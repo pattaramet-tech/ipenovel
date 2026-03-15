@@ -53,7 +53,7 @@ export default function CartPage() {
   const createOrderMutation = trpc.checkout.create.useMutation({
     onSuccess: (order) => {
       toast.success("Order created! Proceed to payment.");
-      navigate(`/orders/${order.orderId}`);
+      navigate(`/payment/${order.orderId}`);
     },
     onError: () => {
       toast.error("Failed to create order");

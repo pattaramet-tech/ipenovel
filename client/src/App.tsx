@@ -19,6 +19,7 @@ import AdminEntitlementsPage from "@/pages/AdminEntitlementsPage";
 import AdminBulkUploadPage from "@/pages/AdminBulkUploadPage";
 import NovelDetailPage from "@/pages/NovelDetailPage";
 import PointsPage from "@/pages/PointsPage";
+import PaymentPage from "@/pages/PaymentPage";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
@@ -37,6 +38,7 @@ function Router() {
         <Route path={"/orders"} component={OrdersPage} />
         <Route path={"/my-novels"} component={MyNovelsPage} />
         <Route path={"/points"} component={PointsPage} />
+        <Route path={"/payment/:orderId"} component={PaymentPage} />
         <Route path={"/admin"} component={AdminDashboard} />
         <Route path={"/admin/novels"} component={AdminNovelsPage} />
         <Route path={"/admin/episodes"} component={AdminEpisodesPage} />

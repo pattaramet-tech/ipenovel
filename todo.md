@@ -107,3 +107,16 @@
 - [ ] Implement loading states and empty states
 - [ ] Add accessibility features
 - [ ] Performance testing and optimization
+
+
+## Payment Flow - QR Code & Slip Upload
+- [x] Upload QR payment image to S3
+- [x] Create PaymentPage component with QR display
+- [x] Add payment page route to App.tsx
+- [x] Update CartPage checkout to redirect to payment page
+- [x] Add slip upload functionality to PaymentPage
+- [x] Add Thai translations for payment flow
+- [ ] Test payment flow with paid episodes
+- [ ] Test free episodes bypass payment
+- [ ] Verify admin approval flow still works
+- [ ] Run regression tests
