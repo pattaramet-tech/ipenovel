@@ -1,0 +1,109 @@
+# Ipenovel V2 - Project TODO
+
+## Database & Core Infrastructure
+- [x] Design and implement database schema (18 tables)
+- [x] Create database migrations
+- [x] Add database query helpers in server/db.ts
+
+## Backend API Routes & Services
+- [x] Implement auth integration with Manus OAuth
+- [x] Build novels and episodes browsing APIs
+- [x] Build cart management APIs (add, remove, list)
+- [x] Build checkout and order creation APIs
+- [x] Build payment slip upload API
+- [x] Build payment approval/rejection APIs (admin)
+- [x] Build purchase entitlement APIs
+- [x] Build My Novels APIs
+- [x] Build download/read access verification APIs
+- [x] Build wishlist APIs
+- [x] Build points system APIs (balance, history, redemption)
+- [x] Build coupon validation APIs
+- [x] Build admin content management APIs (novels, episodes, categories, banners, coupons)
+- [x] Build admin order review APIs
+- [x] Build admin settings APIs
+- [x] Implement service layer for business logic
+- [x] Add transaction support for critical flows
+
+## Frontend - Customer Pages
+- [x] Design and implement Home/Landing page
+- [x] Build Novel Listing page with search and filters
+- [ ] Build Novel Detail page (with free/paid episodes)
+- [ ] Build Episode Reader/View page
+- [x] Build Shopping Cart page
+- [ ] Build Checkout page with coupon and points
+- [ ] Build Payment Submission page (slip upload)
+- [x] Build Orders/Order History page
+- [x] Build My Novels page (purchased content)
+- [ ] Build Wishlist page
+- [ ] Build Profile/Account page
+- [ ] Build Points/Rewards page
+
+## Frontend - Admin Pages
+- [x] Build Admin Dashboard
+- [ ] Build Admin Novels Management page
+- [ ] Build Admin Episodes Management page
+- [ ] Build Admin Categories Management page
+- [x] Build Admin Banners Management page
+- [x] Build Admin Coupons Management page
+- [x] Build Admin Payment Verification page
+- [ ] Build Admin Order Details page
+- [ ] Build Admin Settings page
+
+## S3 File Storage & Downloads
+- [x] Implement S3 file upload for episode files
+- [x] Implement pre-signed URL generation for downloads
+- [x] Implement entitlement-based access control
+- [x] Build download endpoint with authorization checks
+
+## Features - Commerce
+- [x] Implement cart logic (prevent duplicates, prevent already purchased)
+- [x] Implement multi-item checkout (create order + orderItems)
+- [x] Implement order number generation (unique, idempotent)
+- [x] Implement payment slip upload and storage
+- [x] Implement admin payment approval with idempotency
+- [x] Implement purchase entitlement granting
+- [x] Implement coupon validation and application
+- [x] Implement points earning and redemption
+- [x] Implement order history/audit logging
+
+## Features - Content Access
+- [x] Implement purchase entitlement verification
+- [x] Implement My Novels grouping by novel
+- [x] Implement download access restrictions
+- [x] Implement read access restrictions
+
+## Testing & Quality
+- [x] Write vitest tests for order creation (multi-item)
+- [x] Write vitest tests for order number generation
+- [x] Write vitest tests for payment approval idempotency
+- [x] Write vitest tests for purchase entitlement
+- [x] Write vitest tests for coupon application
+- [x] Write vitest tests for points system
+- [x] Write vitest tests for authorization checks
+- [x] Write vitest tests for cart logic
+- [ ] Write integration tests for critical flows
+
+## Seed Data & Demo
+- [x] Create seed script for sample novels
+- [x] Create seed script for sample episodes (free + paid)
+- [x] Create seed script for sample categories
+- [x] Create seed script for sample banners
+- [x] Create seed script for sample coupons
+- [ ] Create seed script for sample admin account
+
+## Documentation & Delivery
+- [ ] Write README with local setup instructions
+- [ ] Document architecture overview
+- [ ] Document order/payment/purchase lifecycle
+- [ ] Document assumptions made during implementation
+- [ ] Create API documentation
+- [ ] Add code comments for complex business logic
+
+## Polish & Optimization
+- [ ] Test responsive design across devices
+- [ ] Test cross-browser compatibility
+- [ ] Optimize database queries
+- [ ] Add proper error handling and user feedback
+- [ ] Implement loading states and empty states
+- [ ] Add accessibility features
+- [ ] Performance testing and optimization

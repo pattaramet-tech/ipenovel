@@ -1,0 +1,136 @@
+import { useAuth } from "@/_core/hooks/useAuth";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { trpc } from "@/lib/trpc";
+import { useLocation } from "wouter";
+import { FileText } from "lucide-react";
+
+export default function OrdersPage() {
+  const { isAuthenticated } = useAuth();
+  const [, navigate] = useLocation();
+
+  const { data: orders, isLoading } = trpc.orders.list.useQuery(undefined, {
+    enabled: isAuthenticated,
+  });
+
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardContent className="pt-6 text-center">
+            <p className="text-slate-600 mb-4">Please sign in to view your orders</p>
+            <Button asChild>
+              <a href="/login">Sign In</a>
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case "approved":
+        return "bg-green-100 text-green-800";
+      case "pending":
+        return "bg-yellow-100 text-yellow-800";
+      case "rejected":
+        return "bg-red-100 text-red-800";
+      default:
+        return "bg-slate-100 text-slate-800";
+    }
+  };
+
+  const getPaymentStatusColor = (status: string) => {
+    switch (status) {
+      case "approved":
+        return "bg-green-100 text-green-800";
+      case "submitted":
+        return "bg-blue-100 text-blue-800";
+      case "rejected":
+        return "bg-red-100 text-red-800";
+      default:
+        return "bg-slate-100 text-slate-800";
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 py-8">
+      <div className="container mx-auto px-4">
+        <h1 className="text-3xl font-bold mb-8">My Orders</h1>
+
+        {isLoading ? (
+          <div className="space-y-4">
+            {[...Array(3)].map((_, i) => (
+              <Skeleton key={i} className="h-32" />
+            ))}
+          </div>
+        ) : !orders || orders.length === 0 ? (
+          <Card>
+            <CardContent className="pt-6 text-center py-12">
+              <FileText className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+              <p className="text-slate-600 text-lg">No orders yet</p>
+              <Button asChild className="mt-4">
+                <a href="/novels">Start Shopping</a>
+              </Button>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-4">
+            {orders.map((order: any) => (
+              <Card key={order.id} className="cursor-pointer hover:shadow-lg transition" onClick={() => navigate(`/orders/${order.id}`)}>
+                <CardHeader className="pb-3">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <CardTitle className="text-lg">{order.orderNumber}</CardTitle>
+                      <p className="text-sm text-slate-600 mt-1">
+                        {new Date(order.createdAt).toLocaleDateString()}
+                      </p>
+                    </div>
+                    <div className="flex gap-2">
+                      <Badge className={getStatusColor(order.status)}>
+                        {order.status}
+                      </Badge>
+                      <Badge className={getPaymentStatusColor(order.paymentStatus)}>
+                        {order.paymentStatus}
+                      </Badge>
+                    </div>
+                  </div>
+                </CardHeader>
+
+                <CardContent>
+                  <div className="space-y-2 mb-4">
+                    {order.items?.slice(0, 2).map((item: any) => (
+                      <p key={item.id} className="text-sm text-slate-600">
+                        • Episode {item.episodeId}
+                      </p>
+                    ))}
+                    {order.items?.length > 2 && (
+                      <p className="text-sm text-slate-500">
+                        +{order.items.length - 2} more items
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-between pt-4 border-t">
+                    <div>
+                      <p className="text-sm text-slate-600">Total Amount</p>
+                      <p className="text-lg font-bold text-slate-900">
+                        ฿{parseFloat(order.totalAmount.toString()).toFixed(2)}
+                      </p>
+                    </div>
+                    <Button variant="outline" size="sm">
+                      View Details →
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

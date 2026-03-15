@@ -1,16 +1,29 @@
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/NotFound";
+import Home from "@/pages/Home";
+import NovelsPage from "@/pages/NovelsPage";
+import CartPage from "@/pages/CartPage";
+import OrdersPage from "@/pages/OrdersPage";
+import MyNovelsPage from "@/pages/MyNovelsPage";
+import AdminDashboard from "@/pages/AdminDashboard";
+import AdminBannersPage from "@/pages/AdminBannersPage";
+import AdminCouponsPage from "@/pages/AdminCouponsPage";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
-import Home from "./pages/Home";
 
 function Router() {
-  // make sure to consider if you need authentication for certain routes
   return (
     <Switch>
       <Route path={"/"} component={Home} />
+      <Route path={"/novels"} component={NovelsPage} />
+      <Route path={"/cart"} component={CartPage} />
+      <Route path={"/orders"} component={OrdersPage} />
+      <Route path={"/my-novels"} component={MyNovelsPage} />
+      <Route path={"/admin"} component={AdminDashboard} />
+      <Route path={"/admin/banners"} component={AdminBannersPage} />
+      <Route path={"/admin/coupons"} component={AdminCouponsPage} />
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />
@@ -18,18 +31,10 @@ function Router() {
   );
 }
 
-// NOTE: About Theme
-// - First choose a default theme according to your design style (dark or light bg), than change color palette in index.css
-//   to keep consistent foreground/background color across components
-// - If you want to make theme switchable, pass `switchable` ThemeProvider and use `useTheme` hook
-
 function App() {
   return (
     <ErrorBoundary>
-      <ThemeProvider
-        defaultTheme="light"
-        // switchable
-      >
+      <ThemeProvider defaultTheme="light">
         <TooltipProvider>
           <Toaster />
           <Router />
