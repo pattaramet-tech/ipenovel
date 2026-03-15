@@ -16,7 +16,6 @@ export default function AdminNovelsPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [formData, setFormData] = useState({
     title: "",
-    author: "",
     description: "",
     coverImageUrl: "",
     status: "draft" as "draft" | "published" | "archived",
@@ -30,7 +29,7 @@ export default function AdminNovelsPage() {
   const createMutation = trpc.admin.novels.create.useMutation({
     onSuccess: () => {
       toast.success("Novel created!");
-      setFormData({ title: "", author: "", description: "", coverImageUrl: "", status: "draft" });
+      setFormData({ title: "", description: "", coverImageUrl: "", status: "draft" });
       setIsCreating(false);
       refetch();
     },
@@ -62,13 +61,12 @@ export default function AdminNovelsPage() {
   }
 
   const filteredNovels = novels?.filter((n: any) =>
-    n.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    n.author.toLowerCase().includes(searchTerm.toLowerCase())
+    n.title.toLowerCase().includes(searchTerm.toLowerCase())
   ) || [];
 
   const handleCreate = () => {
-    if (!formData.title || !formData.author) {
-      toast.error("Title and author are required");
+    if (!formData.title) {
+      toast.error("Title is required");
       return;
     }
     createMutation.mutate(formData);
@@ -104,14 +102,6 @@ export default function AdminNovelsPage() {
                       value={formData.title}
                       onChange={(e) => setFormData({ ...formData, title: e.target.value })}
                       placeholder="Enter novel title"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-sm font-semibold text-slate-700 block mb-2">Author *</label>
-                    <Input
-                      value={formData.author}
-                      onChange={(e) => setFormData({ ...formData, author: e.target.value })}
-                      placeholder="Enter author name"
                     />
                   </div>
                 </div>
@@ -152,7 +142,7 @@ export default function AdminNovelsPage() {
         {/* Search Bar */}
         <div className="flex gap-4">
           <Input
-            placeholder="Search by title or author..."
+            placeholder="Search by title..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="max-w-md"
@@ -179,7 +169,6 @@ export default function AdminNovelsPage() {
               <thead>
                 <tr className="border-b bg-slate-50">
                   <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Title</th>
-                  <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Author</th>
                   <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Status</th>
                   <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Created</th>
                   <th className="text-right px-4 py-3 font-semibold text-slate-700 text-sm">Actions</th>

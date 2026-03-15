@@ -41,7 +41,6 @@ const translations: Record<Language, Record<string, string>> = {
     "novels.noResults": "ไม่พบนวนิยาย",
 
     // Novel detail
-    "novel.author": "ผู้เขียน",
     "novel.categories": "หมวดหมู่",
     "novel.episodes": "ตอน",
     "novel.totalEpisodes": "จำนวนตอนทั้งหมด",
@@ -157,7 +156,6 @@ const translations: Record<Language, Record<string, string>> = {
     "novels.noResults": "No novels found",
 
     // Novel detail
-    "novel.author": "Author",
     "novel.categories": "Categories",
     "novel.episodes": "Episodes",
     "novel.totalEpisodes": "Total Episodes",

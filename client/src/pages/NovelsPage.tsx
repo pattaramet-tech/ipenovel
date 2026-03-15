@@ -75,7 +75,6 @@ export default function NovelsPage() {
                 )}
                 <CardContent className="pt-4">
                   <h3 className="font-semibold text-slate-900 line-clamp-2 mb-2">{novel.title}</h3>
-                  <p className="text-sm text-slate-600 mb-3">{novel.author || "Unknown"}</p>
                   <div className="flex items-center justify-between">
                     <span className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded capitalize">
                       {novel.status}

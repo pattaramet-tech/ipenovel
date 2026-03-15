@@ -64,7 +64,6 @@ export default function MyNovelsPage() {
                   <div className="flex items-start justify-between">
                     <div>
                       <CardTitle className="text-xl">{item.novel.title}</CardTitle>
-                      <p className="text-sm text-slate-600 mt-1">{item.novel.author || "Unknown Author"}</p>
                     </div>
                     <span className="text-xs px-3 py-1 bg-blue-200 text-blue-800 rounded-full capitalize">
                       {item.novel.status}

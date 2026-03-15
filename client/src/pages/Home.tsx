@@ -77,7 +77,6 @@ export default function Home() {
                     )}
                     <div className="p-4">
                       <h3 className="font-bold text-sm line-clamp-2">{novel.title}</h3>
-                      <p className="text-xs text-muted-foreground mt-1">{novel.author}</p>
                       <p className="text-xs text-muted-foreground mt-2 line-clamp-2">
                         {novel.description}
                       </p>
@@ -121,7 +120,6 @@ export default function Home() {
                     )}
                     <div className="p-4">
                       <h3 className="font-bold text-sm line-clamp-2">{novel.title}</h3>
-                      <p className="text-xs text-muted-foreground mt-1">{novel.author}</p>
                       <p className="text-xs text-muted-foreground mt-2 line-clamp-2">
                         {novel.description}
                       </p>
