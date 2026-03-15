@@ -168,6 +168,108 @@ export async function getCategoriesByNovelId(novelId: number) {
     .where(eq(novelCategories.novelId, novelId));
 }
 
+// ============ NOVEL CRUD ============
+
+export async function createNovel(data: {
+  title: string;
+  author?: string;
+  description?: string;
+  coverImageUrl?: string;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(novels).values({
+    title: data.title,
+    author: data.author || "",
+    description: data.description || "",
+    coverImageUrl: data.coverImageUrl || "",
+    slug: data.title.toLowerCase().replace(/\s+/g, "-"),
+    status: "ongoing",
+  });
+  return result;
+}
+
+export async function updateNovel(novelId: number, data: any) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(novels).set(data).where(eq(novels.id, novelId));
+}
+
+export async function deleteNovel(novelId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(novels).where(eq(novels.id, novelId));
+}
+
+// ============ EPISODE CRUD ============
+
+export async function getAllEpisodes() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(episodes).orderBy(desc(episodes.createdAt));
+}
+
+export async function createEpisode(data: {
+  novelId: number;
+  episodeNumber: number;
+  title: string;
+  price: string;
+  isFree?: boolean;
+  fileUrl?: string;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(episodes).values({
+    novelId: data.novelId,
+    episodeNumber: String(data.episodeNumber),
+    title: data.title,
+    price: data.price,
+    isFree: data.isFree || false,
+    fileUrl: data.fileUrl || "",
+  });
+  return result;
+}
+
+export async function updateEpisode(episodeId: number, data: any) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(episodes).set(data).where(eq(episodes.id, episodeId));
+}
+
+export async function deleteEpisode(episodeId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(episodes).where(eq(episodes.id, episodeId));
+}
+
+// ============ CATEGORY CRUD ============
+
+export async function createCategory(data: {
+  name: string;
+  description?: string;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(categories).values({
+    name: data.name,
+    slug: data.name.toLowerCase().replace(/\s+/g, "-"),
+    description: data.description || "",
+  });
+  return result;
+}
+
+export async function updateCategory(categoryId: number, data: any) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(categories).set(data).where(eq(categories.id, categoryId));
+}
+
+export async function deleteCategory(categoryId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(categories).where(eq(categories.id, categoryId));
+}
+
 // ============ CART ============
 
 export async function getOrCreateCart(userId: number) {

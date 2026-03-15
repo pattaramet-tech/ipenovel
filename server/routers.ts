@@ -17,7 +17,26 @@ const adminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
   return next({ ctx });
 });
 
-// ============ MAIN ROUTER ============
+  // ============ MAIN ROUTER ============
+
+const dashboardRouter = router({
+  dashboard: adminProcedure.query(async () => {
+    const novels = await db.getAllNovels();
+    const orders = await db.getAllOrders(1000);
+    const payments = await db.getPendingPayments(1000);
+    
+    const totalRevenue = orders.reduce((sum: number, order: any) => {
+      return sum + (parseFloat(order.totalAmount.toString()) || 0);
+    }, 0);
+
+    return {
+      totalNovels: novels.length,
+      totalOrders: orders.length,
+      pendingPayments: payments.length,
+      totalRevenue,
+    };
+  }),
+});
 
 export const appRouter = router({
   system: systemRouter,
@@ -431,6 +450,12 @@ export const appRouter = router({
         }),
     }),
 
+    dashboard: dashboardRouter,
+
+    getAllEpisodes: adminProcedure.query(async () => {
+      return db.getAllEpisodes();
+    }),
+
     novels: router({
       list: adminProcedure.query(async () => {
         return db.getAllNovels();
@@ -440,16 +465,195 @@ export const appRouter = router({
         .input(
           z.object({
             title: z.string(),
-            slug: z.string(),
-            description: z.string().optional(),
             author: z.string().optional(),
+            description: z.string().optional(),
             coverImageUrl: z.string().optional(),
-            status: z.enum(["ongoing", "completed", "hiatus"]),
           })
         )
         .mutation(async ({ input }) => {
-          // TODO: Implement novel creation in db
+          const result = await db.createNovel(input);
+          return result;
+        }),
+
+      update: adminProcedure
+        .input(
+          z.object({
+            novelId: z.number(),
+            title: z.string().optional(),
+            author: z.string().optional(),
+            description: z.string().optional(),
+            coverImageUrl: z.string().optional(),
+          })
+        )
+        .mutation(async ({ input }) => {
+          const { novelId, ...data } = input;
+          await db.updateNovel(novelId, data);
           return { success: true };
+        }),
+
+      delete: adminProcedure
+        .input(z.object({ novelId: z.number() }))
+        .mutation(async ({ input }) => {
+          await db.deleteNovel(input.novelId);
+          return { success: true };
+        }),
+
+      publish: adminProcedure
+        .input(z.object({ novelId: z.number() }))
+        .mutation(async ({ input }) => {
+          await db.updateNovel(input.novelId, { status: "ongoing" });
+          return { success: true };
+        }),
+
+      unpublish: adminProcedure
+        .input(z.object({ novelId: z.number() }))
+        .mutation(async ({ input }) => {
+          await db.updateNovel(input.novelId, { status: "hiatus" });
+          return { success: true };
+        }),
+    }),
+
+    episodes: router({
+      list: adminProcedure
+        .input(z.object({ novelId: z.number().optional() }))
+        .query(async ({ input }) => {
+          if (input.novelId) {
+            return db.getEpisodesByNovelId(input.novelId);
+          }
+          return db.getAllEpisodes();
+        }),
+
+      create: adminProcedure
+        .input(
+          z.object({
+            novelId: z.number(),
+            episodeNumber: z.number(),
+            title: z.string(),
+            price: z.string(),
+            isFree: z.boolean().optional(),
+            fileUrl: z.string().optional(),
+          })
+        )
+        .mutation(async ({ input }) => {
+          const result = await db.createEpisode(input);
+          return result;
+        }),
+
+      update: adminProcedure
+        .input(
+          z.object({
+            episodeId: z.number(),
+            episodeNumber: z.number().optional(),
+            title: z.string().optional(),
+            price: z.string().optional(),
+            isFree: z.boolean().optional(),
+            fileUrl: z.string().optional(),
+          })
+        )
+        .mutation(async ({ input }) => {
+          const { episodeId, ...data } = input;
+          await db.updateEpisode(episodeId, data);
+          return { success: true };
+        }),
+
+      delete: adminProcedure
+        .input(z.object({ episodeId: z.number() }))
+        .mutation(async ({ input }) => {
+          await db.deleteEpisode(input.episodeId);
+          return { success: true };
+        }),
+    }),
+
+    categories: router({
+      list: adminProcedure.query(async () => {
+        return db.getAllCategories();
+      }),
+
+      create: adminProcedure
+        .input(
+          z.object({
+            name: z.string(),
+            description: z.string().optional(),
+          })
+        )
+        .mutation(async ({ input }) => {
+          const result = await db.createCategory(input);
+          return result;
+        }),
+
+      update: adminProcedure
+        .input(
+          z.object({
+            categoryId: z.number(),
+            name: z.string().optional(),
+            description: z.string().optional(),
+          })
+        )
+        .mutation(async ({ input }) => {
+          const { categoryId, ...data } = input;
+          await db.updateCategory(categoryId, data);
+          return { success: true };
+        }),
+
+      delete: adminProcedure
+        .input(z.object({ categoryId: z.number() }))
+        .mutation(async ({ input }) => {
+          await db.deleteCategory(input.categoryId);
+          return { success: true };
+        }),
+    }),
+
+    entitlements: router({
+      repair: adminProcedure
+        .input(z.object({ orderId: z.number() }))
+        .mutation(async ({ input }) => {
+          const order = await db.getOrderById(input.orderId);
+          if (!order) throw new TRPCError({ code: "NOT_FOUND" });
+          if (!order.userId) throw new TRPCError({ code: "BAD_REQUEST", message: "Order has no user" });
+
+          const items = await db.getOrderItems(order.id);
+          const payment = await db.getPaymentByOrderId(order.id);
+
+          if (!payment || payment.status !== "approved") {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Payment not approved" });
+          }
+
+          // Grant entitlements for each item
+          let grantedCount = 0;
+          for (const item of items) {
+            const existing = await db.getPurchaseByUserAndEpisode(order.userId, item.episodeId);
+            if (!existing) {
+              await db.createPurchase(order.userId, item.novelId, item.episodeId, order.id);
+              grantedCount++;
+            }
+          }
+
+          return { success: true, grantedCount };
+        }),
+
+      search: adminProcedure
+        .input(z.object({ orderId: z.number() }))
+        .query(async ({ input }) => {
+          const order = await db.getOrderById(input.orderId);
+          if (!order) throw new TRPCError({ code: "NOT_FOUND" });
+          if (!order.userId) throw new TRPCError({ code: "BAD_REQUEST", message: "Order has no user" });
+
+          const items = await db.getOrderItems(order.id);
+          const purchases = await db.getPurchasesByUserId(order.userId);
+
+          const missing = items.filter(
+            (item: any) => !purchases.some((p: any) => p.episodeId === item.episodeId)
+          );
+
+          return {
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            userId: order.userId,
+            totalItems: items.length,
+            grantedCount: items.length - missing.length,
+            missingCount: missing.length,
+            missingItems: missing,
+          };
         }),
     }),
 
