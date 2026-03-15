@@ -5,9 +5,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
 import { BookOpen, ShoppingCart, Zap } from "lucide-react";
 import { Link } from "wouter";
+import { useLanguage } from "@/contexts/LanguageContext";
 
 export default function Home() {
   const { user, isAuthenticated } = useAuth();
+  const { t } = useLanguage();
   const { data: novels, isLoading: novelsLoading } = trpc.novels.list.useQuery();
   const { data: banners, isLoading: bannersLoading } = trpc.admin.banners.list.useQuery(undefined, {
     enabled: false, // Disable for now, will implement banner API
@@ -22,22 +24,22 @@ export default function Home() {
       {/* Hero Section */}
       <section className="bg-gradient-to-r from-blue-600 to-blue-700 text-white py-16 px-4">
         <div className="max-w-6xl mx-auto text-center">
-          <h1 className="text-5xl font-bold mb-4">Discover Amazing Novels</h1>
+          <h1 className="text-5xl font-bold mb-4">{t("home.title")}</h1>
           <p className="text-xl text-blue-100 mb-8">
-            Read translated novels with flexible payment options and instant access
+            {t("home.subtitle")}
           </p>
           <div className="flex gap-4 justify-center">
             <Link href="/novels">
               <Button size="lg" variant="secondary">
                 <BookOpen className="w-5 h-5 mr-2" />
-                Browse Novels
+                {t("home.browse")}
               </Button>
             </Link>
             {isAuthenticated && (
               <Link href="/my-novels">
                 <Button size="lg" variant="outline" className="text-white border-white hover:bg-white/10">
                   <Zap className="w-5 h-5 mr-2" />
-                  My Novels
+                  {t("home.myNovels")}
                 </Button>
               </Link>
             )}
