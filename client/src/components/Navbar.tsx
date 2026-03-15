@@ -1,7 +1,7 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { useLocation } from "wouter";
-import { BookOpen, ShoppingCart, LogOut, Menu, X } from "lucide-react";
+import { BookOpen, ShoppingCart, LogOut, Menu, X, Settings } from "lucide-react";
 import { useState } from "react";
 import { getLoginUrl } from "@/const";
 
@@ -19,6 +19,10 @@ export default function Navbar() {
     { label: "Browse", href: "/novels" },
     { label: "My Novels", href: "/my-novels", auth: true },
     { label: "Orders", href: "/orders", auth: true },
+  ];
+
+  const adminLinks = [
+    { label: "Admin", href: "/admin", auth: true, adminOnly: true },
   ];
 
   return (
@@ -48,6 +52,17 @@ export default function Navbar() {
                 </button>
               );
             })}
+            
+            {/* Admin Link */}
+            {user?.role === "admin" && (
+              <button
+                onClick={() => navigate("/admin")}
+                className="text-slate-600 hover:text-slate-900 font-medium transition flex items-center gap-2 px-3 py-1 rounded-lg hover:bg-slate-100"
+              >
+                <Settings className="w-4 h-4" />
+                Admin
+              </button>
+            )}
           </div>
 
           {/* Right Section */}
@@ -97,7 +112,7 @@ export default function Navbar() {
         {/* Mobile Navigation */}
         {mobileMenuOpen && (
           <div className="md:hidden pb-4 border-t border-slate-200">
-            <div className="flex flex-col gap-3 pt-4">
+              <div className="flex flex-col gap-3 pt-4">
               {navLinks.map((link) => {
                 if (link.auth && !isAuthenticated) return null;
                 return (
@@ -113,6 +128,20 @@ export default function Navbar() {
                   </button>
                 );
               })}
+              
+              {/* Admin Link Mobile */}
+              {user?.role === "admin" && (
+                <button
+                  onClick={() => {
+                    navigate("/admin");
+                    setMobileMenuOpen(false);
+                  }}
+                  className="text-left text-slate-600 hover:text-slate-900 font-medium py-2 flex items-center gap-2"
+                >
+                  <Settings className="w-4 h-4" />
+                  Admin
+                </button>
+              )}
 
               <div className="flex flex-col gap-2 pt-2 border-t border-slate-200">
                 <Button
