@@ -91,7 +91,7 @@ export default function AdminCategoriesPage() {
   ) || [];
 
   return (
-    <AdminLayout title="Manage Categories">
+    <AdminLayout>
       <div className="space-y-6">
         {/* Header with Search and Create Button */}
         <div className="flex gap-4 items-center">

@@ -30,7 +30,7 @@ export default function AdminPaymentsPage() {
   });
 
   return (
-    <AdminLayout title="Payment Verification">
+    <AdminLayout>
       <div className="space-y-6">
         {isLoading ? (
           <div className="flex items-center justify-center h-64">

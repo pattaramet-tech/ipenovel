@@ -45,7 +45,7 @@ export default function AdminEntitlementsPage() {
   };
 
   return (
-    <AdminLayout title="Entitlement Repair Tool">
+    <AdminLayout>
       <div className="space-y-6">
         {/* Search Section */}
         <Card className="p-6">

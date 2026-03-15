@@ -104,7 +104,7 @@ export default function AdminEpisodesPage() {
   ) || [];
 
   return (
-    <AdminLayout title="Manage Episodes">
+    <AdminLayout>
       <div className="space-y-6">
         {/* Header with Filters and Create Button */}
         <div className="flex gap-4 items-center">

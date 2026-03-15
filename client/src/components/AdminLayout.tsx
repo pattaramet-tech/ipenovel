@@ -1,204 +1,181 @@
+import { useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
+import { useLocation } from "wouter";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarHeader,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  SidebarProvider,
-} from "@/components/ui/sidebar";
-import {
-  BarChart3,
+  LayoutDashboard,
   BookOpen,
   Layers,
-  LogOut,
-  Menu,
-  Settings,
-  ShoppingCart,
   Tag,
-  User,
+  Image,
+  Ticket,
+  ShoppingCart,
+  CreditCard,
+  Gift,
+  Settings,
+  Menu,
+  X,
+  LogOut,
+  ChevronRight,
 } from "lucide-react";
-import { ReactNode } from "react";
-import { Link, useLocation } from "wouter";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 
 interface AdminLayoutProps {
-  children: ReactNode;
-  title?: string;
+  children: React.ReactNode;
 }
 
-export default function AdminLayout({ children, title }: AdminLayoutProps) {
-  const { user, logout } = useAuth();
-  const [location] = useLocation();
+interface NavItem {
+  label: string;
+  icon: React.ReactNode;
+  href: string;
+  badge?: number;
+}
 
+const navItems: NavItem[] = [
+  { label: "Dashboard", icon: <LayoutDashboard className="w-5 h-5" />, href: "/admin" },
+  { label: "Novels", icon: <BookOpen className="w-5 h-5" />, href: "/admin/novels" },
+  { label: "Episodes", icon: <Layers className="w-5 h-5" />, href: "/admin/episodes" },
+  { label: "Categories", icon: <Tag className="w-5 h-5" />, href: "/admin/categories" },
+  { label: "Banners", icon: <Image className="w-5 h-5" />, href: "/admin/banners" },
+  { label: "Coupons", icon: <Ticket className="w-5 h-5" />, href: "/admin/coupons" },
+  { label: "Orders", icon: <ShoppingCart className="w-5 h-5" />, href: "/admin/orders" },
+  { label: "Payments", icon: <CreditCard className="w-5 h-5" />, href: "/admin/payments" },
+  { label: "Entitlements", icon: <Gift className="w-5 h-5" />, href: "/admin/entitlements" },
+  { label: "Settings", icon: <Settings className="w-5 h-5" />, href: "/admin/settings" },
+];
+
+export default function AdminLayout({ children }: AdminLayoutProps) {
+  const { user } = useAuth();
+  const [location, navigate] = useLocation();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // Auth check
   if (!user || user.role !== "admin") {
     return (
-      <div className="flex items-center justify-center min-h-screen">
-        <Card className="p-8 text-center">
-          <h1 className="text-2xl font-bold mb-4">Access Denied</h1>
-          <p className="text-muted-foreground mb-6">
+      <div className="flex items-center justify-center min-h-screen bg-slate-50">
+        <Card className="p-8 text-center max-w-md">
+          <h1 className="text-2xl font-bold mb-4 text-slate-900">Access Denied</h1>
+          <p className="text-slate-600 mb-6">
             You do not have permission to access the admin panel.
           </p>
-          <Link href="/">
-            <Button>Return to Home</Button>
-          </Link>
+          <Button asChild>
+            <a href="/">Return to Home</a>
+          </Button>
         </Card>
       </div>
     );
   }
 
-  const isActive = (path: string) => location === path;
-
-  const menuItems = [
-    {
-      label: "Dashboard",
-      icon: BarChart3,
-      href: "/admin",
-    },
-    {
-      label: "Content Management",
-      icon: BookOpen,
-      submenu: [
-        { label: "Novels", href: "/admin/novels" },
-        { label: "Episodes", href: "/admin/episodes" },
-        { label: "Categories", href: "/admin/categories" },
-      ],
-    },
-    {
-      label: "Promotions",
-      icon: Tag,
-      submenu: [
-        { label: "Banners", href: "/admin/banners" },
-        { label: "Coupons", href: "/admin/coupons" },
-      ],
-    },
-    {
-      label: "Orders & Payments",
-      icon: ShoppingCart,
-      submenu: [
-        { label: "Payments", href: "/admin/payments" },
-        { label: "Orders", href: "/admin/orders" },
-      ],
-    },
-    {
-      label: "Tools",
-      icon: Layers,
-      submenu: [
-        { label: "Entitlement Repair", href: "/admin/entitlements" },
-      ],
-    },
-    {
-      label: "Settings",
-      icon: Settings,
-      href: "/admin/settings",
-    },
-  ];
+  const isActive = (href: string) => location === href || location.startsWith(href + "/");
 
   return (
-    <SidebarProvider>
-      <div className="flex h-screen w-full">
-        {/* Sidebar */}
-        <Sidebar className="border-r">
-          <SidebarHeader className="border-b p-4">
-            <Link href="/admin">
-              <div className="flex items-center gap-2 cursor-pointer">
-                <BookOpen className="w-6 h-6" />
-                <span className="font-bold text-lg">Ipenovel Admin</span>
-              </div>
-            </Link>
-          </SidebarHeader>
+    <div className="min-h-screen bg-slate-50">
+      {/* Mobile Menu Button */}
+      <div className="md:hidden fixed top-0 left-0 right-0 z-50 bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between">
+        <h1 className="font-bold text-slate-900">Admin</h1>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+        >
+          {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+        </Button>
+      </div>
 
-          <SidebarContent>
-            <SidebarMenu>
-              {menuItems.map((item, idx) => (
-                <div key={idx}>
-                  {item.submenu ? (
-                    <div className="px-2 py-2">
-                      <div className="flex items-center gap-2 px-2 py-2 text-sm font-semibold text-muted-foreground">
-                        <item.icon className="w-4 h-4" />
-                        {item.label}
-                      </div>
-                      <div className="pl-4 space-y-1">
-                        {item.submenu.map((sub, subIdx) => (
-                          <Link key={subIdx} href={sub.href}>
-                            <SidebarMenuItem>
-                              <SidebarMenuButton
-                                isActive={isActive(sub.href)}
-                                className="text-sm"
-                              >
-                                {sub.label}
-                              </SidebarMenuButton>
-                            </SidebarMenuItem>
-                          </Link>
-                        ))}
-                      </div>
-                    </div>
-                  ) : (
-                    <Link href={item.href || "#"}>
-                      <SidebarMenuItem>
-                        <SidebarMenuButton
-                          isActive={isActive(item.href || "")}
-                          className="gap-2"
-                        >
-                          <item.icon className="w-4 h-4" />
-                          {item.label}
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                    </Link>
-                  )}
-                </div>
-              ))}
-            </SidebarMenu>
-          </SidebarContent>
-        </Sidebar>
+      {/* Sidebar */}
+      <aside
+        className={`fixed left-0 top-0 bottom-0 w-64 bg-slate-900 text-white transition-transform duration-300 z-40 ${
+          mobileMenuOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
+        }`}
+      >
+        {/* Logo */}
+        <div className="p-6 border-b border-slate-800">
+          <h1 className="text-xl font-bold">Admin Panel</h1>
+          <p className="text-xs text-slate-400 mt-1">Manage your store</p>
+        </div>
 
-        {/* Main Content */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Top Bar */}
-          <div className="border-b bg-background px-6 py-4 flex items-center justify-between">
-            <div>
-              <h1 className="text-2xl font-bold">{title || "Admin Panel"}</h1>
+        {/* Navigation */}
+        <nav className="mt-6 px-3 space-y-1 pb-32">
+          {navItems.map((item) => (
+            <button
+              key={item.href}
+              onClick={() => {
+                navigate(item.href);
+                setMobileMenuOpen(false);
+              }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
+                isActive(item.href)
+                  ? "bg-blue-600 text-white"
+                  : "text-slate-300 hover:bg-slate-800 hover:text-white"
+              }`}
+            >
+              {item.icon}
+              <span className="flex-1 text-left">{item.label}</span>
+              {item.badge && (
+                <span className="bg-red-500 text-white text-xs px-2 py-1 rounded-full">
+                  {item.badge}
+                </span>
+              )}
+              {isActive(item.href) && <ChevronRight className="w-4 h-4" />}
+            </button>
+          ))}
+        </nav>
+
+        {/* User Info */}
+        <div className="absolute bottom-0 left-0 right-0 border-t border-slate-800 p-4 bg-slate-800">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold text-sm">
+              {user?.name?.charAt(0) || "A"}
             </div>
-
-            {/* User Menu */}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="gap-2">
-                  <User className="w-4 h-4" />
-                  {user.name || user.email || "Admin"}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem disabled>
-                  <span className="text-xs text-muted-foreground">
-                    {user.email}
-                  </span>
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => logout()}
-                  className="text-red-600"
-                >
-                  <LogOut className="w-4 h-4 mr-2" />
-                  Logout
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-white truncate">{user?.name || "Admin"}</p>
+              <p className="text-xs text-slate-400 truncate">{user?.email || "admin@store.com"}</p>
+            </div>
           </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full text-slate-300 border-slate-600 hover:bg-slate-700 hover:text-white"
+            asChild
+          >
+            <a href="/api/auth/logout">
+              <LogOut className="w-4 h-4 mr-2" />
+              Logout
+            </a>
+          </Button>
+        </div>
+      </aside>
 
-          {/* Content Area */}
-          <div className="flex-1 overflow-auto bg-muted/30 p-6">
-            {children}
+      {/* Main Content */}
+      <main className="md:ml-64 pt-16 md:pt-0">
+        {/* Top Bar */}
+        <div className="bg-white border-b border-slate-200 px-6 py-4 sticky top-0 z-30">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-2xl font-bold text-slate-900">
+                {navItems.find((item) => isActive(item.href))?.label || "Admin"}
+              </h2>
+            </div>
+            <div className="flex items-center gap-4">
+              <div className="text-right">
+                <p className="text-sm font-medium text-slate-900">{user?.name || "Admin"}</p>
+                <p className="text-xs text-slate-600">{user?.role || "admin"}</p>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
-    </SidebarProvider>
+
+        {/* Page Content */}
+        <div className="p-6">{children}</div>
+      </main>
+
+      {/* Mobile Overlay */}
+      {mobileMenuOpen && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 z-30 md:hidden"
+          onClick={() => setMobileMenuOpen(false)}
+        />
+      )}
+    </div>
   );
 }

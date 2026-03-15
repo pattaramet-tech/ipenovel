@@ -8,7 +8,7 @@ export default function AdminOrdersPage() {
   const { data: orders, isLoading } = trpc.admin.orders.list.useQuery();
 
   return (
-    <AdminLayout title="Orders">
+    <AdminLayout>
       <div className="space-y-6">
         {isLoading ? (
           <div className="flex items-center justify-center h-64">

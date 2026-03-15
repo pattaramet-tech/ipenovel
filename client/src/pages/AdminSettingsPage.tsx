@@ -30,7 +30,7 @@ export default function AdminSettingsPage() {
   };
 
   return (
-    <AdminLayout title="Settings">
+    <AdminLayout>
       <div className="space-y-6 max-w-2xl">
         {/* General Settings */}
         <Card className="p-6">

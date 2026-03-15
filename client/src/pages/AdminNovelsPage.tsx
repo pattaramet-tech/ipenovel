@@ -1,307 +1,241 @@
 import AdminLayout from "@/components/AdminLayout";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from "@/components/ui/form";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
+import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { Edit2, Plus } from "lucide-react";
+import { Edit2, Plus, Trash2, BookOpen } from "lucide-react";
 import { useState } from "react";
-import { useForm } from "react-hook-form";
 import { toast } from "sonner";
-import { z } from "zod";
-
-const novelSchema = z.object({
-  title: z.string().min(1, "Title is required"),
-  slug: z.string().min(1, "Slug is required"),
-  author: z.string().optional(),
-  description: z.string().optional(),
-  coverImageUrl: z.string().url("Must be a valid URL").optional().or(z.literal("")),
-  status: z.enum(["ongoing", "completed", "hiatus"]),
-});
-
-type NovelFormData = z.infer<typeof novelSchema>;
+import { SectionHeader, StatusBadge, EmptyState, FormSection } from "@/components/AdminComponents";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 export default function AdminNovelsPage() {
-  const [isOpen, setIsOpen] = useState(false);
-  const [editingId, setEditingId] = useState<number | null>(null);
+  const { user, isAuthenticated } = useAuth();
+  const [isCreating, setIsCreating] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [formData, setFormData] = useState({
+    title: "",
+    author: "",
+    description: "",
+    coverImageUrl: "",
+    status: "draft" as "draft" | "published" | "archived",
+  });
 
-  const { data: novels, isLoading, refetch } = trpc.admin.novels.list.useQuery();
-  const createMutation = trpc.admin.novels.create.useMutation();
+  const { data: novels, isLoading, refetch } = trpc.admin.novels.list.useQuery(
+    undefined,
+    { enabled: !!user && user.role === "admin" }
+  );
 
-  const form = useForm<NovelFormData>({
-    resolver: zodResolver(novelSchema),
-    defaultValues: {
-      title: "",
-      slug: "",
-      author: "",
-      description: "",
-      coverImageUrl: "",
-      status: "ongoing",
+  const createMutation = trpc.admin.novels.create.useMutation({
+    onSuccess: () => {
+      toast.success("Novel created!");
+      setFormData({ title: "", author: "", description: "", coverImageUrl: "", status: "draft" });
+      setIsCreating(false);
+      refetch();
+    },
+    onError: () => {
+      toast.error("Failed to create novel");
     },
   });
 
-  const onSubmit = async (data: NovelFormData) => {
-    try {
-      if (editingId) {
-        toast.info("Novel editing not yet implemented");
-      } else {
-        await createMutation.mutateAsync(data);
-        toast.success("Novel created successfully");
-      }
-      setIsOpen(false);
-      form.reset();
-      setEditingId(null);
+  const deleteMutation = trpc.admin.novels.delete.useMutation({
+    onSuccess: () => {
+      toast.success("Novel deleted");
       refetch();
-    } catch (error) {
-      toast.error("Failed to save novel");
+    },
+    onError: () => {
+      toast.error("Failed to delete novel");
+    },
+  });
+
+  if (!isAuthenticated || user?.role !== "admin") {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardContent className="pt-6 text-center">
+            <p className="text-slate-600 mb-4">Admin access required</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  const filteredNovels = novels?.filter((n: any) =>
+    n.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    n.author.toLowerCase().includes(searchTerm.toLowerCase())
+  ) || [];
+
+  const handleCreate = () => {
+    if (!formData.title || !formData.author) {
+      toast.error("Title and author are required");
+      return;
     }
-  };
-
-  const handleEdit = (novel: any) => {
-    setEditingId(novel.id);
-    form.reset({
-      title: novel.title,
-      slug: novel.slug,
-      author: novel.author || "",
-      description: novel.description || "",
-      coverImageUrl: novel.coverImageUrl || "",
-      status: novel.status,
-    });
-    setIsOpen(true);
-  };
-
-  const handleClose = () => {
-    setIsOpen(false);
-    form.reset();
-    setEditingId(null);
+    createMutation.mutate(formData);
   };
 
   return (
-    <AdminLayout title="Novel Management">
-      <div className="space-y-6">
+    <AdminLayout>
+      <div className="space-y-8">
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-3xl font-bold">Novels</h2>
-            <p className="text-muted-foreground mt-1">
-              Manage your novel catalog
-            </p>
+            <h1 className="text-3xl font-bold text-slate-900">Novels</h1>
+            <p className="text-slate-600 mt-1">Manage your novel catalog</p>
           </div>
-
-          <Dialog open={isOpen} onOpenChange={setIsOpen}>
-            <DialogTrigger asChild>
-              <Button className="gap-2">
-                <Plus className="w-4 h-4" />
-                Add Novel
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-2xl">
-              <DialogHeader>
-                <DialogTitle>
-                  {editingId ? "Edit Novel" : "Create New Novel"}
-                </DialogTitle>
-                <DialogDescription>
-                  {editingId
-                    ? "Update the novel details below"
-                    : "Fill in the details to create a new novel"}
-                </DialogDescription>
-              </DialogHeader>
-
-              <Form {...form}>
-                <form
-                  onSubmit={form.handleSubmit(onSubmit)}
-                  className="space-y-4"
-                >
-                  <FormField
-                    control={form.control}
-                    name="title"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Title</FormLabel>
-                        <FormControl>
-                          <Input placeholder="Novel title" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={form.control}
-                    name="slug"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Slug (URL-friendly name)</FormLabel>
-                        <FormControl>
-                          <Input placeholder="novel-title" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={form.control}
-                    name="author"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Author/Translator</FormLabel>
-                        <FormControl>
-                          <Input placeholder="Author name" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={form.control}
-                    name="description"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Description</FormLabel>
-                        <FormControl>
-                          <Textarea
-                            placeholder="Novel description"
-                            rows={4}
-                            {...field}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={form.control}
-                    name="coverImageUrl"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Cover Image URL</FormLabel>
-                        <FormControl>
-                          <Input
-                            placeholder="https://example.com/cover.jpg"
-                            {...field}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={form.control}
-                    name="status"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Status</FormLabel>
-                        <Select
-                          onValueChange={field.onChange}
-                          defaultValue={field.value}
-                        >
-                          <FormControl>
-                            <SelectTrigger>
-                              <SelectValue />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            <SelectItem value="ongoing">Ongoing</SelectItem>
-                            <SelectItem value="completed">
-                              Completed
-                            </SelectItem>
-                            <SelectItem value="hiatus">Hiatus</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <div className="flex gap-2 pt-4">
-                    <Button
-                      type="submit"
-                      disabled={createMutation.isPending}
-                    >
-                      {editingId ? "Update" : "Create"}
-                    </Button>
-                    <Button type="button" variant="outline" onClick={handleClose}>
-                      Cancel
-                    </Button>
-                  </div>
-                </form>
-              </Form>
-            </DialogContent>
-          </Dialog>
+          <Button onClick={() => setIsCreating(!isCreating)} size="lg">
+            <Plus className="w-5 h-5 mr-2" />
+            New Novel
+          </Button>
         </div>
 
-        {/* Novels List */}
-        {isLoading ? (
-          <div className="text-center py-12">
-            <p className="text-muted-foreground">Loading novels...</p>
-          </div>
-        ) : !novels || novels.length === 0 ? (
-          <div className="text-center py-12">
-            <p className="text-muted-foreground mb-4">No novels yet</p>
-            <Button onClick={() => setIsOpen(true)} variant="outline">
-              Create your first novel
-            </Button>
-          </div>
-        ) : (
-          <div className="grid gap-4">
-            {novels.map((novel: any) => (
-              <div
-                key={novel.id}
-                className="border rounded-lg p-4 flex items-start justify-between hover:bg-muted/50 transition"
-              >
-                <div className="flex-1">
-                  <h3 className="font-semibold text-lg">{novel.title}</h3>
-                  <p className="text-sm text-muted-foreground">
-                    by {novel.author || "Unknown"}
-                  </p>
-                  <p className="text-sm mt-2 line-clamp-2">
-                    {novel.description || "No description"}
-                  </p>
-                  <div className="flex gap-2 mt-2">
-                    <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded capitalize">
-                      {novel.status}
-                    </span>
+        {/* Create Form */}
+        {isCreating && (
+          <Card className="border-blue-200 bg-blue-50">
+            <CardHeader>
+              <CardTitle>Create New Novel</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <FormSection title="Basic Information">
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-sm font-semibold text-slate-700 block mb-2">Title *</label>
+                    <Input
+                      value={formData.title}
+                      onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                      placeholder="Enter novel title"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-slate-700 block mb-2">Author *</label>
+                    <Input
+                      value={formData.author}
+                      onChange={(e) => setFormData({ ...formData, author: e.target.value })}
+                      placeholder="Enter author name"
+                    />
                   </div>
                 </div>
 
-                <div className="flex gap-2 ml-4">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => handleEdit(novel)}
-                  >
-                    <Edit2 className="w-4 h-4" />
-                  </Button>
+                <div>
+                  <label className="text-sm font-semibold text-slate-700 block mb-2">Description</label>
+                  <textarea
+                    value={formData.description}
+                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                    placeholder="Enter novel description"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    rows={4}
+                  />
                 </div>
+
+                <div>
+                  <label className="text-sm font-semibold text-slate-700 block mb-2">Cover Image URL</label>
+                  <Input
+                    value={formData.coverImageUrl}
+                    onChange={(e) => setFormData({ ...formData, coverImageUrl: e.target.value })}
+                    placeholder="https://..."
+                  />
+                </div>
+              </FormSection>
+
+              <div className="flex gap-2 pt-4 border-t">
+                <Button onClick={handleCreate} disabled={createMutation.isPending} className="flex-1">
+                  Create Novel
+                </Button>
+                <Button variant="outline" onClick={() => setIsCreating(false)} className="flex-1">
+                  Cancel
+                </Button>
               </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Search Bar */}
+        <div className="flex gap-4">
+          <Input
+            placeholder="Search by title or author..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="max-w-md"
+          />
+        </div>
+
+        {/* Novels Table */}
+        {isLoading ? (
+          <div className="space-y-4">
+            {[...Array(5)].map((_, i) => (
+              <Skeleton key={i} className="h-20" />
             ))}
+          </div>
+        ) : !filteredNovels || filteredNovels.length === 0 ? (
+          <EmptyState
+            icon={BookOpen}
+            title="No Novels"
+            description={searchTerm ? "No novels match your search" : "No novels yet. Create one to get started"}
+            action={!searchTerm ? <Button onClick={() => setIsCreating(true)}>Create First Novel</Button> : undefined}
+          />
+        ) : (
+          <div className="overflow-x-auto border border-slate-200 rounded-lg">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b bg-slate-50">
+                  <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Title</th>
+                  <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Author</th>
+                  <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Status</th>
+                  <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Created</th>
+                  <th className="text-right px-4 py-3 font-semibold text-slate-700 text-sm">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredNovels.map((novel: any) => (
+                  <tr key={novel.id} className="border-b hover:bg-slate-50 transition-colors">
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-3">
+                        {novel.coverImageUrl && (
+                          <img
+                            src={novel.coverImageUrl}
+                            alt={novel.title}
+                            className="w-10 h-14 object-cover rounded"
+                          />
+                        )}
+                        <div>
+                          <p className="font-medium text-slate-900">{novel.title}</p>
+                          <p className="text-xs text-slate-600">{novel.description?.substring(0, 40)}...</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-slate-700">{novel.author}</td>
+                    <td className="px-4 py-3">
+                      <StatusBadge status={novel.status} />
+                    </td>
+                    <td className="px-4 py-3 text-sm text-slate-600">
+                      {new Date(novel.createdAt).toLocaleDateString()}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            if (confirm("Delete this novel?")) {
+                              deleteMutation.mutate({ novelId: novel.id });
+                            }
+                          }}
+                          disabled={deleteMutation.isPending}
+                        >
+                          <Trash2 className="w-4 h-4 text-red-500" />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </div>

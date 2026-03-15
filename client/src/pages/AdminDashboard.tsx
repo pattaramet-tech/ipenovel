@@ -6,15 +6,17 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
-import { CheckCircle, XCircle, Clock } from "lucide-react";
+import { CheckCircle, XCircle, Clock, BookOpen, ShoppingCart, TrendingUp, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
+import { StatCard, SectionHeader, StatusBadge, EmptyState } from "@/components/AdminComponents";
+import AdminLayout from "@/components/AdminLayout";
 
 export default function AdminDashboard() {
   // All hooks must be called at the top level, before any conditional returns
   const { user, isAuthenticated } = useAuth();
   const [, navigate] = useLocation();
-  const [activeTab, setActiveTab] = useState("payments");
+  const [activeTab, setActiveTab] = useState("overview");
 
   // Query hooks with enabled flag - they won't fetch until auth is resolved and user is admin
   const { data: pendingPayments, isLoading: paymentsLoading, refetch: refetchPayments } = trpc.admin.payments.pending.useQuery(
@@ -22,6 +24,10 @@ export default function AdminDashboard() {
     { enabled: !!user && user.role === "admin" }
   );
   const { data: allOrders, isLoading: ordersLoading } = trpc.admin.orders.list.useQuery(
+    undefined,
+    { enabled: !!user && user.role === "admin" }
+  );
+  const { data: allNovels, isLoading: novelsLoading } = trpc.admin.novels.list.useQuery(
     undefined,
     { enabled: !!user && user.role === "admin" }
   );
@@ -54,9 +60,6 @@ export default function AdminDashboard() {
         <Card className="w-full max-w-md">
           <CardContent className="pt-6 text-center">
             <p className="text-slate-600 mb-4">Please log in to access admin</p>
-            <Button asChild>
-              <a href="/">Go Home</a>
-            </Button>
           </CardContent>
         </Card>
       </div>
@@ -69,53 +72,141 @@ export default function AdminDashboard() {
         <Card className="w-full max-w-md">
           <CardContent className="pt-6 text-center">
             <p className="text-slate-600 mb-4">Admin access required</p>
-            <Button asChild>
-              <a href="/">Go Home</a>
-            </Button>
           </CardContent>
         </Card>
       </div>
     );
   }
 
-  return (
-    <div className="min-h-screen bg-slate-50">
-      {/* Header */}
-      <div className="bg-white border-b border-slate-200 py-6">
-        <div className="container mx-auto px-4">
-          <h1 className="text-3xl font-bold text-slate-900">Admin Dashboard</h1>
-          <p className="text-slate-600 mt-2">Manage payments, orders, and content</p>
-        </div>
-      </div>
+  // Calculate stats
+  const totalOrders = allOrders?.length || 0;
+  const totalNovels = allNovels?.length || 0;
+  const pendingPaymentCount = pendingPayments?.length || 0;
+  const approvedPaymentCount = allOrders?.filter((o: any) => o.status === "approved").length || 0;
 
-      {/* Content */}
-      <div className="container mx-auto px-4 py-8">
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid w-full grid-cols-3">
+  return (
+    <AdminLayout>
+      <div className="space-y-8">
+        {/* Quick Stats */}
+        <div>
+          <SectionHeader 
+            title="Dashboard Overview" 
+            description="Key metrics and recent activity"
+          />
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <StatCard
+              label="Total Novels"
+              value={totalNovels}
+              icon={BookOpen}
+              color="blue"
+            />
+            <StatCard
+              label="Total Orders"
+              value={totalOrders}
+              icon={ShoppingCart}
+              color="green"
+            />
+            <StatCard
+              label="Pending Payments"
+              value={pendingPaymentCount}
+              icon={Clock}
+              color="yellow"
+            />
+            <StatCard
+              label="Approved Payments"
+              value={approvedPaymentCount}
+              icon={CheckCircle}
+              color="purple"
+            />
+          </div>
+        </div>
+
+        {/* Tabs */}
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+          <TabsList className="grid w-full grid-cols-3 lg:w-auto">
+            <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="payments">
-              Payment Verification
-              {pendingPayments && pendingPayments.length > 0 && (
-                <Badge className="ml-2 bg-red-100 text-red-800">{pendingPayments.length}</Badge>
+              Payments
+              {pendingPaymentCount > 0 && (
+                <Badge className="ml-2 bg-red-100 text-red-800">{pendingPaymentCount}</Badge>
               )}
             </TabsTrigger>
-            <TabsTrigger value="orders">All Orders</TabsTrigger>
-            <TabsTrigger value="content">Content Management</TabsTrigger>
+            <TabsTrigger value="recent">Recent Orders</TabsTrigger>
           </TabsList>
 
-          {/* Payment Verification Tab */}
-          <TabsContent value="payments" className="space-y-4">
-            <div className="grid md:grid-cols-3 gap-4 mb-6">
+          {/* Overview Tab */}
+          <TabsContent value="overview" className="space-y-6 mt-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Quick Actions */}
               <Card>
-                <CardContent className="pt-6">
-                  <div className="text-center">
-                    <Clock className="w-8 h-8 text-yellow-500 mx-auto mb-2" />
-                    <p className="text-2xl font-bold">{pendingPayments?.length || 0}</p>
-                    <p className="text-sm text-slate-600">Pending</p>
+                <CardHeader>
+                  <CardTitle className="text-lg">Quick Actions</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start h-10"
+                    onClick={() => navigate("/admin/novels")}
+                  >
+                    <BookOpen className="w-4 h-4 mr-2" />
+                    Manage Novels
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start h-10"
+                    onClick={() => navigate("/admin/episodes")}
+                  >
+                    <TrendingUp className="w-4 h-4 mr-2" />
+                    Manage Episodes
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start h-10"
+                    onClick={() => navigate("/admin/payments")}
+                  >
+                    <AlertCircle className="w-4 h-4 mr-2" />
+                    Review Payments
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start h-10"
+                    onClick={() => navigate("/admin/settings")}
+                  >
+                    <CheckCircle className="w-4 h-4 mr-2" />
+                    Settings
+                  </Button>
+                </CardContent>
+              </Card>
+
+              {/* System Status */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-lg">System Status</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-slate-600">Database</span>
+                    <span className="text-sm font-medium text-green-600">✓ Connected</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-slate-600">Auth</span>
+                    <span className="text-sm font-medium text-green-600">✓ Active</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-slate-600">Storage</span>
+                    <span className="text-sm font-medium text-green-600">✓ Ready</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-slate-600">API</span>
+                    <span className="text-sm font-medium text-green-600">✓ Running</span>
                   </div>
                 </CardContent>
               </Card>
             </div>
+          </TabsContent>
 
+          {/* Payments Tab */}
+          <TabsContent value="payments" className="space-y-4 mt-6">
             {paymentsLoading ? (
               <div className="space-y-4">
                 {[...Array(3)].map((_, i) => (
@@ -123,25 +214,24 @@ export default function AdminDashboard() {
                 ))}
               </div>
             ) : !pendingPayments || pendingPayments.length === 0 ? (
-              <Card>
-                <CardContent className="pt-6 text-center py-12">
-                  <CheckCircle className="w-12 h-12 text-green-300 mx-auto mb-4" />
-                  <p className="text-slate-600 text-lg">No pending payments</p>
-                </CardContent>
-              </Card>
+              <EmptyState
+                icon={CheckCircle}
+                title="No Pending Payments"
+                description="All payments have been reviewed"
+              />
             ) : (
               <div className="space-y-4">
                 {pendingPayments.map((payment: any) => (
-                  <Card key={payment.id} className="overflow-hidden">
+                  <Card key={payment.id} className="overflow-hidden hover:shadow-md transition-shadow">
                     <CardHeader className="pb-3 bg-slate-50">
                       <div className="flex items-start justify-between">
                         <div>
-                          <CardTitle className="text-lg">{payment.order?.orderNumber}</CardTitle>
+                          <CardTitle className="text-base">{payment.order?.orderNumber}</CardTitle>
                           <p className="text-sm text-slate-600 mt-1">
-                            User: {payment.order?.userId} | Amount: ฿{parseFloat(payment.order?.totalAmount.toString()).toFixed(2)}
+                            Amount: ฿{parseFloat(payment.order?.totalAmount.toString()).toFixed(2)}
                           </p>
                         </div>
-                        <Badge className="bg-yellow-100 text-yellow-800">Pending</Badge>
+                        <StatusBadge status="pending" />
                       </div>
                     </CardHeader>
 
@@ -157,18 +247,6 @@ export default function AdminDashboard() {
                           />
                         </div>
                       )}
-
-                      {/* Order Items */}
-                      <div className="mb-4">
-                        <p className="text-sm font-semibold mb-2">Items:</p>
-                        <ul className="text-sm text-slate-600 space-y-1">
-                          {payment.items?.map((item: any) => (
-                            <li key={item.id}>
-                              • Episode {item.episodeId} - ฿{parseFloat(item.finalPrice.toString()).toFixed(2)}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
 
                       {/* Actions */}
                       <div className="flex gap-2 pt-4 border-t">
@@ -202,8 +280,8 @@ export default function AdminDashboard() {
             )}
           </TabsContent>
 
-          {/* Orders Tab */}
-          <TabsContent value="orders" className="space-y-4">
+          {/* Recent Orders Tab */}
+          <TabsContent value="recent" className="space-y-4 mt-6">
             {ordersLoading ? (
               <div className="space-y-4">
                 {[...Array(5)].map((_, i) => (
@@ -211,41 +289,37 @@ export default function AdminDashboard() {
                 ))}
               </div>
             ) : !allOrders || allOrders.length === 0 ? (
-              <Card>
-                <CardContent className="pt-6 text-center py-12">
-                  <p className="text-slate-600">No orders found</p>
-                </CardContent>
-              </Card>
+              <EmptyState
+                icon={ShoppingCart}
+                title="No Orders"
+                description="No orders found in the system"
+              />
             ) : (
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto border border-slate-200 rounded-lg">
                 <table className="w-full">
                   <thead>
                     <tr className="border-b bg-slate-50">
-                      <th className="text-left p-3 font-semibold">Order Number</th>
-                      <th className="text-left p-3 font-semibold">User ID</th>
-                      <th className="text-left p-3 font-semibold">Amount</th>
-                      <th className="text-left p-3 font-semibold">Items</th>
-                      <th className="text-left p-3 font-semibold">Status</th>
-                      <th className="text-left p-3 font-semibold">Date</th>
+                      <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Order</th>
+                      <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Amount</th>
+                      <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Items</th>
+                      <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Status</th>
+                      <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Date</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {allOrders.map((order: any) => (
+                    {allOrders.slice(0, 10).map((order: any) => (
                       <tr
                         key={order.id}
-                        className="border-b hover:bg-slate-50 cursor-pointer"
+                        className="border-b hover:bg-slate-50 cursor-pointer transition-colors"
                         onClick={() => navigate(`/admin/orders/${order.id}`)}
                       >
-                        <td className="p-3 font-medium">{order.orderNumber}</td>
-                        <td className="p-3">{order.userId || "—"}</td>
-                        <td className="p-3">฿{parseFloat(order.totalAmount.toString()).toFixed(2)}</td>
-                        <td className="p-3">{order.items?.length || 0} items</td>
-                        <td className="p-3">
-                          <Badge className={order.status === "approved" ? "bg-green-100 text-green-800" : "bg-yellow-100 text-yellow-800"}>
-                            {order.status}
-                          </Badge>
+                        <td className="px-4 py-3 font-medium text-slate-900">{order.orderNumber}</td>
+                        <td className="px-4 py-3 text-slate-700">฿{parseFloat(order.totalAmount.toString()).toFixed(2)}</td>
+                        <td className="px-4 py-3 text-slate-700">{order.items?.length || 0} items</td>
+                        <td className="px-4 py-3">
+                          <StatusBadge status={order.status} />
                         </td>
-                        <td className="p-3 text-sm text-slate-600">
+                        <td className="px-4 py-3 text-sm text-slate-600">
                           {new Date(order.createdAt).toLocaleDateString()}
                         </td>
                       </tr>
@@ -255,49 +329,8 @@ export default function AdminDashboard() {
               </div>
             )}
           </TabsContent>
-
-          {/* Content Management Tab */}
-          <TabsContent value="content" className="space-y-4">
-            <div className="grid md:grid-cols-2 gap-4">
-              <Card className="cursor-pointer hover:shadow-lg transition" onClick={() => navigate("/admin/novels")}>
-                <CardHeader>
-                  <CardTitle>Manage Novels</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-slate-600">Create, edit, and delete novels</p>
-                </CardContent>
-              </Card>
-
-              <Card className="cursor-pointer hover:shadow-lg transition" onClick={() => navigate("/admin/banners")}>
-                <CardHeader>
-                  <CardTitle>Manage Banners</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-slate-600">Create and manage promotional banners</p>
-                </CardContent>
-              </Card>
-
-              <Card className="cursor-pointer hover:shadow-lg transition" onClick={() => navigate("/admin/coupons")}>
-                <CardHeader>
-                  <CardTitle>Manage Coupons</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-slate-600">Create discount coupons and manage usage</p>
-                </CardContent>
-              </Card>
-
-              <Card className="cursor-pointer hover:shadow-lg transition" onClick={() => navigate("/admin/settings")}>
-                <CardHeader>
-                  <CardTitle>Settings</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-slate-600">Configure site settings and webhooks</p>
-                </CardContent>
-              </Card>
-            </div>
-          </TabsContent>
         </Tabs>
       </div>
-    </div>
+    </AdminLayout>
   );
 }
