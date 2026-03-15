@@ -12,22 +12,26 @@ import AdminCouponsPage from "@/pages/AdminCouponsPage";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
+import Navbar from "./components/Navbar";
 
 function Router() {
   return (
-    <Switch>
-      <Route path={"/"} component={Home} />
-      <Route path={"/novels"} component={NovelsPage} />
-      <Route path={"/cart"} component={CartPage} />
-      <Route path={"/orders"} component={OrdersPage} />
-      <Route path={"/my-novels"} component={MyNovelsPage} />
-      <Route path={"/admin"} component={AdminDashboard} />
-      <Route path={"/admin/banners"} component={AdminBannersPage} />
-      <Route path={"/admin/coupons"} component={AdminCouponsPage} />
-      <Route path={"/404"} component={NotFound} />
-      {/* Final fallback route */}
-      <Route component={NotFound} />
-    </Switch>
+    <>
+      <Navbar />
+      <Switch>
+        <Route path={"/"} component={Home} />
+        <Route path={"/novels"} component={NovelsPage} />
+        <Route path={"/cart"} component={CartPage} />
+        <Route path={"/orders"} component={OrdersPage} />
+        <Route path={"/my-novels"} component={MyNovelsPage} />
+        <Route path={"/admin"} component={AdminDashboard} />
+        <Route path={"/admin/banners"} component={AdminBannersPage} />
+        <Route path={"/admin/coupons"} component={AdminCouponsPage} />
+        <Route path={"/404"} component={NotFound} />
+        {/* Final fallback route */}
+        <Route component={NotFound} />
+      </Switch>
+    </>
   );
 }
 
