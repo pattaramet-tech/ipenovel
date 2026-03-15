@@ -139,7 +139,7 @@ const translations: Record<Language, Record<string, string>> = {
     "nav.login": "Login",
 
     // Home page
-    "home.title": "Welcome to Ipe Translated Novels",
+    "home.title": "ยินดีต้อนรับสู่ Ipe นิยายแปล",
     "home.subtitle": "Charcoal Gray Silver Gold Maya",
     "home.browse": "Browse Novels",
     "home.myNovels": "My Novels",
