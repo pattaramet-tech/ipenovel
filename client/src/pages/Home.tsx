@@ -1,214 +1,212 @@
+import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
-import { getLoginUrl } from "@/const";
-import { useAuth } from "@/_core/hooks/useAuth";
 import { BookOpen, ShoppingCart, Zap } from "lucide-react";
 import { Link } from "wouter";
 
 export default function Home() {
-  const { isAuthenticated } = useAuth();
-  const { data: novels } = trpc.novels.list.useQuery();
-  const { data: banners } = trpc.admin.banners.list.useQuery();
+  const { user, isAuthenticated } = useAuth();
+  const { data: novels, isLoading: novelsLoading } = trpc.novels.list.useQuery();
+  const { data: banners, isLoading: bannersLoading } = trpc.admin.banners.list.useQuery(undefined, {
+    enabled: false, // Disable for now, will implement banner API
+  });
 
-  const featuredNovels = novels?.slice(0, 3) || [];
-  const newNovels = novels?.slice(-3) || [];
+  const featuredNovels = novels?.slice(0, 4) || [];
+  const newNovels = novels?.slice(4, 8) || [];
+  const freeNovels = novels?.filter((n: any) => true).slice(0, 4) || []; // Filter for free episodes
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-gradient-to-b from-blue-50 to-white">
       {/* Hero Section */}
-      <section className="bg-gradient-to-r from-blue-600 to-blue-800 text-white py-20 px-4">
+      <section className="bg-gradient-to-r from-blue-600 to-blue-700 text-white py-16 px-4">
         <div className="max-w-6xl mx-auto text-center">
           <h1 className="text-5xl font-bold mb-4">Discover Amazing Novels</h1>
-          <p className="text-xl mb-8 text-blue-100">
+          <p className="text-xl text-blue-100 mb-8">
             Read translated novels with flexible payment options and instant access
           </p>
-          {!isAuthenticated ? (
-            <Link href={getLoginUrl()}>
-              <Button size="lg" className="bg-white text-blue-600 hover:bg-blue-50">
-                Get Started
-              </Button>
-            </Link>
-          ) : (
+          <div className="flex gap-4 justify-center">
             <Link href="/novels">
-              <Button size="lg" className="bg-white text-blue-600 hover:bg-blue-50">
+              <Button size="lg" variant="secondary">
+                <BookOpen className="w-5 h-5 mr-2" />
                 Browse Novels
               </Button>
             </Link>
-          )}
+            {isAuthenticated && (
+              <Link href="/my-novels">
+                <Button size="lg" variant="outline" className="text-white border-white hover:bg-white/10">
+                  <Zap className="w-5 h-5 mr-2" />
+                  My Novels
+                </Button>
+              </Link>
+            )}
+          </div>
         </div>
       </section>
 
-      {/* Banners Section */}
-      {banners && banners.length > 0 && (
-        <section className="py-12 px-4 bg-muted/30">
-          <div className="max-w-6xl mx-auto">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {banners.slice(0, 2).map((banner: any) => (
-                <Card key={banner.id} className="overflow-hidden hover:shadow-lg transition">
-                  {banner.imageUrl && (
-                    <img
-                      src={banner.imageUrl}
-                      alt={banner.title}
-                      className="w-full h-48 object-cover"
-                    />
-                  )}
-                  <div className="p-4">
-                    <h3 className="font-semibold text-lg">{banner.title}</h3>
-                    {banner.description && (
-                      <p className="text-sm text-muted-foreground mt-2">
-                        {banner.description}
-                      </p>
-                    )}
-                    {banner.linkUrl && (
-                      <Button variant="outline" size="sm" className="mt-4">
-                        Learn More
-                      </Button>
-                    )}
-                  </div>
-                </Card>
+      {/* Main Content */}
+      <div className="max-w-6xl mx-auto px-4 py-12">
+        {/* Featured Novels */}
+        <section className="mb-16">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-3xl font-bold">Featured Novels</h2>
+            <Link href="/novels">
+              <Button variant="outline">View All</Button>
+            </Link>
+          </div>
+          {novelsLoading ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {[...Array(4)].map((_, i) => (
+                <Skeleton key={i} className="h-64 rounded-lg" />
               ))}
             </div>
-          </div>
-        </section>
-      )}
-
-      {/* Why Choose Ipenovel */}
-      <section className="py-16 px-4">
-        <div className="max-w-6xl mx-auto">
-          <h2 className="text-3xl font-bold text-center mb-12">Why Choose Ipenovel?</h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            <Card className="p-6 text-center hover:shadow-lg transition">
-              <BookOpen className="w-12 h-12 mx-auto mb-4 text-blue-600" />
-              <h3 className="font-semibold text-lg mb-2">Wide Selection</h3>
-              <p className="text-muted-foreground">
-                Browse thousands of translated novels across multiple genres and categories.
-              </p>
-            </Card>
-
-            <Card className="p-6 text-center hover:shadow-lg transition">
-              <ShoppingCart className="w-12 h-12 mx-auto mb-4 text-blue-600" />
-              <h3 className="font-semibold text-lg mb-2">Flexible Payment</h3>
-              <p className="text-muted-foreground">
-                Pay for individual episodes, use coupons, or redeem points for discounts.
-              </p>
-            </Card>
-
-            <Card className="p-6 text-center hover:shadow-lg transition">
-              <Zap className="w-12 h-12 mx-auto mb-4 text-blue-600" />
-              <h3 className="font-semibold text-lg mb-2">Instant Access</h3>
-              <p className="text-muted-foreground">
-                Get immediate access to purchased episodes and download for offline reading.
-              </p>
-            </Card>
-          </div>
-        </div>
-      </section>
-
-      {/* Featured Novels */}
-      {featuredNovels.length > 0 && (
-        <section className="py-16 px-4 bg-muted/30">
-          <div className="max-w-6xl mx-auto">
-            <h2 className="text-3xl font-bold mb-8">Featured Novels</h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          ) : featuredNovels.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               {featuredNovels.map((novel: any) => (
-                <Link key={novel.id} href={`/novels/${novel.id}`}>
-                  <Card className="overflow-hidden hover:shadow-lg transition cursor-pointer h-full">
+                <Link key={novel.id} href={`/novels/${novel.slug}`}>
+                  <Card className="overflow-hidden hover:shadow-lg transition-shadow cursor-pointer h-full">
                     {novel.coverImageUrl && (
                       <img
                         src={novel.coverImageUrl}
                         alt={novel.title}
-                        className="w-full h-48 object-cover"
+                        className="w-full h-40 object-cover"
                       />
                     )}
                     <div className="p-4">
-                      <h3 className="font-semibold text-lg line-clamp-2">
-                        {novel.title}
-                      </h3>
-                      <p className="text-sm text-muted-foreground mt-1">
-                        by {novel.author || "Unknown"}
+                      <h3 className="font-bold text-sm line-clamp-2">{novel.title}</h3>
+                      <p className="text-xs text-muted-foreground mt-1">{novel.author}</p>
+                      <p className="text-xs text-muted-foreground mt-2 line-clamp-2">
+                        {novel.description}
                       </p>
-                      <p className="text-sm mt-3 line-clamp-3 text-muted-foreground">
-                        {novel.description || "No description available"}
+                    </div>
+                  </Card>
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <Card className="p-8 text-center text-muted-foreground">
+              <p>No featured novels available yet</p>
+            </Card>
+          )}
+        </section>
+
+        {/* New Novels */}
+        <section className="mb-16">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-3xl font-bold">New Releases</h2>
+            <Link href="/novels">
+              <Button variant="outline">View All</Button>
+            </Link>
+          </div>
+          {novelsLoading ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {[...Array(4)].map((_, i) => (
+                <Skeleton key={i} className="h-64 rounded-lg" />
+              ))}
+            </div>
+          ) : newNovels.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {newNovels.map((novel: any) => (
+                <Link key={novel.id} href={`/novels/${novel.slug}`}>
+                  <Card className="overflow-hidden hover:shadow-lg transition-shadow cursor-pointer h-full">
+                    {novel.coverImageUrl && (
+                      <img
+                        src={novel.coverImageUrl}
+                        alt={novel.title}
+                        className="w-full h-40 object-cover"
+                      />
+                    )}
+                    <div className="p-4">
+                      <h3 className="font-bold text-sm line-clamp-2">{novel.title}</h3>
+                      <p className="text-xs text-muted-foreground mt-1">{novel.author}</p>
+                      <p className="text-xs text-muted-foreground mt-2 line-clamp-2">
+                        {novel.description}
                       </p>
-                      <div className="mt-4">
-                        <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded capitalize">
-                          {novel.status}
+                    </div>
+                  </Card>
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <Card className="p-8 text-center text-muted-foreground">
+              <p>No new novels available yet</p>
+            </Card>
+          )}
+        </section>
+
+        {/* Free to Read */}
+        <section className="mb-16">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-3xl font-bold">Free to Read</h2>
+            <Link href="/novels">
+              <Button variant="outline">View All</Button>
+            </Link>
+          </div>
+          {novelsLoading ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {[...Array(4)].map((_, i) => (
+                <Skeleton key={i} className="h-64 rounded-lg" />
+              ))}
+            </div>
+          ) : freeNovels.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {freeNovels.map((novel: any) => (
+                <Link key={novel.id} href={`/novels/${novel.slug}`}>
+                  <Card className="overflow-hidden hover:shadow-lg transition-shadow cursor-pointer h-full">
+                    {novel.coverImageUrl && (
+                      <img
+                        src={novel.coverImageUrl}
+                        alt={novel.title}
+                        className="w-full h-40 object-cover"
+                      />
+                    )}
+                    <div className="p-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <h3 className="font-bold text-sm line-clamp-2 flex-1">{novel.title}</h3>
+                        <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded whitespace-nowrap ml-2">
+                          Free
                         </span>
                       </div>
-                    </div>
-                  </Card>
-                </Link>
-              ))}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* New Novels */}
-      {newNovels.length > 0 && (
-        <section className="py-16 px-4">
-          <div className="max-w-6xl mx-auto">
-            <h2 className="text-3xl font-bold mb-8">Latest Novels</h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {newNovels.map((novel: any) => (
-                <Link key={novel.id} href={`/novels/${novel.id}`}>
-                  <Card className="overflow-hidden hover:shadow-lg transition cursor-pointer h-full">
-                    {novel.coverImageUrl && (
-                      <img
-                        src={novel.coverImageUrl}
-                        alt={novel.title}
-                        className="w-full h-48 object-cover"
-                      />
-                    )}
-                    <div className="p-4">
-                      <h3 className="font-semibold text-lg line-clamp-2">
-                        {novel.title}
-                      </h3>
-                      <p className="text-sm text-muted-foreground mt-1">
-                        by {novel.author || "Unknown"}
-                      </p>
-                      <p className="text-sm mt-3 line-clamp-3 text-muted-foreground">
-                        {novel.description || "No description available"}
+                      <p className="text-xs text-muted-foreground mt-1">{novel.author}</p>
+                      <p className="text-xs text-muted-foreground mt-2 line-clamp-2">
+                        {novel.description}
                       </p>
                     </div>
                   </Card>
                 </Link>
               ))}
             </div>
-          </div>
-        </section>
-      )}
-
-      {/* CTA Section */}
-      <section className="py-16 px-4 bg-blue-600 text-white">
-        <div className="max-w-4xl mx-auto text-center">
-          <h2 className="text-3xl font-bold mb-4">Ready to Start Reading?</h2>
-          <p className="text-lg mb-8 text-blue-100">
-            Join thousands of readers enjoying translated novels
-          </p>
-          {!isAuthenticated ? (
-            <Link href={getLoginUrl()}>
-              <Button size="lg" className="bg-white text-blue-600 hover:bg-blue-50">
-                Sign In to Browse
-              </Button>
-            </Link>
           ) : (
+            <Card className="p-8 text-center text-muted-foreground">
+              <p>No free novels available yet</p>
+            </Card>
+          )}
+        </section>
+
+        {/* CTA Section */}
+        <section className="bg-gradient-to-r from-purple-50 to-blue-50 rounded-lg p-12 text-center mb-16">
+          <h2 className="text-3xl font-bold mb-4">Ready to Start Reading?</h2>
+          <p className="text-lg text-muted-foreground mb-8">
+            Browse our collection of translated novels and find your next favorite read.
+          </p>
+          <div className="flex gap-4 justify-center">
             <Link href="/novels">
-              <Button size="lg" className="bg-white text-blue-600 hover:bg-blue-50">
-                Start Browsing
+              <Button size="lg">
+                <BookOpen className="w-5 h-5 mr-2" />
+                Browse All Novels
               </Button>
             </Link>
-          )}
-        </div>
-      </section>
-
-      {/* Footer */}
-      <footer className="bg-background border-t py-8 px-4">
-        <div className="max-w-6xl mx-auto text-center text-muted-foreground">
-          <p>&copy; 2026 Ipenovel. All rights reserved.</p>
-        </div>
-      </footer>
+            {!isAuthenticated && (
+              <Link href="/auth/login">
+                <Button size="lg" variant="outline">
+                  Sign In
+                </Button>
+              </Link>
+            )}
+          </div>
+        </section>
+      </div>
     </div>
   );
 }
