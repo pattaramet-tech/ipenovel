@@ -68,6 +68,8 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
   describe("Area 2: Multi-Item Cart and Checkout", () => {
     it("should add multiple episodes to cart", async () => {
       const cart = await db.getOrCreateCart(testUser.id);
+      // Clear cart before test to avoid duplicate constraint violations
+      await db.clearCart(cart.id);
 
       const episodes = await db.getEpisodesByNovelId(testNovel.id);
       const paidEpisodes = episodes.filter((e: any) => !e.isFree).slice(0, 3);
@@ -82,6 +84,8 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
 
     it("should prevent duplicate items in cart", async () => {
       const cart = await db.getOrCreateCart(testUser.id);
+      // Clear cart before test
+      await db.clearCart(cart.id);
       const episodes = await db.getEpisodesByNovelId(testNovel.id);
       const episode = episodes.find((e: any) => !e.isFree);
 
@@ -101,6 +105,8 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
 
     it("should calculate correct checkout totals", async () => {
       const cart = await db.getOrCreateCart(testUser.id);
+      // Clear cart before test
+      await db.clearCart(cart.id);
       const cartItems = await db.getCartItems(cart.id);
 
       let subtotal = 0;
@@ -126,6 +132,7 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
 
     it("should create order with single orderNumber", async () => {
       const cart = await db.getOrCreateCart(testUser.id);
+      await db.clearCart(cart.id);
       const episodes = await db.getEpisodesByNovelId(testNovel.id);
       const paidEpisodes = episodes.filter((e: any) => !e.isFree).slice(0, 2);
 
@@ -145,6 +152,7 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
 
     it("should create payment record with order", async () => {
       const cart = await db.getOrCreateCart(testUser.id);
+      await db.clearCart(cart.id);
       const episodes = await db.getEpisodesByNovelId(testNovel.id);
       const paidEpisode = episodes.find((e: any) => !e.isFree);
 
@@ -165,6 +173,7 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
   describe("Area 4: Admin Approve/Reject Flow", () => {
     it("should approve payment and change status", async () => {
       const cart = await db.getOrCreateCart(testUser.id);
+      await db.clearCart(cart.id);
       const episodes = await db.getEpisodesByNovelId(testNovel.id);
       const paidEpisode = episodes.find((e: any) => !e.isFree);
 
@@ -185,6 +194,7 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
 
     it("should reject payment with reason", async () => {
       const cart = await db.getOrCreateCart(testUser.id);
+      await db.clearCart(cart.id);
       const episodes = await db.getEpisodesByNovelId(testNovel.id);
       const paidEpisode = episodes.find((e: any) => !e.isFree);
 
@@ -210,6 +220,7 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
   describe("Area 5: Purchases / Entitlement Creation", () => {
     it("should create purchase on approval", async () => {
       const cart = await db.getOrCreateCart(testUser.id);
+      await db.clearCart(cart.id);
       const episodes = await db.getEpisodesByNovelId(testNovel.id);
       const paidEpisode = episodes.find((e: any) => !e.isFree);
 
@@ -233,6 +244,7 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
 
     it("should not create purchase on rejection", async () => {
       const cart = await db.getOrCreateCart(testUser.id);
+      await db.clearCart(cart.id);
       const episodes = await db.getEpisodesByNovelId(testNovel.id);
       const paidEpisode = episodes.find((e: any) => !e.isFree);
 
@@ -257,6 +269,7 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
   describe("Area 6: My Novels Correctness", () => {
     it("should show only purchased episodes in My Novels", async () => {
       const cart = await db.getOrCreateCart(testUser.id);
+      await db.clearCart(cart.id);
       const episodes = await db.getEpisodesByNovelId(testNovel.id);
       const paidEpisode = episodes.find((e: any) => !e.isFree);
 
@@ -288,6 +301,7 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
       if (paidEpisode) {
         // Create and approve order
         const cart = await db.getOrCreateCart(testUser.id);
+        await db.clearCart(cart.id);
         await db.addToCart(cart.id, paidEpisode.id, paidEpisode.novelId, paidEpisode.price.toString());
         const cartItems = await db.getCartItems(cart.id);
         const order = await orderService.createOrderFromCart(testUser.id, cartItems);
@@ -332,6 +346,7 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
       const initialUsage = coupon?.usageCount || 0;
 
       const cart = await db.getOrCreateCart(testUser.id);
+      await db.clearCart(cart.id);
       const episodes = await db.getEpisodesByNovelId(testNovel.id);
       const paidEpisode = episodes.find((e: any) => !e.isFree);
 
@@ -359,9 +374,13 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
     });
 
     it("should calculate points correctly", async () => {
+      // Give test user points first (1000 points = 100000 currency)
+      await db.addPointsTransaction(testUser.id, 1000, "test", "Test points for redemption");
+      
       const result = await orderService.calculatePointsRedemption(testUser.id, "10");
       expect(result.pointsToRedeem).toBeDefined();
       expect(result.pointsDiscount).toBeDefined();
+      expect(parseFloat(result.pointsDiscount)).toBeGreaterThan(0);
     });
   });
 

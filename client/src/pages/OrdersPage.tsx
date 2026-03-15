@@ -101,6 +101,14 @@ export default function OrdersPage() {
                 </CardHeader>
 
                 <CardContent>
+                  {/* Show rejection reason if payment was rejected */}
+                  {order.paymentStatus === "rejected" && order.rejectionReason && (
+                    <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-sm text-red-700">
+                      <p className="font-semibold">Payment Rejected</p>
+                      <p>{order.rejectionReason}</p>
+                    </div>
+                  )}
+
                   <div className="space-y-2 mb-4">
                     {order.items?.slice(0, 2).map((item: any) => (
                       <p key={item.id} className="text-sm text-slate-600">
