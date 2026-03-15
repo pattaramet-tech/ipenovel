@@ -64,7 +64,7 @@ export default function Home() {
           ) : featuredNovels.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               {featuredNovels.map((novel: any) => (
-                <Link key={novel.id} href={`/novels/${novel.slug}`}>
+                <Link key={novel.id} href={`/novels/${novel.id}`}>
                   <Card className="overflow-hidden hover:shadow-lg transition-shadow cursor-pointer h-full">
                     {novel.coverImageUrl && (
                       <img
@@ -108,7 +108,7 @@ export default function Home() {
           ) : newNovels.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               {newNovels.map((novel: any) => (
-                <Link key={novel.id} href={`/novels/${novel.slug}`}>
+                <Link key={novel.id} href={`/novels/${novel.id}`}>
                   <Card className="overflow-hidden hover:shadow-lg transition-shadow cursor-pointer h-full">
                     {novel.coverImageUrl && (
                       <img
@@ -152,7 +152,7 @@ export default function Home() {
           ) : freeNovels.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               {freeNovels.map((novel: any) => (
-                <Link key={novel.id} href={`/novels/${novel.slug}`}>
+                <Link key={novel.id} href={`/novels/${novel.id}`}>
                   <Card className="overflow-hidden hover:shadow-lg transition-shadow cursor-pointer h-full">
                     {novel.coverImageUrl && (
                       <img

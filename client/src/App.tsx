@@ -15,8 +15,9 @@ import AdminCategoriesPage from "@/pages/AdminCategoriesPage";
 import AdminOrdersPage from "@/pages/AdminOrdersPage";
 import AdminPaymentsPage from "@/pages/AdminPaymentsPage";
 import AdminEntitlementsPage from "@/pages/AdminEntitlementsPage";
-import AdminSettingsPage from "@/pages/AdminSettingsPage";
+// import AdminSettingsPage from "@/pages/AdminSettingsPage";
 import AdminBulkUploadPage from "@/pages/AdminBulkUploadPage";
+import NovelDetailPage from "@/pages/NovelDetailPage";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
@@ -29,6 +30,7 @@ function Router() {
       <Switch>
         <Route path={"/"} component={Home} />
         <Route path={"/novels"} component={NovelsPage} />
+        <Route path={"/novels/:identifier"} component={NovelDetailPage} />
         <Route path={"/cart"} component={CartPage} />
         <Route path={"/orders"} component={OrdersPage} />
         <Route path={"/my-novels"} component={MyNovelsPage} />
@@ -41,7 +43,7 @@ function Router() {
         <Route path={"/admin/orders"} component={AdminOrdersPage} />
         <Route path={"/admin/payments"} component={AdminPaymentsPage} />
         <Route path={"/admin/entitlements"} component={AdminEntitlementsPage} />
-        <Route path={"/admin/settings"} component={AdminSettingsPage} />
+        {/* <Route path={"/admin/settings"} component={AdminSettingsPage} /> */}
         <Route path={"/admin/bulk-upload"} component={AdminBulkUploadPage} />
         <Route path={"/404"} component={NotFound} />
         {/* Final fallback route */}
