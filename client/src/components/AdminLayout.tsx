@@ -16,6 +16,7 @@ import {
   X,
   LogOut,
   ChevronRight,
+  Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -41,6 +42,7 @@ const navItems: NavItem[] = [
   { label: "Orders", icon: <ShoppingCart className="w-5 h-5" />, href: "/admin/orders" },
   { label: "Payments", icon: <CreditCard className="w-5 h-5" />, href: "/admin/payments" },
   { label: "Entitlements", icon: <Gift className="w-5 h-5" />, href: "/admin/entitlements" },
+  { label: "Bulk Upload", icon: <Upload className="w-5 h-5" />, href: "/admin/bulk-upload" },
   { label: "Settings", icon: <Settings className="w-5 h-5" />, href: "/admin/settings" },
 ];
 

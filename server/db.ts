@@ -211,7 +211,7 @@ export async function getAllEpisodes() {
 
 export async function createEpisode(data: {
   novelId: number;
-  episodeNumber: number;
+  episodeNumber: string | number;
   title: string;
   price: string;
   isFree?: boolean;
@@ -710,4 +710,161 @@ export async function getOrderHistory(orderId: number) {
   const db = await getDb();
   if (!db) return [];
   return db.select().from(orderHistory).where(eq(orderHistory.orderId, orderId)).orderBy(desc(orderHistory.createdAt));
+}
+
+// ============ BULK UPLOAD HELPERS ============
+
+/**
+ * Generate a unique slug from a title
+ * If slug conflicts with existing novel, append a unique suffix
+ */
+export async function generateUniqueSlug(title: string, existingNovelId?: number): Promise<string> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  let slug = title.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+  if (!slug) slug = "novel";
+
+  // Check if slug already exists
+  const existing = await db
+    .select()
+    .from(novels)
+    .where(eq(novels.slug, slug))
+    .limit(1);
+
+  if (existing.length === 0 || (existingNovelId && existing[0].id === existingNovelId)) {
+    return slug;
+  }
+
+  // Append unique suffix if conflict
+  let counter = 1;
+  while (true) {
+    const newSlug = `${slug}-${counter}`;
+    const conflict = await db
+      .select()
+      .from(novels)
+      .where(eq(novels.slug, newSlug))
+      .limit(1);
+    if (conflict.length === 0) {
+      return newSlug;
+    }
+    counter++;
+  }
+}
+
+/**
+ * Bulk create novels from CSV data
+ * Validates and returns errors for invalid rows
+ */
+export async function bulkCreateNovels(
+  rows: Array<{ title: string }>
+): Promise<{
+  success: Array<{ rowIndex: number; novelId: number; title: string }>;
+  errors: Array<{ rowIndex: number; error: string }>;
+}> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const success: Array<{ rowIndex: number; novelId: number; title: string }> = [];
+  const errors: Array<{ rowIndex: number; error: string }> = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+
+    // Validate
+    if (!row.title || !row.title.trim()) {
+      errors.push({ rowIndex: i, error: "Title is required" });
+      continue;
+    }
+
+    try {
+      const slug = await generateUniqueSlug(row.title);
+      const result = await db.insert(novels).values({
+        title: row.title.trim(),
+        author: "",
+        description: "",
+        coverImageUrl: "",
+        slug,
+        status: "ongoing",
+      });
+
+      const novelId = (result as any).insertId;
+      success.push({ rowIndex: i, novelId, title: row.title });
+    } catch (error) {
+      errors.push({ rowIndex: i, error: `Failed to create: ${error instanceof Error ? error.message : "Unknown error"}` });
+    }
+  }
+
+  return { success, errors };
+}
+
+/**
+ * Bulk create episodes for a novel from CSV data
+ * Validates and returns errors for invalid rows
+ */
+export async function bulkCreateEpisodes(
+  novelId: number,
+  rows: Array<{ title: string; episodeNumber: string; price: string; fileUrl: string }>
+): Promise<{
+  success: Array<{ rowIndex: number; episodeId: number; title: string; price: string }>;
+  errors: Array<{ rowIndex: number; error: string }>;
+}> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const success: Array<{ rowIndex: number; episodeId: number; title: string; price: string }> = [];
+  const errors: Array<{ rowIndex: number; error: string }> = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+
+    // Validate required fields
+    if (!row.title || !row.title.trim()) {
+      errors.push({ rowIndex: i, error: "Title is required" });
+      continue;
+    }
+
+    if (!row.episodeNumber || !row.episodeNumber.trim()) {
+      errors.push({ rowIndex: i, error: "Episode number is required" });
+      continue;
+    }
+
+    if (!row.price) {
+      errors.push({ rowIndex: i, error: "Price is required" });
+      continue;
+    }
+
+    // Validate price is numeric
+    const priceNum = parseFloat(row.price);
+    if (isNaN(priceNum)) {
+      errors.push({ rowIndex: i, error: `Invalid price: "${row.price}" is not a number` });
+      continue;
+    }
+
+    if (!row.fileUrl || !row.fileUrl.trim()) {
+      errors.push({ rowIndex: i, error: "File URL is required" });
+      continue;
+    }
+
+    try {
+      // Determine if free based on price
+      const isFree = priceNum === 0;
+
+      const result = await db.insert(episodes).values({
+        novelId,
+        episodeNumber: row.episodeNumber.trim(),
+        title: row.title.trim(),
+        price: row.price.trim(),
+        isFree,
+        fileUrl: row.fileUrl.trim(),
+      });
+
+      const episodeId = (result as any).insertId;
+      success.push({ rowIndex: i, episodeId, title: row.title, price: row.price });
+    } catch (error) {
+      errors.push({ rowIndex: i, error: `Failed to create: ${error instanceof Error ? error.message : "Unknown error"}` });
+    }
+  }
+
+  return { success, errors };
 }

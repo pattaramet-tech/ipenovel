@@ -16,6 +16,7 @@ import AdminOrdersPage from "@/pages/AdminOrdersPage";
 import AdminPaymentsPage from "@/pages/AdminPaymentsPage";
 import AdminEntitlementsPage from "@/pages/AdminEntitlementsPage";
 import AdminSettingsPage from "@/pages/AdminSettingsPage";
+import AdminBulkUploadPage from "@/pages/AdminBulkUploadPage";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
@@ -41,6 +42,7 @@ function Router() {
         <Route path={"/admin/payments"} component={AdminPaymentsPage} />
         <Route path={"/admin/entitlements"} component={AdminEntitlementsPage} />
         <Route path={"/admin/settings"} component={AdminSettingsPage} />
+        <Route path={"/admin/bulk-upload"} component={AdminBulkUploadPage} />
         <Route path={"/404"} component={NotFound} />
         {/* Final fallback route */}
         <Route component={NotFound} />

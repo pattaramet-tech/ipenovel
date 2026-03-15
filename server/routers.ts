@@ -739,6 +739,28 @@ export const appRouter = router({
           return { success: true };
         }),
     }),
+
+    bulkUpload: router({
+      novels: adminProcedure
+        .input(z.object({ rows: z.array(z.object({ title: z.string() })) }))
+        .mutation(async ({ input }) => {
+          return db.bulkCreateNovels(input.rows);
+        }),
+
+      episodes: adminProcedure
+        .input(z.object({
+          novelId: z.number(),
+          rows: z.array(z.object({
+            title: z.string(),
+            episodeNumber: z.string(),
+            price: z.string(),
+            fileUrl: z.string(),
+          })),
+        }))
+        .mutation(async ({ input }) => {
+          return db.bulkCreateEpisodes(input.novelId, input.rows);
+        }),
+    }),
   }),
 });
 
