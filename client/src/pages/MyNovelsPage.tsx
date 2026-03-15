@@ -15,15 +15,9 @@ export default function MyNovelsPage() {
     enabled: isAuthenticated,
   });
 
-  const handleDownload = async (episodeId: number) => {
-    try {
-      const queryClient = trpc.useUtils();
-      const data = await queryClient.myNovels.downloadUrl.fetch({ episodeId });
-      window.open(data.downloadUrl, "_blank");
-      toast.success("Download started");
-    } catch (error) {
-      toast.error("Failed to download");
-    }
+  const handleDownload = (episodeId: number) => {
+    // Redirect to centralized download route with auth/authz
+    window.location.href = `/api/download/${episodeId}`;
   };
 
   if (!isAuthenticated) {
@@ -102,6 +96,7 @@ export default function MyNovelsPage() {
                             size="sm"
                             onClick={() => navigate(`/read/${episode.id}`)}
                           >
+                            <BookOpen className="w-4 h-4 mr-2" />
                             Read
                           </Button>
                           <Button
