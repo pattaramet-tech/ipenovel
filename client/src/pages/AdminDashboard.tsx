@@ -11,28 +11,22 @@ import { toast } from "sonner";
 import { useState } from "react";
 
 export default function AdminDashboard() {
+  // All hooks must be called at the top level, before any conditional returns
   const { user, isAuthenticated } = useAuth();
   const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState("payments");
 
-  if (!isAuthenticated || user?.role !== "admin") {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Card className="w-full max-w-md">
-          <CardContent className="pt-6 text-center">
-            <p className="text-slate-600 mb-4">Admin access required</p>
-            <Button asChild>
-              <a href="/">Go Home</a>
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+  // Query hooks with enabled flag - they won't fetch until auth is resolved and user is admin
+  const { data: pendingPayments, isLoading: paymentsLoading, refetch: refetchPayments } = trpc.admin.payments.pending.useQuery(
+    undefined,
+    { enabled: !!user && user.role === "admin" }
+  );
+  const { data: allOrders, isLoading: ordersLoading } = trpc.admin.orders.list.useQuery(
+    undefined,
+    { enabled: !!user && user.role === "admin" }
+  );
 
-  const { data: pendingPayments, isLoading: paymentsLoading, refetch: refetchPayments } = trpc.admin.payments.pending.useQuery();
-  const { data: allOrders, isLoading: ordersLoading } = trpc.admin.orders.list.useQuery();
-
+  // Mutation hooks
   const approveMutation = trpc.admin.payments.approve.useMutation({
     onSuccess: () => {
       toast.success("Payment approved!");
@@ -52,6 +46,37 @@ export default function AdminDashboard() {
       toast.error("Failed to reject payment");
     },
   });
+
+  // Now perform auth checks after all hooks are declared
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardContent className="pt-6 text-center">
+            <p className="text-slate-600 mb-4">Please log in to access admin</p>
+            <Button asChild>
+              <a href="/">Go Home</a>
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (user?.role !== "admin") {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardContent className="pt-6 text-center">
+            <p className="text-slate-600 mb-4">Admin access required</p>
+            <Button asChild>
+              <a href="/">Go Home</a>
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50">

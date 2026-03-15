@@ -6,16 +6,21 @@ import { useLocation } from "wouter";
 import { BarChart3, BookOpen, ShoppingCart, AlertCircle, CheckCircle, Settings } from "lucide-react";
 
 export default function AdminDashboardNew() {
+  // All hooks must be called at the top level, before any conditional returns
   const { user } = useAuth();
   const [, navigate] = useLocation();
 
-  // Redirect if not admin
+  // Query hooks with enabled flag - they won't fetch until user is admin
+  const { data: payments } = trpc.admin.payments.pending.useQuery(
+    undefined,
+    { enabled: !!user && user.role === "admin" }
+  );
+
+  // Now perform auth checks after all hooks are declared
   if (user?.role !== "admin") {
     navigate("/");
     return null;
   }
-
-  const { data: payments } = trpc.admin.payments.pending.useQuery();
 
   const pendingPayments = payments || [];
   const approvedPayments: any[] = [];

@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { useState } from "react";
 
 export default function AdminCouponsPage() {
+  // All hooks must be called at the top level, before any conditional returns
   const { user, isAuthenticated } = useAuth();
   const [isCreating, setIsCreating] = useState(false);
   const [formData, setFormData] = useState({
@@ -21,20 +22,13 @@ export default function AdminCouponsPage() {
     expiresAt: "",
   });
 
-  if (!isAuthenticated || user?.role !== "admin") {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Card className="w-full max-w-md">
-          <CardContent className="pt-6 text-center">
-            <p className="text-slate-600 mb-4">Admin access required</p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+  // Query hooks with enabled flag - they won't fetch until auth is resolved and user is admin
+  const { data: coupons, isLoading, refetch } = trpc.admin.coupons.list.useQuery(
+    undefined,
+    { enabled: !!user && user.role === "admin" }
+  );
 
-  const { data: coupons, isLoading, refetch } = trpc.admin.coupons.list.useQuery();
-
+  // Mutation hooks
   const createMutation = trpc.admin.coupons.create.useMutation({
     onSuccess: () => {
       toast.success("Coupon created!");
@@ -53,6 +47,31 @@ export default function AdminCouponsPage() {
       toast.error("Failed to create coupon");
     },
   });
+
+  // Now perform auth checks after all hooks are declared
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardContent className="pt-6 text-center">
+            <p className="text-slate-600 mb-4">Please log in to access admin</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (user?.role !== "admin") {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardContent className="pt-6 text-center">
+            <p className="text-slate-600 mb-4">Admin access required</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   const handleCreate = () => {
     if (!formData.code || !formData.discountValue) {

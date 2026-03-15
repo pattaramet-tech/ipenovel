@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { useState } from "react";
 
 export default function AdminBannersPage() {
+  // All hooks must be called at the top level, before any conditional returns
   const { user, isAuthenticated } = useAuth();
   const [, navigate] = useLocation();
   const [isCreating, setIsCreating] = useState(false);
@@ -21,23 +22,13 @@ export default function AdminBannersPage() {
     displayOrder: 0,
   });
 
-  if (!isAuthenticated || user?.role !== "admin") {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Card className="w-full max-w-md">
-          <CardContent className="pt-6 text-center">
-            <p className="text-slate-600 mb-4">Admin access required</p>
-            <Button asChild>
-              <a href="/">Go Home</a>
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+  // Query hooks with enabled flag - they won't fetch until auth is resolved and user is admin
+  const { data: banners, isLoading, refetch } = trpc.admin.banners.list.useQuery(
+    undefined,
+    { enabled: !!user && user.role === "admin" }
+  );
 
-  const { data: banners, isLoading, refetch } = trpc.admin.banners.list.useQuery();
-
+  // Mutation hooks
   const createMutation = trpc.admin.banners.create.useMutation({
     onSuccess: () => {
       toast.success("Banner created!");
@@ -59,6 +50,37 @@ export default function AdminBannersPage() {
       toast.error("Failed to delete banner");
     },
   });
+
+  // Now perform auth checks after all hooks are declared
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardContent className="pt-6 text-center">
+            <p className="text-slate-600 mb-4">Please log in to access admin</p>
+            <Button asChild>
+              <a href="/">Go Home</a>
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (user?.role !== "admin") {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardContent className="pt-6 text-center">
+            <p className="text-slate-600 mb-4">Admin access required</p>
+            <Button asChild>
+              <a href="/">Go Home</a>
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   const handleCreate = () => {
     if (!formData.title || !formData.imageUrl) {
