@@ -23,8 +23,8 @@ const translations: Record<Language, Record<string, string>> = {
     "nav.login": "เข้าสู่ระบบ",
 
     // Home page
-    "home.title": "ค้นพบนวนิยายที่น่าสนใจ",
-    "home.subtitle": "อ่านนวนิยายแปลด้วยตัวเลือกการชำระเงินที่ยืดหยุ่นและการเข้าถึงทันที",
+    "home.title": "ยินดีต้อนรับสู่ Ipe นิยายแปล",
+    "home.subtitle": "Charcoal Gray Silver Gold Maya",
     "home.browse": "เรียดูนวนิยาย",
     "home.myNovels": "นวนิยายของฉัน",
     "home.featured": "นวนิยายที่เด่น",
@@ -138,8 +138,8 @@ const translations: Record<Language, Record<string, string>> = {
     "nav.login": "Login",
 
     // Home page
-    "home.title": "Discover Amazing Novels",
-    "home.subtitle": "Read translated novels with flexible payment options and instant access",
+    "home.title": "Welcome to Ipe Translated Novels",
+    "home.subtitle": "Charcoal Gray Silver Gold Maya",
     "home.browse": "Browse Novels",
     "home.myNovels": "My Novels",
     "home.featured": "Featured Novels",
