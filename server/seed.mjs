@@ -5,9 +5,14 @@
 
 import { drizzle } from "drizzle-orm/mysql2";
 import mysql from "mysql2/promise";
-import * as schema from "../drizzle/schema.js";
+import * as schema from "../drizzle/schema.ts";
 
-const DATABASE_URL = process.env.DATABASE_URL || "mysql://root@localhost/ipenovel";
+const DATABASE_URL = process.env.DATABASE_URL;
+
+if (!DATABASE_URL) {
+  console.error("❌ DATABASE_URL environment variable not set");
+  process.exit(1);
+}
 
 async function seed() {
   console.log("🌱 Starting database seed...");
@@ -20,6 +25,7 @@ async function seed() {
       user: url.username,
       password: url.password,
       database: url.pathname.slice(1),
+      ssl: { rejectUnauthorized: false },
     });
 
     const db = drizzle(connection);
@@ -32,6 +38,7 @@ async function seed() {
       { name: "Mystery", slug: "mystery", description: "Mystery and thriller novels" },
       { name: "Sci-Fi", slug: "sci-fi", description: "Science fiction novels" },
       { name: "Drama", slug: "drama", description: "Drama and emotional stories" },
+      { name: "Action", slug: "action", description: "Action and adventure stories" },
     ];
 
     for (const cat of categories) {
@@ -73,6 +80,14 @@ async function seed() {
         coverImageUrl: "https://via.placeholder.com/300x400?text=Beyond+Stars",
         status: "hiatus",
       },
+      {
+        title: "Shadow Warrior",
+        slug: "shadow-warrior",
+        description: "An action-packed tale of a warrior seeking redemption",
+        author: "Author Five",
+        coverImageUrl: "https://via.placeholder.com/300x400?text=Shadow+Warrior",
+        status: "ongoing",
+      },
     ];
 
     const novelIds = [];
@@ -81,20 +96,51 @@ async function seed() {
       novelIds.push(result[0]?.insertId || 1);
     }
 
-    // Seed episodes
+    // Seed episodes with episode ranges
     console.log("📄 Seeding episodes...");
     const episodes = [
-      { novelId: novelIds[0], episodeNumber: "1", title: "The Beginning", price: "29.99", isFree: false },
-      { novelId: novelIds[0], episodeNumber: "2", title: "The Journey Begins", price: "29.99", isFree: false },
-      { novelId: novelIds[0], episodeNumber: "3 - 5", title: "Triple Episode Pack", price: "79.99", isFree: false },
-      { novelId: novelIds[1], episodeNumber: "1", title: "First Meeting", price: "0.00", isFree: true },
-      { novelId: novelIds[1], episodeNumber: "2", title: "Growing Closer", price: "29.99", isFree: false },
-      { novelId: novelIds[2], episodeNumber: "1", title: "The Crime Scene", price: "34.99", isFree: false },
-      { novelId: novelIds[3], episodeNumber: "1", title: "Launch into Space", price: "39.99", isFree: false },
+      // The Eternal Kingdom
+      { novelId: novelIds[0], episodeNumber: "1-10", title: "The Beginning", price: "29.99", isFree: true },
+      { novelId: novelIds[0], episodeNumber: "11-20", title: "The Journey Begins", price: "29.99", isFree: false },
+      { novelId: novelIds[0], episodeNumber: "21-30", title: "The Dark Forest", price: "29.99", isFree: false },
+      { novelId: novelIds[0], episodeNumber: "31-50", title: "Triple Episode Pack", price: "79.99", isFree: false },
+      // Hearts Intertwined
+      { novelId: novelIds[1], episodeNumber: "1-5", title: "First Meeting", price: "0.00", isFree: true },
+      { novelId: novelIds[1], episodeNumber: "6-15", title: "Growing Closer", price: "29.99", isFree: false },
+      { novelId: novelIds[1], episodeNumber: "16-25", title: "Confessions", price: "34.99", isFree: false },
+      // The Last Detective
+      { novelId: novelIds[2], episodeNumber: "1-10", title: "The Crime Scene", price: "34.99", isFree: false },
+      { novelId: novelIds[2], episodeNumber: "11-20", title: "Clues and Suspects", price: "34.99", isFree: false },
+      { novelId: novelIds[2], episodeNumber: "21-30", title: "The Revelation", price: "39.99", isFree: false },
+      // Beyond the Stars
+      { novelId: novelIds[3], episodeNumber: "1-8", title: "Launch into Space", price: "0.00", isFree: true },
+      { novelId: novelIds[3], episodeNumber: "9-20", title: "First Contact", price: "39.99", isFree: false },
+      { novelId: novelIds[3], episodeNumber: "21-35", title: "Alien Worlds", price: "44.99", isFree: false },
+      // Shadow Warrior
+      { novelId: novelIds[4], episodeNumber: "1-12", title: "The Beginning", price: "0.00", isFree: true },
+      { novelId: novelIds[4], episodeNumber: "13-25", title: "Training", price: "29.99", isFree: false },
+      { novelId: novelIds[4], episodeNumber: "26-40", title: "The Final Battle", price: "39.99", isFree: false },
     ];
 
     for (const episode of episodes) {
       await db.insert(schema.episodes).values(episode).onDuplicateKeyUpdate({ set: episode });
+    }
+
+    // Seed novel categories
+    console.log("🏷️  Seeding novel categories...");
+    const novelCategories = [
+      { novelId: novelIds[0], categoryId: 1 }, // Eternal Kingdom - Fantasy
+      { novelId: novelIds[0], categoryId: 6 }, // Eternal Kingdom - Action
+      { novelId: novelIds[1], categoryId: 2 }, // Hearts Intertwined - Romance
+      { novelId: novelIds[1], categoryId: 5 }, // Hearts Intertwined - Drama
+      { novelId: novelIds[2], categoryId: 3 }, // Last Detective - Mystery
+      { novelId: novelIds[3], categoryId: 4 }, // Beyond the Stars - Sci-Fi
+      { novelId: novelIds[4], categoryId: 6 }, // Shadow Warrior - Action
+      { novelId: novelIds[4], categoryId: 1 }, // Shadow Warrior - Fantasy
+    ];
+
+    for (const nc of novelCategories) {
+      await db.insert(schema.novelCategories).values(nc).onDuplicateKeyUpdate({ set: nc });
     }
 
     // Seed coupons
@@ -117,6 +163,15 @@ async function seed() {
         maxUsageCount: null,
         isActive: true,
         expiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000), // 60 days from now
+      },
+      {
+        code: "NEWUSER10",
+        discountType: "percentage",
+        discountValue: "10",
+        minPurchaseAmount: "0.00",
+        maxUsageCount: 1000,
+        isActive: true,
+        expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000), // 90 days from now
       },
       {
         code: "EXPIRED",
@@ -152,13 +207,49 @@ async function seed() {
         displayOrder: 2,
         isActive: true,
       },
+      {
+        title: "Best Sellers",
+        description: "Most loved novels by our readers",
+        imageUrl: "https://via.placeholder.com/1200x300?text=Best+Sellers",
+        linkUrl: "/novels?sort=popular",
+        displayOrder: 3,
+        isActive: true,
+      },
     ];
 
     for (const banner of banners) {
       await db.insert(schema.banners).values(banner).onDuplicateKeyUpdate({ set: banner });
     }
 
-    console.log("✅ Seed completed successfully!");
+    // Seed settings
+    console.log("⚙️  Seeding settings...");
+    const settings = [
+      { key: "site_title", value: "Ipenovel - Digital Novel Store", description: "Site title" },
+      { key: "site_description", value: "Read translated novels with flexible payment options", description: "Site description" },
+      { key: "points_conversion_rate", value: "100", description: "100 currency units = 1 point" },
+      { key: "discord_webhook_url", value: "", description: "Discord webhook for order notifications" },
+      { key: "max_file_size_mb", value: "100", description: "Maximum file size in MB" },
+    ];
+
+    for (const setting of settings) {
+      await db.insert(schema.settings).values(setting).onDuplicateKeyUpdate({ set: setting });
+    }
+
+    console.log("\n✅ Seed completed successfully!");
+    console.log("\n📊 Summary:");
+    console.log(`   ✓ ${categories.length} categories created`);
+    console.log(`   ✓ ${novels.length} novels created`);
+    console.log(`   ✓ ${episodes.length} episodes created (with episode ranges)`);
+    console.log(`   ✓ ${novelCategories.length} novel-category assignments`);
+    console.log(`   ✓ ${coupons.length} coupons created`);
+    console.log(`   ✓ ${banners.length} banners created`);
+    console.log(`   ✓ ${settings.length} settings created`);
+    console.log("\n🎯 Test Data Ready:");
+    console.log("   - Browse novels at /novels");
+    console.log("   - Add episodes to cart");
+    console.log("   - Use coupon codes: WELCOME20, SUMMER30, NEWUSER10");
+    console.log("   - Admin dashboard at /admin");
+
     await connection.end();
   } catch (error) {
     console.error("❌ Seed failed:", error);

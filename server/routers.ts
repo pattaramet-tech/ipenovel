@@ -380,7 +380,7 @@ export const appRouter = router({
 
       approve: adminProcedure
         .input(z.object({ paymentId: z.number() }))
-      .mutation(async ({ input, ctx }) => {
+        .mutation(async ({ input, ctx }) => {
         try {
           await orderService.approvePayment(input.paymentId, ctx.user.id);
           return { success: true };
