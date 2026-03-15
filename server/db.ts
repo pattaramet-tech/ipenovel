@@ -297,6 +297,13 @@ export async function getPaymentByOrderId(orderId: number) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+export async function getPaymentById(paymentId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(payments).where(eq(payments.id, paymentId)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
 export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected" }) {
   const db = await getDb();
   if (!db) return;
@@ -328,6 +335,27 @@ export async function rejectPayment(paymentId: number, reviewedByUserId: number,
       reviewedAt: new Date(),
     })
     .where(eq(payments.id, paymentId));
+}
+
+export async function getCartItemById(cartItemId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(cartItems).where(eq(cartItems.id, cartItemId)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function getCartById(cartId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(carts).where(eq(carts.id, cartId)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function getWishlistById(wishlistId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(wishlists).where(eq(wishlists.id, wishlistId)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
 }
 
 export async function getPendingPayments(limit?: number, offset?: number) {

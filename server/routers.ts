@@ -135,7 +135,13 @@ export const appRouter = router({
 
     remove: protectedProcedure
       .input(z.object({ cartItemId: z.number() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
+        const item = await db.getCartItemById(input.cartItemId);
+        if (!item) throw new TRPCError({ code: "NOT_FOUND" });
+        const cart = await db.getCartById(item.cartId);
+        if (!cart || cart.userId !== ctx.user.id) {
+          throw new TRPCError({ code: "FORBIDDEN" });
+        }
         await db.removeFromCart(input.cartItemId);
         return { success: true };
       }),
@@ -352,7 +358,12 @@ export const appRouter = router({
 
     remove: protectedProcedure
       .input(z.object({ wishlistId: z.number() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
+        const wishlist = await db.getWishlistById(input.wishlistId);
+        if (!wishlist) throw new TRPCError({ code: "NOT_FOUND" });
+        if (wishlist.userId !== ctx.user.id) {
+          throw new TRPCError({ code: "FORBIDDEN" });
+        }
         await db.removeFromWishlist(input.wishlistId);
         return { success: true };
       }),

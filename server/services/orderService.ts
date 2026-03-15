@@ -161,27 +161,9 @@ export async function createOrderFromCart(userId: number, cartItems: any[], coup
     actorUserId: userId,
   });
 
-  // Record points redemption if applicable
-  if (pointsRedeemed !== "0.00") {
-    const newBalance = (parseFloat(await db.getUserPointsBalance(userId)) - parseFloat(pointsRedeemed)).toFixed(2);
-    await db.recordPointsTransaction({
-      userId,
-      type: "redeem",
-      amount: pointsRedeemed,
-      balanceAfter: newBalance,
-      referenceType: "order",
-      referenceId: orderId,
-      note: `Redeemed points for order ${orderNumber}`,
-    });
-  }
+  // NOTE: Points redemption will be recorded when payment is approved, not at checkout
 
-  // Record coupon usage if applicable
-  if (couponSnapshot) {
-    const coupon = await db.getCouponByCode(couponSnapshot);
-    if (coupon) {
-      await db.recordCouponUsage(coupon.id, userId, orderId);
-    }
-  }
+  // NOTE: Coupon usage will be recorded when payment is approved, not at checkout
 
   return {
     orderId,
@@ -203,7 +185,7 @@ export async function approvePayment(paymentId: number, reviewedByUserId: number
     throw new Error("Database not available");
   }
 
-  const payment = await db.getPaymentByOrderId(paymentId);
+  const payment = await db.getPaymentById(paymentId);
   if (!payment) {
     throw new Error("Payment not found");
   }
@@ -267,6 +249,31 @@ export async function approvePayment(paymentId: number, reviewedByUserId: number
     toStatus: "approved",
     actorUserId: reviewedByUserId,
   });
+
+  // Record coupon usage only after approval
+  if (order.couponCodeSnapshot) {
+    const coupon = await db.getCouponByCode(order.couponCodeSnapshot);
+    if (coupon) {
+      await db.recordCouponUsage(coupon.id, order.userId || 0, order.id);
+    }
+  }
+
+  // Deduct points only after approval
+  if (order.pointsDiscountAmount && order.pointsDiscountAmount !== "0.00" && order.userId) {
+    const pointsToDeduct = (parseFloat(order.pointsDiscountAmount.toString()) / POINTS_CONVERSION_RATE).toFixed(2);
+    const currentBalance = await db.getUserPointsBalance(order.userId);
+    const newBalance = (parseFloat(currentBalance) - parseFloat(pointsToDeduct)).toFixed(2);
+
+    await db.recordPointsTransaction({
+      userId: order.userId,
+      type: "redeem",
+      amount: pointsToDeduct,
+      balanceAfter: newBalance,
+      referenceType: "order",
+      referenceId: order.id,
+      note: `Redeemed points for order ${order.orderNumber}`,
+    });
+  }
 
   return { message: "Payment approved successfully" };
 }
