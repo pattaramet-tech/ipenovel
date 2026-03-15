@@ -20,6 +20,7 @@ export default function Navbar() {
     { label: "Browse", href: "/novels" },
     { label: "My Novels", href: "/my-novels", auth: true },
     { label: "Orders", href: "/orders", auth: true },
+    { label: "Points", href: "/points", auth: true },
   ];
 
   const adminLinks = [

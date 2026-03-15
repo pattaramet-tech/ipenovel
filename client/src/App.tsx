@@ -18,6 +18,7 @@ import AdminEntitlementsPage from "@/pages/AdminEntitlementsPage";
 // import AdminSettingsPage from "@/pages/AdminSettingsPage";
 import AdminBulkUploadPage from "@/pages/AdminBulkUploadPage";
 import NovelDetailPage from "@/pages/NovelDetailPage";
+import PointsPage from "@/pages/PointsPage";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
@@ -35,6 +36,7 @@ function Router() {
         <Route path={"/cart"} component={CartPage} />
         <Route path={"/orders"} component={OrdersPage} />
         <Route path={"/my-novels"} component={MyNovelsPage} />
+        <Route path={"/points"} component={PointsPage} />
         <Route path={"/admin"} component={AdminDashboard} />
         <Route path={"/admin/novels"} component={AdminNovelsPage} />
         <Route path={"/admin/episodes"} component={AdminEpisodesPage} />

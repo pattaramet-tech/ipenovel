@@ -21,6 +21,7 @@ const translations: Record<Language, Record<string, string>> = {
     "nav.cart": "ตะกร้า",
     "nav.logout": "ออกจากระบบ",
     "nav.login": "เข้าสู่ระบบ",
+    "nav.points": "พอยท์",
 
     // Home page
     "home.title": "ยินดีต้อนรับสู่ Ipe นิยายแปล",
@@ -70,6 +71,27 @@ const translations: Record<Language, Record<string, string>> = {
     "myNovels.title": "นวนิยายของฉัน",
     "myNovels.noPurchases": "คุณยังไม่ได้ซื้อนวนิยายใด ๆ",
     "myNovels.download": "ดาวน์โหลด",
+
+    // Points
+    "points.title": "พอยท์ของฉัน",
+    "points.subtitle": "รับและใช้พอยท์กับการซื้อแต่ละครั้ง",
+    "points.currentBalance": "ยอดพอยท์ปัจจุบัน",
+    "points.balanceDescription": "พอยท์ที่มีให้ใช้เพื่อรับส่วนลด",
+    "points.rules": "กฎของพอยท์",
+    "points.earnRate": "อัตราการรับพอยท์",
+    "points.redeemRate": "อัตราการแลกพอยท์",
+    "points.point": "พอยท์",
+    "points.history": "ประวัติพอยท์",
+    "points.date": "วันที่",
+    "points.type": "ประเภท",
+    "points.amount": "จำนวน",
+    "points.balance": "ยอดคงเหลือ",
+    "points.reference": "อ้างอิง",
+    "points.earned": "ได้รับ",
+    "points.redeemed": "ใช้แล้ว",
+    "points.noHistory": "ยังไม่มีประวัติพอยท์",
+    "points.browseLinkText": "เรียกดูนวนิยาย",
+    "points.checkoutLinkText": "ไปที่ชำระเงิน",
 
     // Admin
     "admin.dashboard": "แดชบอร์ด",
@@ -137,6 +159,7 @@ const translations: Record<Language, Record<string, string>> = {
     "nav.cart": "Cart",
     "nav.logout": "Logout",
     "nav.login": "Login",
+    "nav.points": "Points",
 
     // Home page
     "home.title": "ยินดีต้อนรับสู่ Ipe นิยายแปล",
@@ -185,6 +208,27 @@ const translations: Record<Language, Record<string, string>> = {
     "myNovels.title": "My Novels",
     "myNovels.noPurchases": "You haven't purchased any novels yet",
     "myNovels.download": "Download",
+
+    // Points
+    "points.title": "My Points",
+    "points.subtitle": "Earn and redeem points with every purchase",
+    "points.currentBalance": "Current Balance",
+    "points.balanceDescription": "Available points to redeem for discounts",
+    "points.rules": "Points Rules",
+    "points.earnRate": "Earn Rate",
+    "points.redeemRate": "Redemption Rate",
+    "points.point": "Point",
+    "points.history": "Points History",
+    "points.date": "Date",
+    "points.type": "Type",
+    "points.amount": "Amount",
+    "points.balance": "Balance",
+    "points.reference": "Reference",
+    "points.earned": "Earned",
+    "points.redeemed": "Redeemed",
+    "points.noHistory": "No points history yet",
+    "points.browseLinkText": "Browse Novels",
+    "points.checkoutLinkText": "Go to Checkout",
 
     // Admin
     "admin.dashboard": "Dashboard",

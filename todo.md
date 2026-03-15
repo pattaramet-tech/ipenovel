@@ -36,7 +36,7 @@
 - [x] Build My Novels page (purchased content)
 - [ ] Build Wishlist page
 - [ ] Build Profile/Account page
-- [ ] Build Points/Rewards page
+- [x] Build Points/Rewards page
 
 ## Frontend - Admin Pages
 - [x] Build Admin Dashboard
