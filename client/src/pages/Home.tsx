@@ -52,9 +52,9 @@ export default function Home() {
         {/* Featured Novels */}
         <section className="mb-16">
           <div className="flex items-center justify-between mb-6">
-            <h2 className="text-3xl font-bold">Featured Novels</h2>
+            <h2 className="text-3xl font-bold">{t("home.featured")}</h2>
             <Link href="/novels">
-              <Button variant="outline">View All</Button>
+              <Button variant="outline">{t("home.viewAll")}</Button>
             </Link>
           </div>
           {novelsLoading ? (
@@ -88,7 +88,7 @@ export default function Home() {
             </div>
           ) : (
             <Card className="p-8 text-center text-muted-foreground">
-              <p>No featured novels available yet</p>
+              <p>{t("home.noFeatured")}</p>
             </Card>
           )}
         </section>
@@ -96,9 +96,9 @@ export default function Home() {
         {/* New Novels */}
         <section className="mb-16">
           <div className="flex items-center justify-between mb-6">
-            <h2 className="text-3xl font-bold">New Releases</h2>
+            <h2 className="text-3xl font-bold">{t("home.newReleases")}</h2>
             <Link href="/novels">
-              <Button variant="outline">View All</Button>
+              <Button variant="outline">{t("home.viewAll")}</Button>
             </Link>
           </div>
           {novelsLoading ? (
