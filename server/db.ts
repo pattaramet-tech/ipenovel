@@ -868,3 +868,121 @@ export async function bulkCreateEpisodes(
 
   return { success, errors };
 }
+
+/**
+ * Find novel by title with exact normalized matching
+ * Trim spaces and case-insensitive comparison
+ * Returns null if no match, throws error if multiple matches
+ */
+export async function findNovelByTitle(title: string): Promise<{ id: number; title: string } | null> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const normalizedTitle = title.trim().toLowerCase();
+  const allNovels = await db.select().from(novels);
+  
+  const matches = allNovels.filter((n: any) => n.title.trim().toLowerCase() === normalizedTitle);
+
+  if (matches.length === 0) {
+    return null;
+  }
+
+  if (matches.length > 1) {
+    throw new Error(`Multiple novels match title "${title}". Please be more specific.`);
+  }
+
+  return { id: matches[0].id, title: matches[0].title };
+}
+
+/**
+ * Bulk create episodes with novel title matching
+ * CSV format: novelTitle,title,episodeNumber,price,fileUrl
+ */
+export async function bulkCreateEpisodesWithNovelTitle(
+  rows: Array<{ novelTitle: string; title: string; episodeNumber: string; price: string; fileUrl: string }>
+): Promise<{
+  success: Array<{ rowIndex: number; episodeId: number; novelTitle: string; episodeTitle: string; novelId: number; price: string }>;
+  errors: Array<{ rowIndex: number; error: string }>;
+}> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const success: Array<{ rowIndex: number; episodeId: number; novelTitle: string; episodeTitle: string; novelId: number; price: string }> = [];
+  const errors: Array<{ rowIndex: number; error: string }> = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+
+    // Validate required fields
+    if (!row.novelTitle || !row.novelTitle.trim()) {
+      errors.push({ rowIndex: i, error: "Novel title is required" });
+      continue;
+    }
+
+    if (!row.title || !row.title.trim()) {
+      errors.push({ rowIndex: i, error: "Episode title is required" });
+      continue;
+    }
+
+    if (!row.episodeNumber || !row.episodeNumber.trim()) {
+      errors.push({ rowIndex: i, error: "Episode number is required" });
+      continue;
+    }
+
+    if (!row.price) {
+      errors.push({ rowIndex: i, error: "Price is required" });
+      continue;
+    }
+
+    // Validate price is numeric
+    const priceNum = parseFloat(row.price);
+    if (isNaN(priceNum)) {
+      errors.push({ rowIndex: i, error: `Invalid price: "${row.price}" is not a number` });
+      continue;
+    }
+
+    if (!row.fileUrl || !row.fileUrl.trim()) {
+      errors.push({ rowIndex: i, error: "File URL is required" });
+      continue;
+    }
+
+    try {
+      // Find novel by title
+      const novel = await findNovelByTitle(row.novelTitle);
+      if (!novel) {
+        errors.push({ rowIndex: i, error: `No novel found with title "${row.novelTitle}"` });
+        continue;
+      }
+
+      // Determine if free based on price
+      const isFree = priceNum === 0;
+
+      // Create episode
+      const result = await db.insert(episodes).values({
+        novelId: novel.id,
+        episodeNumber: row.episodeNumber.trim(),
+        title: row.title.trim(),
+        price: row.price.trim(),
+        isFree,
+        fileUrl: row.fileUrl.trim(),
+      });
+
+      const episodeId = (result as any).insertId;
+      success.push({
+        rowIndex: i,
+        episodeId,
+        novelTitle: novel.title,
+        episodeTitle: row.title,
+        novelId: novel.id,
+        price: row.price,
+      });
+    } catch (error) {
+      errors.push({
+        rowIndex: i,
+        error: `Failed to create: ${error instanceof Error ? error.message : "Unknown error"}`,
+      });
+    }
+  }
+
+  return { success, errors };
+}

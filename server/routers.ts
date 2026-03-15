@@ -760,6 +760,20 @@ export const appRouter = router({
         .mutation(async ({ input }) => {
           return db.bulkCreateEpisodes(input.novelId, input.rows);
         }),
+
+      episodesWithNovelTitle: adminProcedure
+        .input(z.object({
+          rows: z.array(z.object({
+            novelTitle: z.string(),
+            title: z.string(),
+            episodeNumber: z.string(),
+            price: z.string(),
+            fileUrl: z.string(),
+          })),
+        }))
+        .mutation(async ({ input }) => {
+          return db.bulkCreateEpisodesWithNovelTitle(input.rows);
+        }),
     }),
   }),
 });
