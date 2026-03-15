@@ -14,7 +14,7 @@ const LanguageContext = createContext<LanguageContextType | undefined>(undefined
 const translations: Record<Language, Record<string, string>> = {
   th: {
     // Navbar
-    "nav.browse": "เรียดู",
+    "nav.browse": "เรียกดู",
     "nav.myNovels": "นวนิยายของฉัน",
     "nav.orders": "คำสั่งซื้อ",
     "nav.admin": "ผู้ดูแล",
@@ -25,13 +25,13 @@ const translations: Record<Language, Record<string, string>> = {
     // Home page
     "home.title": "ยินดีต้อนรับสู่ Ipe นิยายแปล",
     "home.subtitle": "Charcoal Gray Silver Gold Maya",
-    "home.browse": "เรียดูนวนิยาย",
+    "home.browse": "เรียกดูนวนิยาย",
     "home.myNovels": "นวนิยายของฉัน",
-    "home.featured": "นวนิยายที่เด่น",
+    "home.featured": "นวนิยายที่นิยม",
     "home.viewAll": "ดูทั้งหมด",
     "home.newReleases": "เพิ่งเข้าใหม่",
     "home.freeEpisodes": "ตอนฟรี",
-    "home.noFeatured": "ยังไม่มีนวนิยายที่เด่น",
+    "home.noFeatured": "ยังไม่มีนวนิยายที่นิยม",
     "home.noNew": "ยังไม่มีเพิ่งเข้าใหม่",
     "home.noFree": "ยังไม่มีตอนฟรี",
 
@@ -42,10 +42,11 @@ const translations: Record<Language, Record<string, string>> = {
 
     // Novel detail
     "novel.categories": "หมวดหมู่",
+    "novel.description": "รายละเอียด",
     "novel.episodes": "ตอน",
     "novel.totalEpisodes": "จำนวนตอนทั้งหมด",
     "novel.freeEpisodes": "ตอนฟรี",
-    "novel.paidEpisodes": "ตอนจ่ายเงิน",
+    "novel.paidEpisodes": "ตอนเสียค่าใช้",
     "novel.free": "ฟรี",
     "novel.purchased": "ซื้อแล้ว",
     "novel.inCart": "ในตะกร้า",
@@ -77,7 +78,7 @@ const translations: Record<Language, Record<string, string>> = {
     "admin.categories": "หมวดหมู่",
     "admin.orders": "คำสั่งซื้อ",
     "admin.payments": "การชำระเงิน",
-    "admin.entitlements": "สิทธิ์",
+    "admin.entitlements": "สิทธิ์การเข้าถึง",
     "admin.settings": "การตั้งค่า",
     "admin.bulkUpload": "อัปโหลดจำนวนมาก",
 
@@ -98,7 +99,7 @@ const translations: Record<Language, Record<string, string>> = {
     "common.sort": "เรียงลำดับ",
     "common.price": "ราคา",
     "common.free": "ฟรี",
-    "common.paid": "จ่ายเงิน",
+    "common.paid": "เสียค่าใช้",
     "common.status": "สถานะ",
     "common.action": "การกระทำ",
     "common.confirm": "ยืนยัน",
@@ -122,7 +123,7 @@ const translations: Record<Language, Record<string, string>> = {
     "common.of": "ของ",
     "common.results": "ผลลัพธ์",
     "common.noData": "ไม่มีข้อมูล",
-    "common.emptyState": "ไม่มีอะไรที่นี่",
+    "common.emptyState": "ไม่มีข้อมูล",
     "common.tryAgain": "ลองอีกครั้ง",
     "common.errorOccurred": "เกิดข้อผิดพลาด",
     "common.pleaseWait": "กรุณารอสักครู่...",
