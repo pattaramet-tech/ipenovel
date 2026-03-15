@@ -211,7 +211,7 @@ export async function getAllEpisodes() {
 
 export async function createEpisode(data: {
   novelId: number;
-  episodeNumber: string | number;
+  episodeNumber: string;
   title: string;
   price: string;
   isFree?: boolean;
@@ -219,9 +219,12 @@ export async function createEpisode(data: {
 }) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  if (!data.episodeNumber || !data.episodeNumber.trim()) {
+    throw new Error("Episode number is required");
+  }
   const result = await db.insert(episodes).values({
     novelId: data.novelId,
-    episodeNumber: String(data.episodeNumber),
+    episodeNumber: data.episodeNumber.trim(),
     title: data.title,
     price: data.price,
     isFree: data.isFree || false,

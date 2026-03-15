@@ -527,7 +527,7 @@ export const appRouter = router({
         .input(
           z.object({
             novelId: z.number(),
-            episodeNumber: z.number(),
+            episodeNumber: z.string().min(1, "Episode number is required"),
             title: z.string(),
             price: z.string(),
             isFree: z.boolean().optional(),
