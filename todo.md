@@ -120,3 +120,12 @@
 - [ ] Test free episodes bypass payment
 - [ ] Verify admin approval flow still works
 - [ ] Run regression tests
+
+
+## UI/UX Redesign - Mobile-First Navbar & Home Page
+- [x] Redesign Navbar with pill-style navigation and mobile-first layout
+- [x] Redesign Home page hero section with strong blue banner
+- [x] Redesign Home page content sections and novel cards
+- [x] Update shared styles for better visual consistency
+- [ ] Test responsive design on mobile, tablet, desktop
+- [ ] Verify no regression in auth, orders, payments, purchases, My Novels, points

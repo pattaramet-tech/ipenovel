@@ -22,6 +22,7 @@ const translations: Record<Language, Record<string, string>> = {
     "nav.logout": "ออกจากระบบ",
     "nav.login": "เข้าสู่ระบบ",
     "nav.points": "พอยท์",
+    "nav.signedInAs": "ลงชื่อเข้าใช้เป็น",
 
     // Home page
     "home.title": "ยินดีต้อนรับสู่ Ipe นิยายแปล",
@@ -35,6 +36,14 @@ const translations: Record<Language, Record<string, string>> = {
     "home.noFeatured": "ยังไม่มีนวนิยายที่นิยม",
     "home.noNew": "ยังไม่มีเพิ่งเข้าใหม่",
     "home.noFree": "ยังไม่มีตอนฟรี",
+    "home.welcomeTag": "ยินดีต้อนรับสู่",
+    "home.free": "ฟรี",
+    "home.featuredDesc": "นวนิยายที่นิยมเลือกอย่างหมันดุจากผู้อ่าน",
+    "home.newReleasesDesc": "นวนิยายใหม่ล่าสุด",
+    "home.freeEpisodesDesc": "อ่านฟรีที่คุณสามารถอ่านได้ทันที",
+    "home.ctaTitle": "พร้อมเริ่มอ่านหรือ",
+    "home.ctaDescription": "สำรวจคนหาที่สุดของนวนิยายแปลไทยที่สมบูรณ์และหาความสนใจใหม่ที่คุณชอบคหรณ์",
+    "home.browseAll": "เริ่มอ่านทั้งหมด",
 
     // Novels page
     "novels.title": "นวนิยาย",
@@ -189,9 +198,10 @@ const translations: Record<Language, Record<string, string>> = {
     "nav.logout": "Logout",
     "nav.login": "Login",
     "nav.points": "Points",
+    "nav.signedInAs": "Signed in as",
 
     // Home page
-    "home.title": "ยินดีต้อนรับสู่ Ipe นิยายแปล",
+    "home.title": "Welcome to Ipe นิยายแปล",
     "home.subtitle": "Charcoal Gray Silver Gold Maya",
     "home.browse": "Browse Novels",
     "home.myNovels": "My Novels",
@@ -202,6 +212,14 @@ const translations: Record<Language, Record<string, string>> = {
     "home.noFeatured": "No featured novels available yet",
     "home.noNew": "No new releases available yet",
     "home.noFree": "No free episodes available yet",
+    "home.welcomeTag": "Welcome",
+    "home.free": "Free",
+    "home.featuredDesc": "Popular novels handpicked by our readers",
+    "home.newReleasesDesc": "Latest releases",
+    "home.freeEpisodesDesc": "Free episodes you can read instantly",
+    "home.ctaTitle": "Ready to Start Reading?",
+    "home.ctaDescription": "Browse our collection of translated novels and find your next favorite read.",
+    "home.browseAll": "Browse All Novels",
 
     // Novels page
     "novels.title": "Novels",

@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
-import { BookOpen, ShoppingCart, Zap } from "lucide-react";
+import { BookOpen, Sparkles, ArrowRight } from "lucide-react";
 import { Link } from "wouter";
 import { useLanguage } from "@/contexts/LanguageContext";
 
@@ -11,34 +11,83 @@ export default function Home() {
   const { user, isAuthenticated } = useAuth();
   const { t } = useLanguage();
   const { data: novels, isLoading: novelsLoading } = trpc.novels.list.useQuery();
-  const { data: banners, isLoading: bannersLoading } = trpc.admin.banners.list.useQuery(undefined, {
-    enabled: false, // Disable for now, will implement banner API
-  });
 
   const featuredNovels = novels?.slice(0, 4) || [];
   const newNovels = novels?.slice(4, 8) || [];
-  const freeNovels = novels?.filter((n: any) => true).slice(0, 4) || []; // Filter for free episodes
+  const freeNovels = novels?.filter((n: any) => true).slice(0, 4) || [];
+
+  // Novel Card Component for reusability
+  const NovelCard = ({ novel, showFreeTag = false }: any) => (
+    <Link href={`/novels/${novel.id}`}>
+      <Card className="overflow-hidden hover:shadow-xl transition-all duration-300 cursor-pointer h-full hover:scale-105 transform rounded-xl border-0">
+        <div className="relative bg-gradient-to-br from-slate-200 to-slate-300 h-48 sm:h-56 overflow-hidden">
+          {novel.coverImageUrl ? (
+            <img
+              src={novel.coverImageUrl}
+              alt={novel.title}
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-100 to-purple-100">
+              <BookOpen className="w-12 h-12 text-slate-400" />
+            </div>
+          )}
+          {showFreeTag && (
+            <div className="absolute top-3 right-3 bg-green-500 text-white px-3 py-1 rounded-full text-xs font-semibold">
+              {t("home.free")}
+            </div>
+          )}
+        </div>
+        <div className="p-4 sm:p-5">
+          <h3 className="font-bold text-sm sm:text-base line-clamp-2 text-slate-900 mb-2">
+            {novel.title}
+          </h3>
+          <p className="text-xs sm:text-sm text-slate-600 line-clamp-2">
+            {novel.description}
+          </p>
+        </div>
+      </Card>
+    </Link>
+  );
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-blue-50 to-white">
-      {/* Hero Section */}
-      <section className="bg-gradient-to-r from-blue-600 to-blue-700 text-white py-16 px-4">
-        <div className="max-w-6xl mx-auto text-center">
-          <h1 className="text-5xl font-bold mb-4">{t("home.title")}</h1>
-          <p className="text-xl text-blue-100 mb-8">
+    <div className="min-h-screen bg-white">
+      {/* Hero Section - Mobile First */}
+      <section className="bg-gradient-to-b from-blue-600 via-blue-500 to-blue-600 text-white py-12 sm:py-16 md:py-20 px-4 relative overflow-hidden">
+        {/* Decorative elements */}
+        <div className="absolute top-0 right-0 w-40 h-40 bg-white/5 rounded-full -mr-20 -mt-20" />
+        <div className="absolute bottom-0 left-0 w-32 h-32 bg-white/5 rounded-full -ml-16 -mb-16" />
+
+        <div className="max-w-5xl mx-auto text-center relative z-10">
+          <div className="inline-flex items-center gap-2 bg-white/20 px-4 py-2 rounded-full mb-6 text-sm font-semibold backdrop-blur-sm">
+            <Sparkles className="w-4 h-4" />
+            {t("home.welcomeTag")}
+          </div>
+
+          <h1 className="text-4xl sm:text-5xl md:text-6xl font-bold mb-4 sm:mb-6 leading-tight">
+            {t("home.title")}
+          </h1>
+
+          <p className="text-base sm:text-lg md:text-xl text-blue-100 mb-8 sm:mb-10 max-w-2xl mx-auto leading-relaxed">
             {t("home.subtitle")}
           </p>
-          <div className="flex gap-4 justify-center">
+
+          {/* CTA Buttons - Mobile Friendly */}
+          <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center items-center">
             <Link href="/novels">
-              <Button size="lg" variant="secondary">
+              <Button size="lg" className="w-full sm:w-auto rounded-full bg-white text-blue-600 hover:bg-blue-50 font-semibold">
                 <BookOpen className="w-5 h-5 mr-2" />
                 {t("home.browse")}
               </Button>
             </Link>
             {isAuthenticated && (
               <Link href="/my-novels">
-                <Button size="lg" variant="outline" className="text-white border-white hover:bg-white/10">
-                  <Zap className="w-5 h-5 mr-2" />
+                <Button 
+                  size="lg" 
+                  variant="outline" 
+                  className="w-full sm:w-auto rounded-full text-white border-white/30 bg-white/10 hover:bg-white/20 font-semibold"
+                >
+                  <Sparkles className="w-5 h-5 mr-2" />
                   {t("home.myNovels")}
                 </Button>
               </Link>
@@ -47,160 +96,144 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Main Content */}
-      <div className="max-w-6xl mx-auto px-4 py-12">
-        {/* Featured Novels */}
-        <section className="mb-16">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-3xl font-bold">{t("home.featured")}</h2>
-            <Link href="/novels">
-              <Button variant="outline">{t("home.viewAll")}</Button>
+      {/* Main Content - Mobile First */}
+      <div className="max-w-6xl mx-auto px-4 py-12 sm:py-16 md:py-20">
+        {/* Featured Novels Section */}
+        <section className="mb-16 sm:mb-20">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+            <div>
+              <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold text-slate-900">
+                {t("home.featured")}
+              </h2>
+              <p className="text-sm text-slate-600 mt-1">{t("home.featuredDesc")}</p>
+            </div>
+            <Link href="/novels" className="flex-shrink-0">
+              <Button 
+                variant="outline" 
+                className="w-full sm:w-auto rounded-full"
+              >
+                {t("home.viewAll")}
+                <ArrowRight className="w-4 h-4 ml-2" />
+              </Button>
             </Link>
           </div>
+
           {novelsLoading ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
               {[...Array(4)].map((_, i) => (
-                <Skeleton key={i} className="h-64 rounded-lg" />
+                <Skeleton key={i} className="h-64 sm:h-72 rounded-xl" />
               ))}
             </div>
           ) : featuredNovels.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
               {featuredNovels.map((novel: any) => (
-                <Link key={novel.id} href={`/novels/${novel.id}`}>
-                  <Card className="overflow-hidden hover:shadow-lg transition-shadow cursor-pointer h-full">
-                    {novel.coverImageUrl && (
-                      <img
-                        src={novel.coverImageUrl}
-                        alt={novel.title}
-                        className="w-full h-40 object-cover"
-                      />
-                    )}
-                    <div className="p-4">
-                      <h3 className="font-bold text-sm line-clamp-2">{novel.title}</h3>
-                      <p className="text-xs text-muted-foreground mt-2 line-clamp-2">
-                        {novel.description}
-                      </p>
-                    </div>
-                  </Card>
-                </Link>
+                <NovelCard key={novel.id} novel={novel} />
               ))}
             </div>
           ) : (
-            <Card className="p-8 text-center text-muted-foreground">
+            <Card className="p-8 text-center text-slate-500 rounded-xl border-slate-200">
               <p>{t("home.noFeatured")}</p>
             </Card>
           )}
         </section>
 
-        {/* New Novels */}
-        <section className="mb-16">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-3xl font-bold">{t("home.newReleases")}</h2>
-            <Link href="/novels">
-              <Button variant="outline">{t("home.viewAll")}</Button>
+        {/* New Releases Section */}
+        <section className="mb-16 sm:mb-20">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+            <div>
+              <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold text-slate-900">
+                {t("home.newReleases")}
+              </h2>
+              <p className="text-sm text-slate-600 mt-1">{t("home.newReleasesDesc")}</p>
+            </div>
+            <Link href="/novels" className="flex-shrink-0">
+              <Button 
+                variant="outline" 
+                className="w-full sm:w-auto rounded-full"
+              >
+                {t("home.viewAll")}
+                <ArrowRight className="w-4 h-4 ml-2" />
+              </Button>
             </Link>
           </div>
+
           {novelsLoading ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
               {[...Array(4)].map((_, i) => (
-                <Skeleton key={i} className="h-64 rounded-lg" />
+                <Skeleton key={i} className="h-64 sm:h-72 rounded-xl" />
               ))}
             </div>
           ) : newNovels.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
               {newNovels.map((novel: any) => (
-                <Link key={novel.id} href={`/novels/${novel.id}`}>
-                  <Card className="overflow-hidden hover:shadow-lg transition-shadow cursor-pointer h-full">
-                    {novel.coverImageUrl && (
-                      <img
-                        src={novel.coverImageUrl}
-                        alt={novel.title}
-                        className="w-full h-40 object-cover"
-                      />
-                    )}
-                    <div className="p-4">
-                      <h3 className="font-bold text-sm line-clamp-2">{novel.title}</h3>
-                      <p className="text-xs text-muted-foreground mt-2 line-clamp-2">
-                        {novel.description}
-                      </p>
-                    </div>
-                  </Card>
-                </Link>
+                <NovelCard key={novel.id} novel={novel} />
               ))}
             </div>
           ) : (
-            <Card className="p-8 text-center text-muted-foreground">
-              <p>No new novels available yet</p>
+            <Card className="p-8 text-center text-slate-500 rounded-xl border-slate-200">
+              <p>{t("home.noNew")}</p>
             </Card>
           )}
         </section>
 
-        {/* Free to Read */}
-        <section className="mb-16">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-3xl font-bold">Free to Read</h2>
-            <Link href="/novels">
-              <Button variant="outline">View All</Button>
+        {/* Free Episodes Section */}
+        <section className="mb-16 sm:mb-20">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+            <div>
+              <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold text-slate-900">
+                {t("home.freeEpisodes")}
+              </h2>
+              <p className="text-sm text-slate-600 mt-1">{t("home.freeEpisodesDesc")}</p>
+            </div>
+            <Link href="/novels" className="flex-shrink-0">
+              <Button 
+                variant="outline" 
+                className="w-full sm:w-auto rounded-full"
+              >
+                {t("home.viewAll")}
+                <ArrowRight className="w-4 h-4 ml-2" />
+              </Button>
             </Link>
           </div>
+
           {novelsLoading ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
               {[...Array(4)].map((_, i) => (
-                <Skeleton key={i} className="h-64 rounded-lg" />
+                <Skeleton key={i} className="h-64 sm:h-72 rounded-xl" />
               ))}
             </div>
           ) : freeNovels.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
               {freeNovels.map((novel: any) => (
-                <Link key={novel.id} href={`/novels/${novel.id}`}>
-                  <Card className="overflow-hidden hover:shadow-lg transition-shadow cursor-pointer h-full">
-                    {novel.coverImageUrl && (
-                      <img
-                        src={novel.coverImageUrl}
-                        alt={novel.title}
-                        className="w-full h-40 object-cover"
-                      />
-                    )}
-                    <div className="p-4">
-                      <div className="flex items-center justify-between mb-2">
-                        <h3 className="font-bold text-sm line-clamp-2 flex-1">{novel.title}</h3>
-                        <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded whitespace-nowrap ml-2">
-                          Free
-                        </span>
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-1">{novel.author}</p>
-                      <p className="text-xs text-muted-foreground mt-2 line-clamp-2">
-                        {novel.description}
-                      </p>
-                    </div>
-                  </Card>
-                </Link>
+                <NovelCard key={novel.id} novel={novel} showFreeTag={true} />
               ))}
             </div>
           ) : (
-            <Card className="p-8 text-center text-muted-foreground">
-              <p>No free novels available yet</p>
+            <Card className="p-8 text-center text-slate-500 rounded-xl border-slate-200">
+              <p>{t("home.noFree")}</p>
             </Card>
           )}
         </section>
 
         {/* CTA Section */}
-        <section className="bg-gradient-to-r from-purple-50 to-blue-50 rounded-lg p-12 text-center mb-16">
-          <h2 className="text-3xl font-bold mb-4">Ready to Start Reading?</h2>
-          <p className="text-lg text-muted-foreground mb-8">
-            Browse our collection of translated novels and find your next favorite read.
+        <section className="bg-gradient-to-br from-blue-50 to-purple-50 rounded-2xl p-8 sm:p-12 text-center border border-blue-100">
+          <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold text-slate-900 mb-4">
+            {t("home.ctaTitle")}
+          </h2>
+          <p className="text-base sm:text-lg text-slate-600 mb-8 max-w-2xl mx-auto">
+            {t("home.ctaDescription")}
           </p>
-          <div className="flex gap-4 justify-center">
+          <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center items-center">
             <Link href="/novels">
-              <Button size="lg">
+              <Button size="lg" className="w-full sm:w-auto rounded-full">
                 <BookOpen className="w-5 h-5 mr-2" />
-                Browse All Novels
+                {t("home.browseAll")}
               </Button>
             </Link>
             {!isAuthenticated && (
-              <Link href="/auth/login">
-                <Button size="lg" variant="outline">
-                  Sign In
+              <Link href={"/login"}>
+                <Button size="lg" variant="outline" className="w-full sm:w-auto rounded-full">
+                  {t("nav.login")}
                 </Button>
               </Link>
             )}
