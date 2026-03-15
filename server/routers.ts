@@ -543,7 +543,7 @@ export const appRouter = router({
         .input(
           z.object({
             episodeId: z.number(),
-            episodeNumber: z.number().optional(),
+            episodeNumber: z.string().optional(),
             title: z.string().optional(),
             price: z.string().optional(),
             isFree: z.boolean().optional(),

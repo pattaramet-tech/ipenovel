@@ -22,7 +22,7 @@ export default function AdminEpisodesPage() {
   const [editingEpisode, setEditingEpisode] = useState<any>(null);
   const [formData, setFormData] = useState({
     novelId: 0,
-    episodeNumber: 0,
+    episodeNumber: "",
     title: "",
     price: "0",
     isFree: false,
@@ -36,7 +36,7 @@ export default function AdminEpisodesPage() {
     onSuccess: () => {
       toast.success("Episode created successfully!");
       setOpenDialog(false);
-      setFormData({ novelId: 0, episodeNumber: 0, title: "", price: "0", isFree: false, fileUrl: "" });
+      setFormData({ novelId: 0, episodeNumber: "", title: "", price: "0", isFree: false, fileUrl: "" });
       refetch();
     },
     onError: (error) => {
@@ -90,7 +90,7 @@ export default function AdminEpisodesPage() {
     setEditingEpisode(episode);
     setFormData({
       novelId: episode.novelId,
-      episodeNumber: parseInt(episode.episodeNumber) || 0,
+      episodeNumber: String(episode.episodeNumber) || "",
       title: episode.title,
       price: episode.price || "0",
       isFree: episode.isFree || false,
@@ -125,7 +125,7 @@ export default function AdminEpisodesPage() {
               <Button
                 onClick={() => {
                   setEditingEpisode(null);
-                  setFormData({ novelId: 0, episodeNumber: 0, title: "", price: "0", isFree: false, fileUrl: "" });
+                  setFormData({ novelId: 0, episodeNumber: "", title: "", price: "0", isFree: false, fileUrl: "" });
                 }}
               >
                 <Plus className="w-4 h-4 mr-2" />
@@ -155,10 +155,10 @@ export default function AdminEpisodesPage() {
                 <div>
                   <Label>Episode Number</Label>
                   <Input
-                    type="number"
+                    type="text"
                     value={formData.episodeNumber}
-                    onChange={(e) => setFormData({ ...formData, episodeNumber: parseInt(e.target.value) || 0 })}
-                    placeholder="1"
+                    onChange={(e) => setFormData({ ...formData, episodeNumber: e.target.value })}
+                    placeholder="e.g., 001 - 030 or 1"
                   />
                 </div>
                 <div>
