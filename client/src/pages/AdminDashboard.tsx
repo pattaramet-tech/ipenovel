@@ -18,18 +18,24 @@ export default function AdminDashboard() {
   const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState("overview");
 
+  // Check for admin session (local admin login)
+  const adminSession = typeof window !== 'undefined' ? localStorage.getItem('admin-session') : null;
+  const isAdminLoggedIn = adminSession !== null;
+  const isAdmin = isAdminLoggedIn || (user && user.role === 'admin');
+  const shouldFetchAdminData = isAdmin === true; // Ensure it's a boolean for enabled flag
+
   // Query hooks with enabled flag - they won't fetch until auth is resolved and user is admin
   const { data: pendingPayments, isLoading: paymentsLoading, refetch: refetchPayments } = trpc.admin.payments.pending.useQuery(
     undefined,
-    { enabled: !!user && user.role === "admin" }
+    { enabled: shouldFetchAdminData }
   );
   const { data: allOrders, isLoading: ordersLoading } = trpc.admin.orders.list.useQuery(
     undefined,
-    { enabled: !!user && user.role === "admin" }
+    { enabled: shouldFetchAdminData }
   );
   const { data: allNovels, isLoading: novelsLoading } = trpc.admin.novels.list.useQuery(
     undefined,
-    { enabled: !!user && user.role === "admin" }
+    { enabled: shouldFetchAdminData }
   );
 
   // Mutation hooks
@@ -52,11 +58,6 @@ export default function AdminDashboard() {
       toast.error("Failed to reject payment");
     },
   });
-
-  // Check for admin session (local admin login)
-  const adminSession = typeof window !== 'undefined' ? localStorage.getItem('admin-session') : null;
-  const isAdminLoggedIn = adminSession !== null;
-  const isAdmin = isAdminLoggedIn || (isAuthenticated && user?.role === 'admin');
 
   // Now perform auth checks after all hooks are declared
   if (!isAdmin) {
