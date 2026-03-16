@@ -345,10 +345,12 @@ export async function createOrder(data: {
     paymentStatus: "unpaid",
   });
 
-  // Get the inserted order ID from the result
-  const insertedId = (result as any).insertId;
+  // Extract insertId from Drizzle MySQL result
+  // Drizzle returns [result, null] where result has insertId
+  const insertedId = (result as any)?.[0]?.insertId || (result as any)?.insertId;
   if (!insertedId) {
-    throw new Error("Failed to get inserted order ID");
+    console.error("Insert result structure:", result);
+    throw new Error("Failed to extract inserted order ID from database result");
   }
 
   // Fetch and return the inserted order with all fields

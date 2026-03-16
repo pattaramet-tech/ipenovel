@@ -281,3 +281,9 @@
 - [x] Fix createOrderFromCart to use the correct orderId from the inserted order
 - [x] Ensure orderItems are inserted with the correct orderId (not default)
 - [x] Verify dev server running without errors
+
+
+## Drizzle insertId Extraction Fix
+- [x] Debug Drizzle MySQL insert result structure
+- [x] Fix createOrder to extract insertId from result[0].insertId
+- [x] Verify dev server running without errors
