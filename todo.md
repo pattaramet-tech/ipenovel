@@ -411,3 +411,10 @@
 - [x] User remains on payment page if no slip or upload fails
 - [x] Valid slip upload still redirects to orders page
 - [x] Dev server running without errors
+
+
+## Order Number Generation - Duplicate Fix
+- [x] Fix generateOrderNumber to use timestamp-based sequence instead of random
+- [x] Ensure order numbers are unique even with concurrent checkout requests
+- [x] Change format from MMDDNNN to MMDDNNNNNNNNN for better uniqueness
+- [x] Dev server running without errors

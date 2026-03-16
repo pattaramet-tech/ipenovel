@@ -1,14 +1,17 @@
 import * as db from "../db";
 
 /**
- * Generate order number in MMDDNNN format
- * MM = month, DD = day, NNN = sequence (001-999)
+ * Generate order number in MMDDNNNNNNN format
+ * MM = month, DD = day, NNNNNNN = timestamp-based sequence for uniqueness
  */
 export function generateOrderNumber(): string {
   const now = new Date();
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const day = String(now.getDate()).padStart(2, "0");
-  const sequence = String(Math.floor(Math.random() * 900) + 100); // 100-999
+  // Use milliseconds + random to ensure uniqueness
+  const timestamp = Date.now() % 10000000; // Last 7 digits of timestamp
+  const random = String(Math.floor(Math.random() * 100)).padStart(2, "0");
+  const sequence = String(timestamp).padStart(7, "0") + random;
   const datePrefix = `${month}${day}`;
   return `${datePrefix}${sequence}`;
 }
