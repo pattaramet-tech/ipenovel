@@ -1,4 +1,5 @@
-import { eq, and, or, desc, asc, inArray, isNull, isNotNull } from "drizzle-orm";
+import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
@@ -374,6 +375,21 @@ export async function getAllOrders(limit?: number, offset?: number) {
   if (limit) query = query.limit(limit);
   if (offset) query = query.offset(offset);
   return query;
+}
+
+export async function countOrdersByDateRange(startDate: Date, endDate: Date) {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db
+    .select({ count: count() })
+    .from(orders)
+    .where(
+      and(
+        gte(orders.createdAt, startDate),
+        lte(orders.createdAt, endDate)
+      )
+    );
+  return result[0]?.count || 0;
 }
 
 export async function createOrderItems(items: Array<{ orderId: number; novelId: number; episodeId: number; unitPrice: string; discountAmount: string; finalPrice: string }>) {

@@ -4,7 +4,8 @@ import NotFound from "@/pages/NotFound";
 import Home from "@/pages/Home";
 import NovelsPage from "@/pages/NovelsPage";
 import CartPage from "@/pages/CartPage";
-import OrdersPage from "@/pages/OrdersPage";
+import OrdersPage from "./pages/OrdersPage";
+import OrderDetailPage from "./pages/OrderDetailPage";
 import MyNovelsPage from "@/pages/MyNovelsPage";
 import AdminDashboard from "@/pages/AdminDashboard";
 import AdminBannersPage from "@/pages/AdminBannersPage";
@@ -36,6 +37,7 @@ function Router() {
         <Route path={"/novels/:identifier"} component={NovelDetailPage} />
         <Route path={"/cart"} component={CartPage} />
         <Route path={"/orders"} component={OrdersPage} />
+        <Route path={"/orders/:id"} component={OrderDetailPage} />
         <Route path={"/my-novels"} component={MyNovelsPage} />
         <Route path={"/points"} component={PointsPage} />
         <Route path={"/payment/:orderId"} component={PaymentPage} />

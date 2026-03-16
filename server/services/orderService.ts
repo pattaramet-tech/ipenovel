@@ -12,12 +12,33 @@ const POINTS_REDEMPTION_RATE = 1; // 1 point = 1 currency unit
 
 /**
  * Generate unique order number
- * Format: ORD-{timestamp}-{randomId}
+ * Format: MMDDNNN
+ * MM = 2-digit month, DD = 2-digit day, NNN = 3-digit daily sequence
+ * Example: 0316001 (March 16, first order)
  */
-export function generateOrderNumber(): string {
-  const timestamp = Date.now().toString(36).toUpperCase();
-  const randomId = nanoid(8).toUpperCase();
-  return `ORD-${timestamp}-${randomId}`;
+export async function generateOrderNumber(): Promise<string> {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const datePrefix = `${month}${day}`;
+  
+  // Get the database to query today's order count
+  const database = await getDb();
+  if (!database) {
+    throw new Error("Database not available");
+  }
+  
+  // Get today's date range in UTC
+  const startOfDay = new Date(now);
+  startOfDay.setUTCHours(0, 0, 0, 0);
+  const endOfDay = new Date(now);
+  endOfDay.setUTCHours(23, 59, 59, 999);
+  
+  // Count orders created today
+  const todayOrderCount = await db.countOrdersByDateRange(startOfDay, endOfDay);
+  const sequence = String(todayOrderCount + 1).padStart(3, '0');
+  
+  return `${datePrefix}${sequence}`;
 }
 
 /**
@@ -120,7 +141,7 @@ export async function createOrderFromCart(userId: number, cartItems: any[], coup
   const totalAmount = (parseFloat(subtotal) - parseFloat(discountAmount) - parseFloat(pointsDiscountAmount)).toFixed(2);
 
   // Create order with transaction
-  const orderNumber = generateOrderNumber();
+  const orderNumber = await generateOrderNumber();
 
   const result = await db.createOrder({
     orderNumber,

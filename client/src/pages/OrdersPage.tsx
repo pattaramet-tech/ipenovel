@@ -129,7 +129,7 @@ export default function OrdersPage() {
                         ฿{parseFloat(order.totalAmount.toString()).toFixed(2)}
                       </p>
                     </div>
-                    <Button variant="outline" size="sm">
+                    <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); navigate(`/orders/${order.id}`); }}>
                       View Details →
                     </Button>
                   </div>

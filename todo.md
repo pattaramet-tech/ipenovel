@@ -129,3 +129,12 @@
 - [x] Update shared styles for better visual consistency
 - [ ] Test responsive design on mobile, tablet, desktop
 - [ ] Verify no regression in auth, orders, payments, purchases, My Novels, points
+
+
+## Order Fixes - orderNumber Format & View Details
+- [x] Implement MMDDNNN orderNumber format with daily reset
+- [x] Fix View Details button on Orders page
+- [x] Verify order detail page routing
+- [x] Test orderNumber format and concurrent creation
+- [x] Test View Details button navigation
+- [x] Verify no regression in order/payment flows
