@@ -1111,3 +1111,11 @@ export async function hasPointsBeenAwardedForOrder(orderId: number): Promise<boo
 
   return result.length > 0;
 }
+
+export async function getAdminByEmail(email: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  return result[0];
+}

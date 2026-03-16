@@ -15,6 +15,13 @@
       "when": 1773598350397,
       "tag": "0001_steep_romulus",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1773669805843,
+      "tag": "0002_goofy_hairball",
+      "breakpoints": true
     }
   ]
 }

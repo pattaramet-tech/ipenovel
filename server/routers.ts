@@ -432,6 +432,23 @@ export const appRouter = router({
 
   // ============ ADMIN ROUTES ============
   admin: router({
+    login: publicProcedure
+      .input(z.object({ email: z.string().email(), password: z.string() }))
+      .mutation(async ({ input, ctx }) => {
+        const admin = await db.getAdminByEmail(input.email);
+        if (!admin || !admin.passwordHash) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid credentials" });
+        }
+
+        const bcrypt = await import("bcryptjs");
+        const isPasswordValid = await bcrypt.compare(input.password, admin.passwordHash);
+        if (!isPasswordValid) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid credentials" });
+        }
+
+        return { success: true, adminId: admin.id };
+      }),
+
     payments: router({
       pending: adminProcedure.query(async () => {
         const payments = await db.getPendingPayments(50);

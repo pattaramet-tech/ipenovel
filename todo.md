@@ -418,3 +418,14 @@
 - [x] Ensure order numbers are unique even with concurrent checkout requests
 - [x] Change format from MMDDNNN to MMDDNNNNNNNNN for better uniqueness
 - [x] Dev server running without errors
+
+
+## Admin Login Feature
+- [x] Create /admin/login page with email/password form
+- [x] Add admin.login mutation to backend routers
+- [x] Add passwordHash field to users table
+- [x] Create admin account seed with hashed password
+- [x] Add getAdminByEmail helper in db.ts
+- [x] Implement bcrypt password verification
+- [x] Add AdminLoginPage route to App.tsx
+- [x] Fix TypeScript compilation errors
