@@ -147,7 +147,15 @@ export async function createOrderFromCart(
     await db.createOrderItems(orderItemsData);
   }
 
-  return result;
+  // Create payment record for the order
+  await db.createPayment(orderId);
+
+  // Fetch and return the full order object
+  const fullOrder = await db.getOrderById(orderId);
+  if (!fullOrder) {
+    throw new Error("Failed to fetch created order");
+  }
+  return fullOrder;
 }
 
 /**

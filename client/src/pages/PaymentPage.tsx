@@ -24,11 +24,15 @@ export default function PaymentPage() {
   const parsedId = params?.orderId ? parseInt(params.orderId, 10) : null;
   const orderId = parsedId && !isNaN(parsedId) && parsedId > 0 ? parsedId : null;
 
+
+
   // Fetch order details - only when authenticated and we have a valid orderId
   const { data: orderData, isLoading: orderLoading, error: orderError } = trpc.orders.detail.useQuery(
     { orderId: orderId || 0 },
     { enabled: isAuthenticated && orderId !== null && orderId > 0 }
   );
+
+
 
   const uploadPaymentSlipMutation = trpc.orders.uploadPaymentSlip.useMutation({
     onSuccess: () => {

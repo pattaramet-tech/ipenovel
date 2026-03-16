@@ -306,3 +306,12 @@
 - [x] Fix PaymentPage orderId parsing to handle NaN safely
 - [x] Add missing translations for payment.orderNotFound and nav.viewOrders (Thai + English)
 - [x] Verify dev server running without errors
+
+
+## Payment Record Creation Fix
+- [x] Identify root cause: payment record not created when order is created
+- [x] Add db.createPayment(orderId) call in createOrderFromCart
+- [x] Ensure checkout returns full order object with all fields
+- [x] Remove debug logging from PaymentPage and CartPage
+- [x] Verify payment page tests pass (10/10 passing)
+- [x] Verify dev server running without errors
