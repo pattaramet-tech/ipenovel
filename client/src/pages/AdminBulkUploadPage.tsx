@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -6,10 +6,11 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
-import { Download, Upload, CheckCircle, AlertCircle } from "lucide-react";
+import { Download, Upload, CheckCircle, AlertCircle, File } from "lucide-react";
 import { toast } from "sonner";
 import AdminLayout from "@/components/AdminLayout";
 import { SectionHeader, EmptyState, FormSection } from "@/components/AdminComponents";
+import { parseCSVText, readCSVFile, validateCSVRows } from "@/lib/csvParser";
 
 export default function AdminBulkUploadPage() {
   const { user, isAuthenticated } = useAuth();
@@ -20,6 +21,10 @@ export default function AdminBulkUploadPage() {
   const [selectedNovelId, setSelectedNovelId] = useState<number | null>(null);
   const [novelPreview, setNovelPreview] = useState<Array<{ title: string }> | null>(null);
   const [episodePreview, setEpisodePreview] = useState<Array<any> | null>(null);
+  const [selectedFileName, setSelectedFileName] = useState<string>("");
+  const [isParsingCSV, setIsParsingCSV] = useState(false);
+  const novelFileInputRef = useRef<HTMLInputElement>(null);
+  const episodeFileInputRef = useRef<HTMLInputElement>(null);
 
   // Queries
   const { data: novels } = trpc.admin.novels.list.useQuery(
@@ -136,6 +141,149 @@ export default function AdminBulkUploadPage() {
     setEpisodePreview(rows as any);
   };
 
+  // Handle CSV file upload for novels
+  const handleNovelCSVFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!file.name.endsWith(".csv")) {
+      toast.error("Please select a CSV file");
+      return;
+    }
+
+    setIsParsingCSV(true);
+    setSelectedFileName(file.name);
+
+    try {
+      const { content, error } = await readCSVFile(file);
+      if (error) {
+        toast.error(error);
+        setIsParsingCSV(false);
+        return;
+      }
+
+      setNovelCsvText(content);
+      const { rows, error: parseError } = parseCSVText(content);
+      
+      if (parseError) {
+        toast.error(parseError);
+        setIsParsingCSV(false);
+        return;
+      }
+
+      const validation = validateCSVRows(rows, ["title"]);
+      if (!validation.valid) {
+        toast.error(validation.error);
+        setIsParsingCSV(false);
+        return;
+      }
+
+      setNovelPreview(rows as any);
+      toast.success(`Loaded ${rows.length} novels from ${file.name}`);
+    } catch (err) {
+      toast.error("Failed to process CSV file");
+    } finally {
+      setIsParsingCSV(false);
+    }
+  };
+
+  // Handle CSV file upload for episodes (by title mode)
+  const handleEpisodeCSVFileUploadByTitle = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!file.name.endsWith(".csv")) {
+      toast.error("Please select a CSV file");
+      return;
+    }
+
+    setIsParsingCSV(true);
+    setSelectedFileName(file.name);
+
+    try {
+      const { content, error } = await readCSVFile(file);
+      if (error) {
+        toast.error(error);
+        setIsParsingCSV(false);
+        return;
+      }
+
+      setEpisodeCsvText(content);
+      const { rows, error: parseError } = parseCSVText(content);
+      
+      if (parseError) {
+        toast.error(parseError);
+        setIsParsingCSV(false);
+        return;
+      }
+
+      const validation = validateCSVRows(rows, ["novelTitle", "title", "price", "episodeNumber", "fileUrl"]);
+      if (!validation.valid) {
+        toast.error(validation.error);
+        setIsParsingCSV(false);
+        return;
+      }
+
+      setEpisodePreview(rows as any);
+      toast.success(`Loaded ${rows.length} episodes from ${file.name}`);
+    } catch (err) {
+      toast.error("Failed to process CSV file");
+    } finally {
+      setIsParsingCSV(false);
+    }
+  };
+
+  // Handle CSV file upload for episodes (manual mode)
+  const handleEpisodeCSVFileUploadManual = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!file.name.endsWith(".csv")) {
+      toast.error("Please select a CSV file");
+      return;
+    }
+
+    if (!selectedNovelId) {
+      toast.error("Please select a novel first");
+      return;
+    }
+
+    setIsParsingCSV(true);
+    setSelectedFileName(file.name);
+
+    try {
+      const { content, error } = await readCSVFile(file);
+      if (error) {
+        toast.error(error);
+        setIsParsingCSV(false);
+        return;
+      }
+
+      setEpisodeCsvText(content);
+      const { rows, error: parseError } = parseCSVText(content);
+      
+      if (parseError) {
+        toast.error(parseError);
+        setIsParsingCSV(false);
+        return;
+      }
+
+      const validation = validateCSVRows(rows, ["title", "price", "episodeNumber", "fileUrl"]);
+      if (!validation.valid) {
+        toast.error(validation.error);
+        setIsParsingCSV(false);
+        return;
+      }
+
+      setEpisodePreview(rows as any);
+      toast.success(`Loaded ${rows.length} episodes from ${file.name}`);
+    } catch (err) {
+      toast.error("Failed to process CSV file");
+    } finally {
+      setIsParsingCSV(false);
+    }
+  };
+
   // Download sample CSVs
   const downloadNovelSample = () => {
     const csv = "title\nMy First Novel\nAnother Great Novel";
@@ -209,9 +357,35 @@ export default function AdminBulkUploadPage() {
                   Download Sample CSV
                 </Button>
 
+                {/* CSV File Upload */}
+                <div className="space-y-2">
+                  <label className="text-sm font-semibold text-slate-700 block">Or Upload CSV File</label>
+                  <div className="flex gap-2">
+                    <input
+                      ref={novelFileInputRef}
+                      type="file"
+                      accept=".csv"
+                      onChange={handleNovelCSVFileUpload}
+                      className="hidden"
+                    />
+                    <Button
+                      variant="outline"
+                      onClick={() => novelFileInputRef.current?.click()}
+                      disabled={isParsingCSV}
+                      className="w-full"
+                    >
+                      <File className="w-4 h-4 mr-2" />
+                      {isParsingCSV ? "Parsing..." : "Upload CSV File"}
+                    </Button>
+                  </div>
+                  {selectedFileName && (
+                    <p className="text-xs text-slate-600">Selected: {selectedFileName}</p>
+                  )}
+                </div>
+
                 {/* CSV Input */}
                 <div>
-                  <label className="text-sm font-semibold text-slate-700 block mb-2">Paste CSV Content</label>
+                  <label className="text-sm font-semibold text-slate-700 block mb-2">Or Paste CSV Content</label>
                   <textarea
                     value={novelCsvText}
                     onChange={(e) => setNovelCsvText(e.target.value)}
@@ -318,9 +492,35 @@ export default function AdminBulkUploadPage() {
                       Download Sample CSV
                     </Button>
 
+                    {/* CSV File Upload */}
+                    <div className="space-y-2">
+                      <label className="text-sm font-semibold text-slate-700 block">Or Upload CSV File</label>
+                      <div className="flex gap-2">
+                        <input
+                          ref={episodeFileInputRef}
+                          type="file"
+                          accept=".csv"
+                          onChange={handleEpisodeCSVFileUploadByTitle}
+                          className="hidden"
+                        />
+                        <Button
+                          variant="outline"
+                          onClick={() => episodeFileInputRef.current?.click()}
+                          disabled={isParsingCSV}
+                          className="w-full"
+                        >
+                          <File className="w-4 h-4 mr-2" />
+                          {isParsingCSV ? "Parsing..." : "Upload CSV File"}
+                        </Button>
+                      </div>
+                      {selectedFileName && (
+                        <p className="text-xs text-slate-600">Selected: {selectedFileName}</p>
+                      )}
+                    </div>
+
                     {/* CSV Input */}
                     <div>
-                      <label className="text-sm font-semibold text-slate-700 block mb-2">Paste CSV Content</label>
+                      <label className="text-sm font-semibold text-slate-700 block mb-2">Or Paste CSV Content</label>
                       <textarea
                         value={episodeCsvText}
                         onChange={(e) => setEpisodeCsvText(e.target.value)}
@@ -421,9 +621,35 @@ export default function AdminBulkUploadPage() {
                       Download Sample CSV
                     </Button>
 
+                    {/* CSV File Upload */}
+                    <div className="space-y-2">
+                      <label className="text-sm font-semibold text-slate-700 block">Or Upload CSV File</label>
+                      <div className="flex gap-2">
+                        <input
+                          ref={episodeFileInputRef}
+                          type="file"
+                          accept=".csv"
+                          onChange={handleEpisodeCSVFileUploadManual}
+                          className="hidden"
+                        />
+                        <Button
+                          variant="outline"
+                          onClick={() => episodeFileInputRef.current?.click()}
+                          disabled={isParsingCSV || !selectedNovelId}
+                          className="w-full"
+                        >
+                          <File className="w-4 h-4 mr-2" />
+                          {isParsingCSV ? "Parsing..." : "Upload CSV File"}
+                        </Button>
+                      </div>
+                      {selectedFileName && (
+                        <p className="text-xs text-slate-600">Selected: {selectedFileName}</p>
+                      )}
+                    </div>
+
                     {/* CSV Input */}
                     <div>
-                      <label className="text-sm font-semibold text-slate-700 block mb-2">Paste CSV Content</label>
+                      <label className="text-sm font-semibold text-slate-700 block mb-2">Or Paste CSV Content</label>
                       <textarea
                         value={episodeCsvText}
                         onChange={(e) => setEpisodeCsvText(e.target.value)}

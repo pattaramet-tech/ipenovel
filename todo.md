@@ -196,3 +196,18 @@
 - [x] Write comprehensive vitest for coupon CRUD functions (21 tests passing)
 - [x] Verify backend procedures work correctly
 - [x] Verify no regressions in core flows (coupon tests passing)
+
+
+## Admin Bulk Upload CSV File Support
+- [x] Create CSV parser helper with file upload support (client/src/lib/csvParser.ts)
+- [x] Add CSV file upload button to AdminBulkUploadPage (novels tab)
+- [x] Add CSV file upload button to AdminBulkUploadPage (episodes tab - by title mode)
+- [x] Add CSV file upload button to AdminBulkUploadPage (episodes tab - manual mode)
+- [x] Integrate CSV parser with existing bulk upload validation pipeline
+- [x] Support Thai characters in CSV parsing
+- [x] Keep episodeNumber as string (not number)
+- [x] Show selected filename and loading state during parsing
+- [x] Display clear error messages for invalid CSV
+- [x] Write comprehensive vitest for CSV parser (15 tests passing)
+- [x] Verify existing manual bulk upload flow still works
+- [x] No architecture changes - reused existing bulk upload pipeline
