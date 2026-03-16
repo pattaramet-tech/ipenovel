@@ -377,3 +377,15 @@
 - [x] Added comprehensive tests for points awarding (5 test cases)
 - [x] All tests passing (18/18)
 - [x] Dev server running without errors
+
+
+## Episode Selection UX Improvement
+- [x] Implement immediate add-to-cart on episode checkbox selection
+- [x] Implement immediate remove-from-cart on checkbox deselection
+- [x] Remove "Add Episodes to Cart" and "Clear Selection" buttons
+- [x] Make episode cards more compact (reduced padding and spacing)
+- [x] Optimize mobile layout with tighter card proportions
+- [x] Show proper loading/disabled state during add/remove mutations
+- [x] Revert selection state on mutation error
+- [x] Keep purchased episodes showing "Read" button unchanged
+- [x] Dev server running without errors

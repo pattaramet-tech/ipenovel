@@ -32,13 +32,53 @@ export default function NovelDetailPage() {
 
   const addToCartMutation = trpc.cart.add.useMutation({
     onSuccess: () => {
-      toast.success("Episode added to cart!");
-      setSelectedEpisodes([]);
+      // Don't clear selection - keep track of what's in cart
     },
     onError: (error: any) => {
       toast.error(error.message || "Failed to add to cart");
     },
   });
+
+  const removeFromCartMutation = trpc.cart.remove.useMutation({
+    onSuccess: () => {
+      // Cart updated
+    },
+    onError: (error: any) => {
+      toast.error(error.message || "Failed to remove from cart");
+    },
+  });
+
+  // Handle immediate add/remove on checkbox change
+  const handleEpisodeToggle = async (episodeId: number, isAdding: boolean) => {
+    if (isAdding) {
+      // Add to cart
+      setSelectedEpisodes((prev) => [...prev, episodeId]);
+      addToCartMutation.mutate(
+        { episodeId },
+        {
+          onError: () => {
+            // Revert on error
+            setSelectedEpisodes((prev) => prev.filter((id) => id !== episodeId));
+          },
+        }
+      );
+    } else {
+      // Remove from cart - find the cartItemId for this episode
+      const cartItem = cartItems.find((item: any) => item.episodeId === episodeId);
+      if (cartItem) {
+        setSelectedEpisodes((prev) => prev.filter((id) => id !== episodeId));
+        removeFromCartMutation.mutate(
+          { cartItemId: cartItem.id },
+          {
+            onError: () => {
+              // Revert on error
+              setSelectedEpisodes((prev) => [...prev, episodeId]);
+            },
+          }
+        );
+      }
+    }
+  };
 
   if (novelLoading) {
     return (
@@ -75,27 +115,6 @@ export default function NovelDetailPage() {
 
   const freeEpisodes = episodes?.filter((ep: any) => ep.isFree === true) || [];
   const paidEpisodes = episodes?.filter((ep: any) => ep.isFree !== true) || [];
-
-  const handleAddToCart = async () => {
-    if (selectedEpisodes.length === 0) {
-      toast.error("Please select at least one episode");
-      return;
-    }
-
-    // Add episodes to cart one by one
-    for (const episodeId of selectedEpisodes) {
-      try {
-        await new Promise((resolve, reject) => {
-          addToCartMutation.mutate({ episodeId }, {
-            onSuccess: resolve,
-            onError: reject,
-          });
-        });
-      } catch (error) {
-        console.error("Failed to add episode to cart", error);
-      }
-    }
-  };
 
   return (
     <div className="container py-8">
@@ -163,16 +182,17 @@ export default function NovelDetailPage() {
         {/* Free Episodes */}
         {freeEpisodes.length > 0 && (
           <div>
-            <h3 className="text-lg font-semibold mb-4 text-green-600">Free Episodes</h3>
-            <div className="space-y-3">
+            <h3 className="text-lg font-semibold mb-3 text-green-600">Free Episodes</h3>
+            <div className="space-y-2">
               {freeEpisodes.map((episode: any) => (
-                <Card key={episode.id} className="p-4 flex items-center justify-between">
-                  <div className="flex-1">
-                    <p className="font-semibold">{episode.episodeNumber}</p>
-                    <p className="text-sm text-muted-foreground">{episode.title}</p>
+                <Card key={episode.id} className="p-3 flex items-center justify-between">
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold text-sm">
+                      Episode {episode.episodeNumber} - {episode.title}
+                    </p>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <Badge variant="outline" className="bg-green-50">
+                  <div className="flex items-center gap-3 ml-3 flex-shrink-0">
+                    <Badge variant="outline" className="bg-green-50 text-xs">
                       Free
                     </Badge>
                     {episode.fileUrl ? (
@@ -180,15 +200,15 @@ export default function NovelDetailPage() {
                         href={episode.fileUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
+                        className="inline-flex items-center justify-center px-2 py-1 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition whitespace-nowrap"
                       >
-                        <BookOpen className="w-4 h-4 mr-2" />
+                        <BookOpen className="w-3 h-3 mr-1" />
                         Read
                       </a>
                     ) : (
-                      <Button size="sm" disabled>
-                        <BookOpen className="w-4 h-4 mr-2" />
-                        Read (File Not Available)
+                      <Button size="sm" disabled className="text-xs px-2 py-1">
+                        <BookOpen className="w-3 h-3 mr-1" />
+                        Read
                       </Button>
                     )}
                   </div>
@@ -201,68 +221,50 @@ export default function NovelDetailPage() {
         {/* Paid Episodes */}
         {paidEpisodes.length > 0 && (
           <div>
-            <h3 className="text-lg font-semibold mb-4 text-blue-600">Paid Episodes</h3>
-            <div className="space-y-3">
+            <h3 className="text-lg font-semibold mb-3 text-blue-600">Paid Episodes</h3>
+            <div className="space-y-2">
               {paidEpisodes.map((episode: any) => {
                 const inCart = cartItems.some((item: any) => item.episodeId === episode.id);
                 const isPurchased = episode.isPurchased || false;
+                const isLoading = addToCartMutation.isPending || removeFromCartMutation.isPending;
                 return (
                   <Card
                     key={episode.id}
-                    className={`p-4 flex items-center justify-between transition-colors ${
-                      !isPurchased && !inCart ? "cursor-pointer hover:bg-muted" : ""
-                    } ${
-                      selectedEpisodes.includes(episode.id)
-                        ? "bg-blue-50 border-blue-300"
-                        : ""
-                    }`}
-                    onClick={() => {
-                      if (!inCart && !isPurchased) {
-                        setSelectedEpisodes((prev) =>
-                          prev.includes(episode.id)
-                            ? prev.filter((id) => id !== episode.id)
-                            : [...prev, episode.id]
-                        );
-                      }
-                    }}
+                    className="p-3 flex items-center justify-between transition-colors"
                   >
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <p className="font-semibold">{episode.episodeNumber}</p>
-                        {inCart && <Badge variant="secondary">In Cart</Badge>}
-                        {isPurchased && <Badge variant="secondary">Purchased</Badge>}
-                      </div>
-                      <p className="text-sm text-muted-foreground">{episode.title}</p>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-sm">
+                        Episode {episode.episodeNumber} - {episode.title}
+                      </p>
                     </div>
-                    <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-3 ml-3 flex-shrink-0">
                       {isPurchased ? (
                         episode.fileUrl ? (
                           <a
                             href={episode.fileUrl}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
+                            className="inline-flex items-center justify-center px-2 py-1 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition whitespace-nowrap"
                           >
-                            <BookOpen className="w-4 h-4 mr-2" />
+                            <BookOpen className="w-3 h-3 mr-1" />
                             Read
                           </a>
                         ) : (
-                          <Button size="sm" disabled>
-                            <BookOpen className="w-4 h-4 mr-2" />
-                            Read (File Not Available)
+                          <Button size="sm" disabled className="text-xs px-2 py-1">
+                            <BookOpen className="w-3 h-3 mr-1" />
+                            Read
                           </Button>
                         )
                       ) : (
                         <>
-                          <p className="font-semibold text-lg">฿{episode.price}</p>
-                          {!inCart && (
-                            <input
-                              type="checkbox"
-                              checked={selectedEpisodes.includes(episode.id)}
-                              onChange={() => {}}
-                              className="w-5 h-5"
-                            />
-                          )}
+                          <p className="font-semibold text-sm whitespace-nowrap">฿{episode.price}</p>
+                          <input
+                            type="checkbox"
+                            checked={selectedEpisodes.includes(episode.id)}
+                            onChange={(e) => handleEpisodeToggle(episode.id, e.target.checked)}
+                            disabled={isLoading}
+                            className="w-4 h-4 cursor-pointer"
+                          />
                         </>
                       )}
                     </div>
@@ -270,26 +272,6 @@ export default function NovelDetailPage() {
                 );
               })}
             </div>
-
-            {/* Add to Cart Button */}
-            {selectedEpisodes.length > 0 && (
-              <div className="mt-8 flex gap-4">
-                <Button
-                  size="lg"
-                  onClick={handleAddToCart}
-                  disabled={addToCartMutation.isPending}
-                >
-                  Add {selectedEpisodes.length} Episode{selectedEpisodes.length !== 1 ? "s" : ""} to Cart
-                </Button>
-                <Button
-                  size="lg"
-                  variant="outline"
-                  onClick={() => setSelectedEpisodes([])}
-                >
-                  Clear Selection
-                </Button>
-              </div>
-            )}
           </div>
         )}
 
