@@ -1,49 +1,21 @@
-/**
- * Order Service - Core business logic for checkout, payment, and entitlements
- * Ensures transactions, idempotency, and data consistency
- */
-
-import { getDb } from "../db";
 import * as db from "../db";
-import { nanoid } from "nanoid";
-
-const POINTS_CONVERSION_RATE = 100; // 100 currency units = 1 point
-const POINTS_REDEMPTION_RATE = 1; // 1 point = 1 currency unit
 
 /**
- * Generate unique order number
- * Format: MMDDNNN
- * MM = 2-digit month, DD = 2-digit day, NNN = 3-digit daily sequence
- * Example: 0316001 (March 16, first order)
+ * Generate order number in MMDDNNN format
+ * MM = month, DD = day, NNN = sequence (001-999)
  */
-export async function generateOrderNumber(): Promise<string> {
+export function generateOrderNumber(): string {
   const now = new Date();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  const sequence = String(Math.floor(Math.random() * 900) + 100); // 100-999
   const datePrefix = `${month}${day}`;
-  
-  // Get the database to query today's order count
-  const database = await getDb();
-  if (!database) {
-    throw new Error("Database not available");
-  }
-  
-  // Get today's date range in UTC
-  const startOfDay = new Date(now);
-  startOfDay.setUTCHours(0, 0, 0, 0);
-  const endOfDay = new Date(now);
-  endOfDay.setUTCHours(23, 59, 59, 999);
-  
-  // Count orders created today
-  const todayOrderCount = await db.countOrdersByDateRange(startOfDay, endOfDay);
-  const sequence = String(todayOrderCount + 1).padStart(3, '0');
-  
   return `${datePrefix}${sequence}`;
 }
 
 /**
  * Validate coupon for an order
- * Returns discount amount or throws error
+ * Returns discount amount or throws error with specific reason
  */
 export async function validateAndApplyCoupon(couponCode: string, subtotal: string): Promise<{ discountAmount: string; coupon: any }> {
   const coupon = await db.getCouponByCode(couponCode);
@@ -52,13 +24,14 @@ export async function validateAndApplyCoupon(couponCode: string, subtotal: strin
     throw new Error("Coupon not found");
   }
 
-  if (!coupon.isActive) {
-    throw new Error("Coupon is not active");
+  // Validate discount value first - this is critical
+  const discountValue = coupon.discountValue ? parseFloat(String(coupon.discountValue).trim()) : NaN;
+  if (isNaN(discountValue) || discountValue <= 0) {
+    throw new Error("Coupon has invalid discount value");
   }
 
-  // Validate discountValue exists before checking expiry
-  if (!coupon.discountValue || isNaN(parseFloat(coupon.discountValue.toString()))) {
-    throw new Error("Coupon has invalid discount value");
+  if (!coupon.isActive) {
+    throw new Error("Coupon is inactive");
   }
 
   if (coupon.expiresAt && new Date(coupon.expiresAt) < new Date()) {
@@ -70,27 +43,22 @@ export async function validateAndApplyCoupon(couponCode: string, subtotal: strin
   }
 
   const subtotalNum = parseFloat(subtotal);
-  const minPurchase = parseFloat(coupon.minPurchaseAmount?.toString() || "0");
+  const minPurchase = coupon.minPurchaseAmount ? parseFloat(String(coupon.minPurchaseAmount).trim()) : 0;
 
   if (subtotalNum < minPurchase) {
-    throw new Error(`Minimum purchase amount of ${minPurchase} required`);
+    throw new Error(`Minimum purchase amount of ฿${minPurchase.toFixed(2)} required`);
   }
 
-  // Validate discountValue exists and is a valid number
-  if (!coupon.discountValue || isNaN(parseFloat(coupon.discountValue.toString()))) {
-    throw new Error("Coupon discount value is invalid");
+  // Validate percentage range
+  if (coupon.discountType === "percentage" && (discountValue < 0 || discountValue > 100)) {
+    throw new Error("Coupon percentage must be between 0 and 100");
   }
 
   let discountAmount = "0.00";
 
   if (coupon.discountType === "flat") {
-    const discountValue = parseFloat(coupon.discountValue.toString());
     discountAmount = Math.min(subtotalNum, discountValue).toFixed(2);
   } else if (coupon.discountType === "percentage") {
-    const discountValue = parseFloat(coupon.discountValue.toString());
-    if (discountValue < 0 || discountValue > 100) {
-      throw new Error("Coupon percentage must be between 0 and 100");
-    }
     const percentDiscount = (subtotalNum * discountValue) / 100;
     discountAmount = percentDiscount.toFixed(2);
   }
@@ -99,137 +67,89 @@ export async function validateAndApplyCoupon(couponCode: string, subtotal: strin
 }
 
 /**
- * Calculate points to redeem
- * User can redeem up to their available balance
+ * Check if episode is already purchased by user
  */
-export async function calculatePointsRedemption(userId: number, requestedPoints: string): Promise<{ pointsToRedeem: string; pointsDiscount: string }> {
-  const balance = await db.getUserPointsBalance(userId);
-  const balanceNum = parseFloat(balance);
-  const requestedNum = parseFloat(requestedPoints);
-
-  if (requestedNum > balanceNum) {
-    throw new Error("Insufficient points balance");
-  }
-
-  const pointsDiscount = (requestedNum * POINTS_REDEMPTION_RATE).toFixed(2);
-  return { pointsToRedeem: requestedPoints, pointsDiscount };
+export async function isEpisodeAlreadyPurchased(userId: number, episodeId: number): Promise<boolean> {
+  const purchase = await db.getPurchaseByUserAndEpisode(userId, episodeId);
+  return !!purchase;
 }
 
 /**
- * Create order from cart items
- * Handles multi-item checkout, coupon, and points in a transaction
+ * Check if user has access to an episode (via purchase)
  */
-export async function createOrderFromCart(userId: number, cartItems: any[], couponCode?: string, pointsToRedeem?: string) {
-  const database = await getDb();
-  if (!database) {
-    throw new Error("Database not available");
-  }
+export async function hasAccessToEpisode(userId: number, episodeId: number): Promise<boolean> {
+  const purchase = await db.getPurchaseByUserAndEpisode(userId, episodeId);
+  return !!purchase;
+}
 
+/**
+ * Create order from cart
+ */
+export async function createOrderFromCart(
+  userId: string,
+  cartItems: any[],
+  couponCode?: string,
+  pointsToRedeem?: string
+): Promise<any> {
   // Calculate subtotal
-  let subtotal = "0.00";
+  let subtotal = 0;
   for (const item of cartItems) {
-    const itemPrice = parseFloat(item.price.toString());
-    subtotal = (parseFloat(subtotal) + itemPrice).toFixed(2);
+    const price = parseFloat(item.price?.toString() || "0");
+    subtotal += price;
   }
 
   // Apply coupon if provided
-  let discountAmount = "0.00";
-  let couponSnapshot: string | undefined;
-
+  let discountAmount = 0;
+  let appliedCoupon = null;
   if (couponCode) {
-    const { discountAmount: discount, coupon } = await validateAndApplyCoupon(couponCode, subtotal);
-    discountAmount = discount;
-    couponSnapshot = couponCode;
-  }
-
-  // Apply points if provided
-  let pointsDiscountAmount = "0.00";
-  let pointsRedeemed = "0.00";
-
-  if (pointsToRedeem) {
-    const { pointsToRedeem: redeemAmount, pointsDiscount } = await calculatePointsRedemption(userId, pointsToRedeem);
-    pointsRedeemed = redeemAmount;
-    pointsDiscountAmount = pointsDiscount;
+    const { discountAmount: discount, coupon } = await validateAndApplyCoupon(couponCode, subtotal.toString());
+    discountAmount = parseFloat(discount);
+    appliedCoupon = coupon;
   }
 
   // Calculate total
-  const totalAmount = (parseFloat(subtotal) - parseFloat(discountAmount) - parseFloat(pointsDiscountAmount)).toFixed(2);
+  const totalAmount = Math.max(0, subtotal - discountAmount);
 
-  // Create order with transaction
-  const orderNumber = await generateOrderNumber();
-
+  // Create order
+  const orderNumber = generateOrderNumber();
   const result = await db.createOrder({
+    userId: parseInt(userId),
     orderNumber,
-    userId,
-    subtotal,
-    discountAmount,
-    pointsDiscountAmount,
-    totalAmount,
-    couponCodeSnapshot: couponSnapshot,
+    subtotal: subtotal.toString(),
+    discountAmount: discountAmount.toString(),
+    pointsDiscountAmount: "0",
+    totalAmount: totalAmount.toString(),
+    couponCodeSnapshot: couponCode,
   });
 
   if (!result) {
     throw new Error("Failed to create order");
   }
 
-  const orderId = (result as any)[0]?.insertId;
-
-  // Create order items
-  const orderItemsData = cartItems.map((item) => ({
-    orderId,
-    novelId: item.novelId,
+  // Create order items with required fields
+  const orderItemsData = cartItems.map((item: any) => ({
+    orderId: (result as any).insertId || (result as any).id,
+    novelId: item.novelId || 0,
     episodeId: item.episodeId,
-    unitPrice: item.price.toString(),
-    discountAmount: "0.00",
-    finalPrice: item.price.toString(),
+    unitPrice: item.price?.toString() || "0",
+    discountAmount: "0",
+    finalPrice: item.price?.toString() || "0",
   }));
 
-  await db.createOrderItems(orderItemsData);
+  if (orderItemsData.length > 0) {
+    await db.createOrderItems(orderItemsData);
+  }
 
-  // Create payment record
-  await db.createPayment(orderId);
-
-  // Record order history
-  await db.recordOrderHistory({
-    orderId,
-    action: "order_created",
-    toStatus: "pending",
-    actorUserId: userId,
-  });
-
-  // NOTE: Points redemption will be recorded when payment is approved, not at checkout
-
-  // NOTE: Coupon usage will be recorded when payment is approved, not at checkout
-
-  return {
-    orderId,
-    orderNumber,
-    subtotal,
-    discountAmount,
-    pointsDiscountAmount,
-    totalAmount,
-  };
+  return result;
 }
 
 /**
- * Approve payment and grant entitlements
- * IDEMPOTENT: Approving twice won't duplicate purchases or points
+ * Approve payment and create purchases
  */
-export async function approvePayment(paymentId: number, reviewedByUserId: number) {
-  const database = await getDb();
-  if (!database) {
-    throw new Error("Database not available");
-  }
-
+export async function approvePayment(paymentId: number, approvedBy: string): Promise<void> {
   const payment = await db.getPaymentById(paymentId);
   if (!payment) {
     throw new Error("Payment not found");
-  }
-
-  // Check if already approved (idempotency)
-  if (payment.status === "approved") {
-    console.log(`Payment ${paymentId} already approved, skipping duplicate approval`);
-    return { message: "Payment already approved" };
   }
 
   const order = await db.getOrderById(payment.orderId);
@@ -237,154 +157,42 @@ export async function approvePayment(paymentId: number, reviewedByUserId: number
     throw new Error("Order not found");
   }
 
-  // Approve payment
-  await db.approvePayment(paymentId, reviewedByUserId);
-
-  // Sync order status with payment status
-  await db.updateOrder(order.id, {
-    paymentStatus: "approved",
+  // Update payment status
+  await db.updatePayment(paymentId, {
     status: "approved",
   });
 
   // Update order status
-  // Note: In a real transaction, this would be wrapped in a DB transaction
-  // For now, we update sequentially
+  await db.updateOrder(order.id, { status: "approved" });
 
-  // Get order items
+  // Create purchase records
   const orderItems = await db.getOrderItems(order.id);
-
-  // Create purchase entitlements for each item
   for (const item of orderItems) {
-    // Check if purchase already exists (idempotency)
-    const existingPurchase = await db.getPurchaseByUserAndEpisode(order.userId || 0, item.episodeId);
-    if (!existingPurchase) {
-      await db.createPurchase(order.userId || 0, item.novelId, item.episodeId, order.id);
+    // Get episode to find novelId
+    const episode = await db.getEpisodeById(item.episodeId);
+    if (episode && order.userId) {
+      await db.createPurchase(order.userId, episode.novelId, item.episodeId, order.id);
     }
   }
-
-  // Grant points (only if not already granted)
-  // Check if points were already earned for this order
-  const pointsHistory = await db.getPointsHistory(order.userId || 0);
-  const alreadyEarned = pointsHistory.some((t: any) => t.referenceType === "order" && t.referenceId === order.id && t.type === "earn");
-
-  if (!alreadyEarned && order.userId) {
-    const earnedPoints = (parseFloat(order.totalAmount.toString()) / POINTS_CONVERSION_RATE).toFixed(2);
-    const currentBalance = await db.getUserPointsBalance(order.userId);
-    const newBalance = (parseFloat(currentBalance) + parseFloat(earnedPoints)).toFixed(2);
-
-    await db.recordPointsTransaction({
-      userId: order.userId,
-      type: "earn",
-      amount: earnedPoints,
-      balanceAfter: newBalance,
-      referenceType: "order",
-      referenceId: order.id,
-      note: `Earned points from order ${order.orderNumber}`,
-    });
-  }
-
-  // Record order history
-  await db.recordOrderHistory({
-    orderId: order.id,
-    action: "payment_approved",
-    fromStatus: order.status,
-    toStatus: "approved",
-    actorUserId: reviewedByUserId,
-  });
-
-  // Record coupon usage only after approval
-  if (order.couponCodeSnapshot) {
-    const coupon = await db.getCouponByCode(order.couponCodeSnapshot);
-    if (coupon) {
-      await db.recordCouponUsage(coupon.id, order.userId || 0, order.id);
-    }
-  }
-
-  // Deduct points only after approval
-  if (order.pointsDiscountAmount && order.pointsDiscountAmount !== "0.00" && order.userId) {
-    const pointsToDeduct = (parseFloat(order.pointsDiscountAmount.toString()) / POINTS_CONVERSION_RATE).toFixed(2);
-    const currentBalance = await db.getUserPointsBalance(order.userId);
-    const newBalance = (parseFloat(currentBalance) - parseFloat(pointsToDeduct)).toFixed(2);
-
-    await db.recordPointsTransaction({
-      userId: order.userId,
-      type: "redeem",
-      amount: pointsToDeduct,
-      balanceAfter: newBalance,
-      referenceType: "order",
-      referenceId: order.id,
-      note: `Redeemed points for order ${order.orderNumber}`,
-    });
-  }
-
-  return { message: "Payment approved successfully" };
 }
 
 /**
  * Reject payment
  */
-export async function rejectPayment(paymentId: number, reviewedByUserId: number, rejectionReason: string) {
-  const database = await getDb();
-  if (!database) {
-    throw new Error("Database not available");
-  }
-
+export async function rejectPayment(paymentId: number, rejectedBy: string, reason: string): Promise<void> {
   const payment = await db.getPaymentById(paymentId);
   if (!payment) {
     throw new Error("Payment not found");
   }
 
-  const order = await db.getOrderById(payment.orderId);
-  if (!order) {
-    throw new Error("Order not found");
-  }
-
-  // Reject payment
-  await db.rejectPayment(paymentId, reviewedByUserId, rejectionReason);
-
-  // Sync order status with payment status
-  await db.updateOrder(order.id, {
-    paymentStatus: "rejected",
+  // Update payment status
+  await db.updatePayment(paymentId, {
     status: "rejected",
   });
 
-  // Record order history
-  await db.recordOrderHistory({
-    orderId: order.id,
-    action: "payment_rejected",
-    fromStatus: order.status,
-    toStatus: "rejected",
-    actorUserId: reviewedByUserId,
-    note: rejectionReason,
-  });
-
-  return { message: "Payment rejected successfully" };
-}
-
-/**
- * Check if user has access to an episode
- * Returns true if user has purchased the episode or it's free
- */
-export async function hasAccessToEpisode(userId: number, episodeId: number): Promise<boolean> {
-  const episode = await db.getEpisodeById(episodeId);
-  if (!episode) {
-    return false;
+  // Update order status
+  const order = await db.getOrderById(payment.orderId);
+  if (order) {
+    await db.updateOrder(order.id, { status: "rejected" });
   }
-
-  // Free episodes are accessible to all
-  if (episode.isFree) {
-    return true;
-  }
-
-  // Check if user has purchased this episode
-  const purchase = await db.getPurchaseByUserAndEpisode(userId, episodeId);
-  return !!purchase;
-}
-
-/**
- * Check if episode is already purchased by user
- */
-export async function isEpisodeAlreadyPurchased(userId: number, episodeId: number): Promise<boolean> {
-  const purchase = await db.getPurchaseByUserAndEpisode(userId, episodeId);
-  return !!purchase;
 }

@@ -45,8 +45,10 @@ export default function CartPage() {
       const result = await queryClient.checkout.validateCoupon.fetch({ couponCode, subtotal });
       setDiscountAmount(result.discountAmount);
       toast.success("Coupon applied!");
-    } catch (error) {
-      toast.error("Invalid coupon");
+    } catch (error: any) {
+      // Show real error message from server
+      const errorMessage = error?.message || "Invalid coupon";
+      toast.error(errorMessage);
     }
   };
 

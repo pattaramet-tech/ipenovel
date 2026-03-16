@@ -205,7 +205,7 @@ export const appRouter = router({
         }
 
         try {
-          const order = await orderService.createOrderFromCart(ctx.user.id, cartItems, input.couponCode, input.pointsToRedeem);
+          const order = await orderService.createOrderFromCart(String(ctx.user.id), cartItems, input.couponCode, input.pointsToRedeem);
 
           // Clear cart after successful order creation
           await db.clearCart(cart.id);
@@ -436,7 +436,7 @@ export const appRouter = router({
         .input(z.object({ paymentId: z.number() }))
         .mutation(async ({ input, ctx }) => {
           try {
-            await orderService.approvePayment(input.paymentId, ctx.user.id);
+            await orderService.approvePayment(input.paymentId, String(ctx.user.id));
             return { success: true };
           } catch (error: any) {
             throw new TRPCError({ code: "BAD_REQUEST" });
@@ -447,7 +447,7 @@ export const appRouter = router({
         .input(z.object({ paymentId: z.number(), rejectionReason: z.string() }))
         .mutation(async ({ input, ctx }) => {
           try {
-            await orderService.rejectPayment(input.paymentId, ctx.user.id, input.rejectionReason);
+            await orderService.rejectPayment(input.paymentId, String(ctx.user.id), input.rejectionReason);
             return { success: true };
           } catch (error: any) {
             throw new TRPCError({ code: "BAD_REQUEST" });

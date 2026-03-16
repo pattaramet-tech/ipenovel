@@ -566,7 +566,9 @@ export async function getPurchasedEpisodesByNovelAndUser(novelId: number, userId
 export async function getCouponByCode(code: string) {
   const db = await getDb();
   if (!db) return undefined;
-  const result = await db.select().from(coupons).where(eq(coupons.code, code)).limit(1);
+  // Normalize code: trim and uppercase for consistent lookup
+  const normalizedCode = String(code || "").trim().toUpperCase();
+  const result = await db.select().from(coupons).where(eq(coupons.code, normalizedCode)).limit(1);
   return result.length > 0 ? result[0] : undefined;
 }
 
@@ -586,8 +588,10 @@ export async function createCoupon(data: {
 }) {
   const db = await getDb();
   if (!db) return undefined;
+  // Normalize code: uppercase for consistency
+  const normalizedCode = String(data.code || "").trim().toUpperCase();
   const result = await db.insert(coupons).values({
-    code: data.code,
+    code: normalizedCode,
     discountType: data.discountType,
     discountValue: data.discountValue as any,
     minPurchaseAmount: data.minPurchaseAmount as any,
@@ -610,7 +614,12 @@ export async function updateCoupon(couponId: number, data: {
 }) {
   const db = await getDb();
   if (!db) return;
-  await db.update(coupons).set(data).where(eq(coupons.id, couponId));
+  // Normalize code if provided
+  const normalizedData = { ...data };
+  if (data.code) {
+    normalizedData.code = String(data.code).trim().toUpperCase();
+  }
+  await db.update(coupons).set(normalizedData).where(eq(coupons.id, couponId));
 }
 
 export async function deleteCoupon(couponId: number) {

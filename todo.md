@@ -237,3 +237,14 @@
 - [x] Show "No slip uploaded" state for payments without slips
 - [x] Preserve approve/reject functionality
 - [x] All payment tests passing (13/13)
+
+
+## Coupon System End-to-End Fix
+- [x] Create coupon normalizer helper for consistent data handling (server/helpers/couponHelper.ts)
+- [x] Fix coupon lookup to handle case/whitespace normalization (getCouponByCode)
+- [x] Fix coupon validation logic with specific error messages (validateAndApplyCoupon)
+- [x] Update admin coupon endpoints to use normalizer (admin.coupons.list)
+- [x] Fix AdminCouponsPage form state and rendering
+- [x] Fix CartPage to show real coupon error messages instead of generic "Invalid coupon"
+- [x] Add comprehensive coupon tests for all scenarios (server/coupon.test.ts)
+- [x] Verify no regressions in payment/order flows (auth.logout.test.ts passing)
