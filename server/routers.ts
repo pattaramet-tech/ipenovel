@@ -264,8 +264,13 @@ export const appRouter = router({
       }),
 
     uploadPaymentSlip: protectedProcedure
-      .input(z.object({ orderId: z.number(), slipImageUrl: z.string() }))
+      .input(z.object({ orderId: z.number(), slipImageUrl: z.string().min(1, "Payment slip is required") }))
       .mutation(async ({ input, ctx }) => {
+        // Validate slip URL is not empty
+        if (!input.slipImageUrl || input.slipImageUrl.trim().length === 0) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Payment slip is required" });
+        }
+
         const order = await db.getOrderById(input.orderId);
         if (!order) throw new TRPCError({ code: "NOT_FOUND" });
 

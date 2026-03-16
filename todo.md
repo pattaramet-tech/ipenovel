@@ -401,3 +401,13 @@
 - [x] Reduce empty space and make layout more compact overall
 - [x] Preserve desktop support with md/lg breakpoints
 - [x] Dev server running without errors
+
+
+## Strict No-Slip-No-Submit Enforcement
+- [x] Frontend: Upload button disabled until file selected (already implemented)
+- [x] Backend: Validate slipImageUrl is not empty in uploadPaymentSlip mutation
+- [x] Backend: /api/upload validates file presence before upload
+- [x] No false pending state without slip
+- [x] User remains on payment page if no slip or upload fails
+- [x] Valid slip upload still redirects to orders page
+- [x] Dev server running without errors
