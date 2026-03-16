@@ -258,3 +258,10 @@
 - [x] Audit admin components for hook violations (no violations found)
 - [x] Fix AdminPaymentsPage import path for useAuth
 - [x] Verify dev server running without React errors
+
+
+## React Error #321 Fix - CartPage
+- [x] Move trpc.useUtils() from event handler to component top level
+- [x] Update handleValidateCoupon to use top-level utils instance
+- [x] Verify CartPage renders without React error #321
+- [x] Verify coupon apply functionality still works

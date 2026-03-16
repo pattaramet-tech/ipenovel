@@ -15,6 +15,7 @@ export default function CartPage() {
   const [couponCode, setCouponCode] = useState("");
   const [pointsToRedeem, setPointsToRedeem] = useState("");
   const [discountAmount, setDiscountAmount] = useState("0.00");
+  const utils = trpc.useUtils();
 
   const { data: cartData, isLoading: cartLoading, refetch: refetchCart } = trpc.cart.get.useQuery(undefined, {
     enabled: isAuthenticated,
@@ -41,8 +42,7 @@ export default function CartPage() {
       return;
     }
     try {
-      const queryClient = trpc.useUtils();
-      const result = await queryClient.checkout.validateCoupon.fetch({ couponCode, subtotal });
+      const result = await utils.checkout.validateCoupon.fetch({ couponCode, subtotal });
       setDiscountAmount(result.discountAmount);
       toast.success("Coupon applied!");
     } catch (error: any) {
