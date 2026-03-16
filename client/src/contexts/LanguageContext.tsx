@@ -23,6 +23,8 @@ const translations: Record<Language, Record<string, string>> = {
     "nav.login": "เข้าสู่ระบบ",
     "nav.points": "พอยท์",
     "nav.signedInAs": "ลงชื่อเข้าใช้เป็น",
+    "nav.viewOrders": "ดูคำสั่งซื้อ",
+    "nav.backToCart": "กลับไปยังตะกร้า",
 
     // Home page
     "home.title": "ยินดีต้อนรับสู่ Ipe นิยายแปล",
@@ -135,6 +137,8 @@ const translations: Record<Language, Record<string, string>> = {
     "payment.rejected": "ชำระเงินถูกปฏิเสธ",
     "payment.rejectionReason": "เหตุผล",
     "payment.uploadNewSlip": "อัปโหลดสลิปใหม่",
+    "payment.orderNotFound": "ไม่พบคำสั่งซื้อ",
+    "payment.invalidOrder": "ลำดับที่คำสั่งซื้อไม่ถูกต้อง",
 
     // Admin
     "admin.dashboard": "แดชบอร์ด",
@@ -201,9 +205,11 @@ const translations: Record<Language, Record<string, string>> = {
     "nav.admin": "Admin",
     "nav.cart": "Cart",
     "nav.logout": "Logout",
-    "nav.login": "Login",
+    "nav.login": "Sign In",
     "nav.points": "Points",
     "nav.signedInAs": "Signed in as",
+    "nav.viewOrders": "View Orders",
+    "nav.backToCart": "Back to Cart",
 
     // Home page
     "home.title": "Welcome to Ipe นิยายแปล",
@@ -315,6 +321,8 @@ const translations: Record<Language, Record<string, string>> = {
     "payment.rejected": "Payment Rejected",
     "payment.rejectionReason": "Reason",
     "payment.uploadNewSlip": "Upload New Payment Slip",
+    "payment.orderNotFound": "Order Not Found",
+    "payment.invalidOrder": "Invalid order ID",
 
     // Admin
     "admin.dashboard": "Dashboard",

@@ -21,7 +21,8 @@ export default function PaymentPage() {
 
   // Get order ID from URL params using wouter's useParams
   const params = useParams();
-  const orderId = params?.orderId ? parseInt(params.orderId, 10) : null;
+  const parsedId = params?.orderId ? parseInt(params.orderId, 10) : null;
+  const orderId = parsedId && !isNaN(parsedId) && parsedId > 0 ? parsedId : null;
 
   // Fetch order details - only when authenticated and we have a valid orderId
   const { data: orderData, isLoading: orderLoading, error: orderError } = trpc.orders.detail.useQuery(

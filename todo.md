@@ -302,3 +302,7 @@
 - [x] Fix PaymentPage rendering guards and state handling
 - [x] Add loading, error, and empty states to PaymentPage
 - [x] Test payment page with different order statuses (vitest: 10/10 passing)
+- [x] Fix CartPage to use correct field name (order.id instead of order.orderId)
+- [x] Fix PaymentPage orderId parsing to handle NaN safely
+- [x] Add missing translations for payment.orderNotFound and nav.viewOrders (Thai + English)
+- [x] Verify dev server running without errors
