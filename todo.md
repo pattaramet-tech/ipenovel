@@ -227,3 +227,13 @@
 - [x] All coupon validation tests passing (13/13)
 - [x] discountValue now displays correctly in admin coupons table
 - [x] Coupon validation no longer fails with generic "invalid" error
+
+
+## Admin Payment Review UI Improvement
+- [x] Update admin payments query to include buyer user data (name, email)
+- [x] Create SlipPreviewModal component for viewing payment slips
+- [x] Redesign AdminPaymentsPage to display buyer info prominently
+- [x] Add slip preview functionality (thumbnail + View Full button)
+- [x] Show "No slip uploaded" state for payments without slips
+- [x] Preserve approve/reject functionality
+- [x] All payment tests passing (13/13)

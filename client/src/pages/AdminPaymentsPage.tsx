@@ -1,13 +1,22 @@
-import AdminLayout from "@/components/AdminLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
-import { Loader2, CheckCircle, XCircle } from "lucide-react";
+import { Loader2, CheckCircle, XCircle, Image as ImageIcon } from "lucide-react";
 import { toast } from "sonner";
+import { useState } from "react";
+import { SlipPreviewModal } from "@/components/SlipPreviewModal";
+import AdminLayout from "@/components/AdminLayout";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 export default function AdminPaymentsPage() {
-  const { data: payments, isLoading, refetch } = trpc.admin.payments.pending.useQuery();
+  const { user, isAuthenticated } = useAuth();
+  const [slipPreviewOpen, setSlipPreviewOpen] = useState(false);
+  const [selectedSlipUrl, setSelectedSlipUrl] = useState<string | null>(null);
+  const { data: payments, isLoading, refetch } = trpc.admin.payments.pending.useQuery(
+    undefined,
+    { enabled: !!user && user.role === "admin" }
+  );
 
   const approveMutation = trpc.admin.payments.approve.useMutation({
     onSuccess: () => {
@@ -29,6 +38,35 @@ export default function AdminPaymentsPage() {
     },
   });
 
+  const handleSlipPreview = (slipUrl: string) => {
+    setSelectedSlipUrl(slipUrl);
+    setSlipPreviewOpen(true);
+  };
+
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardContent className="pt-6 text-center">
+            <p className="text-slate-600 mb-4">Please log in to access admin</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (user?.role !== "admin") {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardContent className="pt-6 text-center">
+            <p className="text-slate-600 mb-4">Admin access required</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <AdminLayout>
       <div className="space-y-6">
@@ -49,11 +87,19 @@ export default function AdminPaymentsPage() {
               <Card key={payment.id} className="overflow-hidden">
                 <CardHeader className="pb-3 bg-slate-50">
                   <div className="flex items-start justify-between">
-                    <div>
+                    <div className="flex-1">
                       <CardTitle className="text-lg">{payment.order?.orderNumber}</CardTitle>
-                      <p className="text-sm text-slate-600 mt-1">
-                        User: {payment.order?.userId} | Amount: ฿{parseFloat(payment.order?.totalAmount.toString()).toFixed(2)}
-                      </p>
+                      <div className="mt-2 space-y-1 text-sm">
+                        <p className="text-slate-700">
+                          <span className="font-semibold">Buyer:</span> {payment.user?.name || "Unknown"}
+                        </p>
+                        <p className="text-slate-600">
+                          <span className="font-semibold">Email:</span> {payment.user?.email || "N/A"}
+                        </p>
+                        <p className="text-slate-600">
+                          <span className="font-semibold">Amount:</span> ฿{parseFloat(payment.order?.totalAmount.toString()).toFixed(2)}
+                        </p>
+                      </div>
                     </div>
                     <Badge className="bg-yellow-100 text-yellow-800">Pending</Badge>
                   </div>
@@ -61,16 +107,31 @@ export default function AdminPaymentsPage() {
 
                 <CardContent className="pt-6">
                   {/* Payment Slip */}
-                  {payment.slipImageUrl && (
-                    <div className="mb-4">
-                      <p className="text-sm font-semibold mb-2">Payment Slip:</p>
-                      <img
-                        src={payment.slipImageUrl}
-                        alt="Payment slip"
-                        className="max-w-xs rounded border border-slate-200"
-                      />
-                    </div>
-                  )}
+                  <div className="mb-4">
+                    <p className="text-sm font-semibold mb-2">Payment Slip:</p>
+                    {payment.slipImageUrl ? (
+                      <div className="flex gap-2 items-start">
+                        <img
+                          src={payment.slipImageUrl}
+                          alt="Payment slip"
+                          className="max-w-xs max-h-32 rounded border border-slate-200 cursor-pointer hover:opacity-80 transition"
+                          onClick={() => handleSlipPreview(payment.slipImageUrl)}
+                        />
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleSlipPreview(payment.slipImageUrl)}
+                        >
+                          <ImageIcon className="w-4 h-4 mr-1" />
+                          View Full
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="bg-slate-100 rounded border border-slate-300 p-4 text-center text-slate-600 text-sm">
+                        No slip uploaded
+                      </div>
+                    )}
+                  </div>
 
                   {/* Order Items */}
                   <div className="mb-4">
@@ -115,6 +176,14 @@ export default function AdminPaymentsPage() {
           </div>
         )}
       </div>
+
+      {selectedSlipUrl && (
+        <SlipPreviewModal
+          isOpen={slipPreviewOpen}
+          onClose={() => setSlipPreviewOpen(false)}
+          slipUrl={selectedSlipUrl}
+        />
+      )}
     </AdminLayout>
   );
 }

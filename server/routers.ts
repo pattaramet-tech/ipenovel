@@ -424,7 +424,8 @@ export const appRouter = router({
           payments.map(async (p: any) => {
             const order = await db.getOrderById(p.orderId);
             const items = order ? await db.getOrderItems(order.id) : [];
-            return { ...p, order, items };
+            const user = order?.userId ? await db.getUserById(order.userId) : null;
+            return { ...p, order, items, user };
           })
         );
 
@@ -434,13 +435,13 @@ export const appRouter = router({
       approve: adminProcedure
         .input(z.object({ paymentId: z.number() }))
         .mutation(async ({ input, ctx }) => {
-        try {
-          await orderService.approvePayment(input.paymentId, ctx.user.id);
-          return { success: true };
-        } catch (error: any) {
-          throw new TRPCError({ code: "BAD_REQUEST" });
-        }
-      }),
+          try {
+            await orderService.approvePayment(input.paymentId, ctx.user.id);
+            return { success: true };
+          } catch (error: any) {
+            throw new TRPCError({ code: "BAD_REQUEST" });
+          }
+        }),
 
       reject: adminProcedure
         .input(z.object({ paymentId: z.number(), rejectionReason: z.string() }))
