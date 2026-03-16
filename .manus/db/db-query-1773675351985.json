@@ -1,0 +1,16 @@
+{
+  "query": "SELECT id, email, role, passwordHash FROM users WHERE email = 'admin@ipenovel.com';",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT id, email, role, passwordHash FROM users WHERE email = 'admin@ipenovel.com';",
+  "rows": [
+    {
+      "id": "390018",
+      "email": "admin@ipenovel.com",
+      "role": "admin",
+      "passwordHash": "$2b$10$ZdRx.tShbyvGRCvAZhxEi.QmrI0j6TyExPq07C30IeH4IBDb55cKG"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\temail\trole\tpasswordHash\n390018\tadmin@ipenovel.com\tadmin\t$2b$10$ZdRx.tShbyvGRCvAZhxEi.QmrI0j6TyExPq07C30IeH4IBDb55cKG\n",
+  "stderr": "",
+  "execution_time_ms": 1512
+}

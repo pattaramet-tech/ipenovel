@@ -53,25 +53,18 @@ export default function AdminDashboard() {
     },
   });
 
+  // Check for admin session (local admin login)
+  const adminSession = typeof window !== 'undefined' ? localStorage.getItem('admin-session') : null;
+  const isAdminLoggedIn = adminSession !== null;
+  const isAdmin = isAdminLoggedIn || (isAuthenticated && user?.role === 'admin');
+
   // Now perform auth checks after all hooks are declared
-  if (!isAuthenticated) {
+  if (!isAdmin) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <Card className="w-full max-w-md">
           <CardContent className="pt-6 text-center">
             <p className="text-slate-600 mb-4">Please log in to access admin</p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  if (user?.role !== "admin") {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Card className="w-full max-w-md">
-          <CardContent className="pt-6 text-center">
-            <p className="text-slate-600 mb-4">Admin access required</p>
           </CardContent>
         </Card>
       </div>

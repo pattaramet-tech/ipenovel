@@ -15,8 +15,10 @@ export default function AdminLoginPage() {
   const [error, setError] = useState("");
 
   const adminLoginMutation = trpc.admin.login.useMutation({
-    onSuccess: () => {
+    onSuccess: (data) => {
       setIsLoading(false);
+      // Set admin session flag in localStorage
+      localStorage.setItem('admin-session', JSON.stringify({ adminId: data.adminId, timestamp: Date.now() }));
       toast.success("Admin login successful");
       navigate("/admin");
     },
