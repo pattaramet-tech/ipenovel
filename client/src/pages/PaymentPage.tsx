@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
-import { useLocation } from "wouter";
+import { useLocation, useParams } from "wouter";
 import { Upload, CheckCircle, AlertCircle, QrCode } from "lucide-react";
 import { toast } from "sonner";
 
@@ -19,14 +19,14 @@ export default function PaymentPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
 
-  // Get order ID from URL params
-  const [location] = useLocation();
-  const orderId = parseInt(location.split("/").pop() || "0");
+  // Get order ID from URL params using wouter's useParams
+  const params = useParams();
+  const orderId = params?.orderId ? parseInt(params.orderId, 10) : null;
 
-  // Fetch order details
-  const { data: orderData, isLoading: orderLoading } = trpc.orders.detail.useQuery(
-    { orderId },
-    { enabled: isAuthenticated && orderId > 0 }
+  // Fetch order details - only when authenticated and we have a valid orderId
+  const { data: orderData, isLoading: orderLoading, error: orderError } = trpc.orders.detail.useQuery(
+    { orderId: orderId || 0 },
+    { enabled: isAuthenticated && orderId !== null && orderId > 0 }
   );
 
   const uploadPaymentSlipMutation = trpc.orders.uploadPaymentSlip.useMutation({
@@ -90,7 +90,7 @@ export default function PaymentPage() {
 
         // Submit payment slip
         await uploadPaymentSlipMutation.mutateAsync({
-          orderId,
+          orderId: orderId || 0,
           slipImageUrl: url,
         });
       };
@@ -101,6 +101,7 @@ export default function PaymentPage() {
     }
   };
 
+  // Not authenticated
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -116,8 +117,47 @@ export default function PaymentPage() {
     );
   }
 
-  if (orderLoading || !orderData) {
-    return <Skeleton className="h-96" />;
+  // Invalid order ID in URL
+  if (orderId === null || orderId <= 0) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardContent className="pt-6 text-center">
+            <AlertCircle className="w-12 h-12 text-red-600 mx-auto mb-4" />
+            <p className="text-slate-600 mb-4">{t("payment.invalidOrder")}</p>
+            <Button onClick={() => navigate("/cart")}>{t("nav.backToCart")}</Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  // Loading order data
+  if (orderLoading) {
+    return (
+      <div className="min-h-screen bg-slate-50 py-8">
+        <div className="container mx-auto px-4 max-w-2xl space-y-6">
+          <Skeleton className="h-12 w-48" />
+          <Skeleton className="h-64" />
+          <Skeleton className="h-64" />
+        </div>
+      </div>
+    );
+  }
+
+  // Error loading order or order not found
+  if (orderError || !orderData) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardContent className="pt-6 text-center">
+            <AlertCircle className="w-12 h-12 text-red-600 mx-auto mb-4" />
+            <p className="text-slate-600 mb-4">{t("payment.orderNotFound")}</p>
+            <Button onClick={() => navigate("/orders")}>{t("nav.viewOrders")}</Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   const { order, items, payment } = orderData;
@@ -155,7 +195,7 @@ export default function PaymentPage() {
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-600">{t("payment.items")}</span>
-                <span className="font-semibold">{items.length}</span>
+                <span className="font-semibold">{items?.length || 0}</span>
               </div>
               <div className="border-t pt-4 flex justify-between">
                 <span className="text-lg font-semibold">{t("payment.totalAmount")}</span>
@@ -264,18 +304,6 @@ export default function PaymentPage() {
                 </CardContent>
               </Card>
             </>
-          ) : isSlipSubmittedPendingReview ? (
-            <Card className="border-blue-200 bg-blue-50">
-              <CardContent className="pt-6">
-                <div className="flex items-center gap-3">
-                  <CheckCircle className="w-6 h-6 text-blue-600" />
-                  <div>
-                    <p className="font-semibold text-blue-900">{t("payment.slipSubmitted")}</p>
-                    <p className="text-sm text-blue-700">{t("payment.pendingReview")}</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
           ) : isSlipSubmittedPendingReview ? (
             <Card className="border-blue-200 bg-blue-50">
               <CardContent className="pt-6">
