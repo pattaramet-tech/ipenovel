@@ -345,3 +345,13 @@
 - [x] Keep order number, amount, and status visible
 - [x] Preserve approve/reject button functionality
 - [x] Verify dev server running without errors
+
+
+## Episode Display Fix - Show episodeNumber + title
+- [x] Update OrderDetailPage to show Episode {episodeNumber} - {title}
+- [x] Update OrdersPage to show Episode {episodeNumber} - {title}
+- [x] Update AdminPaymentsPage to show Episode {episodeNumber} - {title}
+- [x] Update AdminEntitlementsPage to show Episode {episodeNumber} - {title}
+- [x] Remove raw episodeId display from all order-related UIs
+- [x] Verify dev server running without errors
+- [x] Verify all episode data is returned from backend queries

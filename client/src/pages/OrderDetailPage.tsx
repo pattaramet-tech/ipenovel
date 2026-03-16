@@ -151,7 +151,7 @@ export default function OrderDetailPage() {
                             {item.novel?.title || "Novel"}
                           </p>
                           <p className="text-sm text-slate-600">
-                            Episode {item.episode?.episodeNumber || item.episodeId}
+                            Episode {item.episode?.episodeNumber}{item.episode?.title ? ` - ${item.episode.title}` : ""}
                           </p>
                         </div>
                         <div className="flex items-center gap-4">

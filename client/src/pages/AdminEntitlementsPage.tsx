@@ -125,7 +125,7 @@ export default function AdminEntitlementsPage() {
                     <div className="space-y-2">
                       {searchResult.missingItems?.map((item: any, idx: number) => (
                         <div key={idx} className="p-2 bg-slate-50 rounded text-sm">
-                          Episode {item.episodeId} - ฿{parseFloat(item.finalPrice.toString()).toFixed(2)}
+                          Episode {item.episode?.episodeNumber}{item.episode?.title ? ` - ${item.episode.title}` : ""} - ฿{parseFloat(item.finalPrice.toString()).toFixed(2)}
                         </div>
                       ))}
                     </div>

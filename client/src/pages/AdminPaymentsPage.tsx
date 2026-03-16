@@ -139,7 +139,7 @@ export default function AdminPaymentsPage() {
                     <ul className="text-sm text-slate-600 space-y-1">
                       {payment.items?.map((item: any) => (
                         <li key={item.id}>
-                          • Episode {item.episodeId} - ฿{parseFloat(item.finalPrice.toString()).toFixed(2)}
+                          • Episode {item.episode?.episodeNumber}{item.episode?.title ? ` - ${item.episode.title}` : ""} - ฿{parseFloat(item.finalPrice.toString()).toFixed(2)}
                         </li>
                       ))}
                     </ul>

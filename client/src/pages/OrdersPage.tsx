@@ -112,7 +112,7 @@ export default function OrdersPage() {
                   <div className="space-y-2 mb-4">
                     {order.items?.slice(0, 2).map((item: any) => (
                       <p key={item.id} className="text-sm text-slate-600">
-                        • Episode {item.episode?.episodeNumber || item.episodeId} - {item.episode?.title || "Untitled"}
+                        • Episode {item.episode?.episodeNumber}{item.episode?.title ? ` - ${item.episode.title}` : ""}
                       </p>
                     ))}
                     {order.items?.length > 2 && (
