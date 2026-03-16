@@ -225,11 +225,19 @@ export default function AdminDashboard() {
                   <Card key={payment.id} className="overflow-hidden hover:shadow-md transition-shadow">
                     <CardHeader className="pb-3 bg-slate-50">
                       <div className="flex items-start justify-between">
-                        <div>
+                        <div className="flex-1">
                           <CardTitle className="text-base">{payment.order?.orderNumber}</CardTitle>
-                          <p className="text-sm text-slate-600 mt-1">
-                            Amount: ฿{parseFloat(payment.order?.totalAmount.toString()).toFixed(2)}
-                          </p>
+                          <div className="mt-2 space-y-1 text-sm">
+                            <p className="text-slate-700">
+                              <span className="font-semibold">Buyer:</span> {payment.user?.name || "Unknown"}
+                            </p>
+                            <p className="text-slate-600">
+                              <span className="font-semibold">Email:</span> {payment.user?.email || "N/A"}
+                            </p>
+                            <p className="text-slate-600">
+                              <span className="font-semibold">Amount:</span> ฿{parseFloat(payment.order?.totalAmount.toString()).toFixed(2)}
+                            </p>
+                          </div>
                         </div>
                         <StatusBadge status="pending" />
                       </div>

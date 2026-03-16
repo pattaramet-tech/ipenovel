@@ -336,3 +336,12 @@
 - [x] No Download button shown (only Read)
 - [x] Verify dev server running without errors
 - [x] Verify tests pass (pre-existing test failures unrelated to this change)
+
+
+## Admin Dashboard Payments Tab - Buyer Info Added
+- [x] Add buyer name display to dashboard payment cards
+- [x] Add buyer email display to dashboard payment cards
+- [x] Reuse existing admin.payments.pending query data
+- [x] Keep order number, amount, and status visible
+- [x] Preserve approve/reject button functionality
+- [x] Verify dev server running without errors
