@@ -346,10 +346,26 @@ export async function createOrder(data: {
   });
 
   // Extract insertId from Drizzle MySQL result
-  // Drizzle returns [result, null] where result has insertId
-  const insertedId = (result as any)?.[0]?.insertId || (result as any)?.insertId;
+  let insertedId: number | undefined;
+  
+  // Try different ways to get insertId based on Drizzle/MySQL driver behavior
+  if (typeof result === 'object' && result !== null) {
+    // Direct property access
+    insertedId = (result as any).insertId;
+    // Or nested in array
+    if (!insertedId && Array.isArray(result) && result[0]) {
+      insertedId = (result[0] as any).insertId;
+    }
+    // Or in metadata
+    if (!insertedId && (result as any).meta) {
+      insertedId = (result as any).meta.insertId;
+    }
+  }
+  
   if (!insertedId) {
-    console.error("Insert result structure:", result);
+    console.error("Insert result structure:", JSON.stringify(result, null, 2));
+    console.error("Result type:", typeof result);
+    console.error("Result keys:", Object.keys(result || {}));
     throw new Error("Failed to extract inserted order ID from database result");
   }
 
