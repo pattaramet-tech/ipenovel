@@ -345,7 +345,15 @@ export async function createOrder(data: {
     paymentStatus: "unpaid",
   });
 
-  return result;
+  // Get the inserted order ID from the result
+  const insertedId = (result as any).insertId;
+  if (!insertedId) {
+    throw new Error("Failed to get inserted order ID");
+  }
+
+  // Fetch and return the inserted order with all fields
+  const insertedOrder = await getOrderById(insertedId);
+  return insertedOrder;
 }
 
 export async function getOrderById(orderId: number) {

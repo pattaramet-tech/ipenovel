@@ -129,8 +129,13 @@ export async function createOrderFromCart(
   }
 
   // Create order items with required fields
+  const orderId = (result as any).id;
+  if (!orderId) {
+    throw new Error("Failed to get order ID after creation");
+  }
+
   const orderItemsData = cartItems.map((item: any) => ({
-    orderId: (result as any).insertId || (result as any).id,
+    orderId: orderId,
     novelId: item.novelId || 0,
     episodeId: item.episodeId,
     unitPrice: item.price?.toString() || "0",

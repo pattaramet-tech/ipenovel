@@ -274,3 +274,10 @@
 - [x] Improve error handling to show real error messages instead of generic "Failed to create order"
 - [x] Fix pointsToRedeem payload handling and normalization
 - [x] Verify dev server running without errors
+
+
+## Order Creation orderId Fix
+- [x] Fix createOrder to return the inserted order with its ID
+- [x] Fix createOrderFromCart to use the correct orderId from the inserted order
+- [x] Ensure orderItems are inserted with the correct orderId (not default)
+- [x] Verify dev server running without errors
