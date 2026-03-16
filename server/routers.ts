@@ -249,7 +249,18 @@ export const appRouter = router({
         const payment = await db.getPaymentByOrderId(order.id);
         const history = await db.getOrderHistory(order.id);
 
-        return { order, items, payment, history };
+        // Enrich items with purchase status
+        const enrichedItems = await Promise.all(
+          items.map(async (item: any) => {
+            const purchase = order.userId ? await db.getPurchaseByUserAndEpisode(order.userId, item.episodeId) : undefined;
+            return {
+              ...item,
+              purchase,
+            };
+          })
+        );
+
+        return { order, items: enrichedItems, payment, history };
       }),
 
     uploadPaymentSlip: protectedProcedure

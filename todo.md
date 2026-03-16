@@ -325,3 +325,14 @@
 - [x] Add missing translation key payment.helpTitle (Thai + English)
 - [x] Verify payment page tests pass (10/10 passing)
 - [x] Verify dev server running without errors
+
+
+## Order Detail Page - Read Button for Purchased Items
+- [x] Enrich order detail query with purchase status for each item
+- [x] Add BookOpen icon import to OrderDetailPage
+- [x] Update order items rendering to show Read button for approved/purchased items
+- [x] Read button uses fileUrl from episode data
+- [x] Read button only shows when order is approved and purchase exists
+- [x] No Download button shown (only Read)
+- [x] Verify dev server running without errors
+- [x] Verify tests pass (pre-existing test failures unrelated to this change)

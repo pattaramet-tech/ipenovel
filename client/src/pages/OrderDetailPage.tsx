@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
-import { ArrowLeft, FileText } from "lucide-react";
+import { ArrowLeft, FileText, BookOpen } from "lucide-react";
 
 export default function OrderDetailPage() {
   const { isAuthenticated } = useAuth();
@@ -136,24 +136,44 @@ export default function OrderDetailPage() {
             <CardContent>
               <div className="space-y-4">
                 {order?.items && order.items.length > 0 ? (
-                  order.items.map((item: any) => (
-                    <div
-                      key={item.id}
-                      className="flex items-center justify-between p-4 bg-slate-50 rounded-lg border"
-                    >
-                      <div>
-                        <p className="font-semibold text-slate-900">
-                          {item.novel?.title || "Novel"}
-                        </p>
-                        <p className="text-sm text-slate-600">
-                          Episode {item.episode?.episodeNumber || item.episodeId}
-                        </p>
+                  order.items.map((item: any) => {
+                    const isApproved = orderData.paymentStatus === "approved" || orderData.status === "approved";
+                    const hasAccess = item.purchase || isApproved;
+                    const fileUrl = item.episode?.fileUrl;
+
+                    return (
+                      <div
+                        key={item.id}
+                        className="flex items-center justify-between p-4 bg-slate-50 rounded-lg border"
+                      >
+                        <div className="flex-1">
+                          <p className="font-semibold text-slate-900">
+                            {item.novel?.title || "Novel"}
+                          </p>
+                          <p className="text-sm text-slate-600">
+                            Episode {item.episode?.episodeNumber || item.episodeId}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <p className="font-semibold text-slate-900">
+                            ฿{parseFloat(item.finalPrice.toString()).toFixed(2)}
+                          </p>
+                          {hasAccess && fileUrl ? (
+                            <Button
+                              size="sm"
+                              asChild
+                              className="bg-blue-600 hover:bg-blue-700 text-white"
+                            >
+                              <a href={fileUrl} target="_blank" rel="noopener noreferrer">
+                                <BookOpen className="w-4 h-4 mr-1" />
+                                Read
+                              </a>
+                            </Button>
+                          ) : null}
+                        </div>
                       </div>
-                      <p className="font-semibold text-slate-900">
-                        ฿{parseFloat(item.finalPrice.toString()).toFixed(2)}
-                      </p>
-                    </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <p className="text-slate-600">No items in this order</p>
                 )}
