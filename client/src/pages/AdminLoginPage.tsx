@@ -13,12 +13,17 @@ export default function AdminLoginPage() {
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+  const utils = trpc.useUtils();
 
   const adminLoginMutation = trpc.admin.login.useMutation({
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
       setIsLoading(false);
       // Set admin session flag in localStorage
       localStorage.setItem('admin-session', JSON.stringify({ adminId: data.adminId, timestamp: Date.now() }));
+      
+      // Invalidate and refetch auth query to pick up the new session cookie
+      await utils.auth.me.invalidate();
+      
       toast.success("Admin login successful");
       navigate("/admin");
     },

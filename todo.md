@@ -429,3 +429,16 @@
 - [x] Implement bcrypt password verification
 - [x] Add AdminLoginPage route to App.tsx
 - [x] Fix TypeScript compilation errors
+
+## Admin Login Session Synchronization Fix
+- [x] Create session cookie with admin-{id} prefix after successful login
+- [x] Modify sdk.authenticateRequest to recognize admin session cookies
+- [x] Return admin user object with role='admin' when admin session detected
+- [x] Invalidate auth query after successful login to refetch with new session
+- [x] Update AdminDashboard to handle auth loading state
+- [x] Show loading state while auth is being resolved
+- [x] Show access denied message if user is not admin
+- [x] Verify session persists after page refresh
+- [x] Verify admin can access /admin dashboard after login
+- [x] Verify admin queries (payments, orders, novels) work correctly
+- [x] Test admin login flow end-to-end

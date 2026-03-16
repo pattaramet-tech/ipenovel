@@ -14,7 +14,7 @@ import AdminLayout from "@/components/AdminLayout";
 
 export default function AdminDashboard() {
   // All hooks must be called at the top level, before any conditional returns
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, loading: authLoading } = useAuth();
   const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState("overview");
 
@@ -60,12 +60,27 @@ export default function AdminDashboard() {
   });
 
   // Now perform auth checks after all hooks are declared
+  // Show loading state while auth is being resolved
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardContent className="pt-6 text-center">
+            <Skeleton className="h-8 w-32 mx-auto mb-4" />
+            <p className="text-slate-600 mb-4">Loading...</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  // Show access denied if not admin
   if (!isAdmin) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <Card className="w-full max-w-md">
           <CardContent className="pt-6 text-center">
-            <p className="text-slate-600 mb-4">Please log in to access admin</p>
+            <p className="text-slate-600 mb-4">Access Denied - You do not have permission to access the admin panel</p>
           </CardContent>
         </Card>
       </div>

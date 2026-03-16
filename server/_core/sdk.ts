@@ -266,6 +266,16 @@ class SDKServer {
       throw ForbiddenError("Invalid session cookie");
     }
 
+    // Check if this is a local admin session
+    if (session.openId.startsWith("admin-")) {
+      const adminId = parseInt(session.openId.substring(6), 10);
+      const user = await db.getUserById(adminId);
+      if (user && user.role === "admin") {
+        return user;
+      }
+      throw ForbiddenError("Invalid admin session");
+    }
+
     const sessionUserId = session.openId;
     const signedInAt = new Date();
     let user = await db.getUserByOpenId(sessionUserId);

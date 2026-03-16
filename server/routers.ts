@@ -1,5 +1,6 @@
-import { COOKIE_NAME } from "@shared/const";
+import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { sdk } from "./_core/sdk";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
@@ -445,6 +446,18 @@ export const appRouter = router({
         if (!isPasswordValid) {
           throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid credentials" });
         }
+
+        // Create a session token for the admin user
+        const sessionToken = await sdk.createSessionToken(`admin-${admin.id}`, {
+          name: admin.email || "admin",
+        });
+
+        // Set the session cookie
+        const cookieOptions = getSessionCookieOptions(ctx.req);
+        ctx.res.cookie(COOKIE_NAME, sessionToken, {
+          ...cookieOptions,
+          maxAge: ONE_YEAR_MS,
+        });
 
         return { success: true, adminId: admin.id };
       }),
