@@ -42,13 +42,13 @@ function Router() {
         <Route path={"/my-novels"} component={MyNovelsPage} />
         <Route path={"/points"} component={PointsPage} />
         <Route path={"/payment/:orderId"} component={PaymentPage} />
-        <Route path={"/ admin"} component={AdminDashboard} />
-        <Route path={"/ admin/novels"} component={AdminNovelsPage} />
-        <Route path={"/ admin/novels/:novelId"} component={AdminNovelManagePage} />
-        <Route path={"/ admin/episodes"} component={AdminEpisodesPage} />
-        <Route path={"/ admin/episodes/:novelId"} component={AdminEpisodesPage} />
-        <Route path={"/ admin/categories"} component={AdminCategoriesPage} />
-        <Route path={"/ admin/banners"} component={AdminBannersPage} />
+        <Route path={"/admin"} component={AdminDashboard} />
+        <Route path={"/admin/novels/:novelId"} component={AdminNovelManagePage} />
+        <Route path={"/admin/novels"} component={AdminNovelsPage} />
+        <Route path={"/admin/episodes/:novelId"} component={AdminEpisodesPage} />
+        <Route path={"/admin/episodes"} component={AdminEpisodesPage} />
+        <Route path={"/admin/categories"} component={AdminCategoriesPage} />
+        <Route path={"/admin/banners"} component={AdminBannersPage} />
         <Route path={"/admin/coupons"} component={AdminCouponsPage} />
         <Route path={"/admin/orders"} component={AdminOrdersPage} />
         <Route path={"/admin/payments"} component={AdminPaymentsPage} />
