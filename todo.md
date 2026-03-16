@@ -265,3 +265,12 @@
 - [x] Update handleValidateCoupon to use top-level utils instance
 - [x] Verify CartPage renders without React error #321
 - [x] Verify coupon apply functionality still works
+
+
+## Checkout/Order Creation Fix
+- [x] Fix coupon normalization to be identical between validateCoupon and checkout.create
+- [x] Add coupon code normalization (trim + uppercase) in validateAndApplyCoupon
+- [x] Fix CartPage to normalize coupon code before sending to server
+- [x] Improve error handling to show real error messages instead of generic "Failed to create order"
+- [x] Fix pointsToRedeem payload handling and normalization
+- [x] Verify dev server running without errors

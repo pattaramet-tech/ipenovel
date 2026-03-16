@@ -57,8 +57,9 @@ export default function CartPage() {
       toast.success("Order created! Proceed to payment.");
       navigate(`/payment/${order.orderId}`);
     },
-    onError: () => {
-      toast.error("Failed to create order");
+    onError: (error: any) => {
+      const errorMessage = error?.message || "Failed to create order";
+      toast.error(errorMessage);
     },
   });
 
@@ -90,9 +91,11 @@ export default function CartPage() {
       toast.error("Cart is empty");
       return;
     }
+    // Normalize coupon code same way as server
+    const normalizedCoupon = couponCode ? couponCode.trim().toUpperCase() : undefined;
     createOrderMutation.mutate({
-      couponCode: couponCode || undefined,
-      pointsToRedeem: pointsToRedeem || undefined,
+      couponCode: normalizedCoupon,
+      pointsToRedeem: pointsToRedeem ? pointsToRedeem.trim() : undefined,
     });
   };
 

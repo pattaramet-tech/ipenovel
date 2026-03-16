@@ -18,7 +18,9 @@ export function generateOrderNumber(): string {
  * Returns discount amount or throws error with specific reason
  */
 export async function validateAndApplyCoupon(couponCode: string, subtotal: string): Promise<{ discountAmount: string; coupon: any }> {
-  const coupon = await db.getCouponByCode(couponCode);
+  // Normalize coupon code: trim and uppercase for consistent lookup
+  const normalizedCode = String(couponCode || "").trim().toUpperCase();
+  const coupon = await db.getCouponByCode(normalizedCode);
 
   if (!coupon) {
     throw new Error("Coupon not found");
