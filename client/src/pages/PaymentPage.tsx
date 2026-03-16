@@ -36,12 +36,14 @@ export default function PaymentPage() {
 
   const uploadPaymentSlipMutation = trpc.orders.uploadPaymentSlip.useMutation({
     onSuccess: () => {
+      setIsUploading(false);
       toast.success(t("payment.slipUploadSuccess"));
       setSelectedFile(null);
-      // Redirect to payment completion page
-      setTimeout(() => navigate(`/payment-completion/${orderId}`), 1000);
+      // Redirect to orders page after successful upload
+      navigate("/orders");
     },
     onError: (error) => {
+      setIsUploading(false);
       toast.error(t("payment.slipUploadError"));
     },
   });

@@ -315,3 +315,13 @@
 - [x] Remove debug logging from PaymentPage and CartPage
 - [x] Verify payment page tests pass (10/10 passing)
 - [x] Verify dev server running without errors
+
+
+## Payment Slip Upload Completion Flow Fix
+- [x] Fix upload mutation to clear loading state on success (setIsUploading(false))
+- [x] Fix upload mutation to clear loading state on error
+- [x] Redirect to /orders page immediately after successful slip upload (no setTimeout)
+- [x] Update review time text from "within 24 hours" to "1-2 hours" (Thai + English)
+- [x] Add missing translation key payment.helpTitle (Thai + English)
+- [x] Verify payment page tests pass (10/10 passing)
+- [x] Verify dev server running without errors
