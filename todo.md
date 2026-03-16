@@ -287,3 +287,10 @@
 - [x] Debug Drizzle MySQL insert result structure
 - [x] Fix createOrder to extract insertId from result[0].insertId
 - [x] Verify dev server running without errors
+
+
+## Order ID Retrieval Bug Fix
+- [x] Fix createOrder to return { id: insertedId } instead of fetching
+- [x] Ensure orderService can access result.id correctly
+- [x] Verify orderItems are created with correct orderId
+- [x] Dev server running without errors

@@ -353,9 +353,8 @@ export async function createOrder(data: {
     throw new Error("Failed to extract inserted order ID from database result");
   }
 
-  // Fetch and return the inserted order with all fields
-  const insertedOrder = await getOrderById(insertedId);
-  return insertedOrder;
+  // Return object with id property so orderService can access it
+  return { id: insertedId } as any;
 }
 
 export async function getOrderById(orderId: number) {
