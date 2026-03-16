@@ -599,6 +599,26 @@ export async function createCoupon(data: {
   return result;
 }
 
+export async function updateCoupon(couponId: number, data: {
+  code?: string;
+  discountType?: "flat" | "percentage";
+  discountValue?: string;
+  minPurchaseAmount?: string;
+  maxUsageCount?: number;
+  expiresAt?: Date;
+  isActive?: boolean;
+}) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(coupons).set(data).where(eq(coupons.id, couponId));
+}
+
+export async function deleteCoupon(couponId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(coupons).where(eq(coupons.id, couponId));
+}
+
 export async function recordCouponUsage(couponId: number, userId: number | undefined, orderId: number) {
   const db = await getDb();
   if (!db) return;

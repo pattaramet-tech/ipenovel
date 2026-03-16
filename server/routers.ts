@@ -744,6 +744,32 @@ export const appRouter = router({
           await db.createCoupon(input);
           return { success: true };
         }),
+
+      update: adminProcedure
+        .input(
+          z.object({
+            couponId: z.number(),
+            code: z.string().optional(),
+            discountType: z.enum(["flat", "percentage"]).optional(),
+            discountValue: z.string().optional(),
+            minPurchaseAmount: z.string().optional(),
+            maxUsageCount: z.number().optional(),
+            expiresAt: z.date().optional(),
+            isActive: z.boolean().optional(),
+          })
+        )
+        .mutation(async ({ input }) => {
+          const { couponId, ...data } = input;
+          await db.updateCoupon(couponId, data);
+          return { success: true };
+        }),
+
+      delete: adminProcedure
+        .input(z.object({ couponId: z.number() }))
+        .mutation(async ({ input }) => {
+          await db.deleteCoupon(input.couponId);
+          return { success: true };
+        }),
     }),
 
     settings: router({

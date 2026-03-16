@@ -44,7 +44,7 @@
 - [ ] Build Admin Episodes Management page
 - [ ] Build Admin Categories Management page
 - [x] Build Admin Banners Management page
-- [x] Build Admin Coupons Management page
+- [x] Build Admin Coupons Management page (with full CRUD: create, read, update, delete)
 - [x] Build Admin Payment Verification page
 - [ ] Build Admin Order Details page
 - [ ] Build Admin Settings page
@@ -182,3 +182,17 @@
 - [ ] Test payment re-upload flow with back navigation
 - [ ] Test refresh and browser back behavior
 - [ ] Run regression tests for orders/payments/purchases flows
+
+
+## Admin Coupons CRUD Implementation
+- [x] Add updateCoupon and deleteCoupon functions to server/db.ts
+- [x] Add update and delete TRPC procedures to admin.coupons router
+- [x] Implement AdminCouponsPage with full CRUD UI
+- [x] Add edit button handler with form population
+- [x] Add delete button with confirmation dialog
+- [x] Fix form state management between create/edit modes
+- [x] Implement date serialization/parsing for existing coupons
+- [x] Add numeric field validation
+- [x] Write comprehensive vitest for coupon CRUD functions (21 tests passing)
+- [x] Verify backend procedures work correctly
+- [x] Verify no regressions in core flows (coupon tests passing)

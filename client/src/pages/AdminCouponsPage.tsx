@@ -5,14 +5,14 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
-import { Plus } from "lucide-react";
+import { Plus, Edit2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
 
 export default function AdminCouponsPage() {
-  // All hooks must be called at the top level, before any conditional returns
   const { user, isAuthenticated } = useAuth();
   const [isCreating, setIsCreating] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
   const [formData, setFormData] = useState({
     code: "",
     discountType: "flat" as "flat" | "percentage",
@@ -20,27 +20,18 @@ export default function AdminCouponsPage() {
     minPurchaseAmount: "",
     maxUsageCount: "",
     expiresAt: "",
+    isActive: true,
   });
 
-  // Query hooks with enabled flag - they won't fetch until auth is resolved and user is admin
   const { data: coupons, isLoading, refetch } = trpc.admin.coupons.list.useQuery(
     undefined,
     { enabled: !!user && user.role === "admin" }
   );
 
-  // Mutation hooks
   const createMutation = trpc.admin.coupons.create.useMutation({
     onSuccess: () => {
       toast.success("Coupon created!");
-      setFormData({
-        code: "",
-        discountType: "flat",
-        discountValue: "",
-        minPurchaseAmount: "",
-        maxUsageCount: "",
-        expiresAt: "",
-      });
-      setIsCreating(false);
+      resetForm();
       refetch();
     },
     onError: () => {
@@ -48,7 +39,27 @@ export default function AdminCouponsPage() {
     },
   });
 
-  // Now perform auth checks after all hooks are declared
+  const updateMutation = trpc.admin.coupons.update.useMutation({
+    onSuccess: () => {
+      toast.success("Coupon updated!");
+      resetForm();
+      refetch();
+    },
+    onError: () => {
+      toast.error("Failed to update coupon");
+    },
+  });
+
+  const deleteMutation = trpc.admin.coupons.delete.useMutation({
+    onSuccess: () => {
+      toast.success("Coupon deleted!");
+      refetch();
+    },
+    onError: () => {
+      toast.error("Failed to delete coupon");
+    },
+  });
+
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -73,16 +84,61 @@ export default function AdminCouponsPage() {
     );
   }
 
-  const handleCreate = () => {
+  const resetForm = () => {
+    setFormData({
+      code: "",
+      discountType: "flat",
+      discountValue: "",
+      minPurchaseAmount: "",
+      maxUsageCount: "",
+      expiresAt: "",
+      isActive: true,
+    });
+    setIsCreating(false);
+    setEditingId(null);
+  };
+
+  const handleEdit = (coupon: any) => {
+    setFormData({
+      code: coupon.code,
+      discountType: coupon.discountType,
+      discountValue: coupon.discountValue,
+      minPurchaseAmount: coupon.minPurchaseAmount || "",
+      maxUsageCount: coupon.maxUsageCount ? coupon.maxUsageCount.toString() : "",
+      expiresAt: coupon.expiresAt ? new Date(coupon.expiresAt).toISOString().slice(0, 16) : "",
+      isActive: coupon.isActive,
+    });
+    setEditingId(coupon.id);
+    setIsCreating(false);
+  };
+
+  const handleSave = () => {
     if (!formData.code || !formData.discountValue) {
       toast.error("Code and discount value are required");
       return;
     }
-    createMutation.mutate({
-      ...formData,
+
+    const payload = {
+      discountType: formData.discountType,
+      discountValue: formData.discountValue,
+      code: formData.code,
+      minPurchaseAmount: formData.minPurchaseAmount || undefined,
       maxUsageCount: formData.maxUsageCount ? parseInt(formData.maxUsageCount) : undefined,
       expiresAt: formData.expiresAt ? new Date(formData.expiresAt) : undefined,
-    });
+      isActive: formData.isActive,
+    };
+
+    if (editingId) {
+      updateMutation.mutate({ couponId: editingId, ...payload });
+    } else {
+      createMutation.mutate(payload);
+    }
+  };
+
+  const handleDelete = (couponId: number) => {
+    if (confirm("Are you sure you want to delete this coupon?")) {
+      deleteMutation.mutate({ couponId });
+    }
   };
 
   return (
@@ -90,17 +146,20 @@ export default function AdminCouponsPage() {
       <div className="container mx-auto px-4">
         <div className="flex items-center justify-between mb-8">
           <h1 className="text-3xl font-bold">Manage Coupons</h1>
-          <Button onClick={() => setIsCreating(!isCreating)}>
+          <Button onClick={() => {
+            resetForm();
+            setIsCreating(true);
+          }}>
             <Plus className="w-4 h-4 mr-2" />
             New Coupon
           </Button>
         </div>
 
-        {/* Create Form */}
-        {isCreating && (
+        {/* Create/Edit Form */}
+        {(isCreating || editingId) && (
           <Card className="mb-8">
             <CardHeader>
-              <CardTitle>Create New Coupon</CardTitle>
+              <CardTitle>{editingId ? "Edit Coupon" : "Create New Coupon"}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div>
@@ -170,11 +229,22 @@ export default function AdminCouponsPage() {
                 />
               </div>
 
+              <div>
+                <label className="text-sm font-semibold flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={formData.isActive}
+                    onChange={(e) => setFormData({ ...formData, isActive: e.target.checked })}
+                  />
+                  Active
+                </label>
+              </div>
+
               <div className="flex gap-2 pt-4">
-                <Button onClick={handleCreate} disabled={createMutation.isPending} className="flex-1">
-                  Create Coupon
+                <Button onClick={handleSave} disabled={createMutation.isPending || updateMutation.isPending} className="flex-1">
+                  {editingId ? "Update Coupon" : "Create Coupon"}
                 </Button>
-                <Button variant="outline" onClick={() => setIsCreating(false)} className="flex-1">
+                <Button variant="outline" onClick={resetForm} className="flex-1">
                   Cancel
                 </Button>
               </div>
@@ -206,6 +276,7 @@ export default function AdminCouponsPage() {
                   <th className="text-left p-3 font-semibold">Usage</th>
                   <th className="text-left p-3 font-semibold">Expires</th>
                   <th className="text-left p-3 font-semibold">Status</th>
+                  <th className="text-left p-3 font-semibold">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -228,6 +299,24 @@ export default function AdminCouponsPage() {
                       <span className={`text-xs px-2 py-1 rounded ${coupon.isActive ? "bg-green-100 text-green-800" : "bg-slate-100 text-slate-800"}`}>
                         {coupon.isActive ? "Active" : "Inactive"}
                       </span>
+                    </td>
+                    <td className="p-3 flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleEdit(coupon)}
+                        disabled={editingId === coupon.id}
+                      >
+                        <Edit2 className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        onClick={() => handleDelete(coupon.id)}
+                        disabled={deleteMutation.isPending}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
                     </td>
                   </tr>
                 ))}
