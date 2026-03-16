@@ -189,6 +189,50 @@ export async function approvePayment(paymentId: number, approvedBy: string): Pro
       await db.createPurchase(order.userId, episode.novelId, item.episodeId, order.id);
     }
   }
+
+  // Award loyalty points once purchases are finalized
+  if (order.userId) {
+    await awardPointsForOrder(order.id, order.userId, order.totalAmount.toString());
+  }
+}
+
+/**
+ * Award loyalty points for a completed order
+ * 100 currency units = 1 point
+ * Only awards once per order (idempotent)
+ */
+async function awardPointsForOrder(orderId: number, userId: number, amount: string): Promise<void> {
+  // Check if points already awarded for this order
+  const alreadyAwarded = await db.hasPointsBeenAwardedForOrder(orderId);
+  if (alreadyAwarded) {
+    console.log(`Points already awarded for order ${orderId}, skipping`);
+    return;
+  }
+
+  // Calculate points: 100 currency units = 1 point
+  const amountNum = parseFloat(amount);
+  const pointsToAward = Math.floor(amountNum / 100);
+
+  if (pointsToAward <= 0) {
+    console.log(`Order ${orderId} amount ${amount} is too small to award points`);
+    return;
+  }
+
+  // Get current balance
+  const currentBalance = await db.getUserPointsBalance(userId);
+  const currentBalanceNum = parseFloat(currentBalance);
+  const newBalance = (currentBalanceNum + pointsToAward).toFixed(2);
+
+  // Record the transaction
+  await db.recordPointsTransaction({
+    userId,
+    type: "earn",
+    amount: pointsToAward.toString(),
+    balanceAfter: newBalance,
+    referenceType: "order",
+    referenceId: orderId,
+    note: `Points earned from order ${orderId}`,
+  });
 }
 
 /**

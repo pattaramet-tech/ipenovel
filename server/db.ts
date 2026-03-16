@@ -1087,3 +1087,27 @@ export async function bulkCreateEpisodesWithNovelTitle(
 
   return { success, errors };
 }
+
+
+/**
+ * Check if points have already been awarded for a given order
+ * Returns true if an "earn" transaction exists for this order
+ */
+export async function hasPointsBeenAwardedForOrder(orderId: number): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+
+  const result = await db
+    .select({ id: pointsTransactions.id })
+    .from(pointsTransactions)
+    .where(
+      and(
+        eq(pointsTransactions.referenceType, "order"),
+        eq(pointsTransactions.referenceId, orderId),
+        eq(pointsTransactions.type, "earn")
+      )
+    )
+    .limit(1);
+
+  return result.length > 0;
+}

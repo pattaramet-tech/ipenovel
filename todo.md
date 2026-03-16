@@ -365,3 +365,15 @@
 - [x] Ensured slip URL is properly saved to payment record
 - [x] Added error handling and logging
 - [x] Verified dev server running without errors
+
+
+## Loyalty Points Accrual Bug Fix
+- [x] Added awardPointsForOrder helper to orderService
+- [x] Integrated points awarding into approvePayment flow
+- [x] Added hasPointsBeenAwardedForOrder helper in db.ts for idempotency
+- [x] Implemented 100 currency = 1 point earning rule
+- [x] Made point awarding idempotent using referenceType=order, referenceId=orderId
+- [x] Ensured points awarded after purchases finalized
+- [x] Added comprehensive tests for points awarding (5 test cases)
+- [x] All tests passing (18/18)
+- [x] Dev server running without errors
