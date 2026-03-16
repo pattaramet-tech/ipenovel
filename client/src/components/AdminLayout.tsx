@@ -34,13 +34,13 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { label: "Dashboard", icon: <LayoutDashboard className="w-5 h-5" />, href: "/admin" },
+  { label: "Payments", icon: <CreditCard className="w-5 h-5" />, href: "/admin/payments" },
   { label: "Novels", icon: <BookOpen className="w-5 h-5" />, href: "/admin/novels" },
   { label: "Episodes", icon: <Layers className="w-5 h-5" />, href: "/admin/episodes" },
   { label: "Categories", icon: <Tag className="w-5 h-5" />, href: "/admin/categories" },
   { label: "Banners", icon: <Image className="w-5 h-5" />, href: "/admin/banners" },
   { label: "Coupons", icon: <Ticket className="w-5 h-5" />, href: "/admin/coupons" },
   { label: "Orders", icon: <ShoppingCart className="w-5 h-5" />, href: "/admin/orders" },
-  { label: "Payments", icon: <CreditCard className="w-5 h-5" />, href: "/admin/payments" },
   { label: "Entitlements", icon: <Gift className="w-5 h-5" />, href: "/admin/entitlements" },
   { label: "Bulk Upload", icon: <Upload className="w-5 h-5" />, href: "/admin/bulk-upload" },
   { label: "Settings", icon: <Settings className="w-5 h-5" />, href: "/admin/settings" },

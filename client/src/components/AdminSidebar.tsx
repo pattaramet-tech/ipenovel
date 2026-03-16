@@ -15,13 +15,13 @@ import {
 
 const adminMenuItems = [
   { label: "Dashboard", href: "/admin/dashboard", icon: LayoutDashboard },
+  { label: "Payments", href: "/admin/payments", icon: CreditCard },
   { label: "Novels", href: "/admin/novels", icon: BookOpen },
   { label: "Episodes", href: "/admin/episodes", icon: FileText },
   { label: "Categories", href: "/admin/categories", icon: Tag },
   { label: "Banners", href: "/admin/banners", icon: Image },
   { label: "Coupons", href: "/admin/coupons", icon: Ticket },
   { label: "Orders", href: "/admin/orders", icon: ShoppingCart },
-  { label: "Payments", href: "/admin/payments", icon: CreditCard },
   { label: "Entitlements", href: "/admin/entitlements", icon: Gift },
   { label: "Settings", href: "/admin/settings", icon: Settings },
 ];
