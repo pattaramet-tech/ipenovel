@@ -6,7 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
 import { toast } from "sonner";
-import { Plus, Edit2, Trash2, Loader2 } from "lucide-react";
+import { Plus, Edit2, Trash2, Loader2, ArrowLeft } from "lucide-react";
+import { useLocation } from "wouter";
 import {
   Dialog,
   DialogContent,
@@ -16,12 +17,22 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 
-export default function AdminEpisodesPage() {
-  const [novelFilter, setNovelFilter] = useState<number | undefined>();
+interface AdminEpisodesPageProps {
+  params?: {
+    novelId?: string;
+  };
+}
+
+export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
+  const [, navigate] = useLocation();
+  const scopedNovelId = params?.novelId ? parseInt(params.novelId) : undefined;
+  const isScoped = !!scopedNovelId;
+
+  const [novelFilter, setNovelFilter] = useState<number | undefined>(scopedNovelId);
   const [openDialog, setOpenDialog] = useState(false);
   const [editingEpisode, setEditingEpisode] = useState<any>(null);
   const [formData, setFormData] = useState({
-    novelId: 0,
+    novelId: scopedNovelId || 0,
     episodeNumber: "",
     title: "",
     price: "0",
@@ -36,7 +47,14 @@ export default function AdminEpisodesPage() {
     onSuccess: () => {
       toast.success("Episode created successfully!");
       setOpenDialog(false);
-      setFormData({ novelId: 0, episodeNumber: "", title: "", price: "0", isFree: false, fileUrl: "" });
+      setFormData({
+        novelId: scopedNovelId || 0,
+        episodeNumber: "",
+        title: "",
+        price: "0",
+        isFree: false,
+        fileUrl: "",
+      });
       refetch();
     },
     onError: (error) => {
@@ -99,6 +117,19 @@ export default function AdminEpisodesPage() {
     setOpenDialog(true);
   };
 
+  const handleCloseDialog = () => {
+    setOpenDialog(false);
+    setEditingEpisode(null);
+    setFormData({
+      novelId: scopedNovelId || 0,
+      episodeNumber: "",
+      title: "",
+      price: "0",
+      isFree: false,
+      fileUrl: "",
+    });
+  };
+
   const filteredEpisodes = episodes?.filter((ep: any) =>
     !novelFilter || ep.novelId === novelFilter
   ) || [];
@@ -106,26 +137,55 @@ export default function AdminEpisodesPage() {
   return (
     <AdminLayout>
       <div className="space-y-6">
-        {/* Header with Filters and Create Button */}
+        {/* Header with Back Button if Scoped */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            {isScoped && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => navigate(`/admin/novels/${scopedNovelId}`)}
+                className="gap-2"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                Back
+              </Button>
+            )}
+            <h1 className="text-3xl font-bold text-slate-900">
+              {isScoped ? "Episodes" : "All Episodes"}
+            </h1>
+          </div>
+        </div>
+
+        {/* Filters and Create Button */}
         <div className="flex gap-4 items-center">
-          <select
-            value={novelFilter || ""}
-            onChange={(e) => setNovelFilter(e.target.value ? parseInt(e.target.value) : undefined)}
-            className="px-3 py-2 border rounded-md"
-          >
-            <option value="">All Novels</option>
-            {novels?.map((novel: any) => (
-              <option key={novel.id} value={novel.id}>
-                {novel.title}
-              </option>
-            ))}
-          </select>
+          {!isScoped && (
+            <select
+              value={novelFilter || ""}
+              onChange={(e) => setNovelFilter(e.target.value ? parseInt(e.target.value) : undefined)}
+              className="px-3 py-2 border rounded-md"
+            >
+              <option value="">All Novels</option>
+              {novels?.map((novel: any) => (
+                <option key={novel.id} value={novel.id}>
+                  {novel.title}
+                </option>
+              ))}
+            </select>
+          )}
           <Dialog open={openDialog} onOpenChange={setOpenDialog}>
             <DialogTrigger asChild>
               <Button
                 onClick={() => {
                   setEditingEpisode(null);
-                  setFormData({ novelId: 0, episodeNumber: "", title: "", price: "0", isFree: false, fileUrl: "" });
+                  setFormData({
+                    novelId: scopedNovelId || 0,
+                    episodeNumber: "",
+                    title: "",
+                    price: "0",
+                    isFree: false,
+                    fileUrl: "",
+                  });
                 }}
               >
                 <Plus className="w-4 h-4 mr-2" />
@@ -137,21 +197,23 @@ export default function AdminEpisodesPage() {
                 <DialogTitle>{editingEpisode ? "Edit Episode" : "Create New Episode"}</DialogTitle>
               </DialogHeader>
               <div className="space-y-4">
-                <div>
-                  <Label>Novel</Label>
-                  <select
-                    value={formData.novelId}
-                    onChange={(e) => setFormData({ ...formData, novelId: parseInt(e.target.value) })}
-                    className="w-full px-3 py-2 border rounded-md"
-                  >
-                    <option value={0}>Select a novel</option>
-                    {novels?.map((novel: any) => (
-                      <option key={novel.id} value={novel.id}>
-                        {novel.title}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                {!isScoped && (
+                  <div>
+                    <Label>Novel</Label>
+                    <select
+                      value={formData.novelId}
+                      onChange={(e) => setFormData({ ...formData, novelId: parseInt(e.target.value) })}
+                      className="w-full px-3 py-2 border rounded-md"
+                    >
+                      <option value={0}>Select a novel</option>
+                      {novels?.map((novel: any) => (
+                        <option key={novel.id} value={novel.id}>
+                          {novel.title}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <div>
                   <Label>Episode Number</Label>
                   <Input
@@ -222,7 +284,9 @@ export default function AdminEpisodesPage() {
           </div>
         ) : filteredEpisodes.length === 0 ? (
           <Card className="p-8 text-center">
-            <p className="text-muted-foreground">No episodes found</p>
+            <p className="text-muted-foreground">
+              {isScoped ? "No episodes for this novel yet" : "No episodes found"}
+            </p>
           </Card>
         ) : (
           <div className="grid gap-4">
@@ -239,7 +303,7 @@ export default function AdminEpisodesPage() {
                         </Badge>
                       </div>
                       <p className="text-sm text-muted-foreground">
-                        {novel?.title} • Episode {episode.episodeNumber}
+                        {!isScoped && `${novel?.title} • `}Episode {episode.episodeNumber}
                       </p>
                     </div>
                     <div className="flex gap-2">

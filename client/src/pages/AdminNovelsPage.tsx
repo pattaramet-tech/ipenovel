@@ -4,15 +4,19 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
-import { Edit2, Plus, Trash2, BookOpen } from "lucide-react";
+import { Edit2, Plus, Trash2, BookOpen, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { SectionHeader, StatusBadge, EmptyState, FormSection } from "@/components/AdminComponents";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { useLocation } from "wouter";
+import SafeImage from "@/components/SafeImage";
 
 export default function AdminNovelsPage() {
   const { user, isAuthenticated } = useAuth();
+  const [, navigate] = useLocation();
   const [isCreating, setIsCreating] = useState(false);
+  const [editingNovelId, setEditingNovelId] = useState<number | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [formData, setFormData] = useState({
     title: "",
@@ -35,6 +39,18 @@ export default function AdminNovelsPage() {
     },
     onError: () => {
       toast.error("Failed to create novel");
+    },
+  });
+
+  const updateMutation = trpc.admin.novels.update.useMutation({
+    onSuccess: () => {
+      toast.success("Novel updated!");
+      setFormData({ title: "", description: "", coverImageUrl: "", status: "draft" });
+      setEditingNovelId(null);
+      refetch();
+    },
+    onError: () => {
+      toast.error("Failed to update novel");
     },
   });
 
@@ -72,6 +88,35 @@ export default function AdminNovelsPage() {
     createMutation.mutate(formData);
   };
 
+  const handleEdit = (novel: any) => {
+    setEditingNovelId(novel.id);
+    setFormData({
+      title: novel.title,
+      description: novel.description || "",
+      coverImageUrl: novel.coverImageUrl || "",
+      status: novel.status || "draft",
+    });
+  };
+
+  const handleSaveEdit = () => {
+    if (!formData.title) {
+      toast.error("Title is required");
+      return;
+    }
+    if (editingNovelId) {
+      updateMutation.mutate({
+        novelId: editingNovelId,
+        ...formData,
+      });
+    }
+  };
+
+  const handleCancel = () => {
+    setIsCreating(false);
+    setEditingNovelId(null);
+    setFormData({ title: "", description: "", coverImageUrl: "", status: "draft" });
+  };
+
   return (
     <AdminLayout>
       <div className="space-y-8">
@@ -87,11 +132,11 @@ export default function AdminNovelsPage() {
           </Button>
         </div>
 
-        {/* Create Form */}
-        {isCreating && (
+        {/* Create/Edit Form */}
+        {(isCreating || editingNovelId) && (
           <Card className="border-blue-200 bg-blue-50">
             <CardHeader>
-              <CardTitle>Create New Novel</CardTitle>
+              <CardTitle>{editingNovelId ? "Edit Novel" : "Create New Novel"}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <FormSection title="Basic Information">
@@ -103,6 +148,18 @@ export default function AdminNovelsPage() {
                       onChange={(e) => setFormData({ ...formData, title: e.target.value })}
                       placeholder="Enter novel title"
                     />
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-slate-700 block mb-2">Status</label>
+                    <select
+                      value={formData.status}
+                      onChange={(e) => setFormData({ ...formData, status: e.target.value as any })}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="draft">Draft</option>
+                      <option value="published">Published</option>
+                      <option value="archived">Archived</option>
+                    </select>
                   </div>
                 </div>
 
@@ -124,14 +181,28 @@ export default function AdminNovelsPage() {
                     onChange={(e) => setFormData({ ...formData, coverImageUrl: e.target.value })}
                     placeholder="https://..."
                   />
+                  {formData.coverImageUrl && (
+                    <div className="mt-2">
+                      <p className="text-xs text-slate-600 mb-2">Preview:</p>
+                      <SafeImage
+                        src={formData.coverImageUrl}
+                        alt="Cover preview"
+                        className="w-20 h-28 object-cover rounded"
+                      />
+                    </div>
+                  )}
                 </div>
               </FormSection>
 
               <div className="flex gap-2 pt-4 border-t">
-                <Button onClick={handleCreate} disabled={createMutation.isPending} className="flex-1">
-                  Create Novel
+                <Button
+                  onClick={editingNovelId ? handleSaveEdit : handleCreate}
+                  disabled={createMutation.isPending || updateMutation.isPending}
+                  className="flex-1"
+                >
+                  {editingNovelId ? "Save Changes" : "Create Novel"}
                 </Button>
-                <Button variant="outline" onClick={() => setIsCreating(false)} className="flex-1">
+                <Button variant="outline" onClick={handleCancel} className="flex-1">
                   Cancel
                 </Button>
               </div>
@@ -168,42 +239,51 @@ export default function AdminNovelsPage() {
             <table className="w-full">
               <thead>
                 <tr className="border-b bg-slate-50">
+                  <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Cover</th>
                   <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Title</th>
                   <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Status</th>
-                  <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Created</th>
+                  <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Updated</th>
                   <th className="text-right px-4 py-3 font-semibold text-slate-700 text-sm">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredNovels.map((novel: any) => (
-                  <tr key={novel.id} className="border-b hover:bg-slate-50 transition-colors">
+                  <tr key={novel.id} className="border-b hover:bg-slate-50 transition-colors cursor-pointer">
                     <td className="px-4 py-3">
-                      <div className="flex items-center gap-3">
-                        {novel.coverImageUrl && (
-                          <img
-                            src={novel.coverImageUrl}
-                            alt={novel.title}
-                            className="w-10 h-14 object-cover rounded"
-                          />
-                        )}
-                        <div>
-                          <p className="font-medium text-slate-900">{novel.title}</p>
-                          <p className="text-xs text-slate-600">{novel.description?.substring(0, 40)}...</p>
-                        </div>
+                      <SafeImage
+                        src={novel.coverImageUrl}
+                        alt={novel.title}
+                        className="w-10 h-14 object-cover rounded"
+                      />
+                    </td>
+                    <td className="px-4 py-3">
+                      <div>
+                        <p className="font-medium text-slate-900">{novel.title}</p>
+                        <p className="text-xs text-slate-600">{novel.description?.substring(0, 40)}...</p>
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-slate-700">{novel.author}</td>
                     <td className="px-4 py-3">
                       <StatusBadge status={novel.status} />
                     </td>
                     <td className="px-4 py-3 text-sm text-slate-600">
-                      {new Date(novel.createdAt).toLocaleDateString()}
+                      {new Date(novel.updatedAt || novel.createdAt).toLocaleDateString()}
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex justify-end gap-2">
                         <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => navigate(`/admin/novels/${novel.id}`)}
+                          title="Manage novel and episodes"
+                        >
+                          Manage
+                          <ChevronRight className="w-4 h-4 ml-1" />
+                        </Button>
+                        <Button
                           variant="ghost"
                           size="sm"
+                          onClick={() => handleEdit(novel)}
+                          title="Edit novel details"
                         >
                           <Edit2 className="w-4 h-4" />
                         </Button>

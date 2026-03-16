@@ -160,3 +160,14 @@
 - [ ] Update OrderDetailPage to show correct statuses and rejection reasons
 - [ ] Add/update tests for payment status sync
 - [ ] Run regression tests for payment/order flows
+
+
+## Admin Novel Management Fixes
+- [ ] Fix broken image URL handling with validation and placeholders
+- [ ] Make admin novels truly editable with update mutation
+- [ ] Create AdminNovelManagePage for dedicated novel management
+- [ ] Update AdminEpisodesPage to support scoped mode per novel
+- [ ] Fix AdminNovelsPage table/list and add Manage button
+- [ ] Add routes and integrate all changes
+- [ ] Test admin novel management flow end-to-end
+- [ ] Verify no regression in core flows
