@@ -401,7 +401,22 @@ export async function createOrderItems(items: Array<{ orderId: number; novelId: 
 export async function getOrderItems(orderId: number) {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(orderItems).where(eq(orderItems.orderId, orderId));
+  const items = await db.select().from(orderItems).where(eq(orderItems.orderId, orderId));
+  
+  // Enrich with episode and novel data
+  const enriched = await Promise.all(
+    items.map(async (item: any) => {
+      const episodeData = await db.select().from(episodes).where(eq(episodes.id, item.episodeId)).limit(1);
+      const novelData = episodeData.length > 0 ? await db.select().from(novels).where(eq(novels.id, episodeData[0].novelId)).limit(1) : [];
+      return {
+        ...item,
+        episode: episodeData.length > 0 ? episodeData[0] : null,
+        novel: novelData.length > 0 ? novelData[0] : null,
+      };
+    })
+  );
+  
+  return enriched;
 }
 
 export async function createPayment(orderId: number) {

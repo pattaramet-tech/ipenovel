@@ -4,8 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
-import { Download, BookOpen } from "lucide-react";
-import { toast } from "sonner";
+import { BookOpen } from "lucide-react";
 
 export default function MyNovelsPage() {
   const { isAuthenticated } = useAuth();
@@ -14,11 +13,6 @@ export default function MyNovelsPage() {
   const { data: myNovels, isLoading } = trpc.myNovels.list.useQuery(undefined, {
     enabled: isAuthenticated,
   });
-
-  const handleDownload = (episodeId: number) => {
-    // Redirect to centralized download route with auth/authz
-    window.location.href = `/api/download/${episodeId}`;
-  };
 
   if (!isAuthenticated) {
     return (
@@ -90,21 +84,22 @@ export default function MyNovelsPage() {
                         </div>
 
                         <div className="flex gap-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => navigate(`/read/${episode.id}`)}
-                          >
-                            <BookOpen className="w-4 h-4 mr-2" />
-                            Read
-                          </Button>
-                          <Button
-                            size="sm"
-                            onClick={() => handleDownload(episode.id)}
-                          >
-                            <Download className="w-4 h-4 mr-2" />
-                            Download
-                          </Button>
+                          {episode.fileUrl ? (
+                            <a
+                              href={episode.fileUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
+                            >
+                              <BookOpen className="w-4 h-4 mr-2" />
+                              Read
+                            </a>
+                          ) : (
+                            <Button size="sm" disabled>
+                              <BookOpen className="w-4 h-4 mr-2" />
+                              Read (File Not Available)
+                            </Button>
+                          )}
                         </div>
                       </div>
                     ))}

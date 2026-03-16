@@ -138,3 +138,13 @@
 - [x] Test orderNumber format and concurrent creation
 - [x] Test View Details button navigation
 - [x] Verify no regression in order/payment flows
+
+
+## Orders & My Novels UI Updates
+- [x] Update Orders page to show episodeNumber and title
+- [x] Update My Novels page to remove Download button
+- [x] Make Read button primary action with fileUrl linking
+- [x] Verify API responses include episodeNumber, title, fileUrl
+- [x] Add fileUrl fallback handling
+- [x] Test Orders and My Novels pages
+- [ ] Run regression tests for orders/purchases/My Novels
