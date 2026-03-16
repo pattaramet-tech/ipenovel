@@ -33,8 +33,8 @@ export default function PaymentPage() {
     onSuccess: () => {
       toast.success(t("payment.slipUploadSuccess"));
       setSelectedFile(null);
-      // Redirect to orders page
-      setTimeout(() => navigate("/orders"), 2000);
+      // Redirect to payment completion page
+      setTimeout(() => navigate(`/payment-completion/${orderId}`), 1000);
     },
     onError: (error) => {
       toast.error(t("payment.slipUploadError"));
@@ -122,9 +122,19 @@ export default function PaymentPage() {
 
   const { order, items, payment } = orderData;
   const totalAmount = parseFloat(order.totalAmount.toString()).toFixed(2);
-  const isSlipSubmitted = payment?.slipImageUrl && payment?.status === "pending";
-  const isRejected = payment?.status === "rejected";
+  
+  // Determine payment state based on payment record and order status
   const isApproved = payment?.status === "approved" || order?.paymentStatus === "approved";
+  const isRejected = payment?.status === "rejected";
+  
+  // Check if slip has been submitted and is pending review
+  // This happens when payment exists with status "pending" and slipImageUrl is set
+  const isSlipSubmittedPendingReview = payment?.slipImageUrl && payment?.status === "pending";
+  
+  // Show upload UI if:
+  // 1. Payment is not approved AND
+  // 2. (No payment record exists OR payment is rejected OR (payment is pending but no slip uploaded yet))
+  const canUploadSlip = !isApproved && (!payment || payment.status === "rejected" || (payment.status === "pending" && !payment.slipImageUrl));
 
   return (
     <div className="min-h-screen bg-slate-50 py-8">
@@ -181,7 +191,7 @@ export default function PaymentPage() {
             </CardContent>
           </Card>
 
-          {/* Slip Status Card */}
+          {/* Payment Status Cards */}
           {isApproved ? (
             <Card className="border-green-200 bg-green-50">
               <CardContent className="pt-6">
@@ -254,7 +264,7 @@ export default function PaymentPage() {
                 </CardContent>
               </Card>
             </>
-          ) : isSlipSubmitted ? (
+          ) : isSlipSubmittedPendingReview ? (
             <Card className="border-blue-200 bg-blue-50">
               <CardContent className="pt-6">
                 <div className="flex items-center gap-3">
@@ -266,7 +276,19 @@ export default function PaymentPage() {
                 </div>
               </CardContent>
             </Card>
-          ) : (
+          ) : isSlipSubmittedPendingReview ? (
+            <Card className="border-blue-200 bg-blue-50">
+              <CardContent className="pt-6">
+                <div className="flex items-center gap-3">
+                  <CheckCircle className="w-6 h-6 text-blue-600" />
+                  <div>
+                    <p className="font-semibold text-blue-900">{t("payment.slipSubmitted")}</p>
+                    <p className="text-sm text-blue-700">{t("payment.pendingReview")}</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ) : canUploadSlip ? (
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -315,29 +337,20 @@ export default function PaymentPage() {
                 </p>
               </CardContent>
             </Card>
-          )}
+          ) : null}
 
           {/* Help Card */}
           <Card className="bg-amber-50 border-amber-200">
             <CardContent className="pt-6">
               <div className="flex gap-3">
                 <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
-                <div className="text-sm text-amber-900">
-                  <p className="font-semibold mb-1">{t("payment.needHelp")}</p>
+                <div className="text-sm text-amber-800">
+                  <p className="font-semibold mb-2">{t("payment.helpTitle")}</p>
                   <p>{t("payment.helpText")}</p>
                 </div>
               </div>
             </CardContent>
           </Card>
-
-          {/* Back Button */}
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={() => navigate("/orders")}
-          >
-            {t("common.back")}
-          </Button>
         </div>
       </div>
     </div>

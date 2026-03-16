@@ -171,3 +171,14 @@
 - [ ] Add routes and integrate all changes
 - [ ] Test admin novel management flow end-to-end
 - [ ] Verify no regression in core flows
+
+
+## Payment Slip Re-Upload Dead-End Fix
+- [x] Analyze payment page flow and identify dead-end issue
+- [x] Ensure PaymentPage loads existing order/payment by route param
+- [x] Update PaymentPage upload UI based on payment status
+- [x] Fix back navigation to not invalidate upload ability
+- [ ] Add resume-payment entry point from OrdersPage/OrderDetailPage
+- [ ] Test payment re-upload flow with back navigation
+- [ ] Test refresh and browser back behavior
+- [ ] Run regression tests for orders/payments/purchases flows

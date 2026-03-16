@@ -1,0 +1,8 @@
+{
+  "query": "\n-- Clear all test data while preserving schema\nDELETE FROM order_items;\nDELETE FROM orders;\nDELETE FROM payments;\nDELETE FROM purchases;\nDELETE FROM coupons;\nDELETE FROM banners;\nDELETE FROM episodes;\nDELETE FROM novel_categories;\nDELETE FROM novels;\nDELETE FROM categories;\nDELETE FROM users;\n",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute \n-- Clear all test data while preserving schema\nDELETE FROM order_items;\nDELETE FROM orders;\nDELETE FROM payments;\nDELETE FROM purchases;\nDELETE FROM coupons;\nDELETE FROM banners;\nDELETE FROM episodes;\nDELETE FROM novel_categories;\nDELETE FROM novels;\nDELETE FROM categories;\nDELETE FROM users;\n",
+  "returncode": 1,
+  "logs": [
+    "ERROR 1146 (42S02) at line 3: Table 'hefiacxnvzgj8v7vkecb9b.order_items' doesn't exist"
+  ]
+}
