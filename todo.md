@@ -211,3 +211,10 @@
 - [x] Write comprehensive vitest for CSV parser (15 tests passing)
 - [x] Verify existing manual bulk upload flow still works
 - [x] No architecture changes - reused existing bulk upload pipeline
+
+
+## Bug Fixes
+- [x] Fix coupon validation to handle null/empty discountValue (server/services/orderService.ts)
+- [x] Add validation for percentage discount range (0-100)
+- [x] Update NEWZ coupon with valid discount value (15%)
+- [x] All coupon validation tests passing (13/13)

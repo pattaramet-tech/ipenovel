@@ -56,6 +56,11 @@ export async function validateAndApplyCoupon(couponCode: string, subtotal: strin
     throw new Error("Coupon is not active");
   }
 
+  // Validate discountValue exists before checking expiry
+  if (!coupon.discountValue || isNaN(parseFloat(coupon.discountValue.toString()))) {
+    throw new Error("Coupon has invalid discount value");
+  }
+
   if (coupon.expiresAt && new Date(coupon.expiresAt) < new Date()) {
     throw new Error("Coupon has expired");
   }
@@ -71,12 +76,22 @@ export async function validateAndApplyCoupon(couponCode: string, subtotal: strin
     throw new Error(`Minimum purchase amount of ${minPurchase} required`);
   }
 
+  // Validate discountValue exists and is a valid number
+  if (!coupon.discountValue || isNaN(parseFloat(coupon.discountValue.toString()))) {
+    throw new Error("Coupon discount value is invalid");
+  }
+
   let discountAmount = "0.00";
 
   if (coupon.discountType === "flat") {
-    discountAmount = Math.min(subtotalNum, parseFloat(coupon.discountValue.toString())).toFixed(2);
+    const discountValue = parseFloat(coupon.discountValue.toString());
+    discountAmount = Math.min(subtotalNum, discountValue).toFixed(2);
   } else if (coupon.discountType === "percentage") {
-    const percentDiscount = (subtotalNum * parseFloat(coupon.discountValue.toString())) / 100;
+    const discountValue = parseFloat(coupon.discountValue.toString());
+    if (discountValue < 0 || discountValue > 100) {
+      throw new Error("Coupon percentage must be between 0 and 100");
+    }
+    const percentDiscount = (subtotalNum * discountValue) / 100;
     discountAmount = percentDiscount.toFixed(2);
   }
 
