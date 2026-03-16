@@ -355,3 +355,13 @@
 - [x] Remove raw episodeId display from all order-related UIs
 - [x] Verify dev server running without errors
 - [x] Verify all episode data is returned from backend queries
+
+
+## Payment Slip Upload Bug Fix
+- [x] Fixed PaymentPage slip upload handler to properly await file reading
+- [x] Fixed async/await flow to prevent loading state from hanging
+- [x] Added /api/upload endpoint for file uploads to S3
+- [x] Validated file type and size on backend
+- [x] Ensured slip URL is properly saved to payment record
+- [x] Added error handling and logging
+- [x] Verified dev server running without errors
