@@ -86,14 +86,14 @@ export default function AdminDashboard() {
 
   return (
     <AdminLayout>
-      <div className="space-y-8">
-        {/* Quick Stats */}
+      <div className="space-y-4 md:space-y-6">
+        {/* Quick Stats - Mobile first grid */}
         <div>
           <SectionHeader 
             title="Dashboard Overview" 
             description="Key metrics and recent activity"
           />
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-2 md:gap-4">
             <StatCard
               label="Total Novels"
               value={totalNovels}
@@ -121,84 +121,84 @@ export default function AdminDashboard() {
           </div>
         </div>
 
-        {/* Tabs */}
+        {/* Tabs - Mobile optimized */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-3 lg:w-auto">
-            <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="payments">
-              Payments
+          <TabsList className="grid w-full grid-cols-3 h-auto gap-1 p-1">
+            <TabsTrigger value="overview" className="text-xs md:text-sm py-2">Overview</TabsTrigger>
+            <TabsTrigger value="payments" className="text-xs md:text-sm py-2 flex items-center justify-center gap-1">
+              <span>Payments</span>
               {pendingPaymentCount > 0 && (
-                <Badge className="ml-2 bg-red-100 text-red-800">{pendingPaymentCount}</Badge>
+                <Badge className="ml-1 bg-red-100 text-red-800 text-xs px-1.5 py-0">{pendingPaymentCount}</Badge>
               )}
             </TabsTrigger>
-            <TabsTrigger value="recent">Recent Orders</TabsTrigger>
+            <TabsTrigger value="recent" className="text-xs md:text-sm py-2">Recent</TabsTrigger>
           </TabsList>
 
           {/* Overview Tab */}
-          <TabsContent value="overview" className="space-y-6 mt-6">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <TabsContent value="overview" className="space-y-3 md:space-y-4 mt-4">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 md:gap-4">
               {/* Quick Actions */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-lg">Quick Actions</CardTitle>
+              <Card className="p-3 md:p-4">
+                <CardHeader className="p-0 mb-3">
+                  <CardTitle className="text-sm md:text-base">Quick Actions</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-3">
+                <CardContent className="p-0 space-y-2">
                   <Button
                     variant="outline"
-                    className="w-full justify-start h-10"
+                    className="w-full justify-start h-9 text-xs md:text-sm"
                     onClick={() => navigate("/admin/novels")}
                   >
-                    <BookOpen className="w-4 h-4 mr-2" />
+                    <BookOpen className="w-3 h-3 md:w-4 md:h-4 mr-2" />
                     Manage Novels
                   </Button>
                   <Button
                     variant="outline"
-                    className="w-full justify-start h-10"
+                    className="w-full justify-start h-9 text-xs md:text-sm"
                     onClick={() => navigate("/admin/episodes")}
                   >
-                    <TrendingUp className="w-4 h-4 mr-2" />
+                    <TrendingUp className="w-3 h-3 md:w-4 md:h-4 mr-2" />
                     Manage Episodes
                   </Button>
                   <Button
                     variant="outline"
-                    className="w-full justify-start h-10"
+                    className="w-full justify-start h-9 text-xs md:text-sm"
                     onClick={() => navigate("/admin/payments")}
                   >
-                    <AlertCircle className="w-4 h-4 mr-2" />
+                    <AlertCircle className="w-3 h-3 md:w-4 md:h-4 mr-2" />
                     Review Payments
                   </Button>
                   <Button
                     variant="outline"
-                    className="w-full justify-start h-10"
+                    className="w-full justify-start h-9 text-xs md:text-sm"
                     onClick={() => navigate("/admin/settings")}
                   >
-                    <CheckCircle className="w-4 h-4 mr-2" />
+                    <CheckCircle className="w-3 h-3 md:w-4 md:h-4 mr-2" />
                     Settings
                   </Button>
                 </CardContent>
               </Card>
 
               {/* System Status */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-lg">System Status</CardTitle>
+              <Card className="p-3 md:p-4">
+                <CardHeader className="p-0 mb-3">
+                  <CardTitle className="text-sm md:text-base">System Status</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-slate-600">Database</span>
-                    <span className="text-sm font-medium text-green-600">✓ Connected</span>
+                <CardContent className="p-0 space-y-2">
+                  <div className="flex items-center justify-between text-xs md:text-sm">
+                    <span className="text-slate-600">Database</span>
+                    <span className="font-medium text-green-600">✓ Connected</span>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-slate-600">Auth</span>
-                    <span className="text-sm font-medium text-green-600">✓ Active</span>
+                  <div className="flex items-center justify-between text-xs md:text-sm">
+                    <span className="text-slate-600">Auth</span>
+                    <span className="font-medium text-green-600">✓ Active</span>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-slate-600">Storage</span>
-                    <span className="text-sm font-medium text-green-600">✓ Ready</span>
+                  <div className="flex items-center justify-between text-xs md:text-sm">
+                    <span className="text-slate-600">Storage</span>
+                    <span className="font-medium text-green-600">✓ Ready</span>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-slate-600">API</span>
-                    <span className="text-sm font-medium text-green-600">✓ Running</span>
+                  <div className="flex items-center justify-between text-xs md:text-sm">
+                    <span className="text-slate-600">API</span>
+                    <span className="font-medium text-green-600">✓ Running</span>
                   </div>
                 </CardContent>
               </Card>
@@ -206,11 +206,11 @@ export default function AdminDashboard() {
           </TabsContent>
 
           {/* Payments Tab */}
-          <TabsContent value="payments" className="space-y-4 mt-6">
+          <TabsContent value="payments" className="space-y-2 md:space-y-3 mt-4">
             {paymentsLoading ? (
-              <div className="space-y-4">
+              <div className="space-y-2 md:space-y-3">
                 {[...Array(3)].map((_, i) => (
-                  <Skeleton key={i} className="h-32" />
+                  <Skeleton key={i} className="h-24 md:h-32" />
                 ))}
               </div>
             ) : !pendingPayments || pendingPayments.length === 0 ? (
@@ -220,55 +220,58 @@ export default function AdminDashboard() {
                 description="All payments have been reviewed"
               />
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-2 md:space-y-3">
                 {pendingPayments.map((payment: any) => (
-                  <Card key={payment.id} className="overflow-hidden hover:shadow-md transition-shadow">
-                    <CardHeader className="pb-3 bg-slate-50">
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <CardTitle className="text-base">{payment.order?.orderNumber}</CardTitle>
-                          <div className="mt-2 space-y-1 text-sm">
-                            <p className="text-slate-700">
-                              <span className="font-semibold">Buyer:</span> {payment.user?.name || "Unknown"}
-                            </p>
-                            <p className="text-slate-600">
-                              <span className="font-semibold">Email:</span> {payment.user?.email || "N/A"}
-                            </p>
-                            <p className="text-slate-600">
-                              <span className="font-semibold">Amount:</span> ฿{parseFloat(payment.order?.totalAmount.toString()).toFixed(2)}
-                            </p>
-                          </div>
+                  <Card key={payment.id} className="overflow-hidden hover:shadow-md transition-shadow p-3 md:p-4">
+                    <div className="space-y-2 md:space-y-3">
+                      {/* Header with order number and status */}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <h3 className="font-semibold text-sm md:text-base text-slate-900 truncate">
+                            {payment.order?.orderNumber}
+                          </h3>
                         </div>
                         <StatusBadge status="pending" />
                       </div>
-                    </CardHeader>
 
-                    <CardContent className="pt-6">
-                      {/* Payment Slip */}
+                      {/* Buyer info - compact */}
+                      <div className="space-y-1 text-xs md:text-sm">
+                        <p className="text-slate-700">
+                          <span className="font-semibold">Buyer:</span> {payment.user?.name || "Unknown"}
+                        </p>
+                        <p className="text-slate-600 truncate">
+                          <span className="font-semibold">Email:</span> {payment.user?.email || "N/A"}
+                        </p>
+                        <p className="text-slate-600">
+                          <span className="font-semibold">Amount:</span> ฿{parseFloat(payment.order?.totalAmount.toString()).toFixed(2)}
+                        </p>
+                      </div>
+
+                      {/* Payment Slip - compact preview */}
                       {payment.slipImageUrl && (
-                        <div className="mb-4">
-                          <p className="text-sm font-semibold mb-2">Payment Slip:</p>
+                        <div className="pt-2 border-t">
+                          <p className="text-xs font-semibold mb-1">Payment Slip:</p>
                           <img
                             src={payment.slipImageUrl}
                             alt="Payment slip"
-                            className="max-w-xs rounded border border-slate-200"
+                            className="max-w-xs max-h-32 rounded border border-slate-200"
                           />
                         </div>
                       )}
 
-                      {/* Actions */}
-                      <div className="flex gap-2 pt-4 border-t">
+                      {/* Actions - stack on mobile */}
+                      <div className="flex gap-2 pt-2 border-t flex-col sm:flex-row">
                         <Button
-                          className="flex-1"
+                          className="flex-1 h-8 md:h-9 text-xs md:text-sm"
                           onClick={() => approveMutation.mutate({ paymentId: payment.id })}
                           disabled={approveMutation.isPending}
                         >
-                          <CheckCircle className="w-4 h-4 mr-2" />
+                          <CheckCircle className="w-3 h-3 md:w-4 md:h-4 mr-1" />
                           Approve
                         </Button>
                         <Button
                           variant="destructive"
-                          className="flex-1"
+                          className="flex-1 h-8 md:h-9 text-xs md:text-sm"
                           onClick={() => {
                             const reason = prompt("Rejection reason:");
                             if (reason) {
@@ -277,11 +280,11 @@ export default function AdminDashboard() {
                           }}
                           disabled={rejectMutation.isPending}
                         >
-                          <XCircle className="w-4 h-4 mr-2" />
+                          <XCircle className="w-3 h-3 md:w-4 md:h-4 mr-1" />
                           Reject
                         </Button>
                       </div>
-                    </CardContent>
+                    </div>
                   </Card>
                 ))}
               </div>
@@ -289,11 +292,11 @@ export default function AdminDashboard() {
           </TabsContent>
 
           {/* Recent Orders Tab */}
-          <TabsContent value="recent" className="space-y-4 mt-6">
+          <TabsContent value="recent" className="space-y-2 md:space-y-3 mt-4">
             {ordersLoading ? (
-              <div className="space-y-4">
+              <div className="space-y-2 md:space-y-3">
                 {[...Array(5)].map((_, i) => (
-                  <Skeleton key={i} className="h-20" />
+                  <Skeleton key={i} className="h-16 md:h-20" />
                 ))}
               </div>
             ) : !allOrders || allOrders.length === 0 ? (
@@ -303,37 +306,40 @@ export default function AdminDashboard() {
                 description="No orders found in the system"
               />
             ) : (
-              <div className="overflow-x-auto border border-slate-200 rounded-lg">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b bg-slate-50">
-                      <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Order</th>
-                      <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Amount</th>
-                      <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Items</th>
-                      <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Status</th>
-                      <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Date</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {allOrders.slice(0, 10).map((order: any) => (
-                      <tr
-                        key={order.id}
-                        className="border-b hover:bg-slate-50 cursor-pointer transition-colors"
-                        onClick={() => navigate(`/admin/orders/${order.id}`)}
-                      >
-                        <td className="px-4 py-3 font-medium text-slate-900">{order.orderNumber}</td>
-                        <td className="px-4 py-3 text-slate-700">฿{parseFloat(order.totalAmount.toString()).toFixed(2)}</td>
-                        <td className="px-4 py-3 text-slate-700">{order.items?.length || 0} items</td>
-                        <td className="px-4 py-3">
-                          <StatusBadge status={order.status} />
-                        </td>
-                        <td className="px-4 py-3 text-sm text-slate-600">
-                          {new Date(order.createdAt).toLocaleDateString()}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="space-y-2 md:space-y-3">
+                {allOrders.slice(0, 10).map((order: any) => (
+                  <Card
+                    key={order.id}
+                    className="p-3 md:p-4 hover:shadow-md transition-shadow cursor-pointer"
+                    onClick={() => navigate(`/admin/orders/${order.id}`)}
+                  >
+                    <div className="space-y-2">
+                      {/* Order number and status */}
+                      <div className="flex items-center justify-between gap-2">
+                        <h3 className="font-semibold text-sm md:text-base text-slate-900">
+                          {order.orderNumber}
+                        </h3>
+                        <StatusBadge status={order.status} />
+                      </div>
+
+                      {/* Order details - compact grid */}
+                      <div className="grid grid-cols-2 gap-2 text-xs md:text-sm">
+                        <div>
+                          <p className="text-slate-600">Amount</p>
+                          <p className="font-semibold text-slate-900">฿{parseFloat(order.totalAmount.toString()).toFixed(2)}</p>
+                        </div>
+                        <div>
+                          <p className="text-slate-600">Items</p>
+                          <p className="font-semibold text-slate-900">{order.items?.length || 0}</p>
+                        </div>
+                        <div className="col-span-2">
+                          <p className="text-slate-600">Date</p>
+                          <p className="font-semibold text-slate-900">{new Date(order.createdAt).toLocaleDateString()}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </Card>
+                ))}
               </div>
             )}
           </TabsContent>

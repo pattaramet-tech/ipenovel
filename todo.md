@@ -389,3 +389,15 @@
 - [x] Revert selection state on mutation error
 - [x] Keep purchased episodes showing "Read" button unchanged
 - [x] Dev server running without errors
+
+
+## Admin Dashboard Mobile-First Refactor
+- [x] Make dashboard layout mobile-first with responsive grid (2-col mobile, 4-col desktop)
+- [x] Reduce spacing and padding on mobile (space-y-4 → space-y-3, p-4 → p-3)
+- [x] Optimize header and tabs for mobile (smaller text, compact badges)
+- [x] Make payment cards stack information cleanly on mobile
+- [x] Convert Recent Orders table to card layout for mobile
+- [x] Make buttons touch-friendly with proper sizing on mobile
+- [x] Reduce empty space and make layout more compact overall
+- [x] Preserve desktop support with md/lg breakpoints
+- [x] Dev server running without errors
