@@ -123,6 +123,8 @@ export default function PaymentPage() {
   const { order, items, payment } = orderData;
   const totalAmount = parseFloat(order.totalAmount.toString()).toFixed(2);
   const isSlipSubmitted = payment?.slipImageUrl && payment?.status === "pending";
+  const isRejected = payment?.status === "rejected";
+  const isApproved = payment?.status === "approved" || order?.paymentStatus === "approved";
 
   return (
     <div className="min-h-screen bg-slate-50 py-8">
@@ -179,15 +181,87 @@ export default function PaymentPage() {
             </CardContent>
           </Card>
 
-          {/* Slip Upload Card */}
-          {isSlipSubmitted ? (
+          {/* Slip Status Card */}
+          {isApproved ? (
             <Card className="border-green-200 bg-green-50">
               <CardContent className="pt-6">
                 <div className="flex items-center gap-3">
                   <CheckCircle className="w-6 h-6 text-green-600" />
                   <div>
-                    <p className="font-semibold text-green-900">{t("payment.slipSubmitted")}</p>
-                    <p className="text-sm text-green-700">{t("payment.pendingReview")}</p>
+                    <p className="font-semibold text-green-900">{t("payment.approved")}</p>
+                    <p className="text-sm text-green-700">{t("payment.accessGranted")}</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ) : isRejected ? (
+            <>
+              <Card className="border-red-200 bg-red-50">
+                <CardContent className="pt-6">
+                  <div className="flex items-center gap-3">
+                    <AlertCircle className="w-6 h-6 text-red-600" />
+                    <div>
+                      <p className="font-semibold text-red-900">{t("payment.rejected")}</p>
+                      {payment?.rejectionReason && (
+                        <p className="text-sm text-red-700 mt-2">{t("payment.rejectionReason")}: {payment.rejectionReason}</p>
+                      )}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Upload className="w-5 h-5" />
+                    {t("payment.uploadNewSlip")}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="border-2 border-dashed border-slate-300 rounded-lg p-8 text-center">
+                    <input
+                      type="file"
+                      id="slip-upload-retry"
+                      className="hidden"
+                      accept="image/jpeg,image/png,application/pdf"
+                      onChange={handleFileSelect}
+                    />
+                    <label
+                      htmlFor="slip-upload-retry"
+                      className="cursor-pointer block"
+                    >
+                      <Upload className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+                      <p className="text-sm font-semibold text-slate-900">
+                        {selectedFile ? selectedFile.name : t("payment.clickToUpload")}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">{t("payment.fileFormats")}</p>
+                    </label>
+                  </div>
+
+                  {selectedFile && (
+                    <div className="bg-blue-50 p-3 rounded-lg flex items-center gap-2">
+                      <CheckCircle className="w-5 h-5 text-blue-600" />
+                      <span className="text-sm text-blue-900">{t("payment.fileSelected")}: {selectedFile.name}</span>
+                    </div>
+                  )}
+
+                  <Button
+                    className="w-full"
+                    onClick={handleUploadSlip}
+                    disabled={!selectedFile || isUploading || uploadPaymentSlipMutation.isPending}
+                  >
+                    {isUploading || uploadPaymentSlipMutation.isPending ? t("common.loading") : t("payment.submitSlip")}
+                  </Button>
+                </CardContent>
+              </Card>
+            </>
+          ) : isSlipSubmitted ? (
+            <Card className="border-blue-200 bg-blue-50">
+              <CardContent className="pt-6">
+                <div className="flex items-center gap-3">
+                  <CheckCircle className="w-6 h-6 text-blue-600" />
+                  <div>
+                    <p className="font-semibold text-blue-900">{t("payment.slipSubmitted")}</p>
+                    <p className="text-sm text-blue-700">{t("payment.pendingReview")}</p>
                   </div>
                 </div>
               </CardContent>

@@ -148,3 +148,15 @@
 - [x] Add fileUrl fallback handling
 - [x] Test Orders and My Novels pages
 - [ ] Run regression tests for orders/purchases/My Novels
+
+
+## Payment Status Sync & Rejection Flow Fix
+- [ ] Fix backend rejection bug in orderService.rejectPayment
+- [ ] Implement payment/order status sync on slip upload
+- [ ] Implement payment/order status sync on approval
+- [ ] Implement payment/order status sync on rejection
+- [ ] Update PaymentPage UX for rejected/pending/approved states
+- [ ] Update OrdersPage to show correct statuses and rejection reasons
+- [ ] Update OrderDetailPage to show correct statuses and rejection reasons
+- [ ] Add/update tests for payment status sync
+- [ ] Run regression tests for payment/order flows

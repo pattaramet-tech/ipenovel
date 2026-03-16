@@ -130,6 +130,11 @@ const translations: Record<Language, Record<string, string>> = {
     "payment.fileTooLarge": "ไฟล์มีขนาดใหญ่เกินไป",
     "payment.selectFileFirst": "กรุณาเลือกไฟล์ก่อน",
     "payment.uploadFailed": "ไม่สามารถอัปโหลดไฟล์",
+    "payment.approved": "ชำระเงินได้รับการอนุมัติ",
+    "payment.accessGranted": "ชำระเงินของคุณได้รับการอนุมัติแล้ว คุณสามารถเข้าถึงตอนที่ซื้อได้",
+    "payment.rejected": "ชำระเงินถูกปฏิเสธ",
+    "payment.rejectionReason": "เหตุผล",
+    "payment.uploadNewSlip": "อัปโหลดสลิปใหม่",
 
     // Admin
     "admin.dashboard": "แดชบอร์ด",
@@ -305,6 +310,11 @@ const translations: Record<Language, Record<string, string>> = {
     "payment.fileTooLarge": "File is too large",
     "payment.selectFileFirst": "Please select a file first",
     "payment.uploadFailed": "Failed to upload file",
+    "payment.approved": "Payment Approved",
+    "payment.accessGranted": "Your payment has been approved. You now have access to your purchased episodes.",
+    "payment.rejected": "Payment Rejected",
+    "payment.rejectionReason": "Reason",
+    "payment.uploadNewSlip": "Upload New Payment Slip",
 
     // Admin
     "admin.dashboard": "Dashboard",

@@ -269,6 +269,27 @@ export const appRouter = router({
           status: "pending",
         });
 
+        // Sync order status
+        await db.updateOrder(order.id, {
+          paymentStatus: "submitted",
+          status: "pending",
+        });
+
+        // Clear rejection state on payment
+        await db.updatePayment(payment.id, {
+          status: "pending",
+        });
+
+        // Record order history
+        await db.recordOrderHistory({
+          orderId: order.id,
+          action: "payment_slip_submitted",
+          fromStatus: order.status,
+          toStatus: "pending",
+          actorUserId: ctx.user.id,
+          note: "Payment slip uploaded",
+        });
+
         return { success: true };
       }),
   }),

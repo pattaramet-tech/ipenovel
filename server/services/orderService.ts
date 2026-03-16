@@ -225,6 +225,12 @@ export async function approvePayment(paymentId: number, reviewedByUserId: number
   // Approve payment
   await db.approvePayment(paymentId, reviewedByUserId);
 
+  // Sync order status with payment status
+  await db.updateOrder(order.id, {
+    paymentStatus: "approved",
+    status: "approved",
+  });
+
   // Update order status
   // Note: In a real transaction, this would be wrapped in a DB transaction
   // For now, we update sequentially
@@ -308,7 +314,7 @@ export async function rejectPayment(paymentId: number, reviewedByUserId: number,
     throw new Error("Database not available");
   }
 
-  const payment = await db.getPaymentByOrderId(paymentId);
+  const payment = await db.getPaymentById(paymentId);
   if (!payment) {
     throw new Error("Payment not found");
   }
@@ -320,6 +326,12 @@ export async function rejectPayment(paymentId: number, reviewedByUserId: number,
 
   // Reject payment
   await db.rejectPayment(paymentId, reviewedByUserId, rejectionReason);
+
+  // Sync order status with payment status
+  await db.updateOrder(order.id, {
+    paymentStatus: "rejected",
+    status: "rejected",
+  });
 
   // Record order history
   await db.recordOrderHistory({

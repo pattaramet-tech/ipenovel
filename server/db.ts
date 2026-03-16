@@ -440,6 +440,19 @@ export async function getPaymentById(paymentId: number) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+export async function updateOrder(orderId: number, data: { status?: string; paymentStatus?: string }) {
+  const db = await getDb();
+  if (!db) return;
+
+  const updateData: any = {};
+  if (data.status !== undefined) updateData.status = data.status;
+  if (data.paymentStatus !== undefined) updateData.paymentStatus = data.paymentStatus;
+
+  if (Object.keys(updateData).length === 0) return;
+
+  await db.update(orders).set(updateData).where(eq(orders.id, orderId));
+}
+
 export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected" }) {
   const db = await getDb();
   if (!db) return;
