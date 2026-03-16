@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { useState } from "react";
+import { BookOpen } from "lucide-react";
 
 export default function NovelDetailPage() {
   const { identifier } = useParams<{ identifier: string }>();
@@ -23,7 +24,7 @@ export default function NovelDetailPage() {
 
   const { data: episodes } = trpc.novels.episodes.useQuery(
     { novelId },
-    { enabled: !!novelId }
+    { enabled: !!novelId && !!user }
   );
 
   const { data: cartData } = trpc.cart.get.useQuery();
@@ -170,9 +171,27 @@ export default function NovelDetailPage() {
                     <p className="font-semibold">{episode.episodeNumber}</p>
                     <p className="text-sm text-muted-foreground">{episode.title}</p>
                   </div>
-                  <Badge variant="outline" className="bg-green-50">
-                    Free
-                  </Badge>
+                  <div className="flex items-center gap-3">
+                    <Badge variant="outline" className="bg-green-50">
+                      Free
+                    </Badge>
+                    {episode.fileUrl ? (
+                      <a
+                        href={episode.fileUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
+                      >
+                        <BookOpen className="w-4 h-4 mr-2" />
+                        Read
+                      </a>
+                    ) : (
+                      <Button size="sm" disabled>
+                        <BookOpen className="w-4 h-4 mr-2" />
+                        Read (File Not Available)
+                      </Button>
+                    )}
+                  </div>
                 </Card>
               ))}
             </div>
@@ -186,14 +205,16 @@ export default function NovelDetailPage() {
             <div className="space-y-3">
               {paidEpisodes.map((episode: any) => {
                 const inCart = cartItems.some((item: any) => item.episodeId === episode.id);
-                const isPurchased = false;
+                const isPurchased = episode.isPurchased || false;
                 return (
                   <Card
                     key={episode.id}
-                    className={`p-4 flex items-center justify-between cursor-pointer transition-colors ${
+                    className={`p-4 flex items-center justify-between transition-colors ${
+                      !isPurchased && !inCart ? "cursor-pointer hover:bg-muted" : ""
+                    } ${
                       selectedEpisodes.includes(episode.id)
                         ? "bg-blue-50 border-blue-300"
-                        : "hover:bg-muted"
+                        : ""
                     }`}
                     onClick={() => {
                       if (!inCart && !isPurchased) {
@@ -214,16 +235,35 @@ export default function NovelDetailPage() {
                       <p className="text-sm text-muted-foreground">{episode.title}</p>
                     </div>
                     <div className="flex items-center gap-4">
-                      <p className="font-semibold text-lg">
-                        {isPurchased || inCart ? "฿" + episode.price : `฿${episode.price}`}
-                      </p>
-                      {!isPurchased && !inCart && (
-                        <input
-                          type="checkbox"
-                          checked={selectedEpisodes.includes(episode.id)}
-                          onChange={() => {}}
-                          className="w-5 h-5"
-                        />
+                      {isPurchased ? (
+                        episode.fileUrl ? (
+                          <a
+                            href={episode.fileUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
+                          >
+                            <BookOpen className="w-4 h-4 mr-2" />
+                            Read
+                          </a>
+                        ) : (
+                          <Button size="sm" disabled>
+                            <BookOpen className="w-4 h-4 mr-2" />
+                            Read (File Not Available)
+                          </Button>
+                        )
+                      ) : (
+                        <>
+                          <p className="font-semibold text-lg">฿{episode.price}</p>
+                          {!inCart && (
+                            <input
+                              type="checkbox"
+                              checked={selectedEpisodes.includes(episode.id)}
+                              onChange={() => {}}
+                              className="w-5 h-5"
+                            />
+                          )}
+                        </>
                       )}
                     </div>
                   </Card>
