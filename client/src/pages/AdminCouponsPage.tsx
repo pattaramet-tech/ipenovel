@@ -99,17 +99,17 @@ export default function AdminCouponsPage() {
   };
 
   const handleEdit = (coupon: any) => {
-    setFormData({
-      code: coupon.code,
-      discountType: coupon.discountType,
-      discountValue: coupon.discountValue,
-      minPurchaseAmount: coupon.minPurchaseAmount || "",
-      maxUsageCount: coupon.maxUsageCount ? coupon.maxUsageCount.toString() : "",
-      expiresAt: coupon.expiresAt ? new Date(coupon.expiresAt).toISOString().slice(0, 16) : "",
-      isActive: coupon.isActive,
-    });
     setEditingId(coupon.id);
     setIsCreating(false);
+    setFormData({
+      code: coupon.code || "",
+      discountType: coupon.discountType || "flat",
+      discountValue: coupon.discountValue ? String(coupon.discountValue).trim() : "",
+      minPurchaseAmount: coupon.minPurchaseAmount ? String(coupon.minPurchaseAmount).trim() : "",
+      maxUsageCount: coupon.maxUsageCount ? String(coupon.maxUsageCount) : "",
+      expiresAt: coupon.expiresAt ? new Date(coupon.expiresAt).toISOString().split("T")[0] : "",
+      isActive: coupon.isActive ?? true,
+    });
   };
 
   const handleSave = () => {
@@ -284,7 +284,7 @@ export default function AdminCouponsPage() {
                   <tr key={coupon.id} className="border-b hover:bg-slate-50">
                     <td className="p-3 font-medium">{coupon.code}</td>
                     <td className="p-3">
-                      {coupon.discountType === "flat" ? "฿" : ""}{coupon.discountValue}
+                      {coupon.discountType === "flat" ? "฿" : ""}{coupon.discountValue || "0.00"}
                       {coupon.discountType === "percentage" ? "%" : ""}
                     </td>
                     <td className="p-3">฿{coupon.minPurchaseAmount || "0"}</td>

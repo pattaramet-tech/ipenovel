@@ -218,3 +218,12 @@
 - [x] Add validation for percentage discount range (0-100)
 - [x] Update NEWZ coupon with valid discount value (15%)
 - [x] All coupon validation tests passing (13/13)
+
+
+## Coupon Serialization & Validation Fix
+- [x] Fix admin coupons list query to normalize decimal fields (discountValue, minPurchaseAmount)
+- [x] Normalize numeric fields in AdminCouponsPage form/state
+- [x] Improve coupon validation error handling with specific error messages
+- [x] All coupon validation tests passing (13/13)
+- [x] discountValue now displays correctly in admin coupons table
+- [x] Coupon validation no longer fails with generic "invalid" error

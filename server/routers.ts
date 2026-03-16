@@ -181,9 +181,10 @@ export const appRouter = router({
       .query(async ({ input }) => {
         try {
           const { discountAmount } = await orderService.validateAndApplyCoupon(input.couponCode, input.subtotal);
-          return { discountAmount };
+          return { discountAmount, valid: true };
         } catch (error: any) {
-          throw new TRPCError({ code: "BAD_REQUEST" });
+          const message = error?.message || "Invalid coupon";
+          throw new TRPCError({ code: "BAD_REQUEST", message });
         }
       }),
 
@@ -211,7 +212,8 @@ export const appRouter = router({
 
           return order;
         } catch (error: any) {
-          throw new TRPCError({ code: "BAD_REQUEST" });
+          const message = error?.message || "Failed to create order";
+          throw new TRPCError({ code: "BAD_REQUEST", message });
         }
       }),
   }),
@@ -726,7 +728,12 @@ export const appRouter = router({
 
     coupons: router({
       list: adminProcedure.query(async () => {
-        return db.getAllCoupons();
+        const coupons = await db.getAllCoupons();
+        return coupons.map((coupon: any) => ({
+          ...coupon,
+          discountValue: coupon.discountValue ? String(coupon.discountValue).trim() : "0.00",
+          minPurchaseAmount: coupon.minPurchaseAmount ? String(coupon.minPurchaseAmount).trim() : null,
+        }));
       }),
 
       create: adminProcedure
@@ -741,7 +748,12 @@ export const appRouter = router({
           })
         )
         .mutation(async ({ input }) => {
-          await db.createCoupon(input);
+          const normalizedInput = {
+            ...input,
+            discountValue: String(input.discountValue).trim(),
+            minPurchaseAmount: input.minPurchaseAmount ? String(input.minPurchaseAmount).trim() : undefined,
+          };
+          await db.createCoupon(normalizedInput);
           return { success: true };
         }),
 
@@ -760,7 +772,14 @@ export const appRouter = router({
         )
         .mutation(async ({ input }) => {
           const { couponId, ...data } = input;
-          await db.updateCoupon(couponId, data);
+          const normalizedData: any = { ...data };
+          if (data.discountValue !== undefined) {
+            normalizedData.discountValue = String(data.discountValue).trim();
+          }
+          if (data.minPurchaseAmount !== undefined) {
+            normalizedData.minPurchaseAmount = data.minPurchaseAmount ? String(data.minPurchaseAmount).trim() : null;
+          }
+          await db.updateCoupon(couponId, normalizedData);
           return { success: true };
         }),
 

@@ -1,0 +1,17 @@
+{
+  "query": "SELECT id, code, discountType, discountValue, isActive FROM coupons WHERE code = 'NEWZ'",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT id, code, discountType, discountValue, isActive FROM coupons WHERE code = 'NEWZ'",
+  "rows": [
+    {
+      "id": "30001",
+      "code": "NEWZ",
+      "discountType": "percentage",
+      "discountValue": "10.00",
+      "isActive": "1"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tcode\tdiscountType\tdiscountValue\tisActive\n30001\tNEWZ\tpercentage\t10.00\t1\n",
+  "stderr": "",
+  "execution_time_ms": 1489
+}
