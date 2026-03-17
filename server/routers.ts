@@ -42,6 +42,23 @@ const dashboardRouter = router({
 export const appRouter = router({
   system: systemRouter,
 
+  // ============ HOME PAGE ============
+  home: router({
+    getSections: publicProcedure.query(async () => {
+      const [popularNovels, newNovels, freeNovels] = await Promise.all([
+        db.getPopularNovels(4),
+        db.getNewNovels(4),
+        db.getFreeNovels(4),
+      ]);
+
+      return {
+        popularNovels,
+        newNovels,
+        freeNovels,
+      };
+    }),
+  }),
+
   // ============ AUTH ============
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user),
@@ -57,6 +74,26 @@ export const appRouter = router({
     list: publicProcedure.query(async () => {
       return db.getAllNovels();
     }),
+
+    catalog: publicProcedure
+      .input(
+        z.object({
+          sort: z.enum(["new", "popular"]).optional(),
+          filter: z.enum(["all", "free"]).optional(),
+          search: z.string().optional(),
+          limit: z.number().optional(),
+          offset: z.number().optional(),
+        })
+      )
+      .query(async ({ input }) => {
+        return db.getCatalogNovels({
+          sort: input.sort || "new",
+          filter: input.filter || "all",
+          search: input.search,
+          limit: input.limit || 50,
+          offset: input.offset || 0,
+        });
+      }),
 
     detail: publicProcedure.input(z.object({ novelId: z.number() })).query(async ({ input }) => {
       const novel = await db.getNovelById(input.novelId);

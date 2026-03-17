@@ -10,11 +10,11 @@ import { useLanguage } from "@/contexts/LanguageContext";
 export default function Home() {
   const { user, isAuthenticated } = useAuth();
   const { t } = useLanguage();
-  const { data: novels, isLoading: novelsLoading } = trpc.novels.list.useQuery();
+  const { data: sections, isLoading } = trpc.home.getSections.useQuery();
 
-  const featuredNovels = novels?.slice(0, 4) || [];
-  const newNovels = novels?.slice(4, 8) || [];
-  const freeNovels = novels?.filter((n: any) => true).slice(0, 4) || [];
+  const popularNovels = sections?.popularNovels || [];
+  const newNovels = sections?.newNovels || [];
+  const freeNovels = sections?.freeNovels || [];
 
   // Novel Card Component for reusability
   const NovelCard = ({ novel, showFreeTag = false }: any) => (
@@ -32,7 +32,7 @@ export default function Home() {
               <BookOpen className="w-12 h-12 text-slate-400" />
             </div>
           )}
-          {showFreeTag && (
+          {showFreeTag && novel.freeEpisodeCount > 0 && (
             <div className="absolute top-3 right-3 bg-green-500 text-white px-3 py-1 rounded-full text-xs font-semibold">
               {t("home.free")}
             </div>
@@ -98,7 +98,7 @@ export default function Home() {
 
       {/* Main Content - Mobile First */}
       <div className="max-w-6xl mx-auto px-4 py-12 sm:py-16 md:py-20">
-        {/* Featured Novels Section */}
+        {/* Featured Novels Section - Popular */}
         <section className="mb-16 sm:mb-20">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
             <div>
@@ -107,7 +107,7 @@ export default function Home() {
               </h2>
               <p className="text-sm text-slate-600 mt-1">{t("home.featuredDesc")}</p>
             </div>
-            <Link href="/novels" className="flex-shrink-0">
+            <Link href="/novels?sort=popular" className="flex-shrink-0">
               <Button 
                 variant="outline" 
                 className="w-full sm:w-auto rounded-full"
@@ -118,15 +118,15 @@ export default function Home() {
             </Link>
           </div>
 
-          {novelsLoading ? (
+          {isLoading ? (
             <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
               {[...Array(4)].map((_, i) => (
                 <Skeleton key={i} className="h-64 sm:h-72 rounded-xl" />
               ))}
             </div>
-          ) : featuredNovels.length > 0 ? (
+          ) : popularNovels.length > 0 ? (
             <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-              {featuredNovels.map((novel: any) => (
+              {popularNovels.map((novel: any) => (
                 <NovelCard key={novel.id} novel={novel} />
               ))}
             </div>
@@ -146,7 +146,7 @@ export default function Home() {
               </h2>
               <p className="text-sm text-slate-600 mt-1">{t("home.newReleasesDesc")}</p>
             </div>
-            <Link href="/novels" className="flex-shrink-0">
+            <Link href="/novels?sort=new" className="flex-shrink-0">
               <Button 
                 variant="outline" 
                 className="w-full sm:w-auto rounded-full"
@@ -157,7 +157,7 @@ export default function Home() {
             </Link>
           </div>
 
-          {novelsLoading ? (
+          {isLoading ? (
             <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
               {[...Array(4)].map((_, i) => (
                 <Skeleton key={i} className="h-64 sm:h-72 rounded-xl" />
@@ -185,7 +185,7 @@ export default function Home() {
               </h2>
               <p className="text-sm text-slate-600 mt-1">{t("home.freeEpisodesDesc")}</p>
             </div>
-            <Link href="/novels" className="flex-shrink-0">
+            <Link href="/novels?filter=free&sort=new" className="flex-shrink-0">
               <Button 
                 variant="outline" 
                 className="w-full sm:w-auto rounded-full"
@@ -196,7 +196,7 @@ export default function Home() {
             </Link>
           </div>
 
-          {novelsLoading ? (
+          {isLoading ? (
             <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
               {[...Array(4)].map((_, i) => (
                 <Skeleton key={i} className="h-64 sm:h-72 rounded-xl" />

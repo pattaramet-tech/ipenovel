@@ -442,3 +442,21 @@
 - [x] Verify admin can access /admin dashboard after login
 - [x] Verify admin queries (payments, orders, novels) work correctly
 - [x] Test admin login flow end-to-end
+
+
+## Home Page & Novel Listing - Real Popularity/Recency/Free Logic Fix
+- [x] Audit current Home.tsx and NovelsPage.tsx implementation
+- [x] Create query helpers for popular, new, and free novels with aggregate subqueries
+- [x] Add home.getSections backend endpoint (popular, new, free novels)
+- [x] Add novels.catalog backend endpoint with sort/filter support
+- [x] Update Home.tsx to use home.getSections instead of slice/filter logic
+- [x] Update NovelsPage.tsx to support ?sort=new, ?sort=popular, ?filter=free query params
+- [x] Fix "View all" links from Home sections to correct catalog URLs
+- [x] Verify no N+1 queries in popularity/free episode counts
+- [x] Write tests for new query helpers and endpoints (24/24 tests passing)
+- [x] Test Home page sections show correct novels
+- [x] Test /novels?sort=popular shows real popularity ranking
+- [x] Test /novels?sort=new shows newest novels
+- [x] Test /novels?filter=free shows only novels with free episodes
+- [x] Test banner links work correctly
+- [x] Verify no regressions in admin pages, detail pages, cart, or existing flows

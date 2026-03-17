@@ -1,5 +1,5 @@
 import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count } from "drizzle-orm";
-import { sql } from "drizzle-orm";
+import { sql, getTableColumns } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
@@ -21,6 +21,7 @@ import {
   banners,
   settings,
   orderHistory,
+  Novel,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
@@ -1118,4 +1119,275 @@ export async function getAdminByEmail(email: string) {
 
   const result = await db.select().from(users).where(eq(users.email, email)).limit(1);
   return result[0];
+}
+
+
+// ============ HOME PAGE & CATALOG QUERIES ============
+
+/**
+ * Type for novel with computed counts
+ */
+export interface NovelWithCounts extends Novel {
+  purchaseCount: number;
+  wishlistCount: number;
+  freeEpisodeCount: number;
+}
+
+/**
+ * Get popular novels sorted by purchaseCount DESC, wishlistCount DESC, createdAt DESC
+ * Uses aggregate subqueries to avoid N+1 queries
+ */
+export async function getPopularNovels(limit: number = 4): Promise<NovelWithCounts[]> {
+  const db = await getDb();
+  if (!db) return [];
+
+  // Subquery for purchase counts per novel
+  const purchaseCountsSubquery = db
+    .select({
+      novelId: purchases.novelId,
+      count: sql<number>`COUNT(DISTINCT ${purchases.userId})`.as("purchaseCount"),
+    })
+    .from(purchases)
+    .groupBy(purchases.novelId)
+    .as("purchaseCounts");
+
+  // Subquery for wishlist counts per novel
+  const wishlistCountsSubquery = db
+    .select({
+      novelId: wishlists.novelId,
+      count: sql<number>`COUNT(DISTINCT ${wishlists.userId})`.as("wishlistCount"),
+    })
+    .from(wishlists)
+    .groupBy(wishlists.novelId)
+    .as("wishlistCounts");
+
+  const result = await db
+    .select({
+      ...getTableColumns(novels),
+      purchaseCount: sql<number>`COALESCE(${purchaseCountsSubquery.count}, 0)`,
+      wishlistCount: sql<number>`COALESCE(${wishlistCountsSubquery.count}, 0)`,
+      freeEpisodeCount: sql<number>`0`, // Placeholder, not used for popular
+    })
+    .from(novels)
+    .leftJoin(purchaseCountsSubquery, eq(novels.id, purchaseCountsSubquery.novelId))
+    .leftJoin(wishlistCountsSubquery, eq(novels.id, wishlistCountsSubquery.novelId))
+    .orderBy(
+      desc(sql<number>`COALESCE(${purchaseCountsSubquery.count}, 0)`),
+      desc(sql<number>`COALESCE(${wishlistCountsSubquery.count}, 0)`),
+      desc(novels.createdAt)
+    )
+    .limit(limit);
+
+  // Normalize counts to numbers
+  return result.map((row: any) => ({
+    ...row,
+    purchaseCount: Number(row.purchaseCount) || 0,
+    wishlistCount: Number(row.wishlistCount) || 0,
+    freeEpisodeCount: 0,
+  }));
+}
+
+/**
+ * Get new novels sorted by createdAt DESC
+ */
+export async function getNewNovels(limit: number = 4): Promise<NovelWithCounts[]> {
+  const db = await getDb();
+  if (!db) return [];
+
+  // Subquery for purchase counts
+  const purchaseCountsSubquery = db
+    .select({
+      novelId: purchases.novelId,
+      count: sql<number>`COUNT(DISTINCT ${purchases.userId})`.as("purchaseCount"),
+    })
+    .from(purchases)
+    .groupBy(purchases.novelId)
+    .as("purchaseCounts");
+
+  // Subquery for wishlist counts
+  const wishlistCountsSubquery = db
+    .select({
+      novelId: wishlists.novelId,
+      count: sql<number>`COUNT(DISTINCT ${wishlists.userId})`.as("wishlistCount"),
+    })
+    .from(wishlists)
+    .groupBy(wishlists.novelId)
+    .as("wishlistCounts");
+
+  const result = await db
+    .select({
+      ...getTableColumns(novels),
+      purchaseCount: sql<number>`COALESCE(${purchaseCountsSubquery.count}, 0)`,
+      wishlistCount: sql<number>`COALESCE(${wishlistCountsSubquery.count}, 0)`,
+      freeEpisodeCount: sql<number>`0`,
+    })
+    .from(novels)
+    .leftJoin(purchaseCountsSubquery, eq(novels.id, purchaseCountsSubquery.novelId))
+    .leftJoin(wishlistCountsSubquery, eq(novels.id, wishlistCountsSubquery.novelId))
+    .orderBy(desc(novels.createdAt))
+    .limit(limit);
+
+  return result.map((row: any) => ({
+    ...row,
+    purchaseCount: Number(row.purchaseCount) || 0,
+    wishlistCount: Number(row.wishlistCount) || 0,
+    freeEpisodeCount: 0,
+  }));
+}
+
+/**
+ * Get novels with free episodes sorted by createdAt DESC
+ * Only returns novels that have at least one free episode
+ */
+export async function getFreeNovels(limit: number = 4): Promise<NovelWithCounts[]> {
+  const db = await getDb();
+  if (!db) return [];
+
+  // Subquery for free episode counts per novel
+  const freeEpisodeCountsSubquery = db
+    .select({
+      novelId: episodes.novelId,
+      count: sql<number>`COUNT(${episodes.id})`.as("freeEpisodeCount"),
+    })
+    .from(episodes)
+    .where(eq(episodes.isFree, true))
+    .groupBy(episodes.novelId)
+    .as("freeEpisodeCounts");
+
+  // Subquery for purchase counts
+  const purchaseCountsSubquery = db
+    .select({
+      novelId: purchases.novelId,
+      count: sql<number>`COUNT(DISTINCT ${purchases.userId})`.as("purchaseCount"),
+    })
+    .from(purchases)
+    .groupBy(purchases.novelId)
+    .as("purchaseCounts");
+
+  // Subquery for wishlist counts
+  const wishlistCountsSubquery = db
+    .select({
+      novelId: wishlists.novelId,
+      count: sql<number>`COUNT(DISTINCT ${wishlists.userId})`.as("wishlistCount"),
+    })
+    .from(wishlists)
+    .groupBy(wishlists.novelId)
+    .as("wishlistCounts");
+
+  const result = await db
+    .select({
+      ...getTableColumns(novels),
+      purchaseCount: sql<number>`COALESCE(${purchaseCountsSubquery.count}, 0)`,
+      wishlistCount: sql<number>`COALESCE(${wishlistCountsSubquery.count}, 0)`,
+      freeEpisodeCount: sql<number>`COALESCE(${freeEpisodeCountsSubquery.count}, 0)`,
+    })
+    .from(novels)
+    .innerJoin(freeEpisodeCountsSubquery, eq(novels.id, freeEpisodeCountsSubquery.novelId))
+    .leftJoin(purchaseCountsSubquery, eq(novels.id, purchaseCountsSubquery.novelId))
+    .leftJoin(wishlistCountsSubquery, eq(novels.id, wishlistCountsSubquery.novelId))
+    .where(sql<boolean>`${freeEpisodeCountsSubquery.count} > 0`)
+    .orderBy(desc(novels.createdAt))
+    .limit(limit);
+
+  return result.map((row: any) => ({
+    ...row,
+    purchaseCount: Number(row.purchaseCount) || 0,
+    wishlistCount: Number(row.wishlistCount) || 0,
+    freeEpisodeCount: Number(row.freeEpisodeCount) || 0,
+  }));
+}
+
+/**
+ * Get catalog novels with flexible sorting and filtering
+ * Supports sort=new|popular and filter=all|free
+ */
+export async function getCatalogNovels(params: {
+  sort?: "new" | "popular";
+  filter?: "all" | "free";
+  search?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<NovelWithCounts[]> {
+  const db = await getDb();
+  if (!db) return [];
+
+  const { sort = "new", filter = "all", search, limit = 50, offset = 0 } = params;
+
+  // Subquery for free episode counts per novel
+  const freeEpisodeCountsSubquery = db
+    .select({
+      novelId: episodes.novelId,
+      count: sql<number>`COUNT(${episodes.id})`.as("freeEpisodeCount"),
+    })
+    .from(episodes)
+    .where(eq(episodes.isFree, true))
+    .groupBy(episodes.novelId)
+    .as("freeEpisodeCounts");
+
+  // Subquery for purchase counts
+  const purchaseCountsSubquery = db
+    .select({
+      novelId: purchases.novelId,
+      count: sql<number>`COUNT(DISTINCT ${purchases.userId})`.as("purchaseCount"),
+    })
+    .from(purchases)
+    .groupBy(purchases.novelId)
+    .as("purchaseCounts");
+
+  // Subquery for wishlist counts
+  const wishlistCountsSubquery = db
+    .select({
+      novelId: wishlists.novelId,
+      count: sql<number>`COUNT(DISTINCT ${wishlists.userId})`.as("wishlistCount"),
+    })
+    .from(wishlists)
+    .groupBy(wishlists.novelId)
+    .as("wishlistCounts");
+
+  let query: any = db
+    .select({
+      ...getTableColumns(novels),
+      purchaseCount: sql<number>`COALESCE(${purchaseCountsSubquery.count}, 0)`,
+      wishlistCount: sql<number>`COALESCE(${wishlistCountsSubquery.count}, 0)`,
+      freeEpisodeCount: sql<number>`COALESCE(${freeEpisodeCountsSubquery.count}, 0)`,
+    })
+    .from(novels)
+    .leftJoin(freeEpisodeCountsSubquery, eq(novels.id, freeEpisodeCountsSubquery.novelId))
+    .leftJoin(purchaseCountsSubquery, eq(novels.id, purchaseCountsSubquery.novelId))
+    .leftJoin(wishlistCountsSubquery, eq(novels.id, wishlistCountsSubquery.novelId));
+
+  // Apply filter
+  if (filter === "free") {
+    query = query.where(sql<boolean>`${freeEpisodeCountsSubquery.count} > 0`);
+  }
+
+  // Apply search
+  if (search && search.trim()) {
+    const searchPattern = `%${search.trim()}%`;
+    query = query.where(sql`${novels.title} LIKE ${searchPattern}`);
+  }
+
+  // Apply sort
+  if (sort === "popular") {
+    query = query.orderBy(
+      desc(sql<number>`COALESCE(${purchaseCountsSubquery.count}, 0)`),
+      desc(sql<number>`COALESCE(${wishlistCountsSubquery.count}, 0)`),
+      desc(novels.createdAt)
+    );
+  } else {
+    // Default to "new"
+    query = query.orderBy(desc(novels.createdAt));
+  }
+
+  // Apply pagination
+  query = query.limit(limit).offset(offset);
+
+  const result: any[] = await query;
+
+  return result.map((row: any) => ({
+    ...row,
+    purchaseCount: Number(row.purchaseCount) || 0,
+    wishlistCount: Number(row.wishlistCount) || 0,
+    freeEpisodeCount: Number(row.freeEpisodeCount) || 0,
+  }));
 }
