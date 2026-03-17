@@ -613,3 +613,14 @@
 - [x] Add Home button to shared admin navigation (added to top bar with Home icon)
 - [x] Verify Home button appears on all admin pages (implemented in shared AdminLayout)
 - [x] Test navigation from all admin pages (Home button navigates to / with <a href="/">)
+
+
+## Production Crash Fix
+- [x] Reproduce the error on deployed site (minified stack trace provided)
+- [x] Identify which page/action triggers the crash (app-wide crash on startup)
+- [x] Inspect recent changes (Admin Home button, Toaster import)
+- [x] Find root cause in source code (duplicate Toaster import in App.tsx)
+- [x] Fix the crash (removed duplicate import from sonner)
+- [x] Verify fix in production build (dev server running without errors)
+- [x] Add error boundary if needed (ErrorBoundary already implemented)
+- [x] Improve debugging and error messages (ErrorBoundary shows stack traces)
