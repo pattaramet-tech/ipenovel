@@ -180,8 +180,11 @@ export async function approvePayment(paymentId: number, approvedBy: string): Pro
     status: "approved",
   });
 
-  // Update order status
-  await db.updateOrder(order.id, { status: "approved" });
+  // Update order status and payment status
+  await db.updateOrder(order.id, { 
+    status: "approved",
+    paymentStatus: "approved"
+  });
 
   // Create purchase records
   const orderItems = await db.getOrderItems(order.id);
@@ -252,9 +255,13 @@ export async function rejectPayment(paymentId: number, rejectedBy: string, reaso
     status: "rejected",
   });
 
-  // Update order status
+  // Update order status and payment status
   const order = await db.getOrderById(payment.orderId);
   if (order) {
-    await db.updateOrder(order.id, { status: "rejected" });
+    await db.updateOrder(order.id, { 
+      status: "rejected",
+      paymentStatus: "rejected",
+      notes: reason
+    });
   }
 }

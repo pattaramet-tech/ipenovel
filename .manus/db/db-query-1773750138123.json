@@ -1,0 +1,9 @@
+{
+  "query": "DELETE FROM payments \nWHERE status = 'pending' AND orderId IS NULL;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute DELETE FROM payments \nWHERE status = 'pending' AND orderId IS NULL;",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 1576
+}

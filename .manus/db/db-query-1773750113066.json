@@ -1,0 +1,22 @@
+{
+  "query": "SELECT \n  status,\n  COUNT(*) as count\nFROM payments\nGROUP BY status;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT \n  status,\n  COUNT(*) as count\nFROM payments\nGROUP BY status;",
+  "rows": [
+    {
+      "status": "approved",
+      "count": "23"
+    },
+    {
+      "status": "pending",
+      "count": "35"
+    },
+    {
+      "status": "rejected",
+      "count": "58"
+    }
+  ],
+  "messages": [],
+  "stdout": "status\tcount\napproved\t23\npending\t35\nrejected\t58\n",
+  "stderr": "",
+  "execution_time_ms": 1576
+}

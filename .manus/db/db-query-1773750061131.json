@@ -1,0 +1,248 @@
+{
+  "query": "SELECT \n  p.id,\n  p.status,\n  o.id as orderId,\n  o.userId,\n  u.name as userName\nFROM payments p\nLEFT JOIN orders o ON p.orderId = o.id\nLEFT JOIN users u ON o.userId = u.id\nWHERE p.status = 'pending'\nLIMIT 50;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT \n  p.id,\n  p.status,\n  o.id as orderId,\n  o.userId,\n  u.name as userName\nFROM payments p\nLEFT JOIN orders o ON p.orderId = o.id\nLEFT JOIN users u ON o.userId = u.id\nWHERE p.status = 'pending'\nLIMIT 50;",
+  "rows": [
+    {
+      "id": "330029",
+      "status": "pending",
+      "orderId": "330041",
+      "userId": "1110259",
+      "userName": "NULL"
+    },
+    {
+      "id": "330030",
+      "status": "pending",
+      "orderId": "330042",
+      "userId": "1110259",
+      "userName": "NULL"
+    },
+    {
+      "id": "330031",
+      "status": "pending",
+      "orderId": "330043",
+      "userId": "1110275",
+      "userName": "NULL"
+    },
+    {
+      "id": "330032",
+      "status": "pending",
+      "orderId": "330044",
+      "userId": "1110259",
+      "userName": "NULL"
+    },
+    {
+      "id": "330033",
+      "status": "pending",
+      "orderId": "330045",
+      "userId": "1110259",
+      "userName": "NULL"
+    },
+    {
+      "id": "330034",
+      "status": "pending",
+      "orderId": "330046",
+      "userId": "1110279",
+      "userName": "NULL"
+    },
+    {
+      "id": "330035",
+      "status": "pending",
+      "orderId": "330047",
+      "userId": "1110259",
+      "userName": "NULL"
+    },
+    {
+      "id": "330036",
+      "status": "pending",
+      "orderId": "330048",
+      "userId": "1110287",
+      "userName": "NULL"
+    },
+    {
+      "id": "330037",
+      "status": "pending",
+      "orderId": "330049",
+      "userId": "1110259",
+      "userName": "NULL"
+    },
+    {
+      "id": "330038",
+      "status": "pending",
+      "orderId": "330050",
+      "userId": "1110259",
+      "userName": "NULL"
+    },
+    {
+      "id": "330039",
+      "status": "pending",
+      "orderId": "330051",
+      "userId": "1110291",
+      "userName": "NULL"
+    },
+    {
+      "id": "330040",
+      "status": "pending",
+      "orderId": "330052",
+      "userId": "1110259",
+      "userName": "NULL"
+    },
+    {
+      "id": "330041",
+      "status": "pending",
+      "orderId": "330053",
+      "userId": "1110292",
+      "userName": "NULL"
+    },
+    {
+      "id": "330042",
+      "status": "pending",
+      "orderId": "330054",
+      "userId": "1110259",
+      "userName": "NULL"
+    },
+    {
+      "id": "330043",
+      "status": "pending",
+      "orderId": "330059",
+      "userId": "1110296",
+      "userName": "NULL"
+    },
+    {
+      "id": "330044",
+      "status": "pending",
+      "orderId": "330060",
+      "userId": "1110314",
+      "userName": "NULL"
+    },
+    {
+      "id": "330045",
+      "status": "pending",
+      "orderId": "330061",
+      "userId": "1110319",
+      "userName": "NULL"
+    },
+    {
+      "id": "330046",
+      "status": "pending",
+      "orderId": "330062",
+      "userId": "1110325",
+      "userName": "NULL"
+    },
+    {
+      "id": "330047",
+      "status": "pending",
+      "orderId": "330063",
+      "userId": "1110328",
+      "userName": "NULL"
+    },
+    {
+      "id": "330048",
+      "status": "pending",
+      "orderId": "330068",
+      "userId": "1110329",
+      "userName": "NULL"
+    },
+    {
+      "id": "330049",
+      "status": "pending",
+      "orderId": "330069",
+      "userId": "1110347",
+      "userName": "NULL"
+    },
+    {
+      "id": "330050",
+      "status": "pending",
+      "orderId": "330070",
+      "userId": "1110353",
+      "userName": "NULL"
+    },
+    {
+      "id": "330051",
+      "status": "pending",
+      "orderId": "330071",
+      "userId": "1110360",
+      "userName": "NULL"
+    },
+    {
+      "id": "330052",
+      "status": "pending",
+      "orderId": "330072",
+      "userId": "1110361",
+      "userName": "NULL"
+    },
+    {
+      "id": "330053",
+      "status": "pending",
+      "orderId": "330077",
+      "userId": "1110364",
+      "userName": "NULL"
+    },
+    {
+      "id": "330054",
+      "status": "pending",
+      "orderId": "330078",
+      "userId": "1110381",
+      "userName": "NULL"
+    },
+    {
+      "id": "330055",
+      "status": "pending",
+      "orderId": "330079",
+      "userId": "1110386",
+      "userName": "NULL"
+    },
+    {
+      "id": "330056",
+      "status": "pending",
+      "orderId": "330080",
+      "userId": "1110392",
+      "userName": "NULL"
+    },
+    {
+      "id": "330057",
+      "status": "pending",
+      "orderId": "330081",
+      "userId": "1110395",
+      "userName": "NULL"
+    },
+    {
+      "id": "330058",
+      "status": "pending",
+      "orderId": "330086",
+      "userId": "1110397",
+      "userName": "NULL"
+    },
+    {
+      "id": "330059",
+      "status": "pending",
+      "orderId": "330087",
+      "userId": "1110414",
+      "userName": "NULL"
+    },
+    {
+      "id": "330060",
+      "status": "pending",
+      "orderId": "330088",
+      "userId": "1110419",
+      "userName": "NULL"
+    },
+    {
+      "id": "330061",
+      "status": "pending",
+      "orderId": "330089",
+      "userId": "1110425",
+      "userName": "NULL"
+    },
+    {
+      "id": "330062",
+      "status": "pending",
+      "orderId": "330090",
+      "userId": "1110428",
+      "userName": "NULL"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tstatus\torderId\tuserId\tuserName\n330029\tpending\t330041\t1110259\tNULL\n330030\tpending\t330042\t1110259\tNULL\n330031\tpending\t330043\t1110275\tNULL\n330032\tpending\t330044\t1110259\tNULL\n330033\tpending\t330045\t1110259\tNULL\n330034\tpending\t330046\t1110279\tNULL\n330035\tpending\t330047\t1110259\tNULL\n330036\tpending\t330048\t1110287\tNULL\n330037\tpending\t330049\t1110259\tNULL\n330038\tpending\t330050\t1110259\tNULL\n330039\tpending\t330051\t1110291\tNULL\n330040\tpending\t330052\t1110259\tNULL\n330041\tpending\t330053\t1110292\tNULL\n330042\tpending\t330054\t1110259\tNULL\n330043\tpending\t330059\t1110296\tNULL\n330044\tpending\t330060\t1110314\tNULL\n330045\tpending\t330061\t1110319\tNULL\n330046\tpending\t330062\t1110325\tNULL\n330047\tpending\t330063\t1110328\tNULL\n330048\tpending\t330068\t1110329\tNULL\n330049\tpending\t330069\t1110347\tNULL\n330050\tpending\t330070\t1110353\tNULL\n330051\tpending\t330071\t1110360\tNULL\n330052\tpending\t330072\t1110361\tNULL\n330053\tpending\t330077\t1110364\tNULL\n330054\tpending\t330078\t1110381\tNULL\n330055\tpending\t330079\t1110386\tNULL\n330056\tpending\t330080\t1110392\tNULL\n330057\tpending\t330081\t1110395\tNULL\n330058\tpending\t330086\t1110397\tNULL\n330059\tpending\t330087\t1110414\tNULL\n330060\tpending\t330088\t1110419\tNULL\n330061\tpending\t330089\t1110425\tNULL\n330062\tpending\t330090\t1110428\tNULL\n",
+  "stderr": "",
+  "execution_time_ms": 1528
+}

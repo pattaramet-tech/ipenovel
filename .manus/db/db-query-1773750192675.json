@@ -1,0 +1,80 @@
+{
+  "query": "SELECT \n  p.id,\n  o.id as orderId,\n  o.userId,\n  u.name as userName,\n  u.email\nFROM payments p\nLEFT JOIN orders o ON p.orderId = o.id\nLEFT JOIN users u ON o.userId = u.id\nWHERE p.status = 'pending'\nLIMIT 10;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT \n  p.id,\n  o.id as orderId,\n  o.userId,\n  u.name as userName,\n  u.email\nFROM payments p\nLEFT JOIN orders o ON p.orderId = o.id\nLEFT JOIN users u ON o.userId = u.id\nWHERE p.status = 'pending'\nLIMIT 10;",
+  "rows": [
+    {
+      "id": "330029",
+      "orderId": "330041",
+      "userId": "1110259",
+      "userName": "NULL",
+      "email": "NULL"
+    },
+    {
+      "id": "330030",
+      "orderId": "330042",
+      "userId": "1110259",
+      "userName": "NULL",
+      "email": "NULL"
+    },
+    {
+      "id": "330031",
+      "orderId": "330043",
+      "userId": "1110275",
+      "userName": "NULL",
+      "email": "NULL"
+    },
+    {
+      "id": "330032",
+      "orderId": "330044",
+      "userId": "1110259",
+      "userName": "NULL",
+      "email": "NULL"
+    },
+    {
+      "id": "330033",
+      "orderId": "330045",
+      "userId": "1110259",
+      "userName": "NULL",
+      "email": "NULL"
+    },
+    {
+      "id": "330034",
+      "orderId": "330046",
+      "userId": "1110279",
+      "userName": "NULL",
+      "email": "NULL"
+    },
+    {
+      "id": "330035",
+      "orderId": "330047",
+      "userId": "1110259",
+      "userName": "NULL",
+      "email": "NULL"
+    },
+    {
+      "id": "330036",
+      "orderId": "330048",
+      "userId": "1110287",
+      "userName": "NULL",
+      "email": "NULL"
+    },
+    {
+      "id": "330037",
+      "orderId": "330049",
+      "userId": "1110259",
+      "userName": "NULL",
+      "email": "NULL"
+    },
+    {
+      "id": "330038",
+      "orderId": "330050",
+      "userId": "1110259",
+      "userName": "NULL",
+      "email": "NULL"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\torderId\tuserId\tuserName\temail\n330029\t330041\t1110259\tNULL\tNULL\n330030\t330042\t1110259\tNULL\tNULL\n330031\t330043\t1110275\tNULL\tNULL\n330032\t330044\t1110259\tNULL\tNULL\n330033\t330045\t1110259\tNULL\tNULL\n330034\t330046\t1110279\tNULL\tNULL\n330035\t330047\t1110259\tNULL\tNULL\n330036\t330048\t1110287\tNULL\tNULL\n330037\t330049\t1110259\tNULL\tNULL\n330038\t330050\t1110259\tNULL\tNULL\n",
+  "stderr": "",
+  "execution_time_ms": 1583
+}

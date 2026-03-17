@@ -1,0 +1,15 @@
+{
+  "query": "SELECT \n  COUNT(*) as totalPending,\n  SUM(CASE WHEN o.id IS NOT NULL THEN 1 ELSE 0 END) as withOrder,\n  SUM(CASE WHEN o.id IS NULL THEN 1 ELSE 0 END) as orphaned\nFROM payments p\nLEFT JOIN orders o ON p.orderId = o.id\nWHERE p.status = 'pending';",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT \n  COUNT(*) as totalPending,\n  SUM(CASE WHEN o.id IS NOT NULL THEN 1 ELSE 0 END) as withOrder,\n  SUM(CASE WHEN o.id IS NULL THEN 1 ELSE 0 END) as orphaned\nFROM payments p\nLEFT JOIN orders o ON p.orderId = o.id\nWHERE p.status = 'pending';",
+  "rows": [
+    {
+      "totalPending": "34",
+      "withOrder": "34",
+      "orphaned": "0"
+    }
+  ],
+  "messages": [],
+  "stdout": "totalPending\twithOrder\torphaned\n34\t34\t0\n",
+  "stderr": "",
+  "execution_time_ms": 1519
+}

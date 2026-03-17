@@ -466,13 +466,14 @@ export async function getPaymentById(paymentId: number) {
   return result.length > 0 ? result[0] : undefined;
 }
 
-export async function updateOrder(orderId: number, data: { status?: string; paymentStatus?: string }) {
+export async function updateOrder(orderId: number, data: { status?: string; paymentStatus?: string; notes?: string }) {
   const db = await getDb();
   if (!db) return;
 
   const updateData: any = {};
   if (data.status !== undefined) updateData.status = data.status;
   if (data.paymentStatus !== undefined) updateData.paymentStatus = data.paymentStatus;
+  if (data.notes !== undefined) updateData.notes = data.notes;
 
   if (Object.keys(updateData).length === 0) return;
 

@@ -1,0 +1,9 @@
+{
+  "query": "-- First, get the IDs of test users\nSELECT id FROM users WHERE name LIKE 'Test%' LIMIT 100;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute -- First, get the IDs of test users\nSELECT id FROM users WHERE name LIKE 'Test%' LIMIT 100;",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 1518
+}

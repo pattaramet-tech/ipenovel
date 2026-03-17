@@ -487,3 +487,23 @@
 - [x] Test all sort options work correctly
 - [x] Verify no regressions in episode navigation and free/paid indicators
 - [x] Test with both Thai and English language settings
+
+
+## Order/Payment Status Synchronization Audit & Fix
+- [x] Audit all status fields in schema (payment.status, order.status, order.paymentStatus)
+- [x] Document all possible status values for each field (STATUS_AUDIT.md created)
+- [x] Identify source of truth for each status field
+- [x] Map all locations where each status field is read
+- [x] Map all locations where each status field is written
+- [x] Identify potential status mismatch scenarios
+- [x] Fix payment approval flow to sync all status fields (approvePayment updated)
+- [x] Fix payment rejection flow to sync all status fields (rejectPayment updated)
+- [x] Verify order creation flow sets correct initial statuses
+- [x] Check OrdersPage.tsx reads statuses correctly (fixed rejectionReason access)
+- [x] Check OrderDetailPage.tsx reads statuses correctly
+- [x] Check PaymentPage.tsx reads statuses correctly
+- [x] Check admin payment review pages read statuses correctly
+- [x] Write tests for status transitions and consistency (status-sync.test.ts created)
+- [ ] Test approval flow end-to-end
+- [ ] Test rejection flow end-to-end
+- [ ] Verify no contradictory status displays across pages

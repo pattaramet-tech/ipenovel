@@ -102,10 +102,10 @@ export default function OrdersPage() {
 
                 <CardContent>
                   {/* Show rejection reason if payment was rejected */}
-                  {order.paymentStatus === "rejected" && order.rejectionReason && (
+                  {order.paymentStatus === "rejected" && order.payment?.rejectionReason && (
                     <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-sm text-red-700">
                       <p className="font-semibold">Payment Rejected</p>
-                      <p>{order.rejectionReason}</p>
+                      <p>{order.payment.rejectionReason}</p>
                     </div>
                   )}
 
