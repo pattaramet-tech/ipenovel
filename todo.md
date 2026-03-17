@@ -634,3 +634,15 @@
 - [x] Review recently changed files for risky imports (AdminLayout.tsx clean)
 - [x] Verify all imports use correct paths (@ and ./ paths both valid)
 - [x] Ensure no build-time warnings (production build successful)
+
+
+## Top 20 Best-Selling Novels Admin Dashboard
+- [x] Create backend query helper for top selling novels (getTopSellingNovels in db.ts)
+- [x] Add admin.getTopSellingNovels endpoint with time filtering (admin.analytics.topSellingNovels)
+- [x] Build admin UI component for top selling novels (AdminAnalyticsPage.tsx)
+- [x] Add time filter (all time, today, last 7 days, this month) (4 period options)
+- [x] Display ranking table with sales data (ranked table with 7 columns)
+- [x] Show summary statistics (total revenue, purchase count) (3 summary cards)
+- [x] Integrate into admin dashboard (added to AdminLayout navigation)
+- [x] Write tests for top selling novels query (5 tests passing)
+- [x] Verify data accuracy with real sales data (all tests verify correct structure)

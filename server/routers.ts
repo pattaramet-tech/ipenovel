@@ -951,6 +951,19 @@ export const appRouter = router({
           return db.bulkCreateEpisodesWithNovelTitle(input.rows);
         }),
     }),
+
+    analytics: router({
+      topSellingNovels: adminProcedure
+        .input(z.object({
+          period: z.enum(["all", "today", "7d", "month"]).default("all"),
+          limit: z.number().min(1).max(100).default(20),
+        }))
+        .query(async ({ input }) => {
+          const novels = await db.getTopSellingNovels(input.period, input.limit);
+          const stats = await db.getTopSellingNovelsStats(input.period);
+          return { novels, stats };
+        }),
+    }),
   }),
 });
 

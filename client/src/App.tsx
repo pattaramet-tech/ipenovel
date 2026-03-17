@@ -20,6 +20,7 @@ import AdminEntitlementsPage from "@/pages/AdminEntitlementsPage";
 import AdminBulkUploadPage from "@/pages/AdminBulkUploadPage";
 import AdminNovelManagePage from "@/pages/AdminNovelManagePage";
 import AdminLoginPage from "@/pages/AdminLoginPage";
+import AdminAnalyticsPage from "@/pages/AdminAnalyticsPage";
 import NovelDetailPage from "@/pages/NovelDetailPage";
 import PointsPage from "@/pages/PointsPage";
 import PaymentPage from "@/pages/PaymentPage";
@@ -55,8 +56,9 @@ function Router() {
         <Route path={"/admin/payments"} component={AdminPaymentsPage} />
         <Route path={"/admin/entitlements"} component={AdminEntitlementsPage} />
         {/* <Route path={"/admin/settings"} component={AdminSettingsPage} /> */}
-        <Route path={"/admin/bulk-upload"} component={AdminBulkUploadPage} />
-        <Route path={"/404"} component={NotFound} />
+         <Route path="/admin/bulk-upload" component={AdminBulkUploadPage} />
+        <Route path="/admin/analytics" component={AdminAnalyticsPage} />
+        <Route path="/404" component={NotFound} />
         {/* Final fallback route */}
         <Route component={NotFound} />
       </Switch>

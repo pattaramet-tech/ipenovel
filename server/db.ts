@@ -1521,3 +1521,123 @@ export async function getBrowseCatalog(params: {
     freeEpisodeCount: Number(row.freeEpisodeCount) || 0,
   }));
 }
+
+
+/**
+ * Get top selling novels by revenue with time filtering
+ * Used for admin dashboard analytics
+ */
+export async function getTopSellingNovels(period: "all" | "today" | "7d" | "month" = "all", limit: number = 20) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  // Calculate date range based on period
+  let dateFilter: any = null;
+  const now = new Date();
+  
+  if (period === "today") {
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    dateFilter = gte(orders.createdAt, startOfDay);
+  } else if (period === "7d") {
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    dateFilter = gte(orders.createdAt, sevenDaysAgo);
+  } else if (period === "month") {
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    dateFilter = gte(orders.createdAt, startOfMonth);
+  }
+
+  // Build the query with aggregation
+  let query = db
+    .select({
+      novelId: novels.id,
+      novelTitle: novels.title,
+      coverImageUrl: novels.coverImageUrl,
+      totalRevenue: sql<string>`CAST(SUM(${orderItems.finalPrice}) AS DECIMAL(12,2))`,
+      purchaseCount: sql<number>`COUNT(DISTINCT ${purchases.id})`,
+      soldEpisodesCount: sql<number>`COUNT(DISTINCT ${orderItems.episodeId})`,
+      wishlistCount: sql<number>`COUNT(DISTINCT ${wishlists.id})`,
+      createdAt: novels.createdAt,
+    })
+    .from(novels)
+    .leftJoin(orderItems, eq(novels.id, orderItems.novelId))
+    .leftJoin(orders, eq(orderItems.orderId, orders.id))
+    .leftJoin(payments, eq(orders.id, payments.orderId))
+    .leftJoin(purchases, eq(novels.id, purchases.novelId))
+    .leftJoin(wishlists, eq(novels.id, wishlists.novelId))
+    .where(
+      and(
+        // Only approved orders with approved payments
+        eq(orders.status, "approved"),
+        eq(orders.paymentStatus, "approved"),
+        eq(payments.status, "approved"),
+        // Apply date filter if specified
+        dateFilter ? dateFilter : undefined
+      )
+    )
+    .groupBy(novels.id, novels.title, novels.coverImageUrl, novels.createdAt)
+    .orderBy(desc(sql<number>`SUM(${orderItems.finalPrice})`))
+    .limit(limit);
+
+  const results: any[] = await query;
+
+  return results.map((row, index) => ({
+    rank: index + 1,
+    novelId: row.novelId,
+    novelTitle: row.novelTitle,
+    coverImageUrl: row.coverImageUrl,
+    totalRevenue: Number(row.totalRevenue) || 0,
+    purchaseCount: Number(row.purchaseCount) || 0,
+    soldEpisodesCount: Number(row.soldEpisodesCount) || 0,
+    wishlistCount: Number(row.wishlistCount) || 0,
+    createdAt: row.createdAt,
+  }));
+}
+
+/**
+ * Get summary statistics for top selling novels dashboard
+ */
+export async function getTopSellingNovelsStats(period: "all" | "today" | "7d" | "month" = "all") {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  // Calculate date range based on period
+  let dateFilter: any = null;
+  const now = new Date();
+  
+  if (period === "today") {
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    dateFilter = gte(orders.createdAt, startOfDay);
+  } else if (period === "7d") {
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    dateFilter = gte(orders.createdAt, sevenDaysAgo);
+  } else if (period === "month") {
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    dateFilter = gte(orders.createdAt, startOfMonth);
+  }
+
+  const result: any[] = await db
+    .select({
+      totalRevenue: sql<string>`CAST(SUM(${orderItems.finalPrice}) AS DECIMAL(12,2))`,
+      totalPurchases: sql<number>`COUNT(DISTINCT ${purchases.id})`,
+      novelCount: sql<number>`COUNT(DISTINCT ${novels.id})`,
+    })
+    .from(novels)
+    .leftJoin(orderItems, eq(novels.id, orderItems.novelId))
+    .leftJoin(orders, eq(orderItems.orderId, orders.id))
+    .leftJoin(payments, eq(orders.id, payments.orderId))
+    .leftJoin(purchases, eq(novels.id, purchases.novelId))
+    .where(
+      and(
+        eq(orders.status, "approved"),
+        eq(orders.paymentStatus, "approved"),
+        eq(payments.status, "approved"),
+        dateFilter ? dateFilter : undefined
+      )
+    );
+
+  return {
+    totalRevenue: Number(result[0]?.totalRevenue) || 0,
+    totalPurchases: Number(result[0]?.totalPurchases) || 0,
+    novelCount: Number(result[0]?.novelCount) || 0,
+  };
+}

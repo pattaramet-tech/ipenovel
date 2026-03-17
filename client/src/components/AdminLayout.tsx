@@ -44,6 +44,7 @@ const navItems: NavItem[] = [
   { label: "Orders", icon: <ShoppingCart className="w-5 h-5" />, href: "/admin/orders" },
   { label: "Entitlements", icon: <Gift className="w-5 h-5" />, href: "/admin/entitlements" },
   { label: "Bulk Upload", icon: <Upload className="w-5 h-5" />, href: "/admin/bulk-upload" },
+  { label: "Analytics", icon: <LayoutDashboard className="w-5 h-5" />, href: "/admin/analytics" },
   { label: "Settings", icon: <Settings className="w-5 h-5" />, href: "/admin/settings" },
 ];
 
