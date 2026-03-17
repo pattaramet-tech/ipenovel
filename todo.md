@@ -472,3 +472,18 @@
 - [x] Verify free badge shows for free episodes
 - [x] Verify episode cards are clickable and navigate correctly
 - [x] Add Thai and English translation keys for latest episodes section
+
+
+## Admin Episodes Page - Search & Sort Feature
+- [x] Audit current Episodes page implementation
+- [x] Implement frontend search filtering by title and episode number
+- [x] Implement frontend sorting (newest, oldest, title A-Z, title Z-A)
+- [x] Add search input to Episodes page UI
+- [x] Add sort dropdown to Episodes page UI
+- [x] Set default sort to newest first
+- [x] Show empty state when no episodes match search
+- [x] Write tests for search and sorting logic (11/11 tests passing)
+- [x] Test search functionality with various keywords
+- [x] Test all sort options work correctly
+- [x] Verify no regressions in episode navigation and free/paid indicators
+- [x] Test with both Thai and English language settings

@@ -4,9 +4,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { toast } from "sonner";
-import { Plus, Edit2, Trash2, Loader2, ArrowLeft } from "lucide-react";
+import { Plus, Edit2, Trash2, Loader2, ArrowLeft, Search } from "lucide-react";
 import { useLocation } from "wouter";
 import {
   Dialog,
@@ -23,12 +23,16 @@ interface AdminEpisodesPageProps {
   };
 }
 
+type SortOption = "newest" | "oldest" | "title_asc" | "title_desc";
+
 export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
   const [, navigate] = useLocation();
   const scopedNovelId = params?.novelId ? parseInt(params.novelId) : undefined;
   const isScoped = !!scopedNovelId;
 
   const [novelFilter, setNovelFilter] = useState<number | undefined>(scopedNovelId);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [sortOption, setSortOption] = useState<SortOption>("newest");
   const [openDialog, setOpenDialog] = useState(false);
   const [editingEpisode, setEditingEpisode] = useState<any>(null);
   const [formData, setFormData] = useState({
@@ -130,9 +134,43 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
     });
   };
 
-  const filteredEpisodes = episodes?.filter((ep: any) =>
+  // Filter by novel
+  const novelFilteredEpisodes = episodes?.filter((ep: any) =>
     !novelFilter || ep.novelId === novelFilter
   ) || [];
+
+  // Search and sort
+  const processedEpisodes = useMemo(() => {
+    let result = [...novelFilteredEpisodes];
+
+    // Apply search filter
+    if (searchTerm.trim()) {
+      const lowerSearch = searchTerm.toLowerCase();
+      result = result.filter((ep: any) => {
+        const titleMatch = ep.title.toLowerCase().includes(lowerSearch);
+        const numberMatch = String(ep.episodeNumber).toLowerCase().includes(lowerSearch);
+        return titleMatch || numberMatch;
+      });
+    }
+
+    // Apply sorting
+    result.sort((a: any, b: any) => {
+      switch (sortOption) {
+        case "newest":
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        case "oldest":
+          return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+        case "title_asc":
+          return a.title.localeCompare(b.title);
+        case "title_desc":
+          return b.title.localeCompare(a.title);
+        default:
+          return 0;
+      }
+    });
+
+    return result;
+  }, [novelFilteredEpisodes, searchTerm, sortOption]);
 
   return (
     <AdminLayout>
@@ -158,123 +196,161 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
         </div>
 
         {/* Filters and Create Button */}
-        <div className="flex gap-4 items-center">
-          {!isScoped && (
-            <select
-              value={novelFilter || ""}
-              onChange={(e) => setNovelFilter(e.target.value ? parseInt(e.target.value) : undefined)}
-              className="px-3 py-2 border rounded-md"
-            >
-              <option value="">All Novels</option>
-              {novels?.map((novel: any) => (
-                <option key={novel.id} value={novel.id}>
-                  {novel.title}
-                </option>
-              ))}
-            </select>
-          )}
-          <Dialog open={openDialog} onOpenChange={setOpenDialog}>
-            <DialogTrigger asChild>
-              <Button
-                onClick={() => {
-                  setEditingEpisode(null);
-                  setFormData({
-                    novelId: scopedNovelId || 0,
-                    episodeNumber: "",
-                    title: "",
-                    price: "0",
-                    isFree: false,
-                    fileUrl: "",
-                  });
-                }}
+        <div className="flex flex-col gap-4">
+          <div className="flex gap-4 items-center flex-wrap">
+            {!isScoped && (
+              <select
+                value={novelFilter || ""}
+                onChange={(e) => setNovelFilter(e.target.value ? parseInt(e.target.value) : undefined)}
+                className="px-3 py-2 border rounded-md"
               >
-                <Plus className="w-4 h-4 mr-2" />
-                Create Episode
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-md">
-              <DialogHeader>
-                <DialogTitle>{editingEpisode ? "Edit Episode" : "Create New Episode"}</DialogTitle>
-              </DialogHeader>
-              <div className="space-y-4">
-                {!isScoped && (
-                  <div>
-                    <Label>Novel</Label>
-                    <select
-                      value={formData.novelId}
-                      onChange={(e) => setFormData({ ...formData, novelId: parseInt(e.target.value) })}
-                      className="w-full px-3 py-2 border rounded-md"
-                    >
-                      <option value={0}>Select a novel</option>
-                      {novels?.map((novel: any) => (
-                        <option key={novel.id} value={novel.id}>
-                          {novel.title}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-                <div>
-                  <Label>Episode Number</Label>
-                  <Input
-                    type="text"
-                    value={formData.episodeNumber}
-                    onChange={(e) => setFormData({ ...formData, episodeNumber: e.target.value })}
-                    placeholder="e.g., 001 - 030 or 1"
-                  />
-                </div>
-                <div>
-                  <Label>Title</Label>
-                  <Input
-                    value={formData.title}
-                    onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                    placeholder="Episode title"
-                  />
-                </div>
-                <div>
-                  <Label>Price (฿)</Label>
-                  <Input
-                    type="number"
-                    step="0.01"
-                    value={formData.price}
-                    onChange={(e) => setFormData({ ...formData, price: e.target.value })}
-                    placeholder="0.00"
-                  />
-                </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={formData.isFree}
-                    onChange={(e) => setFormData({ ...formData, isFree: e.target.checked })}
-                    id="isFree"
-                  />
-                  <Label htmlFor="isFree">Free Episode</Label>
-                </div>
-                <div>
-                  <Label>File URL</Label>
-                  <Input
-                    value={formData.fileUrl}
-                    onChange={(e) => setFormData({ ...formData, fileUrl: e.target.value })}
-                    placeholder="https://..."
-                  />
-                </div>
+                <option value="">All Novels</option>
+                {novels?.map((novel: any) => (
+                  <option key={novel.id} value={novel.id}>
+                    {novel.title}
+                  </option>
+                ))}
+              </select>
+            )}
+            <Dialog open={openDialog} onOpenChange={setOpenDialog}>
+              <DialogTrigger asChild>
                 <Button
-                  onClick={handleSubmit}
-                  disabled={createMutation.isPending || updateMutation.isPending}
-                  className="w-full"
+                  onClick={() => {
+                    setEditingEpisode(null);
+                    setFormData({
+                      novelId: scopedNovelId || 0,
+                      episodeNumber: "",
+                      title: "",
+                      price: "0",
+                      isFree: false,
+                      fileUrl: "",
+                    });
+                  }}
                 >
-                  {createMutation.isPending || updateMutation.isPending ? (
-                    <>
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Saving...
-                    </>
-                  ) : (
-                    "Save"
-                  )}
+                  <Plus className="w-4 h-4 mr-2" />
+                  Create Episode
                 </Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-md">
+                <DialogHeader>
+                  <DialogTitle>{editingEpisode ? "Edit Episode" : "Create New Episode"}</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4">
+                  {!isScoped && (
+                    <div>
+                      <Label>Novel</Label>
+                      <select
+                        value={formData.novelId}
+                        onChange={(e) => setFormData({ ...formData, novelId: parseInt(e.target.value) })}
+                        className="w-full px-3 py-2 border rounded-md"
+                      >
+                        <option value={0}>Select a novel</option>
+                        {novels?.map((novel: any) => (
+                          <option key={novel.id} value={novel.id}>
+                            {novel.title}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  <div>
+                    <Label>Episode Number</Label>
+                    <Input
+                      type="text"
+                      value={formData.episodeNumber}
+                      onChange={(e) => setFormData({ ...formData, episodeNumber: e.target.value })}
+                      placeholder="e.g., 001 - 030 or 1"
+                    />
+                  </div>
+                  <div>
+                    <Label>Title</Label>
+                    <Input
+                      value={formData.title}
+                      onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                      placeholder="Episode title"
+                    />
+                  </div>
+                  <div>
+                    <Label>Price (฿)</Label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      value={formData.price}
+                      onChange={(e) => setFormData({ ...formData, price: e.target.value })}
+                      placeholder="0.00"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={formData.isFree}
+                      onChange={(e) => setFormData({ ...formData, isFree: e.target.checked })}
+                      id="isFree"
+                    />
+                    <Label htmlFor="isFree">Free Episode</Label>
+                  </div>
+                  <div>
+                    <Label>File URL</Label>
+                    <Input
+                      value={formData.fileUrl}
+                      onChange={(e) => setFormData({ ...formData, fileUrl: e.target.value })}
+                      placeholder="https://..."
+                    />
+                  </div>
+                  <Button
+                    onClick={handleSubmit}
+                    disabled={createMutation.isPending || updateMutation.isPending}
+                    className="w-full"
+                  >
+                    {createMutation.isPending || updateMutation.isPending ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Saving...
+                      </>
+                    ) : (
+                      "Save"
+                    )}
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+          </div>
+
+          {/* Search and Sort Controls */}
+          <div className="flex gap-4 items-end flex-wrap">
+            <div className="flex-1 min-w-64">
+              <Label htmlFor="search" className="text-sm mb-2 block">
+                Search Episodes
+              </Label>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <Input
+                  id="search"
+                  type="text"
+                  placeholder="Search by title or episode number..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-10"
+                />
               </div>
-            </DialogContent>
-          </Dialog>
+            </div>
+            <div>
+              <Label htmlFor="sort" className="text-sm mb-2 block">
+                Sort By
+              </Label>
+              <select
+                id="sort"
+                value={sortOption}
+                onChange={(e) => setSortOption(e.target.value as SortOption)}
+                className="px-3 py-2 border rounded-md"
+              >
+                <option value="newest">Newest First</option>
+                <option value="oldest">Oldest First</option>
+                <option value="title_asc">Title A-Z</option>
+                <option value="title_desc">Title Z-A</option>
+              </select>
+            </div>
+          </div>
         </div>
 
         {/* Episodes List */}
@@ -282,15 +358,22 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
           <div className="flex items-center justify-center h-64">
             <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
           </div>
-        ) : filteredEpisodes.length === 0 ? (
+        ) : processedEpisodes.length === 0 ? (
           <Card className="p-8 text-center">
             <p className="text-muted-foreground">
-              {isScoped ? "No episodes for this novel yet" : "No episodes found"}
+              {searchTerm.trim()
+                ? "No episodes match your search"
+                : isScoped
+                  ? "No episodes for this novel yet"
+                  : "No episodes found"}
             </p>
           </Card>
         ) : (
           <div className="grid gap-4">
-            {filteredEpisodes.map((episode: any) => {
+            <div className="text-sm text-muted-foreground">
+              Showing {processedEpisodes.length} episode{processedEpisodes.length !== 1 ? "s" : ""}
+            </div>
+            {processedEpisodes.map((episode: any) => {
               const novel = novels?.find((n: any) => n.id === episode.novelId);
               return (
                 <Card key={episode.id} className="p-4">
