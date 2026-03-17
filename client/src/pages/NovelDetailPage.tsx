@@ -118,25 +118,40 @@ export default function NovelDetailPage() {
 
   // Filter and sort episodes
   const filteredAndSortedEpisodes = useMemo(() => {
-    if (!episodes) return { freeEpisodes: [], paidEpisodes: [] };
+    if (!episodes || !Array.isArray(episodes)) return { freeEpisodes: [], paidEpisodes: [] };
 
     // Search filter (case-insensitive)
     const searchLower = searchTerm.toLowerCase();
     const filtered = episodes.filter((ep: any) => {
+      if (!ep) return false;
       const titleMatch = ep.title?.toLowerCase().includes(searchLower) || false;
       const numberMatch = ep.episodeNumber?.toString().includes(searchTerm) || false;
       return titleMatch || numberMatch;
     });
 
-    // Sort
+    // Sort with defensive checks
     const sorted = [...filtered].sort((a: any, b: any) => {
+      if (!a || !b) return 0;
+      
       switch (sortBy) {
         case "newest":
-          // Sort by createdAt DESC (newest first)
-          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+          // Sort by createdAt DESC (newest first) with fallback
+          try {
+            const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+            return bTime - aTime;
+          } catch {
+            return 0;
+          }
         case "oldest":
-          // Sort by createdAt ASC (oldest first)
-          return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+          // Sort by createdAt ASC (oldest first) with fallback
+          try {
+            const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+            return aTime - bTime;
+          } catch {
+            return 0;
+          }
         case "titleAZ":
           return (a.title || "").localeCompare(b.title || "");
         case "titleZA":
@@ -146,9 +161,9 @@ export default function NovelDetailPage() {
       }
     });
 
-    // Split into free and paid
-    const freeEpisodes = sorted.filter((ep: any) => ep.isFree === true);
-    const paidEpisodes = sorted.filter((ep: any) => ep.isFree !== true);
+    // Split into free and paid with defensive checks
+    const freeEpisodes = sorted.filter((ep: any) => ep && ep.isFree === true);
+    const paidEpisodes = sorted.filter((ep: any) => ep && ep.isFree !== true);
 
     return { freeEpisodes, paidEpisodes };
   }, [episodes, searchTerm, sortBy]);
@@ -248,11 +263,13 @@ export default function NovelDetailPage() {
           <div>
             <h3 className="text-lg font-semibold mb-3 text-green-600">Free Episodes ({freeEpisodes.length})</h3>
             <div className="space-y-2">
-              {freeEpisodes.map((episode: any) => (
+              {freeEpisodes.map((episode: any) => {
+                if (!episode || !episode.id) return null;
+                return (
                 <Card key={episode.id} className="p-3 flex items-center justify-between">
                   <div className="flex-1 min-w-0">
                     <p className="font-semibold text-sm">
-                      Episode {episode.episodeNumber} - {episode.title}
+                      Episode {episode.episodeNumber || "?"} - {episode.title || "Untitled"}
                     </p>
                   </div>
                   <div className="flex items-center gap-3 ml-3 flex-shrink-0">
@@ -277,7 +294,8 @@ export default function NovelDetailPage() {
                     )}
                   </div>
                 </Card>
-              ))}
+              );
+              })}
             </div>
           </div>
         )}
@@ -288,6 +306,7 @@ export default function NovelDetailPage() {
             <h3 className="text-lg font-semibold mb-3 text-blue-600">Paid Episodes ({paidEpisodes.length})</h3>
             <div className="space-y-2">
               {paidEpisodes.map((episode: any) => {
+                if (!episode || !episode.id) return null;
                 const inCart = cartItems.some((item: any) => item.episodeId === episode.id);
                 const isPurchased = episode.isPurchased || false;
                 const isLoading = addToCartMutation.isPending || removeFromCartMutation.isPending;
@@ -298,7 +317,7 @@ export default function NovelDetailPage() {
                   >
                     <div className="flex-1 min-w-0">
                       <p className="font-semibold text-sm">
-                        Episode {episode.episodeNumber} - {episode.title}
+                        Episode {episode.episodeNumber || "?"} - {episode.title || "Untitled"}
                       </p>
                     </div>
                     <div className="flex items-center gap-3 ml-3 flex-shrink-0">

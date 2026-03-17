@@ -646,3 +646,13 @@
 - [x] Integrate into admin dashboard (added to AdminLayout navigation)
 - [x] Write tests for top selling novels query (5 tests passing)
 - [x] Verify data accuracy with real sales data (all tests verify correct structure)
+
+
+## Production Crash - Novel Detail Page
+- [x] Reproduce crash when navigating from Home to novel detail (missing useParams import)
+- [x] Identify exact trigger (episode selection, search, sort) (sort logic with null createdAt)
+- [x] Find root cause in NovelDetailPage or episode list logic (missing wouter imports)
+- [x] Add defensive null checks for episodes array (added array type check)
+- [x] Add guards for missing episode fields (title, price, createdAt, fileUrl) (added fallbacks)
+- [x] Verify production build works without crashes (build successful)
+- [x] Test episode search and sorting with edge cases (try-catch guards added)
