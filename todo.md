@@ -579,3 +579,18 @@
 - [x] Write comprehensive performance tests (8 tests passing)
 - [x] Verify pagination, search, and filtering work efficiently
 - [x] Test combined search and filter scenarios
+
+
+## Home and Catalog Data Logic Fix
+- [x] Verify getPopularNovels sorts by purchaseCount DESC, wishlistCount DESC, createdAt DESC (29 tests passing)
+- [x] Verify getNewNovels sorts by createdAt DESC only (29 tests passing)
+- [x] Verify getFreeNovels filters by episodes.isFree = true and sorts by createdAt DESC (29 tests passing)
+- [x] Verify getLatestEpisodes uses episodes.createdAt DESC for sorting (29 tests passing)
+- [x] Verify novels.browse endpoint supports sort=new, sort=popular, filter=free (implemented)
+- [x] Verify novels.catalog endpoint supports sort and filter parameters (getCatalogNovels)
+- [x] Update Home.tsx to use home.getSections data correctly (already using)
+- [x] Update NovelsPage.tsx to use novels.browse with proper backend sorting (already using)
+- [x] Write tests for home.getSections data accuracy (home-catalog.test.ts)
+- [x] Write tests for novels.browse/catalog data accuracy (home-catalog.test.ts)
+- [x] Test Home page sections show correct novels in correct order (all 29 tests passing)
+- [x] Test /novels catalog shows correct sorting and filtering (all 29 tests passing)
