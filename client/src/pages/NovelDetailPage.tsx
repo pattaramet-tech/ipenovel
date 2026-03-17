@@ -346,11 +346,18 @@ export default function NovelDetailPage() {
                         )
                       ) : (
                         <>
-                          <p className="font-semibold text-sm whitespace-nowrap">฿{episode.price}</p>
+                          <p className="font-semibold text-sm whitespace-nowrap">฿{episode.price ?? "N/A"}</p>
                           <input
                             type="checkbox"
                             checked={selectedEpisodes.includes(episode.id)}
-                            onChange={(e) => handleEpisodeToggle(episode.id, e.target.checked)}
+                            onChange={(e) => {
+                              try {
+                                handleEpisodeToggle(episode.id, e.target.checked);
+                              } catch (err) {
+                                console.error("Error toggling episode:", err);
+                                toast.error("Failed to update cart");
+                              }
+                            }}
                             disabled={isLoading}
                             className="w-4 h-4 cursor-pointer"
                           />
@@ -371,7 +378,7 @@ export default function NovelDetailPage() {
           </Card>
         )}
 
-        {!episodes || episodes.length === 0 && (
+        {(!episodes || episodes.length === 0) && (
           <Card className="p-8 text-center text-muted-foreground">
             No episodes available yet.
           </Card>
