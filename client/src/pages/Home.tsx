@@ -18,7 +18,9 @@ export default function Home() {
   const latestEpisodes = sections?.latestEpisodes || [];
 
   // Episode Card Component for latest episodes
-  const EpisodeCard = ({ episode }: any) => (
+  const EpisodeCard = ({ episode }: any) => {
+    if (!episode || !episode.novelId) return null;
+    return (
     <Link href={`/novels/${episode.novelId}`}>
       <Card className="overflow-hidden hover:shadow-xl transition-all duration-300 cursor-pointer h-full hover:scale-105 transform rounded-xl border-0">
         <div className="relative bg-gradient-to-br from-slate-200 to-slate-300 h-48 sm:h-56 overflow-hidden">
@@ -51,9 +53,12 @@ export default function Home() {
       </Card>
     </Link>
   );
+  };
 
   // Novel Card Component for reusability
-  const NovelCard = ({ novel, showFreeTag = false }: any) => (
+  const NovelCard = ({ novel, showFreeTag = false }: any) => {
+    if (!novel || !novel.id) return null;
+    return (
     <Link href={`/novels/${novel.id}`}>
       <Card className="overflow-hidden hover:shadow-xl transition-all duration-300 cursor-pointer h-full hover:scale-105 transform rounded-xl border-0">
         <div className="relative bg-gradient-to-br from-slate-200 to-slate-300 h-48 sm:h-56 overflow-hidden">
@@ -85,6 +90,7 @@ export default function Home() {
       </Card>
     </Link>
   );
+  };
 
   return (
     <div className="min-h-screen bg-white">
