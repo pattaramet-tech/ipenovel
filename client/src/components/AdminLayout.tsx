@@ -17,6 +17,7 @@ import {
   LogOut,
   ChevronRight,
   Upload,
+  Home,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -159,6 +160,17 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
               </h2>
             </div>
             <div className="flex items-center gap-4">
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-slate-700 border-slate-300 hover:bg-slate-100"
+                asChild
+              >
+                <a href="/">
+                  <Home className="w-4 h-4 mr-2" />
+                  Home
+                </a>
+              </Button>
               <div className="text-right">
                 <p className="text-sm font-medium text-slate-900">{user?.name || "Admin"}</p>
                 <p className="text-xs text-slate-600">{user?.role || "admin"}</p>

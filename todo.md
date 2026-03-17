@@ -605,3 +605,11 @@
 - [x] Write tests for search and sorting functionality (11 tests passing)
 - [x] Verify search is case-insensitive (tested in episode-search-sort.test.ts)
 - [x] Verify sorting works correctly on both free and paid episodes (tested)
+
+
+## Admin Home Button
+- [x] Inspect admin layout and navigation structure (AdminLayout.tsx found)
+- [x] Identify shared admin components (AdminLayout is shared across all admin pages)
+- [x] Add Home button to shared admin navigation (added to top bar with Home icon)
+- [x] Verify Home button appears on all admin pages (implemented in shared AdminLayout)
+- [x] Test navigation from all admin pages (Home button navigates to / with <a href="/">)
