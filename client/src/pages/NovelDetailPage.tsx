@@ -5,15 +5,18 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { useState } from "react";
-import { BookOpen } from "lucide-react";
+import { useState, useMemo } from "react";
+import { BookOpen, Search } from "lucide-react";
 
 export default function NovelDetailPage() {
   const { identifier } = useParams<{ identifier: string }>();
   const [, setLocation] = useLocation();
   const { user } = useAuth();
   const [selectedEpisodes, setSelectedEpisodes] = useState<number[]>([]);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [sortBy, setSortBy] = useState<"newest" | "oldest" | "titleAZ" | "titleZA">("newest");
 
   // Parse identifier as number (id) or try to find by slug
   const novelId = identifier ? parseInt(identifier, 10) : 0;
@@ -113,8 +116,44 @@ export default function NovelDetailPage() {
     );
   }
 
-  const freeEpisodes = episodes?.filter((ep: any) => ep.isFree === true) || [];
-  const paidEpisodes = episodes?.filter((ep: any) => ep.isFree !== true) || [];
+  // Filter and sort episodes
+  const filteredAndSortedEpisodes = useMemo(() => {
+    if (!episodes) return { freeEpisodes: [], paidEpisodes: [] };
+
+    // Search filter (case-insensitive)
+    const searchLower = searchTerm.toLowerCase();
+    const filtered = episodes.filter((ep: any) => {
+      const titleMatch = ep.title?.toLowerCase().includes(searchLower) || false;
+      const numberMatch = ep.episodeNumber?.toString().includes(searchTerm) || false;
+      return titleMatch || numberMatch;
+    });
+
+    // Sort
+    const sorted = [...filtered].sort((a: any, b: any) => {
+      switch (sortBy) {
+        case "newest":
+          // Sort by createdAt DESC (newest first)
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        case "oldest":
+          // Sort by createdAt ASC (oldest first)
+          return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+        case "titleAZ":
+          return (a.title || "").localeCompare(b.title || "");
+        case "titleZA":
+          return (b.title || "").localeCompare(a.title || "");
+        default:
+          return 0;
+      }
+    });
+
+    // Split into free and paid
+    const freeEpisodes = sorted.filter((ep: any) => ep.isFree === true);
+    const paidEpisodes = sorted.filter((ep: any) => ep.isFree !== true);
+
+    return { freeEpisodes, paidEpisodes };
+  }, [episodes, searchTerm, sortBy]);
+
+  const { freeEpisodes, paidEpisodes } = filteredAndSortedEpisodes;
 
   return (
     <div className="container py-8">
@@ -177,12 +216,37 @@ export default function NovelDetailPage() {
 
       {/* Episodes Section */}
       <div className="space-y-6">
-        <h2 className="text-2xl font-bold">Episodes</h2>
+        <div>
+          <h2 className="text-2xl font-bold mb-4">Episodes</h2>
+          
+          {/* Search and Sort Controls */}
+          <div className="flex flex-col sm:flex-row gap-3 mb-6">
+            <div className="flex-1 relative">
+              <Search className="absolute left-3 top-3 w-4 h-4 text-muted-foreground" />
+              <Input
+                placeholder="Search by title or episode number..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-10"
+              />
+            </div>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as any)}
+              className="px-3 py-2 border border-input rounded-md bg-background text-foreground text-sm"
+            >
+              <option value="newest">Newest First</option>
+              <option value="oldest">Oldest First</option>
+              <option value="titleAZ">Title A-Z</option>
+              <option value="titleZA">Title Z-A</option>
+            </select>
+          </div>
+        </div>
 
         {/* Free Episodes */}
         {freeEpisodes.length > 0 && (
           <div>
-            <h3 className="text-lg font-semibold mb-3 text-green-600">Free Episodes</h3>
+            <h3 className="text-lg font-semibold mb-3 text-green-600">Free Episodes ({freeEpisodes.length})</h3>
             <div className="space-y-2">
               {freeEpisodes.map((episode: any) => (
                 <Card key={episode.id} className="p-3 flex items-center justify-between">
@@ -221,7 +285,7 @@ export default function NovelDetailPage() {
         {/* Paid Episodes */}
         {paidEpisodes.length > 0 && (
           <div>
-            <h3 className="text-lg font-semibold mb-3 text-blue-600">Paid Episodes</h3>
+            <h3 className="text-lg font-semibold mb-3 text-blue-600">Paid Episodes ({paidEpisodes.length})</h3>
             <div className="space-y-2">
               {paidEpisodes.map((episode: any) => {
                 const inCart = cartItems.some((item: any) => item.episodeId === episode.id);
@@ -273,6 +337,13 @@ export default function NovelDetailPage() {
               })}
             </div>
           </div>
+        )}
+
+        {/* No Results */}
+        {episodes && episodes.length > 0 && freeEpisodes.length === 0 && paidEpisodes.length === 0 && (
+          <Card className="p-8 text-center text-muted-foreground">
+            No episodes match your search.
+          </Card>
         )}
 
         {!episodes || episodes.length === 0 && (

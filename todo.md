@@ -594,3 +594,14 @@
 - [x] Write tests for novels.browse/catalog data accuracy (home-catalog.test.ts)
 - [x] Test Home page sections show correct novels in correct order (all 29 tests passing)
 - [x] Test /novels catalog shows correct sorting and filtering (all 29 tests passing)
+
+
+## Episode Search and Sorting
+- [x] Add search input for episode title and number (implemented in NovelDetailPage)
+- [x] Add sort dropdown (newest, oldest, title A-Z, title Z-A) (4 sort options added)
+- [x] Implement frontend filtering and sorting logic (useMemo with case-insensitive search)
+- [x] Update NovelDetailPage with search and sort controls (search bar + sort dropdown)
+- [x] Preserve UI and routes (no heavy redesign - kept existing episode cards)
+- [x] Write tests for search and sorting functionality (11 tests passing)
+- [x] Verify search is case-insensitive (tested in episode-search-sort.test.ts)
+- [x] Verify sorting works correctly on both free and paid episodes (tested)
