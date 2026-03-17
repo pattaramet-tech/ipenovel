@@ -30,7 +30,9 @@ export default function NovelDetailPage() {
     { enabled: !!novelId && !!user }
   );
 
-  const { data: cartData } = trpc.cart.get.useQuery();
+  const { data: cartData } = trpc.cart.get.useQuery(undefined, {
+    enabled: !!user, // Only fetch cart if user is authenticated
+  });
   const cartItems = cartData?.items || [];
 
   const addToCartMutation = trpc.cart.add.useMutation({
@@ -38,7 +40,11 @@ export default function NovelDetailPage() {
       // Don't clear selection - keep track of what's in cart
     },
     onError: (error: any) => {
-      toast.error(error.message || "Failed to add to cart");
+      if (error.code === "UNAUTHORIZED") {
+        toast.error("Please log in to add items to cart");
+      } else {
+        toast.error(error.message || "Failed to add to cart");
+      }
     },
   });
 
@@ -47,12 +53,22 @@ export default function NovelDetailPage() {
       // Cart updated
     },
     onError: (error: any) => {
-      toast.error(error.message || "Failed to remove from cart");
+      if (error.code === "UNAUTHORIZED") {
+        toast.error("Please log in to manage cart");
+      } else {
+        toast.error(error.message || "Failed to remove from cart");
+      }
     },
   });
 
   // Handle immediate add/remove on checkbox change
   const handleEpisodeToggle = async (episodeId: number, isAdding: boolean) => {
+    // Require authentication to add/remove from cart
+    if (!user) {
+      toast.error("Please log in to add items to cart");
+      return;
+    }
+
     if (isAdding) {
       // Add to cart
       setSelectedEpisodes((prev) => [...prev, episodeId]);
