@@ -449,7 +449,23 @@ export async function createPayment(orderId: number) {
   const db = await getDb();
   if (!db) return undefined;
   const result = await db.insert(payments).values({ orderId, status: "pending" });
-  return result;
+  
+  // Extract insertId from Drizzle MySQL result
+  let insertedId: number | undefined;
+  if (typeof result === 'object' && result !== null) {
+    insertedId = (result as any).insertId;
+    if (!insertedId && Array.isArray(result) && result[0]) {
+      insertedId = (result[0] as any).insertId;
+    }
+    if (!insertedId && (result as any).meta) {
+      insertedId = (result as any).meta.insertId;
+    }
+  }
+  
+  if (!insertedId) {
+    throw new Error("Failed to extract inserted payment ID from database result");
+  }
+  return { id: insertedId } as any;
 }
 
 export async function getPaymentByOrderId(orderId: number) {
@@ -480,7 +496,7 @@ export async function updateOrder(orderId: number, data: { status?: string; paym
   await db.update(orders).set(updateData).where(eq(orders.id, orderId));
 }
 
-export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected" }) {
+export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected"; rejectionReason?: string }) {
   const db = await getDb();
   if (!db) return;
   await db.update(payments).set(data).where(eq(payments.id, paymentId));

@@ -250,9 +250,10 @@ export async function rejectPayment(paymentId: number, rejectedBy: string, reaso
     throw new Error("Payment not found");
   }
 
-  // Update payment status
+  // Update payment status with rejection reason
   await db.updatePayment(paymentId, {
     status: "rejected",
+    rejectionReason: reason,
   });
 
   // Update order status and payment status

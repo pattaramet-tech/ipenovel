@@ -9,13 +9,15 @@ describe("Order/Payment Status Synchronization", () => {
 
   beforeEach(async () => {
     // Create test user
-    const userResult = await db.createUser({
-      openId: `test-user-${Date.now()}`,
+    const openId = `test-user-${Date.now()}`;
+    await db.upsertUser({
+      openId,
       name: `Test User ${Date.now()}`,
       email: `test-${Date.now()}@example.com`,
       loginMethod: "test",
     });
-    testUserId = (userResult as any).id;
+    const user = await db.getUserByOpenId(openId);
+    testUserId = (user as any).id;
 
     // Create test order
     const orderResult = await db.createOrder({

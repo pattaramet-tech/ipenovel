@@ -503,10 +503,13 @@
 - [x] Check OrderDetailPage.tsx reads statuses correctly
 - [x] Check PaymentPage.tsx reads statuses correctly
 - [x] Check admin payment review pages read statuses correctly
-- [x] Write tests for status transitions and consistency (status-sync.test.ts created)
-- [ ] Test approval flow end-to-end
-- [ ] Test rejection flow end-to-end
-- [ ] Verify no contradictory status displays across pages
+- [x] Write tests for status transitions and consistency (status-sync-verify.test.ts created)
+- [x] Fix updatePayment to support rejectionReason parameter
+- [x] Fix rejectPayment to pass rejectionReason to updatePayment
+- [x] Fix createPayment to return inserted payment ID
+- [x] Test approval flow end-to-end (status-sync-verify.test.ts: 2/2 passing)
+- [x] Test rejection flow end-to-end (status-sync-verify.test.ts: 2/2 passing)
+- [x] Verify no contradictory status displays across pages
 
 
 ## Browse Page (/novels) Performance Optimization
@@ -545,3 +548,22 @@
 - [x] Test profile/account flow for error handling
 - [x] Document all error sources found (ERROR_AUDIT.md created)
 - [x] Verify customers see actionable error messages
+
+
+## Status Synchronization Audit & Fix
+- [ ] Audit schema for all status fields (payment.status, order.status, order.paymentStatus)
+- [ ] Document all possible status values for each field
+- [ ] Trace all status update locations in orderService.ts
+- [ ] Trace all status update locations in routers.ts
+- [ ] Trace all status update locations in db.ts
+- [ ] Identify contradictory status scenarios
+- [ ] Fix approvePayment to sync all three status fields
+- [ ] Fix rejectPayment to sync all three status fields
+- [ ] Verify OrdersPage.tsx reads statuses correctly
+- [ ] Verify OrderDetailPage.tsx reads statuses correctly
+- [ ] Verify PaymentPage.tsx reads statuses correctly
+- [ ] Verify admin payment pages read statuses correctly
+- [ ] Test approval flow end-to-end
+- [ ] Test rejection flow end-to-end
+- [ ] Test pending/review state transitions
+- [ ] Verify no contradictory statuses in database
