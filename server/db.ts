@@ -1420,3 +1420,88 @@ export async function getLatestEpisodes(limit: number = 4) {
 
   return result;
 }
+
+
+/**
+ * Get lightweight browse catalog data - optimized for performance
+ * Returns only essential fields needed for browse cards
+ * Avoids expensive aggregate subqueries for counts
+ */
+export async function getBrowseCatalog(params: {
+  sort?: "new" | "popular";
+  filter?: "all" | "free";
+  search?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<Array<{
+  id: number;
+  title: string;
+  slug: string;
+  coverImageUrl: string | null;
+  status: string;
+  createdAt: Date;
+  freeEpisodeCount: number;
+}>> {
+  const db = await getDb();
+  if (!db) return [];
+
+  const { sort = "new", filter = "all", search, limit = 20, offset = 0 } = params;
+
+  // Lightweight subquery for free episode counts only
+  const freeEpisodeCountsSubquery = db
+    .select({
+      novelId: episodes.novelId,
+      count: sql<number>`COUNT(${episodes.id})`.as("freeEpisodeCount"),
+    })
+    .from(episodes)
+    .where(eq(episodes.isFree, true))
+    .groupBy(episodes.novelId)
+    .as("freeEpisodeCounts");
+
+  let query: any = db
+    .select({
+      id: novels.id,
+      title: novels.title,
+      slug: novels.slug,
+      coverImageUrl: novels.coverImageUrl,
+      status: novels.status,
+      createdAt: novels.createdAt,
+      freeEpisodeCount: sql<number>`COALESCE(${freeEpisodeCountsSubquery.count}, 0)`,
+    })
+    .from(novels)
+    .leftJoin(freeEpisodeCountsSubquery, eq(novels.id, freeEpisodeCountsSubquery.novelId));
+
+  // Apply filter
+  if (filter === "free") {
+    query = query.where(sql<boolean>`${freeEpisodeCountsSubquery.count} > 0`);
+  }
+
+  // Apply search
+  if (search && search.trim()) {
+    const searchPattern = `%${search.trim()}%`;
+    query = query.where(sql`${novels.title} LIKE ${searchPattern}`);
+  }
+
+  // Apply sort
+  if (sort === "popular") {
+    // For lightweight browse, sort by free episode count as a popularity proxy
+    // This avoids expensive purchase/wishlist count queries
+    query = query.orderBy(
+      desc(sql<number>`COALESCE(${freeEpisodeCountsSubquery.count}, 0)`),
+      desc(novels.createdAt)
+    );
+  } else {
+    // Default to "new"
+    query = query.orderBy(desc(novels.createdAt));
+  }
+
+  // Apply pagination
+  query = query.limit(limit).offset(offset);
+
+  const result: any[] = await query;
+
+  return result.map((row: any) => ({
+    ...row,
+    freeEpisodeCount: Number(row.freeEpisodeCount) || 0,
+  }));
+}

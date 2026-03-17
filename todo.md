@@ -507,3 +507,22 @@
 - [ ] Test approval flow end-to-end
 - [ ] Test rejection flow end-to-end
 - [ ] Verify no contradictory status displays across pages
+
+
+## Browse Page (/novels) Performance Optimization
+- [x] Audit current NovelsPage.tsx performance bottlenecks
+- [x] Create novels.browse lightweight backend endpoint (getBrowseCatalog)
+- [x] Add pagination support (page, pageSize) to novels.browse
+- [x] Add backend search filtering by title (case-insensitive)
+- [x] Support sorting (new, popular, title A-Z, title Z-A) in novels.browse
+- [x] Return only lightweight fields (id, title, slug, coverImageUrl, status, createdAt, author)
+- [x] Add database indexes for createdAt and title columns if needed
+- [x] Update NovelsPage.tsx to use novels.browse endpoint
+- [x] Add debounced search input to NovelsPage (300ms debounce)
+- [x] Implement pagination/load-more UI in NovelsPage (20 items per page)
+- [x] Add lazy loading to cover images (loading=lazy, decoding=async)
+- [x] Remove unnecessary useAuth() from NovelsPage if not needed
+- [x] Tune React Query options (staleTime: 5 minutes, refetchOnWindowFocus: false)
+- [x] Test /novels page load time and responsiveness (verified pagination works)
+- [x] Verify no regressions in novel detail page navigation
+- [x] Verify existing admin pages still work correctly

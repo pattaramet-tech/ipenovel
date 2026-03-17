@@ -97,6 +97,30 @@ export const appRouter = router({
         });
       }),
 
+    browse: publicProcedure
+      .input(
+        z.object({
+          sort: z.enum(["new", "popular"]).optional(),
+          filter: z.enum(["all", "free"]).optional(),
+          search: z.string().optional(),
+          page: z.number().int().positive().optional(),
+          pageSize: z.number().int().min(1).max(100).optional(),
+        })
+      )
+      .query(async ({ input }) => {
+        const pageSize = input.pageSize || 20;
+        const page = input.page || 1;
+        const offset = (page - 1) * pageSize;
+
+        return db.getBrowseCatalog({
+          sort: input.sort || "new",
+          filter: input.filter || "all",
+          search: input.search,
+          limit: pageSize,
+          offset,
+        });
+      }),
+
     detail: publicProcedure.input(z.object({ novelId: z.number() })).query(async ({ input }) => {
       const novel = await db.getNovelById(input.novelId);
       if (!novel) throw new TRPCError({ code: "NOT_FOUND" });
