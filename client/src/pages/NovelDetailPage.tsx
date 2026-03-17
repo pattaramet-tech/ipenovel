@@ -102,7 +102,7 @@ export default function NovelDetailPage() {
     );
   }
 
-  if (novelError || !novel) {
+  if (novelError || !novel || !novel.novel) {
     return (
       <div className="container py-8">
         <Card className="p-8 text-center">
@@ -179,27 +179,33 @@ export default function NovelDetailPage() {
       <div className="grid md:grid-cols-3 gap-8 mb-12">
         {/* Novel Cover and Info */}
         <div className="md:col-span-1">
-          {novel.novel?.coverImageUrl && (
+          {novel?.novel?.coverImageUrl && (
             <img
               src={novel.novel.coverImageUrl}
-              alt={novel.novel.title}
+              alt={novel.novel?.title || "Novel"}
               className="w-full h-auto rounded-lg shadow-lg mb-6"
+              onError={(e) => {
+                (e.target as HTMLImageElement).style.display = "none";
+              }}
             />
           )}
           <div className="space-y-4">
             <div>
               <h3 className="font-semibold text-sm text-muted-foreground">Author</h3>
-              <p className="text-lg">{novel.novel?.author || "Unknown"}</p>
+              <p className="text-lg">{novel?.novel?.author || "Unknown"}</p>
             </div>
-            {novel.categories && novel.categories.length > 0 && (
+            {novel?.categories && Array.isArray(novel.categories) && novel.categories.length > 0 && (
               <div>
                 <h3 className="font-semibold text-sm text-muted-foreground">Categories</h3>
                 <div className="flex flex-wrap gap-2 mt-2">
-                  {novel.categories.map((cat: any) => (
-                    <Badge key={cat} variant="secondary">
-                      {cat}
-                    </Badge>
-                  ))}
+                  {novel.categories.map((cat: any) => {
+                    if (!cat) return null;
+                    return (
+                      <Badge key={cat} variant="secondary">
+                        {cat}
+                      </Badge>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -208,8 +214,8 @@ export default function NovelDetailPage() {
 
         {/* Novel Details */}
         <div className="md:col-span-2">
-          <h1 className="text-4xl font-bold mb-4">{novel.novel?.title}</h1>
-          <p className="text-lg text-muted-foreground mb-6">{novel.novel?.description}</p>
+          <h1 className="text-4xl font-bold mb-4">{novel?.novel?.title || "Untitled"}</h1>
+          <p className="text-lg text-muted-foreground mb-6">{novel?.novel?.description || "No description available"}</p>
 
           {/* Episode Stats */}
           <div className="grid grid-cols-3 gap-4 mb-8 p-4 bg-muted rounded-lg">
