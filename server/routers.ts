@@ -45,16 +45,18 @@ export const appRouter = router({
   // ============ HOME PAGE ============
   home: router({
     getSections: publicProcedure.query(async () => {
-      const [popularNovels, newNovels, freeNovels] = await Promise.all([
+      const [popularNovels, newNovels, freeNovels, latestEpisodes] = await Promise.all([
         db.getPopularNovels(4),
         db.getNewNovels(4),
         db.getFreeNovels(4),
+        db.getLatestEpisodes(4),
       ]);
 
       return {
         popularNovels,
         newNovels,
         freeNovels,
+        latestEpisodes,
       };
     }),
   }),

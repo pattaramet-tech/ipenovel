@@ -1391,3 +1391,31 @@ export async function getCatalogNovels(params: {
     freeEpisodeCount: Number(row.freeEpisodeCount) || 0,
   }));
 }
+
+
+/**
+ * Get the latest uploaded episodes with novel information
+ * Used for the "Latest Uploaded Episodes" section on the Home page
+ */
+export async function getLatestEpisodes(limit: number = 4) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const result = await db
+    .select({
+      id: episodes.id,
+      novelId: episodes.novelId,
+      novelTitle: novels.title,
+      novelCoverImageUrl: novels.coverImageUrl,
+      episodeNumber: episodes.episodeNumber,
+      episodeTitle: episodes.title,
+      isFree: episodes.isFree,
+      createdAt: episodes.createdAt,
+    })
+    .from(episodes)
+    .leftJoin(novels, eq(episodes.novelId, novels.id))
+    .orderBy(desc(episodes.createdAt))
+    .limit(limit);
+
+  return result;
+}

@@ -15,6 +15,42 @@ export default function Home() {
   const popularNovels = sections?.popularNovels || [];
   const newNovels = sections?.newNovels || [];
   const freeNovels = sections?.freeNovels || [];
+  const latestEpisodes = sections?.latestEpisodes || [];
+
+  // Episode Card Component for latest episodes
+  const EpisodeCard = ({ episode }: any) => (
+    <Link href={`/novels/${episode.novelId}`}>
+      <Card className="overflow-hidden hover:shadow-xl transition-all duration-300 cursor-pointer h-full hover:scale-105 transform rounded-xl border-0">
+        <div className="relative bg-gradient-to-br from-slate-200 to-slate-300 h-48 sm:h-56 overflow-hidden">
+          {episode.novelCoverImageUrl ? (
+            <img
+              src={episode.novelCoverImageUrl}
+              alt={episode.novelTitle}
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-100 to-purple-100">
+              <BookOpen className="w-12 h-12 text-slate-400" />
+            </div>
+          )}
+          {episode.isFree && (
+            <div className="absolute top-3 right-3 bg-green-500 text-white px-3 py-1 rounded-full text-xs font-semibold">
+              {t("home.free")}
+            </div>
+          )}
+        </div>
+        <div className="p-4 sm:p-5">
+          <p className="text-xs sm:text-sm text-slate-500 mb-1">{episode.novelTitle}</p>
+          <h3 className="font-bold text-sm sm:text-base line-clamp-2 text-slate-900 mb-2">
+            {t("home.episode")} {episode.episodeNumber}
+          </h3>
+          <p className="text-xs sm:text-sm text-slate-600 line-clamp-1">
+            {episode.episodeTitle}
+          </p>
+        </div>
+      </Card>
+    </Link>
+  );
 
   // Novel Card Component for reusability
   const NovelCard = ({ novel, showFreeTag = false }: any) => (
@@ -211,6 +247,36 @@ export default function Home() {
           ) : (
             <Card className="p-8 text-center text-slate-500 rounded-xl border-slate-200">
               <p>{t("home.noFree")}</p>
+            </Card>
+          )}
+        </section>
+
+        {/* Latest Uploaded Episodes Section */}
+        <section className="mb-16 sm:mb-20">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+            <div>
+              <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold text-slate-900">
+                {t("home.latestEpisodes")}
+              </h2>
+              <p className="text-sm text-slate-600 mt-1">{t("home.latestEpisodesDesc")}</p>
+            </div>
+          </div>
+
+          {isLoading ? (
+            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+              {[...Array(4)].map((_, i) => (
+                <Skeleton key={i} className="h-64 sm:h-72 rounded-xl" />
+              ))}
+            </div>
+          ) : latestEpisodes.length > 0 ? (
+            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+              {latestEpisodes.map((episode: any) => (
+                <EpisodeCard key={episode.id} episode={episode} />
+              ))}
+            </div>
+          ) : (
+            <Card className="p-8 text-center text-slate-500 rounded-xl border-slate-200">
+              <p>{t("home.noEpisodes")}</p>
             </Card>
           )}
         </section>

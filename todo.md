@@ -460,3 +460,15 @@
 - [x] Test /novels?filter=free shows only novels with free episodes
 - [x] Test banner links work correctly
 - [x] Verify no regressions in admin pages, detail pages, cart, or existing flows
+
+
+## Latest Uploaded Episodes - Home Page Section
+- [x] Add getLatestEpisodes query helper to db.ts
+- [x] Update home.getSections endpoint to include latestEpisodes array
+- [x] Update Home.tsx to display "Latest Uploaded Episodes" section
+- [x] Write tests for latest episodes query logic (5 tests passing)
+- [x] Test Home page displays latest episodes correctly
+- [x] Verify episodes show correct novel title, episode title, episode number
+- [x] Verify free badge shows for free episodes
+- [x] Verify episode cards are clickable and navigate correctly
+- [x] Add Thai and English translation keys for latest episodes section

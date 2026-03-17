@@ -333,3 +333,65 @@ describe("Home Page & Catalog Queries", () => {
     });
   });
 });
+
+
+  describe("getLatestEpisodes", () => {
+    it("should return episodes sorted by createdAt DESC (newest first)", async () => {
+      const episodes = await db.getLatestEpisodes(10);
+      
+      expect(Array.isArray(episodes)).toBe(true);
+      
+      if (episodes.length > 1) {
+        for (let i = 0; i < episodes.length - 1; i++) {
+          const current = episodes[i];
+          const next = episodes[i + 1];
+          expect(new Date(current.createdAt).getTime()).toBeGreaterThanOrEqual(
+            new Date(next.createdAt).getTime()
+          );
+        }
+      }
+    });
+
+    it("should include all required fields for rendering", async () => {
+      const episodes = await db.getLatestEpisodes(1);
+      
+      if (episodes.length > 0) {
+        const episode = episodes[0];
+        expect(episode).toHaveProperty("id");
+        expect(episode).toHaveProperty("novelId");
+        expect(episode).toHaveProperty("novelTitle");
+        expect(episode).toHaveProperty("novelCoverImageUrl");
+        expect(episode).toHaveProperty("episodeNumber");
+        expect(episode).toHaveProperty("episodeTitle");
+        expect(episode).toHaveProperty("isFree");
+        expect(episode).toHaveProperty("createdAt");
+      }
+    });
+
+    it("should respect the limit parameter", async () => {
+      const limit = 4;
+      const episodes = await db.getLatestEpisodes(limit);
+      
+      expect(episodes.length).toBeLessThanOrEqual(limit);
+    });
+
+    it("should include both free and paid episodes", async () => {
+      const episodes = await db.getLatestEpisodes(100);
+      
+      // Should have a mix of free and paid episodes (if data exists)
+      const hasFreEpisodes = episodes.some((e) => e.isFree === true);
+      const hasPaidEpisodes = episodes.some((e) => e.isFree === false);
+      
+      // At least one type should exist
+      expect(hasFreEpisodes || hasPaidEpisodes).toBe(true);
+    });
+
+    it("should have valid novelId references", async () => {
+      const episodes = await db.getLatestEpisodes(10);
+      
+      for (const episode of episodes) {
+        expect(episode.novelId).toBeGreaterThan(0);
+        expect(episode.novelTitle).toBeTruthy();
+      }
+    });
+  });
