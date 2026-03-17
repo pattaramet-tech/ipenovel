@@ -567,3 +567,15 @@
 - [ ] Test rejection flow end-to-end
 - [ ] Test pending/review state transitions
 - [ ] Verify no contradictory statuses in database
+
+
+## Browse Page Performance Optimization
+- [x] Add database indexes for novels.createdAt and novels.title
+- [x] Add database index for episodes.isFree
+- [x] Memoize URL parameter parsing in NovelsPage to avoid re-parsing on every render
+- [x] Memoize query input to prevent unnecessary refetches
+- [x] Add gcTime (garbage collection time) to React Query config
+- [x] Add image error handling with onError callback
+- [x] Write comprehensive performance tests (8 tests passing)
+- [x] Verify pagination, search, and filtering work efficiently
+- [x] Test combined search and filter scenarios

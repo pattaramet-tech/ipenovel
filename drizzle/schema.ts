@@ -49,17 +49,24 @@ export type InsertCategory = typeof categories.$inferInsert;
 /**
  * Novels (main content items)
  */
-export const novels = mysqlTable("novels", {
-  id: int("id").autoincrement().primaryKey(),
-  title: varchar("title", { length: 500 }).notNull(),
-  slug: varchar("slug", { length: 500 }).notNull().unique(),
-  description: text("description"),
-  author: varchar("author", { length: 255 }),
-  coverImageUrl: text("coverImageUrl"),
-  status: mysqlEnum("status", ["ongoing", "completed", "hiatus"]).default("ongoing").notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+export const novels = mysqlTable(
+  "novels",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    title: varchar("title", { length: 500 }).notNull(),
+    slug: varchar("slug", { length: 500 }).notNull().unique(),
+    description: text("description"),
+    author: varchar("author", { length: 255 }),
+    coverImageUrl: text("coverImageUrl"),
+    status: mysqlEnum("status", ["ongoing", "completed", "hiatus"]).default("ongoing").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    createdAtIdx: index("novels_createdAt_idx").on(table.createdAt),
+    titleIdx: index("novels_title_idx").on(table.title),
+  })
+);
 
 export type Novel = typeof novels.$inferSelect;
 export type InsertNovel = typeof novels.$inferInsert;
@@ -107,6 +114,7 @@ export const episodes = mysqlTable(
   },
   (table) => ({
     novelIdIdx: index("episodes_novelId_idx").on(table.novelId),
+    isFreeIdx: index("episodes_isFree_idx").on(table.isFree),
     uniqueEpisode: uniqueIndex("unique_novel_episode").on(table.novelId, table.episodeNumber),
   })
 );

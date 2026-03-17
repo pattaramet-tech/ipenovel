@@ -18,10 +18,14 @@ export default function NovelsPage() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
 
-  // Parse URL query parameters
-  const urlParams = new URLSearchParams(window.location.search);
-  const sortParam = (urlParams.get("sort") as "new" | "popular" | null) || "new";
-  const filterParam = (urlParams.get("filter") as "all" | "free" | null) || "all";
+  // Parse URL query parameters once and memoize to avoid re-parsing on every render
+  const { sortParam, filterParam } = useMemo(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    return {
+      sortParam: (urlParams.get("sort") as "new" | "popular" | null) || "new",
+      filterParam: (urlParams.get("filter") as "all" | "free" | null) || "all",
+    };
+  }, []);
 
   // Debounce search input
   useEffect(() => {
@@ -33,20 +37,24 @@ export default function NovelsPage() {
     return () => clearTimeout(timer);
   }, [searchTerm]);
 
-  // Fetch novels using the lightweight browse endpoint
-  const { data: novels, isLoading } = trpc.novels.browse.useQuery(
-    {
+  // Memoize query input to prevent unnecessary refetches
+  const queryInput = useMemo(
+    () => ({
       sort: sortParam,
       filter: filterParam,
       search: debouncedSearch || undefined,
       page: currentPage,
       pageSize: PAGE_SIZE,
-    },
-    {
-      staleTime: 5 * 60 * 1000, // 5 minutes
-      refetchOnWindowFocus: false,
-    }
+    }),
+    [sortParam, filterParam, debouncedSearch, currentPage]
   );
+
+  // Fetch novels using the lightweight browse endpoint
+  const { data: novels, isLoading } = trpc.novels.browse.useQuery(queryInput, {
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    refetchOnWindowFocus: false,
+    gcTime: 10 * 60 * 1000, // Keep cached data for 10 minutes
+  });
 
   // Get display title based on current sort/filter
   const getPageTitle = () => {
@@ -76,6 +84,7 @@ export default function NovelsPage() {
     [navigate]
   );
 
+  // Memoize hasNextPage to prevent unnecessary recalculations
   const hasNextPage = useMemo(() => {
     return novels && novels.length === PAGE_SIZE;
   }, [novels]);
@@ -164,11 +173,14 @@ export default function NovelsPage() {
                 >
                   {novel.coverImageUrl ? (
                     <img
-                      src={novel.coverImageUrl}
+                      src={novel.coverImageUrl || ""}
                       alt={novel.title}
                       loading="lazy"
                       decoding="async"
                       className="w-full h-48 object-cover group-hover:scale-105 transition"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = "none";
+                      }}
                     />
                   ) : (
                     <div className="w-full h-48 bg-slate-200 flex items-center justify-center">
