@@ -193,12 +193,12 @@ export const appRouter = router({
         // Check if already purchased
         const isPurchased = await orderService.isEpisodeAlreadyPurchased(ctx.user.id, input.episodeId);
         if (isPurchased) {
-          throw new TRPCError({ code: "BAD_REQUEST" });
+          throw new TRPCError({ code: "BAD_REQUEST", message: "This episode has already been purchased" });
         }
 
         // Free episodes cannot be added to cart
         if (episode.isFree) {
-          throw new TRPCError({ code: "BAD_REQUEST" });
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Free episodes cannot be added to cart" });
         }
 
         const cart = await db.getOrCreateCart(ctx.user.id);
@@ -208,7 +208,7 @@ export const appRouter = router({
         const items = await db.getCartItems(cart.id);
         const alreadyInCart = items.some((i: any) => i.episodeId === input.episodeId);
         if (alreadyInCart) {
-          throw new TRPCError({ code: "BAD_REQUEST" });
+          throw new TRPCError({ code: "CONFLICT", message: "This episode is already in your cart" });
         }
 
         await db.addToCart(cart.id, input.episodeId, episode.novelId, episode.price.toString());
@@ -223,7 +223,7 @@ export const appRouter = router({
         if (!item) throw new TRPCError({ code: "NOT_FOUND" });
         const cart = await db.getCartById(item.cartId);
         if (!cart || cart.userId !== ctx.user.id) {
-          throw new TRPCError({ code: "FORBIDDEN" });
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Your cart is empty" });
         }
         await db.removeFromCart(input.cartItemId);
         return { success: true };
@@ -265,7 +265,7 @@ export const appRouter = router({
 
         const cartItems = await db.getCartItems(cart.id);
         if (cartItems.length === 0) {
-          throw new TRPCError({ code: "BAD_REQUEST" });
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Your cart is empty. Please add items before checkout." });
         }
 
         try {
@@ -471,7 +471,7 @@ export const appRouter = router({
       .mutation(async ({ input, ctx }) => {
         const existing = await db.getWishlistByUserAndNovel(ctx.user.id, input.novelId);
         if (existing) {
-          throw new TRPCError({ code: "BAD_REQUEST" });
+          throw new TRPCError({ code: "CONFLICT", message: "This novel is already in your wishlist" });
         }
 
         await db.addToWishlist(ctx.user.id, input.novelId);
@@ -548,7 +548,7 @@ export const appRouter = router({
             await orderService.approvePayment(input.paymentId, String(ctx.user.id));
             return { success: true };
           } catch (error: any) {
-            throw new TRPCError({ code: "BAD_REQUEST" });
+            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to approve payment. Please try again." });
           }
         }),
 
@@ -559,7 +559,7 @@ export const appRouter = router({
             await orderService.rejectPayment(input.paymentId, String(ctx.user.id), input.rejectionReason);
             return { success: true };
           } catch (error: any) {
-            throw new TRPCError({ code: "BAD_REQUEST" });
+            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to reject payment. Please try again." });
           }
         }),
     }),

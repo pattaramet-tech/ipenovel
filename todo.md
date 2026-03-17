@@ -526,3 +526,22 @@
 - [x] Test /novels page load time and responsiveness (verified pagination works)
 - [x] Verify no regressions in novel detail page navigation
 - [x] Verify existing admin pages still work correctly
+
+
+## Customer-Facing Error Handling Audit & Fix
+- [x] Audit all public/customer endpoints in server/routers.ts
+- [x] Audit all service functions in server/services/*.ts
+- [x] Audit all database queries in server/db.ts
+- [x] Identify all BAD_REQUEST error sources (10 found in routers.ts)
+- [x] Replace vague errors with specific error messages (all fixed in routers.ts)
+- [x] Use correct error codes (BAD_REQUEST, UNAUTHORIZED, FORBIDDEN, NOT_FOUND, CONFLICT)
+- [x] Add structured error logging utility (server/_core/errorLogger.ts created)
+- [x] Improve frontend error display in customer pages (useErrorHandler hook created)
+- [x] Test auth/login flow for error handling
+- [x] Test browse/novel detail flow for error handling
+- [x] Test cart/checkout/payment flow for error handling (CartPage already shows error messages)
+- [x] Test orders/order detail flow for error handling
+- [x] Test wishlist flow for error handling
+- [x] Test profile/account flow for error handling
+- [x] Document all error sources found (ERROR_AUDIT.md created)
+- [x] Verify customers see actionable error messages
