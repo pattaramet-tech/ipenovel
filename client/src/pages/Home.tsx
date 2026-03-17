@@ -6,11 +6,34 @@ import { trpc } from "@/lib/trpc";
 import { BookOpen, Sparkles, ArrowRight } from "lucide-react";
 import { Link } from "wouter";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { toast } from "sonner";
+import React from "react";
 
 export default function Home() {
   const { user, isAuthenticated } = useAuth();
   const { t } = useLanguage();
-  const { data: sections, isLoading } = trpc.home.getSections.useQuery();
+  const { data: sections, isLoading, error } = trpc.home.getSections.useQuery();
+  
+  // Show error toast if query fails
+  React.useEffect(() => {
+    if (error) {
+      console.error("Failed to load home sections:", error);
+      toast.error("Failed to load content. Please refresh the page.");
+    }
+  }, [error]);
+
+  // Handle error state
+  if (error) {
+    return (
+      <div className="min-h-screen bg-white flex items-center justify-center">
+        <Card className="p-8 max-w-md text-center">
+          <p className="text-red-600 font-semibold mb-4">Failed to load content</p>
+          <p className="text-muted-foreground mb-6">Please refresh the page or try again later.</p>
+          <Button onClick={() => window.location.reload()}>Refresh Page</Button>
+        </Card>
+      </div>
+    );
+  }
 
   const popularNovels = sections?.popularNovels || [];
   const newNovels = sections?.newNovels || [];

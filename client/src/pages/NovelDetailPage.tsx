@@ -18,20 +18,24 @@ export default function NovelDetailPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [sortBy, setSortBy] = useState<"newest" | "oldest" | "titleAZ" | "titleZA">("newest");
 
-  // Parse identifier as number (id) or try to find by slug
+  // Parse identifier as number (id) - guard against NaN
   const novelId = identifier ? parseInt(identifier, 10) : 0;
+  const validNovelId = Number.isFinite(novelId) && novelId > 0 ? novelId : 0;
+
   const { data: novel, isLoading: novelLoading, error: novelError } = trpc.novels.detail.useQuery(
-    { novelId },
-    { enabled: !!novelId }
+    { novelId: validNovelId },
+    { enabled: !!validNovelId }
   );
 
+  // Always call episodes query (never conditionally) - gated by validNovelId only
   const { data: episodes } = trpc.novels.episodes.useQuery(
-    { novelId },
-    { enabled: !!novelId && !!user }
+    { novelId: validNovelId },
+    { enabled: !!validNovelId }
   );
 
+  // Always call cart query (never conditionally) - gated by user only
   const { data: cartData } = trpc.cart.get.useQuery(undefined, {
-    enabled: !!user, // Only fetch cart if user is authenticated
+    enabled: !!user,
   });
   const cartItems = cartData?.items || [];
 
@@ -61,28 +65,75 @@ export default function NovelDetailPage() {
     },
   });
 
+  // IMPORTANT: useMemo MUST be called before any early returns to avoid React Hook Order Violation
+  // Filter and sort episodes
+  const filteredAndSortedEpisodes = useMemo(() => {
+    if (!episodes || !Array.isArray(episodes)) return { freeEpisodes: [], paidEpisodes: [] };
+
+    // Search filter (case-insensitive)
+    const searchLower = searchTerm.toLowerCase();
+    const filtered = episodes.filter((ep: any) => {
+      if (!ep) return false;
+      const titleMatch = ep.title?.toLowerCase().includes(searchLower) || false;
+      const numberMatch = ep.episodeNumber?.toString().includes(searchTerm) || false;
+      return titleMatch || numberMatch;
+    });
+
+    // Sort with defensive checks
+    const sorted = [...filtered].sort((a: any, b: any) => {
+      if (!a || !b) return 0;
+
+      switch (sortBy) {
+        case "newest":
+          try {
+            const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+            return bTime - aTime;
+          } catch {
+            return 0;
+          }
+        case "oldest":
+          try {
+            const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+            return aTime - bTime;
+          } catch {
+            return 0;
+          }
+        case "titleAZ":
+          return (a.title || "").localeCompare(b.title || "");
+        case "titleZA":
+          return (b.title || "").localeCompare(a.title || "");
+        default:
+          return 0;
+      }
+    });
+
+    // Split into free and paid with defensive checks
+    const freeEpisodes = sorted.filter((ep: any) => ep && ep.isFree === true);
+    const paidEpisodes = sorted.filter((ep: any) => ep && ep.isFree !== true);
+
+    return { freeEpisodes, paidEpisodes };
+  }, [episodes, searchTerm, sortBy]);
+
   // Handle immediate add/remove on checkbox change
   const handleEpisodeToggle = async (episodeId: number, isAdding: boolean) => {
-    // Require authentication to add/remove from cart
     if (!user) {
       toast.error("Please log in to add items to cart");
       return;
     }
 
     if (isAdding) {
-      // Add to cart
       setSelectedEpisodes((prev) => [...prev, episodeId]);
       addToCartMutation.mutate(
         { episodeId },
         {
           onError: () => {
-            // Revert on error
             setSelectedEpisodes((prev) => prev.filter((id) => id !== episodeId));
           },
         }
       );
     } else {
-      // Remove from cart - find the cartItemId for this episode
       const cartItem = cartItems.find((item: any) => item.episodeId === episodeId);
       if (cartItem) {
         setSelectedEpisodes((prev) => prev.filter((id) => id !== episodeId));
@@ -90,7 +141,6 @@ export default function NovelDetailPage() {
           { cartItemId: cartItem.id },
           {
             onError: () => {
-              // Revert on error
               setSelectedEpisodes((prev) => [...prev, episodeId]);
             },
           }
@@ -98,6 +148,19 @@ export default function NovelDetailPage() {
       }
     }
   };
+
+  // Early returns AFTER all hooks have been called
+  if (!validNovelId) {
+    return (
+      <div className="container py-8">
+        <Card className="p-8 text-center">
+          <h1 className="text-2xl font-bold mb-4">Novel Not Found</h1>
+          <p className="text-muted-foreground mb-6">Invalid novel identifier.</p>
+          <Button onClick={() => setLocation("/novels")}>Back to Novels</Button>
+        </Card>
+      </div>
+    );
+  }
 
   if (novelLoading) {
     return (
@@ -131,58 +194,6 @@ export default function NovelDetailPage() {
       </div>
     );
   }
-
-  // Filter and sort episodes
-  const filteredAndSortedEpisodes = useMemo(() => {
-    if (!episodes || !Array.isArray(episodes)) return { freeEpisodes: [], paidEpisodes: [] };
-
-    // Search filter (case-insensitive)
-    const searchLower = searchTerm.toLowerCase();
-    const filtered = episodes.filter((ep: any) => {
-      if (!ep) return false;
-      const titleMatch = ep.title?.toLowerCase().includes(searchLower) || false;
-      const numberMatch = ep.episodeNumber?.toString().includes(searchTerm) || false;
-      return titleMatch || numberMatch;
-    });
-
-    // Sort with defensive checks
-    const sorted = [...filtered].sort((a: any, b: any) => {
-      if (!a || !b) return 0;
-      
-      switch (sortBy) {
-        case "newest":
-          // Sort by createdAt DESC (newest first) with fallback
-          try {
-            const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-            const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-            return bTime - aTime;
-          } catch {
-            return 0;
-          }
-        case "oldest":
-          // Sort by createdAt ASC (oldest first) with fallback
-          try {
-            const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-            const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-            return aTime - bTime;
-          } catch {
-            return 0;
-          }
-        case "titleAZ":
-          return (a.title || "").localeCompare(b.title || "");
-        case "titleZA":
-          return (b.title || "").localeCompare(a.title || "");
-        default:
-          return 0;
-      }
-    });
-
-    // Split into free and paid with defensive checks
-    const freeEpisodes = sorted.filter((ep: any) => ep && ep.isFree === true);
-    const paidEpisodes = sorted.filter((ep: any) => ep && ep.isFree !== true);
-
-    return { freeEpisodes, paidEpisodes };
-  }, [episodes, searchTerm, sortBy]);
 
   const { freeEpisodes, paidEpisodes } = filteredAndSortedEpisodes;
 
@@ -255,7 +266,7 @@ export default function NovelDetailPage() {
       <div className="space-y-6">
         <div>
           <h2 className="text-2xl font-bold mb-4">Episodes</h2>
-          
+
           {/* Search and Sort Controls */}
           <div className="flex flex-col sm:flex-row gap-3 mb-6">
             <div className="flex-1 relative">
@@ -288,35 +299,35 @@ export default function NovelDetailPage() {
               {freeEpisodes.map((episode: any) => {
                 if (!episode || !episode.id) return null;
                 return (
-                <Card key={episode.id} className="p-3 flex items-center justify-between">
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-sm">
-                      Episode {episode.episodeNumber || "?"} - {episode.title || "Untitled"}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-3 ml-3 flex-shrink-0">
-                    <Badge variant="outline" className="bg-green-50 text-xs">
-                      Free
-                    </Badge>
-                    {episode.fileUrl ? (
-                      <a
-                        href={episode.fileUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center justify-center px-2 py-1 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition whitespace-nowrap"
-                      >
-                        <BookOpen className="w-3 h-3 mr-1" />
-                        Read
-                      </a>
-                    ) : (
-                      <Button size="sm" disabled className="text-xs px-2 py-1">
-                        <BookOpen className="w-3 h-3 mr-1" />
-                        Read
-                      </Button>
-                    )}
-                  </div>
-                </Card>
-              );
+                  <Card key={episode.id} className="p-3 flex items-center justify-between">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-sm">
+                        Episode {episode.episodeNumber || "?"} - {episode.title || "Untitled"}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 ml-3 flex-shrink-0">
+                      <Badge variant="secondary" className="text-xs bg-green-100 text-green-700">
+                        Free
+                      </Badge>
+                      {episode.fileUrl ? (
+                        <a
+                          href={episode.fileUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center justify-center px-2 py-1 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition whitespace-nowrap"
+                        >
+                          <BookOpen className="w-3 h-3 mr-1" />
+                          Read
+                        </a>
+                      ) : (
+                        <Button size="sm" disabled className="text-xs px-2 py-1">
+                          <BookOpen className="w-3 h-3 mr-1" />
+                          Read
+                        </Button>
+                      )}
+                    </div>
+                  </Card>
+                );
               })}
             </div>
           </div>
@@ -365,7 +376,7 @@ export default function NovelDetailPage() {
                           <p className="font-semibold text-sm whitespace-nowrap">฿{episode.price ?? "N/A"}</p>
                           <input
                             type="checkbox"
-                            checked={selectedEpisodes.includes(episode.id)}
+                            checked={inCart || selectedEpisodes.includes(episode.id)}
                             onChange={(e) => {
                               try {
                                 handleEpisodeToggle(episode.id, e.target.checked);

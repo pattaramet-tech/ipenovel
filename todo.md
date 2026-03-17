@@ -656,3 +656,22 @@
 - [x] Add guards for missing episode fields (title, price, createdAt, fileUrl) (added fallbacks)
 - [x] Verify production build works without crashes (build successful)
 - [x] Test episode search and sorting with edge cases (try-catch guards added)
+
+
+## Full Codebase Audit and Stabilization Pass
+- [ ] Phase 1: Audit all frontend pages for crash risks and bugs
+- [ ] Phase 2: Audit all backend routers and services for logic bugs
+- [ ] Phase 3: Audit routing, navigation, and error handling
+- [ ] Phase 4: Fix Critical severity issues
+- [ ] Phase 5: Fix High severity issues
+- [ ] Phase 6: Fix Medium severity issues
+- [ ] Phase 7: Add/update tests for high-risk flows
+- [ ] Phase 8: Verify production build safety
+- [ ] Phase 9: Test all main user flows end-to-end
+- [ ] Phase 10: Document audit findings and issues found
+
+
+## Novel Card Click Crash Fix (Recurring)
+- [x] Debug root cause of crash when clicking novel card from Home page (React Hook Order Violation - useMemo after early returns)
+- [x] Fix NovelDetailPage crash (rewrote file to move useMemo before all early returns)
+- [x] Verify fix in production build (build successful, 0 errors)
