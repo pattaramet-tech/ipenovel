@@ -121,23 +121,38 @@ export async function getUserById(userId: number) {
 export async function getAllNovels(limit?: number, offset?: number) {
   const db = await getDb();
   if (!db) return [];
-  let query: any = db.select().from(novels).orderBy(desc(novels.createdAt));
+  // Only return published novels for public pages
+  let query: any = db.select().from(novels).where(eq(novels.publicationStatus, "published")).orderBy(desc(novels.createdAt));
   if (limit) query = query.limit(limit);
   if (offset) query = query.offset(offset);
   return query;
 }
 
-export async function getNovelById(novelId: number) {
+export async function getNovelById(novelId: number, publicOnly: boolean = true) {
   const db = await getDb();
   if (!db) return undefined;
-  const result = await db.select().from(novels).where(eq(novels.id, novelId)).limit(1);
+  let query: any = db.select().from(novels).where(eq(novels.id, novelId));
+  // For public access, only return published novels
+  if (publicOnly) {
+    query = db.select().from(novels).where(
+      and(eq(novels.id, novelId), eq(novels.publicationStatus, "published"))
+    );
+  }
+  const result = await query.limit(1);
   return result.length > 0 ? result[0] : undefined;
 }
 
-export async function getNovelBySlug(slug: string) {
+export async function getNovelBySlug(slug: string, publicOnly: boolean = true) {
   const db = await getDb();
   if (!db) return undefined;
-  const result = await db.select().from(novels).where(eq(novels.slug, slug)).limit(1);
+  let query: any = db.select().from(novels).where(eq(novels.slug, slug));
+  // For public access, only return published novels
+  if (publicOnly) {
+    query = db.select().from(novels).where(
+      and(eq(novels.slug, slug), eq(novels.publicationStatus, "published"))
+    );
+  }
+  const result = await query.limit(1);
   return result.length > 0 ? result[0] : undefined;
 }
 
@@ -1275,6 +1290,7 @@ export async function getPopularNovels(limit: number = 4): Promise<NovelWithCoun
       freeEpisodeCount: sql<number>`0`, // Placeholder, not used for popular
     })
     .from(novels)
+    .where(eq(novels.publicationStatus, "published")) // Only published novels
     .leftJoin(purchaseCountsSubquery, eq(novels.id, purchaseCountsSubquery.novelId))
     .leftJoin(wishlistCountsSubquery, eq(novels.id, wishlistCountsSubquery.novelId))
     .orderBy(
@@ -1328,6 +1344,7 @@ export async function getNewNovels(limit: number = 4): Promise<NovelWithCounts[]
       freeEpisodeCount: sql<number>`0`,
     })
     .from(novels)
+    .where(eq(novels.publicationStatus, "published")) // Only published novels
     .leftJoin(purchaseCountsSubquery, eq(novels.id, purchaseCountsSubquery.novelId))
     .leftJoin(wishlistCountsSubquery, eq(novels.id, wishlistCountsSubquery.novelId))
     .orderBy(desc(novels.createdAt))
@@ -1391,7 +1408,10 @@ export async function getFreeNovels(limit: number = 4): Promise<NovelWithCounts[
     .innerJoin(freeEpisodeCountsSubquery, eq(novels.id, freeEpisodeCountsSubquery.novelId))
     .leftJoin(purchaseCountsSubquery, eq(novels.id, purchaseCountsSubquery.novelId))
     .leftJoin(wishlistCountsSubquery, eq(novels.id, wishlistCountsSubquery.novelId))
-    .where(sql<boolean>`${freeEpisodeCountsSubquery.count} > 0`)
+    .where(and(
+      eq(novels.publicationStatus, "published"), // Only published novels
+      sql<boolean>`${freeEpisodeCountsSubquery.count} > 0`
+    ))
     .orderBy(desc(novels.createdAt))
     .limit(limit);
 
@@ -1463,7 +1483,9 @@ export async function getCatalogNovels(params: {
     .leftJoin(wishlistCountsSubquery, eq(novels.id, wishlistCountsSubquery.novelId));
 
   // Combine filter and search into a single .where() call to avoid overwriting
-  const conditions: any[] = [];
+  const conditions: any[] = [
+    eq(novels.publicationStatus, "published"), // Always filter for published novels
+  ];
   if (filter === "free") {
     conditions.push(sql<boolean>`${freeEpisodeCountsSubquery.count} > 0`);
   }

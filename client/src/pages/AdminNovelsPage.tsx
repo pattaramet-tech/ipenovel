@@ -22,7 +22,8 @@ export default function AdminNovelsPage() {
     title: "",
     description: "",
     coverImageUrl: "",
-    status: "draft" as "draft" | "published" | "archived",
+    publicationStatus: "published" as "published" | "archived",
+    storyStatus: "ongoing" as "ongoing" | "finished",
   });
 
   const { data: novels, isLoading, refetch } = trpc.admin.novels.list.useQuery(
@@ -33,7 +34,7 @@ export default function AdminNovelsPage() {
   const createMutation = trpc.admin.novels.create.useMutation({
     onSuccess: () => {
       toast.success("Novel created!");
-      setFormData({ title: "", description: "", coverImageUrl: "", status: "draft" });
+      setFormData({ title: "", description: "", coverImageUrl: "", publicationStatus: "published", storyStatus: "ongoing" });
       setIsCreating(false);
       refetch();
     },
@@ -45,7 +46,7 @@ export default function AdminNovelsPage() {
   const updateMutation = trpc.admin.novels.update.useMutation({
     onSuccess: () => {
       toast.success("Novel updated!");
-      setFormData({ title: "", description: "", coverImageUrl: "", status: "draft" });
+      setFormData({ title: "", description: "", coverImageUrl: "", publicationStatus: "published", storyStatus: "ongoing" });
       setEditingNovelId(null);
       refetch();
     },
@@ -94,7 +95,8 @@ export default function AdminNovelsPage() {
       title: novel.title,
       description: novel.description || "",
       coverImageUrl: novel.coverImageUrl || "",
-      status: novel.status || "draft",
+      publicationStatus: novel.publicationStatus || "published",
+      storyStatus: novel.storyStatus || "ongoing",
     });
   };
 
@@ -114,7 +116,7 @@ export default function AdminNovelsPage() {
   const handleCancel = () => {
     setIsCreating(false);
     setEditingNovelId(null);
-    setFormData({ title: "", description: "", coverImageUrl: "", status: "draft" });
+    setFormData({ title: "", description: "", coverImageUrl: "", publicationStatus: "published", storyStatus: "ongoing" });
   };
 
   return (
@@ -150,15 +152,25 @@ export default function AdminNovelsPage() {
                     />
                   </div>
                   <div>
-                    <label className="text-sm font-semibold text-slate-700 block mb-2">Status</label>
+                    <label className="text-sm font-semibold text-slate-700 block mb-2">Publication Status</label>
                     <select
-                      value={formData.status}
-                      onChange={(e) => setFormData({ ...formData, status: e.target.value as any })}
+                      value={formData.publicationStatus}
+                      onChange={(e) => setFormData({ ...formData, publicationStatus: e.target.value as any })}
                       className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     >
-                      <option value="draft">Draft</option>
-                      <option value="published">Published</option>
-                      <option value="archived">Archived</option>
+                      <option value="published">Published (Visible)</option>
+                      <option value="archived">Archived (Hidden)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-slate-700 block mb-2">Story Status</label>
+                    <select
+                      value={formData.storyStatus}
+                      onChange={(e) => setFormData({ ...formData, storyStatus: e.target.value as any })}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="ongoing">Ongoing</option>
+                      <option value="finished">Finished</option>
                     </select>
                   </div>
                 </div>
@@ -241,7 +253,8 @@ export default function AdminNovelsPage() {
                 <tr className="border-b bg-slate-50">
                   <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Cover</th>
                   <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Title</th>
-                  <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Status</th>
+                  <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Publication</th>
+                  <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Story</th>
                   <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Updated</th>
                   <th className="text-right px-4 py-3 font-semibold text-slate-700 text-sm">Actions</th>
                 </tr>
@@ -263,7 +276,10 @@ export default function AdminNovelsPage() {
                       </div>
                     </td>
                     <td className="px-4 py-3">
-                      <StatusBadge status={novel.status} />
+                      <StatusBadge status={novel.publicationStatus} />
+                    </td>
+                    <td className="px-4 py-3">
+                      <StatusBadge status={novel.storyStatus} />
                     </td>
                     <td className="px-4 py-3 text-sm text-slate-600">
                       {new Date(novel.updatedAt || novel.createdAt).toLocaleDateString()}

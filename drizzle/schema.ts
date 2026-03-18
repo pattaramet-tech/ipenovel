@@ -48,6 +48,10 @@ export type InsertCategory = typeof categories.$inferInsert;
 
 /**
  * Novels (main content items)
+ * 
+ * Status is now split into two separate dimensions:
+ * - publicationStatus: controls visibility (published = visible, archived = hidden)
+ * - storyStatus: indicates story progress (ongoing = still writing, finished = completed)
  */
 export const novels = mysqlTable(
   "novels",
@@ -58,13 +62,19 @@ export const novels = mysqlTable(
     description: text("description"),
     author: varchar("author", { length: 255 }),
     coverImageUrl: text("coverImageUrl"),
-    status: mysqlEnum("status", ["ongoing", "completed", "hiatus"]).default("ongoing").notNull(),
+    // Publication status controls visibility on public pages
+    publicationStatus: mysqlEnum("publicationStatus", ["published", "archived"]).default("published").notNull(),
+    // Story status indicates story progress
+    storyStatus: mysqlEnum("storyStatus", ["ongoing", "finished"]).default("ongoing").notNull(),
+    // Legacy status field for backward compatibility during migration (will be removed after migration)
+    status: mysqlEnum("status", ["ongoing", "completed", "hiatus", "pending"]).default("ongoing"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (table) => ({
     createdAtIdx: index("novels_createdAt_idx").on(table.createdAt),
     titleIdx: index("novels_title_idx").on(table.title),
+    publicationStatusIdx: index("novels_publicationStatus_idx").on(table.publicationStatus),
   })
 );
 

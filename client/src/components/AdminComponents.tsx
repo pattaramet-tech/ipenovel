@@ -83,7 +83,10 @@ export function StatusBadge({ status }: { status: string }) {
     active: { bg: "bg-green-100", text: "text-green-800", label: "Active" },
     inactive: { bg: "bg-slate-100", text: "text-slate-800", label: "Inactive" },
     draft: { bg: "bg-slate-100", text: "text-slate-800", label: "Draft" },
-    published: { bg: "bg-blue-100", text: "text-blue-800", label: "Published" },
+    published: { bg: "bg-green-100", text: "text-green-800", label: "Published" },
+    archived: { bg: "bg-slate-100", text: "text-slate-800", label: "Archived" },
+    ongoing: { bg: "bg-blue-100", text: "text-blue-800", label: "Ongoing" },
+    finished: { bg: "bg-purple-100", text: "text-purple-800", label: "Finished" },
   };
 
   const config = statusConfig[status.toLowerCase()] || statusConfig.pending;
