@@ -84,6 +84,9 @@ const translations: Record<Language, Record<string, string>> = {
     "cart.redeemPoints": "แลกคะแนน",
     "cart.availablePoints": "คะแนนคงเหลือ",
 
+    // Checkout
+    "checkout.proceedToCheckout": "ไปที่หน้าชำระเงิน",
+
     // Orders
     "orders.title": "คำสั่งซื้อของฉัน",
     "orders.noOrders": "ไม่มีคำสั่งซื้อ",
@@ -307,6 +310,9 @@ const translations: Record<Language, Record<string, string>> = {
     "cart.empty": "Your cart is empty",
     "cart.checkout": "Checkout",
     "cart.total": "Total",
+
+    // Checkout
+    "checkout.proceedToCheckout": "Go to Payment Page",
 
     // Orders
     "orders.title": "Orders",
