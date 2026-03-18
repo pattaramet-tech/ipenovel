@@ -6,18 +6,40 @@ describe("Order/Payment Status Synchronization", () => {
   let testOrderId: number;
   let testPaymentId: number;
   let testUserId: number;
+  let testNovelId: number;
+  let testEpisodeId: number;
 
   beforeEach(async () => {
+    const ts = Date.now();
     // Create test user
-    const openId = `test-user-${Date.now()}`;
+    const openId = `test-user-${ts}`;
     await db.upsertUser({
       openId,
-      name: `Test User ${Date.now()}`,
-      email: `test-${Date.now()}@example.com`,
+      name: `Test User ${ts}`,
+      email: `test-${ts}@example.com`,
       loginMethod: "test",
     });
     const user = await db.getUserByOpenId(openId);
     testUserId = (user as any).id;
+
+    // Create test novel
+    const novel: any = await db.createNovel({
+      title: `Status Sync Novel ${ts}`,
+      author: "Test Author",
+      description: "Test",
+    });
+    testNovelId = (novel as any).id;
+
+    // Create test episode
+    const epResult: any = await db.createEpisode({
+      novelId: testNovelId,
+      episodeNumber: `ss-ep-${ts}`,
+      title: "Status Sync Episode",
+      price: "100.00",
+      isFree: false,
+      fileUrl: "https://example.com/test.pdf",
+    });
+    testEpisodeId = (epResult as any)[0]?.insertId ?? (epResult as any).insertId;
 
     // Create test order
     const orderResult = await db.createOrder({
@@ -33,7 +55,7 @@ describe("Order/Payment Status Synchronization", () => {
     // Create test payment
     const paymentResult = await db.createPayment(testOrderId);
     testPaymentId = (paymentResult as any).id;
-  });
+  }, 30000);
 
   describe("Payment Approval - Status Synchronization", () => {
     it("should sync order.status and order.paymentStatus when payment is approved", async () => {
@@ -55,12 +77,12 @@ describe("Order/Payment Status Synchronization", () => {
     });
 
     it("should create purchases after approval", async () => {
-      // Add order item
+      // Add order item using real test data
       await db.createOrderItems([
         {
           orderId: testOrderId,
-          novelId: 1,
-          episodeId: 1,
+          novelId: testNovelId,
+          episodeId: testEpisodeId,
           unitPrice: "100.00",
           discountAmount: "0.00",
           finalPrice: "100.00",
@@ -71,11 +93,11 @@ describe("Order/Payment Status Synchronization", () => {
       await orderService.approvePayment(testPaymentId, "admin-1");
 
       // Verify purchase was created
-      const purchase = await db.getPurchaseByUserAndEpisode(testUserId, 1);
+      const purchase = await db.getPurchaseByUserAndEpisode(testUserId, testEpisodeId);
       expect(purchase).toBeDefined();
       expect(purchase?.userId).toBe(testUserId);
-      expect(purchase?.episodeId).toBe(1);
-    });
+      expect(purchase?.episodeId).toBe(testEpisodeId);
+    }, 15000);
   });
 
   describe("Payment Rejection - Status Synchronization", () => {

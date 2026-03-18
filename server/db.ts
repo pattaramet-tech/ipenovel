@@ -180,15 +180,34 @@ export async function createNovel(data: {
 }) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  // Generate slug: strip non-ASCII (e.g., Thai) chars, fallback to timestamp-based slug
+  let rawSlug = data.title.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+  if (!rawSlug) rawSlug = `novel-${Date.now()}`;
+  // Ensure uniqueness
+  const slug = await generateUniqueSlug(data.title);
   const result = await db.insert(novels).values({
     title: data.title,
     author: data.author || "",
     description: data.description || "",
     coverImageUrl: data.coverImageUrl || "",
-    slug: data.title.toLowerCase().replace(/\s+/g, "-"),
+    slug,
     status: "ongoing",
   });
-  return result;
+  // Extract insertId from Drizzle MySQL result
+  let insertedId: number | undefined;
+  if (typeof result === 'object' && result !== null) {
+    insertedId = (result as any).insertId;
+    if (!insertedId && Array.isArray(result) && result[0]) {
+      insertedId = (result[0] as any).insertId;
+    }
+    if (!insertedId && (result as any).meta) {
+      insertedId = (result as any).meta.insertId;
+    }
+  }
+  if (!insertedId) {
+    throw new Error("Failed to extract inserted novel ID from database result");
+  }
+  return { id: insertedId } as any;
 }
 
 export async function updateNovel(novelId: number, data: any) {
@@ -232,7 +251,21 @@ export async function createEpisode(data: {
     isFree: data.isFree || false,
     fileUrl: data.fileUrl || "",
   });
-  return result;
+  // Extract insertId from Drizzle MySQL result
+  let insertedId: number | undefined;
+  if (typeof result === 'object' && result !== null) {
+    insertedId = (result as any).insertId;
+    if (!insertedId && Array.isArray(result) && result[0]) {
+      insertedId = (result[0] as any).insertId;
+    }
+    if (!insertedId && (result as any).meta) {
+      insertedId = (result as any).meta.insertId;
+    }
+  }
+  if (!insertedId) {
+    throw new Error("Failed to extract inserted episode ID from database result");
+  }
+  return { id: insertedId } as any;
 }
 
 export async function updateEpisode(episodeId: number, data: any) {
@@ -578,12 +611,20 @@ export async function createPurchase(userId: number, novelId: number, episodeId:
 export async function getPurchaseByUserAndEpisode(userId: number, episodeId: number) {
   const db = await getDb();
   if (!db) return undefined;
+  // Only return purchase if the associated order is approved
   const result = await db
     .select()
     .from(purchases)
-    .where(and(eq(purchases.userId, userId), eq(purchases.episodeId, episodeId)))
+    .innerJoin(orders, eq(purchases.orderId, orders.id))
+    .where(
+      and(
+        eq(purchases.userId, userId),
+        eq(purchases.episodeId, episodeId),
+        eq(orders.status, "approved")
+      )
+    )
     .limit(1);
-  return result.length > 0 ? result[0] : undefined;
+  return result.length > 0 ? result[0].purchases : undefined;
 }
 
 export async function getPurchasesByUserId(userId: number) {
@@ -675,6 +716,20 @@ export async function recordCouponUsage(couponId: number, userId: number | undef
   const db = await getDb();
   if (!db) return;
   await db.insert(couponUsages).values({ couponId, userId, orderId });
+  // Increment usageCount on the coupon itself
+  await db.update(coupons).set({ usageCount: sql`${coupons.usageCount} + 1` }).where(eq(coupons.id, couponId));
+}
+
+export async function getCouponUsageByUserId(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(couponUsages).where(eq(couponUsages.userId, userId));
+}
+
+export async function getCouponUsageByOrderId(orderId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(couponUsages).where(eq(couponUsages.orderId, orderId));
 }
 
 // ============ POINTS ============
@@ -724,6 +779,32 @@ export async function getPointsHistory(userId: number, limit?: number) {
   return query;
 }
 
+// Alias for getPointsHistory
+export const getPointsTransactions = getPointsHistory;
+
+/**
+ * Convenience wrapper: add a points transaction with a simple signature
+ * Used by tests and admin tools
+ */
+export async function addPointsTransaction(
+  userId: number,
+  amount: number,
+  referenceType: string,
+  note: string
+): Promise<void> {
+  const currentBalance = await getUserPointsBalance(userId);
+  const currentBalanceNum = parseFloat(currentBalance || "0");
+  const newBalance = (currentBalanceNum + amount).toFixed(2);
+  await recordPointsTransaction({
+    userId,
+    type: amount >= 0 ? "earn" : "redeem",
+    amount: Math.abs(amount).toString(),
+    balanceAfter: newBalance,
+    referenceType,
+    note,
+  });
+}
+
 // ============ WISHLISTS ============
 
 export async function getWishlistByUserAndNovel(userId: number, novelId: number) {
@@ -761,6 +842,13 @@ export async function getAllBanners() {
   const db = await getDb();
   if (!db) return [];
   return db.select().from(banners).where(eq(banners.isActive, true)).orderBy(asc(banners.displayOrder));
+}
+
+// Admin version: returns all banners including inactive ones
+export async function getAllBannersAdmin() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(banners).orderBy(asc(banners.displayOrder));
 }
 
 export async function createBanner(data: { title: string; description?: string; imageUrl: string; linkUrl?: string; displayOrder?: number }) {
@@ -841,8 +929,9 @@ export async function generateUniqueSlug(title: string, existingNovelId?: number
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
+  // Strip non-ASCII characters (e.g. Thai) and use timestamp fallback if empty
   let slug = title.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
-  if (!slug) slug = "novel";
+  if (!slug) slug = `novel-${Date.now()}`;
 
   // Check if slug already exists
   const existing = await db
@@ -1373,15 +1462,19 @@ export async function getCatalogNovels(params: {
     .leftJoin(purchaseCountsSubquery, eq(novels.id, purchaseCountsSubquery.novelId))
     .leftJoin(wishlistCountsSubquery, eq(novels.id, wishlistCountsSubquery.novelId));
 
-  // Apply filter
+  // Combine filter and search into a single .where() call to avoid overwriting
+  const conditions: any[] = [];
   if (filter === "free") {
-    query = query.where(sql<boolean>`${freeEpisodeCountsSubquery.count} > 0`);
+    conditions.push(sql<boolean>`${freeEpisodeCountsSubquery.count} > 0`);
   }
-
-  // Apply search
   if (search && search.trim()) {
     const searchPattern = `%${search.trim()}%`;
-    query = query.where(sql`${novels.title} LIKE ${searchPattern}`);
+    conditions.push(sql`${novels.title} LIKE ${searchPattern}`);
+  }
+  if (conditions.length === 1) {
+    query = query.where(conditions[0]);
+  } else if (conditions.length > 1) {
+    query = query.where(and(...conditions));
   }
 
   // Apply sort
@@ -1487,15 +1580,19 @@ export async function getBrowseCatalog(params: {
     .from(novels)
     .leftJoin(freeEpisodeCountsSubquery, eq(novels.id, freeEpisodeCountsSubquery.novelId));
 
-  // Apply filter
+  // Combine filter and search into a single .where() call to avoid overwriting
+  const browseConditions: any[] = [];
   if (filter === "free") {
-    query = query.where(sql<boolean>`${freeEpisodeCountsSubquery.count} > 0`);
+    browseConditions.push(sql<boolean>`${freeEpisodeCountsSubquery.count} > 0`);
   }
-
-  // Apply search
   if (search && search.trim()) {
     const searchPattern = `%${search.trim()}%`;
-    query = query.where(sql`${novels.title} LIKE ${searchPattern}`);
+    browseConditions.push(sql`${novels.title} LIKE ${searchPattern}`);
+  }
+  if (browseConditions.length === 1) {
+    query = query.where(browseConditions[0]);
+  } else if (browseConditions.length > 1) {
+    query = query.where(and(...browseConditions));
   }
 
   // Apply sort
@@ -1565,19 +1662,22 @@ export async function getTopSellingNovels(period: "all" | "today" | "7d" | "mont
     .leftJoin(purchases, eq(novels.id, purchases.novelId))
     .leftJoin(wishlists, eq(novels.id, wishlists.novelId))
     .where(
-      and(
-        // Only approved orders with approved payments
-        eq(orders.status, "approved"),
-        eq(orders.paymentStatus, "approved"),
-        eq(payments.status, "approved"),
-        // Apply date filter if specified
-        dateFilter ? dateFilter : undefined
-      )
+      dateFilter
+        ? and(
+            eq(orders.status, "approved"),
+            eq(orders.paymentStatus, "approved"),
+            eq(payments.status, "approved"),
+            dateFilter
+          )
+        : and(
+            eq(orders.status, "approved"),
+            eq(orders.paymentStatus, "approved"),
+            eq(payments.status, "approved")
+          )
     )
     .groupBy(novels.id, novels.title, novels.coverImageUrl, novels.createdAt)
     .orderBy(desc(sql<number>`SUM(${orderItems.finalPrice})`))
     .limit(limit);
-
   const results: any[] = await query;
 
   return results.map((row, index) => ({
@@ -1627,12 +1727,18 @@ export async function getTopSellingNovelsStats(period: "all" | "today" | "7d" | 
     .leftJoin(payments, eq(orders.id, payments.orderId))
     .leftJoin(purchases, eq(novels.id, purchases.novelId))
     .where(
-      and(
-        eq(orders.status, "approved"),
-        eq(orders.paymentStatus, "approved"),
-        eq(payments.status, "approved"),
-        dateFilter ? dateFilter : undefined
-      )
+      dateFilter
+        ? and(
+            eq(orders.status, "approved"),
+            eq(orders.paymentStatus, "approved"),
+            eq(payments.status, "approved"),
+            dateFilter
+          )
+        : and(
+            eq(orders.status, "approved"),
+            eq(orders.paymentStatus, "approved"),
+            eq(payments.status, "approved")
+          )
     );
 
   return {
@@ -1640,4 +1746,30 @@ export async function getTopSellingNovelsStats(period: "all" | "today" | "7d" | 
     totalPurchases: Number(result[0]?.totalPurchases) || 0,
     novelCount: Number(result[0]?.novelCount) || 0,
   };
+}
+
+// ============ CLEANUP HELPERS (used in tests / admin) ============
+
+export async function deleteOrderItems(orderId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(orderItems).where(eq(orderItems.orderId, orderId));
+}
+
+export async function deletePaymentsByOrderId(orderId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(payments).where(eq(payments.orderId, orderId));
+}
+
+export async function deleteOrder(orderId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(orders).where(eq(orders.id, orderId));
+}
+
+export async function deleteUser(userId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(users).where(eq(users.id, userId));
 }

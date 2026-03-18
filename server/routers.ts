@@ -345,6 +345,7 @@ export const appRouter = router({
         const payment = await db.getPaymentByOrderId(order.id);
         if (!payment) throw new TRPCError({ code: "NOT_FOUND" });
 
+        // Update payment with slip URL, submission time, and reset to pending
         await db.updatePayment(payment.id, {
           slipImageUrl: input.slipImageUrl,
           slipSubmittedAt: new Date(),
@@ -354,11 +355,6 @@ export const appRouter = router({
         // Sync order status
         await db.updateOrder(order.id, {
           paymentStatus: "submitted",
-          status: "pending",
-        });
-
-        // Clear rejection state on payment
-        await db.updatePayment(payment.id, {
           status: "pending",
         });
 
@@ -620,7 +616,13 @@ export const appRouter = router({
         )
         .mutation(async ({ input }) => {
           const { novelId, ...data } = input;
-          await db.updateNovel(novelId, data);
+          // Regenerate slug when title changes to keep slug in sync
+          if (data.title) {
+            const newSlug = await db.generateUniqueSlug(data.title, novelId);
+            await db.updateNovel(novelId, { ...data, slug: newSlug });
+          } else {
+            await db.updateNovel(novelId, data);
+          }
           return { success: true };
         }),
 
@@ -792,7 +794,8 @@ export const appRouter = router({
 
     banners: router({
       list: adminProcedure.query(async () => {
-        return db.getAllBanners();
+        // Admin needs all banners (including inactive)
+        return db.getAllBannersAdmin();
       }),
 
       create: adminProcedure

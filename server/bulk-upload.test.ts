@@ -23,7 +23,8 @@ describe("Bulk Upload - Validation", () => {
       description: "Test Description",
       coverImageUrl: "",
     });
-    const novelId = (novelResult as any).insertId;
+    // createNovel returns { id } not { insertId }
+    const novelId = (novelResult as any).id;
 
     const rows = [
       {
@@ -69,7 +70,7 @@ describe("Bulk Upload - Validation", () => {
       description: "Test Description",
       coverImageUrl: "",
     });
-    const novelId = (novelResult as any).insertId;
+    const novelId = (novelResult as any).id;
 
     const rows = [
       {
@@ -90,7 +91,7 @@ describe("Bulk Upload - Validation", () => {
 describe("Free Episode Behavior", () => {
   it("should mark episodes as free when price is 0", async () => {
     const timestamp = Date.now();
-    
+
     // Create a test novel
     const novelResult = await db.createNovel({
       title: `Test Novel Free Behavior ${timestamp}`,
@@ -98,19 +99,20 @@ describe("Free Episode Behavior", () => {
       description: "Test Description",
       coverImageUrl: "",
     });
-    const novelId = (novelResult as any).insertId;
+    const novelId = (novelResult as any).id;
 
     // Create a free episode directly
-    const freeResult = await db.createEpisode({
+    const freeResult: any = await db.createEpisode({
       novelId,
-      episodeNumber: "1",
+      episodeNumber: `free-${timestamp}`,
       title: "Free Episode",
       price: "0",
       isFree: true,
       fileUrl: "https://example.com/free.pdf",
     });
 
-    const freeEpisodeId = (freeResult as any).insertId;
+    // createEpisode returns raw drizzle result - get insertId from [0] or direct
+    const freeEpisodeId = (freeResult as any)[0]?.insertId ?? (freeResult as any).insertId;
     const freeEpisode = await db.getEpisodeById(freeEpisodeId);
 
     expect(freeEpisode?.isFree).toBe(true);
@@ -119,7 +121,7 @@ describe("Free Episode Behavior", () => {
 
   it("should mark episodes as paid when price > 0", async () => {
     const timestamp = Date.now();
-    
+
     // Create a test novel
     const novelResult = await db.createNovel({
       title: `Test Novel Paid Behavior ${timestamp}`,
@@ -127,19 +129,19 @@ describe("Free Episode Behavior", () => {
       description: "Test Description",
       coverImageUrl: "",
     });
-    const novelId = (novelResult as any).insertId;
+    const novelId = (novelResult as any).id;
 
     // Create a paid episode directly
-    const paidResult = await db.createEpisode({
+    const paidResult: any = await db.createEpisode({
       novelId,
-      episodeNumber: "1",
+      episodeNumber: `paid-${timestamp}`,
       title: "Paid Episode",
       price: "99",
       isFree: false,
       fileUrl: "https://example.com/paid.pdf",
     });
 
-    const paidEpisodeId = (paidResult as any).insertId;
+    const paidEpisodeId = (paidResult as any)[0]?.insertId ?? (paidResult as any).insertId;
     const paidEpisode = await db.getEpisodeById(paidEpisodeId);
 
     expect(paidEpisode?.isFree).toBe(false);

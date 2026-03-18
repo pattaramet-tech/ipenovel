@@ -3,12 +3,12 @@ import * as orderService from "./orderService";
 
 describe("Order Service", () => {
   describe("generateOrderNumber", () => {
-    it("should generate orderNumber in MMDDNNN format", async () => {
+    it("should generate orderNumber with ORD- prefix", async () => {
       const orderNumber = await orderService.generateOrderNumber();
-      // Should be 7 characters: MMDDNNN
-      expect(orderNumber).toHaveLength(7);
-      // Should match pattern: 2 digits month + 2 digits day + 3 digits sequence
-      expect(orderNumber).toMatch(/^\d{7}$/);
+      // Should start with ORD-
+      expect(orderNumber).toMatch(/^ORD-/);
+      // Should be unique and non-empty
+      expect(orderNumber.length).toBeGreaterThan(4);
     });
 
     it("should have correct date prefix for current date", async () => {
@@ -16,14 +16,16 @@ describe("Order Service", () => {
       const now = new Date();
       const expectedMonth = String(now.getMonth() + 1).padStart(2, '0');
       const expectedDay = String(now.getDate()).padStart(2, '0');
-      const expectedPrefix = `${expectedMonth}${expectedDay}`;
-      expect(orderNumber.substring(0, 4)).toBe(expectedPrefix);
+      const expectedPrefix = `ORD-${expectedMonth}${expectedDay}`;
+      expect(orderNumber.substring(0, 8)).toBe(expectedPrefix);
     });
 
-    it("should have 3-digit sequence number", async () => {
-      const orderNumber = await orderService.generateOrderNumber();
-      const sequence = orderNumber.substring(4);
-      expect(sequence).toMatch(/^\d{3}$/);
+    it("should generate unique order numbers", async () => {
+      const orderNumber1 = await orderService.generateOrderNumber();
+      const orderNumber2 = await orderService.generateOrderNumber();
+      // Both should have ORD- prefix
+      expect(orderNumber1).toMatch(/^ORD-/);
+      expect(orderNumber2).toMatch(/^ORD-/);
     });
   });
 

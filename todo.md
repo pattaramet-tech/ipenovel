@@ -675,3 +675,28 @@
 - [x] Debug root cause of crash when clicking novel card from Home page (React Hook Order Violation - useMemo after early returns)
 - [x] Fix NovelDetailPage crash (rewrote file to move useMemo before all early returns)
 - [x] Verify fix in production build (build successful, 0 errors)
+
+
+## Backend Non-Page Audit - Critical Fixes
+- [ ] Fix N+1 queries in cart.get (getEpisodeById + getNovelById per item)
+- [ ] Fix N+1 queries in orders.list (getOrderItems + getPaymentByOrderId per order)
+- [ ] Fix N+1 queries in myNovels.list (getNovelById + getEpisodeById per purchase)
+- [ ] Fix N+1 queries in wishlists.list (getNovelById per wishlist)
+- [ ] Fix N+1 queries in admin.payments.pending (getOrderById + getOrderItems + getUserById per payment)
+- [ ] Fix N+1 queries in novels.episodes (isEpisodeAlreadyPurchased per episode)
+- [ ] Fix getOrderItems N+1 (getEpisodeById + getNovelById per item)
+- [ ] Fix getCatalogNovels: double .where() calls overwrite each other (filter + search)
+- [ ] Fix getBrowseCatalog: double .where() calls overwrite each other (filter + search)
+- [ ] Fix entitlementRepair.ts: uses wrong status string "APPROVED" instead of "approved"
+- [ ] Fix entitlementRepair.ts: INSERT INTO purchases missing novelId and orderId columns
+- [ ] Fix entitlementRepair.ts: INSERT INTO orderHistory uses wrong column "details" instead of "note"
+- [ ] Fix homePageService.ts: getAllBanners ignores isActive filter (uses desc(createdAt) not isActive)
+- [ ] Fix orders.uploadPaymentSlip: double updatePayment call (redundant second call)
+- [ ] Fix createNovel: slug generation strips Thai characters completely (empty slug for Thai titles)
+- [ ] Fix getAllNovels: uses `any` typed query chain losing type safety
+- [ ] Add missing reviewedByUserId to approvePayment in orderService (currently not setting it)
+- [ ] Add missing coupon usageCount increment after successful order creation
+- [ ] Add missing orderHistory record after payment approval/rejection
+- [ ] Write tests for fixed N+1 queries
+- [ ] Write tests for fixed slug generation
+- [ ] Verify build passes after all fixes

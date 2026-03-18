@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import * as dbHelpers from "../db";
 import { getDb } from "../db";
-import { users, novels, episodes, purchases } from "../../drizzle/schema";
+import { episodes, purchases } from "../../drizzle/schema";
 import { eq } from "drizzle-orm";
 
 describe("Download Route - /api/download/:episodeId", () => {
@@ -14,50 +15,69 @@ describe("Download Route - /api/download/:episodeId", () => {
     const db = await getDb();
     if (!db) return;
 
-    // Create test user
-    const userResult = await db.insert(users).values({
-      openId: `test-user-${Date.now()}`,
-      name: "Test User",
-      email: `test-${Date.now()}@example.com`,
+    const ts = Date.now();
+
+    // Use db helpers which return { id } correctly
+    await dbHelpers.upsertUser({
+      openId: `test-dl-user-${ts}`,
+      name: "Test DL User",
+      email: `test-dl-${ts}@example.com`,
       role: "user",
     });
-    testUserId = userResult[0]?.id || 1;
+    const testUser = await dbHelpers.getUserByOpenId(`test-dl-user-${ts}`);
+    if (!testUser) throw new Error("Test user not created");
+    testUserId = testUser.id;
 
-    // Create test novel
-    const novelResult = await db.insert(novels).values({
-      title: "Test Novel",
-      slug: `test-novel-${Date.now()}`,
+    // Create novel using db helper
+    const novelResult: any = await dbHelpers.createNovel({
+      title: `Test DL Novel ${ts}`,
       author: "Test Author",
-      status: "ongoing",
+      description: "Test Description",
     });
-    testNovelId = novelResult[0]?.id || 1;
+    testNovelId = (novelResult as any).id;
 
-    // Create paid episode
-    const paidEpisodeResult = await db.insert(episodes).values({
+    // Create paid episode with unique episodeNumber per test run
+    const paidEpResult: any = await db.insert(episodes).values({
       novelId: testNovelId,
-      episodeNumber: "1-10",
+      episodeNumber: `paid-${ts}`,
       title: "Paid Episode",
       isFree: false,
       price: "99.99",
       fileUrl: testFileUrl,
     });
-    paidEpisodeId = paidEpisodeResult[0]?.id || 1;
+    // drizzle mysql2 returns [ResultSetHeader, ...] - use insertId from [0]
+    paidEpisodeId = (paidEpResult as any)[0]?.insertId ?? (paidEpResult as any).insertId;
+    if (!paidEpisodeId) throw new Error("paidEpisodeId not created");
 
-    // Create free episode
-    const freeEpisodeResult = await db.insert(episodes).values({
+    // Create free episode with unique episodeNumber per test run
+    const freeEpResult: any = await db.insert(episodes).values({
       novelId: testNovelId,
-      episodeNumber: "11-20",
+      episodeNumber: `free-${ts}`,
       title: "Free Episode",
       isFree: true,
       price: "0.00",
       fileUrl: testFileUrl,
     });
-    freeEpisodeId = freeEpisodeResult[0]?.id || 1;
+    freeEpisodeId = (freeEpResult as any)[0]?.insertId ?? (freeEpResult as any).insertId;
+    if (!freeEpisodeId) throw new Error("freeEpisodeId not created");
+
+    // Create a real order for the purchase (orderId FK is required)
+    const { generateOrderNumber } = await import("../services/orderService");
+    const order: any = await dbHelpers.createOrder({
+      orderNumber: generateOrderNumber(),
+      userId: testUserId,
+      subtotal: "99.99",
+      totalAmount: "99.99",
+    });
+    const orderId = (order as any).id;
+    if (!orderId) throw new Error("orderId not created");
 
     // Create purchase for paid episode
     await db.insert(purchases).values({
       userId: testUserId,
+      novelId: testNovelId,
       episodeId: paidEpisodeId,
+      orderId,
       grantedAt: new Date(),
     });
   });
@@ -72,16 +92,13 @@ describe("Download Route - /api/download/:episodeId", () => {
 
   describe("Authorization - Paid Episodes", () => {
     it("entitled user should be able to access paid episode", async () => {
-      // Verify purchase exists
       const db = await getDb();
       if (!db) return;
 
       const purchase = await db
         .select()
         .from(purchases)
-        .where(
-          eq(purchases.episodeId, paidEpisodeId)
-        )
+        .where(eq(purchases.episodeId, paidEpisodeId))
         .limit(1);
 
       expect(purchase.length).toBe(1);
@@ -96,9 +113,7 @@ describe("Download Route - /api/download/:episodeId", () => {
       const purchase = await db
         .select()
         .from(purchases)
-        .where(
-          eq(purchases.episodeId, paidEpisodeId)
-        )
+        .where(eq(purchases.episodeId, paidEpisodeId))
         .limit(1);
 
       // Verify other user has no purchase
@@ -143,16 +158,18 @@ describe("Download Route - /api/download/:episodeId", () => {
       const db = await getDb();
       if (!db) return;
 
-      // Create episode without fileUrl
-      const noFileResult = await db.insert(episodes).values({
+      const ts = Date.now();
+
+      // Create episode without fileUrl (empty string)
+      const noFileResult: any = await db.insert(episodes).values({
         novelId: testNovelId,
-        episodeNumber: "21-30",
+        episodeNumber: `nofile-${ts}`,
         title: "No File Episode",
         isFree: false,
         price: "50.00",
-        fileUrl: "", // Empty fileUrl
+        fileUrl: "",
       });
-      const noFileEpisodeId = noFileResult[0]?.id || 1;
+      const noFileEpisodeId = (noFileResult as any)[0]?.insertId ?? (noFileResult as any).insertId;
 
       const episode = await db
         .select()

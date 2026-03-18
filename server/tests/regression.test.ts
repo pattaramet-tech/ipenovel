@@ -35,12 +35,31 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
     testUser = await db.getUserByOpenId(userOpenId);
     testAdmin = await db.getUserByOpenId(adminOpenId);
 
-    const novels = await db.getAllNovels();
-    testNovel = novels[0];
+    // Create dedicated test novel with paid episodes
+    const ts = Date.now();
+    const novel: any = await db.createNovel({
+      title: `Regression Test Novel ${ts}`,
+      author: "Test Author",
+      description: "Test novel for regression suite",
+    });
+    testNovel = novel;
 
-    const episodes = await db.getEpisodesByNovelId(testNovel.id);
-    testEpisode = episodes.find((e: any) => !e.isFree);
-  });
+    // Create 3 paid episodes for multi-item cart tests
+    const createdEpisodes: any[] = [];
+    for (let i = 1; i <= 3; i++) {
+      const epResult: any = await db.createEpisode({
+        novelId: testNovel.id,
+        episodeNumber: `reg-ep-${ts}-${i}`,
+        title: `Regression Episode ${i}`,
+        price: `${50 * i}.00`,
+        isFree: false,
+        fileUrl: "https://example.com/test.pdf",
+      });
+      const epId = (epResult as any)[0]?.insertId ?? (epResult as any).insertId;
+      createdEpisodes.push({ id: epId, novelId: testNovel.id, price: `${50 * i}.00`, isFree: false });
+    }
+    testEpisode = createdEpisodes[0];
+  }, 30000);
 
   // ============ AREA 1: MANUS AUTH ============
 
@@ -103,17 +122,21 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
       }
     });
 
-    it("should calculate correct checkout totals", async () => {
+     it("should calculate correct checkout totals", async () => {
       const cart = await db.getOrCreateCart(testUser.id);
       // Clear cart before test
       await db.clearCart(cart.id);
+      // Add items to cart before calculating totals
+      const episodes = await db.getEpisodesByNovelId(testNovel.id);
+      const paidEpisodes = episodes.filter((e: any) => !e.isFree).slice(0, 2);
+      for (const episode of paidEpisodes) {
+        await db.addToCart(cart.id, episode.id, episode.novelId, episode.price.toString());
+      }
       const cartItems = await db.getCartItems(cart.id);
-
       let subtotal = 0;
       for (const item of cartItems) {
         subtotal += parseFloat(item.price);
       }
-
       expect(subtotal).toBeGreaterThan(0);
     });
   });
@@ -146,7 +169,7 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
       expect(order.orderNumber).toBeDefined();
       expect(order.orderNumber).toMatch(/^ORD-/);
 
-      const dbOrder = await db.getOrderById(order.orderId);
+      const dbOrder = await db.getOrderById(order.id);
       expect(dbOrder?.orderNumber).toBe(order.orderNumber);
     });
 
@@ -161,7 +184,7 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
         const cartItems = await db.getCartItems(cart.id);
         const order = await orderService.createOrderFromCart(testUser.id, cartItems);
 
-        const payment = await db.getPaymentByOrderId(order.orderId);
+        const payment = await db.getPaymentByOrderId(order.id);
         expect(payment).toBeDefined();
         expect(payment?.status).toBe("pending");
       }
@@ -182,11 +205,11 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
         const cartItems = await db.getCartItems(cart.id);
         const order = await orderService.createOrderFromCart(testUser.id, cartItems);
 
-        const payment = await db.getPaymentByOrderId(order.orderId);
+        const payment = await db.getPaymentByOrderId(order.id);
         if (payment) {
           await orderService.approvePayment(payment.id, testAdmin.id);
 
-          const approvedPayment = await db.getPaymentByOrderId(order.orderId);
+          const approvedPayment = await db.getPaymentByOrderId(order.id);
           expect(approvedPayment?.status).toBe("approved");
         }
       }
@@ -203,11 +226,11 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
         const cartItems = await db.getCartItems(cart.id);
         const order = await orderService.createOrderFromCart(testUser.id, cartItems);
 
-        const payment = await db.getPaymentByOrderId(order.orderId);
+        const payment = await db.getPaymentByOrderId(order.id);
         if (payment) {
           await orderService.rejectPayment(payment.id, testAdmin.id, "Invalid payment slip");
 
-          const rejectedPayment = await db.getPaymentByOrderId(order.orderId);
+          const rejectedPayment = await db.getPaymentByOrderId(order.id);
           expect(rejectedPayment?.status).toBe("rejected");
           expect(rejectedPayment?.rejectionReason).toBe("Invalid payment slip");
         }
@@ -229,7 +252,7 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
         const cartItems = await db.getCartItems(cart.id);
         const order = await orderService.createOrderFromCart(testUser.id, cartItems);
 
-        const payment = await db.getPaymentByOrderId(order.orderId);
+        const payment = await db.getPaymentByOrderId(order.id);
         if (payment) {
           await orderService.approvePayment(payment.id, testAdmin.id);
 
@@ -253,7 +276,7 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
         const cartItems = await db.getCartItems(cart.id);
         const order = await orderService.createOrderFromCart(testUser.id, cartItems);
 
-        const payment = await db.getPaymentByOrderId(order.orderId);
+        const payment = await db.getPaymentByOrderId(order.id);
         if (payment) {
           await orderService.rejectPayment(payment.id, testAdmin.id, "Test rejection");
 
@@ -279,7 +302,7 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
         const cartItems = await db.getCartItems(cart.id);
         const order = await orderService.createOrderFromCart(testUser.id, cartItems);
 
-        const payment = await db.getPaymentByOrderId(order.orderId);
+        const payment = await db.getPaymentByOrderId(order.id);
         if (payment) {
           await orderService.approvePayment(payment.id, testAdmin.id);
 
@@ -306,7 +329,7 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
         const cartItems = await db.getCartItems(cart.id);
         const order = await orderService.createOrderFromCart(testUser.id, cartItems);
 
-        const payment = await db.getPaymentByOrderId(order.orderId);
+        const payment = await db.getPaymentByOrderId(order.id);
         if (payment) {
           await orderService.approvePayment(payment.id, testAdmin.id);
 
@@ -362,7 +385,7 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
         expect(couponAfterCheckout?.usageCount).toBe(initialUsage);
 
         // Approve payment
-        const payment = await db.getPaymentByOrderId(order.orderId);
+        const payment = await db.getPaymentByOrderId(order.id);
         if (payment) {
           await orderService.approvePayment(payment.id, testAdmin.id);
 
@@ -430,7 +453,7 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
         const order = await orderService.createOrderFromCart(testUser.id, cartItems);
 
         // Verify order belongs to user1
-        const dbOrder = await db.getOrderById(order.orderId);
+        const dbOrder = await db.getOrderById(order.id);
         expect(dbOrder?.userId).toBe(testUser.id);
       }
     });
@@ -449,12 +472,12 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
         const cartItems = await db.getCartItems(cart.id);
         const order = await orderService.createOrderFromCart(testUser.id, cartItems);
 
-        const payment = await db.getPaymentByOrderId(order.orderId);
+        const payment = await db.getPaymentByOrderId(order.id);
         if (payment) {
           // Should find payment by ID
           const foundPayment = await db.getPaymentById(payment.id);
           expect(foundPayment?.id).toBe(payment.id);
-          expect(foundPayment?.orderId).toBe(order.orderId);
+          expect(foundPayment?.orderId).toBe(order.id);
         }
       }
     });
@@ -469,7 +492,7 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
         const cartItems = await db.getCartItems(cart.id);
         const order = await orderService.createOrderFromCart(testUser.id, cartItems);
 
-        const payment = await db.getPaymentByOrderId(order.orderId);
+        const payment = await db.getPaymentByOrderId(order.id);
         if (payment) {
           // Approve twice
           await orderService.approvePayment(payment.id, testAdmin.id);

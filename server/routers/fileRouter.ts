@@ -63,9 +63,12 @@ export const fileRouter = router({
         // Upload file
         const { url, key } = await fileService.uploadEpisodeFile(input.episodeId, input.fileName, fileBuffer, input.mimeType);
 
-        // Update episode with file URL
-        // TODO: Implement updateEpisodeFile in db.ts
-        // await db.updateEpisodeFile(input.episodeId, url, key);
+        // Update episode with file URL and metadata
+        await db.updateEpisode(input.episodeId, {
+          fileUrl: url,
+          fileMimeType: input.mimeType,
+          fileSize: fileBuffer.length,
+        });
 
         return {
           success: true,

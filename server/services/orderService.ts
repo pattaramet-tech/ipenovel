@@ -13,14 +13,14 @@ export function generateOrderNumber(): string {
   const random = String(Math.floor(Math.random() * 100)).padStart(2, "0");
   const sequence = String(timestamp).padStart(7, "0") + random;
   const datePrefix = `${month}${day}`;
-  return `${datePrefix}${sequence}`;
+  return `ORD-${datePrefix}${sequence}`;
 }
 
 /**
  * Validate coupon for an order
  * Returns discount amount or throws error with specific reason
  */
-export async function validateAndApplyCoupon(couponCode: string, subtotal: string): Promise<{ discountAmount: string; coupon: any }> {
+export async function validateAndApplyCoupon(couponCode: string, subtotal: string): Promise<{ discountAmount: string; coupon: any; normalizedCode?: string }> {
   // Normalize coupon code: trim and uppercase for consistent lookup
   const normalizedCode = String(couponCode || "").trim().toUpperCase();
   const coupon = await db.getCouponByCode(normalizedCode);
@@ -68,7 +68,7 @@ export async function validateAndApplyCoupon(couponCode: string, subtotal: strin
     discountAmount = percentDiscount.toFixed(2);
   }
 
-  return { discountAmount, coupon };
+  return { discountAmount, coupon, normalizedCode };
 }
 
 /**
@@ -105,26 +105,41 @@ export async function createOrderFromCart(
 
   // Apply coupon if provided
   let discountAmount = 0;
-  let appliedCoupon = null;
+  let normalizedCouponCode: string | undefined;
   if (couponCode) {
-    const { discountAmount: discount, coupon } = await validateAndApplyCoupon(couponCode, subtotal.toString());
+    const { discountAmount: discount, normalizedCode } = await validateAndApplyCoupon(couponCode, subtotal.toString());
     discountAmount = parseFloat(discount);
-    appliedCoupon = coupon;
+    normalizedCouponCode = normalizedCode;
+  }
+
+  // Apply points redemption if provided
+  let pointsDiscountAmount = 0;
+  const userIdNum = parseInt(userId);
+  if (pointsToRedeem && parseFloat(pointsToRedeem) > 0) {
+    const requestedPoints = parseFloat(pointsToRedeem);
+    // Validate user has enough points
+    const balanceStr = await db.getUserPointsBalance(userIdNum);
+    const balance = parseFloat(balanceStr);
+    if (requestedPoints > balance) {
+      throw new Error(`Insufficient points balance. You have ${balance.toFixed(2)} points.`);
+    }
+    // Points: 1 point = 1 currency unit discount
+    pointsDiscountAmount = Math.min(requestedPoints, subtotal - discountAmount);
   }
 
   // Calculate total
-  const totalAmount = Math.max(0, subtotal - discountAmount);
+  const totalAmount = Math.max(0, subtotal - discountAmount - pointsDiscountAmount);
 
   // Create order
   const orderNumber = generateOrderNumber();
   const result = await db.createOrder({
-    userId: parseInt(userId),
+    userId: userIdNum,
     orderNumber,
     subtotal: subtotal.toString(),
     discountAmount: discountAmount.toString(),
-    pointsDiscountAmount: "0",
+    pointsDiscountAmount: pointsDiscountAmount.toString(),
     totalAmount: totalAmount.toString(),
-    couponCodeSnapshot: couponCode,
+    couponCodeSnapshot: normalizedCouponCode,
   });
 
   if (!result) {
@@ -164,7 +179,7 @@ export async function createOrderFromCart(
 /**
  * Approve payment and create purchases
  */
-export async function approvePayment(paymentId: number, approvedBy: string): Promise<void> {
+export async function approvePayment(paymentId: number, approvedBy: string): Promise<{ message: string }> {
   const payment = await db.getPaymentById(paymentId);
   if (!payment) {
     throw new Error("Payment not found");
@@ -175,10 +190,15 @@ export async function approvePayment(paymentId: number, approvedBy: string): Pro
     throw new Error("Order not found");
   }
 
-  // Update payment status
+  // Update payment status with reviewer info
   await db.updatePayment(paymentId, {
     status: "approved",
   });
+  // Also set reviewedByUserId and reviewedAt via db.approvePayment
+  const approvedByNum = parseInt(approvedBy, 10);
+  if (!isNaN(approvedByNum)) {
+    await db.approvePayment(paymentId, approvedByNum);
+  }
 
   // Update order status and payment status
   await db.updateOrder(order.id, { 
@@ -186,20 +206,61 @@ export async function approvePayment(paymentId: number, approvedBy: string): Pro
     paymentStatus: "approved"
   });
 
+  // Record order history
+  await db.recordOrderHistory({
+    orderId: order.id,
+    action: "payment_approved",
+    fromStatus: order.status,
+    toStatus: "approved",
+    actorUserId: approvedByNum || undefined,
+    note: "Payment approved by admin",
+  });
+
   // Create purchase records
   const orderItems = await db.getOrderItems(order.id);
   for (const item of orderItems) {
-    // Get episode to find novelId
-    const episode = await db.getEpisodeById(item.episodeId);
+    // getOrderItems already enriches with episode data; use item.episode if available
+    const episode = (item as any).episode || await db.getEpisodeById(item.episodeId);
     if (episode && order.userId) {
-      await db.createPurchase(order.userId, episode.novelId, item.episodeId, order.id);
+      // Idempotent: skip if already purchased
+      const existing = await db.getPurchaseByUserAndEpisode(order.userId, item.episodeId);
+      if (!existing) {
+        await db.createPurchase(order.userId, episode.novelId, item.episodeId, order.id);
+      }
     }
+  }
+
+  // Deduct redeemed points from user balance if points were used
+  const pointsDiscountNum = parseFloat(order.pointsDiscountAmount?.toString() || "0");
+  if (order.userId && pointsDiscountNum > 0) {
+    const currentBalanceStr = await db.getUserPointsBalance(order.userId);
+    const currentBalance = parseFloat(currentBalanceStr);
+    const newBalance = Math.max(0, currentBalance - pointsDiscountNum);
+    await db.recordPointsTransaction({
+      userId: order.userId,
+      type: "redeem",
+      amount: pointsDiscountNum.toString(),
+      balanceAfter: newBalance.toFixed(2),
+      referenceType: "order",
+      referenceId: order.id,
+      note: `Points redeemed for order ${order.orderNumber}`,
+    });
   }
 
   // Award loyalty points once purchases are finalized
   if (order.userId) {
     await awardPointsForOrder(order.id, order.userId, order.totalAmount.toString());
   }
+
+  // Increment coupon usage count if coupon was used
+  if (order.couponCodeSnapshot) {
+    const coupon = await db.getCouponByCode(order.couponCodeSnapshot);
+    if (coupon) {
+      await db.recordCouponUsage(coupon.id, order.userId || undefined, order.id);
+    }
+  }
+
+  return { message: `Payment ${paymentId} approved successfully` };
 }
 
 /**
@@ -250,11 +311,17 @@ export async function rejectPayment(paymentId: number, rejectedBy: string, reaso
     throw new Error("Payment not found");
   }
 
-  // Update payment status with rejection reason
+  const rejectedByNum = parseInt(rejectedBy, 10);
+
+  // Update payment status with rejection reason and reviewer info
   await db.updatePayment(paymentId, {
     status: "rejected",
     rejectionReason: reason,
   });
+  // Set reviewedByUserId and reviewedAt
+  if (!isNaN(rejectedByNum)) {
+    await db.rejectPayment(paymentId, rejectedByNum, reason);
+  }
 
   // Update order status and payment status
   const order = await db.getOrderById(payment.orderId);
@@ -264,5 +331,35 @@ export async function rejectPayment(paymentId: number, rejectedBy: string, reaso
       paymentStatus: "rejected",
       notes: reason
     });
+
+    // Record order history
+    await db.recordOrderHistory({
+      orderId: order.id,
+      action: "payment_rejected",
+      fromStatus: order.status,
+      toStatus: "rejected",
+      actorUserId: rejectedByNum || undefined,
+      note: reason,
+    });
   }
+}
+
+/**
+ * Calculate how many points a user can redeem for a given order amount
+ * Redemption rate: 1 point = 1 currency unit (1:1 ratio)
+ * Users can redeem up to their full balance, capped at the order subtotal
+ */
+export async function calculatePointsRedemption(
+  userId: number,
+  subtotal: string
+): Promise<{ pointsToRedeem: number; pointsDiscount: string }> {
+  const balance = await db.getUserPointsBalance(userId);
+  const balanceNum = parseFloat(balance || "0");
+  const subtotalNum = parseFloat(subtotal);
+
+  // Cap redemption at the lower of balance or subtotal
+  const pointsToRedeem = Math.min(Math.floor(balanceNum), Math.floor(subtotalNum));
+  const pointsDiscount = pointsToRedeem.toFixed(2);
+
+  return { pointsToRedeem, pointsDiscount };
 }

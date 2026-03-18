@@ -44,7 +44,7 @@ describe("Episode CRUD Operations", () => {
     if (novels.length > 0) {
       const result = await db.createEpisode({
         novelId: novels[0].id,
-        episodeNumber: 999,
+        episodeNumber: "999",
         title: `Test Episode ${Date.now()}`,
         price: "9.99",
       });

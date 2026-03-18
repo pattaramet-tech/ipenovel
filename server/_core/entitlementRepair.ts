@@ -136,7 +136,7 @@ export async function repairEntitlements(
 
     const payment = paymentRecords[0];
 
-    if (!payment || payment.status !== "APPROVED") {
+    if (!payment || payment.status !== "approved") {
       return {
         orderId: order.id,
         orderNumber,
@@ -190,12 +190,18 @@ export async function repairEntitlements(
       }
 
       try {
-        // Insert purchase with ON DUPLICATE KEY UPDATE to ensure idempotency
+        // Insert purchase with all required columns; ON DUPLICATE KEY UPDATE for idempotency
+        // novelId is fetched from episodes table
+        const episodeRows = await (db as any).execute(
+          `SELECT novelId FROM episodes WHERE id = ? LIMIT 1`,
+          [item.episodeId]
+        );
+        const novelId = episodeRows[0]?.novelId || 0;
         await (db as any).execute(
-          `INSERT INTO purchases (userId, episodeId, grantedAt, expiresAt)
-           VALUES (?, ?, NOW(), NULL)
+          `INSERT INTO purchases (userId, novelId, episodeId, orderId, grantedAt, createdAt)
+           VALUES (?, ?, ?, ?, NOW(), NOW())
            ON DUPLICATE KEY UPDATE grantedAt = NOW()`,
-          [order.userId, item.episodeId]
+          [order.userId, novelId, item.episodeId, order.id]
         );
 
         created++;
@@ -213,7 +219,7 @@ export async function repairEntitlements(
     // Write audit log
     try {
       await (db as any).execute(
-        `INSERT INTO orderHistory (orderId, action, details, createdAt)
+        `INSERT INTO orderHistory (orderId, action, note, createdAt)
          VALUES (?, 'ENTITLEMENT_REPAIR', ?, NOW())`,
         [
           order.id,
