@@ -2,6 +2,7 @@ import { ReactNode } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { LucideIcon } from "lucide-react";
+import { useLanguage } from "@/contexts/LanguageContext";
 
 /**
  * Shared Admin UI Components
@@ -75,18 +76,19 @@ export function SectionHeader({
 
 // Status Badge - for order/payment status
 export function StatusBadge({ status }: { status: string }) {
+  const { t } = useLanguage();
   const statusConfig: Record<string, { bg: string; text: string; label: string }> = {
-    pending: { bg: "bg-yellow-100", text: "text-yellow-800", label: "Pending" },
+    pending: { bg: "bg-yellow-100", text: "text-yellow-800", label: t("status.pending") },
     approved: { bg: "bg-green-100", text: "text-green-800", label: "Approved" },
     rejected: { bg: "bg-red-100", text: "text-red-800", label: "Rejected" },
     completed: { bg: "bg-green-100", text: "text-green-800", label: "Completed" },
     active: { bg: "bg-green-100", text: "text-green-800", label: "Active" },
     inactive: { bg: "bg-slate-100", text: "text-slate-800", label: "Inactive" },
     draft: { bg: "bg-slate-100", text: "text-slate-800", label: "Draft" },
-    published: { bg: "bg-green-100", text: "text-green-800", label: "Published" },
-    archived: { bg: "bg-slate-100", text: "text-slate-800", label: "Archived" },
-    ongoing: { bg: "bg-blue-100", text: "text-blue-800", label: "Ongoing" },
-    finished: { bg: "bg-purple-100", text: "text-purple-800", label: "Finished" },
+    published: { bg: "bg-green-100", text: "text-green-800", label: t("status.published") },
+    archived: { bg: "bg-slate-100", text: "text-slate-800", label: t("status.archived") },
+    ongoing: { bg: "bg-blue-100", text: "text-blue-800", label: t("status.ongoing") },
+    finished: { bg: "bg-purple-100", text: "text-purple-800", label: t("status.finished") },
   };
 
   const config = statusConfig[status.toLowerCase()] || statusConfig.pending;

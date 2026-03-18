@@ -200,6 +200,25 @@ const translations: Record<Language, Record<string, string>> = {
     "common.tryAgain": "ลองอีกครั้ง",
     "common.errorOccurred": "เกิดข้อผิดพลาด",
     "common.pleaseWait": "กรุณารอสักครู่...",
+
+    // Status labels
+    "status.published": "ตีพิมพ์",
+    "status.archived": "เก็บถาวร",
+    "status.ongoing": "กำลังดำเนินการ",
+    "status.finished": "เสร็จสิ้น",
+    "status.pending": "รอดำเนินการ",
+    "status.free": "ฟรี",
+    "status.paid": "เสียค่าใช้",
+
+    // Unavailable novel
+    "novel.unavailable": "ไม่สามารถดูนิยายเรื่องนี้ได้",
+    "novel.unavailableDesc": "นิยายเรื่องนี้ถูกซ่อนหรือไม่พร้อมให้เข้าชมในขณะนี้",
+
+    // Admin labels
+    "admin.freeEpisode": "ตอนฟรี",
+    "admin.paidEpisode": "ตอนเสียค่าใช้",
+    "admin.pendingPayments": "การชำระเงินรอดำเนินการ",
+    "admin.noPendingPayments": "ไม่มีการชำระเงินรอดำเนินการ",
   },
   en: {
     // Navbar
@@ -388,6 +407,25 @@ const translations: Record<Language, Record<string, string>> = {
     "common.tryAgain": "Try Again",
     "common.errorOccurred": "An error occurred",
     "common.pleaseWait": "Please wait...",
+
+    // Status labels
+    "status.published": "Published",
+    "status.archived": "Archived",
+    "status.ongoing": "Ongoing",
+    "status.finished": "Finished",
+    "status.pending": "Pending",
+    "status.free": "Free",
+    "status.paid": "Paid",
+
+    // Unavailable novel
+    "novel.unavailable": "Novel Not Available",
+    "novel.unavailableDesc": "This novel is hidden or not available at this time.",
+
+    // Admin labels
+    "admin.freeEpisode": "Free Episode",
+    "admin.paidEpisode": "Paid Episode",
+    "admin.pendingPayments": "Pending Payments",
+    "admin.noPendingPayments": "No Pending Payments",
   },
 };
 
