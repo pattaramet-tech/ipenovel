@@ -59,9 +59,14 @@ export default function MyNovelsPage() {
                     <div>
                       <CardTitle className="text-xl">{item.novel.title}</CardTitle>
                     </div>
-                    <span className="text-xs px-3 py-1 bg-blue-200 text-blue-800 rounded-full capitalize">
-                      {item.novel.status}
-                    </span>
+                    <div className="flex gap-2">
+                      <span className="text-xs px-3 py-1 bg-blue-200 text-blue-800 rounded-full capitalize">
+                        {item.novel.publicationStatus === "published" ? "Published" : "Archived"}
+                      </span>
+                      <span className="text-xs px-3 py-1 bg-purple-200 text-purple-800 rounded-full capitalize">
+                        {item.novel.storyStatus === "finished" ? "Finished" : "Ongoing"}
+                      </span>
+                    </div>
                   </div>
                 </CardHeader>
 

@@ -597,6 +597,8 @@ export const appRouter = router({
             author: z.string().optional(),
             description: z.string().optional(),
             coverImageUrl: z.string().optional(),
+            publicationStatus: z.enum(["published", "archived"]).default("published"),
+            storyStatus: z.enum(["ongoing", "finished"]).default("ongoing"),
           })
         )
         .mutation(async ({ input }) => {
@@ -612,6 +614,8 @@ export const appRouter = router({
             author: z.string().optional(),
             description: z.string().optional(),
             coverImageUrl: z.string().optional(),
+            publicationStatus: z.enum(["published", "archived"]).optional(),
+            storyStatus: z.enum(["ongoing", "finished"]).optional(),
           })
         )
         .mutation(async ({ input }) => {
@@ -636,14 +640,14 @@ export const appRouter = router({
       publish: adminProcedure
         .input(z.object({ novelId: z.number() }))
         .mutation(async ({ input }) => {
-          await db.updateNovel(input.novelId, { status: "ongoing" });
+          await db.updateNovel(input.novelId, { publicationStatus: "published" });
           return { success: true };
         }),
 
       unpublish: adminProcedure
         .input(z.object({ novelId: z.number() }))
         .mutation(async ({ input }) => {
-          await db.updateNovel(input.novelId, { status: "hiatus" });
+          await db.updateNovel(input.novelId, { publicationStatus: "archived" });
           return { success: true };
         }),
     }),

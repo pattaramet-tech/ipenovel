@@ -131,13 +131,13 @@ export async function getAllNovels(limit?: number, offset?: number) {
 export async function getNovelById(novelId: number, publicOnly: boolean = true) {
   const db = await getDb();
   if (!db) return undefined;
-  let query: any = db.select().from(novels).where(eq(novels.id, novelId));
   // For public access, only return published novels
-  if (publicOnly) {
-    query = db.select().from(novels).where(
-      and(eq(novels.id, novelId), eq(novels.publicationStatus, "published"))
-    );
-  }
+  // For admin access (publicOnly=false), return all novels
+  const query = publicOnly
+    ? db.select().from(novels).where(
+        and(eq(novels.id, novelId), eq(novels.publicationStatus, "published"))
+      )
+    : db.select().from(novels).where(eq(novels.id, novelId));
   const result = await query.limit(1);
   return result.length > 0 ? result[0] : undefined;
 }
@@ -145,13 +145,13 @@ export async function getNovelById(novelId: number, publicOnly: boolean = true) 
 export async function getNovelBySlug(slug: string, publicOnly: boolean = true) {
   const db = await getDb();
   if (!db) return undefined;
-  let query: any = db.select().from(novels).where(eq(novels.slug, slug));
   // For public access, only return published novels
-  if (publicOnly) {
-    query = db.select().from(novels).where(
-      and(eq(novels.slug, slug), eq(novels.publicationStatus, "published"))
-    );
-  }
+  // For admin access (publicOnly=false), return all novels
+  const query = publicOnly
+    ? db.select().from(novels).where(
+        and(eq(novels.slug, slug), eq(novels.publicationStatus, "published"))
+      )
+    : db.select().from(novels).where(eq(novels.slug, slug));
   const result = await query.limit(1);
   return result.length > 0 ? result[0] : undefined;
 }
@@ -192,6 +192,8 @@ export async function createNovel(data: {
   author?: string;
   description?: string;
   coverImageUrl?: string;
+  publicationStatus?: "published" | "archived";
+  storyStatus?: "ongoing" | "finished";
 }) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -206,7 +208,8 @@ export async function createNovel(data: {
     description: data.description || "",
     coverImageUrl: data.coverImageUrl || "",
     slug,
-    status: "ongoing",
+    publicationStatus: data.publicationStatus || "published",
+    storyStatus: data.storyStatus || "ongoing",
   });
   // Extract insertId from Drizzle MySQL result
   let insertedId: number | undefined;

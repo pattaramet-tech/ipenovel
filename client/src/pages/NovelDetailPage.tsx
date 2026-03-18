@@ -195,6 +195,21 @@ export default function NovelDetailPage() {
     );
   }
 
+  // Prevent viewing archived novels on public pages
+  if (novel?.novel?.publicationStatus === "archived") {
+    return (
+      <div className="container py-8">
+        <Card className="p-8 text-center">
+          <h1 className="text-2xl font-bold mb-4">Novel Not Available</h1>
+          <p className="text-muted-foreground mb-6">
+            This novel is no longer available for viewing.
+          </p>
+          <Button onClick={() => setLocation("/novels")}>Back to Novels</Button>
+        </Card>
+      </div>
+    );
+  }
+
   const { freeEpisodes, paidEpisodes } = filteredAndSortedEpisodes;
 
   return (

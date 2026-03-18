@@ -187,8 +187,11 @@ export default function AdminNovelManagePage({ params }: AdminNovelManagePagePro
                 <h1 className="text-2xl font-bold text-slate-900">{novel.novel.title}</h1>
                 <p className="text-slate-600 mt-2">{novel.novel.description}</p>
                 <div className="flex gap-2 mt-4">
-                  <Badge variant={novel.novel.status === "completed" ? "default" : "secondary"}>
-                    {novel.novel.status}
+                  <Badge variant={novel.novel.publicationStatus === "published" ? "default" : "secondary"}>
+                    {novel.novel.publicationStatus === "published" ? "Published" : "Archived"}
+                  </Badge>
+                  <Badge variant={novel.novel.storyStatus === "finished" ? "default" : "secondary"}>
+                    {novel.novel.storyStatus === "finished" ? "Finished" : "Ongoing"}
                   </Badge>
                 </div>
               </div>
