@@ -73,19 +73,31 @@ const translations: Record<Language, Record<string, string>> = {
     "novel.backToNovels": "กลับไปยังนวนิยาย",
 
     // Cart
-    "cart.title": "ตะกร้า",
-    "cart.empty": "ตะกร้าของคุณว่างเปล่า",
-    "cart.checkout": "ชำระเงิน",
-    "cart.total": "รวม",
+    "cart.title": "ตะกร้าสินค้า",
+    "cart.empty": "ตะกร้าของคุณว่างอยู่",
+    "cart.checkout": "ดำเนินการชำระเงิน",
+    "cart.total": "รวมทั้งสิ้น",
+    "cart.continueShopping": "เลือกซื้อสินค้าต่อ",
+    "cart.orderSummary": "สรุปคำสั่งซื้อ",
+    "cart.subtotal": "ยอดรวมสินค้า",
+    "cart.applyCoupon": "ใช้คูปอง",
+    "cart.redeemPoints": "แลกคะแนน",
+    "cart.availablePoints": "คะแนนคงเหลือ",
 
     // Orders
-    "orders.title": "คำสั่งซื้อ",
+    "orders.title": "คำสั่งซื้อของฉัน",
     "orders.noOrders": "ไม่มีคำสั่งซื้อ",
+    "orders.orderItems": "รายการสั่งซื้อ",
+    "orders.paymentInfo": "ข้อมูลการชำระเงิน",
+    "orders.paymentSlip": "สลิปการชำระเงิน",
+    "orders.submitted": "ส่งแล้ว",
 
     // My Novels
-    "myNovels.title": "นวนิยายของฉัน",
-    "myNovels.noPurchases": "คุณยังไม่ได้ซื้อนวนิยายใด ๆ",
+    "myNovels.title": "นิยายของฉัน",
+    "myNovels.noPurchases": "คุณยังไม่ได้ซื้อนิยายใด ๆ",
     "myNovels.download": "ดาวน์โหลด",
+    "myNovels.ongoing": "กำลังดำเนินเรื่อง",
+    "myNovels.finished": "จบแล้ว",
 
     // Points
     "points.title": "พอยท์ของฉัน",
@@ -114,7 +126,13 @@ const translations: Record<Language, Record<string, string>> = {
     "payment.orderSummary": "สรุปคำสั่งซื้อ",
     "payment.orderNumber": "หมายเลขคำสั่งซื้อ",
     "payment.items": "จำนวนรายการ",
-    "payment.totalAmount": "จำนวนเงินทั้งหมด",
+    "payment.totalAmount": "จำนวนเงินที่ต้องชำระ",
+    "payment.amount": "จำนวนเงินที่ต้องชำระ:",
+    "payment.status": "สถานะการชำระเงิน:",
+    "payment.qrPayment": "ชำระเงินผ่าน QR Payment",
+    "payment.selectFile": "เลือกไฟล์สลิปเพื่อแนบการชำระเงิน",
+    "payment.fileRequirements": "จำเป็นต้องแนบไฟล์สลิปการชำระเงิน",
+    "payment.uploadButton": "ส่งคำสั่งซื้อ",
     "payment.scanAndPay": "สแกน QR และชำระเงิน",
     "payment.instructions": "วิธีการชำระเงิน:",
     "payment.step1": "ใช้แอปพลิเคชันธนาคารของคุณสแกน QR code",
@@ -209,6 +227,10 @@ const translations: Record<Language, Record<string, string>> = {
     "status.pending": "รอดำเนินการ",
     "status.free": "ฟรี",
     "status.paid": "เสียค่าใช้",
+    "status.episodes": "ตอน",
+    "status.paidEpisodes": "ตอนที่ต้องชำระเงิน",
+    "status.totalEpisodes": "ตอนทั้งหมด",
+    "status.freeEpisodes": "ตอนที่อ่านฟรี",
 
     // Unavailable novel
     "novel.unavailable": "ไม่สามารถดูนิยายเรื่องนี้ได้",
@@ -219,6 +241,7 @@ const translations: Record<Language, Record<string, string>> = {
     "admin.paidEpisode": "ตอนเสียค่าใช้",
     "admin.pendingPayments": "การชำระเงินรอดำเนินการ",
     "admin.noPendingPayments": "ไม่มีการชำระเงินรอดำเนินการ",
+    "admin.myNovels": "นิยายของฉัน",
   },
   en: {
     // Navbar
