@@ -181,30 +181,18 @@ export default function NovelDetailPage() {
     );
   }
 
-  if (novelError || !novel || !novel.novel) {
+  // Handle NOT_FOUND error (archived novels return NOT_FOUND from backend)
+  const isNotFound = novelError && (novelError as any)?.code === "NOT_FOUND";
+  
+  if (isNotFound || novelError || !novel || !novel.novel) {
     return (
       <div className="container py-8">
         <Card className="p-8 text-center">
-          <h1 className="text-2xl font-bold mb-4">Novel Not Found</h1>
+          <h1 className="text-2xl font-bold mb-4">ไม่สามารถดูนิยายเรื่องนี้ได้</h1>
           <p className="text-muted-foreground mb-6">
-            The novel you're looking for doesn't exist or has been removed.
+            นิยายเรื่องนี้ถูกซ่อนหรือไม่พร้อมให้เข้าชมในขณะนี้
           </p>
-          <Button onClick={() => setLocation("/novels")}>Back to Novels</Button>
-        </Card>
-      </div>
-    );
-  }
-
-  // Prevent viewing archived novels on public pages
-  if (novel?.novel?.publicationStatus === "archived") {
-    return (
-      <div className="container py-8">
-        <Card className="p-8 text-center">
-          <h1 className="text-2xl font-bold mb-4">Novel Not Available</h1>
-          <p className="text-muted-foreground mb-6">
-            This novel is no longer available for viewing.
-          </p>
-          <Button onClick={() => setLocation("/novels")}>Back to Novels</Button>
+          <Button onClick={() => setLocation("/novels")}>กลับไปยังรายการนิยาย</Button>
         </Card>
       </div>
     );
