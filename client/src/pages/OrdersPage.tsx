@@ -93,10 +93,10 @@ export default function OrdersPage() {
                     </div>
                     <div className="flex gap-2">
                       <Badge className={getStatusColor(order.status)}>
-                        {t(`status.${order.status}`)}
+                        {t(`order.status.${order.status}`)}
                       </Badge>
                       <Badge className={getPaymentStatusColor(order.paymentStatus)}>
-                        {t(`status.${order.paymentStatus}`)}
+                        {t(`payment.status.${order.paymentStatus}`)}
                       </Badge>
                     </div>
                   </div>

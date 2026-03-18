@@ -235,6 +235,19 @@ const translations: Record<Language, Record<string, string>> = {
     "status.totalEpisodes": "ตอนทั้งหมด",
     "status.freeEpisodes": "ตอนที่อ่านฟรี",
 
+    // Order workflow status (Badge 1)
+    "order.status.pending": "รอดำเนินการ",
+    "order.status.submitted": "รอดำเนินการ",
+    "order.status.approved": "อนุมัติแล้ว",
+    "order.status.rejected": "ถูกปฏิเสธ",
+
+    // Payment status (Badge 2)
+    "payment.status.unpaid": "ยังไม่ชำระเงิน",
+    "payment.status.submitted": "ส่งแล้ว",
+    "payment.status.approved": "ชำระเงินแล้ว",
+    "payment.status.paid": "ชำระเงินแล้ว",
+    "payment.status.rejected": "ถูกปฏิเสธ",
+
     // Unavailable novel
     "novel.unavailable": "ไม่สามารถดูนิยายเรื่องนี้ได้",
     "novel.unavailableDesc": "นิยายเรื่องนี้ถูกซ่อนหรือไม่พร้อมให้เข้าชมในขณะนี้",
@@ -445,6 +458,19 @@ const translations: Record<Language, Record<string, string>> = {
     "status.pending": "Pending",
     "status.free": "Free",
     "status.paid": "Paid",
+
+    // Order workflow status (Badge 1)
+    "order.status.pending": "Pending",
+    "order.status.submitted": "Pending",
+    "order.status.approved": "Approved",
+    "order.status.rejected": "Rejected",
+
+    // Payment status (Badge 2)
+    "payment.status.unpaid": "Unpaid",
+    "payment.status.submitted": "Submitted",
+    "payment.status.approved": "Paid",
+    "payment.status.paid": "Paid",
+    "payment.status.rejected": "Rejected",
 
     // Unavailable novel
     "novel.unavailable": "Novel Not Available",
