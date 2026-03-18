@@ -121,8 +121,10 @@ export const appRouter = router({
         });
       }),
 
-    detail: publicProcedure.input(z.object({ novelId: z.number() })).query(async ({ input }) => {
-      const novel = await db.getNovelById(input.novelId);
+    detail: publicProcedure.input(z.object({ novelId: z.number() })).query(async ({ input, ctx }) => {
+      // Admins can view all novels (including archived), public users can only view published
+      const isAdmin = ctx.user?.role === "admin";
+      const novel = await db.getNovelById(input.novelId, !isAdmin); // publicOnly=true for non-admins
       if (!novel) throw new TRPCError({ code: "NOT_FOUND" });
 
       const episodes = await db.getEpisodesByNovelId(input.novelId);
