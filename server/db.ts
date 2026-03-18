@@ -1586,7 +1586,7 @@ export async function getBrowseCatalog(params: {
   title: string;
   slug: string;
   coverImageUrl: string | null;
-  status: string;
+  storyStatus: string;
   createdAt: Date;
   freeEpisodeCount: number;
 }>> {
@@ -1612,7 +1612,7 @@ export async function getBrowseCatalog(params: {
       title: novels.title,
       slug: novels.slug,
       coverImageUrl: novels.coverImageUrl,
-      status: novels.status,
+      storyStatus: novels.storyStatus,
       createdAt: novels.createdAt,
       freeEpisodeCount: sql<number>`COALESCE(${freeEpisodeCountsSubquery.count}, 0)`,
     })
