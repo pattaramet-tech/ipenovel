@@ -589,7 +589,7 @@ export const appRouter = router({
 
     novels: router({
       list: adminProcedure.query(async () => {
-        return db.getAllNovels();
+        return db.getAllNovelsForAdmin();
       }),
 
       create: adminProcedure

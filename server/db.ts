@@ -128,6 +128,20 @@ export async function getAllNovels(limit?: number, offset?: number) {
   return query;
 }
 
+/**
+ * Get all novels for admin (including archived)
+ * Used by admin pages to manage all novels
+ */
+export async function getAllNovelsForAdmin(limit?: number, offset?: number) {
+  const db = await getDb();
+  if (!db) return [];
+  // Return ALL novels (published and archived) for admin management
+  let query: any = db.select().from(novels).orderBy(desc(novels.createdAt));
+  if (limit) query = query.limit(limit);
+  if (offset) query = query.offset(offset);
+  return query;
+}
+
 export async function getNovelById(novelId: number, publicOnly: boolean = true) {
   const db = await getDb();
   if (!db) return undefined;

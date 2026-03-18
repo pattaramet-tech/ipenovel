@@ -18,6 +18,7 @@ export default function AdminNovelsPage() {
   const [isCreating, setIsCreating] = useState(false);
   const [editingNovelId, setEditingNovelId] = useState<number | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [publicationFilter, setPublicationFilter] = useState<"all" | "published" | "archived">("all");
   const [formData, setFormData] = useState({
     title: "",
     description: "",
@@ -77,9 +78,14 @@ export default function AdminNovelsPage() {
     );
   }
 
-  const filteredNovels = novels?.filter((n: any) =>
-    n.title.toLowerCase().includes(searchTerm.toLowerCase())
-  ) || [];
+  const filteredNovels = novels?.filter((n: any) => {
+    const matchesSearch = n.title.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesStatus = 
+      publicationFilter === "all" ||
+      (publicationFilter === "published" && n.publicationStatus === "published") ||
+      (publicationFilter === "archived" && n.publicationStatus === "archived");
+    return matchesSearch && matchesStatus;
+  }) || [];
 
   const handleCreate = () => {
     if (!formData.title) {
@@ -221,6 +227,40 @@ export default function AdminNovelsPage() {
             </CardContent>
           </Card>
         )}
+
+        {/* Publication Status Filter */}
+        <div className="flex gap-2 border-b border-slate-200">
+          <button
+            onClick={() => setPublicationFilter("all")}
+            className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors ${
+              publicationFilter === "all"
+                ? "border-blue-500 text-blue-600"
+                : "border-transparent text-slate-600 hover:text-slate-900"
+            }`}
+          >
+            All Novels
+          </button>
+          <button
+            onClick={() => setPublicationFilter("published")}
+            className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors ${
+              publicationFilter === "published"
+                ? "border-blue-500 text-blue-600"
+                : "border-transparent text-slate-600 hover:text-slate-900"
+            }`}
+          >
+            Published
+          </button>
+          <button
+            onClick={() => setPublicationFilter("archived")}
+            className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors ${
+              publicationFilter === "archived"
+                ? "border-blue-500 text-blue-600"
+                : "border-transparent text-slate-600 hover:text-slate-900"
+            }`}
+          >
+            Archived
+          </button>
+        </div>
 
         {/* Search Bar */}
         <div className="flex gap-4">
