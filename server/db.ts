@@ -1606,7 +1606,9 @@ export async function getBrowseCatalog(params: {
     .leftJoin(freeEpisodeCountsSubquery, eq(novels.id, freeEpisodeCountsSubquery.novelId));
 
   // Combine filter and search into a single .where() call to avoid overwriting
-  const browseConditions: any[] = [];
+  const browseConditions: any[] = [
+    eq(novels.publicationStatus, "published"), // Always filter for published novels
+  ];
   if (filter === "free") {
     browseConditions.push(sql<boolean>`${freeEpisodeCountsSubquery.count} > 0`);
   }

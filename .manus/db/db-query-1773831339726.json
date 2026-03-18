@@ -1,0 +1,70 @@
+{
+  "query": "SELECT id, title, publicationStatus, storyStatus FROM novels WHERE publicationStatus = 'published' ORDER BY createdAt DESC LIMIT 10;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT id, title, publicationStatus, storyStatus FROM novels WHERE publicationStatus = 'published' ORDER BY createdAt DESC LIMIT 10;",
+  "rows": [
+    {
+      "id": "239",
+      "title": "Prince of Tennis: เทพแร็กเก็ต",
+      "publicationStatus": "published",
+      "storyStatus": "ongoing"
+    },
+    {
+      "id": "238",
+      "title": "NBA: ผมได้สกิลระดับเทพของคุโรโกะตั้งแต่เริ่ม!",
+      "publicationStatus": "published",
+      "storyStatus": "ongoing"
+    },
+    {
+      "id": "235",
+      "title": "Bleach: ความลับที่ซ่อนเร้น",
+      "publicationStatus": "published",
+      "storyStatus": "ongoing"
+    },
+    {
+      "id": "234",
+      "title": "ไฮคิว!!: ราชาสิงโตในหมู่แมว",
+      "publicationStatus": "published",
+      "storyStatus": "ongoing"
+    },
+    {
+      "id": "233",
+      "title": "ไฮคิว!!: พลังที่ไม่มีวันหยุดยั้ง",
+      "publicationStatus": "published",
+      "storyStatus": "ongoing"
+    },
+    {
+      "id": "232",
+      "title": "ไฮคิว!!: ผมคือฮินาตะที่ต่างออกไป!",
+      "publicationStatus": "published",
+      "storyStatus": "ongoing"
+    },
+    {
+      "id": "231",
+      "title": "ไฮคิว!!: ถูกน้องชายเคี่ยวเข็ญจนกลายเป็นตัวตบเลเวลตัน",
+      "publicationStatus": "published",
+      "storyStatus": "ongoing"
+    },
+    {
+      "id": "230",
+      "title": "ไฮคิว: จากศูนย์สู่ผู้ไร้เทียมทาน",
+      "publicationStatus": "published",
+      "storyStatus": "ongoing"
+    },
+    {
+      "id": "229",
+      "title": "ไฮคิว!! จากโค้ชสู่อัจฉริยะวอลเลย์บอล",
+      "publicationStatus": "published",
+      "storyStatus": "ongoing"
+    },
+    {
+      "id": "228",
+      "title": "ไฮคิว: เกิดใหม่ในคาราสึโนะ",
+      "publicationStatus": "published",
+      "storyStatus": "ongoing"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\ttitle\tpublicationStatus\tstoryStatus\n239\tPrince of Tennis: เทพแร็กเก็ต\tpublished\tongoing\n238\tNBA: ผมได้สกิลระดับเทพของคุโรโกะตั้งแต่เริ่ม!\tpublished\tongoing\n235\tBleach: ความลับที่ซ่อนเร้น\tpublished\tongoing\n234\tไฮคิว!!: ราชาสิงโตในหมู่แมว\tpublished\tongoing\n233\tไฮคิว!!: พลังที่ไม่มีวันหยุดยั้ง\tpublished\tongoing\n232\tไฮคิว!!: ผมคือฮินาตะที่ต่างออกไป!\tpublished\tongoing\n231\tไฮคิว!!: ถูกน้องชายเคี่ยวเข็ญจนกลายเป็นตัวตบเลเวลตัน\tpublished\tongoing\n230\tไฮคิว: จากศูนย์สู่ผู้ไร้เทียมทาน\tpublished\tongoing\n229\tไฮคิว!! จากโค้ชสู่อัจฉริยะวอลเลย์บอล\tpublished\tongoing\n228\tไฮคิว: เกิดใหม่ในคาราสึโนะ\tpublished\tongoing\n",
+  "stderr": "",
+  "execution_time_ms": 1534
+}
