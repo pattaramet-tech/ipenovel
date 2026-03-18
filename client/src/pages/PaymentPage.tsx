@@ -223,7 +223,7 @@ export default function PaymentPage() {
             </div>
             <div className="flex justify-between">
               <span className="text-slate-600">{t("payment.status")}:</span>
-              <span className="font-semibold">{payment?.status || "pending"}</span>
+              <span className="font-semibold">{payment?.status ? t(`status.${payment.status}`) : t("status.pending")}</span>
             </div>
           </CardContent>
         </Card>

@@ -8,10 +8,12 @@ import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
 import { Trash2, ShoppingCart } from "lucide-react";
 import { toast } from "sonner";
+import { useLanguage } from "@/contexts/LanguageContext";
 
 export default function CartPage() {
   const { isAuthenticated, user } = useAuth();
   const [, navigate] = useLocation();
+  const { t } = useLanguage();
   const [couponCode, setCouponCode] = useState("");
   const [pointsToRedeem, setPointsToRedeem] = useState("");
   const [discountAmount, setDiscountAmount] = useState("0.00");
@@ -102,7 +104,7 @@ export default function CartPage() {
   return (
     <div className="min-h-screen bg-slate-50 py-8">
       <div className="container mx-auto px-4">
-        <h1 className="text-3xl font-bold mb-8">Shopping Cart</h1>
+        <h1 className="text-3xl font-bold mb-8">{t("cart.title")}</h1>
 
         <div className="grid lg:grid-cols-3 gap-8">
           {/* Cart Items */}
@@ -111,9 +113,9 @@ export default function CartPage() {
               <Card>
                 <CardContent className="pt-6 text-center py-12">
                   <ShoppingCart className="w-12 h-12 text-slate-300 mx-auto mb-4" />
-                  <p className="text-slate-600 text-lg">Your cart is empty</p>
+                  <p className="text-slate-600 text-lg">{t("cart.empty")}</p>
                   <Button asChild className="mt-4">
-                    <a href="/novels">Continue Shopping</a>
+                    <a href="/novels">{t("cart.continueShopping")}</a>
                   </Button>
                 </CardContent>
               </Card>
@@ -151,21 +153,21 @@ export default function CartPage() {
           <div>
             <Card className="sticky top-4">
               <CardHeader>
-                <CardTitle>Order Summary</CardTitle>
+                <CardTitle>{t("cart.orderSummary")}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 {/* Subtotal */}
                 <div className="flex justify-between text-sm">
-                  <span className="text-slate-600">Subtotal</span>
+                  <span className="text-slate-600">{t("cart.subtotal")}</span>
                   <span className="font-semibold">฿{subtotal}</span>
                 </div>
 
                 {/* Coupon */}
                 <div className="border-t pt-4">
-                  <p className="text-sm font-semibold mb-2">Apply Coupon</p>
+                  <p className="text-sm font-semibold mb-2">{t("cart.applyCoupon")}</p>
                   <div className="flex gap-2">
                     <Input
-                      placeholder="Coupon code"
+                      placeholder={t("cart.applyCoupon")}
                       value={couponCode}
                       onChange={(e) => setCouponCode(e.target.value)}
                     />
@@ -174,7 +176,7 @@ export default function CartPage() {
                       onClick={handleValidateCoupon}
                       disabled={!couponCode}
                     >
-                      Apply
+                      {t("common.apply")}
                     </Button>
                   </div>
                   {discountAmount !== "0.00" && (
@@ -184,8 +186,8 @@ export default function CartPage() {
 
                 {/* Points */}
                 <div className="border-t pt-4">
-                  <p className="text-sm font-semibold mb-2">Redeem Points</p>
-                  <p className="text-xs text-slate-600 mb-2">Available: {pointsData?.balance || "0"} pts</p>
+                  <p className="text-sm font-semibold mb-2">{t("cart.redeemPoints")}</p>
+                  <p className="text-xs text-slate-600 mb-2">{t("cart.availablePoints")}: {pointsData?.balance || "0"} pts</p>
                   <Input
                     placeholder="Points to redeem"
                     type="number"
@@ -200,7 +202,7 @@ export default function CartPage() {
                 {/* Total */}
                 <div className="border-t pt-4">
                   <div className="flex justify-between mb-4">
-                    <span className="font-semibold text-slate-900">Total</span>
+                    <span className="font-semibold text-slate-900">{t("cart.total")}</span>
                     <span className="font-bold text-lg text-blue-600">฿{total}</span>
                   </div>
 
@@ -209,7 +211,7 @@ export default function CartPage() {
                     onClick={handleCheckout}
                     disabled={items.length === 0 || createOrderMutation.isPending}
                   >
-                    Proceed to Checkout
+                    {t("checkout.proceedToCheckout")}
                   </Button>
                 </div>
               </CardContent>

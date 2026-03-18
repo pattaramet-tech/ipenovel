@@ -1,4 +1,3 @@
-import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -6,10 +5,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
 import { FileText } from "lucide-react";
+import { useLanguage } from "@/contexts/LanguageContext";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 export default function OrdersPage() {
   const { isAuthenticated } = useAuth();
   const [, navigate] = useLocation();
+  const { t } = useLanguage();
 
   const { data: orders, isLoading } = trpc.orders.list.useQuery(undefined, {
     enabled: isAuthenticated,
@@ -20,9 +22,9 @@ export default function OrdersPage() {
       <div className="min-h-screen flex items-center justify-center">
         <Card className="w-full max-w-md">
           <CardContent className="pt-6 text-center">
-            <p className="text-slate-600 mb-4">Please sign in to view your orders</p>
+            <p className="text-slate-600 mb-4">{t("common.pleaseSignIn")}</p>
             <Button asChild>
-              <a href="/login">Sign In</a>
+              <a href="/login">{t("nav.login")}</a>
             </Button>
           </CardContent>
         </Card>
@@ -59,7 +61,7 @@ export default function OrdersPage() {
   return (
     <div className="min-h-screen bg-slate-50 py-8">
       <div className="container mx-auto px-4">
-        <h1 className="text-3xl font-bold mb-8">My Orders</h1>
+        <h1 className="text-3xl font-bold mb-8">{t("orders.title")}</h1>
 
         {isLoading ? (
           <div className="space-y-4">
@@ -71,9 +73,9 @@ export default function OrdersPage() {
           <Card>
             <CardContent className="pt-6 text-center py-12">
               <FileText className="w-12 h-12 text-slate-300 mx-auto mb-4" />
-              <p className="text-slate-600 text-lg">No orders yet</p>
+              <p className="text-slate-600 text-lg">{t("orders.noOrders")}</p>
               <Button asChild className="mt-4">
-                <a href="/novels">Start Shopping</a>
+                <a href="/novels">{t("common.startShopping")}</a>
               </Button>
             </CardContent>
           </Card>
@@ -91,10 +93,10 @@ export default function OrdersPage() {
                     </div>
                     <div className="flex gap-2">
                       <Badge className={getStatusColor(order.status)}>
-                        {order.status}
+                        {t(`status.${order.status}`)}
                       </Badge>
                       <Badge className={getPaymentStatusColor(order.paymentStatus)}>
-                        {order.paymentStatus}
+                        {t(`status.${order.paymentStatus}`)}
                       </Badge>
                     </div>
                   </div>

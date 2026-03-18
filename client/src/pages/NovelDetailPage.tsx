@@ -1,5 +1,6 @@
 import { useParams, useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { useLanguage } from "@/contexts/LanguageContext";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -14,6 +15,7 @@ export default function NovelDetailPage() {
   const { identifier } = useParams<{ identifier: string }>();
   const [, setLocation] = useLocation();
   const { user } = useAuth();
+  const { t } = useLanguage();
   const [selectedEpisodes, setSelectedEpisodes] = useState<number[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [sortBy, setSortBy] = useState<"newest" | "oldest" | "titleAZ" | "titleZA">("newest");
@@ -156,7 +158,7 @@ export default function NovelDetailPage() {
         <Card className="p-8 text-center">
           <h1 className="text-2xl font-bold mb-4">Novel Not Found</h1>
           <p className="text-muted-foreground mb-6">Invalid novel identifier.</p>
-          <Button onClick={() => setLocation("/novels")}>Back to Novels</Button>
+          <Button onClick={() => setLocation("/novels")}>{t("common.back")}</Button>
         </Card>
       </div>
     );
@@ -203,7 +205,7 @@ export default function NovelDetailPage() {
   return (
     <div className="container py-8">
       <Button variant="ghost" onClick={() => setLocation("/novels")} className="mb-6">
-        ← Back to Novels
+        ← {t("common.back")}
       </Button>
 
       <div className="grid md:grid-cols-3 gap-8 mb-12">
@@ -250,15 +252,15 @@ export default function NovelDetailPage() {
           {/* Episode Stats */}
           <div className="grid grid-cols-3 gap-4 mb-8 p-4 bg-muted rounded-lg">
             <div>
-              <p className="text-sm text-muted-foreground">Total Episodes</p>
+              <p className="text-sm text-muted-foreground">{t("status.totalEpisodes")}</p>
               <p className="text-2xl font-bold">{episodes?.length || 0}</p>
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">Free Episodes</p>
+              <p className="text-sm text-muted-foreground">{t("status.freeEpisodes")}</p>
               <p className="text-2xl font-bold text-green-600">{freeEpisodes.length}</p>
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">Paid Episodes</p>
+              <p className="text-sm text-muted-foreground">{t("status.paidEpisodes")}</p>
               <p className="text-2xl font-bold text-blue-600">{paidEpisodes.length}</p>
             </div>
           </div>
@@ -268,7 +270,7 @@ export default function NovelDetailPage() {
       {/* Episodes Section */}
       <div className="space-y-6">
         <div>
-          <h2 className="text-2xl font-bold mb-4">Episodes</h2>
+          <h2 className="text-2xl font-bold mb-4">{t("status.episodes")}</h2>
 
           {/* Search and Sort Controls */}
           <div className="flex flex-col sm:flex-row gap-3 mb-6">
@@ -297,7 +299,7 @@ export default function NovelDetailPage() {
         {/* Free Episodes */}
         {freeEpisodes.length > 0 && (
           <div>
-            <h3 className="text-lg font-semibold mb-3 text-green-600">Free Episodes ({freeEpisodes.length})</h3>
+            <h3 className="text-lg font-semibold mb-3 text-green-600">{t("status.freeEpisodes")} ({freeEpisodes.length})</h3>
             <div className="space-y-2">
               {freeEpisodes.map((episode: any) => {
                 if (!episode || !episode.id) return null;
@@ -310,7 +312,7 @@ export default function NovelDetailPage() {
                     </div>
                     <div className="flex items-center gap-2 ml-3 flex-shrink-0">
                       <Badge variant="secondary" className="text-xs bg-green-100 text-green-700">
-                        Free
+                        {t("status.free")}
                       </Badge>
                       {episode.fileUrl ? (
                         <a
@@ -339,7 +341,7 @@ export default function NovelDetailPage() {
         {/* Paid Episodes */}
         {paidEpisodes.length > 0 && (
           <div>
-            <h3 className="text-lg font-semibold mb-3 text-blue-600">Paid Episodes ({paidEpisodes.length})</h3>
+            <h3 className="text-lg font-semibold mb-3 text-blue-600">{t("status.paidEpisodes")} ({paidEpisodes.length})</h3>
             <div className="space-y-2">
               {paidEpisodes.map((episode: any) => {
                 if (!episode || !episode.id) return null;
