@@ -1689,9 +1689,9 @@ export async function getTopSellingNovels(period: "all" | "today" | "7d" | "mont
   const salesSubquery = db
     .select({
       novelId: orderItems.novelId,
-      totalRevenue: sql<string>`CAST(SUM(${orderItems.finalPrice}) AS DECIMAL(12,2))`,
-      purchaseCount: sql<number>`COUNT(${orderItems.id})`, // Count real sold line items
-      soldEpisodesCount: sql<number>`COUNT(DISTINCT ${orderItems.episodeId})`,
+      totalRevenue: sql<string>`CAST(SUM(${orderItems.finalPrice}) AS DECIMAL(12,2))`.as("totalRevenue"),
+      purchaseCount: sql<number>`COUNT(${orderItems.id})`.as("purchaseCount"), // Count real sold line items
+      soldEpisodesCount: sql<number>`COUNT(DISTINCT ${orderItems.episodeId})`.as("soldEpisodesCount"),
     })
     .from(orderItems)
     .innerJoin(orders, eq(orderItems.orderId, orders.id))
@@ -1717,7 +1717,7 @@ export async function getTopSellingNovels(period: "all" | "today" | "7d" | "mont
   const wishlistSubquery = db
     .select({
       novelId: wishlists.novelId,
-      wishlistCount: sql<number>`COUNT(DISTINCT ${wishlists.userId})`,
+      wishlistCount: sql<number>`COUNT(DISTINCT ${wishlists.userId})`.as("wishlistCount"),
     })
     .from(wishlists)
     .groupBy(wishlists.novelId)
@@ -1780,9 +1780,9 @@ export async function getTopSellingNovelsStats(period: "all" | "today" | "7d" | 
   // This is the source of truth for financial metrics
   const salesSubquery = db
     .select({
-      totalRevenue: sql<string>`CAST(SUM(${orderItems.finalPrice}) AS DECIMAL(12,2))`,
-      totalPurchases: sql<number>`COUNT(${orderItems.id})`, // Count real sold line items
-      novelCount: sql<number>`COUNT(DISTINCT ${orderItems.novelId})`, // Count distinct novels with sales
+      totalRevenue: sql<string>`CAST(SUM(${orderItems.finalPrice}) AS DECIMAL(12,2))`.as("totalRevenue"),
+      totalPurchases: sql<number>`COUNT(${orderItems.id})`.as("totalPurchases"), // Count real sold line items
+      novelCount: sql<number>`COUNT(DISTINCT ${orderItems.novelId})`.as("novelCount"), // Count distinct novels with sales
     })
     .from(orderItems)
     .innerJoin(orders, eq(orderItems.orderId, orders.id))
