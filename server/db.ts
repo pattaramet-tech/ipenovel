@@ -1684,24 +1684,18 @@ export async function getTopSellingNovels(period: "all" | "today" | "7d" | "mont
     dateFilter = gte(orders.createdAt, startOfMonth);
   }
 
-  // Build the query with aggregation
-  let query = db
+  // Build sales subquery: aggregate approved orderItems by novelId
+  // This is the source of truth for revenue and purchase counts
+  const salesSubquery = db
     .select({
-      novelId: novels.id,
-      novelTitle: novels.title,
-      coverImageUrl: novels.coverImageUrl,
+      novelId: orderItems.novelId,
       totalRevenue: sql<string>`CAST(SUM(${orderItems.finalPrice}) AS DECIMAL(12,2))`,
-      purchaseCount: sql<number>`COUNT(DISTINCT ${purchases.id})`,
+      purchaseCount: sql<number>`COUNT(${orderItems.id})`, // Count real sold line items
       soldEpisodesCount: sql<number>`COUNT(DISTINCT ${orderItems.episodeId})`,
-      wishlistCount: sql<number>`COUNT(DISTINCT ${wishlists.id})`,
-      createdAt: novels.createdAt,
     })
-    .from(novels)
-    .leftJoin(orderItems, eq(novels.id, orderItems.novelId))
-    .leftJoin(orders, eq(orderItems.orderId, orders.id))
-    .leftJoin(payments, eq(orders.id, payments.orderId))
-    .leftJoin(purchases, eq(novels.id, purchases.novelId))
-    .leftJoin(wishlists, eq(novels.id, wishlists.novelId))
+    .from(orderItems)
+    .innerJoin(orders, eq(orderItems.orderId, orders.id))
+    .innerJoin(payments, eq(orders.id, payments.orderId))
     .where(
       dateFilter
         ? and(
@@ -1716,10 +1710,36 @@ export async function getTopSellingNovels(period: "all" | "today" | "7d" | "mont
             eq(payments.status, "approved")
           )
     )
-    .groupBy(novels.id, novels.title, novels.coverImageUrl, novels.createdAt)
-    .orderBy(desc(sql<number>`SUM(${orderItems.finalPrice})`))
+    .groupBy(orderItems.novelId)
+    .as("sales");
+
+  // Build wishlist subquery: count distinct users per novel
+  const wishlistSubquery = db
+    .select({
+      novelId: wishlists.novelId,
+      wishlistCount: sql<number>`COUNT(DISTINCT ${wishlists.userId})`,
+    })
+    .from(wishlists)
+    .groupBy(wishlists.novelId)
+    .as("wishlists_agg");
+
+  // Join aggregated results back to novels table
+  const results: any[] = await db
+    .select({
+      novelId: novels.id,
+      novelTitle: novels.title,
+      coverImageUrl: novels.coverImageUrl,
+      totalRevenue: salesSubquery.totalRevenue,
+      purchaseCount: salesSubquery.purchaseCount,
+      soldEpisodesCount: salesSubquery.soldEpisodesCount,
+      wishlistCount: wishlistSubquery.wishlistCount,
+      createdAt: novels.createdAt,
+    })
+    .from(novels)
+    .innerJoin(salesSubquery, eq(novels.id, salesSubquery.novelId))
+    .leftJoin(wishlistSubquery, eq(novels.id, wishlistSubquery.novelId))
+    .orderBy(desc(salesSubquery.totalRevenue))
     .limit(limit);
-  const results: any[] = await query;
 
   return results.map((row, index) => ({
     rank: index + 1,
@@ -1756,17 +1776,17 @@ export async function getTopSellingNovelsStats(period: "all" | "today" | "7d" | 
     dateFilter = gte(orders.createdAt, startOfMonth);
   }
 
-  const result: any[] = await db
+  // Build sales subquery: aggregate approved orderItems to get real revenue and purchase counts
+  // This is the source of truth for financial metrics
+  const salesSubquery = db
     .select({
       totalRevenue: sql<string>`CAST(SUM(${orderItems.finalPrice}) AS DECIMAL(12,2))`,
-      totalPurchases: sql<number>`COUNT(DISTINCT ${purchases.id})`,
-      novelCount: sql<number>`COUNT(DISTINCT ${novels.id})`,
+      totalPurchases: sql<number>`COUNT(${orderItems.id})`, // Count real sold line items
+      novelCount: sql<number>`COUNT(DISTINCT ${orderItems.novelId})`, // Count distinct novels with sales
     })
-    .from(novels)
-    .leftJoin(orderItems, eq(novels.id, orderItems.novelId))
-    .leftJoin(orders, eq(orderItems.orderId, orders.id))
-    .leftJoin(payments, eq(orders.id, payments.orderId))
-    .leftJoin(purchases, eq(novels.id, purchases.novelId))
+    .from(orderItems)
+    .innerJoin(orders, eq(orderItems.orderId, orders.id))
+    .innerJoin(payments, eq(orders.id, payments.orderId))
     .where(
       dateFilter
         ? and(
@@ -1780,7 +1800,16 @@ export async function getTopSellingNovelsStats(period: "all" | "today" | "7d" | 
             eq(orders.paymentStatus, "approved"),
             eq(payments.status, "approved")
           )
-    );
+    )
+    .as("sales_stats");
+
+  const result: any[] = await db
+    .select({
+      totalRevenue: salesSubquery.totalRevenue,
+      totalPurchases: salesSubquery.totalPurchases,
+      novelCount: salesSubquery.novelCount,
+    })
+    .from(salesSubquery);
 
   return {
     totalRevenue: Number(result[0]?.totalRevenue) || 0,
