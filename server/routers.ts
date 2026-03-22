@@ -21,21 +21,8 @@ const adminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
   // ============ MAIN ROUTER ============
 
 const dashboardRouter = router({
-  dashboard: adminProcedure.query(async () => {
-    const novels = await db.getAllNovels();
-    const orders = await db.getAllOrders(1000);
-    const payments = await db.getPendingPayments(1000);
-    
-    const totalRevenue = orders.reduce((sum: number, order: any) => {
-      return sum + (parseFloat(order.totalAmount.toString()) || 0);
-    }, 0);
-
-    return {
-      totalNovels: novels.length,
-      totalOrders: orders.length,
-      pendingPayments: payments.length,
-      totalRevenue,
-    };
+  summary: adminProcedure.query(async () => {
+    return db.getDashboardSummary();
   }),
 });
 

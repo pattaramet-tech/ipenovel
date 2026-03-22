@@ -25,15 +25,15 @@ export default function AdminDashboard() {
   const shouldFetchAdminData = isAdmin === true; // Ensure it's a boolean for enabled flag
 
   // Query hooks with enabled flag - they won't fetch until auth is resolved and user is admin
+  const { data: dashboardSummary, isLoading: summaryLoading } = trpc.admin.dashboard.summary.useQuery(
+    undefined,
+    { enabled: shouldFetchAdminData }
+  );
   const { data: pendingPayments, isLoading: paymentsLoading, refetch: refetchPayments } = trpc.admin.payments.pending.useQuery(
     undefined,
     { enabled: shouldFetchAdminData }
   );
   const { data: allOrders, isLoading: ordersLoading } = trpc.admin.orders.list.useQuery(
-    undefined,
-    { enabled: shouldFetchAdminData }
-  );
-  const { data: allNovels, isLoading: novelsLoading } = trpc.admin.novels.list.useQuery(
     undefined,
     { enabled: shouldFetchAdminData }
   );
@@ -87,11 +87,11 @@ export default function AdminDashboard() {
     );
   }
 
-  // Calculate stats
-  const totalOrders = allOrders?.length || 0;
-  const totalNovels = allNovels?.length || 0;
-  const pendingPaymentCount = pendingPayments?.length || 0;
-  const approvedPaymentCount = allOrders?.filter((o: any) => o.status === "approved").length || 0;
+  // Calculate stats from dashboard summary (source of truth)
+  const totalOrders = dashboardSummary?.totalOrders || 0;
+  const totalNovels = dashboardSummary?.totalNovels || 0;
+  const pendingPaymentCount = dashboardSummary?.pendingPayments || 0;
+  const approvedPaymentCount = dashboardSummary?.approvedPayments || 0;
 
   return (
     <AdminLayout>

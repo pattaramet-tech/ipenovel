@@ -1843,3 +1843,68 @@ export async function deleteUser(userId: number) {
   if (!db) return;
   await db.delete(users).where(eq(users.id, userId));
 }
+
+// Dashboard count helpers - source of truth for metrics
+export async function countAllOrders(): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db
+    .select({ count: count() })
+    .from(orders);
+  return result[0]?.count || 0;
+}
+
+export async function countAllNovels(): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db
+    .select({ count: count() })
+    .from(novels);
+  return result[0]?.count || 0;
+}
+
+export async function countPendingPayments(): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db
+    .select({ count: count() })
+    .from(payments)
+    .where(eq(payments.status, "pending"));
+  return result[0]?.count || 0;
+}
+
+export async function countApprovedPayments(): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db
+    .select({ count: count() })
+    .from(payments)
+    .where(eq(payments.status, "approved"));
+  return result[0]?.count || 0;
+}
+
+export async function countApprovedOrders(): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db
+    .select({ count: count() })
+    .from(orders)
+    .where(eq(orders.status, "approved"));
+  return result[0]?.count || 0;
+}
+
+export async function getDashboardSummary() {
+  const [totalOrders, totalNovels, pendingPayments, approvedPayments] = await Promise.all([
+    countAllOrders(),
+    countAllNovels(),
+    countPendingPayments(),
+    countApprovedPayments(),
+  ]);
+
+  return {
+    totalOrders,
+    totalNovels,
+    pendingPayments,
+    approvedPayments,
+  };
+}
