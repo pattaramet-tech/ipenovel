@@ -294,8 +294,11 @@ export const appRouter = router({
 
           await db.debitWalletBalance(ctx.user.id, totalAmount, "order", order.id);
           await db.updateOrder(order.id, { status: "approved", paymentStatus: "approved" });
-          await db.createPayment(order.id, totalAmount, "wallet", "approved");
-          await orderService.createPurchasesFromOrder(order.id);
+          const payment = await db.createPayment(order.id);
+          await db.updatePayment(payment.id, { status: "approved" });
+          for (const item of orderItems) {
+            await db.createPurchase(ctx.user.id, item.novelId, item.episodeId, order.id);
+          }
           await db.clearCart(cart.id);
 
           return { order, success: true };
