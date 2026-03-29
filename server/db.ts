@@ -21,6 +21,9 @@ import {
   banners,
   settings,
   orderHistory,
+  walletAccounts,
+  walletTransactions,
+  walletTopups,
   Novel,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
@@ -1906,5 +1909,248 @@ export async function getDashboardSummary() {
     totalNovels,
     pendingPayments,
     approvedPayments,
+  };
+}
+
+
+// ============ WALLET HELPERS ============
+
+export async function getOrCreateWalletAccount(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  let account = (await db.select().from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1))[0];
+
+  if (!account) {
+    await db.insert(walletAccounts).values({ userId, balance: "0.00" });
+    account = (await db.select().from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1))[0];
+  }
+
+  return account;
+}
+
+export async function getWalletBalance(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const account = (await db.select().from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1))[0];
+
+  return account?.balance || "0.00";
+}
+
+export async function listWalletTransactions(userId: number, limit: number = 20, offset: number = 0) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db
+    .select()
+    .from(walletTransactions)
+    .where(eq(walletTransactions.userId, userId))
+    .orderBy(desc(walletTransactions.createdAt))
+    .limit(limit)
+    .offset(offset);
+}
+
+export async function createWalletTopup(userId: number, requestedAmount: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const result = await db.insert(walletTopups).values({
+    userId,
+    requestedAmount,
+    status: "pending" as any,
+  });
+
+  return (await db.select().from(walletTopups).where(eq(walletTopups.id, result[0].insertId)).limit(1))[0];
+}
+
+export async function getWalletTopupById(topupId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return (await db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1))[0];
+}
+
+export async function listPendingWalletTopups(limit: number = 20, offset: number = 0) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db
+    .select()
+    .from(walletTopups)
+    .where(eq(walletTopups.status, "pending"))
+    .orderBy(asc(walletTopups.createdAt))
+    .limit(limit)
+    .offset(offset);
+}
+
+export async function updateWalletTopupSlip(topupId: number, slipImageUrl: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db.update(walletTopups).set({ slipImageUrl }).where(eq(walletTopups.id, topupId));
+
+  return (await db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1))[0];
+}
+
+export async function createWalletTransaction(
+  userId: number,
+  type: string,
+  amount: string,
+  balanceBefore: string,
+  balanceAfter: string,
+  referenceType?: string,
+  referenceId?: number,
+  note?: string
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db.insert(walletTransactions).values({
+    userId,
+    type: type as any,
+    amount,
+    balanceBefore,
+    balanceAfter,
+    referenceType,
+    referenceId,
+    note,
+  });
+}
+
+export async function debitWalletBalance(userId: number, amount: string, referenceType: string, referenceId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const account = await getOrCreateWalletAccount(userId);
+  const currentBalance = parseFloat(account.balance);
+  const debitAmount = parseFloat(amount);
+
+  if (currentBalance < debitAmount) {
+    throw new Error("Insufficient wallet balance");
+  }
+
+  const newBalance = (currentBalance - debitAmount).toFixed(2);
+
+  await db
+    .update(walletAccounts)
+    .set({ balance: newBalance, updatedAt: new Date() })
+    .where(eq(walletAccounts.userId, userId));
+
+  await createWalletTransaction(
+    userId,
+    "debit",
+    amount,
+    account.balance,
+    newBalance,
+    referenceType,
+    referenceId
+  );
+
+  return newBalance;
+}
+
+export async function creditWalletBalance(userId: number, amount: string, referenceType: string, referenceId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const account = await getOrCreateWalletAccount(userId);
+  const currentBalance = parseFloat(account.balance);
+  const creditAmount = parseFloat(amount);
+  const newBalance = (currentBalance + creditAmount).toFixed(2);
+
+  await db
+    .update(walletAccounts)
+    .set({ balance: newBalance, updatedAt: new Date() })
+    .where(eq(walletAccounts.userId, userId));
+
+  await createWalletTransaction(
+    userId,
+    "topup_approved",
+    amount,
+    account.balance,
+    newBalance,
+    referenceType,
+    referenceId
+  );
+
+  return newBalance;
+}
+
+export async function approveWalletTopup(topupId: number, adminUserId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const topup = await getWalletTopupById(topupId);
+  if (!topup) throw new Error("Wallet top-up not found");
+  if (topup.status !== "pending") throw new Error(`Cannot approve ${topup.status} top-up`);
+
+  // Idempotent: if already approved, return success
+  if (topup.status === ("approved" as any)) {
+    return topup;
+  }
+
+  await db
+    .update(walletTopups)
+    .set({
+      status: "approved" as any,
+      reviewedByUserId: adminUserId,
+      reviewedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(walletTopups.id, topupId));
+
+  // Credit wallet
+  await creditWalletBalance(topup.userId, topup.requestedAmount, "topup", topupId);
+
+  return db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1).then(r => r[0]);
+}
+
+export async function rejectWalletTopup(topupId: number, adminUserId: number, reason: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const topup = await getWalletTopupById(topupId);
+  if (!topup) throw new Error("Wallet top-up not found");
+
+  await db
+    .update(walletTopups)
+    .set({
+      status: "rejected" as any,
+      rejectionReason: reason,
+      reviewedByUserId: adminUserId,
+      reviewedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(walletTopups.id, topupId));
+
+  return db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1).then(r => r[0]);
+}
+
+export async function getWalletSummary(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const account = await getOrCreateWalletAccount(userId);
+  const transactions = await db
+    .select()
+    .from(walletTransactions)
+    .where(eq(walletTransactions.userId, userId))
+    .orderBy(desc(walletTransactions.createdAt))
+    .limit(10);
+
+  const topups = await db
+    .select()
+    .from(walletTopups)
+    .where(eq(walletTopups.userId, userId))
+    .orderBy(desc(walletTopups.createdAt))
+    .limit(5);
+
+  return {
+    balance: account.balance,
+    totalTopupApproved: account.totalTopupApproved,
+    totalSpent: account.totalSpent,
+    recentTransactions: transactions,
+    recentTopups: topups,
   };
 }

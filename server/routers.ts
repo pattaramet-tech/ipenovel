@@ -7,6 +7,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import * as db from "./db";
 import * as orderService from "./services/orderService";
+import * as walletService from "./services/walletService";
 import { fileRouter } from "./routers/fileRouter";
 
 // ============ HELPER PROCEDURES ============
@@ -267,6 +268,39 @@ export const appRouter = router({
         } catch (error: any) {
           const message = error?.message || "Failed to create order";
           throw new TRPCError({ code: "BAD_REQUEST", message });
+        }
+      }),
+
+    walletCheckout: protectedProcedure
+      .input(z.object({ couponCode: z.string().optional(), pointsToRedeem: z.string().optional() }))
+      .mutation(async ({ input, ctx }) => {
+        const cart = await db.getOrCreateCart(ctx.user.id);
+        if (!cart) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        const cartItems = await db.getCartItems(cart.id);
+        if (cartItems.length === 0) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Cart is empty" });
+        }
+
+        try {
+          const order = await orderService.createOrderFromCart(String(ctx.user.id), cartItems, input.couponCode, input.pointsToRedeem);
+          const orderItems = await db.getOrderItems(order.id);
+          const totalAmount = orderItems.reduce((sum: number, item: any) => sum + parseFloat(item.finalPrice), 0).toFixed(2);
+
+          const walletBalance = await db.getWalletBalance(ctx.user.id);
+          if (parseFloat(walletBalance) < parseFloat(totalAmount)) {
+            throw new Error("Insufficient wallet balance");
+          }
+
+          await db.debitWalletBalance(ctx.user.id, totalAmount, "order", order.id);
+          await db.updateOrder(order.id, { status: "approved", paymentStatus: "approved" });
+          await db.createPayment(order.id, totalAmount, "wallet", "approved");
+          await orderService.createPurchasesFromOrder(order.id);
+          await db.clearCart(cart.id);
+
+          return { order, success: true };
+        } catch (error: any) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Wallet checkout failed" });
         }
       }),
   }),
@@ -960,6 +994,49 @@ export const appRouter = router({
           return { novels, stats };
         }),
     }),
+
+  wallet: router({
+    getBalance: protectedProcedure.query(async ({ ctx }) => {
+      const balance = await db.getWalletBalance(ctx.user.id);
+      return { balance };
+    }),
+
+    getSummary: protectedProcedure.query(async ({ ctx }) => {
+      return db.getWalletSummary(ctx.user.id);
+    }),
+
+    createTopupRequest: protectedProcedure
+      .input(z.object({ requestedAmount: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        return walletService.createWalletTopupRequest(ctx.user.id, input.requestedAmount);
+      }),
+
+    uploadTopupSlip: protectedProcedure
+      .input(z.object({ topupId: z.number(), slipImageUrl: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        return walletService.uploadWalletTopupSlip(input.topupId, ctx.user.id, input.slipImageUrl);
+      }),
+
+    admin: router({
+      listPendingTopups: adminProcedure
+        .input(z.object({ limit: z.number().default(20), offset: z.number().default(0) }))
+        .query(async ({ input }) => {
+          return db.listPendingWalletTopups(input.limit, input.offset);
+        }),
+
+      approveTopup: adminProcedure
+        .input(z.object({ topupId: z.number() }))
+        .mutation(async ({ ctx, input }) => {
+          return walletService.adminApproveWalletTopup(input.topupId, ctx.user.id);
+        }),
+
+      rejectTopup: adminProcedure
+        .input(z.object({ topupId: z.number(), reason: z.string() }))
+        .mutation(async ({ ctx, input }) => {
+          return walletService.adminRejectWalletTopup(input.topupId, ctx.user.id, input.reason);
+        }),
+    }),
+  }),
   }),
 });
 

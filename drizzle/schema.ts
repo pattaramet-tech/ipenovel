@@ -440,3 +440,56 @@ export const orderHistory = mysqlTable(
 
 export type OrderHistory = typeof orderHistory.$inferSelect;
 export type InsertOrderHistory = typeof orderHistory.$inferInsert;
+
+
+export const walletAccounts = mysqlTable("walletAccounts", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull().unique(),
+  balance: decimal("balance", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  totalTopupApproved: decimal("totalTopupApproved", { precision: 12, scale: 2 }).default("0.00"),
+  totalSpent: decimal("totalSpent", { precision: 12, scale: 2 }).default("0.00"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({ userIdIdx: index("walletAccounts_userId_idx").on(table.userId) }));
+
+export type WalletAccount = typeof walletAccounts.$inferSelect;
+export type InsertWalletAccount = typeof walletAccounts.$inferInsert;
+
+export const walletTransactions = mysqlTable("walletTransactions", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  type: mysqlEnum("type", ["topup_pending", "topup_approved", "topup_rejected", "debit", "refund", "adjust"]).notNull(),
+  amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
+  balanceBefore: decimal("balanceBefore", { precision: 12, scale: 2 }).notNull(),
+  balanceAfter: decimal("balanceAfter", { precision: 12, scale: 2 }).notNull(),
+  referenceType: varchar("referenceType", { length: 50 }),
+  referenceId: int("referenceId"),
+  note: text("note"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({
+  userIdIdx: index("walletTransactions_userId_idx").on(table.userId),
+  createdAtIdx: index("walletTransactions_createdAt_idx").on(table.createdAt),
+}));
+
+export type WalletTransaction = typeof walletTransactions.$inferSelect;
+export type InsertWalletTransaction = typeof walletTransactions.$inferInsert;
+
+export const walletTopups = mysqlTable("walletTopups", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  requestedAmount: decimal("requestedAmount", { precision: 12, scale: 2 }).notNull(),
+  slipImageUrl: text("slipImageUrl"),
+  status: mysqlEnum("status", ["pending", "approved", "rejected", "cancelled"]).default("pending").notNull(),
+  rejectionReason: text("rejectionReason"),
+  reviewedByUserId: int("reviewedByUserId"),
+  reviewedAt: timestamp("reviewedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({
+  userIdIdx: index("walletTopups_userId_idx").on(table.userId),
+  statusIdx: index("walletTopups_status_idx").on(table.status),
+  createdAtIdx: index("walletTopups_createdAt_idx").on(table.createdAt),
+}));
+
+export type WalletTopup = typeof walletTopups.$inferSelect;
+export type InsertWalletTopup = typeof walletTopups.$inferInsert;
