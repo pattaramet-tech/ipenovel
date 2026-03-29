@@ -724,3 +724,11 @@
 - [x] Verify no scrolling required to see warnings
 - [x] Verify TypeScript compilation (no errors)
 - [x] Verify dev server running without errors
+
+
+## Thai Typo Fixes
+- [x] Fix Thai typo "หลักฎาน" → "หลักฐาน" in wallet.policyPoint3
+- [x] Search and verify no other occurrences of the typo in project
+- [x] Verify TypeScript compilation (no errors)
+- [x] Verify dev server running without errors
+- [x] Verify corrected text displays correctly on wallet page
