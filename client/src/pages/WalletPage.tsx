@@ -6,6 +6,9 @@ import { Badge } from "@/components/ui/badge";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { Upload, CheckCircle, AlertCircle } from "lucide-react";
+
+const QR_PAYMENT_IMAGE = "https://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/IMG_8158_8beb9f9a.jpeg";
 
 export default function WalletPage() {
   const auth = useAuth();
@@ -13,8 +16,10 @@ export default function WalletPage() {
   const [showTopupForm, setShowTopupForm] = useState(false);
   const [topupAmount, setTopupAmount] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [activeTopupId, setActiveTopupId] = useState<number | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
 
-  const { data: summary, isLoading } = trpc.wallet.getSummary.useQuery();
+  const { data: summary, isLoading, refetch: refetchSummary } = trpc.wallet.getSummary.useQuery();
   const createTopupMutation = trpc.wallet.createTopupRequest.useMutation();
   const uploadSlipMutation = trpc.wallet.uploadTopupSlip.useMutation();
 
@@ -24,10 +29,12 @@ export default function WalletPage() {
       return;
     }
     try {
-      await createTopupMutation.mutateAsync({ requestedAmount: topupAmount });
+      const result = await createTopupMutation.mutateAsync({ requestedAmount: topupAmount });
       setTopupAmount("");
       setShowTopupForm(false);
-      toast.success("Top-up request created");
+      // Immediately show payment step for the newly created top-up
+      setActiveTopupId(result.id);
+      toast.success("Top-up request created. Please proceed with payment.");
     } catch (error: any) {
       toast.error(error.message || "Failed to create top-up");
     }
@@ -39,12 +46,17 @@ export default function WalletPage() {
       return;
     }
     try {
+      setIsUploading(true);
       const url = await uploadFile(selectedFile);
       await uploadSlipMutation.mutateAsync({ topupId, slipImageUrl: url });
       setSelectedFile(null);
-      toast.success("Slip uploaded successfully");
+      setActiveTopupId(null);
+      toast.success("Slip uploaded successfully. Waiting for admin review.");
+      refetchSummary();
     } catch (error: any) {
       toast.error(error.message || "Failed to upload slip");
+    } finally {
+      setIsUploading(false);
     }
   };
 
@@ -77,6 +89,122 @@ export default function WalletPage() {
 
   if (isLoading) return <div className="p-4 text-center">{t("common.loading")}</div>;
 
+  // Find the active top-up for payment step
+  const activeTopup = activeTopupId
+    ? summary?.recentTopups?.find((t: any) => t.id === activeTopupId)
+    : null;
+
+  // Show payment step if user just created a top-up
+  if (activeTopup) {
+    return (
+      <div className="min-h-screen bg-slate-50 py-8">
+        <div className="container mx-auto px-4 max-w-2xl space-y-6">
+          {/* Top-up Summary */}
+          <Card>
+            <div className="bg-blue-50 p-6 rounded-t-lg">
+              <h1 className="text-2xl font-bold text-blue-900">Complete Your Top-up</h1>
+              <p className="text-blue-700 mt-2">Please follow the steps below to complete your wallet top-up request.</p>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="flex justify-between items-center">
+                <span className="text-slate-600">Top-up Amount:</span>
+                <span className="text-2xl font-bold text-blue-600">฿{activeTopup.requestedAmount}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-600">Request ID:</span>
+                <span className="font-mono text-sm">{activeTopup.id}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-600">Status:</span>
+                <Badge variant="outline">waiting_for_slip</Badge>
+              </div>
+            </div>
+          </Card>
+
+          {/* QR Code Payment */}
+          <Card>
+            <div className="p-6">
+              <h2 className="text-xl font-semibold mb-4">Step 1: Scan QR Code to Pay</h2>
+              <div className="space-y-4">
+                <img src={QR_PAYMENT_IMAGE} alt="QR Code" className="w-64 h-64 mx-auto border rounded" />
+                <p className="text-sm text-slate-600 text-center">
+                  Scan this QR code with your mobile banking app and pay exactly <strong>฿{activeTopup.requestedAmount}</strong>
+                </p>
+              </div>
+            </div>
+          </Card>
+
+          {/* Slip Upload */}
+          <Card>
+            <div className="p-6">
+              <h2 className="text-xl font-semibold mb-4">Step 2: Upload Payment Slip</h2>
+              <div className="space-y-4">
+                <p className="text-sm text-slate-600">
+                  After paying, take a screenshot of the payment confirmation and upload it below.
+                </p>
+
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-slate-700">
+                    Select Payment Slip Image
+                  </label>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,application/pdf"
+                    onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+                    disabled={isUploading}
+                    className="w-full px-3 py-2 border rounded text-sm"
+                  />
+                  <p className="text-xs text-slate-500">
+                    Accepted formats: JPEG, PNG, PDF. Max size: 5MB
+                  </p>
+                </div>
+
+                {selectedFile && (
+                  <div className="bg-green-50 p-3 rounded text-sm text-green-800 flex items-center gap-2">
+                    <CheckCircle className="w-4 h-4" />
+                    Selected: {selectedFile.name}
+                  </div>
+                )}
+
+                <Button
+                  onClick={() => handleUploadSlip(activeTopup.id)}
+                  disabled={!selectedFile || isUploading}
+                  className="w-full"
+                >
+                  <Upload className="w-4 h-4 mr-2" />
+                  {isUploading ? "Uploading..." : "Upload Slip"}
+                </Button>
+              </div>
+            </div>
+          </Card>
+
+          {/* Help Section */}
+          <Card>
+            <div className="p-6">
+              <h2 className="text-xl font-semibold mb-4">What Happens Next?</h2>
+              <div className="space-y-2 text-sm text-slate-600">
+                <p>• Your slip will be reviewed by our admin team</p>
+                <p>• You'll receive a notification when your top-up is approved</p>
+                <p>• Your wallet balance will be updated immediately after approval</p>
+                <p>• If there's an issue, we'll contact you with the rejection reason</p>
+              </div>
+            </div>
+          </Card>
+
+          {/* Cancel Button */}
+          <Button
+            variant="outline"
+            className="w-full"
+            onClick={() => setActiveTopupId(null)}
+          >
+            Back to Wallet
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // Main wallet page
   return (
     <div className="container max-w-2xl py-8">
       <h1 className="text-3xl font-bold mb-6">My Wallet</h1>
@@ -116,33 +244,26 @@ export default function WalletPage() {
         <div className="mt-6 space-y-3">
           {summary?.recentTopups && summary.recentTopups.length > 0 ? (
             summary.recentTopups.map((topup: any) => (
-            <div key={topup.id} className="border rounded p-3 flex justify-between items-start">
-              <div>
-                <div className="font-semibold">฿{topup.requestedAmount}</div>
-                <div className="text-sm text-gray-600">{new Date(topup.createdAt).toLocaleDateString()}</div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Badge variant={topup.status === "pending" ? "outline" : topup.status === "approved" ? "default" : "destructive"}>
-                  {topup.status}
-                </Badge>
-                {topup.status === "pending" && !topup.slipImageUrl && (
-                  <div className="flex gap-2">
-                    <input
-                      type="file"
-                      onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-                      className="text-sm"
-                    />
+              <div key={topup.id} className="border rounded p-3 flex justify-between items-start">
+                <div>
+                  <div className="font-semibold">฿{topup.requestedAmount}</div>
+                  <div className="text-sm text-gray-600">{new Date(topup.createdAt).toLocaleDateString()}</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge variant={topup.status === "pending" ? "outline" : topup.status === "approved" ? "default" : "destructive"}>
+                    {topup.status}
+                  </Badge>
+                  {topup.status === "pending" && !topup.slipImageUrl && (
                     <Button
                       size="sm"
-                      onClick={() => handleUploadSlip(topup.id)}
-                      disabled={uploadSlipMutation.isPending}
+                      variant="outline"
+                      onClick={() => setActiveTopupId(topup.id)}
                     >
-                      {uploadSlipMutation.isPending ? "Uploading..." : "Upload"}
+                      Upload Slip
                     </Button>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
-            </div>
             ))
           ) : (
             <p className="text-sm text-gray-500">No top-up requests yet</p>
