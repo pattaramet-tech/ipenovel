@@ -997,49 +997,42 @@ export const appRouter = router({
           return { novels, stats };
         }),
     }),
-
+  }),
   wallet: router({
     getBalance: protectedProcedure.query(async ({ ctx }) => {
       const balance = await db.getWalletBalance(ctx.user.id);
       return { balance };
     }),
-
     getSummary: protectedProcedure.query(async ({ ctx }) => {
       return db.getWalletSummary(ctx.user.id);
     }),
-
     createTopupRequest: protectedProcedure
       .input(z.object({ requestedAmount: z.string() }))
       .mutation(async ({ ctx, input }) => {
         return walletService.createWalletTopupRequest(ctx.user.id, input.requestedAmount);
       }),
-
     uploadTopupSlip: protectedProcedure
       .input(z.object({ topupId: z.number(), slipImageUrl: z.string() }))
       .mutation(async ({ ctx, input }) => {
         return walletService.uploadWalletTopupSlip(input.topupId, ctx.user.id, input.slipImageUrl);
       }),
-
     admin: router({
       listPendingTopups: adminProcedure
         .input(z.object({ limit: z.number().default(20), offset: z.number().default(0) }))
         .query(async ({ input }) => {
           return db.listPendingWalletTopups(input.limit, input.offset);
         }),
-
       approveTopup: adminProcedure
         .input(z.object({ topupId: z.number() }))
         .mutation(async ({ ctx, input }) => {
           return walletService.adminApproveWalletTopup(input.topupId, ctx.user.id);
         }),
-
       rejectTopup: adminProcedure
         .input(z.object({ topupId: z.number(), reason: z.string() }))
         .mutation(async ({ ctx, input }) => {
           return walletService.adminRejectWalletTopup(input.topupId, ctx.user.id, input.reason);
         }),
     }),
-  }),
   }),
 });
 
