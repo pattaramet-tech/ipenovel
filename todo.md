@@ -700,3 +700,15 @@
 - [ ] Write tests for fixed N+1 queries
 - [ ] Write tests for fixed slug generation
 - [ ] Verify build passes after all fixes
+
+
+## Wallet Feature Localization - Thai Language Support
+- [x] Add comprehensive Thai translations for all wallet strings to LanguageContext.tsx
+- [x] Add English translations for all wallet strings to LanguageContext.tsx
+- [x] Replace hardcoded English in WalletPage with translation keys (14 edits)
+- [x] Replace hardcoded English in CartPage wallet button with translation key
+- [x] Replace English toast messages in CartPage with translation keys (5 edits)
+- [x] Replace English toast messages in WalletPage with translation keys (2 edits)
+- [x] Verify TypeScript compilation (no errors)
+- [x] Verify all wallet UI text uses translation keys (grep verification)
+- [x] Verify dev server running without errors

@@ -25,7 +25,7 @@ export default function WalletPage() {
 
   const handleCreateTopup = async () => {
     if (!topupAmount || parseFloat(topupAmount) <= 0) {
-      toast.error("Please enter a valid amount");
+      toast.error(t("wallet.pleaseEnterValidAmount"));
       return;
     }
     try {
@@ -34,15 +34,15 @@ export default function WalletPage() {
       setShowTopupForm(false);
       // Immediately show payment step for the newly created top-up
       setActiveTopupId(result.id);
-      toast.success("Top-up request created. Please proceed with payment.");
+      toast.success(t("wallet.topupRequestCreated"));
     } catch (error: any) {
-      toast.error(error.message || "Failed to create top-up");
+      toast.error(error.message || t("wallet.failedToCreateTopup"));
     }
   };
 
   const handleUploadSlip = async (topupId: number) => {
     if (!selectedFile) {
-      toast.error("Please select a file");
+      toast.error(t("wallet.pleaseSelectFile"));
       return;
     }
     try {
@@ -51,10 +51,10 @@ export default function WalletPage() {
       await uploadSlipMutation.mutateAsync({ topupId, slipImageUrl: url });
       setSelectedFile(null);
       setActiveTopupId(null);
-      toast.success("Slip uploaded successfully. Waiting for admin review.");
+      toast.success(t("wallet.slipUploadedSuccessfully"));
       refetchSummary();
     } catch (error: any) {
-      toast.error(error.message || "Failed to upload slip");
+      toast.error(error.message || t("wallet.failedToUploadSlip"));
     } finally {
       setIsUploading(false);
     }
@@ -89,9 +89,7 @@ export default function WalletPage() {
 
   if (isLoading) return <div className="p-4 text-center">{t("common.loading")}</div>;
 
-  // Policy message for non-refundable wallet
-  const policyMessage = `ยอดเงินในกระเป๋าใช้สำหรับซื้อสินค้าในระบบเท่านั้น • ยอดเงินที่เติมแล้วไม่สามารถถอนหรือขอคืนได้ • เมื่ออนุมัติแล้วจะไม่สามารถย้อนคืนได้`;
-  const shortWarning = `เติมเงินแล้วไม่สามารถถอนหรือขอคืนได้`;
+  // Policy message for non-refundable wallet (use translation keys)
 
   // Find the active top-up for payment step
   const activeTopup = activeTopupId
@@ -105,26 +103,26 @@ export default function WalletPage() {
     <div className="container mx-auto px-4 max-w-2xl py-8">
       {/* Policy Warning Banner */}
       <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
-        <p className="text-sm text-amber-900 font-semibold mb-2">นโยบายกระเป๋าเงิน</p>
-        <p className="text-xs text-amber-800 leading-relaxed">{policyMessage}</p>
+        <p className="text-sm text-amber-900 font-semibold mb-2">{t("wallet.policyWarning")}</p>
+        <p className="text-xs text-amber-800 leading-relaxed">{t("wallet.policyMessage")}</p>
       </div>          {/* Top-up Summary */}
           <Card>
             <div className="bg-blue-50 p-6 rounded-t-lg">
-              <h1 className="text-2xl font-bold text-blue-900">Complete Your Top-up</h1>
-              <p className="text-blue-700 mt-2">Please follow the steps below to complete your wallet top-up request.</p>
+              <h1 className="text-2xl font-bold text-blue-900">{t("wallet.completeTopup")}</h1>
+              <p className="text-blue-700 mt-2">{t("wallet.pleaseFollowSteps")}</p>
             </div>
             <div className="p-6 space-y-4">
               <div className="flex justify-between items-center">
-                <span className="text-slate-600">Top-up Amount:</span>
+                <span className="text-slate-600">{t("wallet.topupAmountLabel")}</span>
                 <span className="text-2xl font-bold text-blue-600">฿{activeTopup.requestedAmount}</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-slate-600">Request ID:</span>
+                <span className="text-slate-600">{t("wallet.requestIdLabel")}</span>
                 <span className="font-mono text-sm">{activeTopup.id}</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-slate-600">Status:</span>
-                <Badge variant="outline">waiting_for_slip</Badge>
+                <span className="text-slate-600">{t("wallet.statusLabel")}</span>
+                <Badge variant="outline">{t("wallet.waitingForSlip")}</Badge>
               </div>
             </div>
           </Card>
@@ -132,11 +130,11 @@ export default function WalletPage() {
           {/* QR Code Payment */}
           <Card>
             <div className="p-6">
-              <h2 className="text-xl font-semibold mb-4">Step 1: Scan QR Code to Pay</h2>
+              <h2 className="text-xl font-semibold mb-4">{t("wallet.step1ScanQR")}</h2>
               <div className="space-y-4">
                 <img src={QR_PAYMENT_IMAGE} alt="QR Code" className="w-64 h-64 mx-auto border rounded" />
                 <p className="text-sm text-slate-600 text-center">
-                  Scan this QR code with your mobile banking app and pay exactly <strong>฿{activeTopup.requestedAmount}</strong>
+                  {t("wallet.scanQRInstructions")} <strong>฿{activeTopup.requestedAmount}</strong>
                 </p>
               </div>
             </div>
@@ -145,15 +143,15 @@ export default function WalletPage() {
           {/* Slip Upload */}
           <Card>
             <div className="p-6">
-              <h2 className="text-xl font-semibold mb-4">Step 2: Upload Payment Slip</h2>
+              <h2 className="text-xl font-semibold mb-4">{t("wallet.step2UploadSlip")}</h2>
               <div className="space-y-4">
                 <p className="text-sm text-slate-600">
-                  After paying, take a screenshot of the payment confirmation and upload it below.
+                  {t("wallet.afterPayingInstructions")}
                 </p>
 
                 <div className="space-y-2">
                   <label className="block text-sm font-medium text-slate-700">
-                    Select Payment Slip Image
+                    {t("wallet.selectPaymentSlip")}
                   </label>
                   <input
                     type="file"
@@ -163,14 +161,14 @@ export default function WalletPage() {
                     className="w-full px-3 py-2 border rounded text-sm"
                   />
                   <p className="text-xs text-slate-500">
-                    Accepted formats: JPEG, PNG, PDF. Max size: 5MB
+                    {t("wallet.acceptedFormats")}
                   </p>
                 </div>
 
                 {selectedFile && (
                   <div className="bg-green-50 p-3 rounded text-sm text-green-800 flex items-center gap-2">
                     <CheckCircle className="w-4 h-4" />
-                    Selected: {selectedFile.name}
+                    {t("wallet.selected")} {selectedFile.name}
                   </div>
                 )}
 
@@ -180,7 +178,7 @@ export default function WalletPage() {
                   className="w-full"
                 >
                   <Upload className="w-4 h-4 mr-2" />
-                  {isUploading ? "Uploading..." : "Upload Slip"}
+                  {isUploading ? t("wallet.uploading") : t("wallet.uploadSlipButton")}
                 </Button>
               </div>
             </div>
@@ -189,12 +187,12 @@ export default function WalletPage() {
           {/* Help Section */}
           <Card>
             <div className="p-6">
-              <h2 className="text-xl font-semibold mb-4">What Happens Next?</h2>
+              <h2 className="text-xl font-semibold mb-4">{t("wallet.whatHappensNext")}</h2>
               <div className="space-y-2 text-sm text-slate-600">
-                <p>• Your slip will be reviewed by our admin team</p>
-                <p>• You'll receive a notification when your top-up is approved</p>
-                <p>• Your wallet balance will be updated immediately after approval</p>
-                <p>• If there's an issue, we'll contact you with the rejection reason</p>
+                <p>{t("wallet.slipWillBeReviewed")}</p>
+                <p>{t("wallet.youWillReceiveNotification")}</p>
+                <p>{t("wallet.balanceWillBeUpdated")}</p>
+                <p>{t("wallet.ifIssueWeWillContact")}</p>
               </div>
             </div>
           </Card>
@@ -205,7 +203,7 @@ export default function WalletPage() {
             className="w-full"
             onClick={() => setActiveTopupId(null)}
           >
-            Back to Wallet
+            {t("wallet.backToWallet")}
           </Button>
         </div>
       </div>
@@ -215,34 +213,34 @@ export default function WalletPage() {
   // Main wallet page
   return (
     <div className="container max-w-2xl py-8">
-      <h1 className="text-3xl font-bold mb-6">My Wallet</h1>
+      <h1 className="text-3xl font-bold mb-6">{t("wallet.title")}</h1>
 
       {/* Balance Card */}
       <Card className="p-6 mb-6">
-        <div className="text-sm text-gray-600">Current Balance</div>
+        <div className="text-sm text-gray-600">{t("wallet.currentBalance")}</div>
         <div className="text-4xl font-bold">฿{summary?.balance || "0.00"}</div>
       </Card>
 
       {/* Top-up Section */}
       <Card className="p-6 mb-6">
-        <h2 className="text-xl font-semibold mb-4">My Top-up Requests</h2>
+        <h2 className="text-xl font-semibold mb-4">{t("wallet.topupRequests")}</h2>
         {!showTopupForm ? (
-          <Button onClick={() => setShowTopupForm(true)}>Request Top-up</Button>
+          <Button onClick={() => setShowTopupForm(true)}>{t("wallet.requestTopup")}</Button>
         ) : (
           <div className="space-y-4">
             <input
               type="number"
-              placeholder="Amount"
+              placeholder={t("wallet.topupAmount")}
               value={topupAmount}
               onChange={(e) => setTopupAmount(e.target.value)}
               className="w-full px-3 py-2 border rounded"
             />
             <div className="flex gap-2">
               <Button onClick={handleCreateTopup} disabled={createTopupMutation.isPending}>
-                {createTopupMutation.isPending ? "Creating..." : "Create Request"}
+                {createTopupMutation.isPending ? t("common.pleaseWait") : t("wallet.createRequest")}
               </Button>
               <Button variant="outline" onClick={() => setShowTopupForm(false)}>
-                Cancel
+                {t("common.cancel")}
               </Button>
             </div>
           </div>
@@ -259,7 +257,9 @@ export default function WalletPage() {
                 </div>
                 <div className="flex flex-col items-end gap-2">
                   <Badge variant={topup.status === "pending" ? "outline" : topup.status === "approved" ? "default" : "destructive"}>
-                    {topup.status}
+                    {topup.status === "pending" && t("order.status.pending")}
+                    {topup.status === "approved" && t("order.status.approved")}
+                    {topup.status === "rejected" && t("order.status.rejected")}
                   </Badge>
                   {topup.status === "rejected" && topup.rejectionReason && (
                     <p className="text-xs text-red-600 max-w-xs text-right">{topup.rejectionReason}</p>
@@ -270,33 +270,33 @@ export default function WalletPage() {
                       variant="outline"
                       onClick={() => setActiveTopupId(topup.id)}
                     >
-                      Upload Slip
+                      {t("wallet.uploadSlip")}
                     </Button>
                   )}
                 </div>
               </div>
             ))
           ) : (
-            <p className="text-sm text-gray-500">No top-up requests yet</p>
+            <p className="text-sm text-gray-500">{t("wallet.noTopups")}</p>
           )}
         </div>
       </Card>
 
       {/* Transactions */}
       <Card className="p-6">
-        <h2 className="text-xl font-semibold mb-4">Recent Transactions</h2>
+        <h2 className="text-xl font-semibold mb-4">{t("wallet.recentTransactions")}</h2>
         <div className="space-y-2">
           {summary?.recentTransactions && summary.recentTransactions.length > 0 ? (
             summary.recentTransactions.map((tx: any) => (
               <div key={tx.id} className="flex justify-between text-sm py-2 border-b">
-                <div>{tx.type}</div>
+                <div>{tx.type === "debit" ? t("wallet.debit") : t("wallet.credit")}</div>
                 <div className={tx.type === "debit" ? "text-red-600" : "text-green-600"}>
                   {tx.type === "debit" ? "-" : "+"}฿{tx.amount}
                 </div>
               </div>
             ))
           ) : (
-            <p className="text-sm text-gray-500">No transactions yet</p>
+            <p className="text-sm text-gray-500">{t("wallet.noTransactions")}</p>
           )}
         </div>
       </Card>

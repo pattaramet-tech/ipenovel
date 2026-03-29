@@ -30,49 +30,49 @@ export default function CartPage() {
 
   const removeFromCartMutation = trpc.cart.remove.useMutation({
     onSuccess: () => {
-      toast.success("Item removed from cart");
+      toast.success(t("common.success"));
       refetchCart();
     },
     onError: () => {
-      toast.error("Failed to remove item");
+      toast.error(t("common.error"));
     },
   });
 
   const handleValidateCoupon = async () => {
     if (!couponCode) {
-      toast.error("Enter a coupon code");
+      toast.error(t("common.error"));
       return;
     }
     try {
       const result = await utils.checkout.validateCoupon.fetch({ couponCode, subtotal });
       setDiscountAmount(result.discountAmount);
-      toast.success("Coupon applied!");
+      toast.success(t("common.success"));
     } catch (error: any) {
       // Show real error message from server
-      const errorMessage = error?.message || "Invalid coupon";
+      const errorMessage = error?.message || t("common.error");
       toast.error(errorMessage);
     }
   };
 
   const createOrderMutation = trpc.checkout.create.useMutation({
     onSuccess: (order) => {
-      toast.success("Order created! Proceed to payment.");
+      toast.success(t("common.success"));
       navigate(`/payment/${order.id}`);
     },
     onError: (error: any) => {
-      const errorMessage = error?.message || "Failed to create order";
+      const errorMessage = error?.message || t("common.error");
       toast.error(errorMessage);
     },
   });
 
   const walletCheckoutMutation = trpc.checkout.walletCheckout.useMutation({
     onSuccess: () => {
-      toast.success("Payment successful! Access granted.");
+      toast.success(t("wallet.walletCheckoutSuccess"));
       refetchCart();
       navigate("/my-novels");
     },
     onError: (error: any) => {
-      const errorMessage = error?.message || "Wallet checkout failed";
+      const errorMessage = error?.message || t("wallet.walletCheckoutFailed");
       toast.error(errorMessage);
     },
   });
@@ -102,7 +102,7 @@ export default function CartPage() {
 
   const handleCheckout = () => {
     if (items.length === 0) {
-      toast.error("Cart is empty");
+      toast.error(t("cart.empty"));
       return;
     }
     // Normalize coupon code same way as server
@@ -232,7 +232,7 @@ export default function CartPage() {
                       onClick={() => walletCheckoutMutation.mutate({ couponCode: couponCode.trim().toUpperCase() || undefined, pointsToRedeem: pointsToRedeem ? pointsToRedeem.trim() : undefined })}
                       disabled={items.length === 0 || walletCheckoutMutation.isPending}
                     >
-                      Pay with Wallet
+                      {t("wallet.payWithWallet")}
                     </Button>
                   </div>
                 </div>
