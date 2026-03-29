@@ -229,7 +229,7 @@ export default function CartPage() {
                     <Button
                       className="w-full"
                       variant="outline"
-                      onClick={() => walletCheckoutMutation.mutate({ couponCode: couponCode.trim().toUpperCase() || undefined })}
+                      onClick={() => walletCheckoutMutation.mutate({ couponCode: couponCode.trim().toUpperCase() || undefined, pointsToRedeem: pointsToRedeem ? pointsToRedeem.trim() : undefined })}
                       disabled={items.length === 0 || walletCheckoutMutation.isPending}
                     >
                       Pay with Wallet

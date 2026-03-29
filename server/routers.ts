@@ -284,21 +284,33 @@ export const appRouter = router({
 
         try {
           const order = await orderService.createOrderFromCart(String(ctx.user.id), cartItems, input.couponCode, input.pointsToRedeem);
-          const orderItems = await db.getOrderItems(order.id);
-          const totalAmount = orderItems.reduce((sum: number, item: any) => sum + parseFloat(item.finalPrice), 0).toFixed(2);
+          // Use order.totalAmount (already calculated with discounts/points) instead of summing finalPrice
+          const totalAmount = order.totalAmount;
 
           const walletBalance = await db.getWalletBalance(ctx.user.id);
           if (parseFloat(walletBalance) < parseFloat(totalAmount)) {
             throw new Error("Insufficient wallet balance");
           }
 
+          // Debit wallet
           await db.debitWalletBalance(ctx.user.id, totalAmount, "order", order.id);
+          
+          // Update order status
           await db.updateOrder(order.id, { status: "approved", paymentStatus: "approved" });
-          const payment = await db.createPayment(order.id);
-          await db.updatePayment(payment.id, { status: "approved" });
+          
+          // Update the payment record that was already created by createOrderFromCart
+          const payment = await db.getPaymentByOrderId(order.id);
+          if (payment) {
+            await db.updatePayment(payment.id, { status: "approved" });
+          }
+          
+          // Create purchases
+          const orderItems = await db.getOrderItems(order.id);
           for (const item of orderItems) {
             await db.createPurchase(ctx.user.id, item.novelId, item.episodeId, order.id);
           }
+          
+          // Clear cart
           await db.clearCart(cart.id);
 
           return { order, success: true };
