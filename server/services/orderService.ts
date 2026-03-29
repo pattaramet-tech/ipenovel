@@ -216,51 +216,67 @@ export async function approvePayment(paymentId: number, approvedBy: string): Pro
     note: "Payment approved by admin",
   });
 
-  // Create purchase records
-  const orderItems = await db.getOrderItems(order.id);
+  // Finalize order completion (points, purchases, coupon usage)
+  if (order.userId) {
+    await finalizeOrderCompletion(order.id, order.userId);
+  }
+
+  return { message: `Payment ${paymentId} approved successfully` };
+}
+
+/**
+ * Finalize order completion: award points, deduct redeemed points, create purchases, record coupon usage
+ * This is the single source of truth for all order completion flows (manual slip, wallet, etc.)
+ * Idempotent: safe to call multiple times for the same order
+ */
+export async function finalizeOrderCompletion(orderId: number, userId: number): Promise<void> {
+  const order = await db.getOrderById(orderId);
+  if (!order) {
+    throw new Error(`Order ${orderId} not found`);
+  }
+
+  // 1. Deduct redeemed points (if any) - only if not already deducted
+  const pointsDiscountNum = parseFloat(order.pointsDiscountAmount?.toString() || "0");
+  if (pointsDiscountNum > 0) {
+    const alreadyDeducted = await db.hasPointsBeenRedeemedForOrder(orderId);
+    if (!alreadyDeducted) {
+      const currentBalanceStr = await db.getUserPointsBalance(userId);
+      const currentBalance = parseFloat(currentBalanceStr);
+      const newBalance = Math.max(0, currentBalance - pointsDiscountNum);
+      await db.recordPointsTransaction({
+        userId,
+        type: "redeem",
+        amount: pointsDiscountNum.toString(),
+        balanceAfter: newBalance.toFixed(2),
+        referenceType: "order",
+        referenceId: orderId,
+        note: `Points redeemed for order ${order.orderNumber}`,
+      });
+    }
+  }
+
+  // 2. Create purchase records (idempotent: skip if already purchased)
+  const orderItems = await db.getOrderItems(orderId);
   for (const item of orderItems) {
-    // getOrderItems already enriches with episode data; use item.episode if available
     const episode = (item as any).episode || await db.getEpisodeById(item.episodeId);
-    if (episode && order.userId) {
-      // Idempotent: skip if already purchased
-      const existing = await db.getPurchaseByUserAndEpisode(order.userId, item.episodeId);
+    if (episode && userId) {
+      const existing = await db.getPurchaseByUserAndEpisode(userId, item.episodeId);
       if (!existing) {
-        await db.createPurchase(order.userId, episode.novelId, item.episodeId, order.id);
+        await db.createPurchase(userId, episode.novelId, item.episodeId, orderId);
       }
     }
   }
 
-  // Deduct redeemed points from user balance if points were used
-  const pointsDiscountNum = parseFloat(order.pointsDiscountAmount?.toString() || "0");
-  if (order.userId && pointsDiscountNum > 0) {
-    const currentBalanceStr = await db.getUserPointsBalance(order.userId);
-    const currentBalance = parseFloat(currentBalanceStr);
-    const newBalance = Math.max(0, currentBalance - pointsDiscountNum);
-    await db.recordPointsTransaction({
-      userId: order.userId,
-      type: "redeem",
-      amount: pointsDiscountNum.toString(),
-      balanceAfter: newBalance.toFixed(2),
-      referenceType: "order",
-      referenceId: order.id,
-      note: `Points redeemed for order ${order.orderNumber}`,
-    });
-  }
+  // 3. Award loyalty points (only once per order)
+  await awardPointsForOrder(orderId, userId, order.totalAmount.toString());
 
-  // Award loyalty points once purchases are finalized
-  if (order.userId) {
-    await awardPointsForOrder(order.id, order.userId, order.totalAmount.toString());
-  }
-
-  // Increment coupon usage count if coupon was used
+  // 4. Record coupon usage (if coupon was used)
   if (order.couponCodeSnapshot) {
     const coupon = await db.getCouponByCode(order.couponCodeSnapshot);
     if (coupon) {
-      await db.recordCouponUsage(coupon.id, order.userId || undefined, order.id);
+      await db.recordCouponUsage(coupon.id, userId, orderId);
     }
   }
-
-  return { message: `Payment ${paymentId} approved successfully` };
 }
 
 /**

@@ -304,11 +304,8 @@ export const appRouter = router({
             await db.updatePayment(payment.id, { status: "approved" });
           }
           
-          // Create purchases
-          const orderItems = await db.getOrderItems(order.id);
-          for (const item of orderItems) {
-            await db.createPurchase(ctx.user.id, item.novelId, item.episodeId, order.id);
-          }
+          // Finalize order completion (points, purchases, coupon usage) - same flow as manual slip approval
+          await orderService.finalizeOrderCompletion(order.id, ctx.user.id);
           
           // Clear cart
           await db.clearCart(cart.id);

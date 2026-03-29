@@ -1254,6 +1254,25 @@ export async function hasPointsBeenAwardedForOrder(orderId: number): Promise<boo
   return result.length > 0;
 }
 
+export async function hasPointsBeenRedeemedForOrder(orderId: number): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+
+  const result = await db
+    .select({ id: pointsTransactions.id })
+    .from(pointsTransactions)
+    .where(
+      and(
+        eq(pointsTransactions.referenceType, "order"),
+        eq(pointsTransactions.referenceId, orderId),
+        eq(pointsTransactions.type, "redeem")
+      )
+    )
+    .limit(1);
+
+  return result.length > 0;
+}
+
 export async function getAdminByEmail(email: string) {
   const db = await getDb();
   if (!db) return undefined;
