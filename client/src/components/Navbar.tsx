@@ -22,6 +22,7 @@ export default function Navbar() {
     { label: t("nav.browse"), href: "/novels", icon: BookOpen },
     { label: t("nav.myNovels"), href: "/my-novels", auth: true, icon: BookOpen },
     { label: t("nav.orders"), href: "/orders", auth: true, icon: ShoppingCart },
+    { label: t("nav.wallet"), href: "/wallet", auth: true, icon: Heart },
     { label: t("nav.points"), href: "/points", auth: true, icon: Heart },
   ];
 

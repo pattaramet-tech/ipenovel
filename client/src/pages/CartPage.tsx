@@ -65,6 +65,18 @@ export default function CartPage() {
     },
   });
 
+  const walletCheckoutMutation = trpc.checkout.walletCheckout.useMutation({
+    onSuccess: () => {
+      toast.success("Payment successful! Access granted.");
+      refetchCart();
+      navigate("/my-novels");
+    },
+    onError: (error: any) => {
+      const errorMessage = error?.message || "Wallet checkout failed";
+      toast.error(errorMessage);
+    },
+  });
+
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -206,13 +218,23 @@ export default function CartPage() {
                     <span className="font-bold text-lg text-blue-600">฿{total}</span>
                   </div>
 
-                  <Button
-                    className="w-full"
-                    onClick={handleCheckout}
-                    disabled={items.length === 0 || createOrderMutation.isPending}
-                  >
-                    {t("checkout.proceedToCheckout")}
-                  </Button>
+                  <div className="space-y-2">
+                    <Button
+                      className="w-full"
+                      onClick={handleCheckout}
+                      disabled={items.length === 0 || createOrderMutation.isPending}
+                    >
+                      {t("checkout.proceedToCheckout")}
+                    </Button>
+                    <Button
+                      className="w-full"
+                      variant="outline"
+                      onClick={() => walletCheckoutMutation.mutate({ couponCode: couponCode.trim().toUpperCase() || undefined })}
+                      disabled={items.length === 0 || walletCheckoutMutation.isPending}
+                    >
+                      Pay with Wallet
+                    </Button>
+                  </div>
                 </div>
               </CardContent>
             </Card>

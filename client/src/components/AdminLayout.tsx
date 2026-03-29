@@ -18,6 +18,7 @@ import {
   ChevronRight,
   Upload,
   Home,
+  Wallet,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -36,6 +37,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   { label: "Dashboard", icon: <LayoutDashboard className="w-5 h-5" />, href: "/admin" },
   { label: "Payments", icon: <CreditCard className="w-5 h-5" />, href: "/admin/payments" },
+  { label: "Wallet Top-ups", icon: <Wallet className="w-5 h-5" />, href: "/admin/wallet-topups" },
   { label: "Novels", icon: <BookOpen className="w-5 h-5" />, href: "/admin/novels" },
   { label: "Episodes", icon: <Layers className="w-5 h-5" />, href: "/admin/episodes" },
   { label: "Categories", icon: <Tag className="w-5 h-5" />, href: "/admin/categories" },
