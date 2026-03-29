@@ -323,6 +323,16 @@ const translations: Record<Language, Record<string, string>> = {
     "wallet.debit": "เดบิต",
     "wallet.amountLabel": "จำนวนเงิน:",
     "wallet.dateLabel": "วันที่:",
+
+    // Wallet Policy - Full
+    "wallet.policyTitle": "นโยบายกระเป๋าเงินและการเติมเงิน",
+    "wallet.policyPoint1": "ยอดเงินในกระเป๋าใช้สำหรับซื้อสินค้าในระบบเท่านั้น",
+    "wallet.policyPoint2": "ยอดเงินที่เติมแล้วไม่สามารถถอนหรือขอคืนได้",
+    "wallet.policyPoint3": "กรุณาตรวจสอบจำนวนเงินและหลักฎานการชำระเงินก่อนยืนยันการเติมเงิน",
+    "wallet.policyPoint4": "เมื่อคำขอเติมเงินได้รับการอนุมัติแล้ว จะไม่สามารถย้อนคืนหรือแก้ไขได้",
+    "wallet.policyPoint5": "แต้มที่ใช้แลกส่วนลดจะถูกหักเมื่อคำสั่งซื้อสำเร็จเท่านั้น",
+    "wallet.policyPoint6": "แต้มสะสมที่ได้รับจากคำสั่งซื้อสำเร็จถือเป็นที่สิ้นสุด และจะไม่มีการย้อนคืนอัตโนมัติ",
+    "wallet.policyPoint7": "ในกรณีที่เกิดข้อผิดพลาดจากระบบ การตรวจสอบและแก้ไขจะดำเนินการโดยผู้ดูแลระบบตามความเหมาะสม",
   },
   en: {
     // Navbar
@@ -611,6 +621,16 @@ const translations: Record<Language, Record<string, string>> = {
     "wallet.debit": "Debit",
     "wallet.amountLabel": "Amount:",
     "wallet.dateLabel": "Date:",
+
+    // Wallet Policy - Full
+    "wallet.policyTitle": "Wallet Policy and Top-up Terms",
+    "wallet.policyPoint1": "Wallet balance is for purchasing items in the system only",
+    "wallet.policyPoint2": "Top-up amounts cannot be withdrawn or refunded",
+    "wallet.policyPoint3": "Please verify the amount and payment proof before confirming the top-up",
+    "wallet.policyPoint4": "Once a top-up request is approved, it cannot be reversed or modified",
+    "wallet.policyPoint5": "Redeemed points will only be deducted when the order is successfully completed",
+    "wallet.policyPoint6": "Accumulated points from successful orders are final and will not be automatically reversed",
+    "wallet.policyPoint7": "In case of system errors, verification and corrections will be handled by the administrator as appropriate",
   },
 };
 

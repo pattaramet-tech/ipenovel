@@ -712,3 +712,15 @@
 - [x] Verify TypeScript compilation (no errors)
 - [x] Verify all wallet UI text uses translation keys (grep verification)
 - [x] Verify dev server running without errors
+
+
+## Wallet Policy Notice Blocks - Visible UI Implementation
+- [x] Add 7 full policy point translations to LanguageContext (Thai + English)
+- [x] Add visible red-themed policy card to main Wallet page (top position)
+- [x] Add visible amber-themed short warning to payment/slip upload step
+- [x] Verify policy card displays all 7 points with bullet formatting
+- [x] Verify short warning displays 2-point summary with alert icon
+- [x] Test responsive design on mobile (flex layout with icon + text)
+- [x] Verify no scrolling required to see warnings
+- [x] Verify TypeScript compilation (no errors)
+- [x] Verify dev server running without errors

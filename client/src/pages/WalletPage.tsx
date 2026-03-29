@@ -127,6 +127,17 @@ export default function WalletPage() {
             </div>
           </Card>
 
+          {/* Short Warning Banner for Payment Step */}
+          <div className="mb-6 p-4 bg-amber-50 border-l-4 border-l-amber-500 rounded">
+            <div className="flex gap-2">
+              <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+              <div className="text-sm text-amber-800">
+                <p className="font-semibold mb-1">เติมเงินแล้วไม่สามารถถอนหรือขอคืนได้</p>
+                <p>เมื่ออนุมัติแล้วจะไม่สามารถย้อนคืนได้</p>
+              </div>
+            </div>
+          </div>
+
           {/* QR Code Payment */}
           <Card>
             <div className="p-6">
@@ -214,6 +225,46 @@ export default function WalletPage() {
   return (
     <div className="container max-w-2xl py-8">
       <h1 className="text-3xl font-bold mb-6">{t("wallet.title")}</h1>
+
+      {/* Policy Notice Card - Visible and Prominent */}
+      <Card className="p-6 mb-6 border-l-4 border-l-red-500 bg-red-50">
+        <div className="flex gap-3">
+          <AlertCircle className="w-6 h-6 text-red-600 flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <h2 className="text-lg font-bold text-red-900 mb-3">{t("wallet.policyTitle")}</h2>
+            <ul className="space-y-2 text-sm text-red-800">
+              <li className="flex gap-2">
+                <span className="text-red-600 font-bold">•</span>
+                <span>{t("wallet.policyPoint1")}</span>
+              </li>
+              <li className="flex gap-2">
+                <span className="text-red-600 font-bold">•</span>
+                <span>{t("wallet.policyPoint2")}</span>
+              </li>
+              <li className="flex gap-2">
+                <span className="text-red-600 font-bold">•</span>
+                <span>{t("wallet.policyPoint3")}</span>
+              </li>
+              <li className="flex gap-2">
+                <span className="text-red-600 font-bold">•</span>
+                <span>{t("wallet.policyPoint4")}</span>
+              </li>
+              <li className="flex gap-2">
+                <span className="text-red-600 font-bold">•</span>
+                <span>{t("wallet.policyPoint5")}</span>
+              </li>
+              <li className="flex gap-2">
+                <span className="text-red-600 font-bold">•</span>
+                <span>{t("wallet.policyPoint6")}</span>
+              </li>
+              <li className="flex gap-2">
+                <span className="text-red-600 font-bold">•</span>
+                <span>{t("wallet.policyPoint7")}</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </Card>
 
       {/* Balance Card */}
       <Card className="p-6 mb-6">
