@@ -1041,8 +1041,29 @@ export const appRouter = router({
         .mutation(async ({ ctx, input }) => {
           return walletService.adminRejectWalletTopup(input.topupId, ctx.user.id, input.reason);
         }),
+      adjustBalance: adminProcedure
+        .input(z.object({ userId: z.number(), amount: z.string(), reason: z.string() }))
+        .mutation(async ({ ctx, input }) => {
+          const amountNum = parseFloat(input.amount);
+          if (isNaN(amountNum)) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid amount" });
+          }
+          const currentBalance = await db.getWalletBalance(input.userId);
+          const newBalance = Math.max(0, parseFloat(currentBalance) + amountNum);
+          await db.recordPointsTransaction({
+            userId: input.userId,
+            type: "adjust",
+            amount: Math.abs(amountNum).toString(),
+            balanceAfter: newBalance.toFixed(2),
+            referenceType: "admin_correction",
+            referenceId: 0,
+            note: `Admin correction by ${ctx.user.id}: ${input.reason}`,
+          });
+          return { success: true, newBalance: newBalance.toFixed(2) };
+        }),
     }),
   }),
+
 });
 
 export type AppRouter = typeof appRouter;

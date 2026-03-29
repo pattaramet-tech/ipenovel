@@ -89,6 +89,10 @@ export default function WalletPage() {
 
   if (isLoading) return <div className="p-4 text-center">{t("common.loading")}</div>;
 
+  // Policy message for non-refundable wallet
+  const policyMessage = `ยอดเงินในกระเป๋าใช้สำหรับซื้อสินค้าในระบบเท่านั้น • ยอดเงินที่เติมแล้วไม่สามารถถอนหรือขอคืนได้ • เมื่ออนุมัติแล้วจะไม่สามารถย้อนคืนได้`;
+  const shortWarning = `เติมเงินแล้วไม่สามารถถอนหรือขอคืนได้`;
+
   // Find the active top-up for payment step
   const activeTopup = activeTopupId
     ? summary?.recentTopups?.find((t: any) => t.id === activeTopupId)
@@ -97,9 +101,13 @@ export default function WalletPage() {
   // Show payment step if user just created a top-up
   if (activeTopup) {
     return (
-      <div className="min-h-screen bg-slate-50 py-8">
-        <div className="container mx-auto px-4 max-w-2xl space-y-6">
-          {/* Top-up Summary */}
+      <div className="min-h-screen bg-slate-50 py-8">  return (
+    <div className="container mx-auto px-4 max-w-2xl py-8">
+      {/* Policy Warning Banner */}
+      <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+        <p className="text-sm text-amber-900 font-semibold mb-2">นโยบายกระเป๋าเงิน</p>
+        <p className="text-xs text-amber-800 leading-relaxed">{policyMessage}</p>
+      </div>          {/* Top-up Summary */}
           <Card>
             <div className="bg-blue-50 p-6 rounded-t-lg">
               <h1 className="text-2xl font-bold text-blue-900">Complete Your Top-up</h1>
