@@ -249,10 +249,13 @@ export default function WalletPage() {
                   <div className="font-semibold">฿{topup.requestedAmount}</div>
                   <div className="text-sm text-gray-600">{new Date(topup.createdAt).toLocaleDateString()}</div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-col items-end gap-2">
                   <Badge variant={topup.status === "pending" ? "outline" : topup.status === "approved" ? "default" : "destructive"}>
                     {topup.status}
                   </Badge>
+                  {topup.status === "rejected" && topup.rejectionReason && (
+                    <p className="text-xs text-red-600 max-w-xs text-right">{topup.rejectionReason}</p>
+                  )}
                   {topup.status === "pending" && !topup.slipImageUrl && (
                     <Button
                       size="sm"
