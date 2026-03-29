@@ -25,6 +25,7 @@ import AdminAnalyticsPage from "@/pages/AdminAnalyticsPage";
 import NovelDetailPage from "@/pages/NovelDetailPage";
 import PointsPage from "@/pages/PointsPage";
 import PaymentPage from "@/pages/PaymentPage";
+import WalletPage from "@/pages/WalletPage";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
@@ -44,9 +45,11 @@ function Router() {
         <Route path={"/orders/:id"} component={OrderDetailPage} />
         <Route path={"/my-novels"} component={MyNovelsPage} />
         <Route path={"/points"} component={PointsPage} />
+        <Route path={"/wallet"} component={WalletPage} />
         <Route path={"/payment/:orderId"} component={PaymentPage} />
         <Route path={"/admin/login"} component={AdminLoginPage} />
-        <Route path={"/admin"} component={AdminDashboard} />        <Route path={"/admin/novels/:novelId"} component={AdminNovelManagePage} />
+        <Route path={"/admin"} component={AdminDashboard} />
+        <Route path={"/admin/novels/:novelId"} component={AdminNovelManagePage} />
         <Route path={"/admin/novels"} component={AdminNovelsPage} />
         <Route path={"/admin/episodes/:novelId"} component={AdminEpisodesPage} />
         <Route path={"/admin/episodes"} component={AdminEpisodesPage} />
