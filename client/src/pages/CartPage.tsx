@@ -297,12 +297,36 @@ export default function CartPage() {
 
                   {/* Slip Upload Modal */}
                   {showSlipUpload && (
-                    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-                      <Card className="w-full max-w-md">
+                    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-y-auto">
+                      <Card className="w-full max-w-md my-8">
                         <CardHeader>
                           <CardTitle>{t("payment.uploadSlip")}</CardTitle>
                         </CardHeader>
                         <CardContent className="space-y-4">
+                          {/* Order Summary */}
+                          <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
+                            <p className="text-sm text-slate-600 mb-2">{t("cart.orderSummary")}</p>
+                            <p className="text-2xl font-bold text-slate-900">฿{total}</p>
+                          </div>
+
+                          {/* QR Payment Block */}
+                          <div>
+                            <h3 className="text-lg font-semibold mb-3 text-slate-800">{t("payment.scanQRToPayment")}</h3>
+                            <Card className="p-6 bg-slate-50 border-2 border-slate-200">
+                              <div className="flex flex-col items-center">
+                                <img
+                                  src="https://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/IMG_8158_19d96370.JPG"
+                                  alt="QR Payment"
+                                  className="w-full max-w-xs aspect-square object-contain rounded-lg"
+                                />
+                              </div>
+                            </Card>
+                            <p className="text-sm text-slate-600 mt-3 text-center">
+                              {t("payment.qrPaymentHelper")}
+                            </p>
+                          </div>
+
+                          {/* Slip Upload Section */}
                           <div className="space-y-2">
                             <label className="block text-sm font-medium text-slate-700">
                               {t("payment.selectFile")}
