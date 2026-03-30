@@ -3,8 +3,10 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
 import { Loader2 } from "lucide-react";
+import { useLocation } from "wouter";
 
 export default function AdminOrdersPage() {
+  const [, setLocation] = useLocation();
   const { data: orders, isLoading } = trpc.admin.orders.list.useQuery();
 
   return (
@@ -33,8 +35,8 @@ export default function AdminOrdersPage() {
               </thead>
               <tbody>
                 {orders.map((order: any) => (
-                  <tr key={order.id} className="border-b hover:bg-slate-50">
-                    <td className="p-3 font-medium">{order.orderNumber}</td>
+                  <tr key={order.id} className="border-b hover:bg-slate-50 cursor-pointer" onClick={() => setLocation(`/admin/orders/${order.id}`)}>
+                    <td className="p-3 font-medium text-blue-600 hover:underline">{order.orderNumber}</td>
                     <td className="p-3">{order.userId || "—"}</td>
                     <td className="p-3">฿{parseFloat(order.totalAmount.toString()).toFixed(2)}</td>
                     <td className="p-3">{order.items?.length || 0} items</td>

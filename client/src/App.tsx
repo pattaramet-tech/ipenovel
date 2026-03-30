@@ -14,6 +14,7 @@ import AdminNovelsPage from "@/pages/AdminNovelsPage";
 import AdminEpisodesPage from "@/pages/AdminEpisodesPage";
 import AdminCategoriesPage from "@/pages/AdminCategoriesPage";
 import AdminOrdersPage from "@/pages/AdminOrdersPage";
+import AdminOrderDetailPage from "@/pages/AdminOrderDetailPage";
 import AdminPaymentsPage from "@/pages/AdminPaymentsPage";
 import AdminWalletTopupsPage from "@/pages/AdminWalletTopupsPage";
 import AdminEntitlementsPage from "@/pages/AdminEntitlementsPage";
@@ -56,7 +57,8 @@ function Router() {
         <Route path={"/admin/categories"} component={AdminCategoriesPage} />
         <Route path={"/admin/banners"} component={AdminBannersPage} />
         <Route path={"/admin/coupons"} component={AdminCouponsPage} />
-        <Route path={"/admin/orders"} component={AdminOrdersPage} />
+          <Route path="/admin/orders" component={AdminOrdersPage} />
+        <Route path="/admin/orders/:orderId" component={AdminOrderDetailPage} />
         <Route path={"/admin/payments"} component={AdminPaymentsPage} />
         <Route path={"/admin/wallet-topups"} component={AdminWalletTopupsPage} />
         <Route path={"/admin/entitlements"} component={AdminEntitlementsPage} />

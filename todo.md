@@ -762,3 +762,12 @@
 - [x] Verify backward compatibility with existing pending records
 - [x] TypeScript clean and dev server running
 - [x] Both flows tested: wallet top-up and manual slip-payment order
+
+
+## Admin Order Approval Flow Fix (URGENT)
+- [ ] Implement /admin/orders/:orderId detail page component
+- [ ] Add slip preview UI to order detail page
+- [ ] Implement approve/reject backend endpoints
+- [ ] Add rejection reason support
+- [ ] Verify purchases granted only after approval
+- [ ] Real browser verification of complete flow

@@ -1,0 +1,31 @@
+{
+  "query": "SELECT id, requestedAmount, status, slipImageUrl, createdAt FROM walletTopups ORDER BY createdAt DESC LIMIT 3;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT id, requestedAmount, status, slipImageUrl, createdAt FROM walletTopups ORDER BY createdAt DESC LIMIT 3;",
+  "rows": [
+    {
+      "id": "90049",
+      "requestedAmount": "75.00",
+      "status": "pending",
+      "slipImageUrl": "https://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/payment-slips/1774873140259-test_slip.png",
+      "createdAt": "2026-03-30 12:19:01"
+    },
+    {
+      "id": "90048",
+      "requestedAmount": "100.00",
+      "status": "pending",
+      "slipImageUrl": "https://example.com/slip.jpg",
+      "createdAt": "2026-03-30 12:00:20"
+    },
+    {
+      "id": "90047",
+      "requestedAmount": "100.00",
+      "status": "approved",
+      "slipImageUrl": "https://example.com/slip.jpg",
+      "createdAt": "2026-03-30 12:00:18"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\trequestedAmount\tstatus\tslipImageUrl\tcreatedAt\n90049\t75.00\tpending\thttps://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/payment-slips/1774873140259-test_slip.png\t2026-03-30 12:19:01\n90048\t100.00\tpending\thttps://example.com/slip.jpg\t2026-03-30 12:00:20\n90047\t100.00\tapproved\thttps://example.com/slip.jpg\t2026-03-30 12:00:18\n",
+  "stderr": "",
+  "execution_time_ms": 1561
+}
