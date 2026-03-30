@@ -6,9 +6,9 @@ import { Badge } from "@/components/ui/badge";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
-import { Upload, CheckCircle, AlertCircle } from "lucide-react";
+import { Upload, CheckCircle, AlertCircle, X } from "lucide-react";
 
-const QR_PAYMENT_IMAGE = "https://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/IMG_8158_8beb9f9a.jpeg";
+const QR_PAYMENT_IMAGE = "https://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/IMG_8158_19d96370.JPG";
 
 export default function WalletPage() {
   const auth = useAuth();
@@ -19,9 +19,23 @@ export default function WalletPage() {
   const [activeTopupId, setActiveTopupId] = useState<number | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isCreatingRequest, setIsCreatingRequest] = useState(false);
+  const [filePreview, setFilePreview] = useState<string | null>(null);
 
   const { data: summary, isLoading, refetch: refetchSummary } = trpc.wallet.getSummary.useQuery();
   const createTopupMutation = trpc.wallet.createTopupRequest.useMutation();
+
+  const handleFileSelect = (file: File | null) => {
+    setSelectedFile(file);
+    if (file && file.type.startsWith("image/")) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setFilePreview(e.target?.result as string);
+      };
+      reader.readAsDataURL(file);
+    } else {
+      setFilePreview(null);
+    }
+  };
 
   const handleCreateTopupWithSlip = async () => {
     // Validate amount
@@ -158,40 +172,115 @@ export default function WalletPage() {
         {!showTopupForm ? (
           <Button onClick={() => setShowTopupForm(true)}>{t("wallet.requestTopup")}</Button>
         ) : (
-          <div className="space-y-4">
-            <input
-              type="number"
-              placeholder={t("wallet.topupAmount")}
-              value={topupAmount}
-              onChange={(e) => setTopupAmount(e.target.value)}
-              disabled={isUploading || isCreatingRequest}
-              className="w-full px-3 py-2 border rounded"
-            />
-            <div className="space-y-2">
+          <div className="space-y-6">
+            {/* 1. Amount Input */}
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                {t("wallet.topupAmount")}
+              </label>
+              <input
+                type="number"
+                placeholder={t("wallet.topupAmount")}
+                value={topupAmount}
+                onChange={(e) => setTopupAmount(e.target.value)}
+                disabled={isUploading || isCreatingRequest}
+                className="w-full px-3 py-2 border rounded"
+              />
+            </div>
+
+            {/* 2. QR Payment Block */}
+            <div>
+              <h3 className="text-lg font-semibold mb-3 text-slate-800">{t("wallet.scanQRToPayment")}</h3>
+              <Card className="p-6 bg-slate-50 border-2 border-slate-200">
+                <div className="flex flex-col items-center">
+                  <img
+                    src={QR_PAYMENT_IMAGE}
+                    alt="QR Payment"
+                    className="w-full max-w-sm aspect-square object-contain rounded-lg"
+                  />
+                </div>
+              </Card>
+              <p className="text-sm text-slate-600 mt-3 text-center">
+                {t("wallet.qrPaymentHelper")}
+              </p>
+              <p className="text-sm text-slate-500 mt-2 text-center">
+                โอนตามยอดที่กรอกด้านบน
+              </p>
+            </div>
+
+            {/* 3. Slip Upload */}
+            <div className="space-y-3">
               <label className="block text-sm font-medium text-slate-700">
                 {t("wallet.selectPaymentSlip")}
               </label>
-              <input
-                type="file"
-                accept="image/jpeg,image/png,application/pdf"
-                onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-                disabled={isUploading || isCreatingRequest}
-                className="w-full px-3 py-2 border rounded text-sm"
-              />
+              
+              {/* Custom File Input */}
+              <div className="relative">
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,application/pdf"
+                  onChange={(e) => handleFileSelect(e.target.files?.[0] || null)}
+                  disabled={isUploading || isCreatingRequest}
+                  className="hidden"
+                  id="slip-file-input"
+                />
+                <label
+                  htmlFor="slip-file-input"
+                  className="flex items-center justify-center gap-2 w-full px-4 py-3 border-2 border-dashed border-slate-300 rounded-lg cursor-pointer hover:border-slate-400 hover:bg-slate-50 transition"
+                >
+                  <Upload className="w-5 h-5 text-slate-600" />
+                  <span className="text-sm font-medium text-slate-700">
+                    {selectedFile ? t("wallet.selected") : "เลือกรูปสลิป"}
+                  </span>
+                </label>
+              </div>
+              
+              {/* Selected File Info */}
+              {selectedFile && (
+                <div className="bg-green-50 p-3 rounded-lg border border-green-200 flex items-start justify-between gap-2">
+                  <div className="flex items-start gap-2 flex-1 min-w-0">
+                    <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-green-900 truncate">{selectedFile.name}</p>
+                      <p className="text-xs text-green-700">{(selectedFile.size / 1024).toFixed(1)} KB</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setSelectedFile(null);
+                      setFilePreview(null);
+                      const input = document.getElementById("slip-file-input") as HTMLInputElement;
+                      if (input) input.value = "";
+                    }}
+                    className="text-green-600 hover:text-green-700 flex-shrink-0"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+              
+              {/* Image Preview */}
+              {filePreview && (
+                <div className="rounded-lg overflow-hidden border border-slate-200 bg-slate-50 p-2">
+                  <img
+                    src={filePreview}
+                    alt="Slip preview"
+                    className="w-full max-h-48 object-contain rounded"
+                  />
+                </div>
+              )}
+              
               <p className="text-xs text-slate-500">
                 {t("wallet.acceptedFormats")}
               </p>
             </div>
-            {selectedFile && (
-              <div className="bg-green-50 p-3 rounded text-sm text-green-800 flex items-center gap-2">
-                <CheckCircle className="w-4 h-4" />
-                {t("wallet.selected")} {selectedFile.name}
-              </div>
-            )}
+
+            {/* 4. Submit Button */}
             <div className="flex gap-2">
               <Button
                 onClick={handleCreateTopupWithSlip}
                 disabled={!topupAmount || !selectedFile || isUploading || isCreatingRequest}
+                className="flex-1"
               >
                 {isUploading || isCreatingRequest ? t("common.pleaseWait") : t("wallet.createRequest")}
               </Button>

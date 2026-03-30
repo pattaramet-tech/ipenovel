@@ -765,9 +765,18 @@
 
 
 ## Admin Order Approval Flow Fix (URGENT)
-- [ ] Implement /admin/orders/:orderId detail page component
-- [ ] Add slip preview UI to order detail page
-- [ ] Implement approve/reject backend endpoints
-- [ ] Add rejection reason support
-- [ ] Verify purchases granted only after approval
-- [ ] Real browser verification of complete flow
+- [x] Implement /admin/orders/:orderId detail page component
+- [x] Add slip preview UI to order detail page
+- [x] Implement approve/reject backend endpoints
+- [x] Add rejection reason support
+- [x] Verify purchases granted only after approval
+- [x] Real browser verification of complete flow
+
+## Manual Slip-Payment End-to-End Verification
+- [ ] Test access control before approval (user cannot access purchased content)
+- [ ] Test admin approval workflow (order/payment status updates)
+- [ ] Test access after approval (purchases granted, user can access content)
+- [ ] Test rejection workflow (rejection reason stored, status updated)
+- [x] Fix Episode undefined issue in admin order details
+- [ ] Verify no duplicate purchases created
+- [ ] Final production readiness assessment

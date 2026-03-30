@@ -1,0 +1,50 @@
+{
+  "query": "SELECT o.id, o.orderNumber, o.paymentStatus, o.createdAt, p.id as paymentId, p.status as paymentStatus, p.slipImageUrl FROM orders o LEFT JOIN payments p ON o.id = p.orderId WHERE o.userId = 3 ORDER BY o.createdAt DESC LIMIT 5;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT o.id, o.orderNumber, o.paymentStatus, o.createdAt, p.id as paymentId, p.status as paymentStatus, p.slipImageUrl FROM orders o LEFT JOIN payments p ON o.id = p.orderId WHERE o.userId = 3 ORDER BY o.createdAt DESC LIMIT 5;",
+  "rows": [
+    {
+      "id": "4200002",
+      "orderNumber": "ORD-0330648066952",
+      "paymentStatus": "pending",
+      "createdAt": "2026-03-30 13:14:40",
+      "paymentId": "4200035",
+      "slipImageUrl": "https://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/payment-slips/1774876478885-test_slip.png"
+    },
+    {
+      "id": "4200001",
+      "orderNumber": "ORD-0330399288246",
+      "paymentStatus": "approved",
+      "createdAt": "2026-03-30 12:33:12",
+      "paymentId": "4200034",
+      "slipImageUrl": "https://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/payment-slips/1774873991027-test_slip.png"
+    },
+    {
+      "id": "3990214",
+      "orderNumber": "ORD-0329299910959",
+      "paymentStatus": "approved",
+      "createdAt": "2026-03-29 19:36:39",
+      "paymentId": "3990184",
+      "slipImageUrl": "NULL"
+    },
+    {
+      "id": "3990210",
+      "orderNumber": "ORD-0329070150336",
+      "paymentStatus": "approved",
+      "createdAt": "2026-03-29 18:58:21",
+      "paymentId": "3990180",
+      "slipImageUrl": "NULL"
+    },
+    {
+      "id": "3990209",
+      "orderNumber": "ORD-0329059669922",
+      "paymentStatus": "approved",
+      "createdAt": "2026-03-29 18:56:36",
+      "paymentId": "3990179",
+      "slipImageUrl": "NULL"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\torderNumber\tpaymentStatus\tcreatedAt\tpaymentId\tpaymentStatus\tslipImageUrl\n4200002\tORD-0330648066952\tunpaid\t2026-03-30 13:14:40\t4200035\tpending\thttps://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/payment-slips/1774876478885-test_slip.png\n4200001\tORD-0330399288246\tunpaid\t2026-03-30 12:33:12\t4200034\tapproved\thttps://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/payment-slips/1774873991027-test_slip.png\n3990214\tORD-0329299910959\tapproved\t2026-03-29 19:36:39\t3990184\tapproved\tNULL\n3990210\tORD-0329070150336\tapproved\t2026-03-29 18:58:21\t3990180\tapproved\tNULL\n3990209\tORD-0329059669922\tapproved\t2026-03-29 18:56:36\t3990179\tapproved\tNULL\n",
+  "stderr": "",
+  "execution_time_ms": 1601
+}

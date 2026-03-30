@@ -183,12 +183,15 @@ export default function AdminOrderDetailPage() {
           <Card className="p-6">
             <h2 className="text-lg font-semibold mb-4">Items</h2>
             <div className="space-y-2">
-              {order.items.map((item: any) => (
-                <div key={item.id} className="flex justify-between p-2 border-b">
-                  <span>{item.episodeTitle || item.title || `Episode ${item.episodeNumber}`}</span>
-                  <span className="font-semibold">฿{item.price ? parseFloat(item.price.toString()).toFixed(2) : "0.00"}</span>
-                </div>
-              ))}
+              {order.items.map((item: any) => {
+                const episodeTitle = item.episode?.title || item.episodeTitle || item.title || `Episode ${item.episodeNumber}`;
+                return (
+                  <div key={item.id} className="flex justify-between p-2 border-b">
+                    <span>{episodeTitle}</span>
+                    <span className="font-semibold">฿{item.price ? parseFloat(item.price.toString()).toFixed(2) : "0.00"}</span>
+                  </div>
+                );
+              })}
             </div>
           </Card>
         )}
