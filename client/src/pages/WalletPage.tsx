@@ -18,45 +18,47 @@ export default function WalletPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [activeTopupId, setActiveTopupId] = useState<number | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [isCreatingRequest, setIsCreatingRequest] = useState(false);
 
   const { data: summary, isLoading, refetch: refetchSummary } = trpc.wallet.getSummary.useQuery();
   const createTopupMutation = trpc.wallet.createTopupRequest.useMutation();
-  const uploadSlipMutation = trpc.wallet.uploadTopupSlip.useMutation();
 
-  const handleCreateTopup = async () => {
+  const handleCreateTopupWithSlip = async () => {
+    // Validate amount
     if (!topupAmount || parseFloat(topupAmount) <= 0) {
       toast.error(t("wallet.pleaseEnterValidAmount"));
       return;
     }
-    try {
-      const result = await createTopupMutation.mutateAsync({ requestedAmount: topupAmount });
-      setTopupAmount("");
-      setShowTopupForm(false);
-      // Immediately show payment step for the newly created top-up
-      setActiveTopupId(result.id);
-      toast.success(t("wallet.topupRequestCreated"));
-    } catch (error: any) {
-      toast.error(error.message || t("wallet.failedToCreateTopup"));
-    }
-  };
-
-  const handleUploadSlip = async (topupId: number) => {
+    // Validate file
     if (!selectedFile) {
       toast.error(t("wallet.pleaseSelectFile"));
       return;
     }
+
     try {
       setIsUploading(true);
-      const url = await uploadFile(selectedFile);
-      await uploadSlipMutation.mutateAsync({ topupId, slipImageUrl: url });
+      setIsCreatingRequest(true);
+
+      // Step 1: Upload slip first
+      const slipImageUrl = await uploadFile(selectedFile);
+
+      // Step 2: Create top-up request with slip URL
+      const result = await createTopupMutation.mutateAsync({
+        requestedAmount: topupAmount,
+        slipImageUrl,
+      });
+
+      // Success: Reset form and show confirmation
+      setTopupAmount("");
       setSelectedFile(null);
-      setActiveTopupId(null);
-      toast.success(t("wallet.slipUploadedSuccessfully"));
+      setShowTopupForm(false);
+      toast.success(t("wallet.topupRequestCreated"));
       refetchSummary();
     } catch (error: any) {
-      toast.error(error.message || t("wallet.failedToUploadSlip"));
+      toast.error(error.message || t("wallet.failedToCreateTopup"));
     } finally {
       setIsUploading(false);
+      setIsCreatingRequest(false);
     }
   };
 
@@ -96,130 +98,8 @@ export default function WalletPage() {
     ? summary?.recentTopups?.find((t: any) => t.id === activeTopupId)
     : null;
 
-  // Show payment step if user just created a top-up
-  if (activeTopup) {
-    return (
-      <div className="min-h-screen bg-slate-50 py-8">  return (
-    <div className="container mx-auto px-4 max-w-2xl py-8">
-      {/* Policy Warning Banner */}
-      <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
-        <p className="text-sm text-amber-900 font-semibold mb-2">{t("wallet.policyWarning")}</p>
-        <p className="text-xs text-amber-800 leading-relaxed">{t("wallet.policyMessage")}</p>
-      </div>          {/* Top-up Summary */}
-          <Card>
-            <div className="bg-blue-50 p-6 rounded-t-lg">
-              <h1 className="text-2xl font-bold text-blue-900">{t("wallet.completeTopup")}</h1>
-              <p className="text-blue-700 mt-2">{t("wallet.pleaseFollowSteps")}</p>
-            </div>
-            <div className="p-6 space-y-4">
-              <div className="flex justify-between items-center">
-                <span className="text-slate-600">{t("wallet.topupAmountLabel")}</span>
-                <span className="text-2xl font-bold text-blue-600">฿{activeTopup.requestedAmount}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-slate-600">{t("wallet.requestIdLabel")}</span>
-                <span className="font-mono text-sm">{activeTopup.id}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-slate-600">{t("wallet.statusLabel")}</span>
-                <Badge variant="outline">{t("wallet.waitingForSlip")}</Badge>
-              </div>
-            </div>
-          </Card>
-
-          {/* Short Warning Banner for Payment Step */}
-          <div className="mb-6 p-4 bg-amber-50 border-l-4 border-l-amber-500 rounded">
-            <div className="flex gap-2">
-              <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
-              <div className="text-sm text-amber-800">
-                <p className="font-semibold mb-1">เติมเงินแล้วไม่สามารถถอนหรือขอคืนได้</p>
-                <p>เมื่ออนุมัติแล้วจะไม่สามารถย้อนคืนได้</p>
-              </div>
-            </div>
-          </div>
-
-          {/* QR Code Payment */}
-          <Card>
-            <div className="p-6">
-              <h2 className="text-xl font-semibold mb-4">{t("wallet.step1ScanQR")}</h2>
-              <div className="space-y-4">
-                <img src={QR_PAYMENT_IMAGE} alt="QR Code" className="w-64 h-64 mx-auto border rounded" />
-                <p className="text-sm text-slate-600 text-center">
-                  {t("wallet.scanQRInstructions")} <strong>฿{activeTopup.requestedAmount}</strong>
-                </p>
-              </div>
-            </div>
-          </Card>
-
-          {/* Slip Upload */}
-          <Card>
-            <div className="p-6">
-              <h2 className="text-xl font-semibold mb-4">{t("wallet.step2UploadSlip")}</h2>
-              <div className="space-y-4">
-                <p className="text-sm text-slate-600">
-                  {t("wallet.afterPayingInstructions")}
-                </p>
-
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-slate-700">
-                    {t("wallet.selectPaymentSlip")}
-                  </label>
-                  <input
-                    type="file"
-                    accept="image/jpeg,image/png,application/pdf"
-                    onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-                    disabled={isUploading}
-                    className="w-full px-3 py-2 border rounded text-sm"
-                  />
-                  <p className="text-xs text-slate-500">
-                    {t("wallet.acceptedFormats")}
-                  </p>
-                </div>
-
-                {selectedFile && (
-                  <div className="bg-green-50 p-3 rounded text-sm text-green-800 flex items-center gap-2">
-                    <CheckCircle className="w-4 h-4" />
-                    {t("wallet.selected")} {selectedFile.name}
-                  </div>
-                )}
-
-                <Button
-                  onClick={() => handleUploadSlip(activeTopup.id)}
-                  disabled={!selectedFile || isUploading}
-                  className="w-full"
-                >
-                  <Upload className="w-4 h-4 mr-2" />
-                  {isUploading ? t("wallet.uploading") : t("wallet.uploadSlipButton")}
-                </Button>
-              </div>
-            </div>
-          </Card>
-
-          {/* Help Section */}
-          <Card>
-            <div className="p-6">
-              <h2 className="text-xl font-semibold mb-4">{t("wallet.whatHappensNext")}</h2>
-              <div className="space-y-2 text-sm text-slate-600">
-                <p>{t("wallet.slipWillBeReviewed")}</p>
-                <p>{t("wallet.youWillReceiveNotification")}</p>
-                <p>{t("wallet.balanceWillBeUpdated")}</p>
-                <p>{t("wallet.ifIssueWeWillContact")}</p>
-              </div>
-            </div>
-          </Card>
-
-          {/* Cancel Button */}
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={() => setActiveTopupId(null)}
-          >
-            {t("wallet.backToWallet")}
-          </Button>
-        </div>
-      </div>
-    );
-  }
+  // Old payment step is now removed - slip is uploaded before creating the top-up request
+  // This keeps the UI cleaner and prevents incomplete records
 
   // Main wallet page
   return (
@@ -284,13 +164,42 @@ export default function WalletPage() {
               placeholder={t("wallet.topupAmount")}
               value={topupAmount}
               onChange={(e) => setTopupAmount(e.target.value)}
+              disabled={isUploading || isCreatingRequest}
               className="w-full px-3 py-2 border rounded"
             />
+            <div className="space-y-2">
+              <label className="block text-sm font-medium text-slate-700">
+                {t("wallet.selectPaymentSlip")}
+              </label>
+              <input
+                type="file"
+                accept="image/jpeg,image/png,application/pdf"
+                onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+                disabled={isUploading || isCreatingRequest}
+                className="w-full px-3 py-2 border rounded text-sm"
+              />
+              <p className="text-xs text-slate-500">
+                {t("wallet.acceptedFormats")}
+              </p>
+            </div>
+            {selectedFile && (
+              <div className="bg-green-50 p-3 rounded text-sm text-green-800 flex items-center gap-2">
+                <CheckCircle className="w-4 h-4" />
+                {t("wallet.selected")} {selectedFile.name}
+              </div>
+            )}
             <div className="flex gap-2">
-              <Button onClick={handleCreateTopup} disabled={createTopupMutation.isPending}>
-                {createTopupMutation.isPending ? t("common.pleaseWait") : t("wallet.createRequest")}
+              <Button
+                onClick={handleCreateTopupWithSlip}
+                disabled={!topupAmount || !selectedFile || isUploading || isCreatingRequest}
+              >
+                {isUploading || isCreatingRequest ? t("common.pleaseWait") : t("wallet.createRequest")}
               </Button>
-              <Button variant="outline" onClick={() => setShowTopupForm(false)}>
+              <Button variant="outline" onClick={() => {
+                setShowTopupForm(false);
+                setTopupAmount("");
+                setSelectedFile(null);
+              }} disabled={isUploading || isCreatingRequest}>
                 {t("common.cancel")}
               </Button>
             </div>
@@ -315,15 +224,7 @@ export default function WalletPage() {
                   {topup.status === "rejected" && topup.rejectionReason && (
                     <p className="text-xs text-red-600 max-w-xs text-right">{topup.rejectionReason}</p>
                   )}
-                  {topup.status === "pending" && !topup.slipImageUrl && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setActiveTopupId(topup.id)}
-                    >
-                      {t("wallet.uploadSlip")}
-                    </Button>
-                  )}
+
                 </div>
               </div>
             ))

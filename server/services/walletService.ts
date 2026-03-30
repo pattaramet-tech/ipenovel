@@ -6,7 +6,7 @@
 import * as db from "../db";
 import { TRPCError } from "@trpc/server";
 
-export async function createWalletTopupRequest(userId: number, requestedAmount: string) {
+export async function createWalletTopupRequest(userId: number, requestedAmount: string, slipImageUrl?: string) {
   const amount = parseFloat(requestedAmount);
   if (isNaN(amount) || amount <= 0) {
     throw new TRPCError({
@@ -15,7 +15,15 @@ export async function createWalletTopupRequest(userId: number, requestedAmount: 
     });
   }
 
-  const topup = await db.createWalletTopup(userId, requestedAmount);
+  // New flow: slip must be uploaded first before creating the request
+  if (!slipImageUrl) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Payment slip is required",
+    });
+  }
+
+  const topup = await db.createWalletTopup(userId, requestedAmount, slipImageUrl);
   if (!topup) {
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",

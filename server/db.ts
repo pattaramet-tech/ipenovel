@@ -513,10 +513,15 @@ export async function getOrderItems(orderId: number) {
   return enriched;
 }
 
-export async function createPayment(orderId: number) {
+export async function createPayment(orderId: number, slipImageUrl?: string) {
   const db = await getDb();
   if (!db) return undefined;
-  const result = await db.insert(payments).values({ orderId, status: "pending" });
+  const result = await db.insert(payments).values({
+    orderId,
+    status: "pending",
+    slipImageUrl: slipImageUrl || null,
+    slipSubmittedAt: slipImageUrl ? new Date() : null,
+  });
   
   // Extract insertId from Drizzle MySQL result
   let insertedId: number | undefined;
@@ -1970,13 +1975,14 @@ export async function listWalletTransactions(userId: number, limit: number = 20,
     .offset(offset);
 }
 
-export async function createWalletTopup(userId: number, requestedAmount: string) {
+export async function createWalletTopup(userId: number, requestedAmount: string, slipImageUrl?: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
   const result = await db.insert(walletTopups).values({
     userId,
     requestedAmount,
+    slipImageUrl: slipImageUrl || null,
     status: "pending" as any,
   });
 

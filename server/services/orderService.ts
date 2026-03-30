@@ -94,7 +94,8 @@ export async function createOrderFromCart(
   userId: string,
   cartItems: any[],
   couponCode?: string,
-  pointsToRedeem?: string
+  pointsToRedeem?: string,
+  slipImageUrl?: string
 ): Promise<any> {
   // Calculate subtotal
   let subtotal = 0;
@@ -165,8 +166,8 @@ export async function createOrderFromCart(
     await db.createOrderItems(orderItemsData);
   }
 
-  // Create payment record for the order
-  await db.createPayment(orderId);
+  // Create payment record for the order (with slip if provided)
+  await db.createPayment(orderId, slipImageUrl);
 
   // Fetch and return the full order object
   const fullOrder = await db.getOrderById(orderId);

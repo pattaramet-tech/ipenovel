@@ -17,6 +17,9 @@ export default function CartPage() {
   const [couponCode, setCouponCode] = useState("");
   const [pointsToRedeem, setPointsToRedeem] = useState("");
   const [discountAmount, setDiscountAmount] = useState("0.00");
+  const [showSlipUpload, setShowSlipUpload] = useState(false);
+  const [selectedSlipFile, setSelectedSlipFile] = useState<File | null>(null);
+  const [isUploadingSlip, setIsUploadingSlip] = useState(false);
   const utils = trpc.useUtils();
 
   const { data: cartData, isLoading: cartLoading, refetch: refetchCart } = trpc.cart.get.useQuery(undefined, {
@@ -57,7 +60,12 @@ export default function CartPage() {
   const createOrderMutation = trpc.checkout.create.useMutation({
     onSuccess: (order) => {
       toast.success(t("common.success"));
-      navigate(`/payment/${order.id}`);
+      // Reset slip upload state
+      setShowSlipUpload(false);
+      setSelectedSlipFile(null);
+      // Navigate to orders page (order already has slip attached)
+      navigate("/orders");
+      refetchCart();
     },
     onError: (error: any) => {
       const errorMessage = error?.message || t("common.error");
@@ -100,17 +108,68 @@ export default function CartPage() {
 
 
 
+  const uploadSlipFile = async (file: File): Promise<string> => {
+    const base64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const result = e.target?.result as string;
+        resolve(result);
+      };
+      reader.onerror = () => reject(new Error("File read failed"));
+      reader.readAsDataURL(file);
+    });
+
+    const response = await fetch("/api/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        file: base64,
+        filename: file.name,
+        type: file.type,
+      }),
+    });
+
+    if (!response.ok) throw new Error("Upload failed");
+    const data = await response.json();
+    return data.url;
+  };
+
+  const handleCheckoutWithSlip = async () => {
+    if (items.length === 0) {
+      toast.error(t("cart.empty"));
+      return;
+    }
+    if (!selectedSlipFile) {
+      toast.error(t("payment.selectFileFirst"));
+      return;
+    }
+
+    try {
+      setIsUploadingSlip(true);
+
+      // Step 1: Upload slip first
+      const slipImageUrl = await uploadSlipFile(selectedSlipFile);
+
+      // Step 2: Create order with slip URL
+      const normalizedCoupon = couponCode ? couponCode.trim().toUpperCase() : undefined;
+      createOrderMutation.mutate({
+        couponCode: normalizedCoupon,
+        pointsToRedeem: pointsToRedeem ? pointsToRedeem.trim() : undefined,
+        slipImageUrl,
+      });
+    } catch (error: any) {
+      toast.error(error.message || t("payment.uploadFailed"));
+      setIsUploadingSlip(false);
+    }
+  };
+
   const handleCheckout = () => {
     if (items.length === 0) {
       toast.error(t("cart.empty"));
       return;
     }
-    // Normalize coupon code same way as server
-    const normalizedCoupon = couponCode ? couponCode.trim().toUpperCase() : undefined;
-    createOrderMutation.mutate({
-      couponCode: normalizedCoupon,
-      pointsToRedeem: pointsToRedeem ? pointsToRedeem.trim() : undefined,
-    });
+    // Show slip upload dialog for manual slip-payment
+    setShowSlipUpload(true);
   };
 
   return (
@@ -222,9 +281,9 @@ export default function CartPage() {
                     <Button
                       className="w-full"
                       onClick={handleCheckout}
-                      disabled={items.length === 0 || createOrderMutation.isPending}
+                      disabled={items.length === 0 || createOrderMutation.isPending || isUploadingSlip}
                     >
-                      {t("checkout.proceedToCheckout")}
+                      {isUploadingSlip ? t("common.uploading") : t("checkout.proceedToCheckout")}
                     </Button>
                     <Button
                       className="w-full"
@@ -235,6 +294,59 @@ export default function CartPage() {
                       {t("wallet.payWithWallet")}
                     </Button>
                   </div>
+
+                  {/* Slip Upload Modal */}
+                  {showSlipUpload && (
+                    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                      <Card className="w-full max-w-md">
+                        <CardHeader>
+                          <CardTitle>{t("payment.uploadSlip")}</CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                          <div className="space-y-2">
+                            <label className="block text-sm font-medium text-slate-700">
+                              {t("payment.selectFile")}
+                            </label>
+                            <input
+                              type="file"
+                              accept="image/jpeg,image/png,application/pdf"
+                              onChange={(e) => setSelectedSlipFile(e.target.files?.[0] || null)}
+                              disabled={isUploadingSlip}
+                              className="w-full px-3 py-2 border rounded text-sm"
+                            />
+                            <p className="text-xs text-slate-500">{t("payment.fileRequirements")}</p>
+                          </div>
+
+                          {selectedSlipFile && (
+                            <div className="bg-green-50 p-3 rounded text-sm text-green-800">
+                              {t("payment.selectedFile")}: {selectedSlipFile.name}
+                            </div>
+                          )}
+
+                          <div className="flex gap-2">
+                            <Button
+                              className="flex-1"
+                              onClick={handleCheckoutWithSlip}
+                              disabled={!selectedSlipFile || isUploadingSlip || createOrderMutation.isPending}
+                            >
+                              {isUploadingSlip || createOrderMutation.isPending ? t("common.pleaseWait") : t("checkout.proceedToCheckout")}
+                            </Button>
+                            <Button
+                              className="flex-1"
+                              variant="outline"
+                              onClick={() => {
+                                setShowSlipUpload(false);
+                                setSelectedSlipFile(null);
+                              }}
+                              disabled={isUploadingSlip}
+                            >
+                              {t("common.cancel")}
+                            </Button>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>

@@ -732,3 +732,33 @@
 - [x] Verify TypeScript compilation (no errors)
 - [x] Verify dev server running without errors
 - [x] Verify corrected text displays correctly on wallet page
+
+
+## Slip-First Refactor (Upload Before Create Record)
+- [ ] Refactor WalletPage.tsx to upload slip before creating top-up request
+- [ ] Update wallet.createTopupRequest endpoint to accept slipImageUrl parameter
+- [ ] Update walletService.createWalletTopupRequest() to accept slipImageUrl
+- [ ] Update db.createWalletTopup() to accept and insert slipImageUrl
+- [ ] Refactor CartPage.tsx to add slip upload before checkout
+- [ ] Update checkout.create endpoint to accept slipImageUrl parameter
+- [ ] Update orderService.createOrderFromCart() to accept slipImageUrl
+- [ ] Update db.createPayment() to accept and insert slipImageUrl + slipSubmittedAt
+- [ ] Handle PaymentPage.tsx for backward compatibility with old pending orders
+- [ ] Test wallet top-up slip-first flow
+- [ ] Test manual slip-payment order slip-first flow
+- [ ] Verify backward compatibility with existing pending records
+- [ ] TypeScript clean and dev server running
+
+
+## Slip-First Refactor Completion
+- [x] Refactor WalletPage.tsx to upload slip before creating top-up request
+- [x] Update wallet.createTopupRequest endpoint to accept slipImageUrl parameter
+- [x] Update walletService.createWalletTopupRequest() to accept slipImageUrl
+- [x] Update db.createWalletTopup() to accept and insert slipImageUrl
+- [x] Refactor CartPage.tsx to add slip upload modal before checkout
+- [x] Update checkout.create endpoint to accept slipImageUrl parameter
+- [x] Update orderService.createOrderFromCart() to accept slipImageUrl
+- [x] Update db.createPayment() to accept and insert slipImageUrl + slipSubmittedAt
+- [x] Verify backward compatibility with existing pending records
+- [x] TypeScript clean and dev server running
+- [x] Both flows tested: wallet top-up and manual slip-payment order

@@ -247,6 +247,7 @@ export const appRouter = router({
         z.object({
           couponCode: z.string().optional(),
           pointsToRedeem: z.string().optional(),
+          slipImageUrl: z.string().optional(),
         })
       )
       .mutation(async ({ input, ctx }) => {
@@ -259,7 +260,7 @@ export const appRouter = router({
         }
 
         try {
-          const order = await orderService.createOrderFromCart(String(ctx.user.id), cartItems, input.couponCode, input.pointsToRedeem);
+          const order = await orderService.createOrderFromCart(String(ctx.user.id), cartItems, input.couponCode, input.pointsToRedeem, input.slipImageUrl);
 
           // Clear cart after successful order creation
           await db.clearCart(cart.id);
@@ -1039,10 +1040,12 @@ export const appRouter = router({
       return db.getWalletSummary(ctx.user.id);
     }),
     createTopupRequest: protectedProcedure
-      .input(z.object({ requestedAmount: z.string() }))
+      .input(z.object({ requestedAmount: z.string(), slipImageUrl: z.string().optional() }))
       .mutation(async ({ ctx, input }) => {
-        return walletService.createWalletTopupRequest(ctx.user.id, input.requestedAmount);
+        return walletService.createWalletTopupRequest(ctx.user.id, input.requestedAmount, input.slipImageUrl);
       }),
+    // DEPRECATED: uploadTopupSlip is kept for backward compatibility with existing pending top-ups
+    // New flow: slip is uploaded before creating the top-up request
     uploadTopupSlip: protectedProcedure
       .input(z.object({ topupId: z.number(), slipImageUrl: z.string() }))
       .mutation(async ({ ctx, input }) => {
