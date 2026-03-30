@@ -124,10 +124,35 @@ export default function OrdersPage() {
                     )}
                   </div>
 
+                  {/* Pricing Breakdown */}
+                  <div className="space-y-2 mb-4 p-3 bg-slate-50 rounded">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-600">ยอดรวมสินค้า</span>
+                      <span className="font-semibold">฿{order.subtotal ? parseFloat(order.subtotal.toString()).toFixed(2) : "0.00"}</span>
+                    </div>
+                    {order.discountAmount && parseFloat(order.discountAmount.toString()) > 0 && (
+                      <div className="flex justify-between text-sm text-red-600">
+                        <div>
+                          <span className="text-slate-600">ส่วนลดคูปอง</span>
+                          {order.couponCodeSnapshot && (
+                            <p className="text-xs text-slate-500">{order.couponCodeSnapshot}</p>
+                          )}
+                        </div>
+                        <span className="font-semibold">-฿{parseFloat(order.discountAmount.toString()).toFixed(2)}</span>
+                      </div>
+                    )}
+                    {order.pointsDiscountAmount && parseFloat(order.pointsDiscountAmount.toString()) > 0 && (
+                      <div className="flex justify-between text-sm text-red-600">
+                        <span className="text-slate-600">ส่วนลดจากคะแนน</span>
+                        <span className="font-semibold">-฿{parseFloat(order.pointsDiscountAmount.toString()).toFixed(2)}</span>
+                      </div>
+                    )}
+                  </div>
+
                   <div className="flex items-center justify-between pt-4 border-t">
                     <div>
-                      <p className="text-sm text-slate-600">Total Amount</p>
-                      <p className="text-lg font-bold text-slate-900">
+                      <p className="text-sm text-slate-600">ยอดชำระสุทธิ</p>
+                      <p className="text-lg font-bold text-blue-600">
                         ฿{parseFloat(order.totalAmount.toString()).toFixed(2)}
                       </p>
                     </div>

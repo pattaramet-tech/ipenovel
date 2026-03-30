@@ -196,6 +196,45 @@ export default function AdminOrderDetailPage() {
           </Card>
         )}
 
+        {/* Order Pricing Breakdown */}
+        <Card className="p-6">
+          <h2 className="text-lg font-semibold mb-4">Order Summary</h2>
+          <div className="space-y-3">
+            {/* Subtotal */}
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">ยอดรวมสินค้า</span>
+              <span className="font-semibold">฿{order.order.subtotal ? parseFloat(order.order.subtotal.toString()).toFixed(2) : "0.00"}</span>
+            </div>
+
+            {/* Coupon Discount */}
+            {order.order.discountAmount && parseFloat(order.order.discountAmount.toString()) > 0 && (
+              <div className="flex justify-between text-red-600">
+                <div>
+                  <span className="text-muted-foreground">ส่วนลดคูปอง</span>
+                  {order.order.couponCodeSnapshot && (
+                    <p className="text-xs text-muted-foreground">โค้ดคูปอง: {order.order.couponCodeSnapshot}</p>
+                  )}
+                </div>
+                <span className="font-semibold">-฿{parseFloat(order.order.discountAmount.toString()).toFixed(2)}</span>
+              </div>
+            )}
+
+            {/* Points Discount */}
+            {order.order.pointsDiscountAmount && parseFloat(order.order.pointsDiscountAmount.toString()) > 0 && (
+              <div className="flex justify-between text-red-600">
+                <span className="text-muted-foreground">ส่วนลดจากคะแนน</span>
+                <span className="font-semibold">-฿{parseFloat(order.order.pointsDiscountAmount.toString()).toFixed(2)}</span>
+              </div>
+            )}
+
+            {/* Total Amount */}
+            <div className="flex justify-between pt-3 border-t-2 border-slate-200">
+              <span className="font-semibold text-lg">ยอดชำระสุทธิ</span>
+              <span className="font-bold text-lg text-blue-600">฿{parseFloat(order.order.totalAmount.toString()).toFixed(2)}</span>
+            </div>
+          </div>
+        </Card>
+
         {/* Actions */}
         {order.order.status === "pending" && (
           <Card className="p-6">

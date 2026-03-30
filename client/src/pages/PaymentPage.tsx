@@ -217,10 +217,36 @@ export default function PaymentPage() {
               <span className="text-slate-600">{t("payment.orderNumber")}:</span>
               <span className="font-semibold">{order?.orderNumber}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-slate-600">{t("payment.amount")}:</span>
-              <span className="font-semibold">฿{parseFloat(order?.totalAmount.toString()).toFixed(2)}</span>
+
+            {/* Pricing Breakdown */}
+            <div className="space-y-2 p-3 bg-slate-50 rounded">
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-600">ยอดรวมสินค้า</span>
+                <span className="font-semibold">฿{order?.subtotal ? parseFloat(order.subtotal.toString()).toFixed(2) : "0.00"}</span>
+              </div>
+              {order?.discountAmount && parseFloat(order.discountAmount.toString()) > 0 && (
+                <div className="flex justify-between text-sm text-red-600">
+                  <div>
+                    <span className="text-slate-600">ส่วนลดคูปอง</span>
+                    {order.couponCodeSnapshot && (
+                      <p className="text-xs text-slate-500">{order.couponCodeSnapshot}</p>
+                    )}
+                  </div>
+                  <span className="font-semibold">-฿{parseFloat(order.discountAmount.toString()).toFixed(2)}</span>
+                </div>
+              )}
+              {order?.pointsDiscountAmount && parseFloat(order.pointsDiscountAmount.toString()) > 0 && (
+                <div className="flex justify-between text-sm text-red-600">
+                  <span className="text-slate-600">ส่วนลดจากคะแนน</span>
+                  <span className="font-semibold">-฿{parseFloat(order.pointsDiscountAmount.toString()).toFixed(2)}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-sm pt-2 border-t border-slate-200 font-semibold">
+                <span>ยอดชำระสุทธิ</span>
+                <span className="text-blue-600">฿{parseFloat(order?.totalAmount.toString()).toFixed(2)}</span>
+              </div>
             </div>
+
             <div className="flex justify-between">
               <span className="text-slate-600">{t("payment.status")}:</span>
               <span className="font-semibold">{payment?.status ? t(`status.${payment.status}`) : t("status.pending")}</span>
