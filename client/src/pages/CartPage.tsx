@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
-import { Trash2, ShoppingCart } from "lucide-react";
+import { Trash2, ShoppingCart, Maximize2, X } from "lucide-react";
 import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
 
@@ -20,6 +20,8 @@ export default function CartPage() {
   const [showSlipUpload, setShowSlipUpload] = useState(false);
   const [selectedSlipFile, setSelectedSlipFile] = useState<File | null>(null);
   const [isUploadingSlip, setIsUploadingSlip] = useState(false);
+  const [showQRFullscreen, setShowQRFullscreen] = useState(false);
+  const [slipPreview, setSlipPreview] = useState<string | null>(null);
   const utils = trpc.useUtils();
 
   const { data: cartData, isLoading: cartLoading, refetch: refetchCart } = trpc.cart.get.useQuery(undefined, {
@@ -172,6 +174,25 @@ export default function CartPage() {
     setShowSlipUpload(true);
   };
 
+  const handleSlipFileSelect = (file: File | null) => {
+    setSelectedSlipFile(file);
+    if (file && file.type.startsWith("image/")) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setSlipPreview(e.target?.result as string);
+      };
+      reader.readAsDataURL(file);
+    } else {
+      setSlipPreview(null);
+    }
+  };
+
+  const resetSlipUploadState = () => {
+    setShowSlipUpload(false);
+    setSelectedSlipFile(null);
+    setSlipPreview(null);
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 py-8">
       <div className="container mx-auto px-4">
@@ -303,16 +324,16 @@ export default function CartPage() {
                           <CardTitle>{t("payment.uploadSlip")}</CardTitle>
                         </CardHeader>
                         <CardContent className="space-y-4">
-                          {/* Order Summary */}
-                          <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
-                            <p className="text-sm text-slate-600 mb-2">{t("cart.orderSummary")}</p>
-                            <p className="text-2xl font-bold text-slate-900">฿{total}</p>
+                          {/* Transfer Amount Label */}
+                          <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
+                            <p className="text-sm text-blue-700 mb-1">ยอดที่ต้องโอน</p>
+                            <p className="text-3xl font-bold text-blue-900">฿{total}</p>
                           </div>
 
                           {/* QR Payment Block */}
                           <div>
                             <h3 className="text-lg font-semibold mb-3 text-slate-800">{t("payment.scanQRToPayment")}</h3>
-                            <Card className="p-6 bg-slate-50 border-2 border-slate-200">
+                            <Card className="p-4 bg-slate-50 border-2 border-slate-200 relative">
                               <div className="flex flex-col items-center">
                                 <img
                                   src="https://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/IMG_8158_19d96370.JPG"
@@ -320,6 +341,14 @@ export default function CartPage() {
                                   className="w-full max-w-xs aspect-square object-contain rounded-lg"
                                 />
                               </div>
+                              {/* Fullscreen QR Button */}
+                              <button
+                                onClick={() => setShowQRFullscreen(true)}
+                                className="absolute top-2 right-2 p-2 bg-white rounded-lg shadow hover:bg-slate-100 transition"
+                                title="Expand QR"
+                              >
+                                <Maximize2 className="w-5 h-5 text-slate-700" />
+                              </button>
                             </Card>
                             <p className="text-sm text-slate-600 mt-3 text-center">
                               {t("payment.qrPaymentHelper")}
@@ -327,25 +356,46 @@ export default function CartPage() {
                           </div>
 
                           {/* Slip Upload Section */}
-                          <div className="space-y-2">
+                          <div className="space-y-3">
                             <label className="block text-sm font-medium text-slate-700">
                               {t("payment.selectFile")}
                             </label>
                             <input
                               type="file"
                               accept="image/jpeg,image/png,application/pdf"
-                              onChange={(e) => setSelectedSlipFile(e.target.files?.[0] || null)}
+                              onChange={(e) => handleSlipFileSelect(e.target.files?.[0] || null)}
                               disabled={isUploadingSlip}
                               className="w-full px-3 py-2 border rounded text-sm"
                             />
                             <p className="text-xs text-slate-500">{t("payment.fileRequirements")}</p>
-                          </div>
 
-                          {selectedSlipFile && (
-                            <div className="bg-green-50 p-3 rounded text-sm text-green-800">
-                              {t("payment.selectedFile")}: {selectedSlipFile.name}
-                            </div>
-                          )}
+                            {/* Selected File Info */}
+                            {selectedSlipFile && (
+                              <div className="bg-green-50 p-3 rounded-lg border border-green-200 flex items-start justify-between gap-2">
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm font-medium text-green-900 truncate">{selectedSlipFile.name}</p>
+                                  <p className="text-xs text-green-700">{(selectedSlipFile.size / 1024).toFixed(1)} KB</p>
+                                </div>
+                                <button
+                                  onClick={() => handleSlipFileSelect(null)}
+                                  className="text-green-600 hover:text-green-700 flex-shrink-0"
+                                >
+                                  <X className="w-4 h-4" />
+                                </button>
+                              </div>
+                            )}
+
+                            {/* Slip Image Preview */}
+                            {slipPreview && (
+                              <div className="rounded-lg overflow-hidden border border-slate-200 bg-slate-50 p-2">
+                                <img
+                                  src={slipPreview}
+                                  alt="Slip preview"
+                                  className="w-full max-h-48 object-contain rounded"
+                                />
+                              </div>
+                            )}
+                          </div>
 
                           <div className="flex gap-2">
                             <Button
@@ -358,10 +408,7 @@ export default function CartPage() {
                             <Button
                               className="flex-1"
                               variant="outline"
-                              onClick={() => {
-                                setShowSlipUpload(false);
-                                setSelectedSlipFile(null);
-                              }}
+                              onClick={resetSlipUploadState}
                               disabled={isUploadingSlip}
                             >
                               {t("common.cancel")}
@@ -369,6 +416,30 @@ export default function CartPage() {
                           </div>
                         </CardContent>
                       </Card>
+                    </div>
+                  )}
+
+                  {/* Fullscreen QR Modal */}
+                  {showQRFullscreen && (
+                    <div className="fixed inset-0 bg-black/75 flex items-center justify-center z-50 p-4">
+                      <div className="relative bg-white rounded-lg p-4 max-w-2xl w-full">
+                        <button
+                          onClick={() => setShowQRFullscreen(false)}
+                          className="absolute top-4 right-4 p-2 bg-slate-100 rounded-lg hover:bg-slate-200 transition"
+                        >
+                          <X className="w-6 h-6 text-slate-700" />
+                        </button>
+                        <div className="flex flex-col items-center">
+                          <img
+                            src="https://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/IMG_8158_19d96370.JPG"
+                            alt="QR Payment - Full Screen"
+                            className="w-full max-w-lg aspect-square object-contain"
+                          />
+                        </div>
+                        <p className="text-center text-slate-600 mt-4 text-sm">
+                          {t("payment.qrPaymentHelper")}
+                        </p>
+                      </div>
                     </div>
                   )}
                 </div>
