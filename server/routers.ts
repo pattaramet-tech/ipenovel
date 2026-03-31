@@ -25,6 +25,15 @@ const dashboardRouter = router({
   summary: adminProcedure.query(async () => {
     return db.getDashboardSummary();
   }),
+  topUsers: adminProcedure
+    .input(
+      z.object({
+        period: z.enum(["all", "today", "7d", "30d", "month"]).default("all"),
+      })
+    )
+    .query(async ({ input }) => {
+      return db.getTopUsersBySpending(input.period, 10);
+    }),
 });
 
 export const appRouter = router({

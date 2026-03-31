@@ -1920,6 +1920,60 @@ export async function countApprovedOrders(): Promise<number> {
   return result[0]?.count || 0;
 }
 
+export async function getTopUsersBySpending(period: "all" | "today" | "7d" | "30d" | "month" = "all", limit: number = 10) {
+  const db = await getDb();
+  if (!db) return [];
+
+  let startDate: Date | null = null;
+  const now = new Date();
+
+  if (period === "today") {
+    startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  } else if (period === "7d") {
+    startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  } else if (period === "30d") {
+    startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  } else if (period === "month") {
+    startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+  }
+
+  try {
+    const whereConditions = [eq(orders.status, "approved")];
+    if (startDate) {
+      whereConditions.push(gte(orders.createdAt, startDate));
+    }
+
+    const result = await db
+      .select({
+        userId: orders.userId,
+        userName: users.name,
+        userEmail: users.email,
+        totalSpent: sql<string>`SUM(CAST(${orders.totalAmount} AS DECIMAL(10,2)))`,
+        orderCount: sql<number>`COUNT(DISTINCT ${orders.id})`,
+        episodeCount: sql<number>`COUNT(DISTINCT ${orderItems.episodeId})`,
+      })
+      .from(orders)
+      .leftJoin(users, eq(orders.userId, users.id))
+      .leftJoin(orderItems, eq(orders.id, orderItems.orderId))
+      .where(and(...whereConditions))
+      .groupBy(orders.userId)
+      .orderBy(sql`SUM(CAST(${orders.totalAmount} AS DECIMAL(10,2))) DESC`)
+      .limit(limit);
+
+    return result.map((row: any) => ({
+      userId: row.userId,
+      userName: row.userName || "Unknown",
+      userEmail: row.userEmail || "",
+      totalSpent: row.totalSpent ? parseFloat(row.totalSpent).toFixed(2) : "0.00",
+      orderCount: row.orderCount || 0,
+      episodeCount: row.episodeCount || 0,
+    }));
+  } catch (error) {
+    console.error("Error fetching top users:", error);
+    return [];
+  }
+}
+
 export async function getDashboardSummary() {
   const [totalOrders, totalNovels, pendingPayments, approvedPayments] = await Promise.all([
     countAllOrders(),

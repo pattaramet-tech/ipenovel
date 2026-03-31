@@ -37,6 +37,11 @@ export default function AdminDashboard() {
     undefined,
     { enabled: shouldFetchAdminData }
   );
+  const [topUsersPeriod, setTopUsersPeriod] = useState<"all" | "today" | "7d" | "30d" | "month">("all");
+  const { data: topUsers, isLoading: topUsersLoading } = trpc.admin.dashboard.topUsers.useQuery(
+    { period: topUsersPeriod },
+    { enabled: shouldFetchAdminData }
+  );
 
   // Mutation hooks
   const approveMutation = trpc.admin.payments.approve.useMutation({
@@ -132,7 +137,7 @@ export default function AdminDashboard() {
 
         {/* Tabs - Mobile optimized */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-3 h-auto gap-1 p-1">
+          <TabsList className="grid w-full grid-cols-4 h-auto gap-1 p-1">
             <TabsTrigger value="overview" className="text-xs md:text-sm py-2">Overview</TabsTrigger>
             <TabsTrigger value="payments" className="text-xs md:text-sm py-2 flex items-center justify-center gap-1">
               <span>Payments</span>
@@ -140,6 +145,7 @@ export default function AdminDashboard() {
                 <Badge className="ml-1 bg-red-100 text-red-800 text-xs px-1.5 py-0">{pendingPaymentCount}</Badge>
               )}
             </TabsTrigger>
+            <TabsTrigger value="users" className="text-xs md:text-sm py-2">Top Users</TabsTrigger>
             <TabsTrigger value="recent" className="text-xs md:text-sm py-2">Recent</TabsTrigger>
           </TabsList>
 
@@ -296,6 +302,104 @@ export default function AdminDashboard() {
                     </div>
                   </Card>
                 ))}
+              </div>
+            )}
+          </TabsContent>
+
+          {/* Top Users Tab */}
+          <TabsContent value="users" className="space-y-3 md:space-y-4 mt-4">
+            {/* Period Filter */}
+            <div className="flex gap-2 flex-wrap">
+              {(["all", "today", "7d", "30d", "month"] as const).map((p) => (
+                <Button
+                  key={p}
+                  variant={topUsersPeriod === p ? "default" : "outline"}
+                  size="sm"
+                  className="text-xs"
+                  onClick={() => setTopUsersPeriod(p)}
+                >
+                  {p === "all" ? "All Time" : p === "today" ? "Today" : p === "7d" ? "7 Days" : p === "30d" ? "30 Days" : "This Month"}
+                </Button>
+              ))}
+            </div>
+
+            {/* Top Users Table */}
+            {topUsersLoading ? (
+              <div className="space-y-2">
+                {[...Array(5)].map((_, i) => (
+                  <Skeleton key={i} className="h-12 md:h-16" />
+                ))}
+              </div>
+            ) : !topUsers || topUsers.length === 0 ? (
+              <EmptyState
+                icon={TrendingUp}
+                title="No Data"
+                description="No approved orders found for this period"
+              />
+            ) : (
+              <div className="overflow-x-auto">
+                <Card className="p-0">
+                  <div className="hidden md:block">
+                    {/* Desktop Table */}
+                    <div className="grid grid-cols-6 gap-2 p-3 md:p-4 bg-slate-50 font-semibold text-xs md:text-sm border-b">
+                      <div>อันดับ</div>
+                      <div>ผู้ใช้</div>
+                      <div className="text-right">ยอดซื้อรวม</div>
+                      <div className="text-right">จำนวนออเดอร์</div>
+                      <div className="text-right">จำนวนตอนที่ซื้อ</div>
+                      <div></div>
+                    </div>
+                    {topUsers.map((user: any, idx: number) => (
+                      <div
+                        key={user.userId}
+                        className="grid grid-cols-6 gap-2 p-3 md:p-4 border-b hover:bg-slate-50 transition-colors cursor-pointer text-xs md:text-sm"
+                      >
+                        <div className="font-semibold text-blue-600">{idx + 1}</div>
+                        <div className="truncate">
+                          <p className="font-semibold text-slate-900 truncate">{user.userName}</p>
+                          <p className="text-slate-500 truncate text-xs">{user.userEmail}</p>
+                        </div>
+                        <div className="text-right font-semibold text-slate-900">฿{parseFloat(user.totalSpent).toFixed(2)}</div>
+                        <div className="text-right text-slate-600">{user.orderCount}</div>
+                        <div className="text-right text-slate-600">{user.episodeCount}</div>
+                        <div></div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Mobile Cards */}
+                  <div className="md:hidden space-y-2 p-3">
+                    {topUsers.map((user: any, idx: number) => (
+                      <div
+                        key={user.userId}
+                        className="p-3 bg-slate-50 rounded border hover:shadow-md transition-shadow"
+                      >
+                        <div className="flex items-start justify-between mb-2">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-blue-600 text-lg">#{idx + 1}</span>
+                              <div>
+                                <p className="font-semibold text-slate-900 text-sm">{user.userName}</p>
+                                <p className="text-slate-500 text-xs truncate">{user.userEmail}</p>
+                              </div>
+                            </div>
+                          </div>
+                          <span className="font-bold text-lg text-blue-600">฿{parseFloat(user.totalSpent).toFixed(2)}</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          <div>
+                            <p className="text-slate-600">จำนวนออเดอร์</p>
+                            <p className="font-semibold text-slate-900">{user.orderCount}</p>
+                          </div>
+                          <div>
+                            <p className="text-slate-600">จำนวนตอนที่ซื้อ</p>
+                            <p className="font-semibold text-slate-900">{user.episodeCount}</p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
               </div>
             )}
           </TabsContent>
