@@ -145,7 +145,7 @@ export default function AdminDashboard() {
                 <Badge className="ml-1 bg-red-100 text-red-800 text-xs px-1.5 py-0">{pendingPaymentCount}</Badge>
               )}
             </TabsTrigger>
-            <TabsTrigger value="users" className="text-xs md:text-sm py-2">Top Users</TabsTrigger>
+            <TabsTrigger value="users" className="text-xs md:text-sm py-2">Top 10 ลูกค้า</TabsTrigger>
             <TabsTrigger value="recent" className="text-xs md:text-sm py-2">Recent</TabsTrigger>
           </TabsList>
 
@@ -308,6 +308,12 @@ export default function AdminDashboard() {
 
           {/* Top Users Tab */}
           <TabsContent value="users" className="space-y-3 md:space-y-4 mt-4">
+            {/* Title and Helper Text */}
+            <div className="mb-4">
+              <h3 className="text-lg md:text-xl font-bold text-slate-900 mb-1">Top 10 ลูกค้ายอดซื้อสูงสุด (อนุมัติแล้ว)</h3>
+              <p className="text-xs md:text-sm text-slate-600">นับจากออเดอร์ที่อนุมัติแล้วเท่านั้น</p>
+            </div>
+
             {/* Period Filter */}
             <div className="flex gap-2 flex-wrap">
               {(["all", "today", "7d", "30d", "month"] as const).map((p) => (
@@ -318,7 +324,7 @@ export default function AdminDashboard() {
                   className="text-xs"
                   onClick={() => setTopUsersPeriod(p)}
                 >
-                  {p === "all" ? "All Time" : p === "today" ? "Today" : p === "7d" ? "7 Days" : p === "30d" ? "30 Days" : "This Month"}
+                  {p === "all" ? "ทั้งหมด" : p === "today" ? "วันนี้" : p === "7d" ? "7 วัน" : p === "30d" ? "30 วัน" : "เดือนนี้"}
                 </Button>
               ))}
             </div>
@@ -333,8 +339,8 @@ export default function AdminDashboard() {
             ) : !topUsers || topUsers.length === 0 ? (
               <EmptyState
                 icon={TrendingUp}
-                title="No Data"
-                description="No approved orders found for this period"
+                title="ไม่มีข้อมูล"
+                description="ไม่พบออเดอร์ที่อนุมัติแล้วในช่วงเวลานี้"
               />
             ) : (
               <div className="overflow-x-auto">
@@ -344,7 +350,7 @@ export default function AdminDashboard() {
                     <div className="grid grid-cols-6 gap-2 p-3 md:p-4 bg-slate-50 font-semibold text-xs md:text-sm border-b">
                       <div>อันดับ</div>
                       <div>ผู้ใช้</div>
-                      <div className="text-right">ยอดซื้อรวม</div>
+                      <div className="text-right">ยอดซื้อรวม (อนุมัติ)</div>
                       <div className="text-right">จำนวนออเดอร์</div>
                       <div className="text-right">จำนวนตอนที่ซื้อ</div>
                       <div></div>

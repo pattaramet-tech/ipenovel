@@ -1956,7 +1956,7 @@ export async function getTopUsersBySpending(period: "all" | "today" | "7d" | "30
       .leftJoin(users, eq(orders.userId, users.id))
       .leftJoin(orderItems, eq(orders.id, orderItems.orderId))
       .where(and(...whereConditions))
-      .groupBy(orders.userId)
+      .groupBy(orders.userId, users.name, users.email)
       .orderBy(sql`SUM(CAST(${orders.totalAmount} AS DECIMAL(10,2))) DESC`)
       .limit(limit);
 
