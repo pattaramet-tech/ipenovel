@@ -1,0 +1,15 @@
+{
+  "query": "SELECT COUNT(*) as total_orders, SUM(totalAmount) as total_spent, COUNT(CASE WHEN status='approved' THEN 1 END) as approved_count FROM orders WHERE userId = 720005;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT COUNT(*) as total_orders, SUM(totalAmount) as total_spent, COUNT(CASE WHEN status='approved' THEN 1 END) as approved_count FROM orders WHERE userId = 720005;",
+  "rows": [
+    {
+      "total_orders": "3",
+      "total_spent": "4659.60",
+      "approved_count": "3"
+    }
+  ],
+  "messages": [],
+  "stdout": "total_orders\ttotal_spent\tapproved_count\n3\t4659.60\t3\n",
+  "stderr": "",
+  "execution_time_ms": 1521
+}

@@ -1938,36 +1938,64 @@ export async function getTopUsersBySpending(period: "all" | "today" | "7d" | "30
   }
 
   try {
-    const whereConditions = [eq(orders.status, "approved")];
+    const whereConditions = [
+      eq(orders.status, "approved"),
+      eq(orders.paymentStatus, "approved")
+    ];
     if (startDate) {
       whereConditions.push(gte(orders.createdAt, startDate));
     }
 
-    const result = await db
+    // Step 1: Get totalSpent and orderCount from orders alone (no joins to avoid multiplication)
+    const spendingData = await db
       .select({
         userId: orders.userId,
-        userName: users.name,
-        userEmail: users.email,
         totalSpent: sql<string>`SUM(CAST(${orders.totalAmount} AS DECIMAL(10,2)))`,
         orderCount: sql<number>`COUNT(DISTINCT ${orders.id})`,
+      })
+      .from(orders)
+      .where(and(...whereConditions))
+      .groupBy(orders.userId);
+
+    // Step 2: Get episode counts separately to avoid multiplying totalSpent
+    const episodeData = await db
+      .select({
+        userId: orders.userId,
         episodeCount: sql<number>`COUNT(DISTINCT ${orderItems.episodeId})`,
       })
       .from(orders)
-      .leftJoin(users, eq(orders.userId, users.id))
       .leftJoin(orderItems, eq(orders.id, orderItems.orderId))
       .where(and(...whereConditions))
-      .groupBy(orders.userId, users.name, users.email)
-      .orderBy(sql`SUM(CAST(${orders.totalAmount} AS DECIMAL(10,2))) DESC`)
-      .limit(limit);
+      .groupBy(orders.userId);
 
-    return result.map((row: any) => ({
-      userId: row.userId,
-      userName: row.userName || "Unknown",
-      userEmail: row.userEmail || "",
-      totalSpent: row.totalSpent ? parseFloat(row.totalSpent).toFixed(2) : "0.00",
-      orderCount: row.orderCount || 0,
-      episodeCount: row.episodeCount || 0,
-    }));
+    // Step 3: Get user names
+    const userIds = spendingData.map((d: any) => d.userId);
+    const userNames = await db
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+      })
+      .from(users)
+      .where(inArray(users.id, userIds));
+
+    const userMap = new Map(userNames.map((u: any) => [u.id, { name: u.name, email: u.email }]));
+    const episodeMap = new Map(episodeData.map((d: any) => [d.userId, d.episodeCount]));
+
+    // Step 4: Merge and sort by totalSpent descending
+    const result = spendingData
+      .map((row: any) => ({
+        userId: row.userId,
+        userName: userMap.get(row.userId)?.name || "Unknown",
+        userEmail: userMap.get(row.userId)?.email || "",
+        totalSpent: row.totalSpent ? parseFloat(row.totalSpent).toFixed(2) : "0.00",
+        orderCount: row.orderCount || 0,
+        episodeCount: episodeMap.get(row.userId) || 0,
+      }))
+      .sort((a: any, b: any) => parseFloat(b.totalSpent) - parseFloat(a.totalSpent))
+      .slice(0, limit);
+
+    return result;
   } catch (error) {
     console.error("Error fetching top users:", error);
     return [];

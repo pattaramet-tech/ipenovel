@@ -1,0 +1,31 @@
+{
+  "query": "SELECT p.id, p.orderId, o.userId, p.status, p.createdAt FROM payments p JOIN orders o ON p.orderId = o.id WHERE o.userId = 720005 ORDER BY p.id DESC;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT p.id, p.orderId, o.userId, p.status, p.createdAt FROM payments p JOIN orders o ON p.orderId = o.id WHERE o.userId = 720005 ORDER BY p.id DESC;",
+  "rows": [
+    {
+      "id": "2970001",
+      "orderId": "2970001",
+      "userId": "720005",
+      "status": "approved",
+      "createdAt": "2026-03-26 08:25:03"
+    },
+    {
+      "id": "2580001",
+      "orderId": "2580001",
+      "userId": "720005",
+      "status": "approved",
+      "createdAt": "2026-03-25 03:34:34"
+    },
+    {
+      "id": "510159",
+      "orderId": "510185",
+      "userId": "720005",
+      "status": "approved",
+      "createdAt": "2026-03-18 07:50:03"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\torderId\tuserId\tstatus\tcreatedAt\n2970001\t2970001\t720005\tapproved\t2026-03-26 08:25:03\n2580001\t2580001\t720005\tapproved\t2026-03-25 03:34:34\n510159\t510185\t720005\tapproved\t2026-03-18 07:50:03\n",
+  "stderr": "",
+  "execution_time_ms": 1547
+}
