@@ -24,6 +24,7 @@ import {
   walletAccounts,
   walletTransactions,
   walletTopups,
+  topupLogs,
   Novel,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
@@ -2210,6 +2211,17 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
   // Credit wallet
   await creditWalletBalance(topup.userId, topup.requestedAmount, "topup", topupId);
 
+  // Log the top-up approval
+  await createTopupLog(
+    topup.userId,
+    topup.requestedAmount,
+    "0.00",
+    "slip",
+    `topup-${topupId}`,
+    `Slip approved by admin`,
+    adminUserId
+  );
+
   return db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1).then(r => r[0]);
 }
 
@@ -2230,6 +2242,17 @@ export async function rejectWalletTopup(topupId: number, adminUserId: number, re
       updatedAt: new Date(),
     })
     .where(eq(walletTopups.id, topupId));
+
+  // Log the rejection
+  await createTopupLog(
+    topup.userId,
+    "0.00",
+    "0.00",
+    "slip",
+    `topup-${topupId}`,
+    `Slip rejected: ${reason}`,
+    adminUserId
+  );
 
   return db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1).then(r => r[0]);
 }
@@ -2260,4 +2283,136 @@ export async function getWalletSummary(userId: number) {
     recentTransactions: transactions,
     recentTopups: topups,
   };
+}
+
+
+/**
+ * Top-up Logs (Audit Trail) Helpers
+ */
+
+export async function createTopupLog(
+  userId: number,
+  amount: string,
+  bonus: string,
+  method: "slip" | "admin_adjust" | "promo",
+  reference?: string,
+  note?: string,
+  createdBy?: number
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const amountNum = parseFloat(amount);
+  const bonusNum = parseFloat(bonus || "0");
+  const total = (amountNum + bonusNum).toFixed(2);
+
+  const result = await db.insert(topupLogs).values({
+    userId,
+    amount: amount,
+    bonus: bonus || "0.00",
+    total: total,
+    method,
+    reference,
+    note,
+    createdBy,
+    createdAt: new Date(),
+  });
+
+  return result;
+}
+
+export async function getTopupLogs(
+  userId?: number,
+  startDate?: Date,
+  endDate?: Date,
+  limit: number = 50,
+  offset: number = 0
+) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const conditions: any[] = [];
+
+  if (userId) {
+    conditions.push(eq(topupLogs.userId, userId));
+  }
+
+  if (startDate) {
+    conditions.push(gte(topupLogs.createdAt, startDate));
+  }
+
+  if (endDate) {
+    conditions.push(lte(topupLogs.createdAt, endDate));
+  }
+
+  let query = db
+    .select({
+      id: topupLogs.id,
+      userId: topupLogs.userId,
+      userName: users.name,
+      userEmail: users.email,
+      amount: topupLogs.amount,
+      bonus: topupLogs.bonus,
+      total: topupLogs.total,
+      method: topupLogs.method,
+      reference: topupLogs.reference,
+      note: topupLogs.note,
+      createdBy: topupLogs.createdBy,
+      createdByName: users.name,
+      createdAt: topupLogs.createdAt,
+    })
+    .from(topupLogs)
+    .leftJoin(users, eq(topupLogs.userId, users.id));
+
+  if (conditions.length > 0) {
+    query = query.where(and(...conditions)) as any;
+  }
+
+  const result = await (query as any)
+    .orderBy(desc(topupLogs.createdAt))
+    .limit(limit)
+    .offset(offset);
+
+  return result;
+}
+
+export async function getTopupLogsCount(userId?: number, startDate?: Date, endDate?: Date) {
+  const db = await getDb();
+  if (!db) return 0;
+
+  const conditions: any[] = [];
+
+  if (userId) {
+    conditions.push(eq(topupLogs.userId, userId));
+  }
+
+  if (startDate) {
+    conditions.push(gte(topupLogs.createdAt, startDate));
+  }
+
+  if (endDate) {
+    conditions.push(lte(topupLogs.createdAt, endDate));
+  }
+
+  let query = db.select({ count: count() }).from(topupLogs) as any;
+
+  if (conditions.length > 0) {
+    query = query.where(and(...conditions));
+  }
+
+  const result = await query;
+  return result[0]?.count || 0;
+}
+
+export async function getTopupLogsByUser(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const result = await db
+    .select()
+    .from(topupLogs)
+    .where(eq(topupLogs.userId, userId))
+    .orderBy(desc(topupLogs.createdAt));
+
+  return result;
 }

@@ -1144,6 +1144,47 @@ export const appRouter = router({
           });
           return { success: true, newBalance: newBalance.toFixed(2) };
         }),
+      listTopupLogs: adminProcedure
+        .input(z.object({
+          userId: z.number().optional(),
+          startDate: z.date().optional(),
+          endDate: z.date().optional(),
+          limit: z.number().default(50),
+          offset: z.number().default(0),
+        }))
+        .query(async ({ input }) => {
+          const logs = await db.getTopupLogs(input.userId, input.startDate, input.endDate, input.limit, input.offset);
+          const total = await db.getTopupLogsCount(input.userId, input.startDate, input.endDate);
+          return { logs, total };
+        }),
+      createTopupLog: adminProcedure
+        .input(z.object({
+          userId: z.number(),
+          amount: z.string(),
+          bonus: z.string().optional(),
+          method: z.enum(["slip", "admin_adjust", "promo"]),
+          reference: z.string().optional(),
+          note: z.string().optional(),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const amountNum = parseFloat(input.amount);
+          if (amountNum <= 0) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Amount must be greater than 0" });
+          }
+          const user = await db.getUserById(input.userId);
+          if (!user) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+          }
+          return db.createTopupLog(
+            input.userId,
+            input.amount,
+            input.bonus || "0.00",
+            input.method,
+            input.reference,
+            input.note,
+            ctx.user.id
+          );
+        }),
     }),
   }),
 

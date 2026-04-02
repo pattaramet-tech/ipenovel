@@ -493,3 +493,31 @@ export const walletTopups = mysqlTable("walletTopups", {
 
 export type WalletTopup = typeof walletTopups.$inferSelect;
 export type InsertWalletTopup = typeof walletTopups.$inferInsert;
+
+/**
+ * Top-up Logs (Admin Audit Trail)
+ * Tracks all wallet balance changes with full audit context
+ */
+export const topupLogs = mysqlTable(
+  "topupLogs",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
+    bonus: decimal("bonus", { precision: 12, scale: 2 }).notNull().default("0.00"),
+    total: decimal("total", { precision: 12, scale: 2 }).notNull(),
+    method: mysqlEnum("method", ["slip", "admin_adjust", "promo"]).notNull(),
+    reference: varchar("reference", { length: 255 }),
+    note: text("note"),
+    createdBy: int("createdBy"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    userIdIdx: index("topupLogs_userId_idx").on(table.userId),
+    methodIdx: index("topupLogs_method_idx").on(table.method),
+    createdAtIdx: index("topupLogs_createdAt_idx").on(table.createdAt),
+  })
+);
+
+export type TopupLog = typeof topupLogs.$inferSelect;
+export type InsertTopupLog = typeof topupLogs.$inferInsert;
