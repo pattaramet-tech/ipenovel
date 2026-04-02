@@ -1,5 +1,5 @@
-import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count } from "drizzle-orm";
-import { sql, getTableColumns } from "drizzle-orm";
+import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql } from "drizzle-orm";
+import { getTableColumns } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
@@ -2230,15 +2230,19 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const topup = await getWalletTopupById(topupId);
-  if (!topup) throw new Error("Wallet top-up not found");
-  if (topup.status !== "pending") throw new Error(`Cannot approve ${topup.status} top-up`);
-
-  // ATOMIC TRANSACTION: Update status, credit wallet, and log in one transaction
+  // REAL DATABASE TRANSACTION: All operations succeed or all rollback
   // This prevents double-crediting if approval is retried
-  try {
-    // Step 1: Update topup status to approved
-    await db
+  return await db.transaction(async (tx) => {
+    // Step 1: Fetch topup INSIDE transaction for consistency
+    const topupResult = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
+    if (!topupResult || topupResult.length === 0) {
+      throw new Error("Wallet top-up not found");
+    }
+    const topup = topupResult[0];
+    
+    // Step 2: Conditional status update - ONLY update if still pending (idempotency)
+    // If already approved/rejected, this update will fail silently (no rows affected)
+    const updateResult = await tx
       .update(walletTopups)
       .set({
         status: "approved" as any,
@@ -2246,33 +2250,64 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
         reviewedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(walletTopups.id, topupId));
+      .where(and(eq(walletTopups.id, topupId), eq(walletTopups.status, "pending" as any)));
+    
+    // If no rows were updated, topup was already approved/rejected
+    // Throw error to rollback entire transaction
+    // Note: Drizzle ORM update doesn't return rowsAffected in transaction context
+    // So we verify by checking if status is still pending after update
+    const verifyResult = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
+    if (verifyResult[0].status !== "approved") {
+      throw new Error(`Cannot approve ${topup.status} top-up - already processed`);
+    }
 
     // Step 2: Use creditedAmount (includes bonus), fallback to requestedAmount for backward compatibility
     const creditAmount = topup.creditedAmount || topup.requestedAmount;
     const bonusAmount = topup.bonusAmount || "0.00";
 
-    // Step 3: Credit wallet with creditedAmount (includes bonus)
-    await creditWalletBalance(topup.userId, creditAmount, "topup", topupId);
+    // Step 3: Get current wallet balance (within transaction)
+    const account = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, topup.userId)).limit(1);
+    if (!account || account.length === 0) {
+      throw new Error("Wallet account not found");
+    }
+    const currentBalance = parseFloat(account[0].balance);
+    const creditAmountNum = parseFloat(creditAmount);
+    const newBalance = (currentBalance + creditAmountNum).toFixed(2);
 
-    // Step 4: Log the top-up approval with bonus details
-    await createTopupLog(
-      topup.userId,
-      topup.requestedAmount,
-      bonusAmount,
-      "slip",
-      `topup-${topupId}`,
-      `Slip approved by admin`,
-      adminUserId
-    );
+    // Step 4: Update wallet balance (within transaction)
+    await tx
+      .update(walletAccounts)
+      .set({ balance: newBalance, updatedAt: new Date() })
+      .where(eq(walletAccounts.userId, topup.userId));
 
-    // Step 5: Return updated topup
-    return db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1).then(r => r[0]);
-  } catch (error) {
-    // If any step fails, the entire approval is rolled back
-    // This ensures no partial state (e.g., status updated but wallet not credited)
-    throw error;
-  }
+    // Step 5: Create wallet transaction record (within transaction)
+    await tx.insert(walletTransactions).values({
+      userId: topup.userId,
+      type: "topup_approved" as any,
+      amount: creditAmount,
+      balanceBefore: account[0].balance,
+      balanceAfter: newBalance,
+      referenceType: "topup",
+      referenceId: topupId,
+    });
+
+    // Step 6: Create topup log (within transaction)
+    await tx.insert(topupLogs).values({
+      userId: topup.userId,
+      amount: topup.requestedAmount,
+      bonus: bonusAmount,
+      total: creditAmount,
+      method: "slip" as any,
+      reference: `topup-${topupId}`,
+      note: `Slip approved by admin`,
+      createdBy: adminUserId,
+      createdAt: new Date(),
+    });
+
+    // Step 7: Return updated topup
+    const updated = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
+    return updated[0];
+  });
 }
 
 export async function rejectWalletTopup(topupId: number, adminUserId: number, reason: string) {

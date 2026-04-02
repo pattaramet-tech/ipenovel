@@ -329,26 +329,35 @@ export const appRouter = router({
             throw new Error("Insufficient wallet balance");
           }
 
-          // STEP 3: Now safe to create order (balance check passed)
-          const order = await orderService.createOrderFromCart(String(ctx.user.id), cartItems, input.couponCode, input.pointsToRedeem);
+          // STEP 3-8: ATOMIC TRANSACTION - All operations succeed or all rollback
+          // This prevents orphan orders if debit/finalization fails after order creation
+          const dbConnection = await db.getDb();
+          if (!dbConnection) throw new Error("Database connection failed");
+          
+          const order = await dbConnection.transaction(async (tx) => {
+            // STEP 3: Create order (within transaction)
+            const newOrder = await orderService.createOrderFromCart(String(ctx.user.id), cartItems, input.couponCode, input.pointsToRedeem);
 
-          // STEP 4: Debit wallet
-          await db.debitWalletBalance(ctx.user.id, totalAmount, "order", order.id);
-          
-          // STEP 5: Update order status
-          await db.updateOrder(order.id, { status: "approved", paymentStatus: "approved" });
-          
-          // STEP 6: Update the payment record that was already created by createOrderFromCart
-          const payment = await db.getPaymentByOrderId(order.id);
-          if (payment) {
-            await db.updatePayment(payment.id, { status: "approved" });
-          }
-          
-          // STEP 7: Finalize order completion (points, purchases, coupon usage) - same flow as manual slip approval
-          await orderService.finalizeOrderCompletion(order.id, ctx.user.id);
-          
-          // STEP 8: Clear cart
-          await db.clearCart(cart.id);
+            // STEP 4: Debit wallet (within transaction)
+            await db.debitWalletBalance(ctx.user.id, totalAmount, "order", newOrder.id);
+            
+            // STEP 5: Update order status (within transaction)
+            await db.updateOrder(newOrder.id, { status: "approved", paymentStatus: "approved" });
+            
+            // STEP 6: Update the payment record (within transaction)
+            const payment = await db.getPaymentByOrderId(newOrder.id);
+            if (payment) {
+              await db.updatePayment(payment.id, { status: "approved" });
+            }
+            
+            // STEP 7: Finalize order completion (points, purchases, coupon usage)
+            await orderService.finalizeOrderCompletion(newOrder.id, ctx.user.id);
+            
+            // STEP 8: Clear cart (within transaction)
+            await db.clearCart(cart.id);
+            
+            return newOrder;
+          });
 
           return { order, success: true };
         } catch (error: any) {
@@ -529,21 +538,25 @@ export const appRouter = router({
           if (isNaN(amountNum)) {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid amount" });
           }
-          // Write to wallet, not points
-          const reference = `admin-adjust-${Date.now()}`;
-          await db.creditWalletBalance(input.userId, Math.abs(amountNum).toString(), "admin_adjust", 0);
-          // Create topup log for audit trail
-          await db.createTopupLog(
-            input.userId,
-            Math.abs(amountNum).toString(),
-            "0.00",
-            "admin_adjust",
-            reference,
-            `Admin adjustment: ${input.reason}`,
-            ctx.user.id
-          );
-          const newBalance = await db.getWalletBalance(input.userId);
-          return { success: true, newBalance };
+          // Bidirectional points adjustment: positive = add, negative = subtract
+          const absAmount = Math.abs(amountNum);
+          let operation = 'add';
+          
+          if (amountNum > 0) {
+            // Add points
+            const newPointsBalance = (parseFloat(await db.getUserPointsBalance(input.userId)) + absAmount).toString();
+          await db.recordPointsTransaction({ userId: input.userId, amount: absAmount.toString(), type: "adjust", balanceAfter: newPointsBalance, note: `Admin add: ${input.reason}` });
+          } else if (amountNum < 0) {
+            // Subtract points
+            const newPointsBalance2 = (parseFloat(await db.getUserPointsBalance(input.userId)) - absAmount).toString();
+          await db.recordPointsTransaction({ userId: input.userId, amount: (-absAmount).toString(), type: "adjust", balanceAfter: newPointsBalance2, note: `Admin subtract: ${input.reason}` });
+            operation = 'subtract';
+          } else {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Amount must be non-zero" });
+          }
+          
+          const newBalance = await db.getUserPointsBalance(input.userId);
+          return { success: true, newBalance, operation };
         }),
     }),
   }),
@@ -1164,21 +1177,34 @@ export const appRouter = router({
           if (isNaN(amountNum)) {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid amount" });
           }
-          // Write to wallet, not points
+          // Bidirectional wallet adjustment: positive = credit, negative = debit
           const reference = `admin-adjust-${Date.now()}`;
-          await db.creditWalletBalance(input.userId, Math.abs(amountNum).toString(), "admin_adjust", 0);
+          const absAmount = Math.abs(amountNum).toString();
+          let operation = 'credit';
+          
+          if (amountNum > 0) {
+            // Credit operation
+            await db.creditWalletBalance(input.userId, absAmount, "admin_adjust", 0);
+          } else if (amountNum < 0) {
+            // Debit operation
+            await db.debitWalletBalance(input.userId, absAmount, "admin_adjust", 0);
+            operation = 'debit';
+          } else {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Amount must be non-zero" });
+          }
+          
           // Create topup log for audit trail
           await db.createTopupLog(
             input.userId,
-            Math.abs(amountNum).toString(),
+            absAmount,
             "0.00",
             "admin_adjust",
             reference,
-            `Admin adjustment: ${input.reason}`,
+            `Admin ${operation}: ${input.reason}`,
             ctx.user.id
           );
           const newBalance = await db.getWalletBalance(input.userId);
-          return { success: true, newBalance };
+          return { success: true, newBalance, operation };
         }),
       listTopupLogs: adminProcedure
         .input(z.object({

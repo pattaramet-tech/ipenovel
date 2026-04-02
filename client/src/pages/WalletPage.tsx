@@ -173,7 +173,7 @@ export default function WalletPage() {
           <Button onClick={() => setShowTopupForm(true)}>{t("wallet.requestTopup")}</Button>
         ) : (
           <div className="space-y-6">
-            {/* 1. Amount Input */}
+            {/* 1. Amount Input with Live Bonus Preview */}
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-2">
                 {t("wallet.topupAmount")}
@@ -186,6 +186,35 @@ export default function WalletPage() {
                 disabled={isUploading || isCreatingRequest}
                 className="w-full px-3 py-2 border rounded"
               />
+              
+              {/* Live Bonus Preview */}
+              {topupAmount && parseFloat(topupAmount) > 0 && (
+                <div className="mt-3 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-700">Requested Amount:</span>
+                      <span className="font-semibold">฿{parseFloat(topupAmount).toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-700">Bonus:</span>
+                      <span className="font-semibold text-green-600">
+                        {parseFloat(topupAmount) >= 500 ? "+฿20.00" : parseFloat(topupAmount) >= 250 ? "+฿10.00" : "No bonus"}
+                      </span>
+                    </div>
+                    <div className="border-t border-blue-200 pt-2 mt-2 flex justify-between">
+                      <span className="font-semibold text-slate-900">Total to be Credited:</span>
+                      <span className="font-bold text-lg text-green-700">
+                        ฿{(
+                          parseFloat(topupAmount) + (
+                            parseFloat(topupAmount) >= 500 ? 20 :
+                            parseFloat(topupAmount) >= 250 ? 10 : 0
+                          )
+                        ).toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* 2. QR Payment Block */}
