@@ -1,4 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle as DialogTitleComponent } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
@@ -13,6 +15,8 @@ export default function AdminPaymentsPage() {
   const { user, isAuthenticated } = useAuth();
   const [slipPreviewOpen, setSlipPreviewOpen] = useState(false);
   const [selectedSlipUrl, setSelectedSlipUrl] = useState<string | null>(null);
+  const [rejectingPaymentId, setRejectingPaymentId] = useState<number | null>(null);
+  const [rejectionReason, setRejectionReason] = useState("");
   const { data: payments, isLoading, refetch } = trpc.admin.payments.pending.useQuery(
     undefined,
     { enabled: !!user && user.role === "admin" }
@@ -158,12 +162,7 @@ export default function AdminPaymentsPage() {
                     <Button
                       variant="destructive"
                       className="flex-1"
-                      onClick={() => {
-                        const reason = prompt("Rejection reason:");
-                        if (reason) {
-                          rejectMutation.mutate({ paymentId: payment.id, rejectionReason: reason });
-                        }
-                      }}
+                      onClick={() => setRejectingPaymentId(payment.id)}
                       disabled={rejectMutation.isPending}
                     >
                       <XCircle className="w-4 h-4 mr-2" />
@@ -175,7 +174,48 @@ export default function AdminPaymentsPage() {
             ))}
           </div>
         )}
-      </div>
+      
+      {/* Rejection Reason Dialog */}
+      <Dialog open={rejectingPaymentId !== null} onOpenChange={(open) => {
+        if (!open) {
+          setRejectingPaymentId(null);
+          setRejectionReason("");
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitleComponent>Reject Payment</DialogTitleComponent>
+            <DialogDescription>
+              Please provide a reason for rejecting this payment.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Input
+              placeholder="Rejection reason..."
+              value={rejectionReason}
+              onChange={(e) => setRejectionReason(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => {
+              setRejectingPaymentId(null);
+              setRejectionReason("");
+            }}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={() => {
+              if (rejectingPaymentId && rejectionReason.trim()) {
+                rejectMutation.mutate({ paymentId: rejectingPaymentId, rejectionReason: rejectionReason.trim() });
+                setRejectingPaymentId(null);
+                setRejectionReason("");
+              }
+            }}>
+              Reject
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
 
       {selectedSlipUrl && (
         <SlipPreviewModal

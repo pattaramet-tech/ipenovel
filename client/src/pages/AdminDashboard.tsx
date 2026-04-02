@@ -1,6 +1,8 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle as DialogTitleComponent } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -16,6 +18,8 @@ export default function AdminDashboard() {
   // All hooks must be called at the top level, before any conditional returns
   const { user, isAuthenticated, loading: authLoading } = useAuth();
   const [, navigate] = useLocation();
+    const [rejectingPaymentId, setRejectingPaymentId] = useState<number | null>(null);
+  const [rejectionReason, setRejectionReason] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
 
   // Check for admin session (local admin login)
@@ -287,12 +291,7 @@ export default function AdminDashboard() {
                         <Button
                           variant="destructive"
                           className="flex-1 h-8 md:h-9 text-xs md:text-sm"
-                          onClick={() => {
-                            const reason = prompt("Rejection reason:");
-                            if (reason) {
-                              rejectMutation.mutate({ paymentId: payment.id, rejectionReason: reason });
-                            }
-                          }}
+                          onClick={() => setRejectingPaymentId(payment.id)}
                           disabled={rejectMutation.isPending}
                         >
                           <XCircle className="w-3 h-3 md:w-4 md:h-4 mr-1" />
@@ -463,7 +462,48 @@ export default function AdminDashboard() {
             )}
           </TabsContent>
         </Tabs>
-      </div>
+      
+      {/* Rejection Reason Dialog */}
+      <Dialog open={rejectingPaymentId !== null} onOpenChange={(open) => {
+        if (!open) {
+          setRejectingPaymentId(null);
+          setRejectionReason("");
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitleComponent>Reject Payment</DialogTitleComponent>
+            <DialogDescription>
+              Please provide a reason for rejecting this payment.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Input
+              placeholder="Rejection reason..."
+              value={rejectionReason}
+              onChange={(e) => setRejectionReason(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => {
+              setRejectingPaymentId(null);
+              setRejectionReason("");
+            }}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={() => {
+              if (rejectingPaymentId && rejectionReason.trim()) {
+                rejectMutation.mutate({ paymentId: rejectingPaymentId, rejectionReason: rejectionReason.trim() });
+                setRejectingPaymentId(null);
+                setRejectionReason("");
+              }
+            }}>
+              Reject
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
     </AdminLayout>
   );
 }
