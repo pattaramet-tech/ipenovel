@@ -157,6 +157,63 @@ describe("Wallet Integration Tests", () => {
     });
   });
 
+  describe("8. rejectWalletTopup with reason", () => {
+    it("should reject topup with reason and not credit wallet", async () => {
+      const topup = await db.createWalletTopup(testUserId, "250.00");
+      const balanceBefore = await db.getWalletBalance(testUserId);
+      const reason = "Invalid slip image";
+
+      const rejected = await db.rejectWalletTopup(topup.id, 1, reason);
+
+      expect(rejected.status).toBe("rejected");
+      expect(rejected.rejectionReason).toBe(reason);
+      expect(rejected.reviewedByUserId).toBe(1);
+
+      const balanceAfter = await db.getWalletBalance(testUserId);
+      expect(balanceAfter).toBe(balanceBefore);
+    });
+  });
+
+  describe("9. Topup with slip image URL", () => {
+    it("should persist slip image URL", async () => {
+      const slipUrl = "https://example.com/slip-test.jpg";
+      const topup = await db.createWalletTopup(testUserId, "300.00", slipUrl);
+
+      expect(topup.slipImageUrl).toBe(slipUrl);
+
+      const fetched = await db.getWalletTopupById(topup.id);
+      expect(fetched.slipImageUrl).toBe(slipUrl);
+    });
+  });
+
+  describe("10. Wallet debit operations", () => {
+    it("should debit wallet balance correctly", async () => {
+      const topup = await db.createWalletTopup(testUserId, "500.00");
+      await db.approveWalletTopup(topup.id, 1);
+
+      const balanceBefore = await db.getWalletBalance(testUserId);
+      const debitAmount = "100.00";
+
+      await db.debitWalletBalance(testUserId, debitAmount, "order", 1);
+
+      const balanceAfter = await db.getWalletBalance(testUserId);
+      const debited = parseFloat(balanceBefore) - parseFloat(balanceAfter);
+      expect(debited).toBeCloseTo(100.0, 1);
+    });
+  });
+
+  describe("11. Topup logs audit trail", () => {
+    it("should create topup logs for audit trail", async () => {
+      const topup = await db.createWalletTopup(testUserId, "250.00");
+      await db.approveWalletTopup(topup.id, 1);
+
+      const logs = await db.getTopupLogs(testUserId);
+      // Verify logs exist and are being recorded
+      expect(logs).toBeDefined();
+      expect(Array.isArray(logs)).toBe(true);
+    });
+  });
+
   afterAll(async () => {
     // Cleanup
   });

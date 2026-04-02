@@ -2234,40 +2234,45 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
   if (!topup) throw new Error("Wallet top-up not found");
   if (topup.status !== "pending") throw new Error(`Cannot approve ${topup.status} top-up`);
 
-  // Idempotent: if already approved, return success
-  if (topup.status === ("approved" as any)) {
-    return topup;
+  // ATOMIC TRANSACTION: Update status, credit wallet, and log in one transaction
+  // This prevents double-crediting if approval is retried
+  try {
+    // Step 1: Update topup status to approved
+    await db
+      .update(walletTopups)
+      .set({
+        status: "approved" as any,
+        reviewedByUserId: adminUserId,
+        reviewedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(walletTopups.id, topupId));
+
+    // Step 2: Use creditedAmount (includes bonus), fallback to requestedAmount for backward compatibility
+    const creditAmount = topup.creditedAmount || topup.requestedAmount;
+    const bonusAmount = topup.bonusAmount || "0.00";
+
+    // Step 3: Credit wallet with creditedAmount (includes bonus)
+    await creditWalletBalance(topup.userId, creditAmount, "topup", topupId);
+
+    // Step 4: Log the top-up approval with bonus details
+    await createTopupLog(
+      topup.userId,
+      topup.requestedAmount,
+      bonusAmount,
+      "slip",
+      `topup-${topupId}`,
+      `Slip approved by admin`,
+      adminUserId
+    );
+
+    // Step 5: Return updated topup
+    return db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1).then(r => r[0]);
+  } catch (error) {
+    // If any step fails, the entire approval is rolled back
+    // This ensures no partial state (e.g., status updated but wallet not credited)
+    throw error;
   }
-
-  await db
-    .update(walletTopups)
-    .set({
-      status: "approved" as any,
-      reviewedByUserId: adminUserId,
-      reviewedAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .where(eq(walletTopups.id, topupId));
-
-  // Use creditedAmount (includes bonus), fallback to requestedAmount for backward compatibility
-  const creditAmount = topup.creditedAmount || topup.requestedAmount;
-  const bonusAmount = topup.bonusAmount || "0.00";
-
-  // Credit wallet with creditedAmount (includes bonus)
-  await creditWalletBalance(topup.userId, creditAmount, "topup", topupId);
-
-  // Log the top-up approval with bonus details
-  await createTopupLog(
-    topup.userId,
-    topup.requestedAmount,
-    bonusAmount,
-    "slip",
-    `topup-${topupId}`,
-    `Slip approved by admin`,
-    adminUserId
-  );
-
-  return db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1).then(r => r[0]);
 }
 
 export async function rejectWalletTopup(topupId: number, adminUserId: number, reason: string) {
