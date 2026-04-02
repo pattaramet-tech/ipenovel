@@ -3,7 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
-import { Loader2, CheckCircle, XCircle, Image as ImageIcon } from "lucide-react";
+import { Loader2, CheckCircle, XCircle, Image as ImageIcon, FileText, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
 import { SlipPreviewModal } from "@/components/SlipPreviewModal";
@@ -45,6 +45,10 @@ export default function AdminWalletTopupsPage() {
   const handleSlipPreview = (slipUrl: string) => {
     setSelectedSlipUrl(slipUrl);
     setSlipPreviewOpen(true);
+  };
+
+  const isPdfSlip = (url: string): boolean => {
+    return url.toLowerCase().endsWith('.pdf') || url.includes('pdf');
   };
 
   if (!isAuthenticated) {
@@ -125,20 +129,46 @@ export default function AdminWalletTopupsPage() {
                     <p className="text-sm font-semibold mb-2">Payment Slip:</p>
                     {topup.slipImageUrl ? (
                       <div className="flex gap-2 items-start">
-                        <img
-                          src={topup.slipImageUrl}
-                          alt="Payment slip"
-                          className="max-w-xs max-h-32 rounded border border-slate-200 cursor-pointer hover:opacity-80 transition"
-                          onClick={() => handleSlipPreview(topup.slipImageUrl)}
-                        />
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleSlipPreview(topup.slipImageUrl)}
-                        >
-                          <ImageIcon className="w-4 h-4 mr-1" />
-                          View Full
-                        </Button>
+                        {isPdfSlip(topup.slipImageUrl) ? (
+                          <div className="flex flex-col gap-2 w-full">
+                            <div className="flex items-center gap-2 bg-slate-100 rounded border border-slate-300 p-3">
+                              <FileText className="w-6 h-6 text-red-600" />
+                              <div className="flex-1">
+                                <p className="text-sm font-medium text-slate-700">PDF Payment Slip</p>
+                                <p className="text-xs text-slate-600">Click to open in new tab</p>
+                              </div>
+                            </div>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => window.open(topup.slipImageUrl, '_blank')}
+                              className="w-full"
+                            >
+                              <ExternalLink className="w-4 h-4 mr-2" />
+                              Open PDF
+                            </Button>
+                          </div>
+                        ) : (
+                          <div className="flex gap-2 items-start">
+                            <img
+                              src={topup.slipImageUrl}
+                              alt="Payment slip"
+                              className="max-w-xs max-h-32 rounded border border-slate-200 cursor-pointer hover:opacity-80 transition"
+                              onClick={() => handleSlipPreview(topup.slipImageUrl)}
+                              onError={(e) => {
+                                (e.target as HTMLImageElement).style.display = 'none';
+                              }}
+                            />
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleSlipPreview(topup.slipImageUrl)}
+                            >
+                              <ImageIcon className="w-4 h-4 mr-1" />
+                              View Full
+                            </Button>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="bg-slate-100 rounded border border-slate-300 p-4 text-center text-slate-600 text-sm">

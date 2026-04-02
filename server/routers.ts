@@ -293,31 +293,61 @@ export const appRouter = router({
         }
 
         try {
-          const order = await orderService.createOrderFromCart(String(ctx.user.id), cartItems, input.couponCode, input.pointsToRedeem);
-          // Use order.totalAmount (already calculated with discounts/points) instead of summing finalPrice
-          const totalAmount = order.totalAmount;
+          // STEP 1: Calculate total amount BEFORE creating order
+          // This requires simulating the order calculation without persisting
+          let subtotal = 0;
+          for (const item of cartItems) {
+            const price = parseFloat(item.price?.toString() || "0");
+            subtotal += price;
+          }
 
+          // Apply coupon if provided
+          let discountAmount = 0;
+          if (input.couponCode) {
+            const { discountAmount: discount } = await orderService.validateAndApplyCoupon(input.couponCode, subtotal.toString());
+            discountAmount = parseFloat(discount);
+          }
+
+          // Apply points redemption if provided
+          let pointsDiscountAmount = 0;
+          if (input.pointsToRedeem && parseFloat(input.pointsToRedeem) > 0) {
+            const requestedPoints = parseFloat(input.pointsToRedeem);
+            const balanceStr = await db.getUserPointsBalance(ctx.user.id);
+            const balance = parseFloat(balanceStr);
+            if (requestedPoints > balance) {
+              throw new Error(`Insufficient points balance. You have ${balance.toFixed(2)} points.`);
+            }
+            pointsDiscountAmount = Math.min(requestedPoints, subtotal - discountAmount);
+          }
+
+          // Calculate final total
+          const totalAmount = Math.max(0, subtotal - discountAmount - pointsDiscountAmount).toFixed(2);
+
+          // STEP 2: Check wallet balance BEFORE creating order
           const walletBalance = await db.getWalletBalance(ctx.user.id);
           if (parseFloat(walletBalance) < parseFloat(totalAmount)) {
             throw new Error("Insufficient wallet balance");
           }
 
-          // Debit wallet
+          // STEP 3: Now safe to create order (balance check passed)
+          const order = await orderService.createOrderFromCart(String(ctx.user.id), cartItems, input.couponCode, input.pointsToRedeem);
+
+          // STEP 4: Debit wallet
           await db.debitWalletBalance(ctx.user.id, totalAmount, "order", order.id);
           
-          // Update order status
+          // STEP 5: Update order status
           await db.updateOrder(order.id, { status: "approved", paymentStatus: "approved" });
           
-          // Update the payment record that was already created by createOrderFromCart
+          // STEP 6: Update the payment record that was already created by createOrderFromCart
           const payment = await db.getPaymentByOrderId(order.id);
           if (payment) {
             await db.updatePayment(payment.id, { status: "approved" });
           }
           
-          // Finalize order completion (points, purchases, coupon usage) - same flow as manual slip approval
+          // STEP 7: Finalize order completion (points, purchases, coupon usage) - same flow as manual slip approval
           await orderService.finalizeOrderCompletion(order.id, ctx.user.id);
           
-          // Clear cart
+          // STEP 8: Clear cart
           await db.clearCart(cart.id);
 
           return { order, success: true };
