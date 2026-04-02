@@ -2058,13 +2058,43 @@ export async function listWalletTransactions(userId: number, limit: number = 20,
     .offset(offset);
 }
 
+/**
+ * Calculate bonus based on requested amount
+ * - amount < 250 => bonus 0
+ * - 250 <= amount < 500 => bonus 10
+ * - amount >= 500 => bonus 20
+ */
+export function calculateBonus(requestedAmount: string | number): string {
+  const amount = typeof requestedAmount === 'string' ? parseFloat(requestedAmount) : requestedAmount;
+  
+  if (isNaN(amount) || amount <= 0) {
+    throw new Error("Invalid amount: must be a positive number");
+  }
+  
+  if (amount >= 500) return "20.00";
+  if (amount >= 250) return "10.00";
+  return "0.00";
+}
+
 export async function createWalletTopup(userId: number, requestedAmount: string, slipImageUrl?: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
+  // Validate amount
+  const amount = parseFloat(requestedAmount);
+  if (isNaN(amount) || amount <= 0) {
+    throw new Error("Invalid top-up amount");
+  }
+
+  // Calculate bonus
+  const bonusAmount = calculateBonus(amount);
+  const creditedAmount = (amount + parseFloat(bonusAmount)).toFixed(2);
+
   const result = await db.insert(walletTopups).values({
     userId,
     requestedAmount,
+    bonusAmount,
+    creditedAmount,
     slipImageUrl: slipImageUrl || null,
     status: "pending" as any,
   });
@@ -2083,13 +2113,24 @@ export async function listPendingWalletTopups(limit: number = 20, offset: number
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  return db
-    .select()
+  // Join with users to enrich topup data with user info
+  const result = await db
+    .select({
+      ...getTableColumns(walletTopups),
+      user: {
+        id: users.id,
+        name: users.name,
+        email: users.email,
+      },
+    })
     .from(walletTopups)
+    .leftJoin(users, eq(walletTopups.userId, users.id))
     .where(eq(walletTopups.status, "pending"))
     .orderBy(asc(walletTopups.createdAt))
     .limit(limit)
     .offset(offset);
+
+  return result;
 }
 
 export async function updateWalletTopupSlip(topupId: number, slipImageUrl: string) {
@@ -2208,14 +2249,18 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
     })
     .where(eq(walletTopups.id, topupId));
 
-  // Credit wallet
-  await creditWalletBalance(topup.userId, topup.requestedAmount, "topup", topupId);
+  // Use creditedAmount (includes bonus), fallback to requestedAmount for backward compatibility
+  const creditAmount = topup.creditedAmount || topup.requestedAmount;
+  const bonusAmount = topup.bonusAmount || "0.00";
 
-  // Log the top-up approval
+  // Credit wallet with creditedAmount (includes bonus)
+  await creditWalletBalance(topup.userId, creditAmount, "topup", topupId);
+
+  // Log the top-up approval with bonus details
   await createTopupLog(
     topup.userId,
     topup.requestedAmount,
-    "0.00",
+    bonusAmount,
     "slip",
     `topup-${topupId}`,
     `Slip approved by admin`,

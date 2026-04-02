@@ -295,14 +295,30 @@ export default function WalletPage() {
           </div>
         )}
 
+        {/* Bonus Rule Hint */}
+        <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-4 text-sm">
+          <p className="font-semibold text-blue-900 mb-1">Bonus Rule:</p>
+          <ul className="text-blue-800 text-xs space-y-1">
+            <li>• Amount less than ฿250: No bonus</li>
+            <li>• ฿250 - ฿499: +฿10 bonus</li>
+            <li>• ฿500 and above: +฿20 bonus</li>
+          </ul>
+        </div>
+
         {/* Top-up Requests List */}
         <div className="mt-6 space-y-3">
           {summary?.recentTopups && summary.recentTopups.length > 0 ? (
             summary.recentTopups.map((topup: any) => (
               <div key={topup.id} className="border rounded p-3 flex justify-between items-start">
-                <div>
+                <div className="flex-1">
                   <div className="font-semibold">฿{topup.requestedAmount}</div>
-                  <div className="text-sm text-gray-600">{new Date(topup.createdAt).toLocaleDateString()}</div>
+                  {(topup.bonusAmount || topup.creditedAmount) && (
+                    <div className="text-xs text-gray-600 mt-1">
+                      {topup.bonusAmount && <div>Bonus: +฿{topup.bonusAmount}</div>}
+                      {topup.creditedAmount && <div className="font-semibold text-green-700">Total Credited: ฿{topup.creditedAmount}</div>}
+                    </div>
+                  )}
+                  <div className="text-sm text-gray-600 mt-1">{new Date(topup.createdAt).toLocaleDateString()}</div>
                 </div>
                 <div className="flex flex-col items-end gap-2">
                   <Badge variant={topup.status === "pending" ? "outline" : topup.status === "approved" ? "default" : "destructive"}>

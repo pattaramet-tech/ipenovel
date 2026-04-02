@@ -478,6 +478,8 @@ export const walletTopups = mysqlTable("walletTopups", {
   id: int("id").autoincrement().primaryKey(),
   userId: int("userId").notNull(),
   requestedAmount: decimal("requestedAmount", { precision: 12, scale: 2 }).notNull(),
+  bonusAmount: decimal("bonusAmount", { precision: 12, scale: 2 }).default("0").notNull(),
+  creditedAmount: decimal("creditedAmount", { precision: 12, scale: 2 }),
   slipImageUrl: text("slipImageUrl"),
   status: mysqlEnum("status", ["pending", "approved", "rejected", "cancelled"]).default("pending").notNull(),
   rejectionReason: text("rejectionReason"),

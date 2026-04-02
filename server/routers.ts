@@ -499,18 +499,21 @@ export const appRouter = router({
           if (isNaN(amountNum)) {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid amount" });
           }
-          const currentBalance = await db.getUserPointsBalance(input.userId);
-          const newBalance = Math.max(0, parseFloat(currentBalance) + amountNum);
-          await db.recordPointsTransaction({
-            userId: input.userId,
-            type: "adjust",
-            amount: Math.abs(amountNum).toString(),
-            balanceAfter: newBalance.toFixed(2),
-            referenceType: "admin_correction",
-            referenceId: 0,
-            note: `Admin correction by ${ctx.user.id}: ${input.reason}`,
-          });
-          return { success: true, newBalance: newBalance.toFixed(2) };
+          // Write to wallet, not points
+          const reference = `admin-adjust-${Date.now()}`;
+          await db.creditWalletBalance(input.userId, Math.abs(amountNum).toString(), "admin_adjust", 0);
+          // Create topup log for audit trail
+          await db.createTopupLog(
+            input.userId,
+            Math.abs(amountNum).toString(),
+            "0.00",
+            "admin_adjust",
+            reference,
+            `Admin adjustment: ${input.reason}`,
+            ctx.user.id
+          );
+          const newBalance = await db.getWalletBalance(input.userId);
+          return { success: true, newBalance };
         }),
     }),
   }),
@@ -1131,18 +1134,21 @@ export const appRouter = router({
           if (isNaN(amountNum)) {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid amount" });
           }
-          const currentBalance = await db.getWalletBalance(input.userId);
-          const newBalance = Math.max(0, parseFloat(currentBalance) + amountNum);
-          await db.recordPointsTransaction({
-            userId: input.userId,
-            type: "adjust",
-            amount: Math.abs(amountNum).toString(),
-            balanceAfter: newBalance.toFixed(2),
-            referenceType: "admin_correction",
-            referenceId: 0,
-            note: `Admin correction by ${ctx.user.id}: ${input.reason}`,
-          });
-          return { success: true, newBalance: newBalance.toFixed(2) };
+          // Write to wallet, not points
+          const reference = `admin-adjust-${Date.now()}`;
+          await db.creditWalletBalance(input.userId, Math.abs(amountNum).toString(), "admin_adjust", 0);
+          // Create topup log for audit trail
+          await db.createTopupLog(
+            input.userId,
+            Math.abs(amountNum).toString(),
+            "0.00",
+            "admin_adjust",
+            reference,
+            `Admin adjustment: ${input.reason}`,
+            ctx.user.id
+          );
+          const newBalance = await db.getWalletBalance(input.userId);
+          return { success: true, newBalance };
         }),
       listTopupLogs: adminProcedure
         .input(z.object({
