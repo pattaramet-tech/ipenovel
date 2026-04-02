@@ -1,6 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
 import { Loader2, CheckCircle, XCircle, Image as ImageIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -13,6 +14,9 @@ export default function AdminWalletTopupsPage() {
   const { user, isAuthenticated } = useAuth();
   const [slipPreviewOpen, setSlipPreviewOpen] = useState(false);
   const [selectedSlipUrl, setSelectedSlipUrl] = useState<string | null>(null);
+  const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
+  const [rejectingTopupId, setRejectingTopupId] = useState<number | null>(null);
+  const [rejectionReason, setRejectionReason] = useState("");
   const { data: topups, isLoading, refetch } = trpc.wallet.admin.listPendingTopups.useQuery(
     { limit: 50, offset: 0 },
     { enabled: !!user && user.role === "admin" }
@@ -158,10 +162,9 @@ export default function AdminWalletTopupsPage() {
                         variant="destructive"
                         className="flex-1"
                         onClick={() => {
-                          const reason = prompt("Rejection reason:");
-                          if (reason) {
-                            rejectMutation.mutate({ topupId: topup.id, reason });
-                          }
+                          setRejectingTopupId(topup.id);
+                          setRejectionReason("");
+                          setRejectDialogOpen(true);
                         }}
                         disabled={rejectMutation.isPending}
                       >
@@ -183,6 +186,59 @@ export default function AdminWalletTopupsPage() {
           onClose={() => setSlipPreviewOpen(false)}
           slipUrl={selectedSlipUrl}
         />
+      )}
+
+      {/* Rejection Reason Dialog */}
+      {rejectDialogOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <Card className="w-full max-w-md">
+            <CardHeader>
+              <CardTitle>Reject Top-up</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  Rejection Reason
+                </label>
+                <Input
+                  type="text"
+                  placeholder="Enter reason for rejection"
+                  value={rejectionReason}
+                  onChange={(e) => setRejectionReason(e.target.value)}
+                  disabled={rejectMutation.isPending}
+                />
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  onClick={() => setRejectDialogOpen(false)}
+                  disabled={rejectMutation.isPending}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  className="flex-1"
+                  onClick={() => {
+                    if (rejectingTopupId && rejectionReason.trim()) {
+                      rejectMutation.mutate({
+                        topupId: rejectingTopupId,
+                        reason: rejectionReason.trim(),
+                      });
+                      setRejectDialogOpen(false);
+                    } else {
+                      toast.error("Please enter a rejection reason");
+                    }
+                  }}
+                  disabled={rejectMutation.isPending || !rejectionReason.trim()}
+                >
+                  Confirm Rejection
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       )}
     </AdminLayout>
   );
