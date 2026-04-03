@@ -142,7 +142,7 @@ export async function createOrderFromCart(
     pointsDiscountAmount: pointsDiscountAmount.toString(),
     totalAmount: totalAmount.toString(),
     couponCodeSnapshot: normalizedCouponCode,
-  });
+  }, tx);
 
   if (!result) {
     throw new Error("Failed to create order");
@@ -253,7 +253,7 @@ export async function finalizeOrderCompletion(orderId: number, userId: number, t
         referenceType: "order",
         referenceId: orderId,
         note: `Points redeemed for order ${order.orderNumber}`,
-      });
+      }, tx);
     }
   }
 
@@ -317,7 +317,7 @@ async function awardPointsForOrder(orderId: number, userId: number, amount: stri
     referenceType: "order",
     referenceId: orderId,
     note: `Points earned from order ${orderId}`,
-  });
+  }, tx);
 }
 
 /**
