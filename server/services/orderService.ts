@@ -74,16 +74,16 @@ export async function validateAndApplyCoupon(couponCode: string, subtotal: strin
 /**
  * Check if episode is already purchased by user
  */
-export async function isEpisodeAlreadyPurchased(userId: number, episodeId: number): Promise<boolean> {
-  const purchase = await db.getPurchaseByUserAndEpisode(userId, episodeId);
+export async function isEpisodeAlreadyPurchased(userId: number, episodeId: number, tx?: any): Promise<boolean> {
+  const purchase = await db.getPurchaseByUserAndEpisode(userId, episodeId, tx);
   return !!purchase;
 }
 
 /**
  * Check if user has access to an episode (via purchase)
  */
-export async function hasAccessToEpisode(userId: number, episodeId: number): Promise<boolean> {
-  const purchase = await db.getPurchaseByUserAndEpisode(userId, episodeId);
+export async function hasAccessToEpisode(userId: number, episodeId: number, tx?: any): Promise<boolean> {
+  const purchase = await db.getPurchaseByUserAndEpisode(userId, episodeId, tx);
   return !!purchase;
 }
 
@@ -181,13 +181,13 @@ export async function createOrderFromCart(
 /**
  * Approve payment and create purchases
  */
-export async function approvePayment(paymentId: number, approvedBy: string): Promise<{ message: string }> {
-  const payment = await db.getPaymentById(paymentId);
+export async function approvePayment(paymentId: number, approvedBy: string, tx?: any): Promise<{ message: string }> {
+  const payment = await db.getPaymentById(paymentId, tx);
   if (!payment) {
     throw new Error("Payment not found");
   }
 
-  const order = await db.getOrderById(payment.orderId);
+  const order = await db.getOrderById(payment.orderId, tx);
   if (!order) {
     throw new Error("Order not found");
   }
@@ -195,18 +195,18 @@ export async function approvePayment(paymentId: number, approvedBy: string): Pro
   // Update payment status with reviewer info
   await db.updatePayment(paymentId, {
     status: "approved",
-  });
+  }, tx);
   // Also set reviewedByUserId and reviewedAt via db.approvePayment
   const approvedByNum = parseInt(approvedBy, 10);
   if (!isNaN(approvedByNum)) {
-    await db.approvePayment(paymentId, approvedByNum);
+    await db.approvePayment(paymentId, approvedByNum, tx);
   }
 
   // Update order status and payment status
   await db.updateOrder(order.id, { 
     status: "approved",
     paymentStatus: "approved"
-  });
+  }, tx);
 
   // Record order history
   await db.recordOrderHistory({
@@ -216,11 +216,11 @@ export async function approvePayment(paymentId: number, approvedBy: string): Pro
     toStatus: "approved",
     actorUserId: approvedByNum || undefined,
     note: "Payment approved by admin",
-  });
+  }, tx);
 
   // Finalize order completion (points, purchases, coupon usage)
   if (order.userId) {
-    await finalizeOrderCompletion(order.id, order.userId);
+    await finalizeOrderCompletion(order.id, order.userId, tx);
   }
 
   return { message: `Payment ${paymentId} approved successfully` };
@@ -323,8 +323,8 @@ async function awardPointsForOrder(orderId: number, userId: number, amount: stri
 /**
  * Reject payment
  */
-export async function rejectPayment(paymentId: number, rejectedBy: string, reason: string): Promise<void> {
-  const payment = await db.getPaymentById(paymentId);
+export async function rejectPayment(paymentId: number, rejectedBy: string, reason: string, tx?: any): Promise<void> {
+  const payment = await db.getPaymentById(paymentId, tx);
   if (!payment) {
     throw new Error("Payment not found");
   }
@@ -335,20 +335,20 @@ export async function rejectPayment(paymentId: number, rejectedBy: string, reaso
   await db.updatePayment(paymentId, {
     status: "rejected",
     rejectionReason: reason,
-  });
+  }, tx);
   // Set reviewedByUserId and reviewedAt
   if (!isNaN(rejectedByNum)) {
-    await db.rejectPayment(paymentId, rejectedByNum, reason);
+    await db.rejectPayment(paymentId, rejectedByNum, reason, tx);
   }
 
   // Update order status and payment status
-  const order = await db.getOrderById(payment.orderId);
+  const order = await db.getOrderById(payment.orderId, tx);
   if (order) {
     await db.updateOrder(order.id, { 
       status: "rejected",
       paymentStatus: "rejected",
       notes: reason
-    });
+    }, tx);
 
     // Record order history
     await db.recordOrderHistory({
@@ -358,7 +358,7 @@ export async function rejectPayment(paymentId: number, rejectedBy: string, reaso
       toStatus: "rejected",
       actorUserId: rejectedByNum || undefined,
       note: reason,
-    });
+    }, tx);
   }
 }
 
@@ -369,9 +369,10 @@ export async function rejectPayment(paymentId: number, rejectedBy: string, reaso
  */
 export async function calculatePointsRedemption(
   userId: number,
-  subtotal: string
+  subtotal: string,
+  tx?: any
 ): Promise<{ pointsToRedeem: number; pointsDiscount: string }> {
-  const balance = await db.getUserPointsBalance(userId);
+  const balance = await db.getUserPointsBalance(userId, tx);
   const balanceNum = parseFloat(balance || "0");
   const subtotalNum = parseFloat(subtotal);
 

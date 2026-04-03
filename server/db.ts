@@ -549,8 +549,8 @@ export async function getPaymentByOrderId(orderId: number, tx?: any) {
   return result.length > 0 ? result[0] : undefined;
 }
 
-export async function getPaymentById(paymentId: number) {
-  const db = await getDb();
+export async function getPaymentById(paymentId: number, tx?: any) {
+  const db = tx || await getDb();
   if (!db) return undefined;
   const result = await db.select().from(payments).where(eq(payments.id, paymentId)).limit(1);
   return result.length > 0 ? result[0] : undefined;
@@ -576,7 +576,7 @@ export async function updatePayment(paymentId: number, data: { slipImageUrl?: st
   await db.update(payments).set(data).where(eq(payments.id, paymentId));
 }
 
-export async function approvePayment(paymentId: number, reviewedByUserId: number) {
+export async function approvePayment(paymentId: number, reviewedByUserId: number, tx?: any) {
   const db = await getDb();
   if (!db) return;
   await db
@@ -589,7 +589,7 @@ export async function approvePayment(paymentId: number, reviewedByUserId: number
     .where(eq(payments.id, paymentId));
 }
 
-export async function rejectPayment(paymentId: number, reviewedByUserId: number, rejectionReason: string) {
+export async function rejectPayment(paymentId: number, reviewedByUserId: number, rejectionReason: string, tx?: any) {
   const db = await getDb();
   if (!db) return;
   await db
@@ -940,7 +940,7 @@ export async function setSetting(key: string, value: string, description?: strin
 
 // ============ ORDER HISTORY ============
 
-export async function recordOrderHistory(data: { orderId: number; action: string; fromStatus?: string; toStatus?: string; actorUserId?: number; note?: string }) {
+export async function recordOrderHistory(data: { orderId: number; action: string; fromStatus?: string; toStatus?: string; actorUserId?: number; note?: string }, tx?: any) {
   const db = await getDb();
   if (!db) return;
 
