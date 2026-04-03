@@ -336,25 +336,31 @@ export const appRouter = router({
           
           const order = await dbConnection.transaction(async (tx) => {
             // STEP 3: Create order (within transaction)
-            const newOrder = await orderService.createOrderFromCart(String(ctx.user.id), cartItems, input.couponCode, input.pointsToRedeem);
+            // Pass tx so all writes use the same transaction
+            const newOrder = await orderService.createOrderFromCart(String(ctx.user.id), cartItems, input.couponCode, input.pointsToRedeem, undefined, tx);
 
             // STEP 4: Debit wallet (within transaction)
-            await db.debitWalletBalance(ctx.user.id, totalAmount, "order", newOrder.id);
+            // Pass tx so wallet debit uses the same transaction
+            await db.debitWalletBalance(ctx.user.id, totalAmount, "order", newOrder.id, tx);
             
             // STEP 5: Update order status (within transaction)
-            await db.updateOrder(newOrder.id, { status: "approved", paymentStatus: "approved" });
+            // Pass tx so order update uses the same transaction
+            await db.updateOrder(newOrder.id, { status: "approved", paymentStatus: "approved" }, tx);
             
             // STEP 6: Update the payment record (within transaction)
-            const payment = await db.getPaymentByOrderId(newOrder.id);
+            // Pass tx so payment queries/updates use the same transaction
+            const payment = await db.getPaymentByOrderId(newOrder.id, tx);
             if (payment) {
-              await db.updatePayment(payment.id, { status: "approved" });
+              await db.updatePayment(payment.id, { status: "approved" }, tx);
             }
             
             // STEP 7: Finalize order completion (points, purchases, coupon usage)
-            await orderService.finalizeOrderCompletion(newOrder.id, ctx.user.id);
+            // Pass tx so all finalization writes use the same transaction
+            await orderService.finalizeOrderCompletion(newOrder.id, ctx.user.id, tx);
             
             // STEP 8: Clear cart (within transaction)
-            await db.clearCart(cart.id);
+            // Pass tx so cart clear uses the same transaction
+            await db.clearCart(cart.id, tx);
             
             return newOrder;
           });

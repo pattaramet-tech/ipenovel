@@ -95,7 +95,8 @@ export async function createOrderFromCart(
   cartItems: any[],
   couponCode?: string,
   pointsToRedeem?: string,
-  slipImageUrl?: string
+  slipImageUrl?: string,
+  tx?: any
 ): Promise<any> {
   // Calculate subtotal
   let subtotal = 0;
@@ -230,7 +231,7 @@ export async function approvePayment(paymentId: number, approvedBy: string): Pro
  * This is the single source of truth for all order completion flows (manual slip, wallet, etc.)
  * Idempotent: safe to call multiple times for the same order
  */
-export async function finalizeOrderCompletion(orderId: number, userId: number): Promise<void> {
+export async function finalizeOrderCompletion(orderId: number, userId: number, tx?: any): Promise<void> {
   const order = await db.getOrderById(orderId);
   if (!order) {
     throw new Error(`Order ${orderId} not found`);

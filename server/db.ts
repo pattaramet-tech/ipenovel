@@ -383,7 +383,7 @@ export async function removeFromCart(cartItemId: number) {
   await db.delete(cartItems).where(eq(cartItems.id, cartItemId));
 }
 
-export async function clearCart(cartId: number) {
+export async function clearCart(cartId: number, tx?: any) {
   const db = await getDb();
   if (!db) return;
   await db.delete(cartItems).where(eq(cartItems.cartId, cartId));
@@ -542,7 +542,7 @@ export async function createPayment(orderId: number, slipImageUrl?: string) {
   return { id: insertedId } as any;
 }
 
-export async function getPaymentByOrderId(orderId: number) {
+export async function getPaymentByOrderId(orderId: number, tx?: any) {
   const db = await getDb();
   if (!db) return undefined;
   const result = await db.select().from(payments).where(eq(payments.orderId, orderId)).limit(1);
@@ -556,7 +556,7 @@ export async function getPaymentById(paymentId: number) {
   return result.length > 0 ? result[0] : undefined;
 }
 
-export async function updateOrder(orderId: number, data: { status?: string; paymentStatus?: string; notes?: string }) {
+export async function updateOrder(orderId: number, data: { status?: string; paymentStatus?: string; notes?: string }, tx?: any) {
   const db = await getDb();
   if (!db) return;
 
@@ -570,7 +570,7 @@ export async function updateOrder(orderId: number, data: { status?: string; paym
   await db.update(orders).set(updateData).where(eq(orders.id, orderId));
 }
 
-export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected"; rejectionReason?: string }) {
+export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected"; rejectionReason?: string }, tx?: any) {
   const db = await getDb();
   if (!db) return;
   await db.update(payments).set(data).where(eq(payments.id, paymentId));
@@ -2167,7 +2167,7 @@ export async function createWalletTransaction(
   });
 }
 
-export async function debitWalletBalance(userId: number, amount: string, referenceType: string, referenceId: number) {
+export async function debitWalletBalance(userId: number, amount: string, referenceType: string, referenceId: number, tx?: any) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
@@ -2241,7 +2241,8 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
     const topup = topupResult[0];
     
     // Step 2: Conditional status update - ONLY update if still pending (idempotency)
-    // If already approved/rejected, this update will fail silently (no rows affected)
+    // CRITICAL: Only the winning concurrent request may proceed
+    // Losing requests will have 0 rows affected and must abort immediately
     const updateResult = await tx
       .update(walletTopups)
       .set({
@@ -2252,13 +2253,13 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
       })
       .where(and(eq(walletTopups.id, topupId), eq(walletTopups.status, "pending" as any)));
     
-    // If no rows were updated, topup was already approved/rejected
-    // Throw error to rollback entire transaction
-    // Note: Drizzle ORM update doesn't return rowsAffected in transaction context
-    // So we verify by checking if status is still pending after update
-    const verifyResult = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
-    if (verifyResult[0].status !== "approved") {
-      throw new Error(`Cannot approve ${topup.status} top-up - already processed`);
+    // CRITICAL: Check if update actually affected a row
+    // Drizzle ORM returns an array with affected count as first element
+    // If updateResult is 0 or empty, this request lost the race and must not credit wallet
+    const affectedRows = Array.isArray(updateResult) ? updateResult[0] : (updateResult as any)?.affectedRows || 0;
+    if (!affectedRows || affectedRows === 0) {
+      // Another request already approved this topup - abort without crediting
+      throw new Error("Wallet top-up already processed by another request");
     }
 
     // Step 2: Use creditedAmount (includes bonus), fallback to requestedAmount for backward compatibility
