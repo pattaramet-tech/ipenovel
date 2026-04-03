@@ -1241,8 +1241,8 @@ export async function bulkCreateEpisodesWithNovelTitle(
  * Check if points have already been awarded for a given order
  * Returns true if an "earn" transaction exists for this order
  */
-export async function hasPointsBeenAwardedForOrder(orderId: number): Promise<boolean> {
-  const db = await getDb();
+export async function hasPointsBeenAwardedForOrder(orderId: number, tx?: any): Promise<boolean> {
+  const db = tx || await getDb();
   if (!db) return false;
 
   const result = await db

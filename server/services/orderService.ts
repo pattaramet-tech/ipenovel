@@ -20,10 +20,10 @@ export function generateOrderNumber(): string {
  * Validate coupon for an order
  * Returns discount amount or throws error with specific reason
  */
-export async function validateAndApplyCoupon(couponCode: string, subtotal: string): Promise<{ discountAmount: string; coupon: any; normalizedCode?: string }> {
+export async function validateAndApplyCoupon(couponCode: string, subtotal: string, tx?: any): Promise<{ discountAmount: string; coupon: any; normalizedCode?: string }> {
   // Normalize coupon code: trim and uppercase for consistent lookup
   const normalizedCode = String(couponCode || "").trim().toUpperCase();
-  const coupon = await db.getCouponByCode(normalizedCode);
+  const coupon = await db.getCouponByCode(normalizedCode, tx);
 
   if (!coupon) {
     throw new Error("Coupon not found");
@@ -109,7 +109,7 @@ export async function createOrderFromCart(
   let discountAmount = 0;
   let normalizedCouponCode: string | undefined;
   if (couponCode) {
-    const { discountAmount: discount, normalizedCode } = await validateAndApplyCoupon(couponCode, subtotal.toString());
+    const { discountAmount: discount, normalizedCode } = await validateAndApplyCoupon(couponCode, subtotal.toString(), tx);
     discountAmount = parseFloat(discount);
     normalizedCouponCode = normalizedCode;
   }
@@ -120,7 +120,7 @@ export async function createOrderFromCart(
   if (pointsToRedeem && parseFloat(pointsToRedeem) > 0) {
     const requestedPoints = parseFloat(pointsToRedeem);
     // Validate user has enough points
-    const balanceStr = await db.getUserPointsBalance(userIdNum);
+    const balanceStr = await db.getUserPointsBalance(userIdNum, tx);
     const balance = parseFloat(balanceStr);
     if (requestedPoints > balance) {
       throw new Error(`Insufficient points balance. You have ${balance.toFixed(2)} points.`);
@@ -164,14 +164,14 @@ export async function createOrderFromCart(
   }));
 
   if (orderItemsData.length > 0) {
-    await db.createOrderItems(orderItemsData);
+    await db.createOrderItems(orderItemsData, tx);
   }
 
   // Create payment record for the order (with slip if provided)
-  await db.createPayment(orderId, slipImageUrl);
+  await db.createPayment(orderId, slipImageUrl, tx);
 
   // Fetch and return the full order object
-  const fullOrder = await db.getOrderById(orderId);
+  const fullOrder = await db.getOrderById(orderId, tx);
   if (!fullOrder) {
     throw new Error("Failed to fetch created order");
   }
@@ -232,7 +232,7 @@ export async function approvePayment(paymentId: number, approvedBy: string): Pro
  * Idempotent: safe to call multiple times for the same order
  */
 export async function finalizeOrderCompletion(orderId: number, userId: number, tx?: any): Promise<void> {
-  const order = await db.getOrderById(orderId);
+  const order = await db.getOrderById(orderId, tx);
   if (!order) {
     throw new Error(`Order ${orderId} not found`);
   }
@@ -240,9 +240,9 @@ export async function finalizeOrderCompletion(orderId: number, userId: number, t
   // 1. Deduct redeemed points (if any) - only if not already deducted
   const pointsDiscountNum = parseFloat(order.pointsDiscountAmount?.toString() || "0");
   if (pointsDiscountNum > 0) {
-    const alreadyDeducted = await db.hasPointsBeenRedeemedForOrder(orderId);
+    const alreadyDeducted = await db.hasPointsBeenRedeemedForOrder(orderId, tx);
     if (!alreadyDeducted) {
-      const currentBalanceStr = await db.getUserPointsBalance(userId);
+      const currentBalanceStr = await db.getUserPointsBalance(userId, tx);
       const currentBalance = parseFloat(currentBalanceStr);
       const newBalance = Math.max(0, currentBalance - pointsDiscountNum);
       await db.recordPointsTransaction({
@@ -258,25 +258,25 @@ export async function finalizeOrderCompletion(orderId: number, userId: number, t
   }
 
   // 2. Create purchase records (idempotent: skip if already purchased)
-  const orderItems = await db.getOrderItems(orderId);
+  const orderItems = await db.getOrderItems(orderId, tx);
   for (const item of orderItems) {
-    const episode = (item as any).episode || await db.getEpisodeById(item.episodeId);
+    const episode = (item as any).episode || await db.getEpisodeById(item.episodeId, tx);
     if (episode && userId) {
-      const existing = await db.getPurchaseByUserAndEpisode(userId, item.episodeId);
+      const existing = await db.getPurchaseByUserAndEpisode(userId, item.episodeId, tx);
       if (!existing) {
-        await db.createPurchase(userId, episode.novelId, item.episodeId, orderId);
+        await db.createPurchase(userId, episode.novelId, item.episodeId, orderId, tx);
       }
     }
   }
 
   // 3. Award loyalty points (only once per order)
-  await awardPointsForOrder(orderId, userId, order.totalAmount.toString());
+  await awardPointsForOrder(orderId, userId, order.totalAmount.toString(), tx);
 
   // 4. Record coupon usage (if coupon was used)
   if (order.couponCodeSnapshot) {
-    const coupon = await db.getCouponByCode(order.couponCodeSnapshot);
+    const coupon = await db.getCouponByCode(order.couponCodeSnapshot, tx);
     if (coupon) {
-      await db.recordCouponUsage(coupon.id, userId, orderId);
+      await db.recordCouponUsage(coupon.id, userId, orderId, tx);
     }
   }
 }
@@ -286,9 +286,9 @@ export async function finalizeOrderCompletion(orderId: number, userId: number, t
  * 100 currency units = 1 point
  * Only awards once per order (idempotent)
  */
-async function awardPointsForOrder(orderId: number, userId: number, amount: string): Promise<void> {
+async function awardPointsForOrder(orderId: number, userId: number, amount: string, tx?: any): Promise<void> {
   // Check if points already awarded for this order
-  const alreadyAwarded = await db.hasPointsBeenAwardedForOrder(orderId);
+  const alreadyAwarded = await db.hasPointsBeenAwardedForOrder(orderId, tx);
   if (alreadyAwarded) {
     console.log(`Points already awarded for order ${orderId}, skipping`);
     return;
@@ -304,7 +304,7 @@ async function awardPointsForOrder(orderId: number, userId: number, amount: stri
   }
 
   // Get current balance
-  const currentBalance = await db.getUserPointsBalance(userId);
+  const currentBalance = await db.getUserPointsBalance(userId, tx);
   const currentBalanceNum = parseFloat(currentBalance);
   const newBalance = (currentBalanceNum + pointsToAward).toFixed(2);
 
