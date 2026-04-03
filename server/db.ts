@@ -180,8 +180,8 @@ export async function getEpisodesByNovelId(novelId: number) {
   return db.select().from(episodes).where(eq(episodes.novelId, novelId)).orderBy(asc(episodes.episodeNumber));
 }
 
-export async function getEpisodeById(episodeId: number) {
-  const db = await getDb();
+export async function getEpisodeById(episodeId: number, tx?: any) {
+  const db = tx || await getDb();
   if (!db) return undefined;
   const result = await db.select().from(episodes).where(eq(episodes.id, episodeId)).limit(1);
   return result.length > 0 ? result[0] : undefined;
@@ -384,7 +384,7 @@ export async function removeFromCart(cartItemId: number) {
 }
 
 export async function clearCart(cartId: number, tx?: any) {
-  const db = await getDb();
+  const db = tx || await getDb();
   if (!db) return;
   await db.delete(cartItems).where(eq(cartItems.cartId, cartId));
 }
@@ -399,8 +399,8 @@ export async function createOrder(data: {
   pointsDiscountAmount: string;
   totalAmount: string;
   couponCodeSnapshot?: string;
-}) {
-  const db = await getDb();
+}, tx?: any) {
+  const db = tx || await getDb();
   if (!db) return undefined;
 
   const result = await db.insert(orders).values({
@@ -443,8 +443,8 @@ export async function createOrder(data: {
   return { id: insertedId } as any;
 }
 
-export async function getOrderById(orderId: number) {
-  const db = await getDb();
+export async function getOrderById(orderId: number, tx?: any) {
+  const db = tx || await getDb();
   if (!db) return undefined;
   const result = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
   return result.length > 0 ? result[0] : undefined;
@@ -487,14 +487,14 @@ export async function countOrdersByDateRange(startDate: Date, endDate: Date) {
   return result[0]?.count || 0;
 }
 
-export async function createOrderItems(items: Array<{ orderId: number; novelId: number; episodeId: number; unitPrice: string; discountAmount: string; finalPrice: string }>) {
-  const db = await getDb();
+export async function createOrderItems(items: Array<{ orderId: number; novelId: number; episodeId: number; unitPrice: string; discountAmount: string; finalPrice: string }>, tx?: any) {
+  const db = tx || await getDb();
   if (!db) return;
   await db.insert(orderItems).values(items as any);
 }
 
-export async function getOrderItems(orderId: number) {
-  const db = await getDb();
+export async function getOrderItems(orderId: number, tx?: any) {
+  const db = tx || await getDb();
   if (!db) return [];
   const items = await db.select().from(orderItems).where(eq(orderItems.orderId, orderId));
   
@@ -514,8 +514,8 @@ export async function getOrderItems(orderId: number) {
   return enriched;
 }
 
-export async function createPayment(orderId: number, slipImageUrl?: string) {
-  const db = await getDb();
+export async function createPayment(orderId: number, slipImageUrl?: string, tx?: any) {
+  const db = tx || await getDb();
   if (!db) return undefined;
   const result = await db.insert(payments).values({
     orderId,
@@ -543,7 +543,7 @@ export async function createPayment(orderId: number, slipImageUrl?: string) {
 }
 
 export async function getPaymentByOrderId(orderId: number, tx?: any) {
-  const db = await getDb();
+  const db = tx || await getDb();
   if (!db) return undefined;
   const result = await db.select().from(payments).where(eq(payments.orderId, orderId)).limit(1);
   return result.length > 0 ? result[0] : undefined;
@@ -557,7 +557,7 @@ export async function getPaymentById(paymentId: number) {
 }
 
 export async function updateOrder(orderId: number, data: { status?: string; paymentStatus?: string; notes?: string }, tx?: any) {
-  const db = await getDb();
+  const db = tx || await getDb();
   if (!db) return;
 
   const updateData: any = {};
@@ -571,7 +571,7 @@ export async function updateOrder(orderId: number, data: { status?: string; paym
 }
 
 export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected"; rejectionReason?: string }, tx?: any) {
-  const db = await getDb();
+  const db = tx || await getDb();
   if (!db) return;
   await db.update(payments).set(data).where(eq(payments.id, paymentId));
 }
@@ -635,8 +635,8 @@ export async function getPendingPayments(limit?: number, offset?: number) {
 
 // ============ PURCHASES (ENTITLEMENTS) ============
 
-export async function createPurchase(userId: number, novelId: number, episodeId: number, orderId: number) {
-  const db = await getDb();
+export async function createPurchase(userId: number, novelId: number, episodeId: number, orderId: number, tx?: any) {
+  const db = tx || await getDb();
   if (!db) return undefined;
 
   const result = await db.insert(purchases).values({
@@ -649,8 +649,8 @@ export async function createPurchase(userId: number, novelId: number, episodeId:
   return result;
 }
 
-export async function getPurchaseByUserAndEpisode(userId: number, episodeId: number) {
-  const db = await getDb();
+export async function getPurchaseByUserAndEpisode(userId: number, episodeId: number, tx?: any) {
+  const db = tx || await getDb();
   if (!db) return undefined;
   // Only return purchase if the associated order is approved
   const result = await db
@@ -688,8 +688,8 @@ export async function getPurchasedEpisodesByNovelAndUser(novelId: number, userId
 
 // ============ COUPONS ============
 
-export async function getCouponByCode(code: string) {
-  const db = await getDb();
+export async function getCouponByCode(code: string, tx?: any) {
+  const db = tx || await getDb();
   if (!db) return undefined;
   // Normalize code: trim and uppercase for consistent lookup
   const normalizedCode = String(code || "").trim().toUpperCase();
@@ -753,8 +753,8 @@ export async function deleteCoupon(couponId: number) {
   await db.delete(coupons).where(eq(coupons.id, couponId));
 }
 
-export async function recordCouponUsage(couponId: number, userId: number | undefined, orderId: number) {
-  const db = await getDb();
+export async function recordCouponUsage(couponId: number, userId: number | undefined, orderId: number, tx?: any) {
+  const db = tx || await getDb();
   if (!db) return;
   await db.insert(couponUsages).values({ couponId, userId, orderId });
   // Increment usageCount on the coupon itself
@@ -775,8 +775,8 @@ export async function getCouponUsageByOrderId(orderId: number) {
 
 // ============ POINTS ============
 
-export async function getUserPointsBalance(userId: number) {
-  const db = await getDb();
+export async function getUserPointsBalance(userId: number, tx?: any) {
+  const db = tx || await getDb();
   if (!db) return "0.00";
 
   const result = await db
@@ -797,8 +797,8 @@ export async function recordPointsTransaction(data: {
   referenceType?: string;
   referenceId?: number;
   note?: string;
-}) {
-  const db = await getDb();
+}, tx?: any) {
+  const db = tx || await getDb();
   if (!db) return;
 
   await db.insert(pointsTransactions).values({
@@ -1260,8 +1260,8 @@ export async function hasPointsBeenAwardedForOrder(orderId: number): Promise<boo
   return result.length > 0;
 }
 
-export async function hasPointsBeenRedeemedForOrder(orderId: number): Promise<boolean> {
-  const db = await getDb();
+export async function hasPointsBeenRedeemedForOrder(orderId: number, tx?: any): Promise<boolean> {
+  const db = tx || await getDb();
   if (!db) return false;
 
   const result = await db
