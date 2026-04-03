@@ -2022,8 +2022,8 @@ export async function getDashboardSummary() {
 
 // ============ WALLET HELPERS ============
 
-export async function getOrCreateWalletAccount(userId: number) {
-  const db = await getDb();
+export async function getOrCreateWalletAccount(userId: number, tx?: any) {
+  const db = tx || await getDb();
   if (!db) throw new Error("Database not available");
 
   let account = (await db.select().from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1))[0];
@@ -2150,9 +2150,10 @@ export async function createWalletTransaction(
   balanceAfter: string,
   referenceType?: string,
   referenceId?: number,
-  note?: string
+  note?: string,
+  tx?: any
 ) {
-  const db = await getDb();
+  const db = tx || await getDb();
   if (!db) throw new Error("Database not available");
 
   return db.insert(walletTransactions).values({
@@ -2168,10 +2169,10 @@ export async function createWalletTransaction(
 }
 
 export async function debitWalletBalance(userId: number, amount: string, referenceType: string, referenceId: number, tx?: any) {
-  const db = await getDb();
+  const db = tx || await getDb();
   if (!db) throw new Error("Database not available");
 
-  const account = await getOrCreateWalletAccount(userId);
+  const account = await getOrCreateWalletAccount(userId, tx);
   const currentBalance = parseFloat(account.balance);
   const debitAmount = parseFloat(amount);
 
@@ -2193,7 +2194,9 @@ export async function debitWalletBalance(userId: number, amount: string, referen
     account.balance,
     newBalance,
     referenceType,
-    referenceId
+    referenceId,
+    undefined,
+    tx
   );
 
   return newBalance;
