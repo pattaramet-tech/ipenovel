@@ -577,7 +577,7 @@ export async function updatePayment(paymentId: number, data: { slipImageUrl?: st
 }
 
 export async function approvePayment(paymentId: number, reviewedByUserId: number, tx?: any) {
-  const db = await getDb();
+  const db = tx || await getDb();
   if (!db) return;
   await db
     .update(payments)
@@ -590,7 +590,7 @@ export async function approvePayment(paymentId: number, reviewedByUserId: number
 }
 
 export async function rejectPayment(paymentId: number, reviewedByUserId: number, rejectionReason: string, tx?: any) {
-  const db = await getDb();
+  const db = tx || await getDb();
   if (!db) return;
   await db
     .update(payments)
@@ -941,7 +941,7 @@ export async function setSetting(key: string, value: string, description?: strin
 // ============ ORDER HISTORY ============
 
 export async function recordOrderHistory(data: { orderId: number; action: string; fromStatus?: string; toStatus?: string; actorUserId?: number; note?: string }, tx?: any) {
-  const db = await getDb();
+  const db = tx || await getDb();
   if (!db) return;
 
   await db.insert(orderHistory).values({
