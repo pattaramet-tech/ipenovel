@@ -110,21 +110,21 @@ export default function AdminWalletTopupsPage() {
                           <span className="font-semibold">Email:</span> {topup.user?.email || "N/A"}
                         </p>
                         <p className="text-slate-600">
-                          <span className="font-semibold">Requested Amount:</span> ฿{parseFloat(topup.requestedAmount.toString()).toFixed(2)}
+                          <span className="font-semibold">ยอดเติมที่ขอ:</span> ฿{parseFloat(topup.requestedAmount.toString()).toFixed(2)}
                         </p>
                         {topup.bonusAmount && parseFloat(topup.bonusAmount.toString()) > 0 && (
                           <>
                             <p className="text-slate-600">
-                              <span className="font-semibold">Bonus Amount:</span> <span className="text-green-600 font-semibold">+฿{parseFloat(topup.bonusAmount.toString()).toFixed(2)}</span>
+                              <span className="font-semibold">ยอดโบนัส:</span> <span className="text-green-600 font-semibold">+฿{parseFloat(topup.bonusAmount.toString()).toFixed(2)}</span>
                             </p>
                             <p className="text-slate-600">
-                              <span className="font-semibold">Total to Credit:</span> <span className="text-green-700 font-bold">฿{parseFloat((parseFloat(topup.requestedAmount.toString()) + parseFloat(topup.bonusAmount.toString())).toFixed(2)).toFixed(2)}</span>
+                              <span className="font-semibold">ยอดที่จะเครดิตทังหมด:</span> <span className="text-green-700 font-bold">฿{parseFloat((parseFloat(topup.requestedAmount.toString()) + parseFloat(topup.bonusAmount.toString())).toFixed(2)).toFixed(2)}</span>
                             </p>
                           </>
                         )}
                         {topup.creditedAmount && topup.status === "approved" && (
                           <p className="text-slate-600">
-                            <span className="font-semibold">Credited Amount:</span> <span className="text-green-700 font-bold">฿{parseFloat(topup.creditedAmount.toString()).toFixed(2)}</span>
+                            <span className="font-semibold">ยอดที่เครดิตแล้ว:</span> <span className="text-green-700 font-bold">฿{parseFloat(topup.creditedAmount.toString()).toFixed(2)}</span>
                           </p>
                         )}
                         <p className="text-slate-600">

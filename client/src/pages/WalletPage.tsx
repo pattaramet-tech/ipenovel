@@ -198,7 +198,7 @@ export default function WalletPage() {
                     <div className="flex justify-between text-sm">
                       <span className="text-slate-700">Bonus:</span>
                       <span className="font-semibold text-green-600">
-                        {parseFloat(topupAmount) >= 500 ? "+฿20.00" : parseFloat(topupAmount) >= 250 ? "+฿10.00" : "No bonus"}
+                        {parseFloat(topupAmount) >= 500 ? "+฿20.00" : parseFloat(topupAmount) >= 250 ? "+฿10.00" : "ไม่มีโบนัส"}
                       </span>
                     </div>
                     <div className="border-t border-blue-200 pt-2 mt-2 flex justify-between">
@@ -326,11 +326,11 @@ export default function WalletPage() {
 
         {/* Bonus Rule Hint */}
         <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-4 text-sm">
-          <p className="font-semibold text-blue-900 mb-1">Bonus Rule:</p>
+          <p className="font-semibold text-blue-900 mb-1">กติกาโบนัส:</p>
           <ul className="text-blue-800 text-xs space-y-1">
-            <li>• Amount less than ฿250: No bonus</li>
-            <li>• ฿250 - ฿499: +฿10 bonus</li>
-            <li>• ฿500 and above: +฿20 bonus</li>
+            <li>• ยอดเติมน้อยกว่า ฿250: ไม่มีโบนัส</li>
+            <li>• ยอดเติม ฿250 - ฿499: รับโบนัสเพิ่ม ฿10</li>
+            <li>• ยอดเติม ฿500 ขึ้นไป: รับโบนัสเพิ่ม ฿20</li>
           </ul>
         </div>
 

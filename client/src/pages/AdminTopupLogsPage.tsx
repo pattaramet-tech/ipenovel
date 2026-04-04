@@ -208,15 +208,15 @@ export default function AdminTopupLogsPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b bg-slate-50">
-                  <th className="text-left p-3 font-semibold text-slate-700">Date</th>
-                  <th className="text-left p-3 font-semibold text-slate-700">User</th>
-                  <th className="text-left p-3 font-semibold text-slate-700">Amount</th>
-                  <th className="text-left p-3 font-semibold text-slate-700">Bonus</th>
-                  <th className="text-left p-3 font-semibold text-slate-700">Total</th>
-                  <th className="text-left p-3 font-semibold text-slate-700">Method</th>
-                  <th className="text-left p-3 font-semibold text-slate-700">Reference</th>
-                  <th className="text-left p-3 font-semibold text-slate-700">Note</th>
-                  <th className="text-left p-3 font-semibold text-slate-700">Created By</th>
+                  <th className="text-left p-3 font-semibold text-slate-700">วันที่</th>
+                  <th className="text-left p-3 font-semibold text-slate-700">ผู้ใช้</th>
+                  <th className="text-left p-3 font-semibold text-slate-700">ยอดเติม</th>
+                  <th className="text-left p-3 font-semibold text-slate-700">โบนัส</th>
+                  <th className="text-left p-3 font-semibold text-slate-700">ยอดรวม</th>
+                  <th className="text-left p-3 font-semibold text-slate-700">วิธีชำระ</th>
+                  <th className="text-left p-3 font-semibold text-slate-700">อ้างอิง</th>
+                  <th className="text-left p-3 font-semibold text-slate-700">หมายเหตุ</th>
+                  <th className="text-left p-3 font-semibold text-slate-700">อนุมัติโดย</th>
                 </tr>
               </thead>
               <tbody>
