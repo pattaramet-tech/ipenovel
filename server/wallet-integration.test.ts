@@ -74,7 +74,7 @@ describe("Wallet Integration Tests", () => {
         await db.approveWalletTopup(topup.id, 1);
         throw new Error("Should have thrown error on second approval");
       } catch (error: any) {
-        expect(error.message).toContain("Cannot approve approved");
+        expect(error.message).toContain("already processed");
       }
 
       const balanceAfterSecond = await db.getWalletBalance(testUserId);

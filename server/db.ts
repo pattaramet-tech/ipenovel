@@ -2257,10 +2257,11 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
       .where(and(eq(walletTopups.id, topupId), eq(walletTopups.status, "pending" as any)));
     
     // CRITICAL: Check if update actually affected a row
-    // Drizzle ORM returns an array with affected count as first element
-    // If updateResult is 0 or empty, this request lost the race and must not credit wallet
-    const affectedRows = Array.isArray(updateResult) ? updateResult[0] : (updateResult as any)?.affectedRows || 0;
-    if (!affectedRows || affectedRows === 0) {
+    // Drizzle returns [ResultSetHeader, undefined] where ResultSetHeader has affectedRows
+    // If affectedRows is 0, this request lost the race and must not credit wallet
+    const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
+    const affectedRows = (resultHeader as any)?.affectedRows || 0;
+    if (affectedRows === 0) {
       // Another request already approved this topup - abort without crediting
       throw new Error("Wallet top-up already processed by another request");
     }
