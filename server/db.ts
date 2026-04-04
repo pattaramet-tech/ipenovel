@@ -1,4 +1,5 @@
 import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import { getTableColumns } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
@@ -2270,10 +2271,21 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
     const creditAmount = topup.creditedAmount || topup.requestedAmount;
     const bonusAmount = topup.bonusAmount || "0.00";
 
-    // Step 3: Get current wallet balance (within transaction)
-    const account = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, topup.userId)).limit(1);
+    // Step 3: Get or create wallet account (within transaction)
+    let account = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, topup.userId)).limit(1);
     if (!account || account.length === 0) {
-      throw new Error("Wallet account not found");
+      // Create wallet account if it doesn't exist (atomic within transaction)
+      await tx.insert(walletAccounts).values({
+        userId: topup.userId,
+        balance: "0.00",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      // Fetch the newly created account
+      account = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, topup.userId)).limit(1);
+      if (!account || account.length === 0) {
+        throw new Error("Failed to create wallet account");
+      }
     }
     const currentBalance = parseFloat(account[0].balance);
     const creditAmountNum = parseFloat(creditAmount);
@@ -2435,12 +2447,16 @@ export async function getTopupLogs(
     conditions.push(lte(topupLogs.createdAt, endDate));
   }
 
+  // Create aliases for owner and creator users
+  const ownerUser = alias(users, "ownerUser");
+  const creatorUser = alias(users, "creatorUser");
+
   let query = db
     .select({
       id: topupLogs.id,
       userId: topupLogs.userId,
-      userName: users.name,
-      userEmail: users.email,
+      userName: ownerUser.name,
+      userEmail: ownerUser.email,
       amount: topupLogs.amount,
       bonus: topupLogs.bonus,
       total: topupLogs.total,
@@ -2448,11 +2464,12 @@ export async function getTopupLogs(
       reference: topupLogs.reference,
       note: topupLogs.note,
       createdBy: topupLogs.createdBy,
-      createdByName: users.name,
+      createdByName: creatorUser.name,
       createdAt: topupLogs.createdAt,
     })
     .from(topupLogs)
-    .leftJoin(users, eq(topupLogs.userId, users.id));
+    .leftJoin(ownerUser, eq(topupLogs.userId, ownerUser.id))
+    .leftJoin(creatorUser, eq(topupLogs.createdBy, creatorUser.id));
 
   if (conditions.length > 0) {
     query = query.where(and(...conditions)) as any;

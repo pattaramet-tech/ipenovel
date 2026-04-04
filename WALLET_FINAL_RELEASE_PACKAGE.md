@@ -99,13 +99,15 @@ DESCRIBE walletTopups;
 - [ ] Non-admin users cannot access /admin/wallet-topups (403 error)
 - [ ] Admin users can access /admin/wallet-topups
 
-#### Wallet Top-up Flow
+#### Wallet Top-up Flow (Upload-Slip-First)
 - [ ] User can navigate to /wallet from navbar (Thai: กระเป๋าเงิน)
 - [ ] Wallet page displays current balance (shows 0.00 for new users)
+- [ ] Wallet page shows bonus tiers: <250฿=0%, 250-499฿=+10฿, ≥500฿=+20฿
 - [ ] User can click "Request Top-up" button
 - [ ] User can enter amount and click "Create Request"
 - [ ] After creation, user immediately sees payment step with:
-  - [ ] Top-up summary (amount, request ID, status: "pending")
+  - [ ] Top-up summary showing: requestedAmount, bonusAmount, creditedAmount (total)
+  - [ ] Request ID and status: "pending"
   - [ ] QR code image loads correctly
   - [ ] File upload input accepts JPEG/PNG/PDF
   - [ ] "Upload Slip" button is disabled until file selected
@@ -113,16 +115,18 @@ DESCRIBE walletTopups;
 - [ ] After upload, user sees success toast: "Slip uploaded successfully. Waiting for admin review."
 - [ ] User is returned to main wallet page
 - [ ] Top-up request shows in list with status "pending"
+- [ ] Top-up list displays: amount, bonus, total (creditedAmount), status
 - [ ] User can click "Upload Slip" button again if needed
 
 #### Admin Wallet Review
 - [ ] Admin can navigate to /admin/wallet-topups from admin menu
 - [ ] Admin sees list of pending top-up requests
-- [ ] Admin can see: user name, amount, slip image, created time, status
+- [ ] Admin can see: user name, requestedAmount, bonusAmount, creditedAmount (total), slip image, created time, status
 - [ ] Admin can click "Approve" button
 - [ ] After approval, top-up status changes to "approved"
-- [ ] User's wallet balance increases by approved amount
-- [ ] Admin can reject with reason
+- [ ] User's wallet balance increases by creditedAmount (requested + bonus)
+- [ ] Bonus is correctly applied based on tier: <250=0, 250-499=10, ≥500=20
+- [ ] Admin can reject with reason (modal dialog, not prompt)
 - [ ] After rejection, top-up status changes to "rejected"
 - [ ] User sees rejection reason in wallet page (red text below badge)
 - [ ] User's wallet balance does NOT increase on rejection
