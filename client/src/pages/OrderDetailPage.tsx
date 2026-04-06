@@ -253,6 +253,14 @@ export default function OrderDetailPage() {
                       </a>
                     </div>
                   )}
+                  {order.payment.reviewedAt && (
+                    <div className="flex items-center justify-between pt-2 border-t">
+                      <p className="text-slate-600 font-semibold">Approved At</p>
+                      <p className="font-semibold text-green-600">
+                        {new Date(order.payment.reviewedAt).toLocaleDateString()} at {new Date(order.payment.reviewedAt).toLocaleTimeString()}
+                      </p>
+                    </div>
+                  )}
                   {order.payment.rejectionReason && (
                     <div className="p-3 bg-red-50 border border-red-200 rounded text-sm text-red-700">
                       <p className="font-semibold">Rejection Reason</p>
