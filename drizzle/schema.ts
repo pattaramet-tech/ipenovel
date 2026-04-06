@@ -242,16 +242,25 @@ export const payments = mysqlTable(
     orderId: int("orderId").notNull().unique(),
     slipImageUrl: text("slipImageUrl"),
     slipSubmittedAt: timestamp("slipSubmittedAt"),
-    status: mysqlEnum("status", ["pending", "approved", "rejected"]).default("pending").notNull(),
+    status: mysqlEnum("status", ["pending", "approved", "rejected", "pending_review"]).default("pending").notNull(),
     rejectionReason: text("rejectionReason"),
     reviewedByUserId: int("reviewedByUserId"),
     reviewedAt: timestamp("reviewedAt"),
+    // OCR extraction fields for auto-approval
+    extractedData: text("extractedData"), // JSON: {shopName, merchantCode, merchantTransactionCode, amount, transactionDate, reference}
+    reviewReason: varchar("reviewReason", { length: 255 }), // Reason code for pending_review status
+    fingerprint: varchar("fingerprint", { length: 255 }), // Hash for duplicate detection
+    autoApprovedAt: timestamp("autoApprovedAt"), // When auto-approval occurred
+    linkedOrderId: int("linkedOrderId"), // Order ID this slip was verified against
+    linkedPaymentId: int("linkedPaymentId"), // Payment ID this slip was verified against
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (table) => ({
     orderIdIdx: uniqueIndex("payments_orderId_idx").on(table.orderId),
     reviewerIdx: index("payments_reviewedByUserId_idx").on(table.reviewedByUserId),
+    fingerprintIdx: index("payments_fingerprint_idx").on(table.fingerprint),
+    statusIdx: index("payments_status_idx").on(table.status),
   })
 );
 
