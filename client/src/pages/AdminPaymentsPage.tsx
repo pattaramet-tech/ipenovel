@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
-import { Loader2, CheckCircle, XCircle, Image as ImageIcon } from "lucide-react";
+import { Loader2, CheckCircle, XCircle, Image as ImageIcon, AlertCircle, CheckCheckIcon } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
 import { SlipPreviewModal } from "@/components/SlipPreviewModal";
@@ -47,6 +47,28 @@ export default function AdminPaymentsPage() {
     setSlipPreviewOpen(true);
   };
 
+  const getReasonCodeLabel = (code: string): string => {
+    const labels: Record<string, string> = {
+      MISSING_SHOP_NAME: "Missing shop name",
+      SHOP_NAME_MISMATCH: "Shop name mismatch",
+      MISSING_MERCHANT_CODE: "Missing merchant code",
+      MERCHANT_CODE_MISMATCH: "Merchant code mismatch",
+      MERCHANT_TRANSACTION_CODE_MISMATCH: "Transaction code mismatch",
+      MISSING_AMOUNT: "Missing amount",
+      AMOUNT_MISMATCH: "Amount mismatch",
+      MISSING_TRANSACTION_DATE: "Missing transaction date",
+      TRANSACTION_OUTSIDE_TIME_WINDOW: "Transaction outside 24-hour window",
+      MISSING_REFERENCE: "Missing reference number",
+      DUPLICATE_REFERENCE: "Duplicate reference number",
+      LOW_CONFIDENCE: "Confidence below 85%",
+      PAYMENT_ALREADY_PROCESSED: "Payment already processed",
+      DATABASE_CONNECTION_FAILED: "Database error",
+      PAYMENT_NOT_FOUND: "Payment not found",
+      ORDER_NOT_FOUND: "Order not found",
+    };
+    return labels[code] || code;
+  };
+
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -87,159 +109,238 @@ export default function AdminPaymentsPage() {
           </Card>
         ) : (
           <div className="space-y-4">
-            {payments.map((payment: any) => (
-              <Card key={payment.id} className="overflow-hidden">
-                <CardHeader className="pb-3 bg-slate-50">
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <CardTitle className="text-lg">{payment.order?.orderNumber}</CardTitle>
-                      <div className="mt-2 space-y-1 text-sm">
-                        <p className="text-slate-700">
-                          <span className="font-semibold">Buyer:</span> {payment.user?.name || "Unknown"}
-                        </p>
-                        <p className="text-slate-600">
-                          <span className="font-semibold">Email:</span> {payment.user?.email || "N/A"}
-                        </p>
-                        <p className="text-slate-600">
-                          <span className="font-semibold">Amount:</span> ฿{parseFloat(payment.order?.totalAmount.toString()).toFixed(2)}
-                        </p>
-                        <p className="text-slate-600">
-                          <span className="font-semibold">Slip Submitted:</span> {payment.slipSubmittedAt ? new Date(payment.slipSubmittedAt).toLocaleString() : "—"}
-                        </p>
-                        <p className="text-slate-600">
-                          <span className="font-semibold">Request Created:</span> {new Date(payment.createdAt).toLocaleString()}
-                        </p>
+            {payments.map((payment: any) => {
+              const extractedData = payment.extractedData ? JSON.parse(payment.extractedData) : null;
+              const isAutoApproved = payment.autoApprovedAt !== null;
+
+              return (
+                <Card key={payment.id} className="overflow-hidden">
+                  <CardHeader className="pb-3 bg-slate-50">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <CardTitle className="text-lg">{payment.order?.orderNumber}</CardTitle>
+                        <div className="mt-2 space-y-1 text-sm">
+                          <p className="text-slate-700">
+                            <span className="font-semibold">Buyer:</span> {payment.user?.name || "Unknown"}
+                          </p>
+                          <p className="text-slate-600">
+                            <span className="font-semibold">Email:</span> {payment.user?.email || "N/A"}
+                          </p>
+                          <p className="text-slate-600">
+                            <span className="font-semibold">Amount:</span> ฿{parseFloat(payment.order?.totalAmount.toString()).toFixed(2)}
+                          </p>
+                          <p className="text-slate-600">
+                            <span className="font-semibold">Slip Submitted:</span> {payment.slipSubmittedAt ? new Date(payment.slipSubmittedAt).toLocaleString() : "—"}
+                          </p>
+                          <p className="text-slate-600">
+                            <span className="font-semibold">Request Created:</span> {new Date(payment.createdAt).toLocaleString()}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <Badge className="bg-yellow-100 text-yellow-800">Pending Review</Badge>
+                        {isAutoApproved && (
+                          <Badge className="bg-green-100 text-green-800 flex items-center gap-1">
+                            <CheckCheckIcon className="w-3 h-3" />
+                            Auto-Approved
+                          </Badge>
+                        )}
                       </div>
                     </div>
-                    <Badge className="bg-yellow-100 text-yellow-800">Pending</Badge>
-                  </div>
-                </CardHeader>
+                  </CardHeader>
 
-                <CardContent className="pt-6">
-                  {/* Timestamps */}
-                  <div className="mb-4 p-3 bg-slate-50 rounded border border-slate-200">
-                    <p className="text-sm font-semibold mb-2">Payment Timeline:</p>
-                    <div className="space-y-1 text-xs text-slate-600">
-                      <p><span className="font-semibold">Created:</span> {new Date(payment.createdAt).toLocaleString()}</p>
-                      {payment.slipSubmittedAt && <p><span className="font-semibold">Slip Submitted:</span> {new Date(payment.slipSubmittedAt).toLocaleString()}</p>}
-                      {payment.reviewedAt && <p><span className="font-semibold">Reviewed:</span> {new Date(payment.reviewedAt).toLocaleString()}</p>}
-                    </div>
-                  </div>
-
-                  {/* Payment Slip */}
-                  <div className="mb-4">
-                    <p className="text-sm font-semibold mb-2">Payment Slip:</p>
-                    {payment.slipImageUrl ? (
-                      <div className="flex gap-2 items-start">
-                        <img
-                          src={payment.slipImageUrl}
-                          alt="Payment slip"
-                          className="max-w-xs max-h-32 rounded border border-slate-200 cursor-pointer hover:opacity-80 transition"
-                          onClick={() => handleSlipPreview(payment.slipImageUrl)}
-                        />
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleSlipPreview(payment.slipImageUrl)}
-                        >
-                          <ImageIcon className="w-4 h-4 mr-1" />
-                          View Full
-                        </Button>
-                      </div>
-                    ) : (
-                      <div className="bg-slate-100 rounded border border-slate-300 p-4 text-center text-slate-600 text-sm">
-                        No slip uploaded
+                  <CardContent className="pt-6">
+                    {/* OCR Verification Status */}
+                    {payment.reviewReason && (
+                      <div className="mb-4 p-3 bg-red-50 rounded border border-red-200">
+                        <div className="flex items-start gap-2">
+                          <AlertCircle className="w-4 h-4 text-red-600 mt-0.5 flex-shrink-0" />
+                          <div>
+                            <p className="text-sm font-semibold text-red-900">Verification Issue</p>
+                            <p className="text-sm text-red-700">{getReasonCodeLabel(payment.reviewReason)}</p>
+                          </div>
+                        </div>
                       </div>
                     )}
-                  </div>
 
-                  {/* Order Items */}
-                  <div className="mb-4">
-                    <p className="text-sm font-semibold mb-2">Items:</p>
-                    <ul className="text-sm text-slate-600 space-y-1">
-                      {payment.items?.map((item: any) => (
-                        <li key={item.id}>
-                          • Episode {item.episode?.episodeNumber}{item.episode?.title ? ` - ${item.episode.title}` : ""} - ฿{parseFloat(item.finalPrice.toString()).toFixed(2)}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
+                    {/* OCR Extracted Data */}
+                    {extractedData && (
+                      <div className="mb-4 p-3 bg-blue-50 rounded border border-blue-200">
+                        <p className="text-sm font-semibold mb-2 text-blue-900">OCR Extracted Data:</p>
+                        <div className="space-y-1 text-xs text-blue-800">
+                          {extractedData.shopName && (
+                            <p><span className="font-semibold">Shop Name:</span> {extractedData.shopName}</p>
+                          )}
+                          {extractedData.merchantCode && (
+                            <p><span className="font-semibold">Merchant Code:</span> {extractedData.merchantCode}</p>
+                          )}
+                          {extractedData.amount !== undefined && (
+                            <p><span className="font-semibold">Extracted Amount:</span> ฿{extractedData.amount.toFixed(2)}</p>
+                          )}
+                          {extractedData.reference && (
+                            <p><span className="font-semibold">Reference:</span> {extractedData.reference}</p>
+                          )}
+                          {extractedData.confidence !== undefined && (
+                            <p><span className="font-semibold">Confidence:</span> {extractedData.confidence}%</p>
+                          )}
+                          {extractedData.transactionDate && (
+                            <p><span className="font-semibold">Transaction Date:</span> {extractedData.transactionDate}</p>
+                          )}
+                        </div>
+                      </div>
+                    )}
 
-                  {/* Actions */}
-                  <div className="flex gap-2 pt-4 border-t">
-                    <Button
-                      className="flex-1"
-                      onClick={() => approveMutation.mutate({ paymentId: payment.id })}
-                      disabled={approveMutation.isPending}
-                    >
-                      <CheckCircle className="w-4 h-4 mr-2" />
-                      Approve
-                    </Button>
-                    <Button
-                      variant="destructive"
-                      className="flex-1"
-                      onClick={() => setRejectingPaymentId(payment.id)}
-                      disabled={rejectMutation.isPending}
-                    >
-                      <XCircle className="w-4 h-4 mr-2" />
-                      Reject
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+                    {/* Auto-Approval Info */}
+                    {isAutoApproved && payment.autoApprovedAt && (
+                      <div className="mb-4 p-3 bg-green-50 rounded border border-green-200">
+                        <p className="text-sm font-semibold mb-1 text-green-900">Auto-Approved</p>
+                        <p className="text-xs text-green-700">
+                          {new Date(payment.autoApprovedAt).toLocaleString()}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Linked Order/Payment */}
+                    {(payment.linkedOrderId || payment.linkedPaymentId) && (
+                      <div className="mb-4 p-3 bg-slate-50 rounded border border-slate-200">
+                        <p className="text-sm font-semibold mb-2">Linked Records:</p>
+                        <div className="space-y-1 text-xs text-slate-600">
+                          {payment.linkedOrderId && (
+                            <p><span className="font-semibold">Order ID:</span> {payment.linkedOrderId}</p>
+                          )}
+                          {payment.linkedPaymentId && (
+                            <p><span className="font-semibold">Payment ID:</span> {payment.linkedPaymentId}</p>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Timestamps */}
+                    <div className="mb-4 p-3 bg-slate-50 rounded border border-slate-200">
+                      <p className="text-sm font-semibold mb-2">Payment Timeline:</p>
+                      <div className="space-y-1 text-xs text-slate-600">
+                        <p><span className="font-semibold">Created:</span> {new Date(payment.createdAt).toLocaleString()}</p>
+                        {payment.slipSubmittedAt && <p><span className="font-semibold">Slip Submitted:</span> {new Date(payment.slipSubmittedAt).toLocaleString()}</p>}
+                        {payment.autoApprovedAt && <p><span className="font-semibold">Auto-Approved:</span> {new Date(payment.autoApprovedAt).toLocaleString()}</p>}
+                        {payment.reviewedAt && <p><span className="font-semibold">Reviewed:</span> {new Date(payment.reviewedAt).toLocaleString()}</p>}
+                      </div>
+                    </div>
+
+                    {/* Payment Slip */}
+                    <div className="mb-4">
+                      <p className="text-sm font-semibold mb-2">Payment Slip:</p>
+                      {payment.slipImageUrl ? (
+                        <div className="flex gap-2 items-start">
+                          <img
+                            src={payment.slipImageUrl}
+                            alt="Payment slip"
+                            className="max-w-xs max-h-32 rounded border border-slate-200 cursor-pointer hover:opacity-80 transition"
+                            onClick={() => handleSlipPreview(payment.slipImageUrl)}
+                          />
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleSlipPreview(payment.slipImageUrl)}
+                          >
+                            <ImageIcon className="w-4 h-4 mr-1" />
+                            View Full
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="bg-slate-100 rounded border border-slate-300 p-4 text-center text-slate-600 text-sm">
+                          No slip uploaded
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Order Items */}
+                    <div className="mb-4">
+                      <p className="text-sm font-semibold mb-2">Items:</p>
+                      <ul className="text-sm text-slate-600 space-y-1">
+                        {payment.items?.map((item: any) => (
+                          <li key={item.id}>
+                            • Episode {item.episode?.episodeNumber}{item.episode?.title ? ` - ${item.episode.title}` : ""} - ฿{parseFloat(item.finalPrice.toString()).toFixed(2)}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex gap-2 pt-4 border-t">
+                      <Button
+                        className="flex-1"
+                        onClick={() => approveMutation.mutate({ paymentId: payment.id })}
+                        disabled={approveMutation.isPending}
+                      >
+                        <CheckCircle className="w-4 h-4 mr-2" />
+                        Approve
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        className="flex-1"
+                        onClick={() => setRejectingPaymentId(payment.id)}
+                        disabled={rejectMutation.isPending}
+                      >
+                        <XCircle className="w-4 h-4 mr-2" />
+                        Reject
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
           </div>
         )}
-      
-      {/* Rejection Reason Dialog */}
-      <Dialog open={rejectingPaymentId !== null} onOpenChange={(open) => {
-        if (!open) {
-          setRejectingPaymentId(null);
-          setRejectionReason("");
-        }
-      }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitleComponent>Reject Payment</DialogTitleComponent>
-            <DialogDescription>
-              Please provide a reason for rejecting this payment.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <Input
-              placeholder="Rejection reason..."
-              value={rejectionReason}
-              onChange={(e) => setRejectionReason(e.target.value)}
-            />
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => {
-              setRejectingPaymentId(null);
-              setRejectionReason("");
-            }}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={() => {
-              if (rejectingPaymentId && rejectionReason.trim()) {
-                rejectMutation.mutate({ paymentId: rejectingPaymentId, rejectionReason: rejectionReason.trim() });
+
+        {/* Rejection Reason Dialog */}
+        <Dialog open={rejectingPaymentId !== null} onOpenChange={(open) => {
+          if (!open) {
+            setRejectingPaymentId(null);
+            setRejectionReason("");
+          }
+        }}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitleComponent>Reject Payment</DialogTitleComponent>
+              <DialogDescription>
+                Please provide a reason for rejecting this payment.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <Input
+                placeholder="Rejection reason..."
+                value={rejectionReason}
+                onChange={(e) => setRejectionReason(e.target.value)}
+              />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => {
                 setRejectingPaymentId(null);
                 setRejectionReason("");
-              }
-            }}>
-              Reject
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
+              }}>
+                Cancel
+              </Button>
+              <Button variant="destructive" onClick={() => {
+                if (rejectingPaymentId && rejectionReason.trim()) {
+                  rejectMutation.mutate({ paymentId: rejectingPaymentId, rejectionReason: rejectionReason.trim() });
+                  setRejectingPaymentId(null);
+                  setRejectionReason("");
+                }
+              }}>
+                Reject
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
-      {selectedSlipUrl && (
-        <SlipPreviewModal
-          isOpen={slipPreviewOpen}
-          onClose={() => setSlipPreviewOpen(false)}
-          slipUrl={selectedSlipUrl}
-        />
-      )}
+        {selectedSlipUrl && (
+          <SlipPreviewModal
+            isOpen={slipPreviewOpen}
+            onClose={() => setSlipPreviewOpen(false)}
+            slipUrl={selectedSlipUrl}
+          />
+        )}
+      </div>
     </AdminLayout>
   );
 }

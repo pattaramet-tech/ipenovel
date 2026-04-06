@@ -380,9 +380,10 @@ export function verifySlipData(
     return result;
   }
 
-  // Check 7: Confidence level
-  if ((extracted.confidence || 0) < 70) {
+  // Check 7: Confidence level - must be >= 85 for auto-approval
+  if ((extracted.confidence || 0) < 85) {
     result.reviewReason = "LOW_CONFIDENCE";
+    result.status = "pending_review";
     return result;
   }
 

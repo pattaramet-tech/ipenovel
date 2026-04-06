@@ -385,6 +385,12 @@ export const appRouter = router({
         return db.getAllPayments();
       }),
 
+      pending: adminProcedure.query(async () => {
+        // Get all pending_review payments with related order and user data
+        const payments = await db.getAllPayments();
+        return payments.filter(p => p.status === "pending_review");
+      }),
+
       detail: adminProcedure
         .input(z.object({ id: z.number() }))
         .query(async ({ input }) => {
@@ -392,9 +398,9 @@ export const appRouter = router({
         }),
 
       approve: adminProcedure
-        .input(z.object({ id: z.number() }))
+        .input(z.object({ paymentId: z.number() }))
         .mutation(async ({ input, ctx }) => {
-          const payment = await db.getPaymentById(input.id);
+          const payment = await db.getPaymentById(input.paymentId);
           if (!payment) throw new TRPCError({ code: "NOT_FOUND" });
 
           if (payment.status !== "pending_review") {
@@ -427,9 +433,9 @@ export const appRouter = router({
         }),
 
       reject: adminProcedure
-        .input(z.object({ id: z.number(), reason: z.string() }))
+        .input(z.object({ paymentId: z.number(), reason: z.string() }))
         .mutation(async ({ input, ctx }) => {
-          const payment = await db.getPaymentById(input.id);
+          const payment = await db.getPaymentById(input.paymentId);
           if (!payment) throw new TRPCError({ code: "NOT_FOUND" });
 
           if (payment.status !== "pending_review") {
