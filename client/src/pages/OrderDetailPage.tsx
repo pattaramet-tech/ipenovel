@@ -115,9 +115,9 @@ export default function OrderDetailPage() {
                     <p className="text-sm text-slate-600">
                       Created: {orderData.createdAt ? new Date(orderData.createdAt).toLocaleDateString() + " at " + new Date(orderData.createdAt).toLocaleTimeString() : "—"}
                     </p>
-                    {orderData.updatedAt && new Date(orderData.updatedAt).getTime() !== new Date(orderData.createdAt).getTime() && (
+                    {order?.payment?.reviewedAt && (
                       <p className="text-xs text-slate-500">
-                        Last Updated: {new Date(orderData.updatedAt).toLocaleDateString()} at {new Date(orderData.updatedAt).toLocaleTimeString()}
+                        Approved At: {new Date(order.payment.reviewedAt).toLocaleDateString()} at {new Date(order.payment.reviewedAt).toLocaleTimeString()}
                       </p>
                     )}
                   </div>

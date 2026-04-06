@@ -90,9 +90,9 @@ export default function OrdersPage() {
                       <p className="text-sm text-slate-600 mt-1">
                         Created: {order.createdAt ? new Date(order.createdAt).toLocaleDateString() : "—"}
                       </p>
-                      {order.updatedAt && new Date(order.updatedAt).getTime() !== new Date(order.createdAt).getTime() && (
+                      {order.payment?.reviewedAt && (
                         <p className="text-xs text-slate-500 mt-0.5">
-                          Updated: {new Date(order.updatedAt).toLocaleDateString()}
+                          Approved At: {new Date(order.payment.reviewedAt).toLocaleDateString()}
                         </p>
                       )}
                     </div>
