@@ -36,7 +36,8 @@ export default function CartPage() {
   const removeFromCartMutation = trpc.cart.remove.useMutation({
     onSuccess: () => {
       toast.success(t("common.success"));
-      refetchCart();
+      // Invalidate cart query to update badge and cart state
+      utils.cart.get.invalidate();
     },
     onError: () => {
       toast.error(t("common.error"));
@@ -67,7 +68,7 @@ export default function CartPage() {
       setSelectedSlipFile(null);
       // Navigate to orders page (order already has slip attached)
       navigate("/orders");
-      refetchCart();
+      utils.cart.get.invalidate();
     },
     onError: (error: any) => {
       const errorMessage = error?.message || t("common.error");
@@ -78,7 +79,7 @@ export default function CartPage() {
   const walletCheckoutMutation = trpc.checkout.walletCheckout.useMutation({
     onSuccess: () => {
       toast.success(t("wallet.walletCheckoutSuccess"));
-      refetchCart();
+      utils.cart.get.invalidate();
       navigate("/my-novels");
     },
     onError: (error: any) => {

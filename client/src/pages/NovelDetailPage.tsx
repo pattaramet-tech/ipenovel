@@ -41,9 +41,12 @@ export default function NovelDetailPage() {
   });
   const cartItems = cartData?.items || [];
 
+  const utils = trpc.useUtils();
+
   const addToCartMutation = trpc.cart.add.useMutation({
     onSuccess: () => {
-      // Don't clear selection - keep track of what's in cart
+      // Invalidate cart query to update badge and cart state
+      utils.cart.get.invalidate();
     },
     onError: (error: any) => {
       if (error.code === "UNAUTHORIZED") {
@@ -56,7 +59,8 @@ export default function NovelDetailPage() {
 
   const removeFromCartMutation = trpc.cart.remove.useMutation({
     onSuccess: () => {
-      // Cart updated
+      // Invalidate cart query to update badge and cart state
+      utils.cart.get.invalidate();
     },
     onError: (error: any) => {
       if (error.code === "UNAUTHORIZED") {
