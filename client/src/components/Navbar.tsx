@@ -6,12 +6,19 @@ import { useState } from "react";
 import { getLoginUrl } from "@/const";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { trpc } from "@/lib/trpc";
 
 export default function Navbar() {
   const { user, logout, isAuthenticated } = useAuth();
   const { t } = useLanguage();
   const [, navigate] = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  
+  // Get cart count
+  const { data: cartData } = trpc.cart.get.useQuery(undefined, {
+    enabled: isAuthenticated,
+  });
+  const cartCount = cartData?.items?.length || 0;
 
   const handleLogout = async () => {
     await logout();
@@ -76,10 +83,15 @@ export default function Navbar() {
             
             <button
               onClick={() => navigate("/cart")}
-              className="flex items-center gap-2 px-4 py-2 rounded-full text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium transition text-sm"
+              className="flex items-center gap-2 px-4 py-2 rounded-full text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium transition text-sm relative"
             >
               <ShoppingCart className="w-4 h-4" />
               {t("nav.cart")}
+              {cartCount > 0 && (
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                  {cartCount}
+                </span>
+              )}
             </button>
 
             {isAuthenticated ? (
@@ -108,9 +120,14 @@ export default function Navbar() {
             
             <button
               onClick={() => navigate("/cart")}
-              className="p-2 rounded-full hover:bg-slate-100 transition"
+              className="p-2 rounded-full hover:bg-slate-100 transition relative"
             >
               <ShoppingCart className="w-5 h-5 text-slate-600" />
+              {cartCount > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                  {cartCount}
+                </span>
+              )}
             </button>
 
             {/* Mobile Menu Button */}
