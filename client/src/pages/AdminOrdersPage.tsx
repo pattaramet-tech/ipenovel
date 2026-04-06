@@ -28,9 +28,10 @@ export default function AdminOrdersPage() {
                   <th className="text-left p-3 font-semibold">Order Number</th>
                   <th className="text-left p-3 font-semibold">User ID</th>
                   <th className="text-left p-3 font-semibold">Amount</th>
+                  <th className="text-left p-3 font-semibold">Discount</th>
                   <th className="text-left p-3 font-semibold">Items</th>
                   <th className="text-left p-3 font-semibold">Status</th>
-                  <th className="text-left p-3 font-semibold">Date</th>
+                  <th className="text-left p-3 font-semibold">Created</th>
                 </tr>
               </thead>
               <tbody>
@@ -39,6 +40,16 @@ export default function AdminOrdersPage() {
                     <td className="p-3 font-medium text-blue-600 hover:underline">{order.orderNumber}</td>
                     <td className="p-3">{order.userId || "—"}</td>
                     <td className="p-3">฿{parseFloat(order.totalAmount.toString()).toFixed(2)}</td>
+                    <td className="p-3 text-sm">
+                      {parseFloat(order.discountAmount.toString()) > 0 || parseFloat(order.pointsDiscountAmount.toString()) > 0 ? (
+                        <div className="space-y-0.5">
+                          {parseFloat(order.discountAmount.toString()) > 0 && <div>฿{parseFloat(order.discountAmount.toString()).toFixed(2)}</div>}
+                          {parseFloat(order.pointsDiscountAmount.toString()) > 0 && <div className="text-xs text-slate-500">Pts: ฿{parseFloat(order.pointsDiscountAmount.toString()).toFixed(2)}</div>}
+                        </div>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
                     <td className="p-3">{order.items?.length || 0} items</td>
                     <td className="p-3">
                       <Badge className="bg-blue-100 text-blue-800">
@@ -46,7 +57,7 @@ export default function AdminOrdersPage() {
                       </Badge>
                     </td>
                     <td className="p-3 text-sm text-slate-600">
-                      {new Date(order.createdAt).toLocaleDateString()}
+                      {new Date(order.createdAt).toLocaleString()}
                     </td>
                   </tr>
                 ))}

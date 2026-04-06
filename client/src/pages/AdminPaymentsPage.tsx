@@ -103,6 +103,12 @@ export default function AdminPaymentsPage() {
                         <p className="text-slate-600">
                           <span className="font-semibold">Amount:</span> ฿{parseFloat(payment.order?.totalAmount.toString()).toFixed(2)}
                         </p>
+                        <p className="text-slate-600">
+                          <span className="font-semibold">Slip Submitted:</span> {payment.slipSubmittedAt ? new Date(payment.slipSubmittedAt).toLocaleString() : "—"}
+                        </p>
+                        <p className="text-slate-600">
+                          <span className="font-semibold">Request Created:</span> {new Date(payment.createdAt).toLocaleString()}
+                        </p>
                       </div>
                     </div>
                     <Badge className="bg-yellow-100 text-yellow-800">Pending</Badge>
@@ -110,6 +116,16 @@ export default function AdminPaymentsPage() {
                 </CardHeader>
 
                 <CardContent className="pt-6">
+                  {/* Timestamps */}
+                  <div className="mb-4 p-3 bg-slate-50 rounded border border-slate-200">
+                    <p className="text-sm font-semibold mb-2">Payment Timeline:</p>
+                    <div className="space-y-1 text-xs text-slate-600">
+                      <p><span className="font-semibold">Created:</span> {new Date(payment.createdAt).toLocaleString()}</p>
+                      {payment.slipSubmittedAt && <p><span className="font-semibold">Slip Submitted:</span> {new Date(payment.slipSubmittedAt).toLocaleString()}</p>}
+                      {payment.reviewedAt && <p><span className="font-semibold">Reviewed:</span> {new Date(payment.reviewedAt).toLocaleString()}</p>}
+                    </div>
+                  </div>
+
                   {/* Payment Slip */}
                   <div className="mb-4">
                     <p className="text-sm font-semibold mb-2">Payment Slip:</p>

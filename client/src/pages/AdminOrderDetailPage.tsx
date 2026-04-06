@@ -114,12 +114,37 @@ export default function AdminOrderDetailPage() {
               <p className="font-semibold">{order.order.userId || "—"}</p>
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">Amount</p>
+              <p className="text-sm text-muted-foreground">Subtotal</p>
+              <p className="font-semibold">฿{parseFloat(order.order.subtotal.toString()).toFixed(2)}</p>
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground">Discount</p>
+              <p className="font-semibold">
+                {parseFloat(order.order.discountAmount.toString()) > 0 || parseFloat(order.order.pointsDiscountAmount.toString()) > 0 ? (
+                  <div className="space-y-1">
+                    {parseFloat(order.order.discountAmount.toString()) > 0 && <div>฿{parseFloat(order.order.discountAmount.toString()).toFixed(2)}</div>}
+                    {parseFloat(order.order.pointsDiscountAmount.toString()) > 0 && <div className="text-xs text-slate-500">Points: ฿{parseFloat(order.order.pointsDiscountAmount.toString()).toFixed(2)}</div>}
+                  </div>
+                ) : (
+                  "—"
+                )}
+              </p>
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground">Total Amount</p>
               <p className="font-semibold">฿{parseFloat(order.order.totalAmount.toString()).toFixed(2)}</p>
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground">Coupon Code</p>
+              <p className="font-semibold">{order.order.couponCodeSnapshot || "—"}</p>
             </div>
             <div>
               <p className="text-sm text-muted-foreground">Created</p>
               <p className="font-semibold">{new Date(order.order.createdAt).toLocaleString()}</p>
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground">Last Updated</p>
+              <p className="font-semibold">{new Date(order.order.updatedAt).toLocaleString()}</p>
             </div>
           </div>
         </Card>
@@ -144,6 +169,22 @@ export default function AdminOrderDetailPage() {
                     ? new Date(order.payment.slipSubmittedAt).toLocaleString()
                     : "Not submitted"}
                 </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Reviewed At</p>
+                <p className="font-semibold">
+                  {order.payment.reviewedAt
+                    ? new Date(order.payment.reviewedAt).toLocaleString()
+                    : "Not reviewed"}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Payment Created</p>
+                <p className="font-semibold">{new Date(order.payment.createdAt).toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Payment Updated</p>
+                <p className="font-semibold">{new Date(order.payment.updatedAt).toLocaleString()}</p>
               </div>
               {order.payment.rejectionReason && (
                 <div>
