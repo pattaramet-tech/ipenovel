@@ -111,10 +111,16 @@ export default function OrderDetailPage() {
               <div className="flex items-start justify-between">
                 <div>
                   <CardTitle className="text-2xl">Order #{orderData.orderNumber}</CardTitle>
-                  <p className="text-sm text-slate-600 mt-2">
-                    {new Date(orderData.createdAt).toLocaleDateString()} at{" "}
-                    {new Date(orderData.createdAt).toLocaleTimeString()}
-                  </p>
+                  <div className="mt-2 space-y-1">
+                    <p className="text-sm text-slate-600">
+                      Created: {orderData.createdAt ? new Date(orderData.createdAt).toLocaleDateString() + " at " + new Date(orderData.createdAt).toLocaleTimeString() : "—"}
+                    </p>
+                    {orderData.updatedAt && new Date(orderData.updatedAt).getTime() !== new Date(orderData.createdAt).getTime() && (
+                      <p className="text-xs text-slate-500">
+                        Last Updated: {new Date(orderData.updatedAt).toLocaleDateString()} at {new Date(orderData.updatedAt).toLocaleTimeString()}
+                      </p>
+                    )}
+                  </div>
                 </div>
                 <div className="flex gap-2">
                   <Badge className={getStatusColor(orderData.status)}>

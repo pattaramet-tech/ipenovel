@@ -88,8 +88,13 @@ export default function OrdersPage() {
                     <div>
                       <CardTitle className="text-lg">{order.orderNumber}</CardTitle>
                       <p className="text-sm text-slate-600 mt-1">
-                        {new Date(order.createdAt).toLocaleDateString()}
+                        Created: {order.createdAt ? new Date(order.createdAt).toLocaleDateString() : "—"}
                       </p>
+                      {order.updatedAt && new Date(order.updatedAt).getTime() !== new Date(order.createdAt).getTime() && (
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          Updated: {new Date(order.updatedAt).toLocaleDateString()}
+                        </p>
+                      )}
                     </div>
                     <div className="flex gap-2">
                       <Badge className={getStatusColor(order.status)}>
