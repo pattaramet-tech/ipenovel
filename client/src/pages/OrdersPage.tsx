@@ -88,11 +88,11 @@ export default function OrdersPage() {
                     <div>
                       <CardTitle className="text-lg">{order.orderNumber}</CardTitle>
                       <p className="text-sm text-slate-600 mt-1">
-                        Created: {order.createdAt ? new Date(order.createdAt).toLocaleDateString() : "—"}
+                        Created: {order.createdAt ? new Date(order.createdAt).toLocaleDateString() + " " + new Date(order.createdAt).toLocaleTimeString() : "—"}
                       </p>
                       {order.payment?.reviewedAt && (
                         <p className="text-xs text-slate-500 mt-0.5">
-                          Approved At: {new Date(order.payment.reviewedAt).toLocaleDateString()}
+                          Approved At: {new Date(order.payment.reviewedAt).toLocaleDateString()} {new Date(order.payment.reviewedAt).toLocaleTimeString()}
                         </p>
                       )}
                     </div>
