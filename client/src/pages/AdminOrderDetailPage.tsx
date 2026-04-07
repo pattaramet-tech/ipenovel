@@ -223,13 +223,31 @@ export default function AdminOrderDetailPage() {
         {order.items && order.items.length > 0 && (
           <Card className="p-6">
             <h2 className="text-lg font-semibold mb-4">Items</h2>
-            <div className="space-y-2">
+            <div className="space-y-4">
               {order.items.map((item: any) => {
                 const episodeTitle = item.episode?.title || item.episodeTitle || item.title || `Episode ${item.episodeNumber}`;
+                const fileUrl = item.episode?.fileUrl || null;
                 return (
-                  <div key={item.id} className="flex justify-between p-2 border-b">
-                    <span>{episodeTitle}</span>
-                    <span className="font-semibold">฿{item.price ? parseFloat(item.price.toString()).toFixed(2) : "0.00"}</span>
+                  <div key={item.id} className="border-b pb-4 last:border-b-0">
+                    <div className="flex justify-between items-start">
+                      <div className="flex-1">
+                        <p className="font-medium">{episodeTitle}</p>
+                        {fileUrl ? (
+                          <a
+                            href={fileUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-sm text-blue-600 hover:text-blue-800 hover:underline break-all mt-1 block"
+                            title="Click to open file"
+                          >
+                            {fileUrl}
+                          </a>
+                        ) : (
+                          <p className="text-sm text-muted-foreground mt-1">—</p>
+                        )}
+                      </div>
+                      <span className="font-semibold ml-4 whitespace-nowrap">฿{item.price ? parseFloat(item.price.toString()).toFixed(2) : "0.00"}</span>
+                    </div>
                   </div>
                 );
               })}
