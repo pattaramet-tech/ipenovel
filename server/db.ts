@@ -1,4 +1,4 @@
-import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql } from "drizzle-orm";
+import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql, gt } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { getTableColumns } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
@@ -27,6 +27,7 @@ import {
   walletTopups,
   topupLogs,
   Novel,
+  couponUsages as couponUsagesTable,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
@@ -471,6 +472,259 @@ export async function getAllOrders(limit?: number, offset?: number) {
   if (limit) query = query.limit(limit);
   if (offset) query = query.offset(offset);
   return query;
+}
+
+export async function getAdminOrders(options: {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  sortBy?: 'createdAt' | 'updatedAt' | 'amount' | 'discount';
+  sortOrder?: 'asc' | 'desc';
+  status?: string;
+  paymentStatus?: string;
+  startDate?: Date;
+  endDate?: Date;
+  hasDiscount?: boolean;
+  hasCoupon?: boolean;
+  minAmount?: number;
+  maxAmount?: number;
+} = {}) {
+  const db = await getDb();
+  if (!db) return { orders: [], total: 0, page: 1, pageSize: 20, totalPages: 0 };
+
+  const pageSize = options.pageSize || 20;
+  const page = Math.max(1, options.page || 1);
+  const offset = (page - 1) * pageSize;
+
+  // Build where conditions
+  const conditions: any[] = [];
+
+  // Search conditions
+  if (options.search) {
+    const searchLower = `%${options.search.toLowerCase()}%`;
+    conditions.push(
+      or(
+        sql`LOWER(${orders.orderNumber}) LIKE ${searchLower}`,
+        sql`LOWER(${orders.userId}) LIKE ${searchLower}`
+      )
+    );
+  }
+
+  // Status filter
+  if (options.status) {
+    conditions.push(eq(orders.status, options.status));
+  }
+
+  // Payment status filter
+  if (options.paymentStatus) {
+    conditions.push(eq(orders.paymentStatus, options.paymentStatus));
+  }
+
+  // Date range filter
+  if (options.startDate) {
+    conditions.push(gte(orders.createdAt, options.startDate));
+  }
+  if (options.endDate) {
+    conditions.push(lte(orders.createdAt, options.endDate));
+  }
+
+  // Discount filter
+  if (options.hasDiscount === true) {
+    conditions.push(
+      or(
+        gt(orders.discountAmount, '0'),
+        gt(orders.pointsDiscountAmount, '0')
+      )
+    );
+  } else if (options.hasDiscount === false) {
+    conditions.push(
+      and(
+        eq(orders.discountAmount, '0'),
+        eq(orders.pointsDiscountAmount, '0')
+      )
+    );
+  }
+
+  // Amount range filter
+  if (options.minAmount !== undefined) {
+    conditions.push(gte(orders.totalAmount, options.minAmount.toString()));
+  }
+  if (options.maxAmount !== undefined) {
+    conditions.push(lte(orders.totalAmount, options.maxAmount.toString()));
+  }
+
+  // Build base query
+  let query: any = db.select().from(orders);
+
+  if (conditions.length > 0) {
+    query = query.where(and(...conditions));
+  }
+
+  // Sorting
+  const sortBy = options.sortBy || 'createdAt';
+  const sortOrder = options.sortOrder || 'desc';
+  const orderByFn = sortOrder === 'asc' ? asc : desc;
+
+  let orderByColumn: any = orders.createdAt;
+  if (sortBy === 'updatedAt') orderByColumn = orders.updatedAt;
+  if (sortBy === 'amount') orderByColumn = orders.totalAmount;
+  if (sortBy === 'discount') orderByColumn = orders.discountAmount;
+
+  // Count total before pagination
+  const countQuery = query;
+  const countResult = await countQuery;
+  const total = countResult.length;
+
+  // Apply sorting and pagination
+  query = query.orderBy(orderByFn(orderByColumn)).limit(pageSize).offset(offset);
+  const result = await query;
+
+  return {
+    orders: result,
+    total,
+    page,
+    pageSize,
+    totalPages: Math.ceil(total / pageSize),
+  };
+}
+
+export async function getOrderWithUserName(orderId: number) {
+  const db = await getDb();
+  if (!db) return null;
+  
+  const order = await db
+    .select({
+      ...getTableColumns(orders),
+      userName: users.name,
+      userEmail: users.email,
+    })
+    .from(orders)
+    .leftJoin(users, eq(orders.userId, users.id))
+    .where(eq(orders.id, orderId))
+    .limit(1);
+
+  return order.length > 0 ? order[0] : null;
+}
+
+export async function getAdminOrdersWithUsers(options: {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  sortBy?: 'createdAt' | 'updatedAt' | 'amount' | 'discount';
+  sortOrder?: 'asc' | 'desc';
+  status?: string;
+  paymentStatus?: string;
+  startDate?: Date;
+  endDate?: Date;
+  hasDiscount?: boolean;
+  hasCoupon?: boolean;
+  minAmount?: number;
+  maxAmount?: number;
+} = {}) {
+  const db = await getDb();
+  if (!db) return { orders: [], total: 0, page: 1, pageSize: 20, totalPages: 0 };
+
+  const pageSize = options.pageSize || 20;
+  const page = Math.max(1, options.page || 1);
+  const offset = (page - 1) * pageSize;
+
+  // Build where conditions
+  const conditions: any[] = [];
+
+  // Search conditions - search in order number, user ID, or user name
+  if (options.search) {
+    const searchLower = `%${options.search.toLowerCase()}%`;
+    conditions.push(
+      or(
+        sql`LOWER(${orders.orderNumber}) LIKE ${searchLower}`,
+        sql`LOWER(CAST(${orders.userId} AS CHAR)) LIKE ${searchLower}`,
+        sql`LOWER(${users.name}) LIKE ${searchLower}`
+      )
+    );
+  }
+
+  // Status filter
+  if (options.status) {
+    conditions.push(eq(orders.status, options.status));
+  }
+
+  // Payment status filter
+  if (options.paymentStatus) {
+    conditions.push(eq(orders.paymentStatus, options.paymentStatus));
+  }
+
+  // Date range filter
+  if (options.startDate) {
+    conditions.push(gte(orders.createdAt, options.startDate));
+  }
+  if (options.endDate) {
+    conditions.push(lte(orders.createdAt, options.endDate));
+  }
+
+  // Discount filter
+  if (options.hasDiscount === true) {
+    conditions.push(
+      or(
+        gt(orders.discountAmount, '0'),
+        gt(orders.pointsDiscountAmount, '0')
+      )
+    );
+  } else if (options.hasDiscount === false) {
+    conditions.push(
+      and(
+        eq(orders.discountAmount, '0'),
+        eq(orders.pointsDiscountAmount, '0')
+      )
+    );
+  }
+
+  // Amount range filter
+  if (options.minAmount !== undefined) {
+    conditions.push(gte(orders.totalAmount, options.minAmount.toString()));
+  }
+  if (options.maxAmount !== undefined) {
+    conditions.push(lte(orders.totalAmount, options.maxAmount.toString()));
+  }
+
+  // Build query with user join
+  let query: any = db
+    .select({
+      ...getTableColumns(orders),
+      userName: users.name,
+      userEmail: users.email,
+    })
+    .from(orders)
+    .leftJoin(users, eq(orders.userId, users.id));
+
+  if (conditions.length > 0) {
+    query = query.where(and(...conditions));
+  }
+
+  // Count total before pagination
+  const countResult = await query;
+  const total = countResult.length;
+
+  // Sorting
+  const sortBy = options.sortBy || 'createdAt';
+  const sortOrder = options.sortOrder || 'desc';
+  const orderByFn = sortOrder === 'asc' ? asc : desc;
+
+  let orderByColumn: any = orders.createdAt;
+  if (sortBy === 'updatedAt') orderByColumn = orders.updatedAt;
+  if (sortBy === 'amount') orderByColumn = orders.totalAmount;
+  if (sortBy === 'discount') orderByColumn = orders.discountAmount;
+
+  // Apply sorting and pagination
+  query = query.orderBy(orderByFn(orderByColumn)).limit(pageSize).offset(offset);
+  const result = await query;
+
+  return {
+    orders: result,
+    total,
+    page,
+    pageSize,
+    totalPages: Math.ceil(total / pageSize),
+  };
 }
 
 export async function countOrdersByDateRange(startDate: Date, endDate: Date) {

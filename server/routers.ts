@@ -712,9 +712,39 @@ export const appRouter = router({
     }),
 
     orders: router({
-      list: adminProcedure.query(async () => {
-        return db.getAllOrders(100);
-      }),
+      list: adminProcedure
+        .input(
+          z.object({
+            page: z.number().int().positive().default(1),
+            pageSize: z.number().int().positive().default(20),
+            search: z.string().optional(),
+            sortBy: z.enum(['createdAt', 'updatedAt', 'amount', 'discount']).default('createdAt'),
+            sortOrder: z.enum(['asc', 'desc']).default('desc'),
+            status: z.string().optional(),
+            paymentStatus: z.string().optional(),
+            startDate: z.date().optional(),
+            endDate: z.date().optional(),
+            hasDiscount: z.boolean().optional(),
+            minAmount: z.number().optional(),
+            maxAmount: z.number().optional(),
+          })
+        )
+        .query(async ({ input }) => {
+          return db.getAdminOrdersWithUsers({
+            page: input.page,
+            pageSize: input.pageSize,
+            search: input.search,
+            sortBy: input.sortBy,
+            sortOrder: input.sortOrder,
+            status: input.status,
+            paymentStatus: input.paymentStatus,
+            startDate: input.startDate,
+            endDate: input.endDate,
+            hasDiscount: input.hasDiscount,
+            minAmount: input.minAmount,
+            maxAmount: input.maxAmount,
+          });
+        }),
 
       detail: adminProcedure
         .input(z.object({ orderId: z.number() }))
