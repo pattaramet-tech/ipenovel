@@ -831,7 +831,7 @@ export async function updateOrder(orderId: number, data: { status?: string; paym
   await db.update(orders).set(updateData).where(eq(orders.id, orderId));
 }
 
-export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected"; rejectionReason?: string; approvalSource?: "auto" | "manual"; approvedByAdminId?: number | null; approvedByLabel?: string | null; approvedAt?: Date | null }, tx?: any) {
+export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected"; rejectionReason?: string; approvalSource?: "auto" | "manual" | "wallet"; approvedByAdminId?: number | null; approvedByLabel?: string | null; approvedAt?: Date | null }, tx?: any) {
   const db = tx || await getDb();
   if (!db) return;
   await db.update(payments).set(data).where(eq(payments.id, paymentId));
@@ -888,7 +888,7 @@ export async function getWishlistById(wishlistId: number) {
 export async function getPendingPayments(limit?: number, offset?: number) {
   const db = await getDb();
   if (!db) return [];
-  let query: any = db.select().from(payments).where(eq(payments.status, "pending")).orderBy(desc(payments.createdAt));
+  let query: any = db.select().from(payments).where(or(eq(payments.status, "pending"), eq(payments.status, "pending_review"))).orderBy(desc(payments.createdAt));
   if (limit) query = query.limit(limit);
   if (offset) query = query.offset(offset);
   return query;

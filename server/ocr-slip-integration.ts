@@ -94,6 +94,7 @@ export async function processSlipVerification(
     orderTotal: parseFloat(order.totalAmount.toString()),
     orderCreatedAt: order.createdAt,
     paymentCreatedAt: payment.createdAt,
+    slipSubmittedAt: payment.slipSubmittedAt || new Date(), // Use slip submission time if available
   };
 
   // Process slip verification (parse image, extract data, verify)
