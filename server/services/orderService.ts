@@ -382,3 +382,73 @@ export async function calculatePointsRedemption(
 
   return { pointsToRedeem, pointsDiscount };
 }
+
+
+/**
+ * Central approval/finalization service for both auto and manual approvals
+ * Ensures both paths run identical finalization logic
+ * Persists approval source (auto vs manual) with admin identity
+ */
+export async function approvePaymentWithSource(
+  paymentId: number,
+  approvalSource: "auto" | "manual",
+  approvedByAdminId?: number,
+  approvedByAdminName?: string,
+  tx?: any
+): Promise<{ message: string }> {
+  const payment = await db.getPaymentById(paymentId, tx);
+  if (!payment) {
+    throw new Error("Payment not found");
+  }
+
+  const order = await db.getOrderById(payment.orderId, tx);
+  if (!order) {
+    throw new Error("Order not found");
+  }
+
+  // Determine approval label based on source
+  let approvedByLabel = "Manual";
+  if (approvalSource === "auto") {
+    approvedByLabel = "AutoApp";
+  } else if (approvalSource === "manual" && approvedByAdminName) {
+    approvedByLabel = approvedByAdminName;
+  }
+
+  const now = new Date();
+
+  // Update payment with approval source and finalization info
+  await db.updatePayment(paymentId, {
+    status: "approved",
+    approvalSource,
+    approvedByAdminId: approvedByAdminId || null,
+    approvedByLabel,
+    approvedAt: now,
+  }, tx);
+
+  // Update order status
+  await db.updateOrder(order.id, {
+    status: "approved",
+    paymentStatus: "approved",
+  }, tx);
+
+  // Record order history
+  const historyNote = approvalSource === "auto"
+    ? "Payment auto-approved via OCR verification"
+    : `Payment approved by admin: ${approvedByLabel}`;
+
+  await db.recordOrderHistory({
+    orderId: order.id,
+    action: "payment_approved",
+    fromStatus: order.status,
+    toStatus: "approved",
+    actorUserId: approvedByAdminId || 0,
+    note: historyNote,
+  }, tx);
+
+  // Finalize order completion (grant entitlements, award points, record coupon usage)
+  if (order.userId) {
+    await finalizeOrderCompletion(order.id, order.userId, tx);
+  }
+
+  return { message: `Payment ${paymentId} approved successfully` };
+}

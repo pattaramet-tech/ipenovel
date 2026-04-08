@@ -780,3 +780,14 @@
 - [x] Fix Episode undefined issue in admin order details
 - [ ] Verify no duplicate purchases created
 - [ ] Final production readiness assessment
+
+
+## Auto-Approval Flow Fix & Approval Source Visibility
+- [ ] Phase 1: Trace production flow end-to-end
+- [ ] Phase 2: Identify root cause of broken auto-approval
+- [ ] Phase 3: Add approval source fields to database schema
+- [ ] Phase 4: Create central approval/finalization service
+- [ ] Phase 5: Update server/routers.ts to use central service
+- [ ] Phase 6: Add Approved By column to /admin/orders
+- [ ] Phase 7: Test all cases (JPG, PNG, PDF, invalid, manual, legacy)
+- [ ] Phase 8: Generate final report

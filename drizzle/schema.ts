@@ -253,6 +253,11 @@ export const payments = mysqlTable(
     autoApprovedAt: timestamp("autoApprovedAt"), // When auto-approval occurred
     linkedOrderId: int("linkedOrderId"), // Order ID this slip was verified against
     linkedPaymentId: int("linkedPaymentId"), // Payment ID this slip was verified against
+    // Approval source tracking
+    approvalSource: mysqlEnum("approvalSource", ["auto", "manual"]), // How payment was approved
+    approvedByAdminId: int("approvedByAdminId"), // Admin user ID for manual approvals
+    approvedByLabel: varchar("approvedByLabel", { length: 255 }), // Display label (e.g., "AutoApp" or admin name)
+    approvedAt: timestamp("approvedAt"), // When approval occurred
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },

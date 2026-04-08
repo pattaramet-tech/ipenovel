@@ -452,21 +452,13 @@ export const appRouter = router({
 
         // Sync order status based on verification result
         if (verificationResult.isAutoApproved) {
-          // Auto-approved: mark order as completed
-          await db.updateOrder(order.id, {
-            paymentStatus: "approved",
-            status: "completed",
-          });
-
-          // Record order history for auto-approval
-          await db.recordOrderHistory({
-            orderId: order.id,
-            action: "payment_auto_approved",
-            fromStatus: order.status,
-            toStatus: "completed",
-            actorUserId: 0, // 0 indicates system auto-approval
-            note: `Payment auto-approved via OCR verification (confidence: ${verificationResult.extractedData?.confidence || 0}%)`,
-          });
+          // Auto-approved: use central approval service to ensure finalization runs
+          await orderService.approvePaymentWithSource(
+            payment.id,
+            "auto", // approval source
+            undefined, // no admin ID for auto-approval
+            "AutoApp" // display label
+          );
         } else {
           // Pending review: keep order pending
           await db.updateOrder(order.id, {
@@ -692,7 +684,14 @@ export const appRouter = router({
         .input(z.object({ paymentId: z.number() }))
         .mutation(async ({ input, ctx }) => {
           try {
-            await orderService.approvePayment(input.paymentId, String(ctx.user.id));
+            // Use central approval service with manual approval source
+            const adminName = ctx.user.name || ctx.user.email || `Admin ${ctx.user.id}`;
+            await orderService.approvePaymentWithSource(
+              input.paymentId,
+              "manual", // approval source
+              ctx.user.id, // admin ID
+              adminName // display label
+            );
             return { success: true };
           } catch (error: any) {
             throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to approve payment. Please try again." });

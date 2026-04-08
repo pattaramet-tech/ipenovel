@@ -686,15 +686,21 @@ export async function getAdminOrdersWithUsers(options: {
     conditions.push(lte(orders.totalAmount, options.maxAmount.toString()));
   }
 
-  // Build query with user join
+  // Build query with user and payment join
   let query: any = db
     .select({
       ...getTableColumns(orders),
       userName: users.name,
       userEmail: users.email,
+      payment: {
+        approvedByLabel: payments.approvedByLabel,
+        approvalSource: payments.approvalSource,
+        approvedAt: payments.approvedAt,
+      },
     })
     .from(orders)
-    .leftJoin(users, eq(orders.userId, users.id));
+    .leftJoin(users, eq(orders.userId, users.id))
+    .leftJoin(payments, eq(orders.id, payments.orderId));
 
   if (conditions.length > 0) {
     query = query.where(and(...conditions));
@@ -825,7 +831,7 @@ export async function updateOrder(orderId: number, data: { status?: string; paym
   await db.update(orders).set(updateData).where(eq(orders.id, orderId));
 }
 
-export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected"; rejectionReason?: string }, tx?: any) {
+export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected"; rejectionReason?: string; approvalSource?: "auto" | "manual"; approvedByAdminId?: number | null; approvedByLabel?: string | null; approvedAt?: Date | null }, tx?: any) {
   const db = tx || await getDb();
   if (!db) return;
   await db.update(payments).set(data).where(eq(payments.id, paymentId));

@@ -257,6 +257,7 @@ export default function AdminOrdersPage() {
                     </th>
                     <th className="text-left p-3 font-semibold">Status</th>
                     <th className="text-left p-3 font-semibold">Payment</th>
+                    <th className="text-left p-3 font-semibold">Approved By</th>
                     <th className="text-left p-3 font-semibold cursor-pointer hover:bg-slate-100" onClick={() => handleSort('createdAt')}>
                       Created{getSortIndicator('createdAt')}
                     </th>
@@ -288,6 +289,25 @@ export default function AdminOrdersPage() {
                         <Badge className={getPaymentStatusColor(order.paymentStatus || 'pending')}>
                           {order.paymentStatus || "pending"}
                         </Badge>
+                      </td>
+                      <td className="p-3 text-sm">
+                        {order.payment?.approvedByLabel ? (
+                          <div className="space-y-0.5">
+                            <div className="font-medium">{order.payment.approvedByLabel}</div>
+                            {order.payment.approvalSource && (
+                              <div className="text-xs text-slate-500">
+                                ({order.payment.approvalSource === 'auto' ? 'Auto-Approved' : 'Manual'})
+                              </div>
+                            )}
+                            {order.payment.approvedAt && (
+                              <div className="text-xs text-slate-500">
+                                {new Date(order.payment.approvedAt).toLocaleString()}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          "—"
+                        )}
                       </td>
                       <td className="p-3 text-sm text-slate-600">
                         {new Date(order.createdAt).toLocaleString()}
