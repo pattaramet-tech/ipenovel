@@ -291,23 +291,22 @@ export default function AdminOrdersPage() {
                         </Badge>
                       </td>
                       <td className="p-3 text-sm">
-                        {order.payment?.approvedByLabel ? (
-                          <div className="space-y-0.5">
-                            <div className="font-medium">{order.payment.approvedByLabel}</div>
-                            {order.payment.approvalSource && (
-                              <div className="text-xs text-slate-500">
-                                ({order.payment.approvalSource === 'auto' ? 'Auto-Approved' : 'Manual'})
-                              </div>
-                            )}
-                            {order.payment.approvedAt && (
-                              <div className="text-xs text-slate-500">
-                                {new Date(order.payment.approvedAt).toLocaleString()}
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          "—"
-                        )}
+                        {(() => {
+                          const src = order.payment?.approvalSource;
+                          const lbl = order.payment?.approvedByLabel;
+                          const ts = order.payment?.approvedAt;
+                          if (src === 'wallet') {
+                            return <div className="space-y-0.5"><div className="font-medium text-blue-600">Approved by Wallet</div><div className="text-xs text-slate-500">Wallet</div>{ts && <div className="text-xs text-slate-500">{new Date(ts).toLocaleString()}</div>}</div>;
+                          } else if (src === 'auto') {
+                            return <div className="space-y-0.5"><div className="font-medium text-green-600">Approved by AutoApp</div><div className="text-xs text-slate-500">Auto</div>{ts && <div className="text-xs text-slate-500">{new Date(ts).toLocaleString()}</div>}</div>;
+                          } else if (src === 'manual') {
+                            return <div className="space-y-0.5"><div className="font-medium text-purple-600">Approved by {lbl || 'Admin'}</div><div className="text-xs text-slate-500">Manual</div>{ts && <div className="text-xs text-slate-500">{new Date(ts).toLocaleString()}</div>}</div>;
+                          } else if (lbl) {
+                            return <div className="space-y-0.5"><div className="font-medium">{lbl}</div><div className="text-xs text-slate-500">(Legacy)</div>{ts && <div className="text-xs text-slate-500">{new Date(ts).toLocaleString()}</div>}</div>;
+                          } else {
+                            return "—";
+                          }
+                        })()}
                       </td>
                       <td className="p-3 text-sm text-slate-600">
                         {new Date(order.createdAt).toLocaleString()}

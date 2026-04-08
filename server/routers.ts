@@ -353,7 +353,7 @@ export const appRouter = router({
             // Pass tx so payment queries/updates use the same transaction
             const payment = await db.getPaymentByOrderId(newOrder.id, tx);
             if (payment) {
-              await db.updatePayment(payment.id, { status: "approved" }, tx);
+              await db.updatePayment(payment.id, { status: "approved", approvalSource: "wallet", approvedByLabel: "Wallet", approvedAt: new Date() }, tx);
             }
             
             // STEP 7: Finalize order completion (points, purchases, coupon usage)
