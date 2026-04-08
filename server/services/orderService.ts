@@ -391,7 +391,7 @@ export async function calculatePointsRedemption(
  */
 export async function approvePaymentWithSource(
   paymentId: number,
-  approvalSource: "auto" | "manual",
+  approvalSource: "auto" | "manual" | "wallet",
   approvedByAdminId?: number,
   approvedByAdminName?: string,
   tx?: any
@@ -410,6 +410,8 @@ export async function approvePaymentWithSource(
   let approvedByLabel = "Manual";
   if (approvalSource === "auto") {
     approvedByLabel = "AutoApp";
+  } else if (approvalSource === "wallet") {
+    approvedByLabel = "Wallet";
   } else if (approvalSource === "manual" && approvedByAdminName) {
     approvedByLabel = approvedByAdminName;
   }
@@ -432,9 +434,14 @@ export async function approvePaymentWithSource(
   }, tx);
 
   // Record order history
-  const historyNote = approvalSource === "auto"
-    ? "Payment auto-approved via OCR verification"
-    : `Payment approved by admin: ${approvedByLabel}`;
+  let historyNote: string;
+  if (approvalSource === "auto") {
+    historyNote = "Payment auto-approved via OCR verification";
+  } else if (approvalSource === "wallet") {
+    historyNote = "Payment approved via wallet payment";
+  } else {
+    historyNote = `Payment approved by admin: ${approvedByLabel}`;
+  }
 
   await db.recordOrderHistory({
     orderId: order.id,

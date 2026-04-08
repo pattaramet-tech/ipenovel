@@ -345,20 +345,18 @@ export const appRouter = router({
             // Pass tx so wallet debit uses the same transaction
             await db.debitWalletBalance(ctx.user.id, totalAmount, "order", newOrder.id, tx);
             
-            // STEP 5: Update order status (within transaction)
-            // Pass tx so order update uses the same transaction
-            await db.updateOrder(newOrder.id, { status: "approved", paymentStatus: "approved" }, tx);
-            
-            // STEP 6: Update the payment record (within transaction)
-            // Pass tx so payment queries/updates use the same transaction
+            // STEP 5-7: Use central approval service for wallet payment
+            // This ensures wallet uses the same finalization path as manual and auto approvals
             const payment = await db.getPaymentByOrderId(newOrder.id, tx);
             if (payment) {
-              await db.updatePayment(payment.id, { status: "approved", approvalSource: "wallet", approvedByLabel: "Wallet", approvedAt: new Date() }, tx);
+              await orderService.approvePaymentWithSource(
+                payment.id,
+                "wallet",
+                undefined,
+                "Wallet",
+                tx
+              );
             }
-            
-            // STEP 7: Finalize order completion (points, purchases, coupon usage)
-            // Pass tx so all finalization writes use the same transaction
-            await orderService.finalizeOrderCompletion(newOrder.id, ctx.user.id, tx);
             
             // STEP 8: Clear cart (within transaction)
             // Pass tx so cart clear uses the same transaction
