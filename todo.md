@@ -783,11 +783,23 @@
 
 
 ## Auto-Approval Flow Fix & Approval Source Visibility
-- [ ] Phase 1: Trace production flow end-to-end
-- [ ] Phase 2: Identify root cause of broken auto-approval
-- [ ] Phase 3: Add approval source fields to database schema
-- [ ] Phase 4: Create central approval/finalization service
-- [ ] Phase 5: Update server/routers.ts to use central service
-- [ ] Phase 6: Add Approved By column to /admin/orders
-- [ ] Phase 7: Test all cases (JPG, PNG, PDF, invalid, manual, legacy)
-- [ ] Phase 8: Generate final report
+- [x] Phase 1: Trace production flow end-to-end
+- [x] Phase 2: Identify root cause of broken auto-approval
+- [x] Phase 3: Add approval source fields to database schema
+- [x] Phase 4: Create central approval/finalization service
+- [x] Phase 5: Update server/routers.ts to use central service
+- [x] Phase 6: Add Approved By column to /admin/orders
+- [x] Phase 7: Test all cases (JPG, PNG, PDF, invalid, manual, legacy)
+- [x] Phase 8: Generate final report
+
+## Final Stabilization Pass - Unified Approval Paths
+- [x] Audit admin.orders.approve route in server/routers.ts
+- [x] Fix admin.orders.approve to use approvePaymentWithSource
+- [x] Audit admin.orders.reject route in server/routers.ts
+- [x] Fix admin.orders.reject for consistency
+- [x] Update AdminOrderDetailPage.tsx to display approval source metadata
+- [x] Audit legacy approvePayment() service usage
+- [x] Deprecate or redirect legacy approvePayment() if needed
+- [x] Run full test suite to verify no regressions
+- [x] Verify admin list and detail show consistent approval info
+- [x] Create final stabilization report
