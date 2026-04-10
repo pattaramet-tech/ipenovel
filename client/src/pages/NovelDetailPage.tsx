@@ -36,9 +36,7 @@ export default function NovelDetailPage() {
   );
 
   // Always call cart query (never conditionally) - gated by user only
-  const { data: cartData } = trpc.cart.get.useQuery(undefined, {
-    enabled: !!user,
-  });
+  const { data: cartData } = trpc.cart.get.useQuery(undefined, { enabled: !!user });
   const cartItems = cartData?.items || [];
 
   const utils = trpc.useUtils();

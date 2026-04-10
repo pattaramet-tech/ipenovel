@@ -20,13 +20,9 @@ export default function PointsPage() {
   }, [user, navigate]);
 
   // Fetch points balance and history
-  const { data: pointsData, isLoading: pointsLoading } = trpc.points.balance.useQuery(undefined, {
-    enabled: !!user,
-  });
+  const { data: pointsData, isLoading: pointsLoading } = trpc.points.balance.useQuery(undefined, { enabled: !!user });
 
-  const { data: historyData, isLoading: historyLoading } = trpc.points.history.useQuery(undefined, {
-    enabled: !!user,
-  });
+  const { data: historyData, isLoading: historyLoading } = trpc.points.history.useQuery(undefined, { enabled: !!user });
 
   if (!user) {
     return null;

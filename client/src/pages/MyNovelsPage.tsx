@@ -10,9 +10,7 @@ export default function MyNovelsPage() {
   const { isAuthenticated } = useAuth();
   const [, navigate] = useLocation();
 
-  const { data: myNovels, isLoading } = trpc.myNovels.list.useQuery(undefined, {
-    enabled: isAuthenticated,
-  });
+  const { data: myNovels, isLoading } = trpc.myNovels.list.useQuery(undefined, { enabled: isAuthenticated });
 
   if (!isAuthenticated) {
     return (

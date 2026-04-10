@@ -179,6 +179,40 @@ export default function AdminOrderDetailPage() {
                 </p>
               </div>
               <div>
+                <p className="text-sm text-muted-foreground">Approval Source</p>
+                <p className="font-semibold">
+                  {(() => {
+                    const src = order.payment?.approvalSource;
+                    const lbl = order.payment?.approvedByLabel;
+                    if (src === 'wallet') {
+                      return <span className="text-blue-600">Wallet</span>;
+                    } else if (src === 'auto') {
+                      return <span className="text-green-600">AutoApp</span>;
+                    } else if (src === 'manual') {
+                      return <span className="text-purple-600">Manual</span>;
+                    } else if (lbl) {
+                      return <span className="text-slate-600">(Legacy)</span>;
+                    } else {
+                      return "—";
+                    }
+                  })()}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Approved By</p>
+                <p className="font-semibold">
+                  {order.payment?.approvedByLabel || "—"}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Approved At</p>
+                <p className="font-semibold">
+                  {order.payment?.approvedAt
+                    ? new Date(order.payment.approvedAt).toLocaleString()
+                    : "—"}
+                </p>
+              </div>
+              <div>
                 <p className="text-sm text-muted-foreground">Payment Created</p>
                 <p className="font-semibold">{new Date(order.payment.createdAt).toLocaleString()}</p>
               </div>

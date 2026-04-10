@@ -15,9 +15,7 @@ export default function Navbar() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   
   // Get cart count
-  const { data: cartData } = trpc.cart.get.useQuery(undefined, {
-    enabled: isAuthenticated,
-  });
+  const { data: cartData } = trpc.cart.get.useQuery(undefined, { enabled: isAuthenticated });
   const cartCount = cartData?.items?.length || 0;
 
   const handleLogout = async () => {

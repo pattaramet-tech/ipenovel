@@ -758,48 +758,50 @@ export const appRouter = router({
 
       approve: adminProcedure
         .input(z.object({ orderId: z.number(), reason: z.string().optional() }))
-        .mutation(async ({ input }) => {
+        .mutation(async ({ input, ctx }) => {
           const order = await db.getOrderById(input.orderId);
           if (!order) throw new TRPCError({ code: "NOT_FOUND" });
           if (order.status !== "pending") {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Order is not pending" });
           }
 
-          await db.updateOrder(input.orderId, { status: "approved" });
-
           const payment = await db.getPaymentByOrderId(input.orderId);
-          if (payment) {
-            await db.updatePayment(payment.id, { status: "approved" });
+          if (!payment) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "Payment not found" });
           }
 
-          const items = await db.getOrderItems(input.orderId);
-          for (const item of items) {
-            if (order.userId) {
-              await db.createPurchase(order.userId, item.novelId, item.episodeId, order.id);
-            }
-          }
+          // Use central approval service for consistency
+          const adminName = ctx.user.name || ctx.user.email || `Admin ${ctx.user.id}`;
+          await orderService.approvePaymentWithSource(
+            payment.id,
+            "manual",
+            ctx.user.id,
+            adminName
+          );
 
           return { success: true };
         }),
 
       reject: adminProcedure
         .input(z.object({ orderId: z.number(), rejectionReason: z.string() }))
-        .mutation(async ({ input }) => {
+        .mutation(async ({ input, ctx }) => {
           const order = await db.getOrderById(input.orderId);
           if (!order) throw new TRPCError({ code: "NOT_FOUND" });
           if (order.status !== "pending") {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Order is not pending" });
           }
 
-          await db.updateOrder(input.orderId, { status: "rejected" });
-
           const payment = await db.getPaymentByOrderId(input.orderId);
-          if (payment) {
-            await db.updatePayment(payment.id, {
-              status: "rejected",
-              rejectionReason: input.rejectionReason,
-            });
+          if (!payment) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "Payment not found" });
           }
+
+          // Use central rejection service for consistency
+          await orderService.rejectPayment(
+            payment.id,
+            String(ctx.user.id),
+            input.rejectionReason
+          );
 
           return { success: true };
         }),

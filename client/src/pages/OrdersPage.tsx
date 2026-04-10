@@ -13,9 +13,7 @@ export default function OrdersPage() {
   const [, navigate] = useLocation();
   const { t } = useLanguage();
 
-  const { data: orders, isLoading } = trpc.orders.list.useQuery(undefined, {
-    enabled: isAuthenticated,
-  });
+  const { data: orders, isLoading } = trpc.orders.list.useQuery(undefined, { enabled: isAuthenticated });
 
   if (!isAuthenticated) {
     return (

@@ -24,9 +24,7 @@ export default function CartPage() {
   const [slipPreview, setSlipPreview] = useState<string | null>(null);
   const utils = trpc.useUtils();
 
-  const { data: cartData, isLoading: cartLoading, refetch: refetchCart } = trpc.cart.get.useQuery(undefined, {
-    enabled: isAuthenticated,
-  });
+  const { data: cartData, isLoading: cartLoading, refetch: refetchCart } = trpc.cart.get.useQuery(undefined, { enabled: isAuthenticated });
 
   const { data: pointsData } = trpc.points.balance.useQuery(undefined, { enabled: isAuthenticated });
 
