@@ -8,6 +8,7 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { storagePut } from "../storage";
+import { getHealthStatus, getReadinessStatus, logStartupInfo, logStartupWarnings } from "./healthCheck";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -69,6 +70,27 @@ async function startServer() {
     } catch (error) {
       console.error("Upload error:", error);
       res.status(500).json({ error: "Upload failed" });
+    }
+  });
+  
+  // Health and readiness check endpoints
+  app.get("/health", async (req, res) => {
+    try {
+      const health = await getHealthStatus();
+      const statusCode = health.status === "healthy" ? 200 : health.status === "degraded" ? 503 : 500;
+      res.status(statusCode).json(health);
+    } catch (error) {
+      res.status(500).json({ status: "unhealthy", error: String(error) });
+    }
+  });
+
+  app.get("/readiness", async (req, res) => {
+    try {
+      const readiness = await getReadinessStatus();
+      const statusCode = readiness.ready ? 200 : 503;
+      res.status(statusCode).json(readiness);
+    } catch (error) {
+      res.status(500).json({ ready: false, error: String(error) });
     }
   });
   
