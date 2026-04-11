@@ -22,10 +22,9 @@ export default function AdminDashboard() {
   const [rejectionReason, setRejectionReason] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
 
-  // Check for admin session (local admin login)
-  const adminSession = typeof window !== 'undefined' ? localStorage.getItem('admin-session') : null;
-  const isAdminLoggedIn = adminSession !== null;
-  const isAdmin = isAdminLoggedIn || (user && user.role === 'admin');
+  // Admin access is determined by backend auth only (user.role === 'admin')
+  // localStorage is NOT used for authorization (security: prevent client-side tampering)
+  const isAdmin = user && user.role === 'admin';
   const shouldFetchAdminData = isAdmin === true; // Ensure it's a boolean for enabled flag
 
   // Query hooks with enabled flag - they won't fetch until auth is resolved and user is admin

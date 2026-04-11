@@ -191,7 +191,8 @@ export default function AdminOrderDetailPage() {
                     } else if (src === 'manual') {
                       return <span className="text-purple-600">Manual</span>;
                     } else if (lbl) {
-                      return <span className="text-slate-600">(Legacy)</span>;
+                      // Legacy record: show label with (Legacy) indicator
+                      return <span className="text-slate-600">{lbl} (Legacy)</span>;
                     } else {
                       return "—";
                     }
