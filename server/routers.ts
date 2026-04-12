@@ -442,11 +442,24 @@ export const appRouter = router({
           status: "pending",
         });
 
-        // Extract OCR text from slip image
-        const slipOcrText = await parseSlipImage(input.slipImageUrl);
-
         // Process slip verification and auto-approval
-        const verificationResult = await processSlipVerification(payment.id, slipOcrText);
+        // Note: processSlipVerification handles OCR parsing internally
+        const verificationResult = await processSlipVerification(payment.id, input.slipImageUrl);
+
+        // Persist OCR metadata to payments table
+        const metadataUpdate: any = {};
+        if (verificationResult.extractedData) {
+          metadataUpdate.extractedData = JSON.stringify(verificationResult.extractedData);
+        }
+        if (verificationResult.reviewReason) {
+          metadataUpdate.reviewReason = verificationResult.reviewReason;
+        }
+        if (verificationResult.fingerprint) {
+          metadataUpdate.fingerprint = verificationResult.fingerprint;
+        }
+        if (Object.keys(metadataUpdate).length > 0) {
+          await db.updatePayment(payment.id, metadataUpdate);
+        }
 
         // Sync order status based on verification result
         if (verificationResult.isAutoApproved) {
