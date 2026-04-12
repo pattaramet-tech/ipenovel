@@ -128,27 +128,6 @@ async function startServer() {
     }
   });
   
-  // Health and readiness check endpoints
-  app.get("/health", async (req, res) => {
-    try {
-      const health = await getHealthStatus();
-      const statusCode = health.status === "healthy" ? 200 : health.status === "degraded" ? 503 : 500;
-      res.status(statusCode).json(health);
-    } catch (error) {
-      res.status(500).json({ status: "unhealthy", error: String(error) });
-    }
-  });
-
-  app.get("/readiness", async (req, res) => {
-    try {
-      const readiness = await getReadinessStatus();
-      const statusCode = readiness.ready ? 200 : 503;
-      res.status(statusCode).json(readiness);
-    } catch (error) {
-      res.status(500).json({ ready: false, error: String(error) });
-    }
-  });
-  
   // tRPC API
   app.use(
     "/api/trpc",

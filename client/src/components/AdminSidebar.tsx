@@ -23,7 +23,8 @@ const adminMenuItems = [
   { label: "Coupons", href: "/admin/coupons", icon: Ticket },
   { label: "Orders", href: "/admin/orders", icon: ShoppingCart },
   { label: "Entitlements", href: "/admin/entitlements", icon: Gift },
-  { label: "Settings", href: "/admin/settings", icon: Settings },
+  // Settings page not yet implemented - commented out to prevent 404
+  // { label: "Settings", href: "/admin/settings", icon: Settings },
 ];
 
 export default function AdminSidebar() {
