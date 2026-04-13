@@ -112,6 +112,22 @@ async function startServer() {
       const base64Data = file.split(",")[1] || file;
       const buffer = Buffer.from(base64Data, "base64");
       
+      // Magic-byte validation to prevent fake file uploads
+      const magicBytes = buffer.slice(0, 4);
+      const isValidJpeg = magicBytes[0] === 0xff && magicBytes[1] === 0xd8 && magicBytes[2] === 0xff;
+      const isPng = magicBytes[0] === 0x89 && magicBytes[1] === 0x50 && magicBytes[2] === 0x4e && magicBytes[3] === 0x47;
+      const isPdf = magicBytes[0] === 0x25 && magicBytes[1] === 0x50 && magicBytes[2] === 0x44 && magicBytes[3] === 0x46;
+      
+      if (type === "image/jpeg" && !isValidJpeg) {
+        return res.status(400).json({ error: "Invalid JPEG file" });
+      }
+      if (type === "image/png" && !isPng) {
+        return res.status(400).json({ error: "Invalid PNG file" });
+      }
+      if (type === "application/pdf" && !isPdf) {
+        return res.status(400).json({ error: "Invalid PDF file" });
+      }
+      
       // Validate file size (max 5MB)
       if (buffer.length > 5 * 1024 * 1024) {
         return res.status(400).json({ error: "File too large" });
