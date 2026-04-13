@@ -261,22 +261,16 @@ export default function AdminOrderDetailPage() {
             <div className="space-y-4">
               {order.items.map((item: any) => {
                 const episodeTitle = item.episode?.title || item.episodeTitle || item.title || `Episode ${item.episodeNumber}`;
-                const fileUrl = item.episode?.fileUrl || null;
+                const hasFile = item.episode?.fileUrl || null;
                 return (
                   <div key={item.id} className="border-b pb-4 last:border-b-0">
                     <div className="flex justify-between items-start">
                       <div className="flex-1">
                         <p className="font-medium">{episodeTitle}</p>
-                        {fileUrl ? (
-                          <a
-                            href={fileUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-sm text-blue-600 hover:text-blue-800 hover:underline break-all mt-1 block"
-                            title="Click to open file"
-                          >
-                            {fileUrl}
-                          </a>
+                        {hasFile ? (
+                          <p className="text-sm text-slate-600 mt-1">
+                            ✓ File uploaded (secure download available)
+                          </p>
                         ) : (
                           <p className="text-sm text-muted-foreground mt-1">—</p>
                         )}

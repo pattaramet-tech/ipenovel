@@ -129,7 +129,7 @@ export default function PaymentPage() {
           <CardContent className="pt-6 text-center">
             <p className="text-slate-600 mb-4">{t("common.pleaseSignIn")}</p>
             <Button asChild>
-              <a href="/login">{t("nav.login")}</a>
+              <a href={getLoginUrl()}>{t("nav.login")}</a>
             </Button>
           </CardContent>
         </Card>

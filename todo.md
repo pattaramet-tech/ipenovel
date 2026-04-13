@@ -803,3 +803,95 @@
 - [x] Run full test suite to verify no regressions
 - [x] Verify admin list and detail show consistent approval info
 - [x] Create final stabilization report
+
+
+## Production Blockers - Phase B Implementation (14 Blockers)
+
+### Blocker 1: Secure Content Delivery (Remove fileUrl leaks)
+- [ ] Create secure download proxy route (/api/files/download/:episodeId)
+- [ ] Update API responses to NOT expose raw fileUrl
+- [ ] Update MyNovelsPage to use secure download route
+- [ ] Update NovelDetailPage to use secure download route
+- [ ] Update OrderDetailPage to use secure download route
+- [ ] Update AdminOrderDetailPage to use secure download route
+- [ ] Verify unauthorized users cannot access files
+- [ ] Verify authorized users can still access files
+
+### Blocker 2: Episode Upload Transport
+- [ ] Verify current implementation (uses fileUrl string, not base64)
+- [ ] No changes needed if already using URL-based approach
+
+### Blocker 3: Mount Download Route
+- [ ] Mount downloadRoute in server/_core/index.ts
+- [ ] Verify route is accessible at /api/download/:episodeId
+- [ ] Test with real episode ID
+
+### Blocker 4: Fix Migration Scripts
+- [ ] Update apply-migrations.mjs to apply ALL 15 migrations (not just 2)
+- [ ] Create comprehensive migration runner
+- [ ] Verify fresh database reaches latest schema
+- [ ] Document migration order
+
+### Blocker 5: Remove Hardcoded Admin Credentials
+- [ ] Remove hardcoded email/password from seed-admin.mjs
+- [ ] Replace with environment-based bootstrap
+- [ ] Create secure admin creation script
+- [ ] Remove credentials from all seed files
+
+### Blocker 6: Fix Frontend Auth Links
+- [ ] Replace all 7 hardcoded /login links with OAuth flow
+- [ ] Use getLoginUrl() helper instead of /login
+- [ ] Test login flow in browser
+- [ ] Verify logout works correctly
+
+### Blocker 7: Health/Readiness Endpoints
+- [ ] Verify endpoints are working (already implemented)
+- [ ] Test /health endpoint
+- [ ] Test /readiness endpoint
+
+### Blocker 8: Production Port Binding
+- [ ] Fix port binding to fail fast in production
+- [ ] Remove port scanning in production mode
+- [ ] Bind only to PORT env var in production
+- [ ] Keep local fallback for development only
+
+### Blocker 9: Environment Validation
+- [ ] Add fail-fast validation on startup
+- [ ] Validate all required env vars
+- [ ] Crash with clear error if missing
+- [ ] Keep development ergonomics reasonable
+
+### Blocker 10: OAuth Empty-Name Session
+- [ ] Fix session creation to use fallback identifier
+- [ ] Use email or openId if name is empty
+- [ ] Ensure session validation agrees with creation
+- [ ] Test user without profile name
+
+### Blocker 11: Wallet Insert Result Handling
+- [ ] Audit payment/wallet insert logic
+- [ ] Make insertId extraction robust
+- [ ] Apply defensive approach to all insert paths
+- [ ] Add regression tests
+
+### Blocker 12: Upload Security (Already Done)
+- [ ] Verify authentication required
+- [ ] Verify magic-byte validation
+- [ ] Verify filename sanitization
+- [ ] Verify user-scoped paths
+
+### Blocker 13: Clean Up Dead Code
+- [ ] Remove unused download implementations
+- [ ] Remove unused upload implementations
+- [ ] Remove unused auth paths
+- [ ] Keep only official paths
+
+### Blocker 14: Add Regression Tests
+- [ ] Test secure download flow
+- [ ] Test unauthorized file access rejection
+- [ ] Test purchased content access success
+- [ ] Test upload auth requirement
+- [ ] Test upload file signature validation
+- [ ] Test large upload handling
+- [ ] Test OAuth empty-name session case
+- [ ] Test wallet/payment insert handling
+- [ ] Test health/readiness endpoints

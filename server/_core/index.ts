@@ -10,6 +10,7 @@ import { serveStatic, setupVite } from "./vite";
 import { storagePut } from "../storage";
 import { getHealthStatus, getReadinessStatus, logStartupInfo, logStartupWarnings } from "./healthCheck";
 import { sdk } from "./sdk";
+import downloadRoute from "../routes/downloadRoute";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -22,6 +23,15 @@ function isPortAvailable(port: number): Promise<boolean> {
 }
 
 async function findAvailablePort(startPort: number = 3000): Promise<number> {
+  // In production, fail fast if PORT is not available
+  if (process.env.NODE_ENV === "production") {
+    if (await isPortAvailable(startPort)) {
+      return startPort;
+    }
+    throw new Error(`Port ${startPort} is not available in production. Ensure PORT env var is correctly set and not in use.`);
+  }
+  
+  // In development, scan for available port
   for (let port = startPort; port < startPort + 20; port++) {
     if (await isPortAvailable(port)) {
       return port;
@@ -31,6 +41,23 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 }
 
 async function startServer() {
+  // Validate required environment variables
+  const requiredEnvVars = [
+    'DATABASE_URL',
+    'JWT_SECRET',
+    'VITE_APP_ID',
+    'OAUTH_SERVER_URL',
+  ];
+  
+  const missingEnvVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
+  if (missingEnvVars.length > 0) {
+    console.error('ERROR: Missing required environment variables:');
+    missingEnvVars.forEach(envVar => console.error(`  - ${envVar}`));
+    console.error('');
+    console.error('Production startup FAILED. Ensure all required env vars are set.');
+    process.exit(1);
+  }
+  
   const app = express();
   const server = createServer(app);
   // Configure body parser with larger size limit for file uploads
@@ -74,8 +101,22 @@ async function startServer() {
     }
   });
   
+  // Authentication middleware for protected routes
+  app.use(async (req, res, next) => {
+    try {
+      const user = await sdk.authenticateRequest(req);
+      (req as any).user = user;
+    } catch (error) {
+      // User not authenticated, continue (routes will handle auth as needed)
+    }
+    next();
+  });
+  
   // OAuth callback under /api/oauth/callback
   registerOAuthRoutes(app);
+  
+  // Download route for secure file access
+  app.use("/api", downloadRoute);
   
   // File upload endpoint for payment slips
   // SECURITY: Requires authentication to prevent abuse
@@ -160,9 +201,13 @@ async function startServer() {
   }
 
   const preferredPort = parseInt(process.env.PORT || "3000");
+  if (isNaN(preferredPort)) {
+    throw new Error("Invalid PORT environment variable. Must be a valid number.");
+  }
+  
   const port = await findAvailablePort(preferredPort);
 
-  if (port !== preferredPort) {
+  if (port !== preferredPort && process.env.NODE_ENV !== "production") {
     console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
   }
 

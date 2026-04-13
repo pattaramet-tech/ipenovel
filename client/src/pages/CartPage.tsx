@@ -93,7 +93,7 @@ export default function CartPage() {
           <CardContent className="pt-6 text-center">
             <p className="text-slate-600 mb-4">Please sign in to view your cart</p>
             <Button asChild>
-              <a href="/login">Sign In</a>
+              <a href={getLoginUrl()}>Sign In</a>
             </Button>
           </CardContent>
         </Card>

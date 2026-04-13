@@ -26,7 +26,7 @@ export default function OrderDetailPage() {
           <CardContent className="pt-6 text-center">
             <p className="text-slate-600 mb-4">Please sign in to view order details</p>
             <Button asChild>
-              <a href="/login">Sign In</a>
+              <a href={getLoginUrl()}>Sign In</a>
             </Button>
           </CardContent>
         </Card>
@@ -145,7 +145,7 @@ export default function OrderDetailPage() {
                   order.items.map((item: any) => {
                     const isApproved = orderData.paymentStatus === "approved" || orderData.status === "approved";
                     const hasAccess = item.purchase || isApproved;
-                    const fileUrl = item.episode?.fileUrl;
+                    const fileUrl = item.episode?.fileUrl ? `/api/download/${item.episode.id}` : null;
 
                     return (
                       <div
@@ -170,7 +170,7 @@ export default function OrderDetailPage() {
                               asChild
                               className="bg-blue-600 hover:bg-blue-700 text-white"
                             >
-                              <a href={fileUrl} target="_blank" rel="noopener noreferrer">
+                              <a href={fileUrl} target="_blank" rel="noopener noreferrer" download>
                                 <BookOpen className="w-4 h-4 mr-1" />
                                 Read
                               </a>

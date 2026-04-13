@@ -318,7 +318,7 @@ export default function NovelDetailPage() {
                       </Badge>
                       {episode.fileUrl ? (
                         <a
-                          href={episode.fileUrl}
+                          href={`/api/download/${episode.id}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="inline-flex items-center justify-center px-2 py-1 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition whitespace-nowrap"
@@ -364,7 +364,7 @@ export default function NovelDetailPage() {
                       {isPurchased ? (
                         episode.fileUrl ? (
                           <a
-                            href={episode.fileUrl}
+                            href={`/api/download/${episode.id}`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center justify-center px-2 py-1 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition whitespace-nowrap"

@@ -19,7 +19,7 @@ export default function MyNovelsPage() {
           <CardContent className="pt-6 text-center">
             <p className="text-slate-600 mb-4">Please sign in to view your novels</p>
             <Button asChild>
-              <a href="/login">Sign In</a>
+              <a href={getLoginUrl()}>Sign In</a>
             </Button>
           </CardContent>
         </Card>
@@ -89,7 +89,7 @@ export default function MyNovelsPage() {
                         <div className="flex gap-2">
                           {episode.fileUrl ? (
                             <a
-                              href={episode.fileUrl}
+                              href={`/api/download/${episode.id}`}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"

@@ -553,8 +553,9 @@ export const appRouter = router({
           throw new TRPCError({ code: "NOT_FOUND" });
         }
 
-        // In a real implementation, generate a pre-signed URL or proxy the download
-        return { downloadUrl: episode.fileUrl };
+        // Return secure download route instead of raw fileUrl
+        // The download route will verify access again and redirect to the actual file
+        return { downloadUrl: `/api/download/${input.episodeId}` };
       }),
   }),
 
