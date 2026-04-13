@@ -831,11 +831,7 @@ export async function updateOrder(orderId: number, data: { status?: string; paym
   await db.update(orders).set(updateData).where(eq(orders.id, orderId));
 }
 
-<<<<<<< Updated upstream
-export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected"; rejectionReason?: string; approvalSource?: "auto" | "manual" | "wallet"; approvedByAdminId?: number | null; approvedByLabel?: string | null; approvedAt?: Date | null; extractedData?: string; reviewReason?: string; fingerprint?: string }, tx?: any) {
-=======
 export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected"; rejectionReason?: string; approvalSource?: "auto" | "manual" | "wallet"; approvedByAdminId?: number | null; approvedByLabel?: string | null; approvedAt?: Date | null; extractedData?: string; reviewReason?: string; fingerprint?: string; autoApprovedAt?: Date | null; linkedOrderId?: number | null; linkedPaymentId?: number | null }, tx?: any) {
->>>>>>> Stashed changes
   const db = tx || await getDb();
   if (!db) return;
   await db.update(payments).set(data).where(eq(payments.id, paymentId));
