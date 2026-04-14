@@ -9,54 +9,37 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { storagePut } from "../storage";
 import { getHealthStatus, getReadinessStatus, logStartupInfo, logStartupWarnings } from "./healthCheck";
+import { validateEnvironment } from "./env";
 import { sdk } from "./sdk";
 import downloadRoute from "../routes/downloadRoute";
 
-function isPortAvailable(port: number): Promise<boolean> {
-  return new Promise(resolve => {
-    const server = net.createServer();
-    server.listen(port, () => {
-      server.close(() => resolve(true));
-    });
-    server.on("error", () => resolve(false));
+/**
+ * Find an available port for local development.
+ * Scans starting from the given port up to +20 ports.
+ * Only used in development mode.
+ */
+function findAvailablePortForDev(startPort: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const tryPort = (port: number) => {
+      if (port >= startPort + 20) {
+        reject(new Error(`No available port found starting from ${startPort}`));
+        return;
+      }
+      
+      const server = net.createServer();
+      server.listen(port, () => {
+        server.close(() => resolve(port));
+      });
+      server.on("error", () => tryPort(port + 1));
+    };
+    
+    tryPort(startPort);
   });
 }
 
-async function findAvailablePort(startPort: number = 3000): Promise<number> {
-  // In production, fail fast if PORT is not available
-  if (process.env.NODE_ENV === "production") {
-    if (await isPortAvailable(startPort)) {
-      return startPort;
-    }
-    throw new Error(`Port ${startPort} is not available in production. Ensure PORT env var is correctly set and not in use.`);
-  }
-  
-  // In development, scan for available port
-  for (let port = startPort; port < startPort + 20; port++) {
-    if (await isPortAvailable(port)) {
-      return port;
-    }
-  }
-  throw new Error(`No available port found starting from ${startPort}`);
-}
-
 async function startServer() {
-  // Validate required environment variables
-  const requiredEnvVars = [
-    'DATABASE_URL',
-    'JWT_SECRET',
-    'VITE_APP_ID',
-    'OAUTH_SERVER_URL',
-  ];
-  
-  const missingEnvVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
-  if (missingEnvVars.length > 0) {
-    console.error('ERROR: Missing required environment variables:');
-    missingEnvVars.forEach(envVar => console.error(`  - ${envVar}`));
-    console.error('');
-    console.error('Production startup FAILED. Ensure all required env vars are set.');
-    process.exit(1);
-  }
+  // Validate all required environment variables
+  validateEnvironment();
   
   const app = express();
   const server = createServer(app);
@@ -200,15 +183,35 @@ async function startServer() {
     serveStatic(app);
   }
 
-  const preferredPort = parseInt(process.env.PORT || "3000");
-  if (isNaN(preferredPort)) {
-    throw new Error("Invalid PORT environment variable. Must be a valid number.");
-  }
+  // Determine port based on environment
+  let port: number;
   
-  const port = await findAvailablePort(preferredPort);
-
-  if (port !== preferredPort && process.env.NODE_ENV !== "production") {
-    console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
+  if (process.env.NODE_ENV === "production") {
+    // Production: Bind directly to PORT env var (must be set by PaaS)
+    // No probing, no fallback, no scanning - fail fast if invalid
+    if (!process.env.PORT) {
+      throw new Error("PORT environment variable is required in production");
+    }
+    
+    port = parseInt(process.env.PORT, 10);
+    if (isNaN(port) || port < 1 || port > 65535) {
+      throw new Error(`Invalid PORT environment variable: "${process.env.PORT}". Must be a number between 1 and 65535.`);
+    }
+    
+    console.log(`[Production] Binding to port ${port}`);
+  } else {
+    // Development: Use PORT env var if set, otherwise default to 3000
+    // Scan for available port if needed
+    const preferredPort = parseInt(process.env.PORT || "3000", 10);
+    if (isNaN(preferredPort) || preferredPort < 1 || preferredPort > 65535) {
+      throw new Error(`Invalid PORT environment variable: "${process.env.PORT}". Must be a number between 1 and 65535.`);
+    }
+    
+    port = await findAvailablePortForDev(preferredPort);
+    
+    if (port !== preferredPort) {
+      console.log(`[Development] Port ${preferredPort} is busy, using port ${port} instead`);
+    }
   }
 
   server.listen(port, () => {

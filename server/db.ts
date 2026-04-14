@@ -512,12 +512,12 @@ export async function getAdminOrders(options: {
 
   // Status filter
   if (options.status) {
-    conditions.push(eq(orders.status, options.status));
+    conditions.push(eq(orders.status, options.status as any));
   }
 
   // Payment status filter
   if (options.paymentStatus) {
-    conditions.push(eq(orders.paymentStatus, options.paymentStatus));
+    conditions.push(eq(orders.paymentStatus, options.paymentStatus as any));
   }
 
   // Date range filter
@@ -645,12 +645,12 @@ export async function getAdminOrdersWithUsers(options: {
 
   // Status filter
   if (options.status) {
-    conditions.push(eq(orders.status, options.status));
+    conditions.push(eq(orders.status, options.status as any));
   }
 
   // Payment status filter
   if (options.paymentStatus) {
-    conditions.push(eq(orders.paymentStatus, options.paymentStatus));
+    conditions.push(eq(orders.paymentStatus, options.paymentStatus as any));
   }
 
   // Date range filter
@@ -2360,7 +2360,27 @@ export async function createWalletTopup(userId: number, requestedAmount: string,
     status: "pending" as any,
   });
 
-  return (await db.select().from(walletTopups).where(eq(walletTopups.id, result[0].insertId)).limit(1))[0];
+  // Extract insertId using defensive pattern (handles different Drizzle result shapes)
+  let insertedId: number | undefined;
+  if (typeof result === 'object' && result !== null) {
+    insertedId = (result as any).insertId;
+    if (!insertedId && Array.isArray(result) && result[0]) {
+      insertedId = (result[0] as any).insertId;
+    }
+    if (!insertedId && (result as any).meta) {
+      insertedId = (result as any).meta.insertId;
+    }
+  }
+  if (!insertedId) {
+    throw new Error("Failed to extract inserted wallet topup ID from database result");
+  }
+
+  // Fetch and return the created topup record
+  const topup = (await db.select().from(walletTopups).where(eq(walletTopups.id, insertedId)).limit(1))[0];
+  if (!topup) {
+    throw new Error("Wallet topup was inserted but could not be retrieved");
+  }
+  return topup;
 }
 
 export async function getWalletTopupById(topupId: number) {

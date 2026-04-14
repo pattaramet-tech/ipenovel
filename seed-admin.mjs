@@ -1,3 +1,9 @@
+// ⚠️  LOCAL/DEV-ONLY SCRIPT
+// This script creates an admin account for local development only.
+// Do NOT use in production.
+//
+// Usage: ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD=SecurePassword123 node seed-admin.mjs
+
 import bcrypt from 'bcryptjs';
 import mysql from 'mysql2/promise';
 
@@ -6,14 +12,17 @@ const DB_USER = process.env.DB_USER || 'root';
 const DB_PASSWORD = process.env.DB_PASSWORD || '';
 const DB_NAME = process.env.DB_NAME || 'ipenovel';
 
-// Admin credentials should be provided via environment variables
-// For production, use a secure bootstrap method (e.g., admin setup endpoint)
+// Admin credentials must be provided via environment variables
+// This is intentional - it prevents accidental production use
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
 if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
-  console.error('ERROR: Admin credentials not provided');
+  console.error('❌ ERROR: Admin credentials not provided');
+  console.error('');
   console.error('Usage: ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD=SecurePassword123 node seed-admin.mjs');
+  console.error('');
+  console.error('⚠️  This script is for LOCAL DEVELOPMENT ONLY');
   console.error('');
   console.error('For production deployments:');
   console.error('1. Do NOT use this script');
@@ -53,11 +62,14 @@ async function seedAdmin() {
       [openId, 'Administrator', email, 'local', passwordHash, 'admin']
     );
 
-    console.log('✓ Admin account created successfully');
+    console.log('✅ Local/dev admin account created successfully');
     console.log(`  Email: ${email}`);
     console.log('  Password: (provided via ADMIN_PASSWORD env var)');
     console.log('');
-    console.log('SECURITY: Store these credentials securely and change password after first login');
+    console.log('⚠️  This is a LOCAL/DEV-ONLY account');
+    console.log('   Do not use in production');
+    console.log('');
+    console.log('🔒 SECURITY: Store these credentials securely and change password after first login');
   } catch (error) {
     console.error('Error seeding admin:', error);
   } finally {

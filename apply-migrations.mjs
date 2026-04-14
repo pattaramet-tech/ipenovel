@@ -20,13 +20,23 @@ const connection = await mysql.createConnection({
 console.log('✓ Connected to database');
 
 // Automatically discover all migration files in drizzle directory
+// Only apply numbered migrations (0000_*.sql, 0001_*.sql, etc.)
+// Skip LOCAL_ADMIN_BOOTSTRAP.sql (local/dev-only, applied separately)
 const migrationsDir = 'drizzle';
+const isProduction = process.env.NODE_ENV === 'production';
 const migrationFiles = fs.readdirSync(migrationsDir)
   .filter(f => f.endsWith('.sql'))
+  // Only include numbered migrations (0000_*, 0001_*, etc.)
+  // Skip LOCAL_ADMIN_BOOTSTRAP.sql (applied separately for local/dev)
+  .filter(f => /^\d{4}_/.test(f))
   .sort()
   .map(f => path.join(migrationsDir, f));
 
-console.log(`\nFound ${migrationFiles.length} migration files to apply`);
+if (!isProduction) {
+  console.log('\nℹ️  Development mode: LOCAL_ADMIN_BOOTSTRAP.sql can be applied separately');
+}
+
+console.log(`\nFound ${migrationFiles.length} canonical migration files to apply`);
 
 for (const file of migrationFiles) {
   if (fs.existsSync(file)) {
@@ -68,4 +78,15 @@ try {
 }
 
 await connection.end();
-console.log('\n✓ All migrations completed successfully');
+
+console.log('\n✓ Canonical migrations completed successfully');
+
+if (!isProduction) {
+  console.log('\nℹ️  To bootstrap local admin for development:');
+  console.log('   Option 1: ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD=SecurePass123 node seed-admin.mjs');
+  console.log('   Option 2: NODE_ENV=development node apply-local-admin-bootstrap.mjs');
+  console.log('   Option 3: Manually run: mysql ... < drizzle/LOCAL_ADMIN_BOOTSTRAP.sql');
+} else {
+  console.log('\nℹ️  Production: No local admin bootstrap applied');
+  console.log('   Admin accounts must be created through secure endpoint (future)');
+}
