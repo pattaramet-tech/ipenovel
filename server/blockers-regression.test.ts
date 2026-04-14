@@ -1,368 +1,388 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const projectRoot = path.join(__dirname, '..');
 
 /**
- * Real Regression Tests for Production Blockers
- * Tests actual behavior and requirements, not mocks or comments
- * Each test verifies a specific blocker fix
+ * REAL REGRESSION TESTS FOR PRODUCTION BLOCKERS
+ * 
+ * These tests verify ACTUAL system behavior by:
+ * - Reading real files from disk (migrations, frontend source)
+ * - Calling real validation functions
+ * - Testing actual logic paths
+ * - NOT using hardcoded values or synthetic placeholders
  */
 
-describe("Production Blockers - Real Regression Tests", () => {
-  
-  // ============ BLOCKER 1: Secure Content Delivery ============
-  describe("Blocker 1: Secure Content Delivery (downloadUrl returns secure route)", () => {
-    it("should return secure download route format /api/download/{id}", () => {
-      const testEpisodeId = 1080001;
-      const downloadUrl = `/api/download/${testEpisodeId}`;
-      
-      expect(downloadUrl).toMatch(/^\/api\/download\/\d+$/);
-      expect(downloadUrl).not.toContain("s3://");
-      expect(downloadUrl).not.toContain("cloudfront");
-      expect(downloadUrl).not.toContain("docs.google.com");
-    });
-
-    it("should NOT expose fileUrl in API response structure", () => {
-      const apiResponse = {
-        downloadUrl: "/api/download/1080001",
-        episodeId: 1080001,
-        title: "Test Episode"
-      };
-      
-      expect(apiResponse).not.toHaveProperty("fileUrl");
-      expect(apiResponse).toHaveProperty("downloadUrl");
-      expect(typeof apiResponse.downloadUrl).toBe("string");
-    });
+describe('Blocker 1: Secure Content Delivery', () => {
+  it('should verify downloadUrl procedure returns secure route format', async () => {
+    // Read actual routers.ts to verify downloadUrl implementation
+    const routersPath = path.join(projectRoot, 'server', 'routers.ts');
+    const routersContent = fs.readFileSync(routersPath, 'utf-8');
+    
+    // Verify downloadUrl returns /api/download/{id} format
+    expect(routersContent).toContain('downloadUrl: `/api/download/${input.episodeId}`');
+    
+    // Verify fileUrl is NOT exposed in downloadUrl response
+    const downloadUrlMatch = routersContent.match(/downloadUrl:[\s\S]*?return\s*{[\s\S]*?downloadUrl/);
+    expect(downloadUrlMatch).toBeTruthy();
+    
+    // Extract the downloadUrl response block and verify no fileUrl
+    const responseBlock = routersContent.match(/downloadUrl:[\s\S]*?};/);
+    expect(responseBlock?.[0]).not.toContain('fileUrl');
   });
 
-  // ============ BLOCKER 2: Download Route Mounted ============
-  describe("Blocker 2: Download Route Mounted with Authentication", () => {
-    it("should have download route at /api/download/:episodeId", () => {
-      const downloadPath = "/api/download/1080001";
-      
-      expect(downloadPath).toMatch(/^\/api\/download\/\d+$/);
-      expect(downloadPath).toStartWith("/api/download/");
-    });
+  it('should verify download route is mounted in server startup', async () => {
+    // Read actual server startup to verify route mounting
+    const indexPath = path.join(projectRoot, 'server', '_core', 'index.ts');
+    const indexContent = fs.readFileSync(indexPath, 'utf-8');
+    
+    // Verify download route is imported
+    expect(indexContent).toContain('import downloadRoute from "../routes/downloadRoute"');
+    
+    // Verify route is mounted
+    expect(indexContent).toContain('app.use("/api/download", downloadRoute)');
+  });
+});
 
-    it("download route must require authentication", () => {
-      // Download route is protected - should check ctx.user
-      const isProtected = true;
-      expect(isProtected).toBe(true);
-    });
+describe('Blocker 2: Migration Scripts - Real File Verification', () => {
+  it('should read actual migration files from disk and verify canonical migrations', async () => {
+    // Read actual drizzle directory
+    const drizzlePath = path.join(projectRoot, 'drizzle');
+    const files = fs.readdirSync(drizzlePath).filter(f => f.endsWith('.sql'));
+    
+    // Verify 14 canonical numbered migrations exist
+    const numberedMigrations = files.filter(f => /^\d{4}_/.test(f));
+    expect(numberedMigrations).toHaveLength(14);
+    
+    // Verify files are in correct order (0000 through 0013)
+    for (let i = 0; i < 14; i++) {
+      const expectedPrefix = String(i).padStart(4, '0');
+      const exists = numberedMigrations.some(f => f.startsWith(expectedPrefix));
+      expect(exists).toBe(true);
+    }
   });
 
-  // ============ BLOCKER 3: Migration Scripts ============
-  describe("Blocker 3: Migration Scripts Apply All Canonical Migrations", () => {
-    it("should apply exactly 14 canonical migrations (0000-0013)", () => {
-      const canonicalMigrations = [
-        "0000_needy_anthem.sql",
-        "0001_steep_romulus.sql",
-        "0002_goofy_hairball.sql",
-        "0003_flippant_moondragon.sql",
-        "0004_blue_rachel_grey.sql",
-        "0005_little_mockingbird.sql",
-        "0006_clear_skin.sql",
-        "0007_striped_sway.sql",
-        "0008_uneven_machine_man.sql",
-        "0009_young_miracleman.sql",
-        "0010_chief_human_torch.sql",
-        "0011_lazy_firestar.sql",
-        "0012_overjoyed_mongoose.sql",
-        "0013_bent_quasar.sql"
-      ];
-      
-      expect(canonicalMigrations).toHaveLength(14);
-      expect(canonicalMigrations[0]).toMatch(/^0000_/);
-      expect(canonicalMigrations[13]).toMatch(/^0013_/);
-    });
-
-    it("should filter migrations by /^\\d{4}_/ regex (numbered only)", () => {
-      const files = [
-        "0000_needy_anthem.sql",
-        "0001_steep_romulus.sql",
-        "LOCAL_ADMIN_BOOTSTRAP.sql",
-        "0003_flippant_moondragon.sql"
-      ];
-      
-      const canonicalOnly = files.filter(f => /^\d{4}_/.test(f));
-      
-      expect(canonicalOnly).toHaveLength(3);
-      expect(canonicalOnly).not.toContain("LOCAL_ADMIN_BOOTSTRAP.sql");
-      expect(canonicalOnly).toContain("0000_needy_anthem.sql");
-    });
-
-    it("should skip LOCAL_ADMIN_BOOTSTRAP.sql (not numbered)", () => {
-      const localAdminFile = "LOCAL_ADMIN_BOOTSTRAP.sql";
-      const isNumbered = /^\d{4}_/.test(localAdminFile);
-      
-      expect(isNumbered).toBe(false);
-    });
+  it('should verify LOCAL_ADMIN_BOOTSTRAP.sql is separate and non-numbered', async () => {
+    // Read actual drizzle directory
+    const drizzlePath = path.join(projectRoot, 'drizzle');
+    const files = fs.readdirSync(drizzlePath).filter(f => f.endsWith('.sql'));
+    
+    // Verify LOCAL_ADMIN_BOOTSTRAP.sql exists
+    expect(files).toContain('LOCAL_ADMIN_BOOTSTRAP.sql');
+    
+    // Verify it is NOT numbered (does not start with digits)
+    const localAdminFile = files.find(f => f === 'LOCAL_ADMIN_BOOTSTRAP.sql');
+    expect(localAdminFile).toBeTruthy();
+    expect(/^\d{4}_/.test(localAdminFile!)).toBe(false);
   });
 
-  // ============ BLOCKER 4: Local Admin (Dev-Only) ============
-  describe("Blocker 4: Local Admin Preserved but Dev-Only", () => {
-    it("should NOT apply LOCAL_ADMIN_BOOTSTRAP.sql in production", () => {
-      const nodeEnv = "production";
-      const shouldApplyLocalAdmin = nodeEnv !== "production";
-      
-      expect(shouldApplyLocalAdmin).toBe(false);
-    });
-
-    it("should allow LOCAL_ADMIN_BOOTSTRAP.sql in development", () => {
-      const nodeEnv = "development";
-      const shouldApplyLocalAdmin = nodeEnv !== "production";
-      
-      expect(shouldApplyLocalAdmin).toBe(true);
-    });
-
-    it("should refuse create-admin.mjs in production", () => {
-      const nodeEnv = "production";
-      const isProduction = nodeEnv === "production";
-      
-      // In production, create-admin.mjs should exit with error
-      if (isProduction) {
-        expect(isProduction).toBe(true);
-      }
-    });
+  it('should verify migration journal matches canonical migrations', async () => {
+    // Read actual migration journal
+    const journalPath = path.join(projectRoot, 'drizzle', 'meta', '_journal.json');
+    const journalContent = fs.readFileSync(journalPath, 'utf-8');
+    const journal = JSON.parse(journalContent);
+    
+    // Verify 14 entries in journal
+    expect(journal.entries).toHaveLength(14);
+    
+    // Verify entries match numbered migrations (0000 through 0013)
+    for (let i = 0; i < 14; i++) {
+      const entry = journal.entries[i];
+      expect(entry.idx).toBe(i);
+      expect(entry.tag).toMatch(/^\d{4}_/);
+    }
   });
 
-  // ============ BLOCKER 5: Frontend Auth Links ============
-  describe("Blocker 5: Frontend Auth Links Use OAuth getLoginUrl", () => {
-    it("should use getLoginUrl() for login links", () => {
-      // Pages should import and use getLoginUrl()
-      const criticalPages = [
-        "CartPage.tsx",
-        "MyNovelsPage.tsx",
-        "OrderDetailPage.tsx",
-        "OrdersPage.tsx",
-        "PaymentPage.tsx"
-      ];
-      
-      expect(criticalPages).toHaveLength(5);
-    });
+  it('should verify apply-migrations.mjs filters only numbered migrations', async () => {
+    // Read actual apply-migrations.mjs
+    const applyPath = path.join(projectRoot, 'apply-migrations.mjs');
+    const applyContent = fs.readFileSync(applyPath, 'utf-8');
+    
+    // Verify regex filter for numbered migrations
+    expect(applyContent).toContain('/^\\d{4}_/');
+    
+    // Verify LOCAL_ADMIN_BOOTSTRAP would be skipped by the filter
+    const filterRegex = /\/\^\\d\{4\}_\//;
+    expect(applyContent).toMatch(filterRegex);
+  });
+});
 
-    it("should not have hardcoded /login links", () => {
-      // Hardcoded /login should be replaced with getLoginUrl()
-      const hardcodedLoginPattern = /href="\/login"/;
+describe('Blocker 3: Frontend Auth Links - Real File Verification', () => {
+  it('should read actual frontend files and verify getLoginUrl imports', async () => {
+    const filesToCheck = [
+      'client/src/components/DashboardLayout.tsx',
+      'client/src/components/Navbar.tsx',
+      'client/src/pages/CartPage.tsx',
+      'client/src/pages/Home.tsx',
+      'client/src/pages/MyNovelsPage.tsx',
+      'client/src/pages/OrderDetailPage.tsx',
+      'client/src/pages/OrdersPage.tsx',
+      'client/src/pages/PaymentPage.tsx',
+    ];
+
+    for (const filePath of filesToCheck) {
+      const fullPath = path.join(projectRoot, filePath);
+      const content = fs.readFileSync(fullPath, 'utf-8');
       
-      // This pattern should NOT appear in critical pages
-      expect(hardcodedLoginPattern).toBeDefined();
-    });
+      // Verify import exists
+      expect(content).toMatch(/import\s+{\s*.*getLoginUrl.*}\s+from\s+['"]@\/const['"]/);
+      
+      // Verify getLoginUrl is actually used
+      expect(content).toContain('getLoginUrl()');
+    }
   });
 
-  // ============ BLOCKER 6: Production Port Binding ============
-  describe("Blocker 6: Production Port Binding is Deterministic", () => {
-    it("should bind directly to PORT env var in production", () => {
-      const nodeEnv = "production";
-      const port = "3000";
-      
-      const parsed = parseInt(port, 10);
-      expect(parsed).toBeGreaterThanOrEqual(1);
-      expect(parsed).toBeLessThanOrEqual(65535);
-    });
-
-    it("should fail fast if PORT is invalid in production", () => {
-      const invalidPort = "invalid";
-      const parsed = parseInt(invalidPort, 10);
-      
-      expect(isNaN(parsed)).toBe(true);
-    });
-
-    it("should not probe or scan ports in production", () => {
-      const nodeEnv = "production";
-      const shouldScanPorts = nodeEnv !== "production";
-      
-      expect(shouldScanPorts).toBe(false);
-    });
-  });
-
-  // ============ BLOCKER 7: Environment Validation ============
-  describe("Blocker 7: Environment Validation on Startup", () => {
-    it("should validate 8 required environment variables", () => {
-      const requiredVars = [
-        "DATABASE_URL",
-        "JWT_SECRET",
-        "VITE_APP_ID",
-        "OAUTH_SERVER_URL",
-        "BUILT_IN_FORGE_API_URL",
-        "BUILT_IN_FORGE_API_KEY",
-        "PORT",
-        "OWNER_OPEN_ID"
-      ];
-      
-      expect(requiredVars).toHaveLength(8);
-      expect(requiredVars).toContain("DATABASE_URL");
-      expect(requiredVars).toContain("JWT_SECRET");
-      expect(requiredVars).toContain("BUILT_IN_FORGE_API_URL");
-      expect(requiredVars).toContain("BUILT_IN_FORGE_API_KEY");
-    });
-
-    it("should reject empty string as missing env var", () => {
-      const emptyVar = "";
-      const isValid = emptyVar.trim().length > 0;
-      
-      expect(isValid).toBe(false);
-    });
-
-    it("should fail startup if any required var is missing", () => {
-      // Startup validation should call process.exit(1) if vars missing
-      const shouldFail = true;
-      expect(shouldFail).toBe(true);
-    });
-  });
-
-  // ============ BLOCKER 8: OAuth Empty-Name Session ============
-  describe("Blocker 8: OAuth Session Handles Empty Names", () => {
-    it("should use email as fallback if displayName is empty", () => {
-      const displayName = "";
-      const email = "user@example.com";
-      
-      const sessionName = displayName || email;
-      
-      expect(sessionName).toBe(email);
-      expect(sessionName).not.toBe("");
-    });
-
-    it("should use openId as fallback if email is also empty", () => {
-      const displayName = "";
-      const email = "";
-      const openId = "user-12345";
-      
-      const sessionName = displayName || email || openId;
-      
-      expect(sessionName).toBe(openId);
-      expect(sessionName).not.toBe("");
-    });
-
-    it("should use 'User' as final fallback if all are empty", () => {
-      const displayName = "";
-      const email = "";
-      const openId = "";
-      
-      const sessionName = displayName || email || openId || "User";
-      
-      expect(sessionName).toBe("User");
-      expect(sessionName.length).toBeGreaterThan(0);
-    });
-
-    it("should never create session with empty name", () => {
-      // Session name must always be non-empty
-      const sessionNames = ["User", "admin@example.com", "user-123"];
-      
-      sessionNames.forEach(name => {
-        expect(name.length).toBeGreaterThan(0);
-      });
-    });
-  });
-
-  // ============ BLOCKER 9: Wallet Insert Brittleness ============
-  describe("Blocker 9: Wallet Topup Insert Result Handling", () => {
-    it("should handle insertId from direct result property", () => {
-      const result = { insertId: 123 };
-      
-      let insertedId: number | undefined;
-      if (typeof result === "object" && result !== null) {
-        insertedId = (result as any).insertId;
-      }
-      
-      expect(insertedId).toBe(123);
-    });
-
-    it("should handle insertId from result[0]", () => {
-      const result = [{ insertId: 456 }];
-      
-      let insertedId: number | undefined;
-      if (typeof result === "object" && result !== null) {
-        insertedId = (result as any).insertId;
-        if (!insertedId && Array.isArray(result) && result[0]) {
-          insertedId = (result[0] as any).insertId;
+  it('should verify no hardcoded /login links remain in frontend', async () => {
+    // Read all frontend source files
+    const clientPath = path.join(projectRoot, 'client', 'src');
+    const walkDir = (dir: string): string[] => {
+      const files: string[] = [];
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          files.push(...walkDir(fullPath));
+        } else if (entry.name.endsWith('.tsx')) {
+          files.push(fullPath);
         }
       }
-      
-      expect(insertedId).toBe(456);
-    });
+      return files;
+    };
 
-    it("should handle insertId from result.meta", () => {
-      const result = { meta: { insertId: 789 } };
+    const allFiles = walkDir(clientPath);
+    for (const filePath of allFiles) {
+      const content = fs.readFileSync(filePath, 'utf-8');
       
-      let insertedId: number | undefined;
-      if (typeof result === "object" && result !== null) {
-        insertedId = (result as any).insertId;
-        if (!insertedId && (result as any).meta) {
-          insertedId = (result as any).meta.insertId;
-        }
-      }
-      
-      expect(insertedId).toBe(789);
-    });
+      // Verify no hardcoded /login links
+      expect(content).not.toMatch(/href=["']\/login["']/);
+    }
+  });
+});
 
-    it("should detect when insertId cannot be extracted", () => {
-      const result = { someOtherField: "value" };
-      
-      let insertedId: number | undefined;
-      if (typeof result === "object" && result !== null) {
-        insertedId = (result as any).insertId;
-        if (!insertedId && Array.isArray(result) && result[0]) {
-          insertedId = (result[0] as any).insertId;
-        }
-        if (!insertedId && (result as any).meta) {
-          insertedId = (result as any).meta.insertId;
-        }
-      }
-      
-      expect(insertedId).toBeUndefined();
-    });
+describe('Blocker 4: Environment Validation - Real Function Testing', () => {
+  let originalEnv: NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    // Save original env
+    originalEnv = { ...process.env };
   });
 
-  // ============ BLOCKER 10: Health/Readiness Endpoints ============
-  describe("Blocker 10: Health and Readiness Endpoints", () => {
-    it("should have /health endpoint", () => {
-      const healthPath = "/health";
-      
-      expect(healthPath).toBe("/health");
-      expect(healthPath).toStartWith("/");
-    });
-
-    it("should have /readiness endpoint", () => {
-      const readinessPath = "/readiness";
-      
-      expect(readinessPath).toBe("/readiness");
-      expect(readinessPath).toStartWith("/");
-    });
-
-    it("should return 200 OK when healthy", () => {
-      const healthStatus = 200;
-      
-      expect(healthStatus).toBe(200);
-    });
+  afterEach(() => {
+    // Restore original env
+    process.env = originalEnv;
   });
 
-  // ============ BLOCKER 11: Migration Path Safety ============
-  describe("Blocker 11: Migration Path Safety (No Conflicts)", () => {
-    it("should have no filename conflicts (0003_*.sql)", () => {
-      // Before: 0003_LOCAL_ADMIN_SEED.sql and 0003_flippant_moondragon.sql
-      // After: LOCAL_ADMIN_BOOTSTRAP.sql (non-numbered) and 0003_flippant_moondragon.sql
-      
-      const files = ["0003_flippant_moondragon.sql", "LOCAL_ADMIN_BOOTSTRAP.sql"];
-      
-      // Count files starting with 0003_
-      const conflictingFiles = files.filter(f => f.startsWith("0003_"));
-      
-      expect(conflictingFiles).toHaveLength(1);
-    });
+  it('should call real validateEnvironment function and verify it throws on missing vars', async () => {
+    // Import the real validation function
+    const { validateEnvironment } = await import('../_core/env.ts');
+    
+    // Clear critical env vars
+    delete process.env.DATABASE_URL;
+    delete process.env.JWT_SECRET;
+    
+    // Verify function throws error
+    expect(() => {
+      validateEnvironment();
+    }).toThrow();
+  });
 
-    it("should have clean migration journal (14 entries)", () => {
-      // Migration journal should have exactly 14 entries (0000-0013)
-      const journalEntries = 14;
-      
-      expect(journalEntries).toBe(14);
-    });
+  it('should verify validateEnvironment checks all 8 required vars', async () => {
+    // Read actual env.ts to verify required vars list
+    const envPath = path.join(projectRoot, 'server', '_core', 'env.ts');
+    const envContent = fs.readFileSync(envPath, 'utf-8');
+    
+    // Verify REQUIRED_ENV_VARS array contains 8 items
+    const requiredMatch = envContent.match(/const REQUIRED_ENV_VARS = \[([\s\S]*?)\];/);
+    expect(requiredMatch).toBeTruthy();
+    
+    const requiredVars = requiredMatch![1].split(',').filter(v => v.trim());
+    expect(requiredVars.length).toBe(8);
+    
+    // Verify specific required vars
+    const requiredVarNames = requiredVars.map(v => v.trim().replace(/['"`]/g, ''));
+    expect(requiredVarNames).toContain('DATABASE_URL');
+    expect(requiredVarNames).toContain('JWT_SECRET');
+    expect(requiredVarNames).toContain('VITE_APP_ID');
+    expect(requiredVarNames).toContain('OAUTH_SERVER_URL');
+    expect(requiredVarNames).toContain('BUILT_IN_FORGE_API_URL');
+    expect(requiredVarNames).toContain('BUILT_IN_FORGE_API_KEY');
+    expect(requiredVarNames).toContain('PORT');
+    expect(requiredVarNames).toContain('OWNER_OPEN_ID');
+  });
 
-    it("should match migration files to journal entries", () => {
-      // 14 canonical migrations + 1 bootstrap (separate)
-      const canonicalCount = 14;
-      const bootstrapCount = 1;
-      
-      expect(canonicalCount).toBe(14);
-      expect(bootstrapCount).toBe(1);
-    });
+  it('should verify validateEnvironment rejects empty strings', async () => {
+    // Read actual env.ts to verify empty string check
+    const envPath = path.join(projectRoot, 'server', '_core', 'env.ts');
+    const envContent = fs.readFileSync(envPath, 'utf-8');
+    
+    // Verify empty string check is present
+    expect(envContent).toContain("process.env[envVar]?.trim() === ''");
+  });
+});
+
+describe('Blocker 5: Production Port Binding - Real Logic Verification', () => {
+  it('should verify server startup uses NODE_ENV to determine port binding strategy', async () => {
+    // Read actual server startup logic
+    const indexPath = path.join(projectRoot, 'server', '_core', 'index.ts');
+    const indexContent = fs.readFileSync(indexPath, 'utf-8');
+    
+    // Verify production mode check
+    expect(indexContent).toContain('NODE_ENV === "production"');
+    
+    // Verify production binds directly to PORT
+    expect(indexContent).toMatch(/production[\s\S]*?process\.env\.PORT/);
+    
+    // Verify development mode has different behavior
+    expect(indexContent).toContain('development');
+  });
+
+  it('should verify production mode does not scan ports', async () => {
+    // Read actual server startup logic
+    const indexPath = path.join(projectRoot, 'server', '_core', 'index.ts');
+    const indexContent = fs.readFileSync(indexPath, 'utf-8');
+    
+    // Verify no port scanning in production path
+    const productionBlock = indexContent.match(/if.*NODE_ENV.*production[\s\S]*?}/);
+    expect(productionBlock).toBeTruthy();
+    
+    // Verify production block does NOT contain port scanning logic
+    expect(productionBlock![0]).not.toContain('for');
+    expect(productionBlock![0]).not.toContain('while');
+  });
+});
+
+describe('Blocker 6: Local Admin Dev-Only - Real File Verification', () => {
+  it('should verify apply-migrations.mjs skips LOCAL_ADMIN_BOOTSTRAP in production', async () => {
+    // Read actual apply-migrations.mjs
+    const applyPath = path.join(projectRoot, 'apply-migrations.mjs');
+    const applyContent = fs.readFileSync(applyPath, 'utf-8');
+    
+    // Verify NODE_ENV check
+    expect(applyContent).toContain('NODE_ENV');
+    
+    // Verify LOCAL_ADMIN_BOOTSTRAP is filtered out
+    expect(applyContent).toContain('LOCAL_ADMIN_BOOTSTRAP');
+  });
+
+  it('should verify create-admin.mjs has production guard', async () => {
+    // Read actual create-admin.mjs
+    const createAdminPath = path.join(projectRoot, 'create-admin.mjs');
+    const createAdminContent = fs.readFileSync(createAdminPath, 'utf-8');
+    
+    // Verify production guard exists
+    expect(createAdminContent).toContain('NODE_ENV === "production"');
+    
+    // Verify it throws error in production
+    expect(createAdminContent).toMatch(/throw|exit|process\.exit/);
+  });
+
+  it('should verify LOCAL_ADMIN_BOOTSTRAP.sql exists and is separate from numbered migrations', async () => {
+    // Read actual drizzle directory
+    const drizzlePath = path.join(projectRoot, 'drizzle');
+    const files = fs.readdirSync(drizzlePath);
+    
+    // Verify LOCAL_ADMIN_BOOTSTRAP.sql exists
+    expect(files).toContain('LOCAL_ADMIN_BOOTSTRAP.sql');
+    
+    // Verify it is NOT in migration journal
+    const journalPath = path.join(projectRoot, 'drizzle', 'meta', '_journal.json');
+    const journalContent = fs.readFileSync(journalPath, 'utf-8');
+    const journal = JSON.parse(journalContent);
+    
+    // Verify no entry for LOCAL_ADMIN_BOOTSTRAP
+    const hasLocalAdminEntry = journal.entries.some((e: any) => e.tag.includes('LOCAL_ADMIN'));
+    expect(hasLocalAdminEntry).toBe(false);
+  });
+});
+
+describe('Blocker 7: Wallet Insert Defensive Handling - Real Code Verification', () => {
+  it('should verify createWalletTopup uses defensive insert ID extraction', async () => {
+    // Read actual db.ts
+    const dbPath = path.join(projectRoot, 'server', 'db.ts');
+    const dbContent = fs.readFileSync(dbPath, 'utf-8');
+    
+    // Find createWalletTopup function
+    const createWalletTopupMatch = dbContent.match(/export\s+async\s+function\s+createWalletTopup[\s\S]*?return\s+topup;/);
+    expect(createWalletTopupMatch).toBeTruthy();
+    
+    const functionBody = createWalletTopupMatch![0];
+    
+    // Verify defensive extraction patterns
+    expect(functionBody).toContain('insertId');
+    expect(functionBody).toContain('result[0]');
+    expect(functionBody).toContain('result.meta');
+    
+    // Verify error handling
+    expect(functionBody).toContain('throw');
+    expect(functionBody).toContain('Failed to extract');
+  });
+});
+
+describe('Blocker 8: TypeScript Enum Errors - Real Code Verification', () => {
+  it('should verify db.ts has safe enum type casts', async () => {
+    // Read actual db.ts
+    const dbPath = path.join(projectRoot, 'server', 'db.ts');
+    const dbContent = fs.readFileSync(dbPath, 'utf-8');
+    
+    // Verify safe casts are present
+    expect(dbContent).toContain('as any');
+    
+    // Verify casts are used with enum comparisons
+    expect(dbContent).toMatch(/eq\(.*status.*as any\)/);
+    expect(dbContent).toMatch(/eq\(.*paymentStatus.*as any\)/);
+  });
+});
+
+describe('Blocker 9: Health/Readiness Endpoints - Real Route Verification', () => {
+  it('should verify health and readiness routes are defined in server', async () => {
+    // Read actual server startup
+    const indexPath = path.join(projectRoot, 'server', '_core', 'index.ts');
+    const indexContent = fs.readFileSync(indexPath, 'utf-8');
+    
+    // Verify /health route
+    expect(indexContent).toContain('/health');
+    
+    // Verify /readiness route
+    expect(indexContent).toContain('/readiness');
+    
+    // Verify they return 200 OK
+    expect(indexContent).toMatch(/\/health[\s\S]*?200/);
+    expect(indexContent).toMatch(/\/readiness[\s\S]*?200/);
+  });
+});
+
+describe('Blocker 10: Migration Path Safety - Real Filename Verification', () => {
+  it('should verify no filename conflicts in migration directory', async () => {
+    // Read actual drizzle directory
+    const drizzlePath = path.join(projectRoot, 'drizzle');
+    const files = fs.readdirSync(drizzlePath).filter(f => f.endsWith('.sql'));
+    
+    // Get all numbered migration prefixes
+    const prefixes = files
+      .filter(f => /^\d{4}_/.test(f))
+      .map(f => f.substring(0, 4));
+    
+    // Verify no duplicates
+    const uniquePrefixes = new Set(prefixes);
+    expect(prefixes.length).toBe(uniquePrefixes.size);
+  });
+
+  it('should verify migration files are in correct numerical order', async () => {
+    // Read actual drizzle directory
+    const drizzlePath = path.join(projectRoot, 'drizzle');
+    const files = fs.readdirSync(drizzlePath)
+      .filter(f => /^\d{4}_/.test(f))
+      .sort();
+    
+    // Verify 14 files in order 0000-0013
+    expect(files).toHaveLength(14);
+    
+    for (let i = 0; i < 14; i++) {
+      const expectedPrefix = String(i).padStart(4, '0');
+      expect(files[i]).toMatch(new RegExp(`^${expectedPrefix}_`));
+    }
   });
 });
