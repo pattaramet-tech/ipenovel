@@ -15,6 +15,7 @@ describe("Environment Validation", () => {
 
   it("should validate that all required env vars are documented", () => {
     // This test ensures we know which env vars are required
+    // OWNER_OPEN_ID is now optional (only used for owner auto-promotion)
     const requiredVars = [
       "DATABASE_URL",
       "JWT_SECRET",
@@ -22,18 +23,17 @@ describe("Environment Validation", () => {
       "OAUTH_SERVER_URL",
       "BUILT_IN_FORGE_API_URL",
       "BUILT_IN_FORGE_API_KEY",
-      "PORT",
-      "OWNER_OPEN_ID",
     ];
 
-    expect(requiredVars).toHaveLength(8);
+    expect(requiredVars).toHaveLength(6);
     expect(requiredVars).toContain("DATABASE_URL");
     expect(requiredVars).toContain("BUILT_IN_FORGE_API_URL");
     expect(requiredVars).toContain("BUILT_IN_FORGE_API_KEY");
   });
 
-  it("should have PORT as required env var", () => {
-    // Verify PORT is in the required list (critical for startup)
+  it("should NOT have PORT as required env var (MANUS assigns dynamically)", () => {
+    // PORT is optional in production (MANUS assigns it dynamically)
+    // It defaults to 3000 if not set
     const requiredVars = [
       "DATABASE_URL",
       "JWT_SECRET",
@@ -41,11 +41,24 @@ describe("Environment Validation", () => {
       "OAUTH_SERVER_URL",
       "BUILT_IN_FORGE_API_URL",
       "BUILT_IN_FORGE_API_KEY",
-      "PORT",
-      "OWNER_OPEN_ID",
     ];
 
-    expect(requiredVars).toContain("PORT");
+    expect(requiredVars).not.toContain("PORT");
+  });
+
+  it("should NOT have OWNER_OPEN_ID as required env var (only used for owner auto-promotion)", () => {
+    // OWNER_OPEN_ID is optional - only used to auto-promote owner to admin role
+    // App can boot without it; owner promotion just won't happen
+    const requiredVars = [
+      "DATABASE_URL",
+      "JWT_SECRET",
+      "VITE_APP_ID",
+      "OAUTH_SERVER_URL",
+      "BUILT_IN_FORGE_API_URL",
+      "BUILT_IN_FORGE_API_KEY",
+    ];
+
+    expect(requiredVars).not.toContain("OWNER_OPEN_ID");
   });
 
   it("should have storage env vars in required list", () => {
@@ -57,8 +70,6 @@ describe("Environment Validation", () => {
       "OAUTH_SERVER_URL",
       "BUILT_IN_FORGE_API_URL",
       "BUILT_IN_FORGE_API_KEY",
-      "PORT",
-      "OWNER_OPEN_ID",
     ];
 
     expect(requiredVars).toContain("BUILT_IN_FORGE_API_URL");
@@ -74,13 +85,10 @@ describe("Environment Validation", () => {
       "OAUTH_SERVER_URL",
       "BUILT_IN_FORGE_API_URL",
       "BUILT_IN_FORGE_API_KEY",
-      "PORT",
-      "OWNER_OPEN_ID",
     ];
 
     expect(requiredVars).toContain("VITE_APP_ID");
     expect(requiredVars).toContain("OAUTH_SERVER_URL");
-    expect(requiredVars).toContain("OWNER_OPEN_ID");
   });
 
   it("should have database env vars in required list", () => {
@@ -92,8 +100,6 @@ describe("Environment Validation", () => {
       "OAUTH_SERVER_URL",
       "BUILT_IN_FORGE_API_URL",
       "BUILT_IN_FORGE_API_KEY",
-      "PORT",
-      "OWNER_OPEN_ID",
     ];
 
     expect(requiredVars).toContain("DATABASE_URL");
@@ -108,38 +114,16 @@ describe("Environment Validation", () => {
       "SENTRY_DSN",
       "ADMIN_EMAIL",
       "ADMIN_PASSWORD",
+      "OWNER_OPEN_ID",
+      "PORT",
     ];
 
-    expect(optionalVars).toHaveLength(5);
+    expect(optionalVars).toHaveLength(7);
     expect(optionalVars).toContain("NODE_ENV");
     expect(optionalVars).toContain("LOG_LEVEL");
     expect(optionalVars).toContain("SENTRY_DSN");
-  });
-
-  it("should ensure PORT is validated as required (not just optional)", () => {
-    // This is critical: PORT must be required, not optional
-    // because production startup depends on it
-    const requiredVars = [
-      "DATABASE_URL",
-      "JWT_SECRET",
-      "VITE_APP_ID",
-      "OAUTH_SERVER_URL",
-      "BUILT_IN_FORGE_API_URL",
-      "BUILT_IN_FORGE_API_KEY",
-      "PORT",
-      "OWNER_OPEN_ID",
-    ];
-
-    const optionalVars = [
-      "NODE_ENV",
-      "LOG_LEVEL",
-      "SENTRY_DSN",
-      "ADMIN_EMAIL",
-      "ADMIN_PASSWORD",
-    ];
-
-    expect(requiredVars).toContain("PORT");
-    expect(optionalVars).not.toContain("PORT");
+    expect(optionalVars).toContain("OWNER_OPEN_ID");
+    expect(optionalVars).toContain("PORT");
   });
 
   it("should ensure storage env vars are required (not optional)", () => {
@@ -152,8 +136,6 @@ describe("Environment Validation", () => {
       "OAUTH_SERVER_URL",
       "BUILT_IN_FORGE_API_URL",
       "BUILT_IN_FORGE_API_KEY",
-      "PORT",
-      "OWNER_OPEN_ID",
     ];
 
     const optionalVars = [
@@ -162,6 +144,8 @@ describe("Environment Validation", () => {
       "SENTRY_DSN",
       "ADMIN_EMAIL",
       "ADMIN_PASSWORD",
+      "OWNER_OPEN_ID",
+      "PORT",
     ];
 
     expect(requiredVars).toContain("BUILT_IN_FORGE_API_URL");

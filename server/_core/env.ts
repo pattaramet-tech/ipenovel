@@ -1,5 +1,6 @@
 // Define required and optional environment variables
 // Note: PORT is optional in production (MANUS assigns it dynamically)
+// Note: OWNER_OPEN_ID is optional - only used for auto-promoting owner to admin role
 const REQUIRED_ENV_VARS = [
   'DATABASE_URL',
   'JWT_SECRET',
@@ -7,7 +8,6 @@ const REQUIRED_ENV_VARS = [
   'OAUTH_SERVER_URL',
   'BUILT_IN_FORGE_API_URL',
   'BUILT_IN_FORGE_API_KEY',
-  'OWNER_OPEN_ID',
 ] as const;
 
 const OPTIONAL_ENV_VARS = [
@@ -16,6 +16,7 @@ const OPTIONAL_ENV_VARS = [
   'SENTRY_DSN',
   'ADMIN_EMAIL',
   'ADMIN_PASSWORD',
+  'OWNER_OPEN_ID',
 ] as const;
 
 /**
@@ -46,10 +47,10 @@ export function validateEnvironment(): void {
       '  OAUTH_SERVER_URL - Manus OAuth backend base URL',
       '  BUILT_IN_FORGE_API_URL - Manus built-in APIs URL (for storage, LLM, etc)',
       '  BUILT_IN_FORGE_API_KEY - Bearer token for Manus built-in APIs',
-      '  OWNER_OPEN_ID - Owner\'s Manus OpenID for OAuth context',
       '',
       'Optional environment variables:',
       '  PORT - Server port number (defaults to 3000 if not set)',
+      '  OWNER_OPEN_ID - Owner\'s Manus OpenID for auto-promoting owner to admin role',
     ].join('\n');
 
     console.error(errorMessage);

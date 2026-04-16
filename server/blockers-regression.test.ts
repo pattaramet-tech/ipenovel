@@ -189,17 +189,18 @@ describe('Blocker 4: Environment Validation - Real Function Testing', () => {
     }).toThrow();
   });
 
-  it('should verify validateEnvironment checks all 8 required vars', async () => {
+  it('should verify validateEnvironment checks all 6 required vars (not PORT or OWNER_OPEN_ID)', async () => {
     // Read actual env.ts to verify required vars list
     const envPath = path.join(projectRoot, 'server', '_core', 'env.ts');
     const envContent = fs.readFileSync(envPath, 'utf-8');
     
-    // Verify REQUIRED_ENV_VARS array contains 8 items
-    const requiredMatch = envContent.match(/const REQUIRED_ENV_VARS = \[([\s\S]*?)\];/);
+    // Verify REQUIRED_ENV_VARS array contains 6 items (not 8)
+    // Use pattern that stops at ] as const; to avoid matching OPTIONAL_ENV_VARS
+    const requiredMatch = envContent.match(/const REQUIRED_ENV_VARS = \[\s*([\s\S]*?)\s*\] as const;/);
     expect(requiredMatch).toBeTruthy();
     
-    const requiredVars = requiredMatch![1].split(',').filter(v => v.trim());
-    expect(requiredVars.length).toBe(8);
+    const requiredVars = requiredMatch![1].split(',').map(v => v.trim()).filter(v => v);
+    expect(requiredVars.length).toBe(6);
     
     // Verify specific required vars
     const requiredVarNames = requiredVars.map(v => v.trim().replace(/['"`]/g, ''));
@@ -209,8 +210,6 @@ describe('Blocker 4: Environment Validation - Real Function Testing', () => {
     expect(requiredVarNames).toContain('OAUTH_SERVER_URL');
     expect(requiredVarNames).toContain('BUILT_IN_FORGE_API_URL');
     expect(requiredVarNames).toContain('BUILT_IN_FORGE_API_KEY');
-    expect(requiredVarNames).toContain('PORT');
-    expect(requiredVarNames).toContain('OWNER_OPEN_ID');
   });
 
   it('should verify validateEnvironment rejects empty strings', async () => {
