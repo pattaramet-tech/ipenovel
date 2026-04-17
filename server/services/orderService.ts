@@ -419,13 +419,20 @@ export async function approvePaymentWithSource(
   const now = new Date();
 
   // Update payment with approval source and finalization info
-  await db.updatePayment(paymentId, {
+  const updateData: any = {
     status: "approved",
     approvalSource,
     approvedByAdminId: approvedByAdminId || null,
     approvedByLabel,
     approvedAt: now,
-  }, tx);
+  };
+  
+  // For auto-approval, also set autoApprovedAt timestamp
+  if (approvalSource === "auto") {
+    updateData.autoApprovedAt = now;
+  }
+  
+  await db.updatePayment(paymentId, updateData, tx);
 
   // Update order status
   await db.updateOrder(order.id, {
