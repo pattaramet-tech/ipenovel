@@ -50,21 +50,22 @@ export default function AdminPaymentsPage() {
   const getReasonCodeLabel = (code: string): string => {
     const labels: Record<string, string> = {
       MISSING_SHOP_NAME: "Missing shop name",
-      SHOP_NAME_MISMATCH: "Shop name mismatch",
+      INVALID_SHOP_NAME: "Shop name mismatch",
       MISSING_MERCHANT_CODE: "Missing merchant code",
-      MERCHANT_CODE_MISMATCH: "Merchant code mismatch",
+      INVALID_MERCHANT_CODE: "Merchant code mismatch",
       MERCHANT_TRANSACTION_CODE_MISMATCH: "Transaction code mismatch",
       MISSING_AMOUNT: "Missing amount",
       AMOUNT_MISMATCH: "Amount mismatch",
       MISSING_TRANSACTION_DATE: "Missing transaction date",
       TRANSACTION_OUTSIDE_TIME_WINDOW: "Transaction outside 24-hour window",
       MISSING_REFERENCE: "Missing reference number",
-      DUPLICATE_REFERENCE: "Duplicate reference number",
+      DUPLICATE_SLIP: "Duplicate reference number",
       LOW_CONFIDENCE: "Confidence below 85%",
       PAYMENT_ALREADY_PROCESSED: "Payment already processed",
       DATABASE_CONNECTION_FAILED: "Database error",
       PAYMENT_NOT_FOUND: "Payment not found",
       ORDER_NOT_FOUND: "Order not found",
+      OCR_EXTRACTION_FAILED: "OCR extraction failed",
     };
     return labels[code] || code;
   };
