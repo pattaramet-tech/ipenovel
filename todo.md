@@ -910,3 +910,18 @@
 - [ ] Add edge datetime scenario tests
 - [ ] Verify all existing tests still pass (100%)
 - [ ] Verify no regressions in order/wallet/auth systems
+
+
+## Phase 3: OCR Hardening & Production Fixes
+
+- [ ] Implement datetime hardening with timezone and multi-pass parsing
+- [ ] Implement reference normalization with O/0 substitution
+- [ ] Stabilize fingerprint algorithm (date-only, normalized reference)
+- [ ] Create bank detection module (keyword + pattern matching)
+- [ ] Harden PromptPay with merchant whitelist validation
+- [ ] Fix amount normalization (always 2 decimal places)
+- [ ] Integrate all modules into ocr-slip-verification.ts
+- [ ] Integrate fingerprint into ocr-slip-integration.ts
+- [ ] Expand test coverage (20+ new test cases)
+- [ ] Add logging enhancement
+- [ ] Verify no regressions and all tests pass

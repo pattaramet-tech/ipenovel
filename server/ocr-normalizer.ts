@@ -128,14 +128,20 @@ function detectBank(ocrText: string): string {
 }
 
 /**
- * Normalize amount: remove commas, convert to float
+ * Normalize amount: remove commas, convert to float, ensure 2 decimals
  */
 function normalizeAmount(amountStr: string | null): number | null {
   if (!amountStr) return null;
 
   try {
     // Remove commas and spaces
-    const cleaned = amountStr.replace(/,/g, "").trim();
+    let cleaned = amountStr.replace(/,/g, "").trim();
+
+    // If no decimal, add .00
+    if (!cleaned.includes(".")) {
+      cleaned = cleaned + ".00";
+    }
+
     const amount = parseFloat(cleaned);
 
     // Validate: must be positive number
@@ -143,7 +149,8 @@ function normalizeAmount(amountStr: string | null): number | null {
       return null;
     }
 
-    return amount;
+    // Round to 2 decimal places
+    return Math.round(amount * 100) / 100;
   } catch (e) {
     return null;
   }
@@ -238,7 +245,7 @@ function normalizeDatetime(datetimeStr: string | null): string | null {
 }
 
 /**
- * Normalize reference: uppercase, trim, remove spaces if necessary
+ * Normalize reference: uppercase, trim, O→0 substitution, remove special chars
  */
 function normalizeReference(refStr: string | null): string | null {
   if (!refStr) return null;
@@ -247,8 +254,14 @@ function normalizeReference(refStr: string | null): string | null {
     // Uppercase and trim
     let normalized = refStr.toUpperCase().trim();
 
-    // Remove spaces (some references may have spaces)
+    // Remove spaces
     normalized = normalized.replace(/\s+/g, "");
+
+    // O → 0 (common OCR error)
+    normalized = normalized.replace(/O/g, "0");
+
+    // Remove special characters (keep only alphanumeric)
+    normalized = normalized.replace(/[^A-Z0-9]/g, "");
 
     // Validate: must be at least 6 characters
     if (normalized.length < 6) {

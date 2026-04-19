@@ -26,28 +26,43 @@ const DEFAULT_CONFIG: FingerprintConfig = {
 };
 
 /**
+ * Extract date only (YYYY-MM-DD) from ISO string
+ * Used for fingerprinting to prevent datetime noise
+ */
+function extractDateOnly(isoDatetime: string): string {
+  try {
+    const date = new Date(isoDatetime);
+    return date.toISOString().split("T")[0];
+  } catch (e) {
+    return "";
+  }
+}
+
+/**
  * Generate fingerprint from normalized slip data
  * 
- * Fingerprint = hash(amount | datetime | reference | merchantCode)
+ * Fingerprint = hash(amount | date_only | normalized_reference | merchantCode | bank)
  * 
+ * Uses date-only (not time) to prevent OCR datetime noise from breaking duplicate detection
  * This ensures:
  * - Same slip submitted twice = same fingerprint (detects duplicates)
  * - Different slips = different fingerprints
- * - Timestamp precision prevents false positives for legitimate multiple payments
+ * - OCR datetime noise doesn't break detection
  */
 export function generateFingerprint(
   amount: number,
   datetime: string, // ISO format
   reference: string,
   merchantCode: string | null,
+  bank: string = "UNKNOWN",
   config: Partial<FingerprintConfig> = {}
 ): string {
   const finalConfig = { ...DEFAULT_CONFIG, ...config };
 
-  // Build fingerprint data
+  // Build fingerprint data using date-only (not time)
   const parts: string[] = [
-    amount.toString(),
-    normalizeDateTime(datetime, finalConfig.timestampPrecision),
+    amount.toFixed(2), // Ensure 2 decimal places
+    extractDateOnly(datetime), // Date only, no time
     reference.toUpperCase().trim(),
   ];
 
@@ -56,6 +71,9 @@ export function generateFingerprint(
     parts.push(merchantCode.toUpperCase().trim());
   }
 
+  // Include bank for better discrimination
+  parts.push(bank.toUpperCase());
+
   const fingerprintData = parts.join("|");
 
   // Generate hash
@@ -63,6 +81,8 @@ export function generateFingerprint(
   hash.update(fingerprintData);
   return hash.digest("hex");
 }
+
+
 
 /**
  * Normalize datetime for fingerprinting
@@ -147,13 +167,14 @@ export async function generateAndValidate(
   reference: string,
   merchantCode: string | null,
   store: FingerprintStore,
+  bank?: string,
   config?: Partial<FingerprintConfig>
 ): Promise<{
   fingerprint: string;
   isDuplicate: boolean;
   existingPaymentId?: number;
 }> {
-  const fingerprint = generateFingerprint(amount, datetime, reference, merchantCode, config);
+  const fingerprint = generateFingerprint(amount, datetime, reference, merchantCode, bank || "UNKNOWN", config);
   const validation = await validateFingerprint(fingerprint, store);
 
   return {
@@ -172,11 +193,12 @@ export function batchGenerateFingerprints(
     datetime: string;
     reference: string;
     merchantCode: string | null;
+    bank?: string;
   }>,
   config?: Partial<FingerprintConfig>
 ): string[] {
   return slips.map((slip) =>
-    generateFingerprint(slip.amount, slip.datetime, slip.reference, slip.merchantCode, config)
+    generateFingerprint(slip.amount, slip.datetime, slip.reference, slip.merchantCode, slip.bank || "UNKNOWN", config)
   );
 }
 
