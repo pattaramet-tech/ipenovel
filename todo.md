@@ -895,3 +895,18 @@
 - [ ] Test OAuth empty-name session case
 - [ ] Test wallet/payment insert handling
 - [ ] Test health/readiness endpoints
+
+
+## Phase 2: Enhanced OCR System - Production Grade (NEW)
+
+- [ ] Audit current OCR implementation against spec requirements
+- [ ] Implement server/ocr-normalizer.ts with universal extraction rules
+- [ ] Implement bank-specific extraction (KBank, SCB, Bangkok, Krungsri, PromptPay)
+- [ ] Implement server/ocr-fingerprint.ts for duplicate detection
+- [ ] Integrate normalizer and fingerprint into verification pipeline
+- [ ] Add multi-bank test coverage (≥10 cases)
+- [ ] Add fuzzy shop name validation tests
+- [ ] Add duplicate replay attack tests
+- [ ] Add edge datetime scenario tests
+- [ ] Verify all existing tests still pass (100%)
+- [ ] Verify no regressions in order/wallet/auth systems
