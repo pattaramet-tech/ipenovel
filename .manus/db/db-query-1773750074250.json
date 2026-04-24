@@ -1,0 +1,9 @@
+{
+  "query": "-- Delete order items first\nDELETE FROM orderItems WHERE orderId IN (\n  SELECT o.id FROM orders o\n  LEFT JOIN payments p ON o.id = p.orderId\n  WHERE p.status = 'pending' AND o.userId IS NULL\n);\n\n-- Delete pending payments\nDELETE FROM payments WHERE status = 'pending' AND orderId IN (\n  SELECT id FROM orders WHERE userId IS NULL\n);\n\n-- Delete the test orders\nDELETE FROM orders WHERE userId IS NULL;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute -- Delete order items first\nDELETE FROM orderItems WHERE orderId IN (\n  SELECT o.id FROM orders o\n  LEFT JOIN payments p ON o.id = p.orderId\n  WHERE p.status = 'pending' AND o.userId IS NULL\n);\n\n-- Delete pending payments\nDELETE FROM payments WHERE status = 'pending' AND orderId IN (\n  SELECT id FROM orders WHERE userId IS NULL\n);\n\n-- Delete the test orders\nDELETE FROM orders WHERE userId IS NULL;",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 2001
+}

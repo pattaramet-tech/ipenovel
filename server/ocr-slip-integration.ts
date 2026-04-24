@@ -1,207 +1,200 @@
-/**
- * OCR Slip Integration Layer
- * 
- * Wires new structured extractor and weighted verifier into the slip upload flow.
- * Handles:
- * - Image/PDF extraction via LLM
- * - Structured data normalization
- * - Weighted verification with critical signals
- * - Duplicate detection via fingerprints
- * - Persistence of OCR artifacts
- * - Conservative anti-fraud policy
- */
-
 import { getDb } from "./db";
 import { payments, orders } from "../drizzle/schema";
 import { eq } from "drizzle-orm";
-import { extractFromSlipImage, StructuredOCRData } from "./ocr-structured-extractor";
-import { verifyWithWeights, generateFingerprint, VerificationContext } from "./ocr-weighted-verifier";
-
-export interface SlipVerificationResult {
-  isAutoApproved: boolean;
-  overallScore: number;
-  reviewReason?: string;
-  extractedData: StructuredOCRData | null;
-  fingerprint: string;
-  linkedOrderId: number;
-  linkedPaymentId: number;
-  riskLevel: "low" | "medium" | "high";
-  verificationBreakdown?: any; // Signal scores for admin display
-}
+import {
+  extractSlipData,
+  verifySlipData,
+  generateFingerprint,
+  ExtractedSlipData,
+  OrderPaymentContext,
+  VerificationResult,
+} from "./ocr-slip-verification";
 
 /**
  * Process OCR slip verification and auto-approval for a payment
- * 
- * Flow:
- * 1. Extract raw text from image/PDF via LLM
- * 2. Parse structured data (bank, amount, receiver, etc.)
- * 3. Verify against order/payment context with weighted signals
- * 4. Check for duplicates via fingerprint
- * 5. Return auto-approval decision
+ * This is called when a slip is uploaded for a payment
  */
 export async function processSlipVerification(
   paymentId: number,
-  slipImageUrl: string
-): Promise<SlipVerificationResult> {
+  slipOcrText: string
+): Promise<{
+  isAutoApproved: boolean;
+  reviewReason?: string;
+  extractedData?: ExtractedSlipData;
+  linkedOrderId?: number;
+  linkedPaymentId?: number;
+}> {
+  // Get the payment and order details
   const db = await getDb();
   if (!db) {
     return {
       isAutoApproved: false,
-      overallScore: 0,
       reviewReason: "DATABASE_CONNECTION_FAILED",
-      extractedData: null,
-      fingerprint: "",
-      linkedOrderId: 0,
-      linkedPaymentId: paymentId,
-      riskLevel: "high",
     };
   }
 
-  // Get payment and order
-  const payment = await db
+  const paymentResult = await db
     .select()
     .from(payments)
     .where(eq(payments.id, paymentId))
-    .then((rows) => rows[0]);
+    .limit(1);
 
-  if (!payment) {
+  if (!paymentResult.length) {
     return {
       isAutoApproved: false,
-      overallScore: 0,
       reviewReason: "PAYMENT_NOT_FOUND",
-      extractedData: null,
-      fingerprint: "",
-      linkedOrderId: 0,
-      linkedPaymentId: paymentId,
-      riskLevel: "high",
     };
   }
 
-  const order = await db
+  const payment = paymentResult[0];
+
+  // Get the order details
+  const orderResult = await db
     .select()
     .from(orders)
     .where(eq(orders.id, payment.orderId))
-    .then((rows) => rows[0]);
+    .limit(1);
+
+  if (!orderResult.length) {
+    return {
+      isAutoApproved: false,
+      reviewReason: "ORDER_NOT_FOUND",
+    };
+  }
+
+  const order = orderResult[0];
 
   if (!order) {
     return {
       isAutoApproved: false,
-      overallScore: 0,
       reviewReason: "ORDER_NOT_FOUND",
-      extractedData: null,
-      fingerprint: "",
-      linkedOrderId: payment.orderId,
-      linkedPaymentId: paymentId,
-      riskLevel: "high",
     };
   }
 
-  // Check if payment is already processed
-  if (payment.status === "approved" || payment.status === "rejected") {
+  // Check if payment is still pending
+  if (payment.status !== "pending") {
     return {
       isAutoApproved: false,
-      overallScore: 0,
       reviewReason: "PAYMENT_ALREADY_PROCESSED",
-      extractedData: null,
-      fingerprint: "",
-      linkedOrderId: order.id,
-      linkedPaymentId: paymentId,
-      riskLevel: "high",
     };
   }
 
-  // Extract structured data from slip image
-  const extractedData = await extractFromSlipImage(slipImageUrl);
-  if (!extractedData) {
-    return {
-      isAutoApproved: false,
-      overallScore: 0,
-      reviewReason: "OCR_EXTRACTION_FAILED",
-      extractedData: null,
-      fingerprint: "",
-      linkedOrderId: order.id,
-      linkedPaymentId: paymentId,
-      riskLevel: "high",
-    };
-  }
+  // Extract slip data using OCR
+  const extractedData = extractSlipData(slipOcrText);
 
-  // Get existing fingerprints to check for duplicates
+  // Get all existing references to check for duplicates
   const existingPayments = await db
     .select()
     .from(payments)
     .where(eq(payments.status, "approved"));
 
-  const existingFingerprints = new Set<string>();
-  for (const p of existingPayments) {
-    if (p.fingerprint) {
-      existingFingerprints.add(p.fingerprint);
+  const extractedDataArray = existingPayments
+    .map(p => {
+      try {
+        return p.extractedData ? JSON.parse(p.extractedData) : null;
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+
+  const existingReferences = new Set<string>();
+  for (const data of extractedDataArray) {
+    if (data.reference) {
+      existingReferences.add(data.reference);
     }
   }
 
-  // Create verification context
-  const verificationContext: VerificationContext = {
+  // Create order/payment context for verification
+  const context: OrderPaymentContext = {
     orderId: order.id,
     paymentId: payment.id,
     orderTotal: parseFloat(order.totalAmount.toString()),
     orderCreatedAt: order.createdAt,
     paymentCreatedAt: payment.createdAt,
-    slipSubmittedAt: payment.slipSubmittedAt || new Date(),
-    merchantName: "Ipe Novel Shop", // Configured merchant name
-    merchantCode: "KB000002283068", // Optional: configured merchant code
-    receiverAccountMasked: "XXXX-XXXX-5678", // Optional: expected account
   };
 
-  // Perform weighted verification
-  const verificationResult = verifyWithWeights(extractedData, verificationContext, existingFingerprints);
-
-  // Generate fingerprint for duplicate detection
-  const fingerprint = generateFingerprint(
-    extractedData.amount,
-    extractedData.transactionDateTime,
-    extractedData.referenceId,
-    extractedData.transactionId,
-    extractedData.bankName || undefined
+  // Verify the slip data against the order/payment
+  const verificationResult = verifySlipData(
+    extractedData,
+    context,
+    existingReferences
   );
 
+  // Generate fingerprint for duplicate detection
+  const fingerprint = generateFingerprint(extractedData);
+
+  // Determine if we should auto-approve
+  const shouldAutoApprove =
+    verificationResult.isAutoApproved &&
+    (extractedData.confidence ?? 0) >= 85;
+
+  // Update payment with verification results
+  await db
+    .update(payments)
+    .set({
+      extractedData: JSON.stringify(extractedData),
+      reviewReason: verificationResult.reviewReason,
+      fingerprint,
+      linkedOrderId: verificationResult.linkedOrderId,
+      linkedPaymentId: verificationResult.linkedPaymentId,
+      status: shouldAutoApprove ? "approved" : "pending_review",
+      autoApprovedAt: shouldAutoApprove ? new Date() : null,
+      reviewedAt: shouldAutoApprove ? new Date() : null,
+      reviewedByUserId: shouldAutoApprove ? 0 : null, // 0 indicates auto-approval
+      updatedAt: new Date(),
+    })
+    .where(eq(payments.id, paymentId));
+
   return {
-    isAutoApproved: verificationResult.isAutoApproved,
-    overallScore: verificationResult.overallScore,
+    isAutoApproved: shouldAutoApprove,
     reviewReason: verificationResult.reviewReason,
     extractedData,
-    fingerprint,
-    linkedOrderId: order.id,
-    linkedPaymentId: paymentId,
-    riskLevel: verificationResult.riskLevel,
-    verificationBreakdown: verificationResult.signals, // For admin display
+    linkedOrderId: verificationResult.linkedOrderId,
+    linkedPaymentId: verificationResult.linkedPaymentId,
   };
 }
 
 /**
- * Get all approved payment fingerprints for duplicate detection
+ * Get all pending_review payments with extracted data for admin review
  */
-export async function getApprovedFingerprints(): Promise<Set<string>> {
+export async function getPendingReviewPayments() {
   const db = await getDb();
-  if (!db) return new Set();
+  if (!db) return [];
 
-  const approvedPayments = await db
+  const pendingPayments = await db
     .select()
     .from(payments)
-    .where(eq(payments.status, "approved"));
+    .where(eq(payments.status, "pending_review"));
 
-  const fingerprints = new Set<string>();
-  for (const p of approvedPayments) {
-    if (p.fingerprint) {
-      fingerprints.add(p.fingerprint);
-    }
-  }
-
-  return fingerprints;
+  return pendingPayments.map((p: any) => ({
+    ...p,
+    extractedData: p.extractedData ? JSON.parse(p.extractedData) : null,
+  }));
 }
 
 /**
- * Check if a fingerprint already exists in approved payments
+ * Get review reason description for admin display
  */
-export async function isDuplicateFingerprint(fingerprint: string): Promise<boolean> {
-  const fingerprints = await getApprovedFingerprints();
-  return fingerprints.has(fingerprint);
+export function getReviewReasonDescription(reason?: string): string {
+  const descriptions: Record<string, string> = {
+    MISSING_SHOP_NAME: "Shop name not found in slip",
+    MISSING_MERCHANT_CODE: "Merchant code not found in slip",
+    MISSING_AMOUNT: "Payment amount not found in slip",
+    MISSING_REFERENCE: "Transaction reference not found in slip",
+    SHOP_NAME_MISMATCH: "Shop name does not match Ipe Novel",
+    MERCHANT_CODE_MISMATCH: "Merchant code does not match KB000002283068",
+    MERCHANT_TRANSACTION_CODE_MISMATCH:
+      "Merchant transaction code does not match KPS004KB000002283068",
+    AMOUNT_MISMATCH: "Slip amount does not match order total",
+    DUPLICATE_REFERENCE: "Transaction reference already used",
+    LOW_CONFIDENCE: "OCR confidence too low for auto-approval",
+    TRANSACTION_OUTSIDE_TIME_WINDOW:
+      "Transaction date outside acceptable time window",
+    PAYMENT_NOT_FOUND: "Payment record not found",
+    ORDER_NOT_FOUND: "Order record not found",
+    PAYMENT_ALREADY_PROCESSED: "Payment already approved or rejected",
+  };
+
+  return descriptions[reason || ""] || "Unknown reason";
 }

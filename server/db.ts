@@ -82,8 +82,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
     if (user.role !== undefined) {
       values.role = user.role;
       updateSet.role = user.role;
-    } else if (ENV.ownerOpenId && user.openId === ENV.ownerOpenId) {
-      // Auto-promote owner to admin if OWNER_OPEN_ID is configured
+    } else if (user.openId === ENV.ownerOpenId) {
       values.role = "admin";
       updateSet.role = "admin";
     }
@@ -513,12 +512,12 @@ export async function getAdminOrders(options: {
 
   // Status filter
   if (options.status) {
-    conditions.push(eq(orders.status, options.status as any));
+    conditions.push(eq(orders.status, options.status));
   }
 
   // Payment status filter
   if (options.paymentStatus) {
-    conditions.push(eq(orders.paymentStatus, options.paymentStatus as any));
+    conditions.push(eq(orders.paymentStatus, options.paymentStatus));
   }
 
   // Date range filter
@@ -646,12 +645,12 @@ export async function getAdminOrdersWithUsers(options: {
 
   // Status filter
   if (options.status) {
-    conditions.push(eq(orders.status, options.status as any));
+    conditions.push(eq(orders.status, options.status));
   }
 
   // Payment status filter
   if (options.paymentStatus) {
-    conditions.push(eq(orders.paymentStatus, options.paymentStatus as any));
+    conditions.push(eq(orders.paymentStatus, options.paymentStatus));
   }
 
   // Date range filter
@@ -687,21 +686,15 @@ export async function getAdminOrdersWithUsers(options: {
     conditions.push(lte(orders.totalAmount, options.maxAmount.toString()));
   }
 
-  // Build query with user and payment join
+  // Build query with user join
   let query: any = db
     .select({
       ...getTableColumns(orders),
       userName: users.name,
       userEmail: users.email,
-      payment: {
-        approvedByLabel: payments.approvedByLabel,
-        approvalSource: payments.approvalSource,
-        approvedAt: payments.approvedAt,
-      },
     })
     .from(orders)
-    .leftJoin(users, eq(orders.userId, users.id))
-    .leftJoin(payments, eq(orders.id, payments.orderId));
+    .leftJoin(users, eq(orders.userId, users.id));
 
   if (conditions.length > 0) {
     query = query.where(and(...conditions));
@@ -832,7 +825,7 @@ export async function updateOrder(orderId: number, data: { status?: string; paym
   await db.update(orders).set(updateData).where(eq(orders.id, orderId));
 }
 
-export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected"; rejectionReason?: string; approvalSource?: "auto" | "manual" | "wallet"; approvedByAdminId?: number | null; approvedByLabel?: string | null; approvedAt?: Date | null; extractedData?: string; reviewReason?: string; fingerprint?: string; autoApprovedAt?: Date | null; linkedOrderId?: number | null; linkedPaymentId?: number | null }, tx?: any) {
+export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected"; rejectionReason?: string }, tx?: any) {
   const db = tx || await getDb();
   if (!db) return;
   await db.update(payments).set(data).where(eq(payments.id, paymentId));
@@ -889,7 +882,7 @@ export async function getWishlistById(wishlistId: number) {
 export async function getPendingPayments(limit?: number, offset?: number) {
   const db = await getDb();
   if (!db) return [];
-  let query: any = db.select().from(payments).where(or(eq(payments.status, "pending"), eq(payments.status, "pending_review"))).orderBy(desc(payments.createdAt));
+  let query: any = db.select().from(payments).where(eq(payments.status, "pending")).orderBy(desc(payments.createdAt));
   if (limit) query = query.limit(limit);
   if (offset) query = query.offset(offset);
   return query;
@@ -2361,27 +2354,7 @@ export async function createWalletTopup(userId: number, requestedAmount: string,
     status: "pending" as any,
   });
 
-  // Extract insertId using defensive pattern (handles different Drizzle result shapes)
-  let insertedId: number | undefined;
-  if (typeof result === 'object' && result !== null) {
-    insertedId = (result as any).insertId;
-    if (!insertedId && Array.isArray(result) && result[0]) {
-      insertedId = (result[0] as any).insertId;
-    }
-    if (!insertedId && (result as any).meta) {
-      insertedId = (result as any).meta.insertId;
-    }
-  }
-  if (!insertedId) {
-    throw new Error("Failed to extract inserted wallet topup ID from database result");
-  }
-
-  // Fetch and return the created topup record
-  const topup = (await db.select().from(walletTopups).where(eq(walletTopups.id, insertedId)).limit(1))[0];
-  if (!topup) {
-    throw new Error("Wallet topup was inserted but could not be retrieved");
-  }
-  return topup;
+  return (await db.select().from(walletTopups).where(eq(walletTopups.id, result[0].insertId)).limit(1))[0];
 }
 
 export async function getWalletTopupById(topupId: number) {

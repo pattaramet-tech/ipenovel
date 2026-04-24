@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { getLoginUrl } from "@/const";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -130,7 +129,7 @@ export default function PaymentPage() {
           <CardContent className="pt-6 text-center">
             <p className="text-slate-600 mb-4">{t("common.pleaseSignIn")}</p>
             <Button asChild>
-              <a href={getLoginUrl()}>{t("nav.login")}</a>
+              <a href="/login">{t("nav.login")}</a>
             </Button>
           </CardContent>
         </Card>

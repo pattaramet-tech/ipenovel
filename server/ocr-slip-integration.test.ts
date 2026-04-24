@@ -116,7 +116,7 @@ describe("OCR Slip Integration - Core Logic", () => {
       const result = verifySlipData(extracted, context, existingReferences);
 
       expect(result.isAutoApproved).toBe(false);
-      expect(result.reviewReason).toBe("INVALID_MERCHANT_CODE");
+      expect(result.reviewReason).toBe("MERCHANT_CODE_MISMATCH");
     });
 
     it("should send to pending_review on shop name mismatch", () => {
@@ -144,7 +144,7 @@ describe("OCR Slip Integration - Core Logic", () => {
       const result = verifySlipData(extracted, context, existingReferences);
 
       expect(result.isAutoApproved).toBe(false);
-      expect(result.reviewReason).toBe("INVALID_SHOP_NAME");
+      expect(result.reviewReason).toBe("SHOP_NAME_MISMATCH");
     });
 
     it("should send to pending_review on duplicate reference", () => {
@@ -172,7 +172,7 @@ describe("OCR Slip Integration - Core Logic", () => {
       const result = verifySlipData(extracted, context, existingReferences);
 
       expect(result.isAutoApproved).toBe(false);
-      expect(result.reviewReason).toBe("DUPLICATE_SLIP");
+      expect(result.reviewReason).toBe("DUPLICATE_REFERENCE");
     });
 
     it("should send to pending_review on missing fields", () => {
@@ -231,8 +231,8 @@ describe("OCR Slip Integration - Core Logic", () => {
       const reasons = [
         "AMOUNT_MISMATCH",
         "MISSING_SHOP_NAME",
-        "INVALID_MERCHANT_CODE",
-        "DUPLICATE_SLIP",
+        "MERCHANT_CODE_MISMATCH",
+        "DUPLICATE_REFERENCE",
         "LOW_CONFIDENCE",
         "TRANSACTION_OUTSIDE_TIME_WINDOW",
       ];

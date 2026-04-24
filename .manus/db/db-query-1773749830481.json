@@ -1,0 +1,460 @@
+{
+  "query": "SELECT \n  o.id,\n  o.orderNumber,\n  u.name as userName,\n  o.totalAmount,\n  o.status,\n  o.paymentStatus,\n  o.createdAt\nFROM orders o\nLEFT JOIN users u ON o.userId = u.id\nWHERE u.name LIKE 'Test%' OR u.name IS NULL\nORDER BY o.createdAt DESC\nLIMIT 50;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT \n  o.id,\n  o.orderNumber,\n  u.name as userName,\n  o.totalAmount,\n  o.status,\n  o.paymentStatus,\n  o.createdAt\nFROM orders o\nLEFT JOIN users u ON o.userId = u.id\nWHERE u.name LIKE 'Test%' OR u.name IS NULL\nORDER BY o.createdAt DESC\nLIMIT 50;",
+  "rows": [
+    {
+      "id": "330090",
+      "orderNumber": "0317839246260",
+      "userName": "NULL",
+      "totalAmount": "99.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:53:12"
+    },
+    {
+      "id": "330089",
+      "orderNumber": "0317838922614",
+      "userName": "NULL",
+      "totalAmount": "99.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:53:09"
+    },
+    {
+      "id": "330088",
+      "orderNumber": "0317838600672",
+      "userName": "NULL",
+      "totalAmount": "79.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:53:06"
+    },
+    {
+      "id": "330087",
+      "orderNumber": "0317838257221",
+      "userName": "NULL",
+      "totalAmount": "79.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:53:02"
+    },
+    {
+      "id": "330086",
+      "orderNumber": "0317837769584",
+      "userName": "NULL",
+      "totalAmount": "0.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:52:57"
+    },
+    {
+      "id": "330085",
+      "orderNumber": "0317837608801",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:52:56"
+    },
+    {
+      "id": "330084",
+      "orderNumber": "0317837501177",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:52:55"
+    },
+    {
+      "id": "330083",
+      "orderNumber": "0317837415282",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:52:54"
+    },
+    {
+      "id": "330082",
+      "orderNumber": "0317837327496",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:52:53"
+    },
+    {
+      "id": "330081",
+      "orderNumber": "0317836207460",
+      "userName": "NULL",
+      "totalAmount": "99.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:52:42"
+    },
+    {
+      "id": "330080",
+      "orderNumber": "0317835884009",
+      "userName": "NULL",
+      "totalAmount": "99.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:52:38"
+    },
+    {
+      "id": "330079",
+      "orderNumber": "0317835559756",
+      "userName": "NULL",
+      "totalAmount": "79.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:52:35"
+    },
+    {
+      "id": "330078",
+      "orderNumber": "0317835214956",
+      "userName": "NULL",
+      "totalAmount": "79.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:52:32"
+    },
+    {
+      "id": "330077",
+      "orderNumber": "0317834722695",
+      "userName": "NULL",
+      "totalAmount": "0.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:52:27"
+    },
+    {
+      "id": "330076",
+      "orderNumber": "0317834564312",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:52:25"
+    },
+    {
+      "id": "330075",
+      "orderNumber": "0317834455764",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:52:24"
+    },
+    {
+      "id": "330074",
+      "orderNumber": "0317834368387",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:52:23"
+    },
+    {
+      "id": "330073",
+      "orderNumber": "0317834279729",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:52:22"
+    },
+    {
+      "id": "330072",
+      "orderNumber": "0317830262533",
+      "userName": "NULL",
+      "totalAmount": "99.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:51:42"
+    },
+    {
+      "id": "330071",
+      "orderNumber": "0317829913158",
+      "userName": "NULL",
+      "totalAmount": "99.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:51:39"
+    },
+    {
+      "id": "330070",
+      "orderNumber": "0317829561477",
+      "userName": "NULL",
+      "totalAmount": "79.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:51:35"
+    },
+    {
+      "id": "330069",
+      "orderNumber": "0317829188796",
+      "userName": "NULL",
+      "totalAmount": "79.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:51:31"
+    },
+    {
+      "id": "330068",
+      "orderNumber": "0317828609485",
+      "userName": "NULL",
+      "totalAmount": "0.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:51:26"
+    },
+    {
+      "id": "330067",
+      "orderNumber": "0317828478371",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:51:24"
+    },
+    {
+      "id": "330066",
+      "orderNumber": "0317828361390",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:51:23"
+    },
+    {
+      "id": "330065",
+      "orderNumber": "0317828266672",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:51:22"
+    },
+    {
+      "id": "330064",
+      "orderNumber": "0317828171973",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:51:21"
+    },
+    {
+      "id": "330063",
+      "orderNumber": "0317827050670",
+      "userName": "NULL",
+      "totalAmount": "99.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:51:10"
+    },
+    {
+      "id": "330062",
+      "orderNumber": "0317826719970",
+      "userName": "NULL",
+      "totalAmount": "99.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:51:07"
+    },
+    {
+      "id": "330061",
+      "orderNumber": "0317826387218",
+      "userName": "NULL",
+      "totalAmount": "79.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:51:03"
+    },
+    {
+      "id": "330060",
+      "orderNumber": "0317826032514",
+      "userName": "NULL",
+      "totalAmount": "79.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:51:00"
+    },
+    {
+      "id": "330059",
+      "orderNumber": "0317825500276",
+      "userName": "NULL",
+      "totalAmount": "0.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:50:55"
+    },
+    {
+      "id": "330058",
+      "orderNumber": "0317825365919",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:50:53"
+    },
+    {
+      "id": "330057",
+      "orderNumber": "0317825255369",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:50:52"
+    },
+    {
+      "id": "330056",
+      "orderNumber": "0317825166497",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:50:51"
+    },
+    {
+      "id": "330055",
+      "orderNumber": "0317825076208",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:50:50"
+    },
+    {
+      "id": "330054",
+      "orderNumber": "0317823923490",
+      "userName": "NULL",
+      "totalAmount": "80.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:50:39"
+    },
+    {
+      "id": "330053",
+      "orderNumber": "0317823719682",
+      "userName": "NULL",
+      "totalAmount": "99.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:50:37"
+    },
+    {
+      "id": "330052",
+      "orderNumber": "0317823558403",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:50:35"
+    },
+    {
+      "id": "330051",
+      "orderNumber": "0317823377623",
+      "userName": "NULL",
+      "totalAmount": "99.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:50:33"
+    },
+    {
+      "id": "330050",
+      "orderNumber": "0317823331741",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:50:33"
+    },
+    {
+      "id": "330049",
+      "orderNumber": "0317823105562",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:50:31"
+    },
+    {
+      "id": "330048",
+      "orderNumber": "0317823034863",
+      "userName": "NULL",
+      "totalAmount": "79.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:50:30"
+    },
+    {
+      "id": "330047",
+      "orderNumber": "0317822878608",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:50:28"
+    },
+    {
+      "id": "330046",
+      "orderNumber": "0317822669483",
+      "userName": "NULL",
+      "totalAmount": "79.99",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:50:26"
+    },
+    {
+      "id": "330045",
+      "orderNumber": "0317822652385",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:50:26"
+    },
+    {
+      "id": "330044",
+      "orderNumber": "0317822425167",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:50:24"
+    },
+    {
+      "id": "330043",
+      "orderNumber": "0317822383830",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:50:23"
+    },
+    {
+      "id": "330042",
+      "orderNumber": "0317822198539",
+      "userName": "NULL",
+      "totalAmount": "100.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:50:22"
+    },
+    {
+      "id": "330041",
+      "orderNumber": "0317821993458",
+      "userName": "NULL",
+      "totalAmount": "300.00",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "createdAt": "2026-03-17 11:50:20"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\torderNumber\tuserName\ttotalAmount\tstatus\tpaymentStatus\tcreatedAt\n330090\t0317839246260\tNULL\t99.99\tpending\tunpaid\t2026-03-17 11:53:12\n330089\t0317838922614\tNULL\t99.99\tpending\tunpaid\t2026-03-17 11:53:09\n330088\t0317838600672\tNULL\t79.99\tpending\tunpaid\t2026-03-17 11:53:06\n330087\t0317838257221\tNULL\t79.99\tpending\tunpaid\t2026-03-17 11:53:02\n330086\t0317837769584\tNULL\t0.00\tpending\tunpaid\t2026-03-17 11:52:57\n330085\t0317837608801\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:52:56\n330084\t0317837501177\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:52:55\n330083\t0317837415282\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:52:54\n330082\t0317837327496\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:52:53\n330081\t0317836207460\tNULL\t99.99\tpending\tunpaid\t2026-03-17 11:52:42\n330080\t0317835884009\tNULL\t99.99\tpending\tunpaid\t2026-03-17 11:52:38\n330079\t0317835559756\tNULL\t79.99\tpending\tunpaid\t2026-03-17 11:52:35\n330078\t0317835214956\tNULL\t79.99\tpending\tunpaid\t2026-03-17 11:52:32\n330077\t0317834722695\tNULL\t0.00\tpending\tunpaid\t2026-03-17 11:52:27\n330076\t0317834564312\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:52:25\n330075\t0317834455764\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:52:24\n330074\t0317834368387\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:52:23\n330073\t0317834279729\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:52:22\n330072\t0317830262533\tNULL\t99.99\tpending\tunpaid\t2026-03-17 11:51:42\n330071\t0317829913158\tNULL\t99.99\tpending\tunpaid\t2026-03-17 11:51:39\n330070\t0317829561477\tNULL\t79.99\tpending\tunpaid\t2026-03-17 11:51:35\n330069\t0317829188796\tNULL\t79.99\tpending\tunpaid\t2026-03-17 11:51:31\n330068\t0317828609485\tNULL\t0.00\tpending\tunpaid\t2026-03-17 11:51:26\n330067\t0317828478371\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:51:24\n330066\t0317828361390\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:51:23\n330065\t0317828266672\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:51:22\n330064\t0317828171973\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:51:21\n330063\t0317827050670\tNULL\t99.99\tpending\tunpaid\t2026-03-17 11:51:10\n330062\t0317826719970\tNULL\t99.99\tpending\tunpaid\t2026-03-17 11:51:07\n330061\t0317826387218\tNULL\t79.99\tpending\tunpaid\t2026-03-17 11:51:03\n330060\t0317826032514\tNULL\t79.99\tpending\tunpaid\t2026-03-17 11:51:00\n330059\t0317825500276\tNULL\t0.00\tpending\tunpaid\t2026-03-17 11:50:55\n330058\t0317825365919\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:50:53\n330057\t0317825255369\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:50:52\n330056\t0317825166497\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:50:51\n330055\t0317825076208\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:50:50\n330054\t0317823923490\tNULL\t80.00\tpending\tunpaid\t2026-03-17 11:50:39\n330053\t0317823719682\tNULL\t99.99\tpending\tunpaid\t2026-03-17 11:50:37\n330052\t0317823558403\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:50:35\n330051\t0317823377623\tNULL\t99.99\tpending\tunpaid\t2026-03-17 11:50:33\n330050\t0317823331741\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:50:33\n330049\t0317823105562\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:50:31\n330048\t0317823034863\tNULL\t79.99\tpending\tunpaid\t2026-03-17 11:50:30\n330047\t0317822878608\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:50:28\n330046\t0317822669483\tNULL\t79.99\tpending\tunpaid\t2026-03-17 11:50:26\n330045\t0317822652385\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:50:26\n330044\t0317822425167\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:50:24\n330043\t0317822383830\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:50:23\n330042\t0317822198539\tNULL\t100.00\tpending\tunpaid\t2026-03-17 11:50:22\n330041\t0317821993458\tNULL\t300.00\tpending\tunpaid\t2026-03-17 11:50:20\n",
+  "stderr": "",
+  "execution_time_ms": 1557
+}

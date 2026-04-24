@@ -18,6 +18,9 @@ export default function AdminLoginPage() {
   const adminLoginMutation = trpc.admin.login.useMutation({
     onSuccess: async (data) => {
       setIsLoading(false);
+      // Set admin session flag in localStorage
+      localStorage.setItem('admin-session', JSON.stringify({ adminId: data.adminId, timestamp: Date.now() }));
+      
       // Invalidate and refetch auth query to pick up the new session cookie
       await utils.auth.me.invalidate();
       

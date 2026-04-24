@@ -36,11 +36,8 @@ export function registerOAuthRoutes(app: Express) {
         lastSignedIn: new Date(),
       });
 
-      // Use fallback identifier if name is empty
-      const displayName = userInfo.name || userInfo.email || userInfo.openId || "User";
-      
       const sessionToken = await sdk.createSessionToken(userInfo.openId, {
-        name: displayName,
+        name: userInfo.name || "",
         expiresInMs: ONE_YEAR_MS,
       });
 

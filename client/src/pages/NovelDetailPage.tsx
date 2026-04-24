@@ -36,7 +36,9 @@ export default function NovelDetailPage() {
   );
 
   // Always call cart query (never conditionally) - gated by user only
-  const { data: cartData } = trpc.cart.get.useQuery(undefined, { enabled: !!user });
+  const { data: cartData } = trpc.cart.get.useQuery(undefined, {
+    enabled: !!user,
+  });
   const cartItems = cartData?.items || [];
 
   const utils = trpc.useUtils();
@@ -318,7 +320,7 @@ export default function NovelDetailPage() {
                       </Badge>
                       {episode.fileUrl ? (
                         <a
-                          href={`/api/download/${episode.id}`}
+                          href={episode.fileUrl}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="inline-flex items-center justify-center px-2 py-1 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition whitespace-nowrap"
@@ -364,7 +366,7 @@ export default function NovelDetailPage() {
                       {isPurchased ? (
                         episode.fileUrl ? (
                           <a
-                            href={`/api/download/${episode.id}`}
+                            href={episode.fileUrl}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center justify-center px-2 py-1 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition whitespace-nowrap"

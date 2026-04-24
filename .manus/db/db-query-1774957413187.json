@@ -1,0 +1,316 @@
+{
+  "query": "SELECT id, orderNumber, userId, status, paymentStatus, totalAmount, createdAt FROM orders WHERE userId = 3 ORDER BY id DESC LIMIT 100;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT id, orderNumber, userId, status, paymentStatus, totalAmount, createdAt FROM orders WHERE userId = 3 ORDER BY id DESC LIMIT 100;",
+  "rows": [
+    {
+      "id": "4230001",
+      "orderNumber": "ORD-0330563004618",
+      "userId": "3",
+      "status": "rejected",
+      "paymentStatus": "rejected",
+      "totalAmount": "100.00",
+      "createdAt": "2026-03-30 15:47:10"
+    },
+    {
+      "id": "4200002",
+      "orderNumber": "ORD-0330648066952",
+      "userId": "3",
+      "status": "rejected",
+      "paymentStatus": "unpaid",
+      "totalAmount": "100.00",
+      "createdAt": "2026-03-30 13:14:40"
+    },
+    {
+      "id": "4200001",
+      "orderNumber": "ORD-0330399288246",
+      "userId": "3",
+      "status": "approved",
+      "paymentStatus": "unpaid",
+      "totalAmount": "120.00",
+      "createdAt": "2026-03-30 12:33:12"
+    },
+    {
+      "id": "3990214",
+      "orderNumber": "ORD-0329299910959",
+      "userId": "3",
+      "status": "approved",
+      "paymentStatus": "approved",
+      "totalAmount": "100.00",
+      "createdAt": "2026-03-29 19:36:39"
+    },
+    {
+      "id": "3990210",
+      "orderNumber": "ORD-0329070150336",
+      "userId": "3",
+      "status": "approved",
+      "paymentStatus": "approved",
+      "totalAmount": "90.00",
+      "createdAt": "2026-03-29 18:58:21"
+    },
+    {
+      "id": "3990209",
+      "orderNumber": "ORD-0329059669922",
+      "userId": "3",
+      "status": "approved",
+      "paymentStatus": "approved",
+      "totalAmount": "100.00",
+      "createdAt": "2026-03-29 18:56:36"
+    },
+    {
+      "id": "3990208",
+      "orderNumber": "ORD-0329827740834",
+      "userId": "3",
+      "status": "rejected",
+      "paymentStatus": "rejected",
+      "totalAmount": "100.00",
+      "createdAt": "2026-03-29 18:17:57"
+    },
+    {
+      "id": "1860025",
+      "orderNumber": "ORD-0322949312107",
+      "userId": "3",
+      "status": "rejected",
+      "paymentStatus": "rejected",
+      "totalAmount": "100.00",
+      "createdAt": "2026-03-22 19:58:13"
+    },
+    {
+      "id": "1860002",
+      "orderNumber": "ORD-0322945237699",
+      "userId": "3",
+      "status": "rejected",
+      "paymentStatus": "rejected",
+      "totalAmount": "100.00",
+      "createdAt": "2026-03-22 19:57:32"
+    },
+    {
+      "id": "1860001",
+      "orderNumber": "ORD-0322889506598",
+      "userId": "3",
+      "status": "rejected",
+      "paymentStatus": "rejected",
+      "totalAmount": "100.00",
+      "createdAt": "2026-03-22 19:48:15"
+    },
+    {
+      "id": "540002",
+      "orderNumber": "ORD-0318794578150",
+      "userId": "3",
+      "status": "rejected",
+      "paymentStatus": "rejected",
+      "totalAmount": "100.00",
+      "createdAt": "2026-03-18 12:45:45"
+    },
+    {
+      "id": "540001",
+      "orderNumber": "ORD-0318669066348",
+      "userId": "3",
+      "status": "rejected",
+      "paymentStatus": "rejected",
+      "totalAmount": "140.00",
+      "createdAt": "2026-03-18 12:24:50"
+    },
+    {
+      "id": "510187",
+      "orderNumber": "ORD-0318166194619",
+      "userId": "3",
+      "status": "approved",
+      "paymentStatus": "approved",
+      "totalAmount": "180.00",
+      "createdAt": "2026-03-18 08:14:21"
+    },
+    {
+      "id": "420222",
+      "orderNumber": "0317557253036",
+      "userId": "3",
+      "status": "approved",
+      "paymentStatus": "approved",
+      "totalAmount": "180.00",
+      "createdAt": "2026-03-17 22:12:52"
+    },
+    {
+      "id": "420031",
+      "orderNumber": "0317287047870",
+      "userId": "3",
+      "status": "rejected",
+      "paymentStatus": "rejected",
+      "totalAmount": "100.00",
+      "createdAt": "2026-03-17 21:27:50"
+    },
+    {
+      "id": "390001",
+      "orderNumber": "0317298375162",
+      "userId": "3",
+      "status": "approved",
+      "paymentStatus": "approved",
+      "totalAmount": "180.00",
+      "createdAt": "2026-03-17 18:43:03"
+    },
+    {
+      "id": "60006",
+      "orderNumber": "0316919070563",
+      "userId": "3",
+      "status": "approved",
+      "paymentStatus": "submitted",
+      "totalAmount": "180.00",
+      "createdAt": "2026-03-16 13:53:10"
+    },
+    {
+      "id": "60005",
+      "orderNumber": "0316894701709",
+      "userId": "3",
+      "status": "rejected",
+      "paymentStatus": "submitted",
+      "totalAmount": "306.00",
+      "createdAt": "2026-03-16 13:49:07"
+    },
+    {
+      "id": "60002",
+      "orderNumber": "0316853",
+      "userId": "3",
+      "status": "rejected",
+      "paymentStatus": "submitted",
+      "totalAmount": "270.00",
+      "createdAt": "2026-03-16 13:36:08"
+    },
+    {
+      "id": "30054",
+      "orderNumber": "0316465",
+      "userId": "3",
+      "status": "approved",
+      "paymentStatus": "submitted",
+      "totalAmount": "150.00",
+      "createdAt": "2026-03-16 09:43:27"
+    },
+    {
+      "id": "30053",
+      "orderNumber": "0316977",
+      "userId": "3",
+      "status": "approved",
+      "paymentStatus": "unpaid",
+      "totalAmount": "270.00",
+      "createdAt": "2026-03-16 09:31:02"
+    },
+    {
+      "id": "30052",
+      "orderNumber": "0316770",
+      "userId": "3",
+      "status": "approved",
+      "paymentStatus": "unpaid",
+      "totalAmount": "360.00",
+      "createdAt": "2026-03-16 09:06:55"
+    },
+    {
+      "id": "30042",
+      "orderNumber": "0316353",
+      "userId": "3",
+      "status": "approved",
+      "paymentStatus": "unpaid",
+      "totalAmount": "360.00",
+      "createdAt": "2026-03-16 08:47:10"
+    },
+    {
+      "id": "30041",
+      "orderNumber": "0316480",
+      "userId": "3",
+      "status": "approved",
+      "paymentStatus": "unpaid",
+      "totalAmount": "306.00",
+      "createdAt": "2026-03-16 08:42:57"
+    },
+    {
+      "id": "30021",
+      "orderNumber": "0316395",
+      "userId": "3",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "totalAmount": "388.80",
+      "createdAt": "2026-03-16 08:28:14"
+    },
+    {
+      "id": "30003",
+      "orderNumber": "0316632",
+      "userId": "3",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "totalAmount": "217.80",
+      "createdAt": "2026-03-16 08:18:50"
+    },
+    {
+      "id": "30002",
+      "orderNumber": "0316538",
+      "userId": "3",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "totalAmount": "388.80",
+      "createdAt": "2026-03-16 08:06:36"
+    },
+    {
+      "id": "30001",
+      "orderNumber": "0316610",
+      "userId": "3",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "totalAmount": "306.00",
+      "createdAt": "2026-03-16 08:05:41"
+    },
+    {
+      "id": "23",
+      "orderNumber": "0316585",
+      "userId": "3",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "totalAmount": "306.00",
+      "createdAt": "2026-03-16 04:38:18"
+    },
+    {
+      "id": "22",
+      "orderNumber": "0316738",
+      "userId": "3",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "totalAmount": "306.00",
+      "createdAt": "2026-03-16 04:38:08"
+    },
+    {
+      "id": "21",
+      "orderNumber": "0316179",
+      "userId": "3",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "totalAmount": "306.00",
+      "createdAt": "2026-03-16 04:36:26"
+    },
+    {
+      "id": "20",
+      "orderNumber": "0316248",
+      "userId": "3",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "totalAmount": "306.00",
+      "createdAt": "2026-03-16 04:31:44"
+    },
+    {
+      "id": "19",
+      "orderNumber": "0316251",
+      "userId": "3",
+      "status": "pending",
+      "paymentStatus": "unpaid",
+      "totalAmount": "306.00",
+      "createdAt": "2026-03-16 04:31:00"
+    },
+    {
+      "id": "1",
+      "orderNumber": "0316001",
+      "userId": "3",
+      "status": "approved",
+      "paymentStatus": "approved",
+      "totalAmount": "504.00",
+      "createdAt": "2026-03-16 03:17:04"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\torderNumber\tuserId\tstatus\tpaymentStatus\ttotalAmount\tcreatedAt\n4230001\tORD-0330563004618\t3\trejected\trejected\t100.00\t2026-03-30 15:47:10\n4200002\tORD-0330648066952\t3\trejected\tunpaid\t100.00\t2026-03-30 13:14:40\n4200001\tORD-0330399288246\t3\tapproved\tunpaid\t120.00\t2026-03-30 12:33:12\n3990214\tORD-0329299910959\t3\tapproved\tapproved\t100.00\t2026-03-29 19:36:39\n3990210\tORD-0329070150336\t3\tapproved\tapproved\t90.00\t2026-03-29 18:58:21\n3990209\tORD-0329059669922\t3\tapproved\tapproved\t100.00\t2026-03-29 18:56:36\n3990208\tORD-0329827740834\t3\trejected\trejected\t100.00\t2026-03-29 18:17:57\n1860025\tORD-0322949312107\t3\trejected\trejected\t100.00\t2026-03-22 19:58:13\n1860002\tORD-0322945237699\t3\trejected\trejected\t100.00\t2026-03-22 19:57:32\n1860001\tORD-0322889506598\t3\trejected\trejected\t100.00\t2026-03-22 19:48:15\n540002\tORD-0318794578150\t3\trejected\trejected\t100.00\t2026-03-18 12:45:45\n540001\tORD-0318669066348\t3\trejected\trejected\t140.00\t2026-03-18 12:24:50\n510187\tORD-0318166194619\t3\tapproved\tapproved\t180.00\t2026-03-18 08:14:21\n420222\t0317557253036\t3\tapproved\tapproved\t180.00\t2026-03-17 22:12:52\n420031\t0317287047870\t3\trejected\trejected\t100.00\t2026-03-17 21:27:50\n390001\t0317298375162\t3\tapproved\tapproved\t180.00\t2026-03-17 18:43:03\n60006\t0316919070563\t3\tapproved\tsubmitted\t180.00\t2026-03-16 13:53:10\n60005\t0316894701709\t3\trejected\tsubmitted\t306.00\t2026-03-16 13:49:07\n60002\t0316853\t3\trejected\tsubmitted\t270.00\t2026-03-16 13:36:08\n30054\t0316465\t3\tapproved\tsubmitted\t150.00\t2026-03-16 09:43:27\n30053\t0316977\t3\tapproved\tunpaid\t270.00\t2026-03-16 09:31:02\n30052\t0316770\t3\tapproved\tunpaid\t360.00\t2026-03-16 09:06:55\n30042\t0316353\t3\tapproved\tunpaid\t360.00\t2026-03-16 08:47:10\n30041\t0316480\t3\tapproved\tunpaid\t306.00\t2026-03-16 08:42:57\n30021\t0316395\t3\tpending\tunpaid\t388.80\t2026-03-16 08:28:14\n30003\t0316632\t3\tpending\tunpaid\t217.80\t2026-03-16 08:18:50\n30002\t0316538\t3\tpending\tunpaid\t388.80\t2026-03-16 08:06:36\n30001\t0316610\t3\tpending\tunpaid\t306.00\t2026-03-16 08:05:41\n23\t0316585\t3\tpending\tunpaid\t306.00\t2026-03-16 04:38:18\n22\t0316738\t3\tpending\tunpaid\t306.00\t2026-03-16 04:38:08\n21\t0316179\t3\tpending\tunpaid\t306.00\t2026-03-16 04:36:26\n20\t0316248\t3\tpending\tunpaid\t306.00\t2026-03-16 04:31:44\n19\t0316251\t3\tpending\tunpaid\t306.00\t2026-03-16 04:31:00\n1\t0316001\t3\tapproved\tapproved\t504.00\t2026-03-16 03:17:04\n",
+  "stderr": "",
+  "execution_time_ms": 1498
+}

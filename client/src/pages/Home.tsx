@@ -8,7 +8,6 @@ import { Link } from "wouter";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { toast } from "sonner";
 import React from "react";
-import { getLoginUrl } from "@/const";
 
 export default function Home() {
   const { user, isAuthenticated } = useAuth();
@@ -327,11 +326,11 @@ export default function Home() {
               </Button>
             </Link>
             {!isAuthenticated && (
-              <Button size="lg" variant="outline" className="w-full sm:w-auto rounded-full" asChild>
-                <a href={getLoginUrl()}>
+              <Link href={"/login"}>
+                <Button size="lg" variant="outline" className="w-full sm:w-auto rounded-full">
                   {t("nav.login")}
-                </a>
-              </Button>
+                </Button>
+              </Link>
             )}
           </div>
         </section>

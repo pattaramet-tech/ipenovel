@@ -1,0 +1,13 @@
+{
+  "query": "SELECT COUNT(*) as total_items FROM orderItems oi JOIN orders o ON oi.orderId = o.id WHERE o.userId = 720005;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT COUNT(*) as total_items FROM orderItems oi JOIN orders o ON oi.orderId = o.id WHERE o.userId = 720005;",
+  "rows": [
+    {
+      "total_items": "48"
+    }
+  ],
+  "messages": [],
+  "stdout": "total_items\n48\n",
+  "stderr": "",
+  "execution_time_ms": 1563
+}

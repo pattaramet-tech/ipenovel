@@ -1,0 +1,18 @@
+{
+  "query": "SELECT o.id, o.orderNumber, o.paymentStatus, o.createdAt, p.id as paymentId, p.status as paymentStatus, p.updatedAt FROM orders o LEFT JOIN payments p ON o.id = p.orderId WHERE o.id = 4200001;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT o.id, o.orderNumber, o.paymentStatus, o.createdAt, p.id as paymentId, p.status as paymentStatus, p.updatedAt FROM orders o LEFT JOIN payments p ON o.id = p.orderId WHERE o.id = 4200001;",
+  "rows": [
+    {
+      "id": "4200001",
+      "orderNumber": "ORD-0330399288246",
+      "paymentStatus": "approved",
+      "createdAt": "2026-03-30 12:33:12",
+      "paymentId": "4200034",
+      "updatedAt": "2026-03-30 12:44:40"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\torderNumber\tpaymentStatus\tcreatedAt\tpaymentId\tpaymentStatus\tupdatedAt\n4200001\tORD-0330399288246\tunpaid\t2026-03-30 12:33:12\t4200034\tapproved\t2026-03-30 12:44:40\n",
+  "stderr": "",
+  "execution_time_ms": 1539
+}

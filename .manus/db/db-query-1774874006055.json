@@ -1,0 +1,9 @@
+{
+  "query": "SELECT o.id, o.status, o.paymentStatus, o.userId, p.id as paymentId, p.status as paymentStatus, p.slipImageUrl, p.slipSubmittedAt FROM orders o LEFT JOIN payments p ON o.id = p.orderId WHERE o.userId = (SELECT id FROM users WHERE email LIKE '%pattaramet%' OR name = 'Pattaramet') ORDER BY o.createdAt DESC LIMIT 5;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT o.id, o.status, o.paymentStatus, o.userId, p.id as paymentId, p.status as paymentStatus, p.slipImageUrl, p.slipSubmittedAt FROM orders o LEFT JOIN payments p ON o.id = p.orderId WHERE o.userId = (SELECT id FROM users WHERE email LIKE '%pattaramet%' OR name = 'Pattaramet') ORDER BY o.createdAt DESC LIMIT 5;",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 1535
+}

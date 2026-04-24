@@ -1,1 +1,0 @@
-ALTER TABLE `payments` MODIFY COLUMN `approvalSource` enum('auto','manual','wallet');

@@ -1,0 +1,15 @@
+{
+  "query": "SELECT \n  COUNT(*) as orphanedOrderCount,\n  MIN(createdAt) as oldestOrder,\n  MAX(createdAt) as newestOrder\nFROM orders \nWHERE userId IS NULL;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT \n  COUNT(*) as orphanedOrderCount,\n  MIN(createdAt) as oldestOrder,\n  MAX(createdAt) as newestOrder\nFROM orders \nWHERE userId IS NULL;",
+  "rows": [
+    {
+      "orphanedOrderCount": "0",
+      "oldestOrder": "NULL",
+      "newestOrder": "NULL"
+    }
+  ],
+  "messages": [],
+  "stdout": "orphanedOrderCount\toldestOrder\tnewestOrder\n0\tNULL\tNULL\n",
+  "stderr": "",
+  "execution_time_ms": 1542
+}

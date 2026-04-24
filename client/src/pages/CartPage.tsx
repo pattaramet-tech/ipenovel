@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { getLoginUrl } from "@/const";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -25,7 +24,9 @@ export default function CartPage() {
   const [slipPreview, setSlipPreview] = useState<string | null>(null);
   const utils = trpc.useUtils();
 
-  const { data: cartData, isLoading: cartLoading, refetch: refetchCart } = trpc.cart.get.useQuery(undefined, { enabled: isAuthenticated });
+  const { data: cartData, isLoading: cartLoading, refetch: refetchCart } = trpc.cart.get.useQuery(undefined, {
+    enabled: isAuthenticated,
+  });
 
   const { data: pointsData } = trpc.points.balance.useQuery(undefined, { enabled: isAuthenticated });
 
@@ -94,7 +95,7 @@ export default function CartPage() {
           <CardContent className="pt-6 text-center">
             <p className="text-slate-600 mb-4">Please sign in to view your cart</p>
             <Button asChild>
-              <a href={getLoginUrl()}>Sign In</a>
+              <a href="/login">Sign In</a>
             </Button>
           </CardContent>
         </Card>

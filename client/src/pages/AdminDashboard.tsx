@@ -22,9 +22,10 @@ export default function AdminDashboard() {
   const [rejectionReason, setRejectionReason] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
 
-  // Admin access is determined by backend auth only (user.role === 'admin')
-  // localStorage is NOT used for authorization (security: prevent client-side tampering)
-  const isAdmin = user && user.role === 'admin';
+  // Check for admin session (local admin login)
+  const adminSession = typeof window !== 'undefined' ? localStorage.getItem('admin-session') : null;
+  const isAdminLoggedIn = adminSession !== null;
+  const isAdmin = isAdminLoggedIn || (user && user.role === 'admin');
   const shouldFetchAdminData = isAdmin === true; // Ensure it's a boolean for enabled flag
 
   // Query hooks with enabled flag - they won't fetch until auth is resolved and user is admin
@@ -37,12 +38,7 @@ export default function AdminDashboard() {
     { enabled: shouldFetchAdminData }
   );
   const { data: allOrders, isLoading: ordersLoading } = trpc.admin.orders.list.useQuery(
-    {
-      page: 1,
-      pageSize: 20,
-      sortBy: 'createdAt',
-      sortOrder: 'desc',
-    },
+    undefined,
     { enabled: shouldFetchAdminData }
   );
   const [topUsersPeriod, setTopUsersPeriod] = useState<"all" | "today" | "7d" | "30d" | "month">("all");
@@ -421,7 +417,7 @@ export default function AdminDashboard() {
                   <Skeleton key={i} className="h-16 md:h-20" />
                 ))}
               </div>
-            ) : !allOrders || !allOrders.orders || allOrders.orders.length === 0 ? (
+            ) : !allOrders || allOrders.length === 0 ? (
               <EmptyState
                 icon={ShoppingCart}
                 title="No Orders"
@@ -429,7 +425,7 @@ export default function AdminDashboard() {
               />
             ) : (
               <div className="space-y-2 md:space-y-3">
-                {allOrders.orders.slice(0, 10).map((order: any) => (
+                {allOrders.slice(0, 10).map((order: any) => (
                   <Card
                     key={order.id}
                     className="p-3 md:p-4 hover:shadow-md transition-shadow cursor-pointer"

@@ -1,0 +1,9 @@
+{
+  "query": "START TRANSACTION;\n\nDELETE FROM purchases\nWHERE orderId IN (SELECT id FROM orders WHERE userId = 3);\n\nDELETE FROM orderHistory\nWHERE orderId IN (SELECT id FROM orders WHERE userId = 3);\n\nDELETE FROM couponUsages\nWHERE orderId IN (SELECT id FROM orders WHERE userId = 3);\n\nDELETE FROM pointsTransactions\nWHERE referenceType = 'order'\n  AND referenceId IN (SELECT id FROM orders WHERE userId = 3);\n\nDELETE FROM orderItems\nWHERE orderId IN (SELECT id FROM orders WHERE userId = 3);\n\nDELETE FROM payments\nWHERE orderId IN (SELECT id FROM orders WHERE userId = 3);\n\nDELETE FROM orders\nWHERE userId = 3;\n\nCOMMIT;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute START TRANSACTION;\n\nDELETE FROM purchases\nWHERE orderId IN (SELECT id FROM orders WHERE userId = 3);\n\nDELETE FROM orderHistory\nWHERE orderId IN (SELECT id FROM orders WHERE userId = 3);\n\nDELETE FROM couponUsages\nWHERE orderId IN (SELECT id FROM orders WHERE userId = 3);\n\nDELETE FROM pointsTransactions\nWHERE referenceType = 'order'\n  AND referenceId IN (SELECT id FROM orders WHERE userId = 3);\n\nDELETE FROM orderItems\nWHERE orderId IN (SELECT id FROM orders WHERE userId = 3);\n\nDELETE FROM payments\nWHERE orderId IN (SELECT id FROM orders WHERE userId = 3);\n\nDELETE FROM orders\nWHERE userId = 3;\n\nCOMMIT;",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 3217
+}

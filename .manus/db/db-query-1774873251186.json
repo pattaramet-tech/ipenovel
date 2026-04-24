@@ -1,0 +1,17 @@
+{
+  "query": "SELECT id, requestedAmount, status, slipImageUrl, updatedAt FROM walletTopups WHERE id = 90049;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT id, requestedAmount, status, slipImageUrl, updatedAt FROM walletTopups WHERE id = 90049;",
+  "rows": [
+    {
+      "id": "90049",
+      "requestedAmount": "75.00",
+      "status": "approved",
+      "slipImageUrl": "https://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/payment-slips/1774873140259-test_slip.png",
+      "updatedAt": "2026-03-30 12:20:13"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\trequestedAmount\tstatus\tslipImageUrl\tupdatedAt\n90049\t75.00\tapproved\thttps://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/payment-slips/1774873140259-test_slip.png\t2026-03-30 12:20:13\n",
+  "stderr": "",
+  "execution_time_ms": 1613
+}

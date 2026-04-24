@@ -1,0 +1,8 @@
+{
+  "query": "SELECT o.id, o.orderNumber, o.paymentStatus, o.createdAt, p.id as paymentId, p.status as paymentStatus, p.approvedAt FROM orders o LEFT JOIN payments p ON o.id = p.orderId WHERE o.id = 4200001;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT o.id, o.orderNumber, o.paymentStatus, o.createdAt, p.id as paymentId, p.status as paymentStatus, p.approvedAt FROM orders o LEFT JOIN payments p ON o.id = p.orderId WHERE o.id = 4200001;",
+  "returncode": 1,
+  "logs": [
+    "ERROR 1054 (42S22) at line 1: Unknown column 'p.approvedat' in 'field list'"
+  ]
+}

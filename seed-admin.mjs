@@ -1,9 +1,3 @@
-// ⚠️  LOCAL/DEV-ONLY SCRIPT
-// This script creates an admin account for local development only.
-// Do NOT use in production.
-//
-// Usage: ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD=SecurePassword123 node seed-admin.mjs
-
 import bcrypt from 'bcryptjs';
 import mysql from 'mysql2/promise';
 
@@ -11,25 +5,6 @@ const DB_HOST = process.env.DB_HOST || 'localhost';
 const DB_USER = process.env.DB_USER || 'root';
 const DB_PASSWORD = process.env.DB_PASSWORD || '';
 const DB_NAME = process.env.DB_NAME || 'ipenovel';
-
-// Admin credentials must be provided via environment variables
-// This is intentional - it prevents accidental production use
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
-
-if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
-  console.error('❌ ERROR: Admin credentials not provided');
-  console.error('');
-  console.error('Usage: ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD=SecurePassword123 node seed-admin.mjs');
-  console.error('');
-  console.error('⚠️  This script is for LOCAL DEVELOPMENT ONLY');
-  console.error('');
-  console.error('For production deployments:');
-  console.error('1. Do NOT use this script');
-  console.error('2. Use a secure admin bootstrap endpoint instead');
-  console.error('3. Ensure admin credentials are never stored in code or logs');
-  process.exit(1);
-}
 
 async function seedAdmin() {
   const connection = await mysql.createConnection({
@@ -40,8 +15,8 @@ async function seedAdmin() {
   });
 
   try {
-    const email = ADMIN_EMAIL;
-    const password = ADMIN_PASSWORD;
+    const email = 'admin@ipenovel.com';
+    const password = 'Ipe@novel2026';
     const passwordHash = await bcrypt.hash(password, 10);
     const openId = `admin-${Date.now()}`;
 
@@ -59,17 +34,12 @@ async function seedAdmin() {
     // Create admin account
     await connection.execute(
       'INSERT INTO users (openId, name, email, loginMethod, passwordHash, role) VALUES (?, ?, ?, ?, ?, ?)',
-      [openId, 'Administrator', email, 'local', passwordHash, 'admin']
+      [openId, 'Admin', email, 'local', passwordHash, 'admin']
     );
 
-    console.log('✅ Local/dev admin account created successfully');
-    console.log(`  Email: ${email}`);
-    console.log('  Password: (provided via ADMIN_PASSWORD env var)');
-    console.log('');
-    console.log('⚠️  This is a LOCAL/DEV-ONLY account');
-    console.log('   Do not use in production');
-    console.log('');
-    console.log('🔒 SECURITY: Store these credentials securely and change password after first login');
+    console.log('Admin account created successfully');
+    console.log('Email: admin@ipenovel.com');
+    console.log('Password: Ipe@novel2026');
   } catch (error) {
     console.error('Error seeding admin:', error);
   } finally {

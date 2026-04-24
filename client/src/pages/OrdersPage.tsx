@@ -7,14 +7,15 @@ import { useLocation } from "wouter";
 import { FileText } from "lucide-react";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { getLoginUrl } from "@/const";
 
 export default function OrdersPage() {
   const { isAuthenticated } = useAuth();
   const [, navigate] = useLocation();
   const { t } = useLanguage();
 
-  const { data: orders, isLoading } = trpc.orders.list.useQuery(undefined, { enabled: isAuthenticated });
+  const { data: orders, isLoading } = trpc.orders.list.useQuery(undefined, {
+    enabled: isAuthenticated,
+  });
 
   if (!isAuthenticated) {
     return (
@@ -23,7 +24,7 @@ export default function OrdersPage() {
           <CardContent className="pt-6 text-center">
             <p className="text-slate-600 mb-4">{t("common.pleaseSignIn")}</p>
             <Button asChild>
-              <a href={getLoginUrl()}>{t("nav.login")}</a>
+              <a href="/login">{t("nav.login")}</a>
             </Button>
           </CardContent>
         </Card>

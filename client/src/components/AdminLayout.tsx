@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { useLocation } from "wouter";
-import { trpc } from "@/lib/trpc";
 import {
   LayoutDashboard,
   BookOpen,
@@ -54,21 +53,9 @@ const navItems: NavItem[] = [
 ];
 
 export default function AdminLayout({ children }: AdminLayoutProps) {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const [location, navigate] = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [isLoggingOut, setIsLoggingOut] = useState(false);
-
-  const handleLogout = async () => {
-    setIsLoggingOut(true);
-    try {
-      await logout();
-      navigate("/");
-    } catch (error) {
-      console.error("Logout failed:", error);
-      setIsLoggingOut(false);
-    }
-  };
 
   // Auth check
   if (!user || user.role !== "admin") {
@@ -157,11 +144,12 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
             variant="outline"
             size="sm"
             className="w-full text-slate-300 border-slate-600 hover:bg-slate-700 hover:text-white"
-            onClick={handleLogout}
-            disabled={isLoggingOut}
+            asChild
           >
-            <LogOut className="w-4 h-4 mr-2" />
-            {isLoggingOut ? "Logging out..." : "Logout"}
+            <a href="/api/auth/logout">
+              <LogOut className="w-4 h-4 mr-2" />
+              Logout
+            </a>
           </Button>
         </div>
       </aside>

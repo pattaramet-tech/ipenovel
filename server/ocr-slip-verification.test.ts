@@ -99,21 +99,21 @@ describe("OCR Slip Verification", () => {
       const invalid = { ...validExtracted, shopName: "Wrong Shop" };
       const result = verifySlipData(invalid, validContext, new Set());
       expect(result.isAutoApproved).toBe(false);
-      expect(result.reviewReason).toBe("INVALID_SHOP_NAME");
+      expect(result.reviewReason).toBe("SHOP_NAME_MISMATCH");
     });
 
     it("should reject slip with wrong merchant code", () => {
       const invalid = { ...validExtracted, merchantCode: "XX000000000000" };
       const result = verifySlipData(invalid, validContext, new Set());
       expect(result.isAutoApproved).toBe(false);
-      expect(result.reviewReason).toBe("INVALID_MERCHANT_CODE");
+      expect(result.reviewReason).toBe("MERCHANT_CODE_MISMATCH");
     });
 
     it("should reject slip with duplicate reference", () => {
       const existingRefs = new Set(["ABC123456789"]);
       const result = verifySlipData(validExtracted, validContext, existingRefs);
       expect(result.isAutoApproved).toBe(false);
-      expect(result.reviewReason).toBe("DUPLICATE_SLIP");
+      expect(result.reviewReason).toBe("DUPLICATE_REFERENCE");
     });
 
     it("should reject slip with missing reference", () => {
@@ -245,7 +245,7 @@ describe("OCR Slip Verification", () => {
       const existingRefs = new Set(["DUPLICATE123"]);
       const result = verifySlipData(extracted, validContext, existingRefs);
       expect(result.isAutoApproved).toBe(false);
-      expect(result.reviewReason).toBe("DUPLICATE_SLIP");
+      expect(result.reviewReason).toBe("DUPLICATE_REFERENCE");
     });
 
     it("should link slip to correct order/payment", () => {

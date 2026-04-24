@@ -257,7 +257,6 @@ export default function AdminOrdersPage() {
                     </th>
                     <th className="text-left p-3 font-semibold">Status</th>
                     <th className="text-left p-3 font-semibold">Payment</th>
-                    <th className="text-left p-3 font-semibold">Approved By</th>
                     <th className="text-left p-3 font-semibold cursor-pointer hover:bg-slate-100" onClick={() => handleSort('createdAt')}>
                       Created{getSortIndicator('createdAt')}
                     </th>
@@ -289,24 +288,6 @@ export default function AdminOrdersPage() {
                         <Badge className={getPaymentStatusColor(order.paymentStatus || 'pending')}>
                           {order.paymentStatus || "pending"}
                         </Badge>
-                      </td>
-                      <td className="p-3 text-sm">
-                        {(() => {
-                          const src = order.payment?.approvalSource;
-                          const lbl = order.payment?.approvedByLabel;
-                          const ts = order.payment?.approvedAt;
-                          if (src === 'wallet') {
-                            return <div className="space-y-0.5"><div className="font-medium text-blue-600">Approved by Wallet</div><div className="text-xs text-slate-500">Wallet</div>{ts && <div className="text-xs text-slate-500">{new Date(ts).toLocaleString()}</div>}</div>;
-                          } else if (src === 'auto') {
-                            return <div className="space-y-0.5"><div className="font-medium text-green-600">Approved by AutoApp</div><div className="text-xs text-slate-500">Auto</div>{ts && <div className="text-xs text-slate-500">{new Date(ts).toLocaleString()}</div>}</div>;
-                          } else if (src === 'manual') {
-                            return <div className="space-y-0.5"><div className="font-medium text-purple-600">Approved by {lbl || 'Admin'}</div><div className="text-xs text-slate-500">Manual</div>{ts && <div className="text-xs text-slate-500">{new Date(ts).toLocaleString()}</div>}</div>;
-                          } else if (lbl) {
-                            return <div className="space-y-0.5"><div className="font-medium">{lbl}</div><div className="text-xs text-slate-500">(Legacy)</div>{ts && <div className="text-xs text-slate-500">{new Date(ts).toLocaleString()}</div>}</div>;
-                          } else {
-                            return "—";
-                          }
-                        })()}
                       </td>
                       <td className="p-3 text-sm text-slate-600">
                         {new Date(order.createdAt).toLocaleString()}

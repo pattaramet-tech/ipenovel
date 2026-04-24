@@ -179,41 +179,6 @@ export default function AdminOrderDetailPage() {
                 </p>
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Approval Source</p>
-                <p className="font-semibold">
-                  {(() => {
-                    const src = order.payment?.approvalSource;
-                    const lbl = order.payment?.approvedByLabel;
-                    if (src === 'wallet') {
-                      return <span className="text-blue-600">Wallet</span>;
-                    } else if (src === 'auto') {
-                      return <span className="text-green-600">AutoApp</span>;
-                    } else if (src === 'manual') {
-                      return <span className="text-purple-600">Manual</span>;
-                    } else if (lbl) {
-                      // Legacy record: show label with (Legacy) indicator
-                      return <span className="text-slate-600">{lbl} (Legacy)</span>;
-                    } else {
-                      return "—";
-                    }
-                  })()}
-                </p>
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Approved By</p>
-                <p className="font-semibold">
-                  {order.payment?.approvedByLabel || "—"}
-                </p>
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Approved At</p>
-                <p className="font-semibold">
-                  {order.payment?.approvedAt
-                    ? new Date(order.payment.approvedAt).toLocaleString()
-                    : "—"}
-                </p>
-              </div>
-              <div>
                 <p className="text-sm text-muted-foreground">Payment Created</p>
                 <p className="font-semibold">{new Date(order.payment.createdAt).toLocaleString()}</p>
               </div>
@@ -261,16 +226,22 @@ export default function AdminOrderDetailPage() {
             <div className="space-y-4">
               {order.items.map((item: any) => {
                 const episodeTitle = item.episode?.title || item.episodeTitle || item.title || `Episode ${item.episodeNumber}`;
-                const hasFile = item.episode?.fileUrl || null;
+                const fileUrl = item.episode?.fileUrl || null;
                 return (
                   <div key={item.id} className="border-b pb-4 last:border-b-0">
                     <div className="flex justify-between items-start">
                       <div className="flex-1">
                         <p className="font-medium">{episodeTitle}</p>
-                        {hasFile ? (
-                          <p className="text-sm text-slate-600 mt-1">
-                            ✓ File uploaded (secure download available)
-                          </p>
+                        {fileUrl ? (
+                          <a
+                            href={fileUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-sm text-blue-600 hover:text-blue-800 hover:underline break-all mt-1 block"
+                            title="Click to open file"
+                          >
+                            {fileUrl}
+                          </a>
                         ) : (
                           <p className="text-sm text-muted-foreground mt-1">—</p>
                         )}

@@ -169,7 +169,7 @@ describe("OCR Slip Auto-Approval - End-to-End", () => {
       const result = verifySlipData(extracted, context, new Set());
 
       expect(result.isAutoApproved).toBe(false);
-      expect(result.reviewReason).toBe("INVALID_MERCHANT_CODE");
+      expect(result.reviewReason).toBe("MERCHANT_CODE_MISMATCH");
     });
 
     it("should reject slip with shop name mismatch", () => {
@@ -195,7 +195,7 @@ describe("OCR Slip Auto-Approval - End-to-End", () => {
       const result = verifySlipData(extracted, context, new Set());
 
       expect(result.isAutoApproved).toBe(false);
-      expect(result.reviewReason).toBe("INVALID_SHOP_NAME");
+      expect(result.reviewReason).toBe("SHOP_NAME_MISMATCH");
     });
 
     it("should reject slip with duplicate reference", () => {
@@ -222,7 +222,7 @@ describe("OCR Slip Auto-Approval - End-to-End", () => {
       const result = verifySlipData(extracted, context, existingReferences);
 
       expect(result.isAutoApproved).toBe(false);
-      expect(result.reviewReason).toBe("DUPLICATE_SLIP");
+      expect(result.reviewReason).toBe("DUPLICATE_REFERENCE");
     });
 
     it("should reject slip with transaction outside time window", () => {
@@ -350,7 +350,7 @@ describe("OCR Slip Auto-Approval - End-to-End", () => {
       const existingReferences = new Set<string>([extracted.reference!]);
       const result2 = verifySlipData(extracted, context, existingReferences);
       expect(result2.isAutoApproved).toBe(false);
-      expect(result2.reviewReason).toBe("DUPLICATE_SLIP");
+      expect(result2.reviewReason).toBe("DUPLICATE_REFERENCE");
     });
   });
 

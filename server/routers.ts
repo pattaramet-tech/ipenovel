@@ -345,18 +345,20 @@ export const appRouter = router({
             // Pass tx so wallet debit uses the same transaction
             await db.debitWalletBalance(ctx.user.id, totalAmount, "order", newOrder.id, tx);
             
-            // STEP 5-7: Use central approval service for wallet payment
-            // This ensures wallet uses the same finalization path as manual and auto approvals
+            // STEP 5: Update order status (within transaction)
+            // Pass tx so order update uses the same transaction
+            await db.updateOrder(newOrder.id, { status: "approved", paymentStatus: "approved" }, tx);
+            
+            // STEP 6: Update the payment record (within transaction)
+            // Pass tx so payment queries/updates use the same transaction
             const payment = await db.getPaymentByOrderId(newOrder.id, tx);
             if (payment) {
-              await orderService.approvePaymentWithSource(
-                payment.id,
-                "wallet",
-                undefined,
-                "Wallet",
-                tx
-              );
+              await db.updatePayment(payment.id, { status: "approved" }, tx);
             }
+            
+            // STEP 7: Finalize order completion (points, purchases, coupon usage)
+            // Pass tx so all finalization writes use the same transaction
+            await orderService.finalizeOrderCompletion(newOrder.id, ctx.user.id, tx);
             
             // STEP 8: Clear cart (within transaction)
             // Pass tx so cart clear uses the same transaction
@@ -442,34 +444,29 @@ export const appRouter = router({
           status: "pending",
         });
 
-        // Process slip verification and auto-approval
-        // Note: processSlipVerification handles OCR parsing internally
-        const verificationResult = await processSlipVerification(payment.id, input.slipImageUrl);
+        // Extract OCR text from slip image
+        const slipOcrText = await parseSlipImage(input.slipImageUrl);
 
-        // Persist OCR metadata to payments table
-        const metadataUpdate: any = {};
-        if (verificationResult.extractedData) {
-          metadataUpdate.extractedData = JSON.stringify(verificationResult.extractedData);
-        }
-        if (verificationResult.reviewReason) {
-          metadataUpdate.reviewReason = verificationResult.reviewReason;
-        }
-        if (verificationResult.fingerprint) {
-          metadataUpdate.fingerprint = verificationResult.fingerprint;
-        }
-        if (Object.keys(metadataUpdate).length > 0) {
-          await db.updatePayment(payment.id, metadataUpdate);
-        }
+        // Process slip verification and auto-approval
+        const verificationResult = await processSlipVerification(payment.id, slipOcrText);
 
         // Sync order status based on verification result
         if (verificationResult.isAutoApproved) {
-          // Auto-approved: use central approval service to ensure finalization runs
-          await orderService.approvePaymentWithSource(
-            payment.id,
-            "auto", // approval source
-            undefined, // no admin ID for auto-approval
-            "AutoApp" // display label
-          );
+          // Auto-approved: mark order as completed
+          await db.updateOrder(order.id, {
+            paymentStatus: "approved",
+            status: "completed",
+          });
+
+          // Record order history for auto-approval
+          await db.recordOrderHistory({
+            orderId: order.id,
+            action: "payment_auto_approved",
+            fromStatus: order.status,
+            toStatus: "completed",
+            actorUserId: 0, // 0 indicates system auto-approval
+            note: `Payment auto-approved via OCR verification (confidence: ${verificationResult.extractedData?.confidence || 0}%)`,
+          });
         } else {
           // Pending review: keep order pending
           await db.updateOrder(order.id, {
@@ -553,9 +550,8 @@ export const appRouter = router({
           throw new TRPCError({ code: "NOT_FOUND" });
         }
 
-        // Return secure download route instead of raw fileUrl
-        // The download route will verify access again and redirect to the actual file
-        return { downloadUrl: `/api/download/${input.episodeId}` };
+        // In a real implementation, generate a pre-signed URL or proxy the download
+        return { downloadUrl: episode.fileUrl };
       }),
   }),
 
@@ -696,14 +692,7 @@ export const appRouter = router({
         .input(z.object({ paymentId: z.number() }))
         .mutation(async ({ input, ctx }) => {
           try {
-            // Use central approval service with manual approval source
-            const adminName = ctx.user.name || ctx.user.email || `Admin ${ctx.user.id}`;
-            await orderService.approvePaymentWithSource(
-              input.paymentId,
-              "manual", // approval source
-              ctx.user.id, // admin ID
-              adminName // display label
-            );
+            await orderService.approvePayment(input.paymentId, String(ctx.user.id));
             return { success: true };
           } catch (error: any) {
             throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to approve payment. Please try again." });
@@ -772,50 +761,48 @@ export const appRouter = router({
 
       approve: adminProcedure
         .input(z.object({ orderId: z.number(), reason: z.string().optional() }))
-        .mutation(async ({ input, ctx }) => {
+        .mutation(async ({ input }) => {
           const order = await db.getOrderById(input.orderId);
           if (!order) throw new TRPCError({ code: "NOT_FOUND" });
           if (order.status !== "pending") {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Order is not pending" });
           }
 
+          await db.updateOrder(input.orderId, { status: "approved" });
+
           const payment = await db.getPaymentByOrderId(input.orderId);
-          if (!payment) {
-            throw new TRPCError({ code: "NOT_FOUND", message: "Payment not found" });
+          if (payment) {
+            await db.updatePayment(payment.id, { status: "approved" });
           }
 
-          // Use central approval service for consistency
-          const adminName = ctx.user.name || ctx.user.email || `Admin ${ctx.user.id}`;
-          await orderService.approvePaymentWithSource(
-            payment.id,
-            "manual",
-            ctx.user.id,
-            adminName
-          );
+          const items = await db.getOrderItems(input.orderId);
+          for (const item of items) {
+            if (order.userId) {
+              await db.createPurchase(order.userId, item.novelId, item.episodeId, order.id);
+            }
+          }
 
           return { success: true };
         }),
 
       reject: adminProcedure
         .input(z.object({ orderId: z.number(), rejectionReason: z.string() }))
-        .mutation(async ({ input, ctx }) => {
+        .mutation(async ({ input }) => {
           const order = await db.getOrderById(input.orderId);
           if (!order) throw new TRPCError({ code: "NOT_FOUND" });
           if (order.status !== "pending") {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Order is not pending" });
           }
 
-          const payment = await db.getPaymentByOrderId(input.orderId);
-          if (!payment) {
-            throw new TRPCError({ code: "NOT_FOUND", message: "Payment not found" });
-          }
+          await db.updateOrder(input.orderId, { status: "rejected" });
 
-          // Use central rejection service for consistency
-          await orderService.rejectPayment(
-            payment.id,
-            String(ctx.user.id),
-            input.rejectionReason
-          );
+          const payment = await db.getPaymentByOrderId(input.orderId);
+          if (payment) {
+            await db.updatePayment(payment.id, {
+              status: "rejected",
+              rejectionReason: input.rejectionReason,
+            });
+          }
 
           return { success: true };
         }),

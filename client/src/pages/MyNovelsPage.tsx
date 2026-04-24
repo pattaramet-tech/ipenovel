@@ -1,5 +1,4 @@
 import { useAuth } from "@/_core/hooks/useAuth";
-import { getLoginUrl } from "@/const";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -11,7 +10,9 @@ export default function MyNovelsPage() {
   const { isAuthenticated } = useAuth();
   const [, navigate] = useLocation();
 
-  const { data: myNovels, isLoading } = trpc.myNovels.list.useQuery(undefined, { enabled: isAuthenticated });
+  const { data: myNovels, isLoading } = trpc.myNovels.list.useQuery(undefined, {
+    enabled: isAuthenticated,
+  });
 
   if (!isAuthenticated) {
     return (
@@ -20,7 +21,7 @@ export default function MyNovelsPage() {
           <CardContent className="pt-6 text-center">
             <p className="text-slate-600 mb-4">Please sign in to view your novels</p>
             <Button asChild>
-              <a href={getLoginUrl()}>Sign In</a>
+              <a href="/login">Sign In</a>
             </Button>
           </CardContent>
         </Card>
@@ -90,7 +91,7 @@ export default function MyNovelsPage() {
                         <div className="flex gap-2">
                           {episode.fileUrl ? (
                             <a
-                              href={`/api/download/${episode.id}`}
+                              href={episode.fileUrl}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
