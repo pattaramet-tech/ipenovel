@@ -116,6 +116,21 @@ export default function AdminOrdersPage() {
     }
   };
 
+  // Get payment method badge info
+  const getPaymentMethodBadge = (order: any) => {
+    if (order.approvalSource === 'wallet') {
+      return { label: 'Wallet', color: 'bg-purple-100 text-purple-800' };
+    }
+    if (order.approvalSource === 'auto') {
+      return { label: 'OCR', color: 'bg-blue-100 text-blue-800' };
+    }
+    if (order.approvalSource === 'manual') {
+      return { label: 'Transfer', color: 'bg-slate-100 text-slate-800' };
+    }
+    // Fallback for unknown/legacy orders
+    return { label: 'Transfer', color: 'bg-slate-100 text-slate-800' };
+  };
+
   return (
     <AdminLayout>
       <div className="space-y-6">
@@ -257,6 +272,7 @@ export default function AdminOrdersPage() {
                     </th>
                     <th className="text-left p-3 font-semibold">Status</th>
                     <th className="text-left p-3 font-semibold">Payment</th>
+                    <th className="text-left p-3 font-semibold">Method</th>
                     <th className="text-left p-3 font-semibold">Approved By</th>
                     <th className="text-left p-3 font-semibold cursor-pointer hover:bg-slate-100" onClick={() => handleSort('createdAt')}>
                       Created{getSortIndicator('createdAt')}
@@ -289,6 +305,16 @@ export default function AdminOrdersPage() {
                         <Badge className={getPaymentStatusColor(order.paymentStatus || 'pending')}>
                           {order.paymentStatus || "pending"}
                         </Badge>
+                      </td>
+                      <td className="p-3">
+                        {(() => {
+                          const badge = getPaymentMethodBadge(order);
+                          return (
+                            <Badge className={badge.color}>
+                              {badge.label}
+                            </Badge>
+                          );
+                        })()}
                       </td>
                       <td className="p-3 text-slate-600 text-xs">
                         {(() => {
