@@ -355,7 +355,8 @@ export const appRouter = router({
             const payment = await db.getPaymentByOrderId(newOrder.id, tx);
             if (payment) {
               // Use ApprovalService for wallet approval with metadata
-              await ApprovalService.approvePaymentWithSource(payment.id, "wallet", {});
+              // CRITICAL: Pass tx to ensure approval metadata is written within the same transaction
+              await ApprovalService.approvePaymentWithSource(payment.id, "wallet", {}, tx);
             }
             
             // STEP 7: Finalize order completion (points, purchases, coupon usage)

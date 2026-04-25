@@ -24,6 +24,7 @@ export class ApprovalService {
   /**
    * Approve a payment with source metadata
    * Supports: manual admin approval, OCR auto-approval, wallet approval
+   * @param tx - Optional transaction context for atomic operations
    */
   static async approvePaymentWithSource(
     paymentId: number,
@@ -33,9 +34,10 @@ export class ApprovalService {
       adminLabel?: string;
       autoApprovedAt?: Date;
       reviewedAt?: Date;
-    }
+    },
+    tx?: any
   ) {
-    const db = await getDb();
+    const db = tx || (await getDb());
     if (!db) throw new Error("Database connection failed");
 
     const now = new Date();
@@ -88,13 +90,15 @@ export class ApprovalService {
   /**
    * Reject a payment with reason
    * Does NOT set approval metadata
+   * @param tx - Optional transaction context for atomic operations
    */
   static async rejectPayment(
     paymentId: number,
     reason: string,
-    reviewedByAdminId?: number
+    reviewedByAdminId?: number,
+    tx?: any
   ) {
-    const db = await getDb();
+    const db = tx || (await getDb());
     if (!db) throw new Error("Database connection failed");
 
     const now = new Date();
@@ -114,14 +118,16 @@ export class ApprovalService {
   /**
    * Send payment to manual review
    * Does NOT set approval metadata
+   * @param tx - Optional transaction context for atomic operations
    */
   static async sendToReview(
     paymentId: number,
     reviewReason: string,
     extractedData?: any,
-    fingerprint?: string
+    fingerprint?: string,
+    tx?: any
   ) {
-    const db = await getDb();
+    const db = tx || (await getDb());
     if (!db) throw new Error("Database connection failed");
 
     await db
