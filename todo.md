@@ -810,3 +810,12 @@
 - [x] Fix 7 old tests in ocr-slip-e2e.test.ts to match new behavior
 - [x] Fix 4 old tests in ocr-slip-integration.test.ts to match new behavior
 - [x] All 152 OCR tests passing, TypeScript check clean, production build clean
+
+## Bug Fix: Method Column on Admin Orders Page
+
+- [x] Fix getPaymentMethodBadge to handle all approvalSource values: wallet/auto/manual/legacy/null
+- [x] Fix fallback label from wrong "Transfer" to correct "Unknown" for null/legacy orders
+- [x] Add 'legacy' case with distinct "Legacy" label and muted color
+- [x] Fix pending/unpaid orders to show "—" instead of "Transfer"
+- [x] Fix "Approved By" column to use formattedApprovalSource from enrichment when available
+- [x] Fix "Approved By" to handle legacy approvalSource

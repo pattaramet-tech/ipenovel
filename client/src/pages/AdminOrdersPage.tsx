@@ -117,18 +117,26 @@ export default function AdminOrdersPage() {
   };
 
   // Get payment method badge info
+  // approvalSource values: 'wallet' | 'auto' | 'manual' | 'legacy' | null
   const getPaymentMethodBadge = (order: any) => {
-    if (order.approvalSource === 'wallet') {
+    const src = order.approvalSource;
+    if (src === 'wallet') {
       return { label: 'Wallet', color: 'bg-purple-100 text-purple-800' };
     }
-    if (order.approvalSource === 'auto') {
+    if (src === 'auto') {
       return { label: 'OCR', color: 'bg-blue-100 text-blue-800' };
     }
-    if (order.approvalSource === 'manual') {
-      return { label: 'Transfer', color: 'bg-slate-100 text-slate-800' };
+    if (src === 'manual') {
+      return { label: 'Transfer', color: 'bg-green-100 text-green-800' };
     }
-    // Fallback for unknown/legacy orders
-    return { label: 'Transfer', color: 'bg-slate-100 text-slate-800' };
+    if (src === 'legacy') {
+      return { label: 'Legacy', color: 'bg-slate-100 text-slate-600' };
+    }
+    // null / undefined: no payment record yet (pending) or source unknown
+    if (!order.paymentStatus || order.paymentStatus === 'pending' || order.paymentStatus === 'unpaid') {
+      return { label: '—', color: 'bg-slate-50 text-slate-400' };
+    }
+    return { label: 'Unknown', color: 'bg-slate-100 text-slate-500' };
   };
 
   return (
@@ -318,13 +326,19 @@ export default function AdminOrdersPage() {
                       </td>
                       <td className="p-3 text-slate-600 text-xs">
                         {(() => {
-                          // Fallback logic: prefer approvalSource first, then approver details
-                          if (order.approvalSource === "wallet") return "Wallet";
-                          if (order.approvalSource === "auto") return "OCR Auto-Approve";
+                          // Use formattedApprovalSource from enrichment when available
+                          if (order.formattedApprovalSource && order.approvalSource !== 'manual') {
+                            return order.formattedApprovalSource;
+                          }
+                          // For manual approvals, show the admin name
                           if (order.approvedByName) return order.approvedByName;
                           if (order.approvedByEmail) return order.approvedByEmail;
                           if (order.approvedByAdminId) return `Admin ${order.approvedByAdminId}`;
                           if (order.approvedByLabel) return order.approvedByLabel;
+                          // Fallback from raw approvalSource
+                          if (order.approvalSource === "wallet") return "Wallet";
+                          if (order.approvalSource === "auto") return "OCR Auto-Approve";
+                          if (order.approvalSource === "legacy") return "Legacy";
                           return "—";
                         })()}
                       </td>
