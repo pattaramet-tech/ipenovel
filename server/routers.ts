@@ -791,10 +791,22 @@ export const appRouter = router({
               result.orders.map(async (order: any) => {
                 const payment = await db.getPaymentByOrderId(order.id);
                 if (payment) {
+                  const approvalMetadata = ApprovalService.getDisplayMetadata(payment);
+                  let approvedByName = approvalMetadata.approvedByLabel;
+                  
+                  // If manual approval, fetch admin user name
+                  if (payment.approvalSource === 'manual' && payment.approvedByAdminId) {
+                    const adminUser = await db.getUserById(payment.approvedByAdminId);
+                    if (adminUser) {
+                      approvedByName = `Approved By Admin, ${adminUser.name}`;
+                    }
+                  }
+                  
                   return {
                     ...order,
-                    approvalMetadata: ApprovalService.getDisplayMetadata(payment),
+                    approvalMetadata,
                     formattedApprovalSource: ApprovalService.formatApprovalSource(payment.approvalSource),
+                    approvedByName,
                   };
                 }
                 return order;

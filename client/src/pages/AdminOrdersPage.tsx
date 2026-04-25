@@ -291,7 +291,7 @@ export default function AdminOrdersPage() {
                         </Badge>
                       </td>
                       <td className="p-3 text-sm">
-                        {order.approvalMetadata?.approvedByLabel || order.formattedApprovalSource || "—"}
+                        {order.approvedByName || order.approvalMetadata?.approvedByLabel || order.formattedApprovalSource || "—"}
                       </td>
                       <td className="p-3 text-sm text-slate-600">
                         {new Date(order.createdAt).toLocaleString()}
