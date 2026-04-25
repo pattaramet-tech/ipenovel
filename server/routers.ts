@@ -723,6 +723,32 @@ export const appRouter = router({
             throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to reject payment. Please try again." });
           }
         }),
+
+      approved: adminProcedure.query(async () => {
+        const payments = await db.getRecentlyApprovedPayments(50);
+
+        const enriched = await Promise.all(
+          payments.map(async (p: any) => {
+            const order = await db.getOrderById(p.orderId);
+            const items = order ? await db.getOrderItems(order.id) : [];
+            const user = order?.userId ? await db.getUserById(order.userId) : null;
+            
+            const approvalMetadata = ApprovalService.getDisplayMetadata(p);
+            const formattedApprovalSource = ApprovalService.formatApprovalSource(p.approvalSource);
+            
+            return { 
+              ...p, 
+              order, 
+              items, 
+              user,
+              approvalMetadata,
+              formattedApprovalSource,
+            };
+          })
+        );
+
+        return enriched;
+      }),
     }),
 
     orders: router({

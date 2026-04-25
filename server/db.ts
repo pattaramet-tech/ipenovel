@@ -2777,3 +2777,11 @@ export async function getTopupLogsByUser(userId: number) {
 
   return result;
 }
+
+export async function getRecentlyApprovedPayments(limit?: number, offset?: number) {
+  const db = await getDb();
+  if (!db) return [];
+  let query: any = db.select().from(payments).where(eq(payments.status, "approved")).orderBy(desc(payments.approvedAt)).limit(limit || 50);
+  if (offset) query = query.offset(offset);
+  return query;
+}

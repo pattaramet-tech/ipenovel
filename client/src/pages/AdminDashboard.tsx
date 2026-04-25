@@ -37,6 +37,10 @@ export default function AdminDashboard() {
     undefined,
     { enabled: shouldFetchAdminData }
   );
+  const { data: approvedPayments, isLoading: approvedLoading } = trpc.admin.payments.approved.useQuery(
+    undefined,
+    { enabled: shouldFetchAdminData }
+  );
   const { data: allOrders, isLoading: ordersLoading } = trpc.admin.orders.list.useQuery(
     {},
     { enabled: shouldFetchAdminData }
@@ -141,14 +145,15 @@ export default function AdminDashboard() {
 
         {/* Tabs - Mobile optimized */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-4 h-auto gap-1 p-1">
+          <TabsList className="grid w-full grid-cols-5 h-auto gap-1 p-1">
             <TabsTrigger value="overview" className="text-xs md:text-sm py-2">Overview</TabsTrigger>
             <TabsTrigger value="payments" className="text-xs md:text-sm py-2 flex items-center justify-center gap-1">
-              <span>Payments</span>
+              <span>Pending</span>
               {pendingPaymentCount > 0 && (
                 <Badge className="ml-1 bg-red-100 text-red-800 text-xs px-1.5 py-0">{pendingPaymentCount}</Badge>
               )}
             </TabsTrigger>
+            <TabsTrigger value="approved" className="text-xs md:text-sm py-2">Approved</TabsTrigger>
             <TabsTrigger value="users" className="text-xs md:text-sm py-2">Top 10 ลูกค้า</TabsTrigger>
             <TabsTrigger value="recent" className="text-xs md:text-sm py-2">Recent</TabsTrigger>
           </TabsList>
@@ -318,6 +323,73 @@ export default function AdminDashboard() {
                           <XCircle className="w-3 h-3 md:w-4 md:h-4 mr-1" />
                           Reject
                         </Button>
+                      </div>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </TabsContent>
+
+          {/* Approved Payments Tab */}
+          <TabsContent value="approved" className="space-y-2 md:space-y-3 mt-4">
+            {approvedLoading ? (
+              <div className="space-y-2">
+                {[...Array(3)].map((_, i) => (
+                  <Skeleton key={i} className="h-32 w-full" />
+                ))}
+              </div>
+            ) : !approvedPayments || approvedPayments.length === 0 ? (
+              <EmptyState
+                icon={CheckCircle}
+                title="No approved payments"
+                description="Recently approved payments will appear here"
+              />
+            ) : (
+              <div className="space-y-2">
+                {approvedPayments.map((payment: any) => (
+                  <Card key={payment.id} className="overflow-hidden hover:shadow-md transition-shadow p-3 md:p-4">
+                    <div className="space-y-2 md:space-y-3">
+                      {/* Header with order number and status */}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <h3 className="font-semibold text-sm md:text-base text-slate-900 truncate">
+                            {payment.order?.orderNumber}
+                          </h3>
+                        </div>
+                        <StatusBadge status="approved" />
+                      </div>
+
+                      {/* Buyer info - compact */}
+                      <div className="space-y-1 text-xs md:text-sm">
+                        <p className="text-slate-700">
+                          <span className="font-semibold">Buyer:</span> {payment.user?.name || "Unknown"}
+                        </p>
+                        <p className="text-slate-600 truncate">
+                          <span className="font-semibold">Email:</span> {payment.user?.email || "N/A"}
+                        </p>
+                        <p className="text-slate-600">
+                          <span className="font-semibold">Amount:</span> ฿{parseFloat(payment.order?.totalAmount.toString()).toFixed(2)}
+                        </p>
+                      </div>
+
+                      {/* Approval metadata - ALWAYS show for approved payments */}
+                      <div className="pt-2 border-t space-y-1 text-xs md:text-sm">
+                        {payment.formattedApprovalSource && (
+                          <p className="text-slate-700">
+                            <span className="font-semibold">Approval Source:</span> {payment.formattedApprovalSource}
+                          </p>
+                        )}
+                        {payment.approvalMetadata?.approvedByLabel && (
+                          <p className="text-slate-700">
+                            <span className="font-semibold">Approved By:</span> {payment.approvalMetadata.approvedByLabel}
+                          </p>
+                        )}
+                        {payment.approvalMetadata?.approvedAt && (
+                          <p className="text-slate-600">
+                            <span className="font-semibold">Approved At:</span> {new Date(payment.approvalMetadata.approvedAt).toLocaleString()}
+                          </p>
+                        )}
                       </div>
                     </div>
                   </Card>
