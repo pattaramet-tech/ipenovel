@@ -780,3 +780,14 @@
 - [x] Fix Episode undefined issue in admin order details
 - [ ] Verify no duplicate purchases created
 - [ ] Final production readiness assessment
+
+
+## Payment Source Metrics on Admin Dashboard
+- [x] Add getPaymentSourceCounts() to server/db.ts — groups approved payments by approvalSource
+- [x] Update getDashboardSummary() to include paymentSources breakdown
+- [x] Verify dashboardRouter.summary already exposes paymentSources via getDashboardSummary()
+- [x] Add Payment Sources section to AdminDashboard.tsx with Wallet/OCR/Transfer/Unknown cards
+- [x] Add payment-source-metrics.test.ts with 12 unit tests covering all bucketing logic
+- [x] TypeScript check clean (0 errors)
+- [x] Production build clean
+- [x] New tests: 12/12 passing

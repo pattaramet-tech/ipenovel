@@ -2276,12 +2276,64 @@ export async function getTopUsersBySpending(period: "all" | "today" | "7d" | "30
   }
 }
 
+/**
+ * Count approved payments by source (wallet/auto/manual)
+ * Returns accurate breakdown for dashboard metrics
+ */
+export async function getPaymentSourceCounts(): Promise<{
+  walletCount: number;
+  ocrCount: number;
+  transferCount: number;
+  unknownCount: number;
+  totalApproved: number;
+  totalPending: number;
+}> {
+  const db = await getDb();
+  if (!db) return { walletCount: 0, ocrCount: 0, transferCount: 0, unknownCount: 0, totalApproved: 0, totalPending: 0 };
+
+  // Count approved payments grouped by approvalSource
+  const sourceCounts = await db
+    .select({
+      approvalSource: payments.approvalSource,
+      count: count(),
+    })
+    .from(payments)
+    .where(eq(payments.status, "approved"))
+    .groupBy(payments.approvalSource);
+
+  // Count pending payments (for review queue)
+  const pendingResult = await db
+    .select({ count: count() })
+    .from(payments)
+    .where(eq(payments.status, "pending"));
+
+  let walletCount = 0;
+  let ocrCount = 0;
+  let transferCount = 0;
+  let unknownCount = 0;
+
+  for (const row of sourceCounts) {
+    const src = row.approvalSource;
+    const n = Number(row.count) || 0;
+    if (src === "wallet") walletCount += n;
+    else if (src === "auto") ocrCount += n;
+    else if (src === "manual") transferCount += n;
+    else unknownCount += n; // null, "legacy", or any unrecognized source
+  }
+
+  const totalApproved = walletCount + ocrCount + transferCount + unknownCount;
+  const totalPending = Number(pendingResult[0]?.count) || 0;
+
+  return { walletCount, ocrCount, transferCount, unknownCount, totalApproved, totalPending };
+}
+
 export async function getDashboardSummary() {
-  const [totalOrders, totalNovels, pendingPayments, approvedPayments] = await Promise.all([
+  const [totalOrders, totalNovels, pendingPayments, approvedPayments, paymentSources] = await Promise.all([
     countAllOrders(),
     countAllNovels(),
     countPendingPayments(),
     countApprovedPayments(),
+    getPaymentSourceCounts(),
   ]);
 
   return {
@@ -2289,6 +2341,7 @@ export async function getDashboardSummary() {
     totalNovels,
     pendingPayments,
     approvedPayments,
+    paymentSources,
   };
 }
 

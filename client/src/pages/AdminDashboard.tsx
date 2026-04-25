@@ -8,7 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
-import { CheckCircle, XCircle, Clock, BookOpen, ShoppingCart, TrendingUp, AlertCircle } from "lucide-react";
+import { CheckCircle, XCircle, Clock, BookOpen, ShoppingCart, TrendingUp, AlertCircle, Wallet, ScanLine, ArrowLeftRight } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
 import { StatCard, SectionHeader, StatusBadge, EmptyState } from "@/components/AdminComponents";
@@ -106,6 +106,12 @@ export default function AdminDashboard() {
   const pendingPaymentCount = dashboardSummary?.pendingPayments || 0;
   const approvedPaymentCount = dashboardSummary?.approvedPayments || 0;
 
+  // Payment source breakdown (approved payments only)
+  const walletCount = dashboardSummary?.paymentSources?.walletCount ?? 0;
+  const ocrCount = dashboardSummary?.paymentSources?.ocrCount ?? 0;
+  const transferCount = dashboardSummary?.paymentSources?.transferCount ?? 0;
+  const unknownCount = dashboardSummary?.paymentSources?.unknownCount ?? 0;
+
   return (
     <AdminLayout>
       <div className="space-y-4 md:space-y-6">
@@ -140,6 +146,42 @@ export default function AdminDashboard() {
               icon={CheckCircle}
               color="purple"
             />
+          </div>
+        </div>
+
+        {/* Payment Source Metrics */}
+        <div>
+          <SectionHeader
+            title="Payment Sources"
+            description="Breakdown of approved payments by source"
+          />
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-4">
+            <StatCard
+              label="Wallet"
+              value={walletCount}
+              icon={Wallet}
+              color="purple"
+            />
+            <StatCard
+              label="OCR Auto-Approve"
+              value={ocrCount}
+              icon={ScanLine}
+              color="blue"
+            />
+            <StatCard
+              label="Transfer (Manual)"
+              value={transferCount}
+              icon={ArrowLeftRight}
+              color="green"
+            />
+            {unknownCount > 0 && (
+              <StatCard
+                label="Unknown / Legacy"
+                value={unknownCount}
+                icon={AlertCircle}
+                color="yellow"
+              />
+            )}
           </div>
         </div>
 
