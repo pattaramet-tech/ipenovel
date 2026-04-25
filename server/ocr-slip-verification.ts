@@ -4,57 +4,145 @@ import { invokeLLM } from "./_core/llm";
 import crypto from "crypto";
 
 /**
- * OCR Slip Verification System
- * Handles extraction, normalization, and verification of Thai bank slip data
- * Explicitly tied to order/payment records for safe auto-approval
+ * OCR Slip Verification System — Hardened v2
+ *
+ * Improvements over v1:
+ * - Richer extraction: time-of-day, receiver name, masked account, bank aliases
+ * - Buddhist year support in DD/MM/YYYY and DD MonthName YYYY formats
+ * - Thai numeral normalisation applied before every extractor
+ * - Amount: supports PromptPay "฿ 250.00", "250 บาท", "THB 250.00" patterns
+ * - Reference: explicit-label-only (no bare alphanumeric fallback that caused false positives)
+ * - Confidence: reweighted so core payment fields dominate; merchant fields are bonus
+ * - Auto-approval: requires amount + date + reference + confidence ≥ 85 + ≥ 3 structured fields
+ * - Duplicate detection: reference + fingerprint, both checked against approved AND pending_review
+ * - Review reasons: granular, admin-friendly, no vague fallbacks
+ * - Admin payload: includes transactionDateTime, receiverName, maskedAccount, rawText snippet
  */
 
-// Merchant configuration
+// ─── Merchant configuration ───────────────────────────────────────────────────
 const MERCHANT_CONFIG = {
-  shopNameAliases: ["Ipe Novel", "Ipenovel", "IPE NOVEL", "ipe novel", "ipenovel"],
+  shopNameAliases: [
+    "Ipe Novel",
+    "Ipenovel",
+    "IPE NOVEL",
+    "ipe novel",
+    "ipenovel",
+    "ไอพี โนเวล",
+    "ไอพีโนเวล",
+  ],
   merchantCode: "KB000002283068",
   merchantTransactionCode: "KPS004KB000002283068",
 };
 
-// Thai month mapping
+// ─── Thai month mapping ───────────────────────────────────────────────────────
 const THAI_MONTHS: Record<string, number> = {
-  "มกราคม": 1,
-  "กุมภาพันธ์": 2,
-  "มีนาคม": 3,
-  "เมษายน": 4,
-  "พฤษภาคม": 5,
-  "มิถุนายน": 6,
-  "กรกฎาคม": 7,
-  "สิงหาคม": 8,
-  "กันยายน": 9,
-  "ตุลาคม": 10,
-  "พฤศจิกายน": 11,
-  "ธันวาคม": 12,
-  // English aliases
-  "Jan": 1,
-  "Feb": 2,
-  "Mar": 3,
-  "Apr": 4,
-  "May": 5,
-  "Jun": 6,
-  "Jul": 7,
-  "Aug": 8,
-  "Sep": 9,
-  "Oct": 10,
-  "Nov": 11,
-  "Dec": 12,
+  มกราคม: 1,
+  กุมภาพันธ์: 2,
+  มีนาคม: 3,
+  เมษายน: 4,
+  พฤษภาคม: 5,
+  มิถุนายน: 6,
+  กรกฎาคม: 7,
+  สิงหาคม: 8,
+  กันยายน: 9,
+  ตุลาคม: 10,
+  พฤศจิกายน: 11,
+  ธันวาคม: 12,
+  // Short forms
+  "ม.ค.": 1,
+  "ก.พ.": 2,
+  "มี.ค.": 3,
+  "เม.ย.": 4,
+  "พ.ค.": 5,
+  "มิ.ย.": 6,
+  "ก.ค.": 7,
+  "ส.ค.": 8,
+  "ก.ย.": 9,
+  "ต.ค.": 10,
+  "พ.ย.": 11,
+  "ธ.ค.": 12,
+  // English
+  Jan: 1,
+  Feb: 2,
+  Mar: 3,
+  Apr: 4,
+  May: 5,
+  Jun: 6,
+  Jul: 7,
+  Aug: 8,
+  Sep: 9,
+  Oct: 10,
+  Nov: 11,
+  Dec: 12,
 };
 
+// ─── Bank detection patterns ──────────────────────────────────────────────────
+const BANK_PATTERNS: Array<{ patterns: string[]; code: string; name: string }> = [
+  {
+    patterns: ["ธนาคารกรุงเทพ", "Bangkok Bank", "BBL", "bbl"],
+    code: "BBL",
+    name: "Bangkok Bank",
+  },
+  {
+    patterns: ["ธนาคารกสิกรไทย", "Kasikorn", "KBank", "KBANK", "กสิกรไทย"],
+    code: "KBANK",
+    name: "KBank",
+  },
+  {
+    patterns: ["ธนาคารไทยพาณิชย์", "SCB", "ไทยพาณิชย์", "Siam Commercial"],
+    code: "SCB",
+    name: "SCB",
+  },
+  {
+    patterns: ["ธนาคารกรุงไทย", "Krungthai", "KTB", "กรุงไทย"],
+    code: "KTB",
+    name: "Krungthai Bank",
+  },
+  {
+    patterns: ["ธนาคารกรุงศรีอยุธยา", "Krungsri", "BAY", "กรุงศรี"],
+    code: "BAY",
+    name: "Krungsri",
+  },
+  {
+    patterns: ["ธนาคารทหารไทยธนชาต", "TTB", "ทหารไทย", "ธนชาต"],
+    code: "TTB",
+    name: "TTB",
+  },
+  {
+    patterns: ["ธนาคารออมสิน", "GSB", "ออมสิน"],
+    code: "GSB",
+    name: "Government Savings Bank",
+  },
+  {
+    patterns: ["PromptPay", "พร้อมเพย์", "promptpay"],
+    code: "PROMPTPAY",
+    name: "PromptPay",
+  },
+  {
+    patterns: ["TrueMoney", "ทรูมันนี่", "true money"],
+    code: "TRUEMONEY",
+    name: "TrueMoney",
+  },
+];
+
+// ─── Public types ─────────────────────────────────────────────────────────────
 export interface ExtractedSlipData {
-  shopName?: string;
-  merchantCode?: string;
-  merchantTransactionCode?: string;
+  // Core payment fields
   amount?: number;
   transactionDate?: Date;
+  transactionDateTime?: Date; // Full datetime if time is available
   reference?: string;
+  // Bank / merchant fields
   detectedBank?: string;
-  rawText?: string;
+  detectedBankName?: string;
+  shopName?: string;
+  receiverName?: string; // ชื่อผู้รับ / receiver
+  maskedAccount?: string; // e.g. xxx-x-xx123-x
+  merchantCode?: string;
+  merchantTransactionCode?: string;
+  // Meta
   confidence?: number; // 0-100
+  rawText?: string;
 }
 
 export interface OrderPaymentContext {
@@ -75,21 +163,29 @@ export interface VerificationResult {
   linkedPaymentId: number;
 }
 
+// ─── Internal helpers ─────────────────────────────────────────────────────────
+
 /**
- * Normalize Thai numerals to Western digits
+ * Normalise Thai numerals to Western digits (applied first in every extractor)
  */
-function normalizeThaiNumerals(text: string): string {
-  const thaiToWestern: Record<string, string> = {
-    '๐': '0', '๑': '1', '๒': '2', '๓': '3', '๔': '4',
-    '๕': '5', '๖': '6', '๗': '7', '๘': '8', '๙': '9',
+export function normalizeThaiNumerals(text: string): string {
+  const map: Record<string, string> = {
+    "๐": "0",
+    "๑": "1",
+    "๒": "2",
+    "๓": "3",
+    "๔": "4",
+    "๕": "5",
+    "๖": "6",
+    "๗": "7",
+    "๘": "8",
+    "๙": "9",
   };
-  
-  return text.split('').map(char => thaiToWestern[char] || char).join('');
+  return text.split("").map((c) => map[c] ?? c).join("");
 }
 
 /**
- * Normalize Thai text for matching
- * Removes extra spaces, converts to lowercase, removes special characters
+ * Normalise text for fuzzy matching (lowercase, collapse whitespace, strip punctuation)
  */
 function normalizeText(text: string): string {
   if (!text) return "";
@@ -97,43 +193,83 @@ function normalizeText(text: string): string {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, " ")
-    .replace(/[^\u0E00-\u0E7Fa-z0-9\s]/g, ""); // Keep Thai chars, alphanumeric, spaces
+    .replace(/[^\u0E00-\u0E7Fa-z0-9\s]/g, "");
 }
 
 /**
- * Extract shop name from OCR text
- * Looks for common Thai bank slip labels and extracts following text
- * More tolerant of OCR noise, extra spaces, and formatting variations
+ * Preprocess raw OCR text: normalise Thai numerals + collapse whitespace noise
  */
+function preprocessOcrText(raw: string): string {
+  let t = normalizeThaiNumerals(raw);
+  // Collapse multiple spaces/tabs but preserve newlines for label extraction
+  t = t.replace(/[ \t]+/g, " ");
+  return t;
+}
+
+// ─── Field extractors ─────────────────────────────────────────────────────────
+
 function extractShopName(text: string): string | undefined {
   const patterns = [
     /ชื่อร้านค้า\s*[:：]\s*([^\n]+)/i,
     /ชื่อ\s*[:：]\s*([^\n]+)/i,
     /shop\s*name\s*[:：]\s*([^\n]+)/i,
     /merchant\s*name\s*[:：]\s*([^\n]+)/i,
-    /ร้านค้า\s*[:：]\s*([^\n]+)/i,
+    /(?<!รหัส)ร้านค้า\s*[:：]\s*([^\n]+)/i,
     /shop\s*[:：]\s*([^\n]+)/i,
+    /ชื่อผู้รับ\s*[:：]\s*([^\n]+)/i,
+    /ผู้รับ\s*[:：]\s*([^\n]+)/i,
+    /receiver\s*[:：]\s*([^\n]+)/i,
+    /to\s*[:：]\s*([^\n]+)/i,
   ];
 
   for (const pattern of patterns) {
     const match = text.match(pattern);
-    if (match && match[1]) {
-      const extracted = match[1]
-        .trim()
-        .replace(/\s+/g, " ")
-        .substring(0, 100);
-      if (extracted.length > 2) {
-        return extracted;
-      }
+    if (match?.[1]) {
+      const extracted = match[1].trim().replace(/\s+/g, " ").substring(0, 100);
+      if (extracted.length > 2) return extracted;
     }
   }
-
   return undefined;
 }
 
-/**
- * Extract merchant code from OCR text
- */
+function extractReceiverName(text: string): string | undefined {
+  const patterns = [
+    /ชื่อผู้รับ\s*[:：]\s*([^\n]+)/i,
+    /ผู้รับเงิน\s*[:：]\s*([^\n]+)/i,
+    /receiver\s*name\s*[:：]\s*([^\n]+)/i,
+    /to\s*[:：]\s*([^\n]+)/i,
+    /โอนให้\s*[:：]\s*([^\n]+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      const extracted = match[1].trim().replace(/\s+/g, " ").substring(0, 100);
+      if (extracted.length > 2) return extracted;
+    }
+  }
+  return undefined;
+}
+
+function extractMaskedAccount(text: string): string | undefined {
+  // Patterns: xxx-x-xx123-x  /  xxxx-xxxx-1234  /  **** **** 1234
+  const patterns = [
+    /([x*]{3,}[-\s]?[x*0-9]{1,4}[-\s]?[x*0-9]{2,6}[-\s]?[x*0-9]{1,4})/i,
+    /เลขที่บัญชี\s*[:：]\s*([^\n]+)/i,
+    /account\s*(?:no|number|#)\s*[:：]\s*([^\n]+)/i,
+    /บัญชี\s*[:：]\s*([^\n]+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      const extracted = match[1].trim().substring(0, 30);
+      if (extracted.length > 4) return extracted;
+    }
+  }
+  return undefined;
+}
+
 function extractMerchantCode(text: string): string | undefined {
   const patterns = [
     /รหัสร้านค้า\s*[:：]\s*([A-Z0-9]+)/i,
@@ -144,18 +280,11 @@ function extractMerchantCode(text: string): string | undefined {
 
   for (const pattern of patterns) {
     const match = text.match(pattern);
-    if (match && match[1]) {
-      return match[1].trim();
-    }
+    if (match?.[1]) return match[1].trim();
   }
-
   return undefined;
 }
 
-/**
- * Extract merchant transaction code from OCR text
- * Looks for patterns like KPS004KB000002283068
- */
 function extractMerchantTransactionCode(text: string): string | undefined {
   const patterns = [
     /รหัสธุรกรรม\s*[:：]\s*([A-Z0-9]+)/i,
@@ -166,175 +295,294 @@ function extractMerchantTransactionCode(text: string): string | undefined {
 
   for (const pattern of patterns) {
     const match = text.match(pattern);
-    if (match && match[1]) {
-      return match[1].trim();
-    }
+    if (match?.[1]) return match[1].trim();
   }
-
   return undefined;
 }
 
-/**
- * Extract payment amount from OCR text
- */
 function extractAmount(text: string): number | undefined {
   const patterns = [
-    /จำนวนเงิน\s*[:：]\s*([\d,]+\.?\d*)/i,
-    /amount\s*[:：]\s*([\d,]+\.?\d*)/i,
-    /total\s*[:：]\s*([\d,]+\.?\d*)/i,
-    /ยอดเงิน\s*[:：]\s*([\d,]+\.?\d*)/i,
+    // Thai labels
+    /จำนวนเงิน\s*[:：]\s*฿?\s*([\d,]+\.?\d*)/i,
+    /ยอดเงิน\s*[:：]\s*฿?\s*([\d,]+\.?\d*)/i,
+    /ยอดโอน\s*[:：]\s*฿?\s*([\d,]+\.?\d*)/i,
+    /จำนวน\s*[:：]\s*฿?\s*([\d,]+\.?\d*)/i,
+    // English labels
+    /amount\s*[:：]\s*(?:thb|฿)?\s*([\d,]+\.?\d*)/i,
+    /total\s*[:：]\s*(?:thb|฿)?\s*([\d,]+\.?\d*)/i,
+    // PromptPay style: ฿ 250.00 or THB 250.00
+    /(?:฿|thb)\s*([\d,]+\.?\d{2})/i,
+    // Standalone amount with บาท suffix
+    /([\d,]+\.?\d*)\s*บาท/i,
   ];
 
   for (const pattern of patterns) {
     const match = text.match(pattern);
-    if (match && match[1]) {
+    if (match?.[1]) {
       const amountStr = match[1].replace(/,/g, "");
       const amount = parseFloat(amountStr);
-      if (!isNaN(amount) && amount > 0) {
+      if (!isNaN(amount) && amount > 0 && amount < 10_000_000) {
         return amount;
       }
     }
   }
-
   return undefined;
 }
 
 /**
- * Extract transaction reference from OCR text
+ * Extract reference number — explicit label only (no bare alphanumeric fallback)
+ * to avoid false positives from account numbers, merchant codes, etc.
  */
 function extractReference(text: string): string | undefined {
   const patterns = [
-    /เลขที่อ้างอิง\s*[:：]\s*([A-Z0-9]+)/i,
-    /หมายเลขอ้างอิง\s*[:：]\s*([A-Z0-9]+)/i,
-    /เลขที่รายการ\s*[:：]\s*([A-Z0-9]+)/i,
-    /รหัสอ้างอิง\s*[:：]\s*([A-Z0-9]+)/i,
-    /reference\s*[:：]\s*([A-Z0-9]+)/i,
-    /ref\s*[:：]\s*([A-Z0-9]+)/i,
-    /transaction\s*ref\s*[:：]\s*([A-Z0-9]+)/i,
-    /([A-Z0-9]{10,20})/,
+    /เลขที่อ้างอิง\s*[:：]\s*([A-Z0-9]{8,20})/i,
+    /หมายเลขอ้างอิง\s*[:：]\s*([A-Z0-9]{8,20})/i,
+    /เลขที่รายการ\s*[:：]\s*([A-Z0-9]{8,20})/i,
+    /รหัสอ้างอิง\s*[:：]\s*([A-Z0-9]{8,20})/i,
+    /เลขอ้างอิง\s*[:：]\s*([A-Z0-9]{8,20})/i,
+    /transaction\s*(?:ref|id|no|number)\s*[:：]\s*([A-Z0-9]{8,20})/i,
+    /reference\s*(?:no|number|#)?\s*[:：]\s*([A-Z0-9]{8,20})/i,
+    /ref\s*(?:no|#)?\s*[:：]\s*([A-Z0-9]{8,20})/i,
+    /txn\s*(?:id|ref)?\s*[:：]\s*([A-Z0-9]{8,20})/i,
   ];
 
   for (const pattern of patterns) {
     const match = text.match(pattern);
-    if (match && match[1]) {
-      return match[1].trim();
+    if (match?.[1]) {
+      const ref = match[1].trim();
+      // Must be 8-20 chars and contain at least one digit
+      if (ref.length >= 8 && ref.length <= 20 && /\d/.test(ref)) {
+        return ref;
+      }
     }
   }
-
   return undefined;
 }
 
 /**
- * Extract transaction date from OCR text
- * Supports Thai date format with Buddhist year
+ * Extract transaction date (and optionally time) from OCR text.
+ * Supports:
+ * - DD/MM/YYYY (Buddhist or Gregorian)
+ * - DD/MM/YY
+ * - DD MonthNameThai YYYY
+ * - DD MonthNameEng YYYY
+ * - YYYY-MM-DD (ISO)
+ * - With optional HH:MM or HH:MM:SS time component
  */
-function extractTransactionDate(text: string): Date | undefined {
-  const patterns = [
-    /วันที่\s*[:：]\s*(\d{1,2})\s*\/\s*(\d{1,2})\s*\/\s*(\d{2,4})/i,
-    /date\s*[:：]\s*(\d{1,2})\s*\/\s*(\d{1,2})\s*\/\s*(\d{2,4})/i,
-    /(\d{1,2})\s*\/\s*(\d{1,2})\s*\/\s*(\d{4})/,  // Prioritize 4-digit year
-    /(\d{1,2})\s*\/\s*(\d{1,2})\s*\/\s*(\d{2})/,   // Then 2-digit year
-  ];
+function extractTransactionDate(text: string): {
+  date?: Date;
+  dateTime?: Date;
+} {
+  // Helper: convert Buddhist year to Gregorian
+  function toGregorian(year: number): number {
+    if (year > 2500) return year - 543;
+    if (year < 100) return year < 50 ? 2000 + year : 1900 + year;
+    return year;
+  }
 
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      let day = parseInt(match[1]);
-      let month = parseInt(match[2]);
-      let year = parseInt(match[3]);
+  // Helper: build and validate date
+  function buildDate(
+    day: number,
+    month: number,
+    year: number,
+    hour?: number,
+    minute?: number,
+    second?: number
+  ): { date: Date; dateTime?: Date } | undefined {
+    const y = toGregorian(year);
+    if (month < 1 || month > 12 || day < 1 || day > 31) return undefined;
+    try {
+      const d = new Date(y, month - 1, day);
+      if (d.getMonth() !== month - 1) return undefined; // overflow (e.g. Feb 31)
+      // Reasonable range: not in the future, not more than 90 days old
+      const now = new Date();
+      const ninetyDaysAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+      if (d > now || d < ninetyDaysAgo) return undefined;
 
-      // Convert Buddhist year to Gregorian if needed (Thai year is 543 years ahead)
-      if (year > 2500) {
-        year -= 543;
-      } else if (year < 100) {
-        // Handle 2-digit years
-        year += year < 50 ? 2000 : 1900;
+      if (hour !== undefined && minute !== undefined) {
+        const dt = new Date(y, month - 1, day, hour, minute, second ?? 0);
+        return { date: d, dateTime: dt };
       }
+      return { date: d };
+    } catch {
+      return undefined;
+    }
+  }
 
-      // Validate date
-      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-        try {
-          const date = new Date(year, month - 1, day);
-          // Check if date is valid and reasonable (within last 90 days for flexibility)
-          const now = new Date();
-          const ninetyDaysAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
-          if (date <= now && date >= ninetyDaysAgo) {
-            return date;
-          }
-        } catch {
-          // Invalid date
-        }
+  // Optional time suffix pattern
+  const timeSuffix = /(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/;
+
+  // Pattern 1: DD/MM/YYYY or DD-MM-YYYY with optional time
+  {
+    const re = new RegExp(
+      /(?:วันที่|date)\s*[:：]?\s*(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/.source +
+        timeSuffix.source,
+      "i"
+    );
+    const m = text.match(re);
+    if (m) {
+      const r = buildDate(
+        parseInt(m[1]),
+        parseInt(m[2]),
+        parseInt(m[3]),
+        m[4] !== undefined ? parseInt(m[4]) : undefined,
+        m[5] !== undefined ? parseInt(m[5]) : undefined,
+        m[6] !== undefined ? parseInt(m[6]) : undefined
+      );
+      if (r) return r;
+    }
+  }
+
+  // Pattern 2: bare DD/MM/YYYY (no label) with optional time
+  {
+    const re = new RegExp(
+      /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/.source + timeSuffix.source
+    );
+    const m = text.match(re);
+    if (m) {
+      const r = buildDate(
+        parseInt(m[1]),
+        parseInt(m[2]),
+        parseInt(m[3]),
+        m[4] !== undefined ? parseInt(m[4]) : undefined,
+        m[5] !== undefined ? parseInt(m[5]) : undefined,
+        m[6] !== undefined ? parseInt(m[6]) : undefined
+      );
+      if (r) return r;
+    }
+  }
+
+  // Pattern 3: DD MonthNameThai YYYY (e.g. "5 เมษายน 2569")
+  {
+    const monthNames = Object.keys(THAI_MONTHS).join("|");
+    const re = new RegExp(
+      `(\\d{1,2})\\s+(${monthNames})\\s+(\\d{2,4})` + timeSuffix.source,
+      "i"
+    );
+    const m = text.match(re);
+    if (m) {
+      const month = THAI_MONTHS[m[2]];
+      if (month) {
+        const r = buildDate(
+          parseInt(m[1]),
+          month,
+          parseInt(m[3]),
+          m[4] !== undefined ? parseInt(m[4]) : undefined,
+          m[5] !== undefined ? parseInt(m[5]) : undefined,
+          m[6] !== undefined ? parseInt(m[6]) : undefined
+        );
+        if (r) return r;
       }
     }
   }
 
-  return undefined;
-}
-
-/**
- * Detect which bank the slip is from
- */
-function detectBank(text: string): string | undefined {
-  const bankPatterns: Record<string, string> = {
-    'ธนาคารกรุงเทพ': 'KBANK',
-    'ธนาคารกสิกรไทย': 'KASIKORN',
-    'ธนาคารไทยพาณิชย์': 'SCB',
-    'ธนาคารกรุงไทย': 'BBL',
-    'PromptPay': 'PROMPTPAY',
-  };
-  
-  for (const [bankName, bankCode] of Object.entries(bankPatterns)) {
-    if (text.includes(bankName)) {
-      return bankCode;
+  // Pattern 4: ISO YYYY-MM-DD
+  {
+    const re = new RegExp(
+      /(\d{4})-(\d{2})-(\d{2})/.source + timeSuffix.source
+    );
+    const m = text.match(re);
+    if (m) {
+      const r = buildDate(
+        parseInt(m[3]),
+        parseInt(m[2]),
+        parseInt(m[1]),
+        m[4] !== undefined ? parseInt(m[4]) : undefined,
+        m[5] !== undefined ? parseInt(m[5]) : undefined,
+        m[6] !== undefined ? parseInt(m[6]) : undefined
+      );
+      if (r) return r;
     }
   }
-  
-  return undefined;
+
+  return {};
 }
+
+function detectBank(text: string): { code?: string; name?: string } {
+  const lower = text.toLowerCase();
+  for (const bank of BANK_PATTERNS) {
+    if (bank.patterns.some((p) => lower.includes(p.toLowerCase()))) {
+      return { code: bank.code, name: bank.name };
+    }
+  }
+  return {};
+}
+
+// ─── Main extraction function ─────────────────────────────────────────────────
 
 export function extractSlipData(ocrText: string): ExtractedSlipData {
   if (!ocrText || ocrText.trim().length === 0) {
     return { confidence: 0 };
   }
 
-  const shopName = extractShopName(ocrText);
-  const merchantCode = extractMerchantCode(ocrText);
-  const merchantTransactionCode = extractMerchantTransactionCode(ocrText);
-  const amount = extractAmount(ocrText);
-  const transactionDate = extractTransactionDate(ocrText);
-  const reference = extractReference(ocrText);
-  const detectedBank = detectBank(ocrText);
+  // Preprocess: normalise Thai numerals + whitespace
+  const text = preprocessOcrText(ocrText);
 
-  // Calculate confidence based on extracted fields
+  const shopName = extractShopName(text);
+  const receiverName = extractReceiverName(text);
+  const maskedAccount = extractMaskedAccount(text);
+  const merchantCode = extractMerchantCode(text);
+  const merchantTransactionCode = extractMerchantTransactionCode(text);
+  const amount = extractAmount(text);
+  const { date: transactionDate, dateTime: transactionDateTime } =
+    extractTransactionDate(text);
+  const reference = extractReference(text);
+  const { code: detectedBank, name: detectedBankName } = detectBank(text);
+
+  // ─── Confidence scoring ───────────────────────────────────────────────────
+  // Core payment fields (required for auto-approval) — weighted heavily
   let confidence = 0;
-  if (shopName) confidence += 15;
-  if (merchantCode) confidence += 20;
-  if (merchantTransactionCode) confidence += 15;
-  if (amount) confidence += 20;
-  if (transactionDate) confidence += 15;
-  if (reference) confidence += 15;
+  if (amount) confidence += 25;
+  if (transactionDate) confidence += 20;
+  if (reference) confidence += 20;
+  // Bank detection adds moderate confidence
+  if (detectedBank) confidence += 10;
+  // Merchant / shop fields are bonus
+  if (shopName) confidence += 10;
+  if (merchantCode) confidence += 10;
+  if (merchantTransactionCode) confidence += 5;
+  // Extra bonus for full datetime
+  if (transactionDateTime) confidence += 5;
+  // Receiver name or masked account adds a little
+  if (receiverName || maskedAccount) confidence += 5;
+
+  // Cap at 100
+  confidence = Math.min(confidence, 100);
 
   return {
-    shopName,
-    merchantCode,
-    merchantTransactionCode,
     amount,
     transactionDate,
+    transactionDateTime,
     reference,
     detectedBank,
+    detectedBankName,
+    shopName,
+    receiverName,
+    maskedAccount,
+    merchantCode,
+    merchantTransactionCode,
+    confidence,
     rawText: ocrText,
-    confidence: Math.min(confidence, 100),
   };
 }
 
+// ─── Verification function ────────────────────────────────────────────────────
+
 /**
- * Verify extracted slip data against specific order/payment record
- * Ensures slip is correctly linked to the exact pending order/payment
- * 
- * Verification strategy:
- * - HARD FAIL: Missing critical fields (amount, date, reference) or mismatches
- * - MANUAL REVIEW: Missing optional merchant fields, low confidence, or weak signals
- * - AUTO-APPROVE: All critical checks pass + confidence >= 85
+ * Verify extracted slip data against the specific order/payment record.
+ *
+ * Decision model:
+ * HARD FAIL → MISSING_AMOUNT | AMOUNT_MISMATCH | MISSING_TRANSACTION_DATE |
+ *             TRANSACTION_OUTSIDE_TIME_WINDOW | MISSING_REFERENCE |
+ *             DUPLICATE_REFERENCE | DUPLICATE_FINGERPRINT |
+ *             MERCHANT_CODE_MISMATCH | MERCHANT_TRANSACTION_CODE_MISMATCH
+ *
+ * MANUAL REVIEW → LOW_CONFIDENCE | INSUFFICIENT_STRUCTURED_DATA |
+ *                 SHOP_NAME_MISMATCH (when shop name present but wrong)
+ *
+ * AUTO-APPROVE → all critical checks pass + confidence ≥ 85 + ≥ 3 structured fields
+ *
+ * Conservative principle: false approval is worse than manual review.
  */
 export function verifySlipData(
   extracted: ExtractedSlipData,
@@ -342,173 +590,179 @@ export function verifySlipData(
   existingReferences: Set<string>,
   existingFingerprints: Set<string> = new Set()
 ): VerificationResult {
+  const fingerprint = generateFingerprint(extracted);
+
   const result: VerificationResult = {
     isAutoApproved: false,
     status: "pending_review",
     extractedData: extracted,
-    fingerprint: generateFingerprint(extracted),
+    fingerprint,
     linkedOrderId: context.orderId,
     linkedPaymentId: context.paymentId,
   };
 
-  // ===== CRITICAL CHECKS (HARD FAIL) =====
-  // These are non-negotiable for any valid slip
+  // ===== CRITICAL CHECKS (HARD FAIL → pending_review) ======================
 
-  // Check 1: Amount verification (CRITICAL - must match exactly)
+  // 1. Amount must be present
   if (!extracted.amount) {
     result.reviewReason = "MISSING_AMOUNT";
     return result;
   }
 
-  if (Math.abs(extracted.amount - context.orderTotal) > 0.001) {
+  // 2. Amount must match order total exactly (within floating-point tolerance)
+  if (Math.abs(extracted.amount - context.orderTotal) > 0.01) {
     result.reviewReason = "AMOUNT_MISMATCH";
     return result;
   }
 
-  // Check 2: Transaction date verification (CRITICAL)
+  // 3. Transaction date must be present
   if (!extracted.transactionDate) {
     result.reviewReason = "MISSING_TRANSACTION_DATE";
     return result;
   }
 
-  // Verify transaction is within acceptable time window relative to payment submission
-  // Transaction should be before or shortly after payment submission (allow 5 min clock skew)
+  // 4. Transaction must be within acceptable time window
+  //    - Not more than 24 hours before payment submission
+  //    - Not more than 5 minutes after payment submission (clock skew)
   const paymentTime = context.paymentCreatedAt.getTime();
   const transactionTime = extracted.transactionDate.getTime();
   const timeDiffMs = paymentTime - transactionTime;
-  const maxAgeMs = 24 * 60 * 60 * 1000; // 24 hours before payment
-  const minAgeMs = -5 * 60 * 1000; // 5 minutes after payment (clock skew tolerance)
+  const maxAgeMs = 24 * 60 * 60 * 1000; // 24 h
+  const clockSkewMs = 5 * 60 * 1000; // 5 min
 
-  if (timeDiffMs > maxAgeMs || timeDiffMs < minAgeMs) {
+  if (timeDiffMs > maxAgeMs || timeDiffMs < -clockSkewMs) {
     result.reviewReason = "TRANSACTION_OUTSIDE_TIME_WINDOW";
     return result;
   }
 
-  // Check 3: Reference verification (CRITICAL - for duplicate detection)
+  // 5. Reference must be present (explicit label only — no bare alphanumeric fallback)
   if (!extracted.reference) {
     result.reviewReason = "MISSING_REFERENCE";
     return result;
   }
 
+  // 6. Reference duplicate check (approved + pending_review)
   if (existingReferences.has(extracted.reference)) {
     result.reviewReason = "DUPLICATE_REFERENCE";
     return result;
   }
 
-  // Check 4: Fingerprint-based duplicate detection (CRITICAL)
-  // Fingerprint includes reference + amount + merchant code + date
-  if (existingFingerprints.has(result.fingerprint)) {
+  // 7. Fingerprint duplicate check (catches OCR reference variations)
+  if (existingFingerprints.has(fingerprint)) {
     result.reviewReason = "DUPLICATE_FINGERPRINT";
     return result;
   }
 
-  // ===== OPTIONAL MERCHANT CHECKS (MANUAL REVIEW IF MISSING) =====
-  // These are helpful for verification but not absolute blockers
+  // 8. Merchant code — if present, must match exactly
+  if (
+    extracted.merchantCode &&
+    extracted.merchantCode !== MERCHANT_CONFIG.merchantCode
+  ) {
+    result.reviewReason = "MERCHANT_CODE_MISMATCH";
+    return result;
+  }
 
-  // Check 5: Shop name verification (OPTIONAL)
-  // If missing or mismatched, send to manual review but don't hard-fail
-  let shopNameStrength = 0;
+  // 9. Merchant transaction code — if present, must match exactly
+  if (
+    extracted.merchantTransactionCode &&
+    extracted.merchantTransactionCode !== MERCHANT_CONFIG.merchantTransactionCode
+  ) {
+    result.reviewReason = "MERCHANT_TRANSACTION_CODE_MISMATCH";
+    return result;
+  }
+
+  // ===== OPTIONAL MERCHANT CHECKS (MANUAL REVIEW IF MISMATCH) ==============
+
+  // 10. Shop name — if present and doesn't match any alias, flag for manual review
   if (extracted.shopName) {
     const normalizedShopName = normalizeText(extracted.shopName);
     const shopNameMatches = MERCHANT_CONFIG.shopNameAliases.some(
       (alias) => normalizeText(alias) === normalizedShopName
     );
-    if (shopNameMatches) {
-      shopNameStrength = 2; // Strong match
-    } else {
-      shopNameStrength = 1; // Weak match (shop name present but doesn't match)
-    }
-  }
-  // If shop name is completely missing, that's a signal but not a hard fail
-
-  // Check 6: Merchant code verification (OPTIONAL)
-  // If present, must match. If missing, that's okay - send to manual review
-  let merchantCodeStrength = 0;
-  if (extracted.merchantCode) {
-    if (extracted.merchantCode === MERCHANT_CONFIG.merchantCode) {
-      merchantCodeStrength = 2; // Strong match
-    } else {
-      // Merchant code present but doesn't match - this is a red flag
-      // Send to manual review instead of hard-failing
-      result.reviewReason = "MERCHANT_CODE_MISMATCH";
+    if (!shopNameMatches) {
+      result.reviewReason = "SHOP_NAME_MISMATCH";
       return result;
     }
   }
-  // If merchant code is missing, that's okay - we'll rely on other signals
+  // If shop name is completely absent, we rely on other signals — no hard fail
 
-  // Check 7: Merchant transaction code (OPTIONAL)
-  // If present, must match. If missing, that's completely fine
-  if (
-    extracted.merchantTransactionCode &&
-    extracted.merchantTransactionCode !== MERCHANT_CONFIG.merchantTransactionCode
-  ) {
-    // Present but doesn't match - send to manual review
-    result.reviewReason = "MERCHANT_TRANSACTION_CODE_MISMATCH";
-    return result;
-  }
-  // If missing, that's fine - many real Thai slips don't have this field
+  // ===== CONFIDENCE AND STRUCTURED DATA GATE ================================
 
-  // ===== CONFIDENCE AND FINAL DECISION =====
-
-  // Check 8: Confidence level - must be >= 85 for auto-approval
-  // If confidence is too low, send to manual review
-  if ((extracted.confidence || 0) < 85) {
+  // 11. Confidence must be ≥ 85 for auto-approval
+  if ((extracted.confidence ?? 0) < 85) {
     result.reviewReason = "LOW_CONFIDENCE";
-    result.status = "pending_review";
     return result;
   }
 
-  // Check 9: Structured data sufficiency
-  // Make sure we have enough structured data (not just raw OCR noise)
+  // 12. Structured data sufficiency — must have ≥ 3 of the core fields
+  //     (amount, date, reference are already verified above; this checks the
+  //      broader set to ensure we're not approving near-empty extractions)
   const structuredFieldCount = [
-    extracted.shopName,
-    extracted.merchantCode,
     extracted.amount,
     extracted.transactionDate,
     extracted.reference,
+    extracted.shopName,
+    extracted.merchantCode,
+    extracted.detectedBank,
+    extracted.receiverName,
   ].filter(Boolean).length;
 
   if (structuredFieldCount < 3) {
-    // Less than 3 structured fields = insufficient data
     result.reviewReason = "INSUFFICIENT_STRUCTURED_DATA";
-    result.status = "pending_review";
     return result;
   }
 
-  // All critical checks passed - auto-approve
+  // ===== ALL CHECKS PASSED → AUTO-APPROVE ==================================
   result.isAutoApproved = true;
   result.status = "approved";
   return result;
 }
 
+// ─── Fingerprint generation ───────────────────────────────────────────────────
+
 /**
- * Generate fingerprint for duplicate detection
- * Uses reference + amount + merchant code + date
+ * Generate a deterministic fingerprint for duplicate detection.
+ * Includes: reference + amount (2 dp) + merchantCode + date (YYYY-MM-DD)
+ * This catches re-submissions even when OCR produces slightly different reference text.
  */
 export function generateFingerprint(extracted: ExtractedSlipData): string {
   const fingerprintData = [
-    extracted.reference || "",
-    extracted.amount?.toString() || "",
-    extracted.merchantCode || "",
-    extracted.transactionDate?.toISOString().split("T")[0] || "",
+    extracted.reference ?? "",
+    extracted.amount !== undefined ? extracted.amount.toFixed(2) : "",
+    extracted.merchantCode ?? "",
+    extracted.transactionDate
+      ? extracted.transactionDate.toISOString().split("T")[0]
+      : "",
   ].join("|");
 
   return crypto.createHash("sha256").update(fingerprintData).digest("hex");
 }
 
+// ─── LLM-based slip image parsing ────────────────────────────────────────────
+
 /**
- * Parse OCR text from image URL using Manus LLM
- * This would be called from the backend when slip is uploaded
+ * Parse OCR text from a slip image URL using the Manus LLM (vision model).
+ * Returns raw extracted text for downstream parsing by extractSlipData().
  */
 export async function parseSlipImage(imageUrl: string): Promise<string> {
   try {
-    // invokeLLM is already imported at the top of the file
-    
     const response = await invokeLLM({
       messages: [
         {
           role: "system",
-          content: "You are an expert at extracting text from Thai bank slip images. Extract ALL visible text from the slip image, preserving the structure and labels. Focus on extracting: shop name (ชื่อร้านค้า), merchant code (รหัสร้านค้า), merchant transaction code (รหัสธุรกรรม), amount (จำนวนเงิน), transaction date (วันที่), and bank reference number (เลขที่อ้างอิง). Return the extracted text exactly as it appears on the slip.",
+          content: `You are an expert at extracting text from Thai bank payment slip images.
+Extract ALL visible text from the slip image, preserving the original structure and labels.
+Focus especially on:
+- ชื่อร้านค้า / shop name / merchant name / ชื่อผู้รับ / receiver name
+- รหัสร้านค้า / merchant code
+- รหัสธุรกรรม / transaction code
+- จำนวนเงิน / amount / ยอดเงิน / ยอดโอน
+- วันที่ / date (include time if visible)
+- เลขที่อ้างอิง / หมายเลขอ้างอิง / reference number / transaction ID
+- ธนาคาร / bank name
+- เลขที่บัญชี / account number (masked)
+Return the text exactly as it appears on the slip, preserving Thai characters, numbers, and formatting.
+Do NOT translate or interpret — just extract the raw text.`,
         },
         {
           role: "user",
@@ -535,7 +789,7 @@ export async function parseSlipImage(imageUrl: string): Promise<string> {
     }
     return "";
   } catch (error) {
-    console.error("Error parsing slip image:", error);
+    console.error("[OCR] Error parsing slip image:", error);
     return "";
   }
 }

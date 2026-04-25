@@ -12,8 +12,8 @@ import {
 import { ApprovalService } from "./services/approvalService";
 
 /**
- * Process OCR slip verification and auto-approval for a payment
- * This is called when a slip is uploaded for a payment
+ * Process OCR slip verification and auto-approval for a payment.
+ * Called when a slip image has been OCR-parsed and the text is ready.
  */
 export async function processSlipVerification(
   paymentId: number,
@@ -25,15 +25,12 @@ export async function processSlipVerification(
   linkedOrderId?: number;
   linkedPaymentId?: number;
 }> {
-  // Get the payment and order details
   const db = await getDb();
   if (!db) {
-    return {
-      isAutoApproved: false,
-      reviewReason: "DATABASE_CONNECTION_FAILED",
-    };
+    return { isAutoApproved: false, reviewReason: "DATABASE_CONNECTION_FAILED" };
   }
 
+  // ── Load payment ──────────────────────────────────────────────────────────
   const paymentResult = await db
     .select()
     .from(payments)
@@ -41,15 +38,11 @@ export async function processSlipVerification(
     .limit(1);
 
   if (!paymentResult.length) {
-    return {
-      isAutoApproved: false,
-      reviewReason: "PAYMENT_NOT_FOUND",
-    };
+    return { isAutoApproved: false, reviewReason: "PAYMENT_NOT_FOUND" };
   }
-
   const payment = paymentResult[0];
 
-  // Get the order details
+  // ── Load order ────────────────────────────────────────────────────────────
   const orderResult = await db
     .select()
     .from(orders)
@@ -57,71 +50,48 @@ export async function processSlipVerification(
     .limit(1);
 
   if (!orderResult.length) {
-    return {
-      isAutoApproved: false,
-      reviewReason: "ORDER_NOT_FOUND",
-    };
+    return { isAutoApproved: false, reviewReason: "ORDER_NOT_FOUND" };
   }
-
   const order = orderResult[0];
 
-  if (!order) {
-    return {
-      isAutoApproved: false,
-      reviewReason: "ORDER_NOT_FOUND",
-    };
-  }
-
-  // Check if payment is still pending
+  // ── Guard: payment must still be pending ──────────────────────────────────
   if (payment.status !== "pending") {
-    return {
-      isAutoApproved: false,
-      reviewReason: "PAYMENT_ALREADY_PROCESSED",
-    };
+    return { isAutoApproved: false, reviewReason: "PAYMENT_ALREADY_PROCESSED" };
   }
 
-  // Extract slip data using OCR
+  // ── Extract slip data ─────────────────────────────────────────────────────
   const extractedData = extractSlipData(slipOcrText);
 
-  // Get all existing references and fingerprints for duplicate detection
-  // Include both approved AND pending_review to prevent race-condition duplicates
+  // ── Build duplicate sets (approved + pending_review) ──────────────────────
+  // Include pending_review to block race-condition re-submissions
   const existingPayments = await db
     .select()
     .from(payments)
-    .where(or(
-      eq(payments.status, "approved"),
-      eq(payments.status, "pending_review")
-    ));
-
-  const extractedDataArray = existingPayments
-    .map(p => {
-      try {
-        return p.extractedData ? JSON.parse(p.extractedData) : null;
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
+    .where(or(eq(payments.status, "approved"), eq(payments.status, "pending_review")));
 
   const existingReferences = new Set<string>();
   const existingFingerprints = new Set<string>();
 
-  for (const data of extractedDataArray) {
-    if (data.reference) {
-      existingReferences.add(data.reference);
+  for (const p of existingPayments) {
+    // Collect references from stored extractedData JSON
+    try {
+      if (p.extractedData) {
+        const d = JSON.parse(p.extractedData);
+        if (d?.reference) existingReferences.add(d.reference);
+      }
+    } catch {
+      // ignore malformed JSON
     }
+    // Collect fingerprints from dedicated column
+    if (p.fingerprint) existingFingerprints.add(p.fingerprint);
   }
 
-  for (const payment of existingPayments) {
-    if (payment.fingerprint) {
-      existingFingerprints.add(payment.fingerprint);
-    }
-  }
+  console.log(
+    `[OCR-DUPLICATE-CHECK] paymentId=${paymentId} ` +
+    `existingRefs=${existingReferences.size} existingFPs=${existingFingerprints.size}`
+  );
 
-  // Log duplicate detection setup
-  console.log(`[OCR-DUPLICATE-CHECK] Found ${existingReferences.size} existing references and ${existingFingerprints.size} existing fingerprints`);
-
-  // Create order/payment context for verification
+  // ── Build context ─────────────────────────────────────────────────────────
   const context: OrderPaymentContext = {
     orderId: order.id,
     paymentId: payment.id,
@@ -130,8 +100,7 @@ export async function processSlipVerification(
     paymentCreatedAt: payment.createdAt,
   };
 
-  // Verify the slip data against the order/payment
-  // Pass both reference and fingerprint sets for duplicate detection
+  // ── Verify ────────────────────────────────────────────────────────────────
   const verificationResult = verifySlipData(
     extractedData,
     context,
@@ -139,41 +108,43 @@ export async function processSlipVerification(
     existingFingerprints
   );
 
-  // Generate fingerprint for duplicate detection
+  // Generate fingerprint (verifySlipData also computes it, but we keep it here
+  // as the canonical value written to the DB)
   const fingerprint = generateFingerprint(extractedData);
 
-  // Determine if we should auto-approve
-  // Note: verifySlipData already validates confidence >= 85,
-  // but we check again here as defense-in-depth for auto-approval safety
+  // Defense-in-depth: double-check confidence even if verifySlipData passed
   const shouldAutoApprove =
     verificationResult.isAutoApproved &&
     (extractedData.confidence ?? 0) >= 85;
 
-  // Log auto-approval decisions for audit trail (safe fields only)
+  // ── Audit log ─────────────────────────────────────────────────────────────
   if (shouldAutoApprove) {
     const maskedRef = extractedData.reference
-      ? extractedData.reference.substring(0, 4) + "***" + extractedData.reference.substring(extractedData.reference.length - 2)
+      ? extractedData.reference.substring(0, 4) +
+        "***" +
+        extractedData.reference.slice(-2)
       : "N/A";
-    console.log(`[OCR-AUTO-APPROVE] Payment ${paymentId}:`, {
-      paymentId,
+    console.log(`[OCR-AUTO-APPROVE] paymentId=${paymentId}`, {
       orderId: order.id,
       amount: extractedData.amount,
       reference: maskedRef,
       confidence: extractedData.confidence,
       detectedBank: extractedData.detectedBank,
+      detectedBankName: extractedData.detectedBankName,
       timestamp: new Date().toISOString(),
     });
+  } else {
+    console.log(
+      `[OCR-MANUAL-REVIEW] paymentId=${paymentId} reason=${verificationResult.reviewReason} ` +
+      `confidence=${extractedData.confidence}`
+    );
   }
 
-  // Update payment with verification results
+  // ── Persist ───────────────────────────────────────────────────────────────
   if (shouldAutoApprove) {
-    // Use ApprovalService for OCR auto-approval with metadata
-    const now = new Date();
     await ApprovalService.approvePaymentWithSource(paymentId, "auto", {
-      autoApprovedAt: now,
+      autoApprovedAt: new Date(),
     });
-    
-    // Also update OCR-specific fields
     await db
       .update(payments)
       .set({
@@ -186,15 +157,12 @@ export async function processSlipVerification(
       })
       .where(eq(payments.id, paymentId));
   } else {
-    // Send to pending review
     await ApprovalService.sendToReview(
       paymentId,
       verificationResult.reviewReason || "MANUAL_REVIEW_REQUIRED",
       extractedData,
       fingerprint
     );
-    
-    // Update linked order/payment info
     await db
       .update(payments)
       .set({
@@ -214,8 +182,10 @@ export async function processSlipVerification(
   };
 }
 
+// ─── Admin helpers ────────────────────────────────────────────────────────────
+
 /**
- * Get all pending_review payments with extracted data for admin review
+ * Get all pending_review payments with parsed extractedData (basic).
  */
 export async function getPendingReviewPayments() {
   const db = await getDb();
@@ -233,34 +203,44 @@ export async function getPendingReviewPayments() {
 }
 
 /**
- * Get review reason description for admin display
+ * Human-readable descriptions for every review reason code.
+ * Used in admin UI and notification messages.
  */
 export function getReviewReasonDescription(reason?: string): string {
   const descriptions: Record<string, string> = {
-    MISSING_SHOP_NAME: "Shop name not found in slip",
-    MISSING_MERCHANT_CODE: "Merchant code not found in slip",
+    // Critical extraction failures
     MISSING_AMOUNT: "Payment amount not found in slip",
+    MISSING_TRANSACTION_DATE: "Transaction date not found in slip",
     MISSING_REFERENCE: "Transaction reference not found in slip",
-    SHOP_NAME_MISMATCH: "Shop name does not match Ipe Novel",
-    MERCHANT_CODE_MISMATCH: "Merchant code does not match KB000002283068",
-    MERCHANT_TRANSACTION_CODE_MISMATCH:
-      "Merchant transaction code does not match KPS004KB000002283068",
+    // Mismatch failures
     AMOUNT_MISMATCH: "Slip amount does not match order total",
-    DUPLICATE_REFERENCE: "Transaction reference already used",
-    DUPLICATE_FINGERPRINT: "Identical slip already submitted",
-    LOW_CONFIDENCE: "OCR confidence too low for auto-approval",
-    TRANSACTION_OUTSIDE_TIME_WINDOW:
-      "Transaction date outside acceptable time window",
+    TRANSACTION_OUTSIDE_TIME_WINDOW: "Transaction date is outside the acceptable 24-hour window",
+    MERCHANT_CODE_MISMATCH: "Merchant code in slip does not match KB000002283068",
+    MERCHANT_TRANSACTION_CODE_MISMATCH: "Merchant transaction code does not match KPS004KB000002283068",
+    SHOP_NAME_MISMATCH: "Shop name in slip does not match Ipe Novel",
+    // Duplicate protection
+    DUPLICATE_REFERENCE: "Transaction reference has already been used",
+    DUPLICATE_FINGERPRINT: "An identical slip has already been submitted",
+    // Quality gates
+    LOW_CONFIDENCE: "OCR confidence is too low for automatic approval (< 85)",
+    INSUFFICIENT_STRUCTURED_DATA: "Slip does not contain enough structured fields for auto-approval",
+    // Legacy / system codes
+    MISSING_SHOP_NAME: "Shop name not found in slip (legacy)",
+    MISSING_MERCHANT_CODE: "Merchant code not found in slip (legacy)",
+    // Infrastructure
     PAYMENT_NOT_FOUND: "Payment record not found",
     ORDER_NOT_FOUND: "Order record not found",
-    PAYMENT_ALREADY_PROCESSED: "Payment already approved or rejected",
+    PAYMENT_ALREADY_PROCESSED: "Payment has already been approved or rejected",
+    DATABASE_CONNECTION_FAILED: "Database connection failed during OCR processing",
+    MANUAL_REVIEW_REQUIRED: "Sent to manual review",
   };
 
-  return descriptions[reason || ""] || "Unknown reason";
+  return descriptions[reason ?? ""] ?? `Unknown reason: ${reason ?? "none"}`;
 }
 
 /**
- * Get enhanced pending review payments with all fields needed for admin review
+ * Enhanced admin review payload — includes all OCR fields and human-readable
+ * reason descriptions so staff can understand why a slip was flagged.
  */
 export async function getPendingReviewPaymentsForAdmin() {
   const db = await getDb();
@@ -272,30 +252,50 @@ export async function getPendingReviewPaymentsForAdmin() {
     .where(eq(payments.status, "pending_review"));
 
   return pendingPayments.map((p: any) => {
-    const extracted = p.extractedData ? JSON.parse(p.extractedData) : null;
-    
+    let extracted: ExtractedSlipData | null = null;
+    try {
+      extracted = p.extractedData ? JSON.parse(p.extractedData) : null;
+    } catch {
+      extracted = null;
+    }
+
     return {
+      // Core payment record
       id: p.id,
       orderId: p.orderId,
       status: p.status,
+      approvalSource: p.approvalSource,
+
+      // Review reason (code + human description)
       reviewReason: p.reviewReason,
       reviewReasonDescription: getReviewReasonDescription(p.reviewReason),
-      
-      // Extracted data for admin review
+
+      // Extracted OCR fields for admin inspection
       extractedBank: extracted?.detectedBank,
+      extractedBankName: extracted?.detectedBankName,
       extractedAmount: extracted?.amount,
       extractedReference: extracted?.reference,
       extractedDate: extracted?.transactionDate,
+      extractedDateTime: extracted?.transactionDateTime,
       extractedShopName: extracted?.shopName,
+      extractedReceiverName: extracted?.receiverName,
+      extractedMaskedAccount: extracted?.maskedAccount,
       extractedMerchantCode: extracted?.merchantCode,
+      extractedMerchantTransactionCode: extracted?.merchantTransactionCode,
       extractedConfidence: extracted?.confidence,
-      
-      // Fingerprint and duplicate status
+
+      // Duplicate detection
       fingerprint: p.fingerprint,
       linkedOrderId: p.linkedOrderId,
       linkedPaymentId: p.linkedPaymentId,
-      
-      // Metadata
+
+      // Approval metadata
+      approvedBy: p.approvedBy,
+      approvedAt: p.approvedAt,
+      autoApprovedAt: p.autoApprovedAt,
+      reviewedAt: p.reviewedAt,
+
+      // Slip image and timestamps
       slipImageUrl: p.slipImageUrl,
       slipSubmittedAt: p.slipSubmittedAt,
       createdAt: p.createdAt,

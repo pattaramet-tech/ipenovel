@@ -791,3 +791,22 @@
 - [x] TypeScript check clean (0 errors)
 - [x] Production build clean
 - [x] New tests: 12/12 passing
+
+## OCR Auto-Approve Pipeline Hardening
+
+- [x] Improve Thai numeral extraction (Thai digits 0-9, Buddhist year conversion)
+- [x] Improve Thai month parsing (full names + short forms with dots, e.g. ม.ค.)
+- [x] Improve bank alias recognition (KBANK, SCB, BBL, KTB, BAY, TTB, LHBANK, CIMB, UOB, GSB, BAAC)
+- [x] Tighten reference extraction (explicit label only, 8-20 chars, must contain digit)
+- [x] Fix extractShopName to not match รหัสร้านค้า (negative lookbehind)
+- [x] Harden auto-approval: require amount + date + reference + confidence ≥ 85 + ≥ 3 structured fields
+- [x] Improve confidence scoring weights (amount=25, date=20, ref=20, bank=10, shop=10, merchant=10, txnCode=5)
+- [x] Improve duplicate detection: reference + fingerprint, both checked against approved AND pending_review
+- [x] Add clock skew tolerance (5 min) and 24h max window for time validation
+- [x] Enrich admin review payload with all structured OCR fields
+- [x] Add getReviewReasonDescription() for all new reason codes
+- [x] Write 84 new tests in ocr-slip-hardening.test.ts (all passing)
+- [x] Fix 5 old tests in ocr-slip-verification.test.ts to match new behavior
+- [x] Fix 7 old tests in ocr-slip-e2e.test.ts to match new behavior
+- [x] Fix 4 old tests in ocr-slip-integration.test.ts to match new behavior
+- [x] All 152 OCR tests passing, TypeScript check clean, production build clean

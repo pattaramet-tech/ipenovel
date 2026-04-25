@@ -12,7 +12,7 @@ describe("OCR Slip Integration - Core Logic", () => {
         รหัสธุรกรรม: KPS004KB000002283068
         จำนวนเงิน: 250.00 บาท
         วันที่: 06/04/2569 10:30
-        เลขที่อ้างอิง: AUTO001
+        เลขที่อ้างอิง: AUTO00000001
       `;
 
       const extracted = extractSlipData(validSlip);
@@ -69,7 +69,7 @@ describe("OCR Slip Integration - Core Logic", () => {
         ชื่อร้านค้า: Ipe Novel
         รหัสร้านค้า: KB000002283068
         รหัสธุรกรรม: KPS004KB000002283068
-        จำนวนเงิน: 249.99 บาท
+        จำนวนเงิน: 249.98 บาท
         วันที่: 06/04/2569 10:00
         เลขที่อ้างอิง: MISMATCH001
       `;
@@ -127,7 +127,7 @@ describe("OCR Slip Integration - Core Logic", () => {
         รหัสธุรกรรม: KPS004KB000002283068
         จำนวนเงิน: 250.00 บาท
         วันที่: 06/04/2569 10:00
-        เลขที่อ้างอิง: SHOP001
+        เลขที่อ้างอิง: SHOP00001001
       `;
 
       const extracted = extractSlipData(slip);
@@ -155,7 +155,7 @@ describe("OCR Slip Integration - Core Logic", () => {
         รหัสธุรกรรม: KPS004KB000002283068
         จำนวนเงิน: 250.00 บาท
         วันที่: 06/04/2569 10:00
-        เลขที่อ้างอิง: DUP001
+        เลขที่อ้างอิง: DUP000000001
       `;
 
       const extracted = extractSlipData(slip);
@@ -167,7 +167,7 @@ describe("OCR Slip Integration - Core Logic", () => {
         orderCreatedAt: paymentTime,
         paymentCreatedAt: paymentTime,
       };
-      const existingReferences = new Set<string>(["DUP001"]);
+      const existingReferences = new Set<string>(["DUP000000001"]);
 
       const result = verifySlipData(extracted, context, existingReferences);
 
