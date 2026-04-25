@@ -132,11 +132,19 @@ export default function AdminOrdersPage() {
     if (src === 'legacy') {
       return { label: 'Legacy', color: 'bg-slate-100 text-slate-600' };
     }
-    // null / undefined: no payment record yet (pending) or source unknown
+    // null / undefined: infer from available metadata
     if (!order.paymentStatus || order.paymentStatus === 'pending' || order.paymentStatus === 'unpaid') {
       return { label: '—', color: 'bg-slate-50 text-slate-400' };
     }
-    return { label: 'Unknown', color: 'bg-slate-100 text-slate-500' };
+    // Approved with no admin ID → wallet (legacy wallet orders before approvalSource column)
+    if ((order.status === 'approved' || order.paymentStatus === 'approved') && !order.approvedByAdminId) {
+      return { label: 'Wallet', color: 'bg-purple-100 text-purple-800' };
+    }
+    // Approved with admin ID but no source → manual transfer
+    if (order.approvedByAdminId) {
+      return { label: 'Transfer', color: 'bg-green-100 text-green-800' };
+    }
+    return { label: '—', color: 'bg-slate-50 text-slate-400' };
   };
 
   return (

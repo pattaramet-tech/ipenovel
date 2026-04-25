@@ -843,3 +843,9 @@
 - [x] Add finishedNovels to home.getSections router procedure
 - [x] Add Finished Novels section to Home.tsx with purple badge overlay and View All link
 - [x] Add 25 tests in finished-novels.test.ts (all passing)
+
+## Bug Fix: Method Column null-source Wallet Inference
+
+- [x] Fix getPaymentMethodBadge in AdminOrdersPage: null-source + approved + no adminId → "Wallet" (not "Unknown")
+- [x] Fix paymentMethodBadge in AdminOrderDetailPage: same inference logic with new parameters
+- [x] Fix isWalletPayment in AdminOrderDetailPage to also detect legacy wallet orders (null source, no adminId)

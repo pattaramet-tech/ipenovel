@@ -42,7 +42,13 @@ function orderStatusColor(status: string | undefined | null): string {
 }
 
 /** Map approvalSource to a human-readable label + badge color */
-function paymentMethodBadge(approvalSource: string | null | undefined, formattedApprovalSource?: string | null) {
+function paymentMethodBadge(
+  approvalSource: string | null | undefined,
+  formattedApprovalSource?: string | null,
+  approvedByAdminId?: number | null,
+  paymentStatus?: string | null,
+  orderStatus?: string | null,
+) {
   switch (approvalSource) {
     case "wallet":
       return { label: "Wallet", color: "bg-purple-100 text-purple-800" };
@@ -52,12 +58,21 @@ function paymentMethodBadge(approvalSource: string | null | undefined, formatted
       return { label: "Transfer (Manual)", color: "bg-green-100 text-green-800" };
     case "legacy":
       return { label: "Legacy", color: "bg-slate-100 text-slate-600" };
-    default:
-      // Use formatted string from backend if available
+    default: {
+      // null/undefined: infer from metadata
+      const isApproved = paymentStatus === "approved" || orderStatus === "approved";
+      if (isApproved && !approvedByAdminId) {
+        // Approved with no admin → legacy wallet order
+        return { label: "Wallet", color: "bg-purple-100 text-purple-800" };
+      }
+      if (approvedByAdminId) {
+        return { label: "Transfer (Manual)", color: "bg-green-100 text-green-800" };
+      }
       if (formattedApprovalSource && formattedApprovalSource !== "Unknown") {
         return { label: formattedApprovalSource, color: "bg-slate-100 text-slate-600" };
       }
-      return { label: "Unknown", color: "bg-slate-100 text-slate-500" };
+      return { label: "—", color: "bg-slate-50 text-slate-400" };
+    }
   }
 }
 
@@ -133,12 +148,22 @@ export default function AdminOrderDetailPage() {
     );
   }
 
-  const isWalletPayment = order.payment?.approvalSource === "wallet" ||
-    (order.approvalMetadata as any)?.approvalSource === "wallet";
+  const effectiveApprovalSource = order.payment?.approvalSource ||
+    (order.approvalMetadata as any)?.approvalSource;
+  const effectiveAdminId = order.payment?.approvedByAdminId ||
+    (order.approvalMetadata as any)?.approvedByAdminId;
+
+  // Infer wallet: explicit wallet source OR (approved + no admin ID = legacy wallet)
+  const isApproved = order.order?.status === "approved" || order.payment?.status === "approved";
+  const isWalletPayment = effectiveApprovalSource === "wallet" ||
+    (isApproved && !effectiveAdminId && !effectiveApprovalSource);
 
   const methodBadge = paymentMethodBadge(
-    order.payment?.approvalSource,
-    order.formattedApprovalSource
+    effectiveApprovalSource,
+    order.formattedApprovalSource,
+    effectiveAdminId,
+    order.payment?.status,
+    order.order?.status,
   );
 
   return (
