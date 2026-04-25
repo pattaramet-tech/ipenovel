@@ -266,6 +266,27 @@ export default function AdminDashboard() {
                         </p>
                       </div>
 
+                      {/* Approval metadata - show if available */}
+                      {(payment.approvalMetadata || payment.formattedApprovalSource) && (
+                        <div className="pt-2 border-t space-y-1 text-xs md:text-sm">
+                          {payment.formattedApprovalSource && (
+                            <p className="text-slate-700">
+                              <span className="font-semibold">Approval Source:</span> {payment.formattedApprovalSource}
+                            </p>
+                          )}
+                          {payment.approvalMetadata?.approvedByLabel && (
+                            <p className="text-slate-700">
+                              <span className="font-semibold">Approved By:</span> {payment.approvalMetadata.approvedByLabel}
+                            </p>
+                          )}
+                          {payment.approvalMetadata?.approvedAt && (
+                            <p className="text-slate-600">
+                              <span className="font-semibold">Approved At:</span> {new Date(payment.approvalMetadata.approvedAt).toLocaleString()}
+                            </p>
+                          )}
+                        </div>
+                      )}
+
                       {/* Payment Slip - compact preview */}
                       {payment.slipImageUrl && (
                         <div className="pt-2 border-t">
