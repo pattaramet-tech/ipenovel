@@ -290,8 +290,8 @@ export default function AdminOrdersPage() {
                           {order.paymentStatus || "pending"}
                         </Badge>
                       </td>
-                      <td className="p-3 text-sm">
-                        {order.approvedByName || order.approvalMetadata?.approvedByLabel || order.formattedApprovalSource || "—"}
+                      <td className="p-3 text-slate-600 text-xs">
+                        {order.approvedByName || "—"}
                       </td>
                       <td className="p-3 text-sm text-slate-600">
                         {new Date(order.createdAt).toLocaleString()}
