@@ -6,11 +6,15 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
-import { Search, Heart, ChevronDown } from "lucide-react";
+import { Search, Heart } from "lucide-react";
 import { useState, useEffect, useCallback, useMemo } from "react";
 
 const DEBOUNCE_DELAY = 500; // ms
 const PAGE_SIZE = 20;
+
+type StoryStatusFilter = "all" | "ongoing" | "finished";
+type ContentFilter = "all" | "free";
+type SortParam = "new" | "popular";
 
 export default function NovelsPage() {
   const [, navigate] = useLocation();
@@ -19,11 +23,12 @@ export default function NovelsPage() {
   const [currentPage, setCurrentPage] = useState(1);
 
   // Parse URL query parameters once and memoize to avoid re-parsing on every render
-  const { sortParam, filterParam } = useMemo(() => {
+  const { sortParam, filterParam, storyStatusParam } = useMemo(() => {
     const urlParams = new URLSearchParams(window.location.search);
     return {
-      sortParam: (urlParams.get("sort") as "new" | "popular" | null) || "new",
-      filterParam: (urlParams.get("filter") as "all" | "free" | null) || "all",
+      sortParam: (urlParams.get("sort") as SortParam | null) || "new",
+      filterParam: (urlParams.get("filter") as ContentFilter | null) || "all",
+      storyStatusParam: (urlParams.get("storyStatus") as StoryStatusFilter | null) || "all",
     };
   }, []);
 
@@ -42,11 +47,12 @@ export default function NovelsPage() {
     () => ({
       sort: sortParam,
       filter: filterParam,
+      storyStatus: storyStatusParam === "all" ? undefined : storyStatusParam,
       search: debouncedSearch || undefined,
       page: currentPage,
       pageSize: PAGE_SIZE,
     }),
-    [sortParam, filterParam, debouncedSearch, currentPage]
+    [sortParam, filterParam, storyStatusParam, debouncedSearch, currentPage]
   );
 
   // Fetch novels using the lightweight browse endpoint
@@ -58,14 +64,14 @@ export default function NovelsPage() {
 
   // Get display title based on current sort/filter
   const getPageTitle = () => {
-    if (filterParam === "free") {
-      return sortParam === "popular" ? "Popular Free Novels" : "Latest Free Novels";
-    }
+    if (storyStatusParam === "finished") return "Finished Novels";
+    if (storyStatusParam === "ongoing") return "Ongoing Novels";
+    if (filterParam === "free") return sortParam === "popular" ? "Popular Free Novels" : "Latest Free Novels";
     return sortParam === "popular" ? "Popular Novels" : "Latest Novels";
   };
 
   const handleSortChange = useCallback(
-    (newSort: "new" | "popular") => {
+    (newSort: SortParam) => {
       const params = new URLSearchParams(window.location.search);
       params.set("sort", newSort);
       navigate(`/novels?${params.toString()}`);
@@ -75,9 +81,23 @@ export default function NovelsPage() {
   );
 
   const handleFilterChange = useCallback(
-    (newFilter: "all" | "free") => {
+    (newFilter: ContentFilter) => {
       const params = new URLSearchParams(window.location.search);
       params.set("filter", newFilter);
+      navigate(`/novels?${params.toString()}`);
+      setCurrentPage(1);
+    },
+    [navigate]
+  );
+
+  const handleStoryStatusChange = useCallback(
+    (newStatus: StoryStatusFilter) => {
+      const params = new URLSearchParams(window.location.search);
+      if (newStatus === "all") {
+        params.delete("storyStatus");
+      } else {
+        params.set("storyStatus", newStatus);
+      }
       navigate(`/novels?${params.toString()}`);
       setCurrentPage(1);
     },
@@ -108,7 +128,8 @@ export default function NovelsPage() {
           </div>
 
           {/* Filter/Sort Controls */}
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-3">
+            {/* Sort */}
             <div className="flex gap-2">
               <Button
                 variant={sortParam === "new" ? "default" : "outline"}
@@ -126,6 +147,7 @@ export default function NovelsPage() {
               </Button>
             </div>
 
+            {/* Content filter */}
             <div className="flex gap-2">
               <Button
                 variant={filterParam === "all" ? "default" : "outline"}
@@ -140,6 +162,37 @@ export default function NovelsPage() {
                 onClick={() => handleFilterChange("free")}
               >
                 Free Only
+              </Button>
+            </div>
+
+            {/* Story status filter */}
+            <div className="flex gap-2">
+              <Button
+                variant={storyStatusParam === "all" ? "default" : "outline"}
+                size="sm"
+                onClick={() => handleStoryStatusChange("all")}
+              >
+                All Status
+              </Button>
+              <Button
+                variant={storyStatusParam === "ongoing" ? "default" : "outline"}
+                size="sm"
+                onClick={() => handleStoryStatusChange("ongoing")}
+                className={storyStatusParam === "ongoing" ? "" : "border-blue-200 text-blue-700 hover:bg-blue-50"}
+              >
+                Ongoing
+              </Button>
+              <Button
+                variant={storyStatusParam === "finished" ? "default" : "outline"}
+                size="sm"
+                onClick={() => handleStoryStatusChange("finished")}
+                className={
+                  storyStatusParam === "finished"
+                    ? "bg-purple-600 hover:bg-purple-700 text-white border-0"
+                    : "border-purple-200 text-purple-700 hover:bg-purple-50"
+                }
+              >
+                Finished
               </Button>
             </div>
           </div>
@@ -190,7 +243,14 @@ export default function NovelsPage() {
                   <CardContent className="pt-4">
                     <h3 className="font-semibold text-slate-900 line-clamp-2 mb-2">{novel.title}</h3>
                     <div className="flex items-center justify-between">
-                      <span className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded capitalize">
+                      {/* Story status badge — purple for Finished, blue for Ongoing */}
+                      <span
+                        className={`text-xs px-2 py-1 rounded capitalize font-medium ${
+                          novel.storyStatus === "finished"
+                            ? "bg-purple-100 text-purple-700"
+                            : "bg-blue-100 text-blue-700"
+                        }`}
+                      >
                         {novel.storyStatus === "finished" ? "Finished" : "Ongoing"}
                       </span>
                       {novel.freeEpisodeCount > 0 && (

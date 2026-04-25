@@ -1742,6 +1742,59 @@ export async function getFreeNovels(limit: number = 4): Promise<NovelWithCounts[
 }
 
 /**
+ * Get finished/completed novels sorted by createdAt DESC
+ * Only returns published novels with storyStatus = 'finished'
+ */
+export async function getFinishedNovels(limit: number = 4): Promise<NovelWithCounts[]> {
+  const db = await getDb();
+  if (!db) return [];
+
+  // Subquery for purchase counts
+  const purchaseCountsSubquery = db
+    .select({
+      novelId: purchases.novelId,
+      count: sql<number>`COUNT(DISTINCT ${purchases.userId})`.as("purchaseCount"),
+    })
+    .from(purchases)
+    .groupBy(purchases.novelId)
+    .as("purchaseCounts");
+
+  // Subquery for wishlist counts
+  const wishlistCountsSubquery = db
+    .select({
+      novelId: wishlists.novelId,
+      count: sql<number>`COUNT(DISTINCT ${wishlists.userId})`.as("wishlistCount"),
+    })
+    .from(wishlists)
+    .groupBy(wishlists.novelId)
+    .as("wishlistCounts");
+
+  const result = await db
+    .select({
+      ...getTableColumns(novels),
+      purchaseCount: sql<number>`COALESCE(${purchaseCountsSubquery.count}, 0)`,
+      wishlistCount: sql<number>`COALESCE(${wishlistCountsSubquery.count}, 0)`,
+      freeEpisodeCount: sql<number>`0`,
+    })
+    .from(novels)
+    .where(and(
+      eq(novels.publicationStatus, "published"),
+      eq(novels.storyStatus, "finished")
+    ))
+    .leftJoin(purchaseCountsSubquery, eq(novels.id, purchaseCountsSubquery.novelId))
+    .leftJoin(wishlistCountsSubquery, eq(novels.id, wishlistCountsSubquery.novelId))
+    .orderBy(desc(novels.createdAt))
+    .limit(limit);
+
+  return result.map((row: any) => ({
+    ...row,
+    purchaseCount: Number(row.purchaseCount) || 0,
+    wishlistCount: Number(row.wishlistCount) || 0,
+    freeEpisodeCount: 0,
+  }));
+}
+
+/**
  * Get catalog novels with flexible sorting and filtering
  * Supports sort=new|popular and filter=all|free
  */
@@ -1879,6 +1932,7 @@ export async function getLatestEpisodes(limit: number = 4) {
 export async function getBrowseCatalog(params: {
   sort?: "new" | "popular";
   filter?: "all" | "free";
+  storyStatus?: "ongoing" | "finished";
   search?: string;
   limit?: number;
   offset?: number;
@@ -1894,7 +1948,7 @@ export async function getBrowseCatalog(params: {
   const db = await getDb();
   if (!db) return [];
 
-  const { sort = "new", filter = "all", search, limit = 20, offset = 0 } = params;
+  const { sort = "new", filter = "all", storyStatus, search, limit = 20, offset = 0 } = params;
 
   // Lightweight subquery for free episode counts only
   const freeEpisodeCountsSubquery = db
@@ -1926,6 +1980,9 @@ export async function getBrowseCatalog(params: {
   ];
   if (filter === "free") {
     browseConditions.push(sql<boolean>`${freeEpisodeCountsSubquery.count} > 0`);
+  }
+  if (storyStatus === "ongoing" || storyStatus === "finished") {
+    browseConditions.push(eq(novels.storyStatus, storyStatus));
   }
   if (search && search.trim()) {
     const searchPattern = `%${search.trim()}%`;

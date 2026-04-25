@@ -45,11 +45,12 @@ export const appRouter = router({
   // ============ HOME PAGE ============
   home: router({
     getSections: publicProcedure.query(async () => {
-      const [popularNovels, newNovels, freeNovels, latestEpisodes] = await Promise.all([
+      const [popularNovels, newNovels, freeNovels, latestEpisodes, finishedNovels] = await Promise.all([
         db.getPopularNovels(4),
         db.getNewNovels(4),
         db.getFreeNovels(4),
         db.getLatestEpisodes(4),
+        db.getFinishedNovels(4),
       ]);
 
       return {
@@ -57,6 +58,7 @@ export const appRouter = router({
         newNovels,
         freeNovels,
         latestEpisodes,
+        finishedNovels,
       };
     }),
   }),
@@ -102,6 +104,7 @@ export const appRouter = router({
         z.object({
           sort: z.enum(["new", "popular"]).optional(),
           filter: z.enum(["all", "free"]).optional(),
+          storyStatus: z.enum(["ongoing", "finished"]).optional(),
           search: z.string().optional(),
           page: z.number().int().positive().optional(),
           pageSize: z.number().int().min(1).max(100).optional(),
@@ -115,6 +118,7 @@ export const appRouter = router({
         return db.getBrowseCatalog({
           sort: input.sort || "new",
           filter: input.filter || "all",
+          storyStatus: input.storyStatus,
           search: input.search,
           limit: pageSize,
           offset,

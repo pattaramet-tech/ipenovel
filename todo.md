@@ -830,3 +830,16 @@
 - [x] Fix approval metadata field consistency (reviewedByUserId vs reviewedByAdminId)
 - [x] Fix ApprovalService.getDisplayMetadata to use reviewedByUserId (correct DB field)
 - [x] Add 30 new tests in admin-order-approval.test.ts (all passing)
+
+## Finished Novels UX Improvements
+
+- [x] Change Finished badge color to purple in NovelsPage (bg-purple-100 text-purple-700)
+- [x] Change Finished badge color to purple in AdminNovelManagePage
+- [x] Add storyStatus badge (Ongoing/Finished) to NovelDetailPage
+- [x] Add storyStatus filter buttons (All / Ongoing / Finished) to NovelsPage browse UI
+- [x] Update novels.browse tRPC procedure to accept storyStatus param
+- [x] Update getBrowseCatalog in db.ts to filter by storyStatus
+- [x] Add getFinishedNovels function to db.ts (returns up to N published finished novels)
+- [x] Add finishedNovels to home.getSections router procedure
+- [x] Add Finished Novels section to Home.tsx with purple badge overlay and View All link
+- [x] Add 25 tests in finished-novels.test.ts (all passing)

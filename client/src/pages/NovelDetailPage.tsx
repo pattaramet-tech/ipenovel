@@ -251,6 +251,20 @@ export default function NovelDetailPage() {
         {/* Novel Details */}
         <div className="md:col-span-2">
           <h1 className="text-4xl font-bold mb-4">{novel?.novel?.title || "Untitled"}</h1>
+          {/* Story status badge */}
+          {novel?.novel?.storyStatus && (
+            <div className="mb-3">
+              <span
+                className={`inline-block text-sm px-3 py-1 rounded-full font-medium ${
+                  novel.novel.storyStatus === "finished"
+                    ? "bg-purple-100 text-purple-700"
+                    : "bg-blue-100 text-blue-700"
+                }`}
+              >
+                {novel.novel.storyStatus === "finished" ? "Finished" : "Ongoing"}
+              </span>
+            </div>
+          )}
           <p className="text-lg text-muted-foreground mb-6">{novel?.novel?.description || "No description available"}</p>
 
           {/* Episode Stats */}

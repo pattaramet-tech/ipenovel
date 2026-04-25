@@ -190,7 +190,13 @@ export default function AdminNovelManagePage({ params }: AdminNovelManagePagePro
                   <Badge variant={novel.novel.publicationStatus === "published" ? "default" : "secondary"}>
                     {novel.novel.publicationStatus === "published" ? "Published" : "Archived"}
                   </Badge>
-                  <Badge variant={novel.novel.storyStatus === "finished" ? "default" : "secondary"}>
+                  <Badge
+                    variant="outline"
+                    className={novel.novel.storyStatus === "finished"
+                      ? "bg-purple-100 text-purple-700 border-purple-200 hover:bg-purple-100"
+                      : "bg-blue-100 text-blue-700 border-blue-200 hover:bg-blue-100"
+                    }
+                  >
                     {novel.novel.storyStatus === "finished" ? "Finished" : "Ongoing"}
                   </Badge>
                 </div>

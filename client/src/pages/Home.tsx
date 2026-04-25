@@ -39,6 +39,7 @@ export default function Home() {
   const newNovels = sections?.newNovels || [];
   const freeNovels = sections?.freeNovels || [];
   const latestEpisodes = sections?.latestEpisodes || [];
+  const finishedNovels = sections?.finishedNovels || [];
 
   // Episode Card Component for latest episodes
   const EpisodeCard = ({ episode }: any) => {
@@ -279,6 +280,71 @@ export default function Home() {
             </Card>
           )}
         </section>
+
+        {/* Finished Novels Section */}
+        {(isLoading || finishedNovels.length > 0) && (
+          <section className="mb-16 sm:mb-20">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+              <div>
+                <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold text-slate-900">
+                  Finished Novels
+                </h2>
+                <p className="text-sm text-slate-600 mt-1">Complete stories — read from start to finish</p>
+              </div>
+              <Link href="/novels?storyStatus=finished" className="flex-shrink-0">
+                <Button
+                  variant="outline"
+                  className="w-full sm:w-auto rounded-full border-purple-200 text-purple-700 hover:bg-purple-50"
+                >
+                  View All Finished
+                  <ArrowRight className="w-4 h-4 ml-2" />
+                </Button>
+              </Link>
+            </div>
+
+            {isLoading ? (
+              <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+                {[...Array(4)].map((_, i) => (
+                  <Skeleton key={i} className="h-64 sm:h-72 rounded-xl" />
+                ))}
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+                {finishedNovels.map((novel: any) => (
+                  <Link key={novel.id} href={`/novels/${novel.id}`}>
+                    <Card className="overflow-hidden hover:shadow-xl transition-all duration-300 cursor-pointer h-full hover:scale-105 transform rounded-xl border-0">
+                      <div className="relative bg-gradient-to-br from-slate-200 to-slate-300 h-48 sm:h-56 overflow-hidden">
+                        {novel.coverImageUrl ? (
+                          <img
+                            src={novel.coverImageUrl}
+                            alt={novel.title}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-purple-100 to-blue-100">
+                            <BookOpen className="w-12 h-12 text-slate-400" />
+                          </div>
+                        )}
+                        {/* Finished badge overlay */}
+                        <div className="absolute top-3 left-3 bg-purple-600 text-white px-3 py-1 rounded-full text-xs font-semibold">
+                          Finished
+                        </div>
+                      </div>
+                      <div className="p-4 sm:p-5">
+                        <h3 className="font-bold text-sm sm:text-base line-clamp-2 text-slate-900 mb-2">
+                          {novel.title}
+                        </h3>
+                        <p className="text-xs sm:text-sm text-slate-600 line-clamp-2">
+                          {novel.description}
+                        </p>
+                      </div>
+                    </Card>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
 
         {/* Latest Uploaded Episodes Section */}
         <section className="mb-16 sm:mb-20">
