@@ -839,55 +839,56 @@ export const appRouter = router({
           return { order, items, payment, history, approvalMetadata, formattedApprovalSource };
         }),
 
-      approve: adminProcedure
+         approve: adminProcedure
         .input(z.object({ orderId: z.number(), reason: z.string().optional() }))
-        .mutation(async ({ input }) => {
+        .mutation(async ({ input, ctx }) => {
           const order = await db.getOrderById(input.orderId);
           if (!order) throw new TRPCError({ code: "NOT_FOUND" });
           if (order.status !== "pending") {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Order is not pending" });
           }
-
-          await db.updateOrder(input.orderId, { status: "approved" });
-
+          // Use centralized service: sets approvalSource=manual, approvedByAdminId,
+          // approvedByLabel, approvedAt, reviewedAt, reviewedByUserId, finalizes order
           const payment = await db.getPaymentByOrderId(input.orderId);
-          if (payment) {
-            await db.updatePayment(payment.id, { status: "approved" });
+          if (!payment) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "No payment record found for this order" });
           }
-
-          const items = await db.getOrderItems(input.orderId);
-          for (const item of items) {
-            if (order.userId) {
-              await db.createPurchase(order.userId, item.novelId, item.episodeId, order.id);
-            }
+          try {
+            await orderService.approvePayment(
+              payment.id,
+              String(ctx.user.id),
+              ctx.user.name || "Admin"
+            );
+          } catch (error: any) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to approve payment. Please try again." });
           }
-
           return { success: true };
         }),
-
       reject: adminProcedure
         .input(z.object({ orderId: z.number(), rejectionReason: z.string() }))
-        .mutation(async ({ input }) => {
+        .mutation(async ({ input, ctx }) => {
           const order = await db.getOrderById(input.orderId);
           if (!order) throw new TRPCError({ code: "NOT_FOUND" });
           if (order.status !== "pending") {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Order is not pending" });
           }
-
-          await db.updateOrder(input.orderId, { status: "rejected" });
-
+          // Use centralized service: sets reviewedAt, reviewedByUserId, rejectionReason
           const payment = await db.getPaymentByOrderId(input.orderId);
-          if (payment) {
-            await db.updatePayment(payment.id, {
-              status: "rejected",
-              rejectionReason: input.rejectionReason,
-            });
+          if (!payment) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "No payment record found for this order" });
           }
-
+          try {
+            await orderService.rejectPayment(
+              payment.id,
+              String(ctx.user.id),
+              input.rejectionReason
+            );
+          } catch (error: any) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to reject payment. Please try again." });
+          }
           return { success: true };
         }),
     }),
-
     dashboard: dashboardRouter,
 
     getAllEpisodes: adminProcedure.query(async () => {

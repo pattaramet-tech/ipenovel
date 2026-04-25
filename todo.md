@@ -819,3 +819,14 @@
 - [x] Fix pending/unpaid orders to show "—" instead of "Transfer"
 - [x] Fix "Approved By" column to use formattedApprovalSource from enrichment when available
 - [x] Fix "Approved By" to handle legacy approvalSource
+
+## Bug Fix Pass: Order Detail + Approval Flow
+
+- [x] Add Payment Method field to AdminOrderDetailPage
+- [x] Fix wallet payment slip display (show "Not required (Wallet)" instead of broken missing-slip)
+- [x] Fix Payment Status badge to use payment.status not order.status in AdminOrderDetailPage
+- [x] Fix admin.orders.approve route to use centralized orderService.approvePayment
+- [x] Fix admin.orders.reject route to use centralized orderService.rejectPayment
+- [x] Fix approval metadata field consistency (reviewedByUserId vs reviewedByAdminId)
+- [x] Fix ApprovalService.getDisplayMetadata to use reviewedByUserId (correct DB field)
+- [x] Add 30 new tests in admin-order-approval.test.ts (all passing)

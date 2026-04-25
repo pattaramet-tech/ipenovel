@@ -10,6 +10,57 @@ import { useLanguage } from "@/contexts/LanguageContext";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 
+/** Derive a color class for a payment status string */
+function paymentStatusColor(status: string | undefined | null): string {
+  switch (status) {
+    case "approved":
+      return "bg-green-100 text-green-800";
+    case "rejected":
+      return "bg-red-100 text-red-800";
+    case "pending_review":
+      return "bg-orange-100 text-orange-800";
+    case "submitted":
+      return "bg-blue-100 text-blue-800";
+    case "pending":
+    default:
+      return "bg-yellow-100 text-yellow-800";
+  }
+}
+
+/** Derive a color class for an order status string */
+function orderStatusColor(status: string | undefined | null): string {
+  switch (status) {
+    case "approved":
+    case "completed":
+      return "bg-green-100 text-green-800";
+    case "rejected":
+    case "cancelled":
+      return "bg-red-100 text-red-800";
+    default:
+      return "bg-yellow-100 text-yellow-800";
+  }
+}
+
+/** Map approvalSource to a human-readable label + badge color */
+function paymentMethodBadge(approvalSource: string | null | undefined, formattedApprovalSource?: string | null) {
+  switch (approvalSource) {
+    case "wallet":
+      return { label: "Wallet", color: "bg-purple-100 text-purple-800" };
+    case "auto":
+      return { label: "OCR Auto-Approve", color: "bg-blue-100 text-blue-800" };
+    case "manual":
+      return { label: "Transfer (Manual)", color: "bg-green-100 text-green-800" };
+    case "legacy":
+      return { label: "Legacy", color: "bg-slate-100 text-slate-600" };
+    default:
+      // Use formatted string from backend if available
+      if (formattedApprovalSource && formattedApprovalSource !== "Unknown") {
+        return { label: formattedApprovalSource, color: "bg-slate-100 text-slate-600" };
+      }
+      return { label: "Unknown", color: "bg-slate-100 text-slate-500" };
+  }
+}
+
 export default function AdminOrderDetailPage() {
   const [, params] = useRoute("/admin/orders/:orderId");
   const orderId = params?.orderId;
@@ -82,12 +133,13 @@ export default function AdminOrderDetailPage() {
     );
   }
 
-  const statusColor =
-    order.order.status === "approved"
-      ? "bg-green-100 text-green-800"
-      : order.order.status === "rejected"
-        ? "bg-red-100 text-red-800"
-        : "bg-yellow-100 text-yellow-800";
+  const isWalletPayment = order.payment?.approvalSource === "wallet" ||
+    (order.approvalMetadata as any)?.approvalSource === "wallet";
+
+  const methodBadge = paymentMethodBadge(
+    order.payment?.approvalSource,
+    order.formattedApprovalSource
+  );
 
   return (
     <AdminLayout>
@@ -99,7 +151,7 @@ export default function AdminOrderDetailPage() {
             Back
           </Button>
           <h1 className="text-2xl font-bold">Order {order.order.orderNumber}</h1>
-          <Badge className={statusColor}>{order.order.status}</Badge>
+          <Badge className={orderStatusColor(order.order.status)}>{order.order.status}</Badge>
         </div>
 
         {/* Order Details */}
@@ -158,16 +210,29 @@ export default function AdminOrderDetailPage() {
                 <p className="text-sm text-muted-foreground">Payment ID</p>
                 <p className="font-semibold">{order.payment.id}</p>
               </div>
+              {/* Bug fix: use payment.status color, not order.status color */}
               <div>
                 <p className="text-sm text-muted-foreground">Payment Status</p>
-                <Badge className={statusColor}>{order.payment.status}</Badge>
+                <Badge className={paymentStatusColor(order.payment.status)}>{order.payment.status}</Badge>
+              </div>
+              {/* Payment Method — new field */}
+              <div>
+                <p className="text-sm text-muted-foreground">Payment Method</p>
+                <Badge className={methodBadge.color}>{methodBadge.label}</Badge>
+              </div>
+              {/* Approved By — from approval metadata */}
+              <div>
+                <p className="text-sm text-muted-foreground">Approved By</p>
+                <p className="font-semibold text-sm">
+                  {(order.approvalMetadata as any)?.approvedByLabel || order.payment.approvedByLabel || "—"}
+                </p>
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Slip Submitted</p>
+                <p className="text-sm text-muted-foreground">Approved At</p>
                 <p className="font-semibold">
-                  {order.payment.slipSubmittedAt
-                    ? new Date(order.payment.slipSubmittedAt).toLocaleString()
-                    : "Not submitted"}
+                  {order.payment.approvedAt
+                    ? new Date(order.payment.approvedAt).toLocaleString()
+                    : "—"}
                 </p>
               </div>
               <div>
@@ -175,27 +240,33 @@ export default function AdminOrderDetailPage() {
                 <p className="font-semibold">
                   {order.payment.reviewedAt
                     ? new Date(order.payment.reviewedAt).toLocaleString()
-                    : "Not reviewed"}
+                    : "—"}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Slip Submitted</p>
+                <p className="font-semibold">
+                  {isWalletPayment
+                    ? "Not required (Wallet)"
+                    : order.payment.slipSubmittedAt
+                      ? new Date(order.payment.slipSubmittedAt).toLocaleString()
+                      : "Not submitted"}
                 </p>
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">Payment Created</p>
                 <p className="font-semibold">{new Date(order.payment.createdAt).toLocaleString()}</p>
               </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Payment Updated</p>
-                <p className="font-semibold">{new Date(order.payment.updatedAt).toLocaleString()}</p>
-              </div>
               {order.payment.rejectionReason && (
-                <div>
+                <div className="col-span-2">
                   <p className="text-sm text-muted-foreground">Rejection Reason</p>
                   <p className="font-semibold text-red-600">{order.payment.rejectionReason}</p>
                 </div>
               )}
             </div>
 
-            {/* Slip Preview */}
-            {order.payment.slipImageUrl && (
+            {/* Slip Preview — only for non-wallet payments */}
+            {!isWalletPayment && order.payment.slipImageUrl && (
               <div className="mt-6">
                 <p className="text-sm text-muted-foreground mb-2">Payment Slip</p>
                 <div className="flex gap-2">
@@ -214,6 +285,13 @@ export default function AdminOrderDetailPage() {
                     View Full
                   </Button>
                 </div>
+              </div>
+            )}
+            {/* Wallet: show friendly message instead of broken slip section */}
+            {isWalletPayment && (
+              <div className="mt-6 p-3 bg-purple-50 rounded-lg border border-purple-200">
+                <p className="text-sm text-purple-700 font-medium">Wallet Payment — No slip required</p>
+                <p className="text-xs text-purple-500 mt-1">This order was paid directly from the customer's wallet balance.</p>
               </div>
             )}
           </Card>
@@ -259,13 +337,10 @@ export default function AdminOrderDetailPage() {
         <Card className="p-6">
           <h2 className="text-lg font-semibold mb-4">Order Summary</h2>
           <div className="space-y-3">
-            {/* Subtotal */}
             <div className="flex justify-between">
               <span className="text-muted-foreground">ยอดรวมสินค้า</span>
               <span className="font-semibold">฿{order.order.subtotal ? parseFloat(order.order.subtotal.toString()).toFixed(2) : "0.00"}</span>
             </div>
-
-            {/* Coupon Discount */}
             {order.order.discountAmount && parseFloat(order.order.discountAmount.toString()) > 0 && (
               <div className="flex justify-between text-red-600">
                 <div>
@@ -277,16 +352,12 @@ export default function AdminOrderDetailPage() {
                 <span className="font-semibold">-฿{parseFloat(order.order.discountAmount.toString()).toFixed(2)}</span>
               </div>
             )}
-
-            {/* Points Discount */}
             {order.order.pointsDiscountAmount && parseFloat(order.order.pointsDiscountAmount.toString()) > 0 && (
               <div className="flex justify-between text-red-600">
                 <span className="text-muted-foreground">ส่วนลดจากคะแนน</span>
                 <span className="font-semibold">-฿{parseFloat(order.order.pointsDiscountAmount.toString()).toFixed(2)}</span>
               </div>
             )}
-
-            {/* Total Amount */}
             <div className="flex justify-between pt-3 border-t-2 border-slate-200">
               <span className="font-semibold text-lg">ยอดชำระสุทธิ</span>
               <span className="font-bold text-lg text-blue-600">฿{parseFloat(order.order.totalAmount.toString()).toFixed(2)}</span>
@@ -294,7 +365,7 @@ export default function AdminOrderDetailPage() {
           </div>
         </Card>
 
-        {/* Actions */}
+        {/* Actions — only for pending orders */}
         {order.order.status === "pending" && (
           <Card className="p-6">
             <div className="flex gap-4">

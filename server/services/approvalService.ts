@@ -148,12 +148,14 @@ export class ApprovalService {
    */
   static getDisplayMetadata(payment: any) {
     return {
-      approvalSource: payment.approvalSource || "Legacy",
+      // Normalize to lowercase to match ApprovalSource enum
+      approvalSource: (payment.approvalSource as string | null) || "legacy",
       approvedByLabel: payment.approvedByLabel || "Legacy / Unknown",
       approvedAt: payment.approvedAt,
       autoApprovedAt: payment.autoApprovedAt,
       reviewedAt: payment.reviewedAt,
-      reviewedByAdminId: payment.reviewedByAdminId,
+      // Bug fix: DB column is reviewedByUserId, not reviewedByAdminId
+      reviewedByUserId: payment.reviewedByUserId,
       approvedByAdminId: payment.approvedByAdminId,
     };
   }
