@@ -253,6 +253,11 @@ export const payments = mysqlTable(
     autoApprovedAt: timestamp("autoApprovedAt"), // When auto-approval occurred
     linkedOrderId: int("linkedOrderId"), // Order ID this slip was verified against
     linkedPaymentId: int("linkedPaymentId"), // Payment ID this slip was verified against
+    // Approval metadata
+    approvalSource: mysqlEnum("approvalSource", ["manual", "auto", "wallet", "legacy"]).default("legacy"),
+    approvedByAdminId: int("approvedByAdminId"), // Admin user ID for manual approvals
+    approvedByLabel: varchar("approvedByLabel", { length: 255 }), // Display name/label for approval source
+    approvedAt: timestamp("approvedAt"), // When payment was approved
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
@@ -261,6 +266,8 @@ export const payments = mysqlTable(
     reviewerIdx: index("payments_reviewedByUserId_idx").on(table.reviewedByUserId),
     fingerprintIdx: index("payments_fingerprint_idx").on(table.fingerprint),
     statusIdx: index("payments_status_idx").on(table.status),
+    approvalSourceIdx: index("payments_approvalSource_idx").on(table.approvalSource),
+    approvedByAdminIdIdx: index("payments_approvedByAdminId_idx").on(table.approvedByAdminId),
   })
 );
 

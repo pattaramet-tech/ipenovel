@@ -9,6 +9,7 @@ import {
   OrderPaymentContext,
   VerificationResult,
 } from "./ocr-slip-verification";
+import { ApprovalService } from "./services/approvalService";
 
 /**
  * Process OCR slip verification and auto-approval for a payment
@@ -165,21 +166,44 @@ export async function processSlipVerification(
   }
 
   // Update payment with verification results
-  await db
-    .update(payments)
-    .set({
-      extractedData: JSON.stringify(extractedData),
-      reviewReason: verificationResult.reviewReason,
-      fingerprint,
-      linkedOrderId: verificationResult.linkedOrderId,
-      linkedPaymentId: verificationResult.linkedPaymentId,
-      status: shouldAutoApprove ? "approved" : "pending_review",
-      autoApprovedAt: shouldAutoApprove ? new Date() : null,
-      reviewedAt: shouldAutoApprove ? new Date() : null,
-      reviewedByUserId: shouldAutoApprove ? 0 : null, // 0 indicates auto-approval
-      updatedAt: new Date(),
-    })
-    .where(eq(payments.id, paymentId));
+  if (shouldAutoApprove) {
+    // Use ApprovalService for OCR auto-approval with metadata
+    const now = new Date();
+    await ApprovalService.approvePaymentWithSource(paymentId, "auto", {
+      autoApprovedAt: now,
+    });
+    
+    // Also update OCR-specific fields
+    await db
+      .update(payments)
+      .set({
+        extractedData: JSON.stringify(extractedData),
+        reviewReason: verificationResult.reviewReason,
+        fingerprint,
+        linkedOrderId: verificationResult.linkedOrderId,
+        linkedPaymentId: verificationResult.linkedPaymentId,
+        updatedAt: new Date(),
+      })
+      .where(eq(payments.id, paymentId));
+  } else {
+    // Send to pending review
+    await ApprovalService.sendToReview(
+      paymentId,
+      verificationResult.reviewReason || "MANUAL_REVIEW_REQUIRED",
+      extractedData,
+      fingerprint
+    );
+    
+    // Update linked order/payment info
+    await db
+      .update(payments)
+      .set({
+        linkedOrderId: verificationResult.linkedOrderId,
+        linkedPaymentId: verificationResult.linkedPaymentId,
+        updatedAt: new Date(),
+      })
+      .where(eq(payments.id, paymentId));
+  }
 
   return {
     isAutoApproved: shouldAutoApprove,

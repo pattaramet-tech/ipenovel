@@ -1,5 +1,7 @@
 import * as db from "../db";
 
+import { ApprovalService } from "./approvalService";
+
 /**
  * Generate order number in MMDDNNNNNNN format
  * MM = month, DD = day, NNNNNNN = timestamp-based sequence for uniqueness
@@ -181,7 +183,7 @@ export async function createOrderFromCart(
 /**
  * Approve payment and create purchases
  */
-export async function approvePayment(paymentId: number, approvedBy: string, tx?: any): Promise<{ message: string }> {
+export async function approvePayment(paymentId: number, approvedBy: string, adminLabel?: string, tx?: any): Promise<{ message: string }> {
   const payment = await db.getPaymentById(paymentId, tx);
   if (!payment) {
     throw new Error("Payment not found");
@@ -192,14 +194,19 @@ export async function approvePayment(paymentId: number, approvedBy: string, tx?:
     throw new Error("Order not found");
   }
 
-  // Update payment status with reviewer info
-  await db.updatePayment(paymentId, {
-    status: "approved",
-  }, tx);
-  // Also set reviewedByUserId and reviewedAt via db.approvePayment
+  // Use ApprovalService for manual approval with metadata
   const approvedByNum = parseInt(approvedBy, 10);
   if (!isNaN(approvedByNum)) {
-    await db.approvePayment(paymentId, approvedByNum, tx);
+    await ApprovalService.approvePaymentWithSource(paymentId, "manual", {
+      adminId: approvedByNum,
+      adminLabel: adminLabel || "Admin",
+      reviewedAt: new Date(),
+    });
+  } else {
+    // Fallback if admin ID is invalid
+    await db.updatePayment(paymentId, {
+      status: "approved",
+    }, tx);
   }
 
   // Update order status and payment status
@@ -207,6 +214,11 @@ export async function approvePayment(paymentId: number, approvedBy: string, tx?:
     status: "approved",
     paymentStatus: "approved"
   }, tx);
+  
+  // Also update reviewedByUserId for backward compatibility
+  if (!isNaN(approvedByNum)) {
+    await db.approvePayment(paymentId, approvedByNum, tx);
+  }
 
   // Record order history
   await db.recordOrderHistory({
@@ -331,12 +343,15 @@ export async function rejectPayment(paymentId: number, rejectedBy: string, reaso
 
   const rejectedByNum = parseInt(rejectedBy, 10);
 
-  // Update payment status with rejection reason and reviewer info
-  await db.updatePayment(paymentId, {
-    status: "rejected",
-    rejectionReason: reason,
-  }, tx);
-  // Set reviewedByUserId and reviewedAt
+  // Use ApprovalService to reject payment with metadata
+  // This preserves rejection reason and reviewer info without setting approval fields
+  await ApprovalService.rejectPayment(
+    paymentId,
+    reason,
+    !isNaN(rejectedByNum) ? rejectedByNum : undefined
+  );
+  
+  // Also set reviewedByUserId via db.rejectPayment for backward compatibility
   if (!isNaN(rejectedByNum)) {
     await db.rejectPayment(paymentId, rejectedByNum, reason, tx);
   }

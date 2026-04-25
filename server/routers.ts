@@ -8,6 +8,7 @@ import { z } from "zod";
 import * as db from "./db";
 import * as orderService from "./services/orderService";
 import * as walletService from "./services/walletService";
+import { ApprovalService } from "./services/approvalService";
 import { fileRouter } from "./routers/fileRouter";
 import { parseSlipImage } from "./ocr-slip-verification";
 import { processSlipVerification } from "./ocr-slip-integration";
@@ -349,11 +350,12 @@ export const appRouter = router({
             // Pass tx so order update uses the same transaction
             await db.updateOrder(newOrder.id, { status: "approved", paymentStatus: "approved" }, tx);
             
-            // STEP 6: Update the payment record (within transaction)
+            // STEP 6: Update the payment record with wallet approval metadata (within transaction)
             // Pass tx so payment queries/updates use the same transaction
             const payment = await db.getPaymentByOrderId(newOrder.id, tx);
             if (payment) {
-              await db.updatePayment(payment.id, { status: "approved" }, tx);
+              // Use ApprovalService for wallet approval with metadata
+              await ApprovalService.approvePaymentWithSource(payment.id, "wallet", {});
             }
             
             // STEP 7: Finalize order completion (points, purchases, coupon usage)
@@ -681,7 +683,19 @@ export const appRouter = router({
             const order = await db.getOrderById(p.orderId);
             const items = order ? await db.getOrderItems(order.id) : [];
             const user = order?.userId ? await db.getUserById(order.userId) : null;
-            return { ...p, order, items, user };
+            
+            // Include approval metadata with display formatting
+            const approvalMetadata = ApprovalService.getDisplayMetadata(p);
+            const formattedApprovalSource = ApprovalService.formatApprovalSource(p.approvalSource);
+            
+            return { 
+              ...p, 
+              order, 
+              items, 
+              user,
+              approvalMetadata,
+              formattedApprovalSource,
+            };
           })
         );
 
