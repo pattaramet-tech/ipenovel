@@ -744,7 +744,7 @@ export const appRouter = router({
           })
         )
         .query(async ({ input }) => {
-          return db.getAdminOrdersWithUsers({
+          const result = await db.getAdminOrdersWithUsers({
             page: input.page,
             pageSize: input.pageSize,
             search: input.search,
@@ -758,6 +758,25 @@ export const appRouter = router({
             minAmount: input.minAmount,
             maxAmount: input.maxAmount,
           });
+
+          // Enrich orders with approval metadata from payments
+          if (result.orders && Array.isArray(result.orders)) {
+            result.orders = await Promise.all(
+              result.orders.map(async (order: any) => {
+                const payment = await db.getPaymentByOrderId(order.id);
+                if (payment) {
+                  return {
+                    ...order,
+                    approvalMetadata: ApprovalService.getDisplayMetadata(payment),
+                    formattedApprovalSource: ApprovalService.formatApprovalSource(payment.approvalSource),
+                  };
+                }
+                return order;
+              })
+            );
+          }
+
+          return result;
         }),
 
       detail: adminProcedure
@@ -770,7 +789,15 @@ export const appRouter = router({
           const payment = await db.getPaymentByOrderId(order.id);
           const history = await db.getOrderHistory(order.id);
 
-          return { order, items, payment, history };
+          // Include approval metadata if payment exists
+          let approvalMetadata = null;
+          let formattedApprovalSource = null;
+          if (payment) {
+            approvalMetadata = ApprovalService.getDisplayMetadata(payment);
+            formattedApprovalSource = ApprovalService.formatApprovalSource(payment.approvalSource);
+          }
+
+          return { order, items, payment, history, approvalMetadata, formattedApprovalSource };
         }),
 
       approve: adminProcedure
