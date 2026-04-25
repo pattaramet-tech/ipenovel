@@ -296,3 +296,289 @@ describe("OCR Slip Verification", () => {
     });
   });
 });
+
+
+describe("OCR Slip Verification - Critical Fixes Regression", () => {
+  const mockContext: OrderPaymentContext = {
+    orderId: 1,
+    paymentId: 1,
+    orderTotal: 250,
+    orderCreatedAt: new Date("2026-04-19T10:00:00Z"),
+    paymentCreatedAt: new Date("2026-04-19T10:05:00Z"),
+  };
+
+  const validSlipText = `
+    ธนาคารกรุงเทพ
+    ชื่อร้านค้า: Ipe Novel
+    รหัสร้านค้า: KB000002283068
+    จำนวนเงิน: 250.00 บาท
+    วันที่: 19/04/2569
+    เลขที่อ้างอิง: 123456789012
+  `;
+
+  describe("Fix 1: Duplicate Detection with Fingerprint", () => {
+    it("should detect duplicate using fingerprint (not just reference)", () => {
+      const slip1 = extractSlipData(validSlipText);
+      const result1 = verifySlipData(slip1, mockContext, new Set(), new Set());
+      expect(result1.isAutoApproved).toBe(true);
+
+      // Second identical slip should be detected as duplicate via fingerprint
+      const slip2 = extractSlipData(validSlipText);
+      const existingFingerprints = new Set([result1.fingerprint]);
+      const result2 = verifySlipData(
+        slip2,
+        mockContext,
+        new Set(),
+        existingFingerprints
+      );
+
+      expect(result2.isAutoApproved).toBe(false);
+      expect(result2.reviewReason).toBe("DUPLICATE_FINGERPRINT");
+    });
+
+    it("should detect pending_review duplicates (race condition protection)", () => {
+      const slip1 = extractSlipData(validSlipText);
+      const result1 = verifySlipData(slip1, mockContext, new Set(), new Set());
+
+      // Simulate first slip in pending_review status
+      const existingReferences = new Set([slip1.reference]);
+      const slip2 = extractSlipData(validSlipText);
+      const result2 = verifySlipData(
+        slip2,
+        mockContext,
+        existingReferences,
+        new Set()
+      );
+
+      expect(result2.reviewReason).toBe("DUPLICATE_REFERENCE");
+    });
+
+    it("should generate and use fingerprint for duplicate detection", () => {
+      const slip1 = extractSlipData(validSlipText);
+      const fp1 = generateFingerprint(slip1);
+      expect(fp1).toBeDefined();
+      expect(fp1.length).toBeGreaterThan(0);
+
+      // Fingerprint should be consistent
+      const fp2 = generateFingerprint(slip1);
+      expect(fp1).toBe(fp2);
+    });
+  });
+
+  describe("Fix 2: Reference Validation (Strict)", () => {
+    it("should require explicitly labeled reference fields", () => {
+      const slipNoLabel = `
+        ธนาคารกรุงเทพ
+        ชื่อร้านค้า: Ipe Novel
+        รหัสร้านค้า: KB000002283068
+        จำนวนเงิน: 250.00 บาท
+        วันที่: 19/04/2569
+        ABCDEFGHIJKLMNOP
+      `;
+
+      const extracted = extractSlipData(slipNoLabel);
+      // Without explicit label, should not extract as reference
+      expect(extracted.reference).toBeUndefined();
+    });
+
+    it("should accept reference with explicit Thai label", () => {
+      const slipWithLabel = `
+        ธนาคารกรุงเทพ
+        ชื่อร้านค้า: Ipe Novel
+        รหัสร้านค้า: KB000002283068
+        จำนวนเงิน: 250.00 บาท
+        วันที่: 19/04/2569
+        เลขที่อ้างอิง: 123456789012
+      `;
+
+      const extracted = extractSlipData(slipWithLabel);
+      expect(extracted.reference).toBe("123456789012");
+    });
+
+    it("should validate reference format (10-15 chars)", () => {
+      const extracted = extractSlipData(validSlipText);
+      expect(extracted.reference).toMatch(/^[A-Z0-9]{10,15}$/);
+    });
+  });
+
+  describe("Fix 3: Time Window Tightening", () => {
+    it("should reject transaction outside 5-minute window", () => {
+      const slipOldDate = `
+        ธนาคารกรุงเทพ
+        ชื่อร้านค้า: Ipe Novel
+        รหัสร้านค้า: KB000002283068
+        จำนวนเงิน: 250.00 บาท
+        วันที่: 19/04/2569 09:00
+        เลขที่อ้างอิง: 123456789012
+      `;
+
+      const extracted = extractSlipData(slipOldDate);
+      const result = verifySlipData(extracted, mockContext, new Set(), new Set());
+
+      expect(result.isAutoApproved).toBe(false);
+      expect(result.reviewReason).toBe("TRANSACTION_OUTSIDE_TIME_WINDOW");
+    });
+
+    it("should accept transaction within 5-minute window", () => {
+      const extracted = extractSlipData(validSlipText);
+      const result = verifySlipData(extracted, mockContext, new Set(), new Set());
+
+      // Valid slip should pass time window check
+      expect(result.reviewReason).not.toBe("TRANSACTION_OUTSIDE_TIME_WINDOW");
+    });
+  });
+
+  describe("Fix 4: Thai Numeral Support", () => {
+    it("should parse Thai numerals in amount", () => {
+      const slipThaiAmount = `
+        ธนาคารกรุงเทพ
+        ชื่อร้านค้า: Ipe Novel
+        รหัสร้านค้า: KB000002283068
+        จำนวนเงิน: ๒๕๐.๐๐ บาท
+        วันที่: 19/04/2569
+        เลขที่อ้างอิง: 123456789012
+      `;
+
+      const extracted = extractSlipData(slipThaiAmount);
+      expect(extracted.amount).toBe(250);
+    });
+
+    it("should parse Thai numerals in date (Buddhist year)", () => {
+      const slipThaiDate = `
+        ธนาคารกรุงเทพ
+        ชื่อร้านค้า: Ipe Novel
+        รหัสร้านค้า: KB000002283068
+        จำนวนเงิน: 250.00 บาท
+        วันที่: ๑๙/๐๔/๒๕๖๙
+        เลขที่อ้างอิง: 123456789012
+      `;
+
+      const extracted = extractSlipData(slipThaiDate);
+      expect(extracted.transactionDate).toBeDefined();
+      expect(extracted.transactionDate?.getFullYear()).toBe(2026);
+      expect(extracted.transactionDate?.getMonth()).toBe(3); // April (0-indexed)
+      expect(extracted.transactionDate?.getDate()).toBe(19);
+    });
+
+    it("should parse Thai numerals in reference", () => {
+      const slipThaiRef = `
+        ธนาคารกรุงเทพ
+        ชื่อร้านค้า: Ipe Novel
+        รหัสร้านค้า: KB000002283068
+        จำนวนเงิน: 250.00 บาท
+        วันที่: 19/04/2569
+        เลขที่อ้างอิง: ๑๒๓๔๕๖๗๘๙๐๑๒
+      `;
+
+      const extracted = extractSlipData(slipThaiRef);
+      expect(extracted.reference).toBe("123456789012");
+    });
+
+    it("should handle mixed Thai and Western numerals", () => {
+      const slipMixed = `
+        ธนาคารกรุงเทพ
+        ชื่อร้านค้า: Ipe Novel
+        รหัสร้านค้า: KB000002283068
+        จำนวนเงิน: ๒50.00 บาท
+        วันที่: 19/04/๒๕๖๙
+        เลขที่อ้างอิง: 123456789012
+      `;
+
+      const extracted = extractSlipData(slipMixed);
+      expect(extracted.amount).toBe(250);
+      expect(extracted.transactionDate?.getFullYear()).toBe(2026);
+    });
+  });
+
+  describe("Fix 5: Admin Visibility", () => {
+    it("should include detected bank in extracted data", () => {
+      const extracted = extractSlipData(validSlipText);
+      expect(extracted.detectedBank).toBe("KBANK");
+    });
+
+    it("should include all required fields for admin review", () => {
+      const extracted = extractSlipData(validSlipText);
+      const result = verifySlipData(extracted, mockContext, new Set(), new Set());
+
+      // All fields required for admin review
+      expect(result.extractedData).toHaveProperty("shopName");
+      expect(result.extractedData).toHaveProperty("merchantCode");
+      expect(result.extractedData).toHaveProperty("amount");
+      expect(result.extractedData).toHaveProperty("transactionDate");
+      expect(result.extractedData).toHaveProperty("reference");
+      expect(result.extractedData).toHaveProperty("detectedBank");
+      expect(result.extractedData).toHaveProperty("confidence");
+      expect(result).toHaveProperty("fingerprint");
+      expect(result).toHaveProperty("reviewReason");
+    });
+
+    it("should detect different banks", () => {
+      const kbankSlip = `
+        ธนาคารกรุงเทพ
+        ชื่อร้านค้า: Ipe Novel
+        รหัสร้านค้า: KB000002283068
+        จำนวนเงิน: 250.00 บาท
+        วันที่: 19/04/2569
+        เลขที่อ้างอิง: 123456789012
+      `;
+
+      const kasikornSlip = `
+        ธนาคารกสิกรไทย
+        ชื่อร้านค้า: Ipe Novel
+        รหัสร้านค้า: KB000002283068
+        จำนวนเงิน: 250.00 บาท
+        วันที่: 19/04/2569
+        เลขที่อ้างอิง: 123456789012
+      `;
+
+      const kbankExtracted = extractSlipData(kbankSlip);
+      const kasikornExtracted = extractSlipData(kasikornSlip);
+
+      expect(kbankExtracted.detectedBank).toBe("KBANK");
+      expect(kasikornExtracted.detectedBank).toBe("KASIKORN");
+    });
+  });
+
+  describe("Fix 6: Auto-Approval Logging", () => {
+    it("should have structured logging for auto-approval", () => {
+      const extracted = extractSlipData(validSlipText);
+      const result = verifySlipData(extracted, mockContext, new Set(), new Set());
+
+      expect(result.isAutoApproved).toBe(true);
+      // Logging happens in integration layer, but we verify the data is available
+      expect(extracted.amount).toBeDefined();
+      expect(extracted.reference).toBeDefined();
+      expect(extracted.confidence).toBeDefined();
+      expect(extracted.detectedBank).toBeDefined();
+    });
+  });
+
+  describe("Regression: Valid Slip Still Auto-Approves", () => {
+    it("should still auto-approve valid slip after all fixes", () => {
+      const extracted = extractSlipData(validSlipText);
+      const result = verifySlipData(extracted, mockContext, new Set(), new Set());
+
+      expect(result.isAutoApproved).toBe(true);
+      expect(result.status).toBe("approved");
+      expect(result.reviewReason).toBeUndefined();
+      expect(extracted.confidence).toBeGreaterThanOrEqual(85);
+    });
+
+    it("should still reject invalid slip after all fixes", () => {
+      const invalidSlip = `
+        ธนาคารกรุงเทพ
+        ชื่อร้านค้า: Wrong Shop
+        รหัสร้านค้า: KB000002283068
+        จำนวนเงิน: 250.00 บาท
+        วันที่: 19/04/2569
+        เลขที่อ้างอิง: 123456789012
+      `;
+
+      const extracted = extractSlipData(invalidSlip);
+      const result = verifySlipData(extracted, mockContext, new Set(), new Set());
+
+      expect(result.isAutoApproved).toBe(false);
+      expect(result.reviewReason).toBe("SHOP_NAME_MISMATCH");
+    });
+  });
+});

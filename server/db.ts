@@ -512,12 +512,12 @@ export async function getAdminOrders(options: {
 
   // Status filter
   if (options.status) {
-    conditions.push(eq(orders.status, options.status));
+    conditions.push(eq(orders.status, options.status as any));
   }
 
   // Payment status filter
   if (options.paymentStatus) {
-    conditions.push(eq(orders.paymentStatus, options.paymentStatus));
+    conditions.push(eq(orders.paymentStatus, options.paymentStatus as any));
   }
 
   // Date range filter
@@ -645,12 +645,12 @@ export async function getAdminOrdersWithUsers(options: {
 
   // Status filter
   if (options.status) {
-    conditions.push(eq(orders.status, options.status));
+    conditions.push(eq(orders.status, options.status as any));
   }
 
   // Payment status filter
   if (options.paymentStatus) {
-    conditions.push(eq(orders.paymentStatus, options.paymentStatus));
+    conditions.push(eq(orders.paymentStatus, options.paymentStatus as any));
   }
 
   // Date range filter

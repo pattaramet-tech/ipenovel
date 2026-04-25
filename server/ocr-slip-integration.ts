@@ -1,6 +1,6 @@
 import { getDb } from "./db";
 import { payments, orders } from "../drizzle/schema";
-import { eq } from "drizzle-orm";
+import { eq, or } from "drizzle-orm";
 import {
   extractSlipData,
   verifySlipData,
@@ -82,11 +82,15 @@ export async function processSlipVerification(
   // Extract slip data using OCR
   const extractedData = extractSlipData(slipOcrText);
 
-  // Get all existing references to check for duplicates
+  // Get all existing references and fingerprints for duplicate detection
+  // Include both approved AND pending_review to prevent race-condition duplicates
   const existingPayments = await db
     .select()
     .from(payments)
-    .where(eq(payments.status, "approved"));
+    .where(or(
+      eq(payments.status, "approved"),
+      eq(payments.status, "pending_review")
+    ));
 
   const extractedDataArray = existingPayments
     .map(p => {
@@ -99,11 +103,22 @@ export async function processSlipVerification(
     .filter(Boolean);
 
   const existingReferences = new Set<string>();
+  const existingFingerprints = new Set<string>();
+
   for (const data of extractedDataArray) {
     if (data.reference) {
       existingReferences.add(data.reference);
     }
   }
+
+  for (const payment of existingPayments) {
+    if (payment.fingerprint) {
+      existingFingerprints.add(payment.fingerprint);
+    }
+  }
+
+  // Log duplicate detection setup
+  console.log(`[OCR-DUPLICATE-CHECK] Found ${existingReferences.size} existing references and ${existingFingerprints.size} existing fingerprints`);
 
   // Create order/payment context for verification
   const context: OrderPaymentContext = {
@@ -115,19 +130,39 @@ export async function processSlipVerification(
   };
 
   // Verify the slip data against the order/payment
+  // Pass both reference and fingerprint sets for duplicate detection
   const verificationResult = verifySlipData(
     extractedData,
     context,
-    existingReferences
+    existingReferences,
+    existingFingerprints
   );
 
   // Generate fingerprint for duplicate detection
   const fingerprint = generateFingerprint(extractedData);
 
   // Determine if we should auto-approve
+  // Note: verifySlipData already validates confidence >= 85,
+  // but we check again here as defense-in-depth for auto-approval safety
   const shouldAutoApprove =
     verificationResult.isAutoApproved &&
     (extractedData.confidence ?? 0) >= 85;
+
+  // Log auto-approval decisions for audit trail (safe fields only)
+  if (shouldAutoApprove) {
+    const maskedRef = extractedData.reference
+      ? extractedData.reference.substring(0, 4) + "***" + extractedData.reference.substring(extractedData.reference.length - 2)
+      : "N/A";
+    console.log(`[OCR-AUTO-APPROVE] Payment ${paymentId}:`, {
+      paymentId,
+      orderId: order.id,
+      amount: extractedData.amount,
+      reference: maskedRef,
+      confidence: extractedData.confidence,
+      detectedBank: extractedData.detectedBank,
+      timestamp: new Date().toISOString(),
+    });
+  }
 
   // Update payment with verification results
   await db
@@ -188,6 +223,7 @@ export function getReviewReasonDescription(reason?: string): string {
       "Merchant transaction code does not match KPS004KB000002283068",
     AMOUNT_MISMATCH: "Slip amount does not match order total",
     DUPLICATE_REFERENCE: "Transaction reference already used",
+    DUPLICATE_FINGERPRINT: "Identical slip already submitted",
     LOW_CONFIDENCE: "OCR confidence too low for auto-approval",
     TRANSACTION_OUTSIDE_TIME_WINDOW:
       "Transaction date outside acceptable time window",
@@ -197,4 +233,49 @@ export function getReviewReasonDescription(reason?: string): string {
   };
 
   return descriptions[reason || ""] || "Unknown reason";
+}
+
+/**
+ * Get enhanced pending review payments with all fields needed for admin review
+ */
+export async function getPendingReviewPaymentsForAdmin() {
+  const db = await getDb();
+  if (!db) return [];
+
+  const pendingPayments = await db
+    .select()
+    .from(payments)
+    .where(eq(payments.status, "pending_review"));
+
+  return pendingPayments.map((p: any) => {
+    const extracted = p.extractedData ? JSON.parse(p.extractedData) : null;
+    
+    return {
+      id: p.id,
+      orderId: p.orderId,
+      status: p.status,
+      reviewReason: p.reviewReason,
+      reviewReasonDescription: getReviewReasonDescription(p.reviewReason),
+      
+      // Extracted data for admin review
+      extractedBank: extracted?.detectedBank,
+      extractedAmount: extracted?.amount,
+      extractedReference: extracted?.reference,
+      extractedDate: extracted?.transactionDate,
+      extractedShopName: extracted?.shopName,
+      extractedMerchantCode: extracted?.merchantCode,
+      extractedConfidence: extracted?.confidence,
+      
+      // Fingerprint and duplicate status
+      fingerprint: p.fingerprint,
+      linkedOrderId: p.linkedOrderId,
+      linkedPaymentId: p.linkedPaymentId,
+      
+      // Metadata
+      slipImageUrl: p.slipImageUrl,
+      slipSubmittedAt: p.slipSubmittedAt,
+      createdAt: p.createdAt,
+      updatedAt: p.updatedAt,
+    };
+  });
 }
