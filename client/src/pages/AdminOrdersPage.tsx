@@ -291,7 +291,16 @@ export default function AdminOrdersPage() {
                         </Badge>
                       </td>
                       <td className="p-3 text-slate-600 text-xs">
-                        {order.approvedByName || "—"}
+                        {(() => {
+                          // Fallback logic: prefer approvalSource first, then approver details
+                          if (order.approvalSource === "wallet") return "Wallet";
+                          if (order.approvalSource === "auto") return "OCR Auto-Approve";
+                          if (order.approvedByName) return order.approvedByName;
+                          if (order.approvedByEmail) return order.approvedByEmail;
+                          if (order.approvedByAdminId) return `Admin ${order.approvedByAdminId}`;
+                          if (order.approvedByLabel) return order.approvedByLabel;
+                          return "—";
+                        })()}
                       </td>
                       <td className="p-3 text-sm text-slate-600">
                         {new Date(order.createdAt).toLocaleString()}

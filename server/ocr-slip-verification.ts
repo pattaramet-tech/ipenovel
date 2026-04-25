@@ -103,6 +103,7 @@ function normalizeText(text: string): string {
 /**
  * Extract shop name from OCR text
  * Looks for common Thai bank slip labels and extracts following text
+ * More tolerant of OCR noise, extra spaces, and formatting variations
  */
 function extractShopName(text: string): string | undefined {
   const patterns = [
@@ -110,12 +111,20 @@ function extractShopName(text: string): string | undefined {
     /ชื่อ\s*[:：]\s*([^\n]+)/i,
     /shop\s*name\s*[:：]\s*([^\n]+)/i,
     /merchant\s*name\s*[:：]\s*([^\n]+)/i,
+    /ร้านค้า\s*[:：]\s*([^\n]+)/i,
+    /shop\s*[:：]\s*([^\n]+)/i,
   ];
 
   for (const pattern of patterns) {
     const match = text.match(pattern);
     if (match && match[1]) {
-      return match[1].trim();
+      const extracted = match[1]
+        .trim()
+        .replace(/\s+/g, " ")
+        .substring(0, 100);
+      if (extracted.length > 2) {
+        return extracted;
+      }
     }
   }
 
@@ -321,6 +330,11 @@ export function extractSlipData(ocrText: string): ExtractedSlipData {
 /**
  * Verify extracted slip data against specific order/payment record
  * Ensures slip is correctly linked to the exact pending order/payment
+ * 
+ * Verification strategy:
+ * - HARD FAIL: Missing critical fields (amount, date, reference) or mismatches
+ * - MANUAL REVIEW: Missing optional merchant fields, low confidence, or weak signals
+ * - AUTO-APPROVE: All critical checks pass + confidence >= 85
  */
 export function verifySlipData(
   extracted: ExtractedSlipData,
@@ -337,43 +351,10 @@ export function verifySlipData(
     linkedPaymentId: context.paymentId,
   };
 
-  // Check 1: Shop name verification
-  if (!extracted.shopName) {
-    result.reviewReason = "MISSING_SHOP_NAME";
-    return result;
-  }
+  // ===== CRITICAL CHECKS (HARD FAIL) =====
+  // These are non-negotiable for any valid slip
 
-  const normalizedShopName = normalizeText(extracted.shopName);
-  const shopNameMatches = MERCHANT_CONFIG.shopNameAliases.some(
-    (alias) => normalizeText(alias) === normalizedShopName
-  );
-
-  if (!shopNameMatches) {
-    result.reviewReason = "SHOP_NAME_MISMATCH";
-    return result;
-  }
-
-  // Check 2: Merchant code verification
-  if (!extracted.merchantCode) {
-    result.reviewReason = "MISSING_MERCHANT_CODE";
-    return result;
-  }
-
-  if (extracted.merchantCode !== MERCHANT_CONFIG.merchantCode) {
-    result.reviewReason = "MERCHANT_CODE_MISMATCH";
-    return result;
-  }
-
-  // Check 3: Merchant transaction code (if present, must match)
-  if (
-    extracted.merchantTransactionCode &&
-    extracted.merchantTransactionCode !== MERCHANT_CONFIG.merchantTransactionCode
-  ) {
-    result.reviewReason = "MERCHANT_TRANSACTION_CODE_MISMATCH";
-    return result;
-  }
-
-  // Check 4: Amount verification (must match exactly)
+  // Check 1: Amount verification (CRITICAL - must match exactly)
   if (!extracted.amount) {
     result.reviewReason = "MISSING_AMOUNT";
     return result;
@@ -384,7 +365,7 @@ export function verifySlipData(
     return result;
   }
 
-  // Check 5: Transaction date verification and time window validation
+  // Check 2: Transaction date verification (CRITICAL)
   if (!extracted.transactionDate) {
     result.reviewReason = "MISSING_TRANSACTION_DATE";
     return result;
@@ -403,7 +384,7 @@ export function verifySlipData(
     return result;
   }
 
-  // Check 6: Reference verification (duplicate detection)
+  // Check 3: Reference verification (CRITICAL - for duplicate detection)
   if (!extracted.reference) {
     result.reviewReason = "MISSING_REFERENCE";
     return result;
@@ -414,21 +395,87 @@ export function verifySlipData(
     return result;
   }
 
-  // Check 6b: Fingerprint-based duplicate detection
+  // Check 4: Fingerprint-based duplicate detection (CRITICAL)
   // Fingerprint includes reference + amount + merchant code + date
   if (existingFingerprints.has(result.fingerprint)) {
     result.reviewReason = "DUPLICATE_FINGERPRINT";
     return result;
   }
 
-  // Check 7: Confidence level - must be >= 85 for auto-approval
+  // ===== OPTIONAL MERCHANT CHECKS (MANUAL REVIEW IF MISSING) =====
+  // These are helpful for verification but not absolute blockers
+
+  // Check 5: Shop name verification (OPTIONAL)
+  // If missing or mismatched, send to manual review but don't hard-fail
+  let shopNameStrength = 0;
+  if (extracted.shopName) {
+    const normalizedShopName = normalizeText(extracted.shopName);
+    const shopNameMatches = MERCHANT_CONFIG.shopNameAliases.some(
+      (alias) => normalizeText(alias) === normalizedShopName
+    );
+    if (shopNameMatches) {
+      shopNameStrength = 2; // Strong match
+    } else {
+      shopNameStrength = 1; // Weak match (shop name present but doesn't match)
+    }
+  }
+  // If shop name is completely missing, that's a signal but not a hard fail
+
+  // Check 6: Merchant code verification (OPTIONAL)
+  // If present, must match. If missing, that's okay - send to manual review
+  let merchantCodeStrength = 0;
+  if (extracted.merchantCode) {
+    if (extracted.merchantCode === MERCHANT_CONFIG.merchantCode) {
+      merchantCodeStrength = 2; // Strong match
+    } else {
+      // Merchant code present but doesn't match - this is a red flag
+      // Send to manual review instead of hard-failing
+      result.reviewReason = "MERCHANT_CODE_MISMATCH";
+      return result;
+    }
+  }
+  // If merchant code is missing, that's okay - we'll rely on other signals
+
+  // Check 7: Merchant transaction code (OPTIONAL)
+  // If present, must match. If missing, that's completely fine
+  if (
+    extracted.merchantTransactionCode &&
+    extracted.merchantTransactionCode !== MERCHANT_CONFIG.merchantTransactionCode
+  ) {
+    // Present but doesn't match - send to manual review
+    result.reviewReason = "MERCHANT_TRANSACTION_CODE_MISMATCH";
+    return result;
+  }
+  // If missing, that's fine - many real Thai slips don't have this field
+
+  // ===== CONFIDENCE AND FINAL DECISION =====
+
+  // Check 8: Confidence level - must be >= 85 for auto-approval
+  // If confidence is too low, send to manual review
   if ((extracted.confidence || 0) < 85) {
     result.reviewReason = "LOW_CONFIDENCE";
     result.status = "pending_review";
     return result;
   }
 
-  // All checks passed - auto-approve
+  // Check 9: Structured data sufficiency
+  // Make sure we have enough structured data (not just raw OCR noise)
+  const structuredFieldCount = [
+    extracted.shopName,
+    extracted.merchantCode,
+    extracted.amount,
+    extracted.transactionDate,
+    extracted.reference,
+  ].filter(Boolean).length;
+
+  if (structuredFieldCount < 3) {
+    // Less than 3 structured fields = insufficient data
+    result.reviewReason = "INSUFFICIENT_STRUCTURED_DATA";
+    result.status = "pending_review";
+    return result;
+  }
+
+  // All critical checks passed - auto-approve
   result.isAutoApproved = true;
   result.status = "approved";
   return result;

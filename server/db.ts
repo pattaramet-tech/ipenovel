@@ -686,15 +686,27 @@ export async function getAdminOrdersWithUsers(options: {
     conditions.push(lte(orders.totalAmount, options.maxAmount.toString()));
   }
 
-  // Build query with user join
+  // Create aliases for order user and approver user
+  const orderUser = alias(users, "orderUser");
+  const approverUser = alias(users, "approverUser");
+
+  // Build query with user joins and payment data
   let query: any = db
     .select({
       ...getTableColumns(orders),
-      userName: users.name,
-      userEmail: users.email,
+      userName: orderUser.name,
+      userEmail: orderUser.email,
+      approvalSource: payments.approvalSource,
+      approvedByAdminId: payments.approvedByAdminId,
+      approvedByLabel: payments.approvedByLabel,
+      approvedAt: payments.approvedAt,
+      approvedByName: approverUser.name,
+      approvedByEmail: approverUser.email,
     })
     .from(orders)
-    .leftJoin(users, eq(orders.userId, users.id));
+    .leftJoin(orderUser, eq(orders.userId, orderUser.id))
+    .leftJoin(payments, eq(orders.id, payments.orderId))
+    .leftJoin(approverUser, eq(payments.approvedByAdminId, approverUser.id))
 
   if (conditions.length > 0) {
     query = query.where(and(...conditions));
