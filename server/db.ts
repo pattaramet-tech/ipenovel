@@ -1,4 +1,4 @@
-import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql, gt } from "drizzle-orm";
+import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql, gt, ne } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { getTableColumns } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
@@ -894,7 +894,13 @@ export async function getWishlistById(wishlistId: number) {
 export async function getPendingPayments(limit?: number, offset?: number) {
   const db = await getDb();
   if (!db) return [];
-  let query: any = db.select().from(payments).where(eq(payments.status, "pending")).orderBy(desc(payments.createdAt));
+  // Exclude wallet payments - they don't need slip review
+  let query: any = db.select().from(payments).where(
+    and(
+      eq(payments.status, "pending"),
+      ne(payments.approvalSource, "wallet")
+    )
+  ).orderBy(desc(payments.createdAt));
   if (limit) query = query.limit(limit);
   if (offset) query = query.offset(offset);
   return query;
