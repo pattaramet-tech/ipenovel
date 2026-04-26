@@ -8,17 +8,17 @@ describe("Admin Access to Archived Novels", () => {
 
   beforeAll(async () => {
     // Create test novels
-    archivedNovelId = await db.createNovel({
+    archivedNovelId = (await db.createNovel({
       title: "Test Admin Archived Novel",
       publicationStatus: "archived",
       storyStatus: "ongoing",
-    });
+    })).id;
 
-    publishedNovelId = await db.createNovel({
+    publishedNovelId = (await db.createNovel({
       title: "Test Admin Published Novel",
       publicationStatus: "published",
       storyStatus: "ongoing",
-    });
+    })).id;
   });
 
   afterAll(async () => {

@@ -28,13 +28,12 @@ describe("Top Selling Novels Analytics - Regression Tests", () => {
     });
     testUserId = (userResult as any).insertId;
 
-    // Create test novel
-    const novelResult = await database.insert(novels).values({
+    // Create test novel using db helper (returns { id })
+    const novelCreated = await db.createNovel({
       title: `Test Novel ${Date.now()}`,
-      slug: `test-novel-${Date.now()}`,
       author: "Test Author",
     });
-    testNovelId = (novelResult as any).insertId;
+    testNovelId = novelCreated.id;
 
     // Create test episodes
     const episodeResult = await database.insert(episodes).values({

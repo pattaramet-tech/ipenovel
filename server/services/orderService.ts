@@ -201,7 +201,7 @@ export async function approvePayment(paymentId: number, approvedBy: string, admi
       adminId: approvedByNum,
       adminLabel: adminLabel || "Admin",
       reviewedAt: new Date(),
-    });
+    }, tx);
   } else {
     // Fallback if admin ID is invalid
     await db.updatePayment(paymentId, {

@@ -90,11 +90,15 @@ export default function AdminOrdersPage() {
   // Status badge color
   const getStatusColor = (status: string) => {
     switch (status) {
+      case 'approved':
+        return 'bg-green-100 text-green-800';
       case 'completed':
         return 'bg-green-100 text-green-800';
       case 'pending':
         return 'bg-yellow-100 text-yellow-800';
       case 'cancelled':
+        return 'bg-red-100 text-red-800';
+      case 'rejected':
         return 'bg-red-100 text-red-800';
       default:
         return 'bg-slate-100 text-slate-800';
@@ -184,11 +188,11 @@ export default function AdminOrdersPage() {
               </Button>
               <Button
                 size="sm"
-                variant={statusFilter === 'completed' ? 'default' : 'outline'}
-                onClick={() => handleStatusFilter('completed')}
+                variant={statusFilter === 'approved' ? 'default' : 'outline'}
+                onClick={() => handleStatusFilter('approved')}
                 className="text-xs"
               >
-                Completed
+                Approved
               </Button>
               <Button
                 size="sm"

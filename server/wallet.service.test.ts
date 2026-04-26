@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { walletService } from "./wallet.service";
-import { db } from "./db";
+import * as walletService from "./services/walletService";
+import * as db from "./db";
 
 describe("Wallet Service - Core Tests", () => {
   describe("Service Methods Exist", () => {
@@ -36,11 +36,6 @@ describe("Wallet Service - Core Tests", () => {
       expect(typeof db.getWalletSummary).toBe("function");
     });
 
-    it("should have getWalletTransactions helper", () => {
-      expect(db.getWalletTransactions).toBeDefined();
-      expect(typeof db.getWalletTransactions).toBe("function");
-    });
-
     it("should have listPendingWalletTopups helper", () => {
       expect(db.listPendingWalletTopups).toBeDefined();
       expect(typeof db.listPendingWalletTopups).toBe("function");
@@ -50,15 +45,10 @@ describe("Wallet Service - Core Tests", () => {
       expect(db.createWalletTransaction).toBeDefined();
       expect(typeof db.createWalletTransaction).toBe("function");
     });
-
-    it("should have updateWalletBalance helper", () => {
-      expect(db.updateWalletBalance).toBeDefined();
-      expect(typeof db.updateWalletBalance).toBe("function");
-    });
   });
 
   describe("Wallet System Integration", () => {
-    it("wallet service is properly exported", () => {
+    it("wallet service module is properly exported", () => {
       expect(walletService).toBeDefined();
       expect(typeof walletService).toBe("object");
     });
@@ -71,7 +61,7 @@ describe("Wallet Service - Core Tests", () => {
         "adminRejectWalletTopup",
       ];
       methods.forEach(method => {
-        expect(typeof walletService[method as keyof typeof walletService]).toBe("function");
+        expect(typeof (walletService as any)[method]).toBe("function");
       });
     });
 

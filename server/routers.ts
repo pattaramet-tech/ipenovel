@@ -459,21 +459,22 @@ export const appRouter = router({
 
         // Sync order status based on verification result
         if (verificationResult.isAutoApproved) {
-          // Auto-approved: mark order as completed
+          // Auto-approved: mark order as approved (valid enum value)
           await db.updateOrder(order.id, {
             paymentStatus: "approved",
-            status: "completed",
+            status: "approved",
           });
-
           // Record order history for auto-approval
           await db.recordOrderHistory({
             orderId: order.id,
             action: "payment_auto_approved",
             fromStatus: order.status,
-            toStatus: "completed",
+            toStatus: "approved",
             actorUserId: 0, // 0 indicates system auto-approval
             note: `Payment auto-approved via OCR verification (confidence: ${verificationResult.extractedData?.confidence || 0}%)`,
           });
+          // Finalize order: create purchase records, award loyalty points, record coupon usage
+          await orderService.finalizeOrderCompletion(order.id, ctx.user.id);
         } else {
           // Pending review: keep order pending
           await db.updateOrder(order.id, {
