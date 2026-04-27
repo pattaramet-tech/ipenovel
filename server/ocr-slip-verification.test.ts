@@ -5,7 +5,7 @@ import {
   generateFingerprint,
   ExtractedSlipData,
   OrderPaymentContext,
-} from "./ocr-slip-verification";
+} from "./ocr-slip-verification-v2";
 
 describe("OCR Slip Verification", () => {
   describe("extractSlipData", () => {

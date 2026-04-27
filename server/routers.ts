@@ -10,8 +10,8 @@ import * as orderService from "./services/orderService";
 import * as walletService from "./services/walletService";
 import { ApprovalService } from "./services/approvalService";
 import { fileRouter } from "./routers/fileRouter";
-import { parseSlipImage } from "./ocr-slip-verification";
-import { processSlipVerification } from "./ocr-slip-integration";
+import { parseSlipImage } from "./ocr-slip-verification-v2";
+import { processSlipVerification } from "./ocr-slip-integration-v2";
 
 // ============ HELPER PROCEDURES ============
 
@@ -451,11 +451,10 @@ export const appRouter = router({
           status: "pending",
         });
 
-        // Extract OCR text from slip image
-        const slipOcrText = await parseSlipImage(input.slipImageUrl);
-
+         // Extract OCR text from slip image (returns structured result with confidence)
+        const slipOcrResult = await parseSlipImage(input.slipImageUrl);
         // Process slip verification and auto-approval
-        const verificationResult = await processSlipVerification(payment.id, slipOcrText);
+        const verificationResult = await processSlipVerification(payment.id, slipOcrResult);
 
         // Sync order status based on verification result
         if (verificationResult.isAutoApproved) {
