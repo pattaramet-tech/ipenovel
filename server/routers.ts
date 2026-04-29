@@ -11,7 +11,8 @@ import * as walletService from "./services/walletService";
 import { ApprovalService } from "./services/approvalService";
 import { fileRouter } from "./routers/fileRouter";
 import { parseSlipImage } from "./ocr-slip-verification-v2";
-import { processSlipVerification } from "./ocr-slip-integration-v2";
+import { processSlipVerificationStaging } from "./ocr-slip-integration-staging";
+import { getOCRConfig } from "./_core/ocr-config";
 
 // ============ HELPER PROCEDURES ============
 
@@ -453,11 +454,15 @@ export const appRouter = router({
 
          // Extract OCR text from slip image (returns structured result with confidence)
         const slipOcrResult = await parseSlipImage(input.slipImageUrl);
-        // Process slip verification and auto-approval
-        const verificationResult = await processSlipVerification(payment.id, slipOcrResult);
+        // Process slip verification with staging enhancements (shadow mode, metrics)
+        const verificationResult = await processSlipVerificationStaging(payment.id, slipOcrResult);
+        const config = getOCRConfig();
+
+        // Determine if we should actually approve or just simulate
+        const shouldApprove = verificationResult.isAutoApproved && !verificationResult.isShadowMode;
 
         // Sync order status based on verification result
-        if (verificationResult.isAutoApproved) {
+        if (shouldApprove) {
           // Auto-approved: mark order as approved (valid enum value)
           await db.updateOrder(order.id, {
             paymentStatus: "approved",
@@ -470,7 +475,7 @@ export const appRouter = router({
             fromStatus: order.status,
             toStatus: "approved",
             actorUserId: 0, // 0 indicates system auto-approval
-            note: `Payment auto-approved via OCR verification (confidence: ${verificationResult.extractedData?.confidence || 0}%)`,
+            note: `Payment auto-approved via OCR verification (confidence: ${verificationResult.ocrConfidence || 0}%, bank: ${verificationResult.detectedBank || "unknown"})`,
           });
           // Finalize order: create purchase records, award loyalty points, record coupon usage
           await orderService.finalizeOrderCompletion(order.id, ctx.user.id);
@@ -482,20 +487,28 @@ export const appRouter = router({
           });
 
           // Record order history for pending review
+          const reviewNote = verificationResult.isShadowMode
+            ? `Payment slip submitted for manual review (OCR shadow mode - simulated decision: ${verificationResult.simulatedDecision}). Reason: ${verificationResult.reviewReason || "Unknown"}`
+            : `Payment slip submitted for manual review. Reason: ${verificationResult.reviewReason || "Unknown"}`;
+
           await db.recordOrderHistory({
             orderId: order.id,
             action: "payment_slip_submitted",
             fromStatus: order.status,
             toStatus: "pending",
             actorUserId: ctx.user.id,
-            note: `Payment slip submitted for manual review. Reason: ${verificationResult.reviewReason || "Unknown"}`,
+            note: reviewNote,
           });
         }
 
         return {
           success: true,
           isAutoApproved: verificationResult.isAutoApproved,
+          isShadowMode: verificationResult.isShadowMode,
           reviewReason: verificationResult.reviewReason,
+          ocrConfidence: verificationResult.ocrConfidence,
+          detectedBank: verificationResult.detectedBank,
+          duplicateStatus: verificationResult.duplicateStatus,
         };
       }),
   }),
