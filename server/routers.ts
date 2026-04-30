@@ -13,6 +13,11 @@ import { fileRouter } from "./routers/fileRouter";
 import { parseSlipImage } from "./ocr-slip-verification-v2";
 import { processSlipVerificationStaging } from "./ocr-slip-integration-staging";
 import { getOCRConfig } from "./_core/ocr-config";
+import {
+  generateApprovalNote,
+  generateManualReviewNote,
+  generateShadowModeNote,
+} from "./_core/ocr-order-notes";
 
 // ============ HELPER PROCEDURES ============
 
@@ -468,14 +473,33 @@ export const appRouter = router({
             paymentStatus: "approved",
             status: "approved",
           });
-          // Record order history for auto-approval
+          // Record order history for auto-approval with detailed breakdown
+          const approvalNote = generateApprovalNote({
+            isAutoApproved: true,
+            isShadowMode: false,
+            ocrConfidence: verificationResult.ocrConfidence,
+            detectedBank: verificationResult.detectedBank,
+            extractedAmount: verificationResult.extractedData?.amount,
+            orderTotal: order.totalAmount as number,
+            extractedDate: verificationResult.extractedData?.transactionDate
+              ? verificationResult.extractedData.transactionDate.toLocaleString("en-TH", {
+                  year: "numeric",
+                  month: "2-digit",
+                  day: "2-digit",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })
+              : undefined,
+            breakdown: verificationResult.breakdown,
+          });
+
           await db.recordOrderHistory({
             orderId: order.id,
             action: "payment_auto_approved",
             fromStatus: order.status,
             toStatus: "approved",
             actorUserId: 0, // 0 indicates system auto-approval
-            note: `Payment auto-approved via OCR verification (confidence: ${verificationResult.ocrConfidence || 0}%, bank: ${verificationResult.detectedBank || "unknown"})`,
+            note: approvalNote,
           });
           // Finalize order: create purchase records, award loyalty points, record coupon usage
           await orderService.finalizeOrderCompletion(order.id, ctx.user.id);
@@ -486,10 +510,50 @@ export const appRouter = router({
             status: "pending",
           });
 
-          // Record order history for pending review
-          const reviewNote = verificationResult.isShadowMode
-            ? `Payment slip submitted for manual review (OCR shadow mode - simulated decision: ${verificationResult.simulatedDecision}). Reason: ${verificationResult.reviewReason || "Unknown"}`
-            : `Payment slip submitted for manual review. Reason: ${verificationResult.reviewReason || "Unknown"}`;
+          // Record order history for pending review with detailed breakdown
+          let reviewNote: string;
+
+          if (verificationResult.isShadowMode) {
+            reviewNote = generateShadowModeNote({
+              isAutoApproved: verificationResult.isAutoApproved,
+              isShadowMode: true,
+              ocrConfidence: verificationResult.ocrConfidence,
+              detectedBank: verificationResult.detectedBank,
+              reviewReason: verificationResult.reviewReason,
+              extractedAmount: verificationResult.extractedData?.amount,
+              orderTotal: order.totalAmount as number,
+              extractedDate: verificationResult.extractedData?.transactionDate
+                ? verificationResult.extractedData.transactionDate.toLocaleString("en-TH", {
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })
+                : undefined,
+              breakdown: verificationResult.breakdown,
+            });
+          } else {
+            reviewNote = generateManualReviewNote({
+              isAutoApproved: false,
+              isShadowMode: false,
+              ocrConfidence: verificationResult.ocrConfidence,
+              detectedBank: verificationResult.detectedBank,
+              reviewReason: verificationResult.reviewReason,
+              extractedAmount: verificationResult.extractedData?.amount,
+              orderTotal: order.totalAmount as number,
+              extractedDate: verificationResult.extractedData?.transactionDate
+                ? verificationResult.extractedData.transactionDate.toLocaleString("en-TH", {
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })
+                : undefined,
+              breakdown: verificationResult.breakdown,
+            });
+          }
 
           await db.recordOrderHistory({
             orderId: order.id,

@@ -11,30 +11,47 @@ This document provides a comprehensive guide for deploying the OCR Auto-Approve 
 ### Components
 
 **Configuration Layer** (`server/_core/ocr-config.ts`)
+
 - Centralized OCR environment flags
+
 - Production-safe defaults
+
 - Staging-specific overrides
 
 **Metrics Layer** (`server/_core/ocr-metrics.ts`)
+
 - In-memory metrics tracking
+
 - 11 event types (processing, extraction, approval, failures, confidence, banks)
+
 - Metrics summary generation for admin dashboard
 
 **Integration Layer** (`server/ocr-slip-integration-staging.ts`)
+
 - Shadow mode support (OCR runs but doesn't approve)
+
 - Metrics recording at each decision point
+
 - Configurable thresholds
+
 - Detailed logging option
 
 **Admin API** (`server/routers/ocrMetricsRouter.ts`)
+
 - Metrics summary endpoint
+
 - Detailed metrics endpoint
+
 - Configuration inspection endpoint
+
 - Metrics reset endpoint (staging only)
 
 **Main Router** (`server/routers.ts`)
+
 - Updated `uploadPaymentSlip` route
+
 - Uses staging-enhanced integration
+
 - Records OCR metadata in order history
 
 ---
@@ -59,6 +76,7 @@ OCR_SHOW_METADATA=true                    # Show OCR metadata
 ### Recommended Staging Values
 
 **Phase 1: Shadow Mode Only (Days 1-3)**
+
 ```bash
 NODE_ENV=staging
 OCR_ENABLED=true
@@ -74,6 +92,7 @@ OCR_SHOW_METADATA=true
 ```
 
 **Phase 2: Limited Real Approval (Days 4-7)**
+
 ```bash
 NODE_ENV=staging
 OCR_ENABLED=true
@@ -89,6 +108,7 @@ OCR_SHOW_METADATA=true
 ```
 
 **Phase 3: Full Testing (Days 8-14)**
+
 ```bash
 NODE_ENV=staging
 OCR_ENABLED=true
@@ -112,25 +132,39 @@ OCR_SHOW_METADATA=true
 **Goal:** Validate OCR extraction and verification logic without risking approvals
 
 **Configuration:**
+
 - Shadow mode enabled (OCR runs but doesn't approve)
+
 - Lower confidence threshold (75%) to test edge cases
+
 - Detailed logging enabled
 
 **Activities:**
+
 1. Upload 20-30 real Thai payment slips
-2. Monitor extraction success rate
-3. Review OCR confidence distribution
-4. Check duplicate detection
-5. Verify order history records simulated decisions
+
+1. Monitor extraction success rate
+
+1. Review OCR confidence distribution
+
+1. Check duplicate detection
+
+1. Verify order history records simulated decisions
 
 **Success Criteria:**
+
 - Extraction success rate > 80%
+
 - No crashes or errors
+
 - Metrics tracking working correctly
+
 - Admin can see OCR decisions in order history
 
 **Go/No-Go Decision:**
+
 - If success rate < 70%: Debug extraction issues, extend Phase 1
+
 - If success rate > 80%: Proceed to Phase 2
 
 ---
@@ -140,29 +174,47 @@ OCR_SHOW_METADATA=true
 **Goal:** Test real auto-approval with careful monitoring
 
 **Configuration:**
+
 - Shadow mode disabled
+
 - Real auto-approval enabled
+
 - Production confidence threshold (85%)
+
 - Detailed logging disabled
 
 **Activities:**
+
 1. Upload 50-100 payment slips
-2. Monitor auto-approval rate
-3. Review failure reasons
-4. Verify manual review queue
-5. Check for false positives
-6. Monitor duplicate detection
+
+1. Monitor auto-approval rate
+
+1. Review failure reasons
+
+1. Verify manual review queue
+
+1. Check for false positives
+
+1. Monitor duplicate detection
 
 **Success Criteria:**
+
 - Auto-approval rate 40-60% (reasonable balance)
+
 - No duplicate approvals
+
 - Failure reasons make sense
+
 - Manual review queue has appropriate items
 
 **Go/No-Go Decision:**
+
 - If auto-approval rate < 30%: Thresholds too strict, adjust
+
 - If auto-approval rate > 70%: Thresholds too loose, tighten
+
 - If duplicates detected: Debug fingerprint logic
+
 - If all metrics healthy: Proceed to Phase 3
 
 ---
@@ -172,27 +224,43 @@ OCR_SHOW_METADATA=true
 **Goal:** Validate system stability and gather production readiness metrics
 
 **Configuration:**
+
 - Production defaults
+
 - Real auto-approval enabled
+
 - Standard confidence threshold
 
 **Activities:**
+
 1. Continue normal staging traffic
-2. Monitor all metrics continuously
-3. Review top failure reasons
-4. Verify bank detection accuracy
-5. Test edge cases (old slips, unusual amounts, etc.)
-6. Prepare production deployment plan
+
+1. Monitor all metrics continuously
+
+1. Review top failure reasons
+
+1. Verify bank detection accuracy
+
+1. Test edge cases (old slips, unusual amounts, etc.)
+
+1. Prepare production deployment plan
 
 **Success Criteria:**
+
 - Consistent auto-approval rate (40-60%)
+
 - No crashes or errors
+
 - Failure reasons align with business rules
+
 - Duplicate detection working
+
 - Metrics stable over time
 
 **Go/No-Go Decision:**
+
 - If all criteria met: Ready for production
+
 - If issues found: Document and fix before production
 
 ---
@@ -202,44 +270,67 @@ OCR_SHOW_METADATA=true
 ### Key Metrics to Track
 
 **Processing Metrics:**
+
 - Total slips processed
+
 - Successful extractions (%)
+
 - Failed extractions (%)
 
 **Decision Metrics:**
+
 - Auto-approved count
+
 - Manual review count
+
 - Shadow-approved count (Phase 1)
 
 **Failure Reasons (Top 5):**
+
 - Missing amount
+
 - Amount mismatch
+
 - Missing transaction date
+
 - Outside time window
+
 - Duplicate reference
 
 **Bank Distribution:**
+
 - BBL (Bangkok Bank)
+
 - KBANK (Kasikornbank)
+
 - SCB (Siam Commercial Bank)
+
 - PROMPTPAY (PromptPay transfers)
+
 - Others
 
 **Confidence Distribution:**
+
 - Very low (0-25%)
+
 - Low (25-50%)
+
 - Medium (50-75%)
+
 - High (75-85%)
+
 - Very high (85-100%)
 
 ### Admin Dashboard Access
 
 **Metrics Summary Endpoint:**
+
 ```
 GET /api/trpc/ocrMetrics.getSummary
 ```
 
 Returns:
+
 ```json
 {
   "totalProcessed": 150,
@@ -259,6 +350,7 @@ Returns:
 ```
 
 **Detailed Metrics Endpoint:**
+
 ```
 GET /api/trpc/ocrMetrics.getDetailed
 ```
@@ -266,6 +358,7 @@ GET /api/trpc/ocrMetrics.getDetailed
 Returns full metrics object with all counters.
 
 **Configuration Info Endpoint:**
+
 ```
 GET /api/trpc/ocrMetrics.getConfigInfo
 ```
@@ -281,16 +374,19 @@ Returns current configuration and which env vars are set.
 Each slip submission now includes OCR metadata in order history:
 
 **Real Approval:**
+
 ```
 "Payment auto-approved via OCR verification (confidence: 92%, bank: BBL)"
 ```
 
 **Manual Review (Shadow Mode):**
+
 ```
 "Payment slip submitted for manual review (OCR shadow mode - simulated decision: approved). Reason: DUPLICATE_REFERENCE"
 ```
 
 **Manual Review (Real Mode):**
+
 ```
 "Payment slip submitted for manual review. Reason: LOW_CONFIDENCE"
 ```
@@ -298,6 +394,7 @@ Each slip submission now includes OCR metadata in order history:
 ### Payment Response
 
 The `uploadPaymentSlip` endpoint now returns:
+
 ```json
 {
   "success": true,
@@ -320,44 +417,67 @@ The `uploadPaymentSlip` endpoint now returns:
 ### Pre-Staging Deployment
 
 - [ ] All 23 OCR configuration tests passing
+
 - [ ] TypeScript compilation clean
+
 - [ ] No console errors in dev server
+
 - [ ] Shadow mode behavior verified
+
 - [ ] Metrics tracking verified
+
 - [ ] Admin endpoints responding
 
 ### Staging Deployment
 
 - [ ] Environment flags set correctly
+
 - [ ] Dev server running without errors
+
 - [ ] Admin can access metrics endpoints
+
 - [ ] Test slip upload works
+
 - [ ] Order history records OCR metadata
+
 - [ ] Metrics dashboard accessible
 
 ### Phase 1 Testing
 
 - [ ] Upload 20-30 slips in shadow mode
+
 - [ ] Verify extraction success rate > 80%
+
 - [ ] Check metrics accumulation
+
 - [ ] Review order history for simulated decisions
+
 - [ ] Verify no actual approvals occurred
 
 ### Phase 2 Testing
 
 - [ ] Upload 50-100 slips with real approval
+
 - [ ] Monitor auto-approval rate (40-60%)
+
 - [ ] Check for false positives
+
 - [ ] Verify duplicate detection
+
 - [ ] Review failure reasons
+
 - [ ] Confirm manual review queue appropriate
 
 ### Phase 3 Testing
 
 - [ ] Continue normal staging traffic
+
 - [ ] Monitor metrics stability
+
 - [ ] Test edge cases
+
 - [ ] Prepare production deployment plan
+
 - [ ] Document any issues found
 
 ---
@@ -365,7 +485,7 @@ The `uploadPaymentSlip` endpoint now returns:
 ## Failure Reason Reference
 
 | Reason | Meaning | Action |
-|--------|---------|--------|
+| --- | --- | --- |
 | MISSING_AMOUNT | OCR couldn't extract amount | Check slip image quality |
 | AMOUNT_MISMATCH | Extracted amount doesn't match order | Verify order total |
 | MISSING_TRANSACTION_DATE | OCR couldn't extract date/time | Check slip image quality |
@@ -383,9 +503,12 @@ The `uploadPaymentSlip` endpoint now returns:
 ## Known Limitations
 
 1. **In-Memory Metrics:** Metrics reset on server restart. For production, consider persisting to database.
-2. **Thai Bank Support:** Currently supports 9 major Thai banks. Additional banks may need configuration.
-3. **Time Window:** Fixed at 2 hours for full datetime, 24 hours for date-only. May need adjustment per bank.
-4. **Fingerprint Strategy:** Uses reference → bank+account → shop fallback. Some slips may not have all fields.
+
+1. **Thai Bank Support:** Currently supports 9 major Thai banks. Additional banks may need configuration.
+
+1. **Time Window:** Fixed at 2 hours for full datetime, 24 hours for date-only. May need adjustment per bank.
+
+1. **Fingerprint Strategy:** Uses reference → bank+account → shop fallback. Some slips may not have all fields.
 
 ---
 
@@ -394,8 +517,10 @@ The `uploadPaymentSlip` endpoint now returns:
 If issues are discovered during staging:
 
 1. **Phase 1 Issues:** Extend Phase 1, debug extraction logic
-2. **Phase 2 Issues:** Revert to Phase 1, adjust thresholds
-3. **Critical Issues:** Disable OCR (`OCR_ENABLED=false`), revert to manual-only approval
+
+1. **Phase 2 Issues:** Revert to Phase 1, adjust thresholds
+
+1. **Critical Issues:** Disable OCR (`OCR_ENABLED=false`), revert to manual-only approval
 
 ---
 
@@ -404,13 +529,21 @@ If issues are discovered during staging:
 Before deploying to production:
 
 - [ ] Staging testing completed (1-2 weeks)
+
 - [ ] All metrics healthy
+
 - [ ] No false positives detected
+
 - [ ] Duplicate detection working
+
 - [ ] Failure reasons understood
+
 - [ ] Admin trained on OCR system
+
 - [ ] Monitoring plan in place
+
 - [ ] Rollback plan documented
+
 - [ ] Performance impact acceptable
 
 ---
@@ -446,13 +579,16 @@ Shows current configuration and which env vars are set.
 ## Next Steps
 
 1. Set environment flags for Phase 1 (shadow mode)
-2. Deploy to staging
-3. Upload test slips and monitor metrics
-4. Follow rollout plan phases
-5. Document findings and prepare production deployment
+
+1. Deploy to staging
+
+1. Upload test slips and monitor metrics
+
+1. Follow rollout plan phases
+
+1. Document findings and prepare production deployment
 
 ---
 
-**Document Version:** 1.0  
-**Last Updated:** April 29, 2026  
-**Status:** Ready for Staging Deployment
+**Document Version:** 1.0**Last Updated:** April 29, 2026**Status:** Ready for Staging Deployment
+
