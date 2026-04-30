@@ -35,11 +35,87 @@ export default function Home() {
     );
   }
 
+  const banners = sections?.banners || [];
   const popularNovels = sections?.popularNovels || [];
   const newNovels = sections?.newNovels || [];
   const freeNovels = sections?.freeNovels || [];
   const latestEpisodes = sections?.latestEpisodes || [];
   const finishedNovels = sections?.finishedNovels || [];
+
+  // Banner Carousel Component
+  const BannerCarousel = ({ banners }: { banners: any[] }) => {
+    const [currentIndex, setCurrentIndex] = React.useState(0);
+
+    React.useEffect(() => {
+      if (banners.length <= 1) return;
+      const interval = setInterval(() => {
+        setCurrentIndex((prev) => (prev + 1) % banners.length);
+      }, 5000); // Auto-rotate every 5 seconds
+      return () => clearInterval(interval);
+    }, [banners.length]);
+
+    if (banners.length === 0) return null;
+
+    const currentBanner = banners[currentIndex];
+
+    return (
+      <div className="mb-12 sm:mb-16 md:mb-20">
+        <div className="relative w-full h-48 sm:h-64 md:h-80 rounded-xl overflow-hidden group">
+          {/* Banner Image */}
+          {currentBanner.imageUrl ? (
+            <img
+              src={currentBanner.imageUrl}
+              alt={currentBanner.title}
+              className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+            />
+          ) : (
+            <div className="w-full h-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center">
+              <Sparkles className="w-16 h-16 text-white/50" />
+            </div>
+          )}
+
+          {/* Dark overlay for text readability */}
+          <div className="absolute inset-0 bg-black/20" />
+
+          {/* Banner Content */}
+          <div className="absolute inset-0 flex flex-col justify-end p-4 sm:p-6 md:p-8 text-white">
+            <h2 className="text-xl sm:text-2xl md:text-3xl font-bold mb-2 line-clamp-2">
+              {currentBanner.title}
+            </h2>
+            {currentBanner.description && (
+              <p className="text-sm sm:text-base text-white/90 mb-4 line-clamp-2">
+                {currentBanner.description}
+              </p>
+            )}
+            {currentBanner.linkUrl && (
+              <a href={currentBanner.linkUrl} target="_blank" rel="noopener noreferrer">
+                <Button className="w-full sm:w-auto rounded-full bg-white text-slate-900 hover:bg-blue-50 font-semibold">
+                  {t("home.learnMore") || "Learn More"}
+                  <ArrowRight className="w-4 h-4 ml-2" />
+                </Button>
+              </a>
+            )}
+          </div>
+
+          {/* Navigation Dots */}
+          {banners.length > 1 && (
+            <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex gap-2 z-10">
+              {banners.map((_, index) => (
+                <button
+                  key={index}
+                  onClick={() => setCurrentIndex(index)}
+                  className={`w-2 h-2 rounded-full transition-all duration-300 ${
+                    index === currentIndex ? "bg-white w-6" : "bg-white/50 hover:bg-white/75"
+                  }`}
+                  aria-label={`Go to banner ${index + 1}`}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   // Episode Card Component for latest episodes
   const EpisodeCard = ({ episode }: any) => {
@@ -164,6 +240,8 @@ export default function Home() {
 
       {/* Main Content - Mobile First */}
       <div className="max-w-6xl mx-auto px-4 py-12 sm:py-16 md:py-20">
+        {/* Banners Section */}
+        {!isLoading && <BannerCarousel banners={banners} />}
         {/* Featured Novels Section - Popular */}
         <section className="mb-16 sm:mb-20">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">

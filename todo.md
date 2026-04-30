@@ -904,3 +904,12 @@
 - [x] Add tests for order history note generation
 - [x] Verify TypeScript, tests, and build
 - [x] Save checkpoint with enhanced order notes
+
+
+## Banner Integration on Home Page
+- [x] Inspect banner implementation and current Home page data flow
+- [x] Update backend to expose banners in home.getSections
+- [x] Update frontend to render banners on Home page
+- [x] Write tests for banner rendering on Home
+- [x] Run full verification: TypeScript, tests, build
+- [x] Deliver banner integration report
