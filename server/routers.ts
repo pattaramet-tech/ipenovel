@@ -452,6 +452,15 @@ export const appRouter = router({
         const payment = await db.getPaymentByOrderId(order.id);
         if (!payment) throw new TRPCError({ code: "NOT_FOUND" });
 
+        // P0-1 FIX: Prevent re-uploading on finalized payments
+        // Do not allow resetting approved or rejected payments back to pending
+        if (payment.status === "approved" || payment.status === "rejected") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Cannot upload slip for ${payment.status} payment. Payment is finalized.`,
+          });
+        }
+
         // Update payment with slip URL and submission time
         await db.updatePayment(payment.id, {
           slipImageUrl: input.slipImageUrl,

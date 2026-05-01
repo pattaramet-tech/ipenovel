@@ -913,3 +913,18 @@
 - [x] Write tests for banner rendering on Home
 - [x] Run full verification: TypeScript, tests, build
 - [x] Deliver banner integration report
+
+
+## OCR Hardening & Payment Bugs Fix (P0 Priority)
+- [x] Fix Payments review queue correctness (pending_review visibility)
+- [x] Prevent re-upload/reset on finalized payments
+- [x] Fix rejection transaction consistency
+- [x] Harden OCR extraction with structured result (confidence, warnings)
+- [x] Tighten OCR verification time logic
+- [x] Use detectedBank as real signal for verification
+- [x] Strengthen fingerprint with fallback chain
+- [x] Improve review reason codes (precise, not vague)
+- [x] Enhance admin review visibility with OCR details
+- [x] Write comprehensive tests for all fixes
+- [x] Run full verification: TypeScript, tests, build
+- [x] Deliver staging-ready verdict

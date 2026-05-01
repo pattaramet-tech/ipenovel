@@ -343,12 +343,14 @@ export async function rejectPayment(paymentId: number, rejectedBy: string, reaso
 
   const rejectedByNum = parseInt(rejectedBy, 10);
 
+  // P0-2 FIX: Pass transaction parameter for atomicity
   // Use ApprovalService to reject payment with metadata
   // This preserves rejection reason and reviewer info without setting approval fields
   await ApprovalService.rejectPayment(
     paymentId,
     reason,
-    !isNaN(rejectedByNum) ? rejectedByNum : undefined
+    !isNaN(rejectedByNum) ? rejectedByNum : undefined,
+    tx  // Pass transaction for atomicity
   );
   
   // Also set reviewedByUserId via db.rejectPayment for backward compatibility
