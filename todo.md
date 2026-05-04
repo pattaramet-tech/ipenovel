@@ -936,3 +936,12 @@
 - [x] Document current implementation status (85% hardened, 97 tests passing)
 - [x] Create comprehensive hardening report with staging recommendations
 - [x] Provide go/no-go verdict: STAGING-READY
+
+
+## Banner Image Upload Feature
+- [x] Add uploadImage mutation to admin.banners router with storage integration
+- [x] Update AdminBannersPage with file input, preview, and upload workflow
+- [x] Verify storage.ts signature and fix if needed
+- [x] Run pnpm check and pnpm build to verify no errors
+- [x] Test banner creation with image upload
+- [x] Save checkpoint with banner upload feature

@@ -10,6 +10,7 @@ import * as orderService from "./services/orderService";
 import * as walletService from "./services/walletService";
 import { ApprovalService } from "./services/approvalService";
 import { fileRouter } from "./routers/fileRouter";
+import { storagePut } from "./storage";
 import { parseSlipImage } from "./ocr-slip-verification-v2";
 import { processSlipVerificationStaging } from "./ocr-slip-integration-staging";
 import { getOCRConfig } from "./_core/ocr-config";
@@ -27,6 +28,13 @@ const adminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
   }
   return next({ ctx });
 });
+
+const BANNER_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
+const MAX_BANNER_IMAGE_SIZE = 5 * 1024 * 1024;
+
+function sanitizeUploadFileName(fileName: string): string {
+  return fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
 
   // ============ MAIN ROUTER ============
 
@@ -1203,6 +1211,35 @@ export const appRouter = router({
         // Admin needs all banners (including inactive)
         return db.getAllBannersAdmin();
       }),
+
+      uploadImage: adminProcedure
+        .input(
+          z.object({
+            fileName: z.string().min(1),
+            mimeType: z.enum(BANNER_IMAGE_MIME_TYPES),
+            fileBase64: z.string().min(1),
+          })
+        )
+        .mutation(async ({ input }) => {
+          const base64Data = input.fileBase64.split(",")[1] || input.fileBase64;
+          const fileBuffer = Buffer.from(base64Data, "base64");
+
+          if (fileBuffer.length > MAX_BANNER_IMAGE_SIZE) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Banner image must be 5MB or smaller",
+            });
+          }
+
+          const timestamp = Date.now();
+          const randomSuffix = Math.random().toString(36).substring(2, 8);
+          const sanitizedFileName = sanitizeUploadFileName(input.fileName);
+          const fileKey = `banners/${timestamp}-${randomSuffix}-${sanitizedFileName}`;
+
+          const { url, key } = await storagePut(fileKey, fileBuffer, input.mimeType);
+
+          return { url, key };
+        }),
 
       create: adminProcedure
         .input(

@@ -4,40 +4,63 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
-import { useLocation } from "wouter";
-import { Trash2, Plus } from "lucide-react";
+import { ImageIcon, Trash2, Plus, Upload } from "lucide-react";
 import { toast } from "sonner";
-import { useState } from "react";
+import { useState, type ChangeEvent } from "react";
+
+const ALLOWED_BANNER_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
+const MAX_BANNER_IMAGE_SIZE = 5 * 1024 * 1024;
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (event) => resolve(event.target?.result as string);
+    reader.onerror = () => reject(new Error("File read failed"));
+    reader.readAsDataURL(file);
+  });
+}
 
 export default function AdminBannersPage() {
-  // All hooks must be called at the top level, before any conditional returns
   const { user, isAuthenticated } = useAuth();
-  const [, navigate] = useLocation();
+
   const [isCreating, setIsCreating] = useState(false);
+  const [selectedImageFile, setSelectedImageFile] = useState<File | null>(null);
+  const [selectedImageDataUrl, setSelectedImageDataUrl] = useState("");
+
   const [formData, setFormData] = useState({
     title: "",
     description: "",
-    imageUrl: "",
     linkUrl: "",
     displayOrder: 0,
   });
 
-  // Query hooks with enabled flag - they won't fetch until auth is resolved and user is admin
-  const { data: banners, isLoading, refetch } = trpc.admin.banners.list.useQuery(
-    undefined,
-    { enabled: !!user && user.role === "admin" }
-  );
+  const resetCreateForm = () => {
+    setFormData({
+      title: "",
+      description: "",
+      linkUrl: "",
+      displayOrder: 0,
+    });
+    setSelectedImageFile(null);
+    setSelectedImageDataUrl("");
+  };
 
-  // Mutation hooks
+  const {
+    data: banners,
+    isLoading,
+    refetch,
+  } = trpc.admin.banners.list.useQuery(undefined, {
+    enabled: !!user && user.role === "admin",
+  });
+
+  const uploadImageMutation = trpc.admin.banners.uploadImage.useMutation();
+
   const createMutation = trpc.admin.banners.create.useMutation({
     onSuccess: () => {
       toast.success("Banner created!");
-      setFormData({ title: "", description: "", imageUrl: "", linkUrl: "", displayOrder: 0 });
+      resetCreateForm();
       setIsCreating(false);
       refetch();
-    },
-    onError: () => {
-      toast.error("Failed to create banner");
     },
   });
 
@@ -82,31 +105,95 @@ export default function AdminBannersPage() {
     );
   }
 
-  const handleCreate = () => {
-    if (!formData.title || !formData.imageUrl) {
-      toast.error("Title and image URL are required");
+  const handleImageChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+
+    if (!file) {
+      setSelectedImageFile(null);
+      setSelectedImageDataUrl("");
       return;
     }
-    createMutation.mutate(formData);
+
+    if (!ALLOWED_BANNER_IMAGE_TYPES.includes(file.type)) {
+      toast.error("Please upload a JPG, PNG, or WebP image");
+      setSelectedImageFile(null);
+      setSelectedImageDataUrl("");
+      event.target.value = "";
+      return;
+    }
+
+    if (file.size > MAX_BANNER_IMAGE_SIZE) {
+      toast.error("Banner image must be 5MB or smaller");
+      setSelectedImageFile(null);
+      setSelectedImageDataUrl("");
+      event.target.value = "";
+      return;
+    }
+
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      setSelectedImageFile(file);
+      setSelectedImageDataUrl(dataUrl);
+    } catch (error) {
+      console.error("Image preview error:", error);
+      toast.error("Failed to read image file");
+      setSelectedImageFile(null);
+      setSelectedImageDataUrl("");
+      event.target.value = "";
+    }
   };
+
+  const handleCreate = async () => {
+    if (!formData.title.trim() || !selectedImageFile || !selectedImageDataUrl) {
+      toast.error("Title and banner image are required");
+      return;
+    }
+
+    try {
+      const uploadResult = await uploadImageMutation.mutateAsync({
+        fileName: selectedImageFile.name,
+        mimeType: selectedImageFile.type as "image/jpeg" | "image/png" | "image/webp",
+        fileBase64: selectedImageDataUrl,
+      });
+
+      await createMutation.mutateAsync({
+        ...formData,
+        title: formData.title.trim(),
+        description: formData.description.trim() || undefined,
+        linkUrl: formData.linkUrl.trim() || undefined,
+        imageUrl: uploadResult.url,
+      });
+    } catch (error: any) {
+      console.error("Create banner error:", error);
+      toast.error(error?.message || "Failed to create banner");
+    }
+  };
+
+  const isSubmitting = uploadImageMutation.isPending || createMutation.isPending;
 
   return (
     <div className="min-h-screen bg-slate-50 py-8">
       <div className="container mx-auto px-4">
         <div className="flex items-center justify-between mb-8">
           <h1 className="text-3xl font-bold">Manage Banners</h1>
-          <Button onClick={() => setIsCreating(!isCreating)}>
+
+          <Button
+            onClick={() => {
+              if (isCreating) resetCreateForm();
+              setIsCreating(!isCreating);
+            }}
+          >
             <Plus className="w-4 h-4 mr-2" />
             New Banner
           </Button>
         </div>
 
-        {/* Create Form */}
         {isCreating && (
           <Card className="mb-8">
             <CardHeader>
               <CardTitle>Create New Banner</CardTitle>
             </CardHeader>
+
             <CardContent className="space-y-4">
               <div>
                 <label className="text-sm font-semibold">Title</label>
@@ -126,13 +213,42 @@ export default function AdminBannersPage() {
                 />
               </div>
 
-              <div>
-                <label className="text-sm font-semibold">Image URL</label>
-                <Input
-                  value={formData.imageUrl}
-                  onChange={(e) => setFormData({ ...formData, imageUrl: e.target.value })}
-                  placeholder="https://..."
-                />
+              <div className="space-y-2">
+                <label className="text-sm font-semibold">Banner Image</label>
+
+                <div className="rounded-lg border border-dashed border-slate-300 bg-white p-4">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+                    <div className="flex h-32 w-full items-center justify-center overflow-hidden rounded-md bg-slate-100 sm:w-56">
+                      {selectedImageDataUrl ? (
+                        <img
+                          src={selectedImageDataUrl}
+                          alt="Banner preview"
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <ImageIcon className="h-10 w-10 text-slate-400" />
+                      )}
+                    </div>
+
+                    <div className="flex-1 space-y-2">
+                      <Input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        onChange={handleImageChange}
+                      />
+
+                      <p className="text-xs text-slate-500">
+                        Upload JPG, PNG, or WebP. Maximum file size 5MB.
+                      </p>
+
+                      {selectedImageFile && (
+                        <p className="text-xs text-slate-700">
+                          Selected: {selectedImageFile.name}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
 
               <div>
@@ -149,15 +265,30 @@ export default function AdminBannersPage() {
                 <Input
                   type="number"
                   value={formData.displayOrder}
-                  onChange={(e) => setFormData({ ...formData, displayOrder: parseInt(e.target.value) })}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      displayOrder: parseInt(e.target.value) || 0,
+                    })
+                  }
                 />
               </div>
 
               <div className="flex gap-2 pt-4">
-                <Button onClick={handleCreate} disabled={createMutation.isPending} className="flex-1">
-                  Create Banner
+                <Button onClick={handleCreate} disabled={isSubmitting} className="flex-1">
+                  <Upload className="w-4 h-4 mr-2" />
+                  {isSubmitting ? "Uploading..." : "Create Banner"}
                 </Button>
-                <Button variant="outline" onClick={() => setIsCreating(false)} className="flex-1">
+
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    resetCreateForm();
+                    setIsCreating(false);
+                  }}
+                  disabled={isSubmitting}
+                  className="flex-1"
+                >
                   Cancel
                 </Button>
               </div>
@@ -165,7 +296,6 @@ export default function AdminBannersPage() {
           </Card>
         )}
 
-        {/* Banners List */}
         {isLoading ? (
           <div className="space-y-4">
             {[...Array(3)].map((_, i) => (
