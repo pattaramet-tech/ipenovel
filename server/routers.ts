@@ -476,14 +476,40 @@ export const appRouter = router({
           status: "pending",
         });
 
-         // Extract OCR text from slip image (returns structured result with confidence)
-        const slipOcrResult = await parseSlipImage(input.slipImageUrl);
-        // Process slip verification with staging enhancements (shadow mode, metrics)
-        const verificationResult = await processSlipVerificationStaging(payment.id, slipOcrResult);
-        const config = getOCRConfig();
+        // Check if OCR is enabled
+        const { getOCREnabled } = await import("./_core/ocr-settings");
+        const ocrEnabled = await getOCREnabled();
 
-        // Determine if we should actually approve or just simulate
-        const shouldApprove = verificationResult.isAutoApproved && !verificationResult.isShadowMode;
+        let verificationResult: any;
+        let shouldApprove = false;
+
+        if (ocrEnabled) {
+          // OCR is enabled: run OCR processing
+          console.log(`[OCR] Processing slip for order ${order.id} (OCR enabled)`);
+          // Extract OCR text from slip image (returns structured result with confidence)
+          const slipOcrResult = await parseSlipImage(input.slipImageUrl);
+          // Process slip verification with staging enhancements (shadow mode, metrics)
+          verificationResult = await processSlipVerificationStaging(payment.id, slipOcrResult);
+          const config = getOCRConfig();
+          // Determine if we should actually approve or just simulate
+          shouldApprove = verificationResult.isAutoApproved && !verificationResult.isShadowMode;
+        } else {
+          // OCR is disabled: skip OCR and send to manual review
+          console.log(`[OCR] Skipping OCR for order ${order.id} (OCR disabled) - sending to manual review`);
+          verificationResult = {
+            isAutoApproved: false,
+            isShadowMode: false,
+            reviewReason: "OCR_DISABLED",
+            ocrConfidence: 0,
+            detectedBank: null,
+            extractedData: null,
+            breakdown: { reason: "OCR processing is disabled" },
+            duplicateStatus: "not_checked",
+          };
+          shouldApprove = false;
+        }
+
+        const config = getOCRConfig();
 
         // Sync order status based on verification result
         if (shouldApprove) {
@@ -1359,6 +1385,20 @@ export const appRouter = router({
         .mutation(async ({ input }) => {
           await db.setSetting(input.key, input.value, input.description);
           return { success: true };
+        }),
+      getOCRToggle: adminProcedure.query(async () => {
+        const { getOCRSettingsSummary } = await import("./_core/ocr-settings");
+        return getOCRSettingsSummary();
+      }),
+      setOCRToggle: adminProcedure
+        .input(z.object({ enabled: z.boolean() }))
+        .mutation(async ({ input }) => {
+          const { setOCREnabled } = await import("./_core/ocr-settings");
+          const success = await setOCREnabled(input.enabled);
+          if (success) {
+            console.log(`[Admin] OCR toggle updated to: ${input.enabled}`);
+          }
+          return { success };
         }),
     }),
 

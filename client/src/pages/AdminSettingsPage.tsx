@@ -1,12 +1,16 @@
-import AdminLayout from "@/components/AdminLayout";
+"use client";
+
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { Loader2 } from "lucide-react";
+import { Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
+import { trpc } from "@/lib/trpc";
+import { Switch } from "@/components/ui/switch";
+import AdminLayout from "@/components/AdminLayout";
 
 export default function AdminSettingsPage() {
   const [settings, setSettings] = useState({
@@ -15,6 +19,47 @@ export default function AdminSettingsPage() {
     contactEmail: "support@ipenovel.com",
   });
   const [isSaving, setIsSaving] = useState(false);
+
+  // OCR toggle state
+  const [ocrEnabled, setOcrEnabled] = useState(true);
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrStatus, setOcrStatus] = useState<any>(null);
+
+  // Fetch OCR status on mount
+  useEffect(() => {
+    const fetchOCRStatus = async () => {
+      try {
+        const status = await trpc.admin.settings.getOCRToggle.useQuery();
+        setOcrStatus(status.data);
+        setOcrEnabled(status.data?.ocrEnabled ?? true);
+      } catch (error) {
+        console.error("Failed to fetch OCR status:", error);
+        toast.error("Failed to load OCR settings");
+      }
+    };
+    fetchOCRStatus();
+  }, []);
+
+  const handleOCRToggle = async (enabled: boolean) => {
+    setOcrLoading(true);
+    try {
+      const result = await trpc.admin.settings.setOCRToggle.useMutation().mutateAsync({ enabled });
+      if (result.success) {
+        setOcrEnabled(enabled);
+        toast.success(`OCR ${enabled ? "enabled" : "disabled"} successfully`);
+        // Refresh status
+        const status = await trpc.admin.settings.getOCRToggle.useQuery();
+        setOcrStatus(status.data);
+      } else {
+        toast.error("Failed to update OCR toggle");
+      }
+    } catch (error) {
+      console.error("Failed to update OCR toggle:", error);
+      toast.error("Failed to update OCR toggle");
+    } finally {
+      setOcrLoading(false);
+    }
+  };
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -74,6 +119,50 @@ export default function AdminSettingsPage() {
                 Payment processing is configured through Manus built-in payment system.
                 No additional configuration needed.
               </p>
+            </div>
+          </div>
+        </Card>
+
+        {/* OCR Settings */}
+        <Card className="p-6">
+          <h2 className="text-lg font-semibold mb-4">OCR Auto-Approval Settings</h2>
+          <div className="space-y-4">
+            <div className="flex items-center justify-between p-4 bg-gray-50 rounded">
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  <Label className="text-base font-medium">Enable OCR Auto-Processing</Label>
+                  {ocrEnabled ? (
+                    <CheckCircle2 className="w-5 h-5 text-green-600" />
+                  ) : (
+                    <AlertCircle className="w-5 h-5 text-orange-600" />
+                  )}
+                </div>
+                <p className="text-sm text-gray-600 mt-1">
+                  {ocrEnabled
+                    ? "OCR is enabled. Payment slips will be automatically processed and approved if verification is strong."
+                    : "OCR is disabled. All payment slips will be sent to manual review."}
+                </p>
+                {ocrStatus && (
+                  <p className="text-xs text-gray-500 mt-2">
+                    Source: {ocrStatus.source}
+                    {ocrStatus.environmentOverride && ` (${ocrStatus.environmentOverride})`}
+                  </p>
+                )}
+              </div>
+              <Switch
+                checked={ocrEnabled}
+                onCheckedChange={handleOCRToggle}
+                disabled={ocrLoading}
+                className="ml-4"
+              />
+            </div>
+            <div className="p-3 bg-blue-50 rounded text-sm text-blue-900">
+              <p className="font-medium mb-1">How it works:</p>
+              <ul className="list-disc list-inside space-y-1 text-xs">
+                <li><strong>OCR ON:</strong> Slips are processed by OCR. Strong confidence = auto-approve. Otherwise = manual review.</li>
+                <li><strong>OCR OFF:</strong> All slips skip OCR and go directly to manual review.</li>
+                <li>Wallet payments are unaffected by this setting.</li>
+              </ul>
             </div>
           </div>
         </Card>

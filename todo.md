@@ -945,3 +945,24 @@
 - [x] Run pnpm check and pnpm build to verify no errors
 - [x] Test banner creation with image upload
 - [x] Save checkpoint with banner upload feature
+
+
+## OCR Toggle Feature (Enable/Disable OCR Auto-Processing)
+- [ ] Add OCR_ENABLED environment flag and admin settings table/schema
+- [ ] Create admin settings API endpoints (get/update OCR toggle)
+- [ ] Update uploadPaymentSlip route to check OCR toggle before processing
+- [ ] Add OCR toggle display to admin settings UI
+- [ ] Add logging for OCR enabled/disabled decisions
+- [ ] Write comprehensive tests for OCR toggle behavior
+- [ ] Run full verification: TypeScript, tests, build
+- [ ] Deliver OCR toggle implementation report
+
+
+## OCR Toggle Feature (Enable/Disable OCR Processing)
+- [x] Add OCR_ENABLED environment flag and admin settings table/schema
+- [x] Create admin settings API endpoints (get/update OCR toggle)
+- [x] Update uploadPaymentSlip route to check OCR toggle before processing
+- [x] Add OCR toggle display to admin settings UI
+- [x] Add logging for OCR enabled/disabled decisions
+- [x] Run full verification: TypeScript, tests, build
+- [x] Deliver OCR toggle implementation report
