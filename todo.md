@@ -966,3 +966,14 @@
 - [x] Add logging for OCR enabled/disabled decisions
 - [x] Run full verification: TypeScript, tests, build
 - [x] Deliver OCR toggle implementation report
+
+
+## OCR Over-Rejection Diagnosis & Improvement
+- [x] Inspect current active OCR path and identify top manual-review blocking reasons
+- [x] Add metrics/logging infrastructure to track rejection reasons
+- [x] Improve OCR extraction quality (Thai numerals, dates, field robustness)
+- [x] Improve verification logic conservatively (keep fraud protection, improve valid pass-through)
+- [x] Add admin visibility for extracted fields and verification breakdown
+- [x] Write tests for common failure reasons and measure improvements
+- [x] Run full verification: TypeScript, tests, build
+- [x] Deliver diagnostic report with root causes and improvements measured
