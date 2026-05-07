@@ -977,3 +977,18 @@
 - [x] Write tests for common failure reasons and measure improvements
 - [x] Run full verification: TypeScript, tests, build
 - [x] Deliver diagnostic report with root causes and improvements measured
+
+
+## OCR Improved Logic Integration into Active Path
+- [x] Identify improved OCR module (ocr-slip-verification-improved.ts) with better thresholds
+- [x] Merge improved logic into active v2 module (ocr-slip-verification-v2.ts):
+  - [x] Lower confidence threshold: 85% → 80%
+  - [x] Lower structured data requirement: 3 → 2 fields
+  - [x] Convert merchant code checks: hard fail → warning only
+  - [x] Convert merchant transaction code checks: hard fail → warning only
+  - [x] Convert shop name checks: hard fail → warning only
+- [x] Update test expectations to reflect warning-only behavior for merchant/shop mismatches
+- [x] Verify TypeScript clean (0 errors)
+- [ ] Run full test suite to verify all OCR tests pass
+- [ ] Run pnpm build to verify production build clean
+- [ ] Save checkpoint with merged improved OCR logic

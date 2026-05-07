@@ -95,18 +95,20 @@ describe("OCR Slip Verification", () => {
       expect(result.reviewReason).toBe("AMOUNT_MISMATCH");
     });
 
-    it("should reject slip with wrong shop name", () => {
+    it("should auto-approve slip with wrong shop name (warning only)", () => {
       const invalid = { ...validExtracted, shopName: "Wrong Shop" };
       const result = verifySlipData(invalid, validContext, new Set());
-      expect(result.isAutoApproved).toBe(false);
-      expect(result.reviewReason).toBe("SHOP_NAME_MISMATCH");
+      // Shop name mismatch is now a warning, not a hard fail
+      expect(result.isAutoApproved).toBe(true);
+      expect(result.status).toBe("approved");
     });
 
-    it("should reject slip with wrong merchant code", () => {
+    it("should auto-approve slip with wrong merchant code (warning only)", () => {
       const invalid = { ...validExtracted, merchantCode: "XX000000000000" };
       const result = verifySlipData(invalid, validContext, new Set());
-      expect(result.isAutoApproved).toBe(false);
-      expect(result.reviewReason).toBe("MERCHANT_CODE_MISMATCH");
+      // Merchant code mismatch is now a warning, not a hard fail
+      expect(result.isAutoApproved).toBe(true);
+      expect(result.status).toBe("approved");
     });
 
     it("should reject slip with duplicate reference", () => {
@@ -151,11 +153,12 @@ describe("OCR Slip Verification", () => {
       expect(result.isAutoApproved).toBe(true);
     });
 
-    it("should reject slip with mismatched merchant transaction code", () => {
+    it("should auto-approve slip with mismatched merchant transaction code (warning only)", () => {
       const invalid = { ...validExtracted, merchantTransactionCode: "WRONG123456789" };
       const result = verifySlipData(invalid, validContext, new Set());
-      expect(result.isAutoApproved).toBe(false);
-      expect(result.reviewReason).toBe("MERCHANT_TRANSACTION_CODE_MISMATCH");
+      // Merchant transaction code mismatch is now a warning, not a hard fail
+      expect(result.isAutoApproved).toBe(true);
+      expect(result.status).toBe("approved");
     });
 
     it("should normalize shop name for matching", () => {
@@ -574,7 +577,7 @@ describe("OCR Slip Verification - Critical Fixes Regression", () => {
       expect(extracted.confidence).toBeGreaterThanOrEqual(85);
     });
 
-    it("should still reject invalid slip after all fixes", () => {
+     it("should auto-approve slip with wrong shop name (after improvements)", () => {
       const invalidSlip = `
         ธนาคารกรุงเทพ
         ชื่อร้านค้า: Wrong Shop
@@ -583,12 +586,11 @@ describe("OCR Slip Verification - Critical Fixes Regression", () => {
         วันที่: 19/04/2569
         เลขที่อ้างอิง: 123456789012
       `;
-
       const extracted = extractSlipData(invalidSlip);
       const result = verifySlipData(extracted, mockContext, new Set(), new Set());
-
-      expect(result.isAutoApproved).toBe(false);
-      expect(result.reviewReason).toBe("SHOP_NAME_MISMATCH");
-    });
+      // Shop name mismatch is now a warning only - slip should auto-approve if other checks pass
+      expect(result.isAutoApproved).toBe(true);
+      expect(result.status).toBe("approved");
+    });;
   });
 });

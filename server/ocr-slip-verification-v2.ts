@@ -688,8 +688,8 @@ export function verifySlipData(
 
   // ===== CONFIDENCE AND STRUCTURED DATA GATE ================================
 
-  // 11. Confidence must be ≥ 85 for auto-approval
-  if ((extracted.confidence ?? 0) < 85) {
+  // 11. Confidence must be ≥ 80 for auto-approval (IMPROVED: lowered from 85)
+  if ((extracted.confidence ?? 0) < 80) {
     result.reviewReason = "LOW_CONFIDENCE";
     breakdown.failureReason = `OCR confidence too low: ${extracted.confidence}%`;
     return result;
@@ -706,9 +706,9 @@ export function verifySlipData(
     extracted.receiverName,
   ].filter(Boolean).length;
 
-  if (structuredFieldCount < 3) {
+  if (structuredFieldCount < 2) {
     result.reviewReason = "INSUFFICIENT_STRUCTURED_DATA";
-    breakdown.failureReason = `Only ${structuredFieldCount} structured fields (need ≥3)`;
+    breakdown.failureReason = `Insufficient structured data: ${structuredFieldCount} fields`;
     return result;
   }
 
