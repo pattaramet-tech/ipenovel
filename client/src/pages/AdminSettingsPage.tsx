@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Loader2, AlertCircle, CheckCircle2, Trash2, Plus } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Switch } from "@/components/ui/switch";
 import AdminLayout from "@/components/AdminLayout";
@@ -25,9 +25,17 @@ export default function AdminSettingsPage() {
   const [ocrLoading, setOcrLoading] = useState(false);
   const [ocrStatus, setOcrStatus] = useState<any>(null);
 
-  // Fetch OCR status on mount
+  // Wallet bonus rules state
+  const [bonusRules, setBonusRules] = useState<any[]>([]);
+  const [bonusLoading, setBonusLoading] = useState(false);
+  const [bonusSaving, setBonusSaving] = useState(false);
+  const [newRuleThreshold, setNewRuleThreshold] = useState("");
+  const [newRuleBonus, setNewRuleBonus] = useState("");
+  const [newRuleLabel, setNewRuleLabel] = useState("");
+
+  // Fetch OCR status and bonus rules on mount
   useEffect(() => {
-    const fetchOCRStatus = async () => {
+    const fetchSettings = async () => {
       try {
         const status = await trpc.admin.settings.getOCRToggle.useQuery();
         setOcrStatus(status.data);
@@ -36,8 +44,19 @@ export default function AdminSettingsPage() {
         console.error("Failed to fetch OCR status:", error);
         toast.error("Failed to load OCR settings");
       }
-    };
-    fetchOCRStatus();
+      
+      try {
+        setBonusLoading(true);
+        const result = await trpc.admin.settings.getWalletBonusRules.useQuery();
+        setBonusRules(result.data?.rules || []);
+      } catch (error) {
+        console.error("Failed to fetch bonus rules:", error);
+        toast.error("Failed to load bonus rules");
+      } finally {
+        setBonusLoading(false);
+      }
+    }
+    fetchSettings();
   }, []);
 
   const handleOCRToggle = async (enabled: boolean) => {
@@ -58,6 +77,75 @@ export default function AdminSettingsPage() {
       toast.error("Failed to update OCR toggle");
     } finally {
       setOcrLoading(false);
+    }
+  };
+
+  const handleAddBonusRule = async () => {
+    if (!newRuleThreshold || !newRuleBonus) {
+      toast.error("Please enter threshold and bonus amount");
+      return;
+    }
+
+    const threshold = parseFloat(newRuleThreshold);
+    const bonus = parseFloat(newRuleBonus);
+
+    if (isNaN(threshold) || threshold <= 0) {
+      toast.error("Threshold must be a positive number");
+      return;
+    }
+    if (isNaN(bonus) || bonus < 0) {
+      toast.error("Bonus must be zero or positive");
+      return;
+    }
+
+    setBonusSaving(true);
+    try {
+      await trpc.admin.settings.addWalletBonusRule.useMutation().mutateAsync({
+        threshold,
+        bonus,
+        label: newRuleLabel || undefined,
+      });
+      toast.success("Bonus rule added successfully");
+      setNewRuleThreshold("");
+      setNewRuleBonus("");
+      setNewRuleLabel("");
+      // Refresh rules
+      const result = await trpc.admin.settings.getWalletBonusRules.useQuery();
+      setBonusRules(result.data?.rules || []);
+    } catch (error: any) {
+      toast.error(error.message || "Failed to add bonus rule");
+    } finally {
+      setBonusSaving(false);
+    }
+  };
+
+  const handleDeleteBonusRule = async (ruleId: string) => {
+    setBonusSaving(true);
+    try {
+      await trpc.admin.settings.deleteWalletBonusRule.useMutation().mutateAsync({ ruleId });
+      toast.success("Bonus rule deleted successfully");
+      // Refresh rules
+      const result = await trpc.admin.settings.getWalletBonusRules.useQuery();
+      setBonusRules(result.data?.rules || []);
+    } catch (error: any) {
+      toast.error(error.message || "Failed to delete bonus rule");
+    } finally {
+      setBonusSaving(false);
+    }
+  };
+
+  const handleToggleBonusRule = async (ruleId: string, enabled: boolean) => {
+    setBonusSaving(true);
+    try {
+      await trpc.admin.settings.toggleWalletBonusRule.useMutation().mutateAsync({ ruleId, enabled });
+      toast.success(`Bonus rule ${enabled ? "enabled" : "disabled"} successfully`);
+      // Refresh rules
+      const result = await trpc.admin.settings.getWalletBonusRules.useQuery();
+      setBonusRules(result.data?.rules || []);
+    } catch (error: any) {
+      toast.error(error.message || "Failed to toggle bonus rule");
+    } finally {
+      setBonusSaving(false);
     }
   };
 
@@ -120,6 +208,118 @@ export default function AdminSettingsPage() {
                 No additional configuration needed.
               </p>
             </div>
+          </div>
+        </Card>
+
+        {/* Wallet Bonus Settings */}
+        <Card className="p-6">
+          <h2 className="text-lg font-semibold mb-4">Wallet Top-up Bonus Settings</h2>
+          <div className="space-y-4">
+            {bonusLoading ? (
+              <div className="flex items-center gap-2 text-gray-600">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Loading bonus rules...
+              </div>
+            ) : (
+              <>
+                {/* Existing Rules */}
+                <div>
+                  <h3 className="font-medium text-sm mb-3">Current Bonus Rules</h3>
+                  <div className="space-y-2">
+                    {bonusRules.length === 0 ? (
+                      <p className="text-sm text-gray-500">No bonus rules configured</p>
+                    ) : (
+                      bonusRules.map((rule) => (
+                        <div key={rule.id} className="flex items-center gap-2 p-3 bg-gray-50 rounded">
+                          <Switch
+                            checked={rule.enabled}
+                            onCheckedChange={(enabled) => handleToggleBonusRule(rule.id, enabled)}
+                            disabled={bonusSaving}
+                          />
+                          <div className="flex-1">
+                            <p className="text-sm font-medium">
+                              ฿{rule.threshold} → +฿{rule.bonus}
+                              {rule.label && <span className="text-xs text-gray-500 ml-2">({rule.label})</span>}
+                            </p>
+                            <p className="text-xs text-gray-500">
+                              {rule.enabled ? "Enabled" : "Disabled"}
+                            </p>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDeleteBonusRule(rule.id)}
+                            disabled={bonusSaving}
+                          >
+                            <Trash2 className="w-4 h-4 text-red-500" />
+                          </Button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {/* Add New Rule */}
+                <div className="border-t pt-4">
+                  <h3 className="font-medium text-sm mb-3">Add New Bonus Rule</h3>
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <Label className="text-xs">Threshold (฿)</Label>
+                        <Input
+                          type="number"
+                          value={newRuleThreshold}
+                          onChange={(e) => setNewRuleThreshold(e.target.value)}
+                          placeholder="250"
+                          min="0"
+                          step="1"
+                          disabled={bonusSaving}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs">Bonus (฿)</Label>
+                        <Input
+                          type="number"
+                          value={newRuleBonus}
+                          onChange={(e) => setNewRuleBonus(e.target.value)}
+                          placeholder="10"
+                          min="0"
+                          step="1"
+                          disabled={bonusSaving}
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <Label className="text-xs">Label (optional)</Label>
+                      <Input
+                        value={newRuleLabel}
+                        onChange={(e) => setNewRuleLabel(e.target.value)}
+                        placeholder="e.g., Summer promotion"
+                        disabled={bonusSaving}
+                      />
+                    </div>
+                    <Button
+                      onClick={handleAddBonusRule}
+                      disabled={bonusSaving}
+                      className="w-full"
+                      size="sm"
+                    >
+                      {bonusSaving ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Adding...
+                        </>
+                      ) : (
+                        <>
+                          <Plus className="w-4 h-4 mr-2" />
+                          Add Rule
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         </Card>
 

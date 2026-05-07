@@ -2469,8 +2469,9 @@ export async function createWalletTopup(userId: number, requestedAmount: string,
     throw new Error("Invalid top-up amount");
   }
 
-  // Calculate bonus
-  const bonusAmount = calculateBonus(amount);
+  // Calculate bonus using settings-driven function
+  const { calculateBonusFromSettings } = await import("./wallet-bonus-settings");
+  const bonusAmount = await calculateBonusFromSettings(amount);
   const creditedAmount = (amount + parseFloat(bonusAmount)).toFixed(2);
 
   const result = await db.insert(walletTopups).values({

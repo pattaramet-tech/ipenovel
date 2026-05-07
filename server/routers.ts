@@ -1429,6 +1429,78 @@ export const appRouter = router({
           }
           return { success };
         }),
+
+      getWalletBonusRules: adminProcedure.query(async () => {
+        const { getBonusRules } = await import("./wallet-bonus-settings");
+        const rules = await getBonusRules();
+        return { rules };
+      }),
+
+      updateWalletBonusRules: adminProcedure
+        .input(z.object({
+          rules: z.array(z.object({
+            id: z.string(),
+            threshold: z.number().positive(),
+            bonus: z.number().nonnegative(),
+            enabled: z.boolean(),
+            label: z.string().optional(),
+            createdAt: z.date(),
+            updatedAt: z.date(),
+          }))
+        }))
+        .mutation(async ({ input }) => {
+          const { updateBonusRules } = await import("./wallet-bonus-settings");
+          try {
+            await updateBonusRules(input.rules);
+            console.log(`[Admin] Wallet bonus rules updated`);
+            return { success: true };
+          } catch (error: any) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to update bonus rules" });
+          }
+        }),
+
+      addWalletBonusRule: adminProcedure
+        .input(z.object({
+          threshold: z.number().positive(),
+          bonus: z.number().nonnegative(),
+          label: z.string().optional(),
+        }))
+        .mutation(async ({ input }) => {
+          const { addBonusRule } = await import("./wallet-bonus-settings");
+          try {
+            await addBonusRule(input.threshold, input.bonus, input.label);
+            console.log(`[Admin] Wallet bonus rule added: ${input.threshold} => ${input.bonus}`);
+            return { success: true };
+          } catch (error: any) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to add bonus rule" });
+          }
+        }),
+
+      deleteWalletBonusRule: adminProcedure
+        .input(z.object({ ruleId: z.string() }))
+        .mutation(async ({ input }) => {
+          const { deleteBonusRule } = await import("./wallet-bonus-settings");
+          try {
+            await deleteBonusRule(input.ruleId);
+            console.log(`[Admin] Wallet bonus rule deleted: ${input.ruleId}`);
+            return { success: true };
+          } catch (error: any) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to delete bonus rule" });
+          }
+        }),
+
+      toggleWalletBonusRule: adminProcedure
+        .input(z.object({ ruleId: z.string(), enabled: z.boolean() }))
+        .mutation(async ({ input }) => {
+          const { toggleBonusRule } = await import("./wallet-bonus-settings");
+          try {
+            await toggleBonusRule(input.ruleId, input.enabled);
+            console.log(`[Admin] Wallet bonus rule ${input.ruleId} toggled to: ${input.enabled}`);
+            return { success: true };
+          } catch (error: any) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to toggle bonus rule" });
+          }
+        }),
     }),
 
     bulkUpload: router({
@@ -1487,6 +1559,11 @@ export const appRouter = router({
     }),
     getSummary: protectedProcedure.query(async ({ ctx }) => {
       return db.getWalletSummary(ctx.user.id);
+    }),
+    getBonusRules: publicProcedure.query(async () => {
+      const { getEnabledBonusRules } = await import("./wallet-bonus-settings");
+      const rules = await getEnabledBonusRules();
+      return { rules };
     }),
     createTopupRequest: protectedProcedure
       .input(z.object({ requestedAmount: z.string(), slipImageUrl: z.string().optional() }))

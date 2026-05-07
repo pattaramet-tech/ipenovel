@@ -1014,3 +1014,14 @@
 - [x] Write tests for active path improvements
 - [x] Run TypeScript check and build verification
 - [x] Deliver hardening report with final verdict
+
+
+## Wallet Top-up Bonus Settings Feature
+- [x] Study current wallet/top-up system and bonus calculation
+- [x] Create backend settings-driven bonus calculation and admin endpoints
+- [x] Update wallet top-up creation to use settings-driven bonus
+- [x] Add admin bonus settings UI to Admin Settings page
+- [x] Update wallet page to show dynamic bonus preview
+- [x] Write tests for bonus settings functionality
+- [x] Verify all flows: admin change, new top-up, existing top-up preservation, preview, disabled rules
+- [x] Save checkpoint with bonus settings feature
