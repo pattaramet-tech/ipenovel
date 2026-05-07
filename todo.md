@@ -1003,3 +1003,14 @@
 - [x] Verify all flows: create, edit, replace, remove
 - [x] Verify payment slip upload still works
 - [x] Save checkpoint with cover upload feature
+
+
+## OCR Active Path Hardening (Phase 2)
+- [x] Verify current active OCR flow and identify remaining weaknesses
+- [x] Merge conservative improvements (merchant/shop warnings, reference handling)
+- [x] Enhance bank-aware reasoning and duplicate/fingerprint logic
+- [x] Add metrics tracking for rejection reasons
+- [x] Improve admin visibility with OCR breakdown
+- [x] Write tests for active path improvements
+- [x] Run TypeScript check and build verification
+- [x] Deliver hardening report with final verdict
