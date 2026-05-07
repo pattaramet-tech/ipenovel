@@ -992,3 +992,14 @@
 - [ ] Run full test suite to verify all OCR tests pass
 - [ ] Run pnpm build to verify production build clean
 - [ ] Save checkpoint with merged improved OCR logic
+
+
+## Novel Cover Image Upload Feature
+- [x] Analyze current admin novel management and upload infrastructure
+- [x] Create admin.novels.uploadCover endpoint for S3 upload with file validation
+- [x] Update AdminNovelManagePage with file upload UI and preview
+- [x] Support create and edit flows with existing cover preservation
+- [x] Write tests for cover upload functionality
+- [x] Verify all flows: create, edit, replace, remove
+- [x] Verify payment slip upload still works
+- [x] Save checkpoint with cover upload feature

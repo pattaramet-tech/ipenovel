@@ -4,8 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
-import { Edit2, Plus, Trash2, BookOpen, ChevronRight } from "lucide-react";
-import { useState } from "react";
+import { Edit2, Plus, Trash2, BookOpen, ChevronRight, Upload, X } from "lucide-react";
+import { useState, useRef } from "react";
 import { toast } from "sonner";
 import { SectionHeader, StatusBadge, EmptyState, FormSection } from "@/components/AdminComponents";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -26,6 +26,10 @@ export default function AdminNovelsPage() {
     publicationStatus: "published" as "published" | "archived",
     storyStatus: "ongoing" as "ongoing" | "finished",
   });
+  const [selectedCoverFile, setSelectedCoverFile] = useState<File | null>(null);
+  const [coverPreview, setCoverPreview] = useState<string | null>(null);
+  const [isUploadingCover, setIsUploadingCover] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: novels, isLoading, refetch } = trpc.admin.novels.list.useQuery(
     undefined,
@@ -66,6 +70,73 @@ export default function AdminNovelsPage() {
     },
   });
 
+  const uploadCoverMutation = trpc.admin.novels.uploadCover.useMutation({
+    onSuccess: (data) => {
+      setFormData({ ...formData, coverImageUrl: data.url });
+      setSelectedCoverFile(null);
+      setCoverPreview(null);
+      setIsUploadingCover(false);
+      toast.success("Cover image uploaded!");
+    },
+    onError: (error) => {
+      setIsUploadingCover(false);
+      toast.error(error.message || "Failed to upload cover image");
+    },
+  });
+
+  const handleCoverFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Validate file type
+    const validTypes = ["image/jpeg", "image/png", "image/webp"];
+    if (!validTypes.includes(file.type)) {
+      toast.error("Please select a JPG, PNG, or WebP image");
+      return;
+    }
+
+    // Validate file size (5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("Image must be 5MB or smaller");
+      return;
+    }
+
+    setSelectedCoverFile(file);
+
+    // Create preview
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      setCoverPreview(event.target?.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleUploadCover = async () => {
+    if (!selectedCoverFile) return;
+
+    setIsUploadingCover(true);
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const base64 = event.target?.result as string;
+      uploadCoverMutation.mutate({
+        fileName: selectedCoverFile.name,
+        mimeType: selectedCoverFile.type as "image/jpeg" | "image/png" | "image/webp",
+        fileBase64: base64,
+      });
+    };
+    reader.readAsDataURL(selectedCoverFile);
+  };
+
+  const handleRemoveCover = () => {
+    setFormData({ ...formData, coverImageUrl: "" });
+    setSelectedCoverFile(null);
+    setCoverPreview(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
   if (!isAuthenticated || user?.role !== "admin") {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -104,6 +175,8 @@ export default function AdminNovelsPage() {
       publicationStatus: novel.publicationStatus || "published",
       storyStatus: novel.storyStatus || "ongoing",
     });
+    setSelectedCoverFile(null);
+    setCoverPreview(null);
   };
 
   const handleSaveEdit = () => {
@@ -123,6 +196,11 @@ export default function AdminNovelsPage() {
     setIsCreating(false);
     setEditingNovelId(null);
     setFormData({ title: "", description: "", coverImageUrl: "", publicationStatus: "published", storyStatus: "ongoing" });
+    setSelectedCoverFile(null);
+    setCoverPreview(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
   };
 
   return (
@@ -193,22 +271,70 @@ export default function AdminNovelsPage() {
                 </div>
 
                 <div>
-                  <label className="text-sm font-semibold text-slate-700 block mb-2">Cover Image URL</label>
-                  <Input
-                    value={formData.coverImageUrl}
-                    onChange={(e) => setFormData({ ...formData, coverImageUrl: e.target.value })}
-                    placeholder="https://..."
-                  />
-                  {formData.coverImageUrl && (
-                    <div className="mt-2">
-                      <p className="text-xs text-slate-600 mb-2">Preview:</p>
-                      <SafeImage
-                        src={formData.coverImageUrl}
-                        alt="Cover preview"
-                        className="w-20 h-28 object-cover rounded"
+                  <label className="text-sm font-semibold text-slate-700 block mb-2">Cover Image</label>
+                  <div className="space-y-3">
+                    {/* File Input */}
+                    <div className="flex items-center gap-2">
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        onChange={handleCoverFileSelect}
+                        className="hidden"
                       />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="flex-1"
+                      >
+                        <Upload className="w-4 h-4 mr-2" />
+                        Choose Image
+                      </Button>
+                      {selectedCoverFile && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={handleUploadCover}
+                          disabled={isUploadingCover}
+                          className="flex-1"
+                        >
+                          {isUploadingCover ? "Uploading..." : "Upload"}
+                        </Button>
+                      )}
                     </div>
-                  )}
+
+                    {/* Selected File Info */}
+                    {selectedCoverFile && (
+                      <div className="text-sm text-slate-600">
+                        Selected: {selectedCoverFile.name} ({(selectedCoverFile.size / 1024).toFixed(1)} KB)
+                      </div>
+                    )}
+
+                    {/* Preview */}
+                    {(coverPreview || formData.coverImageUrl) && (
+                      <div className="space-y-2">
+                        <p className="text-xs text-slate-600">Preview:</p>
+                        <div className="flex items-end gap-3">
+                          <SafeImage
+                            src={coverPreview || formData.coverImageUrl}
+                            alt="Cover preview"
+                            className="w-20 h-28 object-cover rounded border border-slate-300"
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={handleRemoveCover}
+                            className="text-red-600 hover:text-red-700"
+                          >
+                            <X className="w-4 h-4 mr-1" />
+                            Remove
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </FormSection>
 
@@ -289,59 +415,56 @@ export default function AdminNovelsPage() {
         ) : (
           <div className="overflow-x-auto border border-slate-200 rounded-lg">
             <table className="w-full">
-              <thead>
-                <tr className="border-b bg-slate-50">
-                  <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Cover</th>
-                  <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Title</th>
-                  <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Publication</th>
-                  <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Story</th>
-                  <th className="text-left px-4 py-3 font-semibold text-slate-700 text-sm">Updated</th>
-                  <th className="text-right px-4 py-3 font-semibold text-slate-700 text-sm">Actions</th>
+              <thead className="bg-slate-100 border-b border-slate-200">
+                <tr>
+                  <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Title</th>
+                  <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Status</th>
+                  <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Story</th>
+                  <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredNovels.map((novel: any) => (
-                  <tr key={novel.id} className="border-b hover:bg-slate-50 transition-colors cursor-pointer">
-                    <td className="px-4 py-3">
-                      <SafeImage
-                        src={novel.coverImageUrl}
-                        alt={novel.title}
-                        className="w-10 h-14 object-cover rounded"
-                      />
-                    </td>
-                    <td className="px-4 py-3">
-                      <div>
-                        <p className="font-medium text-slate-900">{novel.title}</p>
-                        <p className="text-xs text-slate-600">{novel.description?.substring(0, 40)}...</p>
+                  <tr key={novel.id} className="border-b border-slate-200 hover:bg-slate-50">
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-3">
+                        {novel.coverImageUrl && (
+                          <SafeImage
+                            src={novel.coverImageUrl}
+                            alt={novel.title}
+                            className="w-10 h-14 object-cover rounded"
+                          />
+                        )}
+                        <span className="font-medium text-slate-900">{novel.title}</span>
                       </div>
                     </td>
-                    <td className="px-4 py-3">
-                      <StatusBadge status={novel.publicationStatus} />
+                    <td className="px-6 py-4">
+                      <span className={`inline-block px-3 py-1 rounded-full text-sm font-medium ${
+                        novel.publicationStatus === "published"
+                          ? "bg-green-100 text-green-800"
+                          : "bg-yellow-100 text-yellow-800"
+                      }`}>
+                        {novel.publicationStatus === "published" ? "Published" : "Archived"}
+                      </span>
                     </td>
-                    <td className="px-4 py-3">
-                      <StatusBadge status={novel.storyStatus} />
+                    <td className="px-6 py-4">
+                      <span className="text-sm text-slate-600 capitalize">{novel.storyStatus}</span>
                     </td>
-                    <td className="px-4 py-3 text-sm text-slate-600">
-                      {new Date(novel.updatedAt || novel.createdAt).toLocaleDateString()}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="flex justify-end gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => navigate(`/admin/novels/${novel.id}`)}
-                          title="Manage novel and episodes"
-                        >
-                          Manage
-                          <ChevronRight className="w-4 h-4 ml-1" />
-                        </Button>
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-2">
                         <Button
                           variant="ghost"
                           size="sm"
                           onClick={() => handleEdit(novel)}
-                          title="Edit novel details"
                         >
                           <Edit2 className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => navigate(`/admin/novels/${novel.id}`)}
+                        >
+                          <ChevronRight className="w-4 h-4" />
                         </Button>
                         <Button
                           variant="ghost"
@@ -351,9 +474,8 @@ export default function AdminNovelsPage() {
                               deleteMutation.mutate({ novelId: novel.id });
                             }
                           }}
-                          disabled={deleteMutation.isPending}
                         >
-                          <Trash2 className="w-4 h-4 text-red-500" />
+                          <Trash2 className="w-4 h-4 text-red-600" />
                         </Button>
                       </div>
                     </td>

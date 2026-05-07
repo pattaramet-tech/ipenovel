@@ -1022,6 +1022,35 @@ export const appRouter = router({
     }),
 
     novels: router({
+      uploadCover: adminProcedure
+        .input(
+          z.object({
+            fileName: z.string().min(1),
+            mimeType: z.enum(BANNER_IMAGE_MIME_TYPES),
+            fileBase64: z.string().min(1),
+          })
+        )
+        .mutation(async ({ input, ctx }) => {
+          const base64Data = input.fileBase64.split(",")[1] || input.fileBase64;
+          const fileBuffer = Buffer.from(base64Data, "base64");
+
+          if (fileBuffer.length > MAX_BANNER_IMAGE_SIZE) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Cover image must be 5MB or smaller",
+            });
+          }
+
+          const timestamp = Date.now();
+          const randomSuffix = Math.random().toString(36).substring(2, 8);
+          const sanitizedFileName = sanitizeUploadFileName(input.fileName);
+          const fileKey = `novel-covers/${ctx.user.id}/${timestamp}-${randomSuffix}-${sanitizedFileName}`;
+
+          const { url, key } = await storagePut(fileKey, fileBuffer, input.mimeType);
+
+          return { url, key };
+        }),
+
       list: adminProcedure.query(async () => {
         return db.getAllNovelsForAdmin();
       }),
