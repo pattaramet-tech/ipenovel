@@ -1025,3 +1025,12 @@
 - [x] Write tests for bonus settings functionality
 - [x] Verify all flows: admin change, new top-up, existing top-up preservation, preview, disabled rules
 - [x] Save checkpoint with bonus settings feature
+
+
+## Admin Settings Route Fix
+- [x] Inspect routing setup in App.tsx and existing admin pages
+- [x] Create or fix AdminSettingsPage with wallet bonus settings
+- [x] Register /admin/settings route in App.tsx
+- [x] Verify route works and admin auth is enforced
+- [x] Test wallet bonus settings from admin settings page
+- [x] Save checkpoint
