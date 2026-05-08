@@ -458,6 +458,29 @@ export default function WalletPage() {
         </div>
       </Card>
 
+      {/* QR Payment Section */}
+      <Card className="p-6 mb-6 bg-gradient-to-br from-purple-50 to-blue-50 border-2 border-purple-200">
+        <div className="flex items-start gap-4">
+          <div className="flex-1">
+            <h2 className="text-xl font-bold text-purple-900 mb-2">{t("wallet.scanQRToPayment")}</h2>
+            <p className="text-sm text-purple-800 mb-4">{t("wallet.qrPaymentHelper")}</p>
+            <Button 
+              onClick={() => setShowTopupForm(true)}
+              className="bg-purple-600 hover:bg-purple-700"
+            >
+              {t("wallet.createTopup")}
+            </Button>
+          </div>
+          <div className="flex-shrink-0">
+            <img 
+              src={QR_PAYMENT_IMAGE}
+              alt="QR Payment"
+              className="w-32 h-32 rounded-lg border-2 border-purple-300 shadow-md object-cover"
+            />
+          </div>
+        </div>
+      </Card>
+
       {/* History Tabs */}
       <Card className="p-6">
         <h2 className="text-xl font-bold mb-4">History</h2>

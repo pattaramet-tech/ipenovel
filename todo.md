@@ -1081,3 +1081,11 @@
 - [x] Add missing tRPC queries if needed (already exist in backend)
 - [x] Test all flows and verify data integrity
 - [x] Save checkpoint
+
+
+## Wallet Page UI Regression Fix (Phase 7)
+- [x] Inspect WalletPage and identify translation/UI issues
+- [x] Check i18n translation files and add missing keys (already exist)
+- [x] Fix translation key rendering in WalletPage (working correctly)
+- [x] Restore QR Payment section (added with gradient card, QR image, and button)
+- [x] Verify all flows and save checkpoint
