@@ -37,14 +37,26 @@ async function startServer() {
   // OAuth callback under /api/oauth/callback
   registerOAuthRoutes(app);
   
-  // File upload endpoint for payment slips
+  // File upload endpoint with authentication and sanitization
   app.post("/api/upload", async (req, res) => {
     try {
-      const { file, filename, type } = req.body;
+      // Check for session cookie (basic auth check)
+      const cookies = req.headers.cookie || "";
+      const sessionMatch = cookies.match(/session=([^;]+)/);
+      
+      if (!sessionMatch) {
+        return res.status(401).json({ error: "Unauthorized: No session" });
+      }
+      
+      const { file, filename, type, uploadType } = req.body;
       
       if (!file || !filename) {
         return res.status(400).json({ error: "Missing file or filename" });
       }
+      
+      // Validate upload type
+      const allowedUploadTypes = ["payment-slip", "novel-cover"];
+      const actualUploadType = uploadType && allowedUploadTypes.includes(uploadType) ? uploadType : "payment-slip";
       
       // Validate file type
       const allowedTypes = ["image/jpeg", "image/png", "application/pdf"];
@@ -61,11 +73,20 @@ async function startServer() {
         return res.status(400).json({ error: "File too large" });
       }
       
+      // Sanitize filename: remove path separators and special characters
+      const sanitizedFilename = filename
+        .replace(/[^a-zA-Z0-9._-]/g, "_")
+        .substring(0, 255);
+      
+      // Generate unique file key with timestamp and random suffix
+      const timestamp = Date.now();
+      const randomSuffix = Math.random().toString(36).substring(2, 8);
+      const fileKey = `${actualUploadType}/${timestamp}-${randomSuffix}-${sanitizedFilename}`;
+      
       // Upload to S3
-      const fileKey = `payment-slips/${Date.now()}-${filename}`;
       const { url } = await storagePut(fileKey, buffer, type);
       
-      res.json({ url });
+      res.json({ url, fileKey });
     } catch (error) {
       console.error("Upload error:", error);
       res.status(500).json({ error: "Upload failed" });

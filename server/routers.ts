@@ -1568,6 +1568,37 @@ export const appRouter = router({
     createTopupRequest: protectedProcedure
       .input(z.object({ requestedAmount: z.string(), slipImageUrl: z.string().optional() }))
       .mutation(async ({ ctx, input }) => {
+        // Validate amount format strongly
+        const amount = input.requestedAmount.trim();
+        
+        if (!amount) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Amount is required" });
+        }
+        
+        // Reject exponential notation
+        if (amount.includes("e") || amount.includes("E")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid amount format" });
+        }
+        
+        const num = parseFloat(amount);
+        
+        if (isNaN(num)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Amount must be a valid number" });
+        }
+        
+        if (num <= 0) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Amount must be positive" });
+        }
+        
+        if (num > 100000) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Amount exceeds maximum limit (100000)" });
+        }
+        
+        const decimalPart = amount.split(".")[1];
+        if (decimalPart && decimalPart.length > 2) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Amount can have at most 2 decimal places" });
+        }
+        
         return walletService.createWalletTopupRequest(ctx.user.id, input.requestedAmount, input.slipImageUrl);
       }),
     // DEPRECATED: uploadTopupSlip is kept for backward compatibility with existing pending top-ups

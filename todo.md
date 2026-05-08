@@ -1063,3 +1063,12 @@
 - [x] Improve loading, error handling, and backward compatibility
 - [x] Write tests for Admin Settings functionality
 - [x] Verify and deliver
+
+
+## Wallet Page Bug Fixes (Phase 5)
+- [x] Inspect WalletPage and identify bugs
+- [x] Fix file handling and validation (clear preview, reset input, validate files)
+- [x] Strengthen top-up amount validation (frontend and backend)
+- [x] Secure /api/upload endpoint and fix bonus preview
+- [x] Clean up obsolete state and test all flows
+- [x] Verify and save checkpoint

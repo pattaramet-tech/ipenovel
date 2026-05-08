@@ -1,32 +1,40 @@
-import { useAuth } from "@/_core/hooks/useAuth";
+"use client";
+
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
-import { Upload, CheckCircle, AlertCircle, X } from "lucide-react";
+import { Upload, CheckCircle, AlertCircle, X, Loader2, FileText } from "lucide-react";
 
 const QR_PAYMENT_IMAGE = "https://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/IMG_8158_19d96370.JPG";
 
+// File validation constants
+const ALLOWED_FILE_TYPES = ["image/jpeg", "image/png", "application/pdf"];
+const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+const MAX_TOPUP_AMOUNT = 100000;
+
 export default function WalletPage() {
-  const auth = useAuth();
   const { t } = useLanguage();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ─── Form state ────────────────────────────────────────────────────────────
   const [showTopupForm, setShowTopupForm] = useState(false);
   const [topupAmount, setTopupAmount] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [activeTopupId, setActiveTopupId] = useState<number | null>(null);
+  const [filePreview, setFilePreview] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isCreatingRequest, setIsCreatingRequest] = useState(false);
-  const [filePreview, setFilePreview] = useState<string | null>(null);
-
-  const { data: summary, isLoading, refetch: refetchSummary } = trpc.wallet.getSummary.useQuery();
-  const { data: bonusRulesData } = trpc.wallet.getBonusRules.useQuery();
-  const createTopupMutation = trpc.wallet.createTopupRequest.useMutation();
   const [calculatedBonus, setCalculatedBonus] = useState("0.00");
 
-  // Calculate bonus based on rules when amount changes
+  // ─── tRPC queries ──────────────────────────────────────────────────────────
+  const { data: summary, isLoading, refetch: refetchSummary } = trpc.wallet.getSummary.useQuery();
+  const { data: bonusRulesData, isLoading: bonusRulesLoading } = trpc.wallet.getBonusRules.useQuery();
+  const createTopupMutation = trpc.wallet.createTopupRequest.useMutation();
+
+  // ─── Calculate bonus based on rules when amount changes ────────────────────
   useEffect(() => {
     if (!topupAmount || parseFloat(topupAmount) <= 0) {
       setCalculatedBonus("0.00");
@@ -49,60 +57,122 @@ export default function WalletPage() {
     setCalculatedBonus(bonus.toFixed(2));
   }, [topupAmount, bonusRulesData]);
 
+  // ─── Validate top-up amount format ─────────────────────────────────────────
+  const isValidTopupAmount = (amount: string): boolean => {
+    if (!amount || amount.trim() === "") return false;
+    
+    // Reject exponential notation
+    if (amount.includes("e") || amount.includes("E")) return false;
+    
+    const num = parseFloat(amount);
+    
+    // Check if valid number
+    if (isNaN(num)) return false;
+    
+    // Check if positive
+    if (num <= 0) return false;
+    
+    // Check if exceeds max
+    if (num > MAX_TOPUP_AMOUNT) return false;
+    
+    // Check decimal places (max 2)
+    const decimalPart = amount.split(".")[1];
+    if (decimalPart && decimalPart.length > 2) return false;
+    
+    return true;
+  };
+
+  // ─── Validate file ────────────────────────────────────────────────────────
+  const validateFile = (file: File): { valid: boolean; error?: string } => {
+    // Check file type
+    if (!ALLOWED_FILE_TYPES.includes(file.type)) {
+      return {
+        valid: false,
+        error: `Invalid file type. Allowed: JPEG, PNG, PDF. Got: ${file.type}`,
+      };
+    }
+
+    // Check file size
+    if (file.size > MAX_FILE_SIZE) {
+      return {
+        valid: false,
+        error: `File too large. Max size: 5MB. Got: ${(file.size / 1024 / 1024).toFixed(1)}MB`,
+      };
+    }
+
+    return { valid: true };
+  };
+
+  // ─── Handle file selection ─────────────────────────────────────────────────
   const handleFileSelect = (file: File | null) => {
+    if (!file) {
+      setSelectedFile(null);
+      setFilePreview(null);
+      return;
+    }
+
+    // Validate file
+    const validation = validateFile(file);
+    if (!validation.valid) {
+      toast.error(validation.error || "Invalid file");
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      return;
+    }
+
+    // Store file
     setSelectedFile(file);
-    if (file && file.type.startsWith("image/")) {
+
+    // Generate preview for images only
+    if (file.type.startsWith("image/")) {
       const reader = new FileReader();
       reader.onload = (e) => {
         setFilePreview(e.target?.result as string);
       };
+      reader.onerror = () => {
+        toast.error("Failed to read file");
+        setFilePreview(null);
+      };
       reader.readAsDataURL(file);
     } else {
+      // For PDF, don't show image preview
       setFilePreview(null);
     }
   };
 
-  const handleCreateTopupWithSlip = async () => {
-    // Validate amount
-    if (!topupAmount || parseFloat(topupAmount) <= 0) {
-      toast.error(t("wallet.pleaseEnterValidAmount"));
-      return;
-    }
-    // Validate file
-    if (!selectedFile) {
-      toast.error(t("wallet.pleaseSelectFile"));
-      return;
-    }
-
-    try {
-      setIsUploading(true);
-      setIsCreatingRequest(true);
-
-      // Step 1: Upload slip first
-      const slipImageUrl = await uploadFile(selectedFile);
-
-      // Step 2: Create top-up request with slip URL
-      const result = await createTopupMutation.mutateAsync({
-        requestedAmount: topupAmount,
-        slipImageUrl,
-      });
-
-      // Success: Reset form and show confirmation
-      setTopupAmount("");
-      setSelectedFile(null);
-      setShowTopupForm(false);
-      toast.success(t("wallet.topupRequestCreated"));
-      refetchSummary();
-    } catch (error: any) {
-      toast.error(error.message || t("wallet.failedToCreateTopup"));
-    } finally {
-      setIsUploading(false);
-      setIsCreatingRequest(false);
+  // ─── Clear form completely ────────────────────────────────────────────────
+  const clearForm = () => {
+    setTopupAmount("");
+    setSelectedFile(null);
+    setFilePreview(null);
+    setCalculatedBonus("0.00");
+    // Reset file input element
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
     }
   };
 
+  // ─── Handle cancel button ─────────────────────────────────────────────────
+  const handleCancel = () => {
+    clearForm();
+    setShowTopupForm(false);
+  };
+
+  // ─── Remove selected file ────────────────────────────────────────────────
+  const handleRemoveFile = () => {
+    setSelectedFile(null);
+    setFilePreview(null);
+    // Reset file input element
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
+  // ─── Upload file to backend ──────────────────────────────────────────────
   const uploadFile = async (file: File): Promise<string> => {
-    // Convert file to base64 and upload via JSON (same as PaymentPage)
+    // Convert file to base64
     const base64 = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => {
@@ -120,32 +190,67 @@ export default function WalletPage() {
         file: base64,
         filename: file.name,
         type: file.type,
+        uploadType: "payment-slip",
       }),
     });
 
-    if (!response.ok) throw new Error("Upload failed");
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.message || "Upload failed");
+    }
+
     const data = await response.json();
     return data.url;
   };
 
+  // ─── Create top-up request ───────────────────────────────────────────────
+  const handleCreateTopupWithSlip = async () => {
+    // Validate amount
+    if (!isValidTopupAmount(topupAmount)) {
+      toast.error("Please enter a valid amount (0 - 100000, max 2 decimals)");
+      return;
+    }
+
+    // Validate file
+    if (!selectedFile) {
+      toast.error(t("wallet.pleaseSelectFile"));
+      return;
+    }
+
+    try {
+      setIsUploading(true);
+      setIsCreatingRequest(true);
+
+      // Step 1: Upload slip first
+      const slipImageUrl = await uploadFile(selectedFile);
+
+      // Step 2: Create top-up request with slip URL
+      await createTopupMutation.mutateAsync({
+        requestedAmount: topupAmount,
+        slipImageUrl,
+      });
+
+      // Success: Clear form and show confirmation
+      clearForm();
+      setShowTopupForm(false);
+      toast.success(t("wallet.topupRequestCreated"));
+      refetchSummary();
+    } catch (error: any) {
+      toast.error(error.message || t("wallet.failedToCreateTopup"));
+    } finally {
+      setIsUploading(false);
+      setIsCreatingRequest(false);
+    }
+  };
+
   if (isLoading) return <div className="p-4 text-center">{t("common.loading")}</div>;
 
-  // Policy message for non-refundable wallet (use translation keys)
-
-  // Find the active top-up for payment step
-  const activeTopup = activeTopupId
-    ? summary?.recentTopups?.find((t: any) => t.id === activeTopupId)
-    : null;
-
-  // Old payment step is now removed - slip is uploaded before creating the top-up request
-  // This keeps the UI cleaner and prevents incomplete records
-
-  // Main wallet page
+  // ─── Main wallet page ────────────────────────────────────────────────────
   return (
     <div className="container max-w-2xl py-8">
       <h1 className="text-3xl font-bold mb-6">{t("wallet.title")}</h1>
 
-      {/* Policy Notice Card - Visible and Prominent */}
+      {/* Policy Notice Card */}
       <Card className="p-6 mb-6 border-l-4 border-l-red-500 bg-red-50">
         <div className="flex gap-3">
           <AlertCircle className="w-6 h-6 text-red-600 flex-shrink-0 mt-0.5" />
@@ -204,16 +309,21 @@ export default function WalletPage() {
                 {t("wallet.topupAmount")}
               </label>
               <input
-                type="number"
-                placeholder={t("wallet.topupAmount")}
+                type="text"
+                placeholder="e.g., 250.00"
                 value={topupAmount}
                 onChange={(e) => setTopupAmount(e.target.value)}
                 disabled={isUploading || isCreatingRequest}
                 className="w-full px-3 py-2 border rounded"
               />
-              
+
               {/* Live Bonus Preview */}
-              {topupAmount && parseFloat(topupAmount) > 0 && (
+              {bonusRulesLoading ? (
+                <div className="mt-3 p-4 bg-gray-50 border border-gray-200 rounded-lg flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span className="text-sm text-gray-600">Loading bonus rules...</span>
+                </div>
+              ) : topupAmount && isValidTopupAmount(topupAmount) ? (
                 <div className="mt-3 p-4 bg-blue-50 border border-blue-200 rounded-lg">
                   <div className="space-y-2">
                     <div className="flex justify-between text-sm">
@@ -223,7 +333,7 @@ export default function WalletPage() {
                     <div className="flex justify-between text-sm">
                       <span className="text-slate-700">Bonus:</span>
                       <span className="font-semibold text-green-600">
-                        {parseFloat(calculatedBonus) > 0 ? `+฿${calculatedBonus}` : "ไม่มีโบนัส"}
+                        {parseFloat(calculatedBonus) > 0 ? `+฿${calculatedBonus}` : "No bonus"}
                       </span>
                     </div>
                     <div className="border-t border-blue-200 pt-2 mt-2 flex justify-between">
@@ -234,7 +344,7 @@ export default function WalletPage() {
                     </div>
                   </div>
                 </div>
-              )}
+              ) : null}
             </div>
 
             {/* 2. QR Payment Block */}
@@ -262,10 +372,11 @@ export default function WalletPage() {
               <label className="block text-sm font-medium text-slate-700">
                 {t("wallet.selectPaymentSlip")}
               </label>
-              
+
               {/* Custom File Input */}
               <div className="relative">
                 <input
+                  ref={fileInputRef}
                   type="file"
                   accept="image/jpeg,image/png,application/pdf"
                   onChange={(e) => handleFileSelect(e.target.files?.[0] || null)}
@@ -279,37 +390,36 @@ export default function WalletPage() {
                 >
                   <Upload className="w-5 h-5 text-slate-600" />
                   <span className="text-sm font-medium text-slate-700">
-                    {selectedFile ? t("wallet.selected") : "เลือกรูปสลิป"}
+                    {selectedFile ? t("wallet.selected") : "Select payment slip"}
                   </span>
                 </label>
               </div>
-              
+
               {/* Selected File Info */}
               {selectedFile && (
                 <div className="bg-green-50 p-3 rounded-lg border border-green-200 flex items-start justify-between gap-2">
                   <div className="flex items-start gap-2 flex-1 min-w-0">
-                    <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
+                    {selectedFile.type.startsWith("image/") ? (
+                      <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
+                    ) : (
+                      <FileText className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
+                    )}
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium text-green-900 truncate">{selectedFile.name}</p>
                       <p className="text-xs text-green-700">{(selectedFile.size / 1024).toFixed(1)} KB</p>
                     </div>
                   </div>
                   <button
-                    onClick={() => {
-                      setSelectedFile(null);
-                      setFilePreview(null);
-                      const input = document.getElementById("slip-file-input") as HTMLInputElement;
-                      if (input) input.value = "";
-                    }}
+                    onClick={handleRemoveFile}
                     className="text-green-600 hover:text-green-700 flex-shrink-0"
                   >
                     <X className="w-4 h-4" />
                   </button>
                 </div>
               )}
-              
-              {/* Image Preview */}
-              {filePreview && (
+
+              {/* Image Preview (only for images) */}
+              {filePreview && selectedFile?.type.startsWith("image/") && (
                 <div className="rounded-lg overflow-hidden border border-slate-200 bg-slate-50 p-2">
                   <img
                     src={filePreview}
@@ -318,9 +428,9 @@ export default function WalletPage() {
                   />
                 </div>
               )}
-              
+
               <p className="text-xs text-slate-500">
-                {t("wallet.acceptedFormats")}
+                {t("wallet.acceptedFormats")} (Max 5MB)
               </p>
             </div>
 
@@ -328,16 +438,16 @@ export default function WalletPage() {
             <div className="flex gap-2">
               <Button
                 onClick={handleCreateTopupWithSlip}
-                disabled={!topupAmount || !selectedFile || isUploading || isCreatingRequest}
+                disabled={!isValidTopupAmount(topupAmount) || !selectedFile || isUploading || isCreatingRequest}
                 className="flex-1"
               >
                 {isUploading || isCreatingRequest ? t("common.pleaseWait") : t("wallet.createRequest")}
               </Button>
-              <Button variant="outline" onClick={() => {
-                setShowTopupForm(false);
-                setTopupAmount("");
-                setSelectedFile(null);
-              }} disabled={isUploading || isCreatingRequest}>
+              <Button
+                variant="outline"
+                onClick={handleCancel}
+                disabled={isUploading || isCreatingRequest}
+              >
                 {t("common.cancel")}
               </Button>
             </div>
@@ -345,78 +455,22 @@ export default function WalletPage() {
         )}
 
         {/* Bonus Rule Hint */}
-        <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-4 text-sm">
+        <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-4 text-sm mt-4">
           <p className="font-semibold text-blue-900 mb-1">กติกาโบนัส:</p>
           {bonusRulesData?.rules && bonusRulesData.rules.filter((r: any) => r.enabled).length > 0 ? (
-            <ul className="text-blue-800 text-xs space-y-1">
+            <ul className="space-y-1 text-blue-800">
               {bonusRulesData.rules
                 .filter((r: any) => r.enabled)
                 .sort((a: any, b: any) => a.threshold - b.threshold)
-                .map((rule: any, idx: number) => {
-                  const enabledRules = bonusRulesData.rules.filter((r: any) => r.enabled).sort((a: any, b: any) => a.threshold - b.threshold);
-                  const nextThreshold = idx < enabledRules.length - 1 ? enabledRules[idx + 1]?.threshold : null;
-                  return (
-                    <li key={rule.id}>
-                      • ยอดเติม ฿{rule.threshold} {nextThreshold ? `- ฿${nextThreshold - 1}` : "ขึ้นไป"}: รับโบนัสเพิ่ม ฿{rule.bonus}
-                      {rule.label && ` (${rule.label})`}
-                    </li>
-                  );
-                })}
+                .map((rule: any) => (
+                  <li key={rule.id}>
+                    ฿{rule.threshold} ขึ้นไป → +฿{rule.bonus}
+                    {rule.label && <span className="text-xs text-blue-700 ml-2">({rule.label})</span>}
+                  </li>
+                ))}
             </ul>
           ) : (
-            <p className="text-blue-800 text-xs">ไม่มีโบนัส</p>
-          )}
-        </div>
-
-        {/* Top-up Requests List */}
-        <div className="mt-6 space-y-3">
-          {summary?.recentTopups && summary.recentTopups.length > 0 ? (
-            summary.recentTopups.map((topup: any) => (
-              <div key={topup.id} className="border rounded p-3 flex justify-between items-start">
-                <div className="flex-1">
-                  <div className="font-semibold">฿{topup.requestedAmount}</div>
-                  {(topup.bonusAmount || topup.creditedAmount) && (
-                    <div className="text-xs text-gray-600 mt-1">
-                      {topup.bonusAmount && <div>Bonus: +฿{topup.bonusAmount}</div>}
-                      {topup.creditedAmount && <div className="font-semibold text-green-700">Total Credited: ฿{topup.creditedAmount}</div>}
-                    </div>
-                  )}
-                  <div className="text-sm text-gray-600 mt-1">{new Date(topup.createdAt).toLocaleDateString()}</div>
-                </div>
-                <div className="flex flex-col items-end gap-2">
-                  <Badge variant={topup.status === "pending" ? "outline" : topup.status === "approved" ? "default" : "destructive"}>
-                    {topup.status === "pending" && t("order.status.pending")}
-                    {topup.status === "approved" && t("order.status.approved")}
-                    {topup.status === "rejected" && t("order.status.rejected")}
-                  </Badge>
-                  {topup.status === "rejected" && topup.rejectionReason && (
-                    <p className="text-xs text-red-600 max-w-xs text-right">{topup.rejectionReason}</p>
-                  )}
-
-                </div>
-              </div>
-            ))
-          ) : (
-            <p className="text-sm text-gray-500">{t("wallet.noTopups")}</p>
-          )}
-        </div>
-      </Card>
-
-      {/* Transactions */}
-      <Card className="p-6">
-        <h2 className="text-xl font-semibold mb-4">{t("wallet.recentTransactions")}</h2>
-        <div className="space-y-2">
-          {summary?.recentTransactions && summary.recentTransactions.length > 0 ? (
-            summary.recentTransactions.map((tx: any) => (
-              <div key={tx.id} className="flex justify-between text-sm py-2 border-b">
-                <div>{tx.type === "debit" ? t("wallet.debit") : t("wallet.credit")}</div>
-                <div className={tx.type === "debit" ? "text-red-600" : "text-green-600"}>
-                  {tx.type === "debit" ? "-" : "+"}฿{tx.amount}
-                </div>
-              </div>
-            ))
-          ) : (
-            <p className="text-sm text-gray-500">{t("wallet.noTransactions")}</p>
+            <p className="text-blue-700">ไม่มีโบนัส</p>
           )}
         </div>
       </Card>
