@@ -1053,3 +1053,13 @@
 - [ ] Add OCR metrics tracking and improve admin visibility
 - [ ] Write tests for active OCR path improvements
 - [ ] Verify and deliver final verdict
+
+
+## Admin Settings Page Fix (Phase 4)
+- [x] Audit Admin Settings page and identify hook usage issues
+- [x] Fix invalid React hook usage and refactor component
+- [x] Verify and fix OCR toggle end-to-end
+- [x] Verify and fix wallet bonus rules end-to-end
+- [x] Improve loading, error handling, and backward compatibility
+- [x] Write tests for Admin Settings functionality
+- [x] Verify and deliver
