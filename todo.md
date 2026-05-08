@@ -1041,3 +1041,15 @@
 - [x] Fix identified bugs (AdminSettingsPage hook violation)
 - [x] Verify fixes and run tests
 - [x] Save checkpoint
+
+
+## OCR Auto-Approve Hardening (Phase 3)
+- [x] Confirm active OCR path and identify current weaknesses
+- [x] Improve OCR extraction quality (Thai numerals, Buddhist dates, bank aliases) - Already implemented
+- [x] Improve OCR result structure - Extended ParseSlipImageResult with extracted field
+- [x] Use pre-extracted data in verification - Updated processSlipVerificationStaging
+- [ ] Reduce over-rejection with conservative merchant/shop/reference handling
+- [ ] Improve time-window logic and strengthen duplicate/fingerprint detection
+- [ ] Add OCR metrics tracking and improve admin visibility
+- [ ] Write tests for active OCR path improvements
+- [ ] Verify and deliver final verdict

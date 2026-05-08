@@ -172,6 +172,8 @@ export interface ParseSlipImageResult {
   text: string;
   ocrConfidence: number;
   warnings: string[];
+  // Structured extraction (optional, populated after parsing)
+  extracted?: ExtractedSlipData;
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -837,10 +839,14 @@ Do NOT translate or interpret — just extract the raw text.`,
       warnings.push("Very short OCR output - may indicate poor image quality");
     }
 
+    // Extract structured data from the OCR text
+    const extracted = extractSlipData(content);
+
     return {
       text: content,
       ocrConfidence,
       warnings,
+      extracted,
     };
   } catch (error) {
     console.error("[OCR] Error parsing slip image:", error);
@@ -848,6 +854,7 @@ Do NOT translate or interpret — just extract the raw text.`,
       text: "",
       ocrConfidence: 0,
       warnings: ["Error parsing image - check URL and image format"],
+      extracted: undefined,
     };
   }
 }
