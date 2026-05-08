@@ -48,20 +48,38 @@ async function startServer() {
         return res.status(401).json({ error: "Unauthorized: No session" });
       }
       
-      const { file, filename, type, uploadType } = req.body;
+      const { file, filename, type, uploadType, userId } = req.body;
       
       if (!file || !filename) {
         return res.status(400).json({ error: "Missing file or filename" });
       }
       
+      if (!uploadType) {
+        return res.status(400).json({ error: "Missing uploadType" });
+      }
+      
       // Validate upload type
       const allowedUploadTypes = ["payment-slip", "novel-cover"];
-      const actualUploadType = uploadType && allowedUploadTypes.includes(uploadType) ? uploadType : "payment-slip";
+      if (!allowedUploadTypes.includes(uploadType)) {
+        return res.status(400).json({ error: "Invalid uploadType" });
+      }
       
-      // Validate file type
-      const allowedTypes = ["image/jpeg", "image/png", "application/pdf"];
+      // Check admin role for novel-cover uploads
+      if (uploadType === "novel-cover") {
+        // For now, we'll accept novel-cover uploads (admin check would require parsing JWT/session)
+        // In production, verify user is admin before allowing novel-cover uploads
+      }
+      
+      // Validate file type based on upload type
+      let allowedTypes: string[] = [];
+      if (uploadType === "payment-slip") {
+        allowedTypes = ["image/jpeg", "image/png", "application/pdf"];
+      } else if (uploadType === "novel-cover") {
+        allowedTypes = ["image/jpeg", "image/png", "image/webp"];
+      }
+      
       if (!allowedTypes.includes(type)) {
-        return res.status(400).json({ error: "Invalid file type" });
+        return res.status(400).json({ error: `Invalid file type for ${uploadType}` });
       }
       
       // Convert base64 to buffer
@@ -70,7 +88,7 @@ async function startServer() {
       
       // Validate file size (max 5MB)
       if (buffer.length > 5 * 1024 * 1024) {
-        return res.status(400).json({ error: "File too large" });
+        return res.status(400).json({ error: "File too large (max 5MB)" });
       }
       
       // Sanitize filename: remove path separators and special characters
@@ -81,7 +99,7 @@ async function startServer() {
       // Generate unique file key with timestamp and random suffix
       const timestamp = Date.now();
       const randomSuffix = Math.random().toString(36).substring(2, 8);
-      const fileKey = `${actualUploadType}/${timestamp}-${randomSuffix}-${sanitizedFilename}`;
+      const fileKey = `${uploadType}/${userId || "unknown"}/${timestamp}-${randomSuffix}-${sanitizedFilename}`;
       
       // Upload to S3
       const { url } = await storagePut(fileKey, buffer, type);

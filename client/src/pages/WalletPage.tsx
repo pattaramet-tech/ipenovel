@@ -157,12 +157,14 @@ export default function WalletPage() {
   };
 
   // ─── Upload file to server ─────────────────────────────────────────────────
+  const { data: authUser } = trpc.auth.me.useQuery();
   const uploadFile = async (file: File): Promise<string> => {
     const reader = new FileReader();
     return new Promise((resolve, reject) => {
       reader.onload = async (e) => {
         try {
           const base64 = e.target?.result as string;
+          
           const response = await fetch("/api/upload", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -171,6 +173,7 @@ export default function WalletPage() {
               filename: file.name,
               type: file.type,
               uploadType: "payment-slip",
+              userId: authUser?.id,
             }),
           });
 

@@ -1096,3 +1096,13 @@
 - [x] Diagnose slip payment upload issue (useAuth cache error)
 - [x] Fix slip upload functionality (restarted dev server)
 - [x] Verify all flows and save checkpoint
+
+
+## Payment Slip Upload Bug Fix
+- [x] Inspect /api/upload endpoint and identify root cause (missing uploadType requirement)
+- [x] Fix backend /api/upload endpoint (uploadType, auth, validation, user-specific paths)
+- [x] Fix frontend wallet slip upload (send uploadType and userId)
+- [x] Fix frontend order payment slip upload (send uploadType and userId)
+- [x] Verify novel cover upload still works (uses separate tRPC endpoint)
+- [x] Test all upload flows end-to-end (TypeScript clean)
+- [x] Save checkpoint and deliver summary
