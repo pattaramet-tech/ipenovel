@@ -37,49 +37,19 @@ async function startServer() {
   // OAuth callback under /api/oauth/callback
   registerOAuthRoutes(app);
   
-  // File upload endpoint with authentication and sanitization
+  // File upload endpoint for payment slips
   app.post("/api/upload", async (req, res) => {
     try {
-      // Check for session cookie (basic auth check)
-      const cookies = req.headers.cookie || "";
-      const sessionMatch = cookies.match(/session=([^;]+)/);
-      
-      if (!sessionMatch) {
-        return res.status(401).json({ error: "Unauthorized: No session" });
-      }
-      
-      const { file, filename, type, uploadType, userId } = req.body;
+      const { file, filename, type } = req.body;
       
       if (!file || !filename) {
         return res.status(400).json({ error: "Missing file or filename" });
       }
       
-      if (!uploadType) {
-        return res.status(400).json({ error: "Missing uploadType" });
-      }
-      
-      // Validate upload type
-      const allowedUploadTypes = ["payment-slip", "novel-cover"];
-      if (!allowedUploadTypes.includes(uploadType)) {
-        return res.status(400).json({ error: "Invalid uploadType" });
-      }
-      
-      // Check admin role for novel-cover uploads
-      if (uploadType === "novel-cover") {
-        // For now, we'll accept novel-cover uploads (admin check would require parsing JWT/session)
-        // In production, verify user is admin before allowing novel-cover uploads
-      }
-      
-      // Validate file type based on upload type
-      let allowedTypes: string[] = [];
-      if (uploadType === "payment-slip") {
-        allowedTypes = ["image/jpeg", "image/png", "application/pdf"];
-      } else if (uploadType === "novel-cover") {
-        allowedTypes = ["image/jpeg", "image/png", "image/webp"];
-      }
-      
+      // Validate file type
+      const allowedTypes = ["image/jpeg", "image/png", "application/pdf"];
       if (!allowedTypes.includes(type)) {
-        return res.status(400).json({ error: `Invalid file type for ${uploadType}` });
+        return res.status(400).json({ error: "Invalid file type" });
       }
       
       // Convert base64 to buffer
@@ -88,23 +58,14 @@ async function startServer() {
       
       // Validate file size (max 5MB)
       if (buffer.length > 5 * 1024 * 1024) {
-        return res.status(400).json({ error: "File too large (max 5MB)" });
+        return res.status(400).json({ error: "File too large" });
       }
       
-      // Sanitize filename: remove path separators and special characters
-      const sanitizedFilename = filename
-        .replace(/[^a-zA-Z0-9._-]/g, "_")
-        .substring(0, 255);
-      
-      // Generate unique file key with timestamp and random suffix
-      const timestamp = Date.now();
-      const randomSuffix = Math.random().toString(36).substring(2, 8);
-      const fileKey = `${uploadType}/${userId || "unknown"}/${timestamp}-${randomSuffix}-${sanitizedFilename}`;
-      
       // Upload to S3
+      const fileKey = `payment-slips/${Date.now()}-${filename}`;
       const { url } = await storagePut(fileKey, buffer, type);
       
-      res.json({ url, fileKey });
+      res.json({ url });
     } catch (error) {
       console.error("Upload error:", error);
       res.status(500).json({ error: "Upload failed" });

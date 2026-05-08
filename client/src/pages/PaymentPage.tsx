@@ -23,7 +23,6 @@ export default function PaymentPage() {
   const params = useParams();
   const parsedId = params?.orderId ? parseInt(params.orderId, 10) : null;
   const orderId = parsedId && !isNaN(parsedId) && parsedId > 0 ? parsedId : null;
-  const { data: authUser } = trpc.auth.me.useQuery();
 
 
 
@@ -86,7 +85,6 @@ export default function PaymentPage() {
       });
 
       // Upload to S3 via backend
-      
       const uploadResponse = await fetch("/api/upload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -94,8 +92,6 @@ export default function PaymentPage() {
           file: base64,
           filename: selectedFile.name,
           type: selectedFile.type,
-          uploadType: "payment-slip",
-          userId: authUser?.id,
         }),
       });
 

@@ -154,7 +154,6 @@ export interface VerificationBreakdown {
   ocrConfidence: number;
   finalDecision: "approved" | "pending_review";
   failureReason?: string;
-  warnings?: string[];
 }
 
 export interface VerificationResult {
@@ -172,8 +171,6 @@ export interface ParseSlipImageResult {
   text: string;
   ocrConfidence: number;
   warnings: string[];
-  // Structured extraction (optional, populated after parsing)
-  extracted?: ExtractedSlipData;
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -527,7 +524,7 @@ export function generateFingerprint(extracted: ExtractedSlipData): string {
         : "",
     ].join("|");
   } else if (extracted.detectedBank && extracted.maskedAccount) {
-    // Fallback 1: bank + account + amount + date (strong signal)
+    // Fallback: bank + account + amount + date
     fingerprintData = [
       extracted.detectedBank,
       extracted.maskedAccount,
@@ -536,21 +533,10 @@ export function generateFingerprint(extracted: ExtractedSlipData): string {
         ? extracted.transactionDate.toISOString().split("T")[0]
         : "",
     ].join("|");
-  } else if (extracted.detectedBank && extracted.receiverName) {
-    // Fallback 2: bank + receiver + amount + date
-    fingerprintData = [
-      extracted.detectedBank,
-      extracted.receiverName,
-      extracted.amount !== undefined ? extracted.amount.toFixed(2) : "",
-      extracted.transactionDate
-        ? extracted.transactionDate.toISOString().split("T")[0]
-        : "",
-    ].join("|");
   } else {
-    // Fallback 3: shop + receiver + amount + date
+    // Tertiary: shop + amount + date
     fingerprintData = [
       extracted.shopName ?? "",
-      extracted.receiverName ?? "",
       extracted.amount !== undefined ? extracted.amount.toFixed(2) : "",
       extracted.transactionDate
         ? extracted.transactionDate.toISOString().split("T")[0]
@@ -641,27 +627,16 @@ export function verifySlipData(
   }
   breakdown.dateWithinWindow = true;
 
-  // 5. Reference handling (IMPROVED: conditional based on bank signal)
-  // If reference is missing but bank signal is strong, allow continued evaluation
+  // 5. Reference must be present
   if (!extracted.reference) {
-    // If we have a strong bank signal and amount/date are solid, continue
-    if (extracted.detectedBank && breakdown.amountMatched && breakdown.dateWithinWindow) {
-      console.log(
-        `[OCR] MISSING_REFERENCE for order ${context.orderId}, but bank signal (${extracted.detectedBank}) is strong, continuing...`
-      );
-      // Continue evaluation - reference is not critical if bank signal is present
-    } else {
-      // Weak signal - require reference
-      result.reviewReason = "MISSING_REFERENCE";
-      breakdown.failureReason = "No reference number detected in slip";
-      return result;
-    }
-  } else {
-    breakdown.referencePresent = true;
+    result.reviewReason = "MISSING_REFERENCE";
+    breakdown.failureReason = "No reference number detected in slip";
+    return result;
   }
+  breakdown.referencePresent = true;
 
   // 6. Reference duplicate check
-  if (extracted.reference && existingReferences.has(extracted.reference)) {
+  if (existingReferences.has(extracted.reference)) {
     result.reviewReason = "DUPLICATE_REFERENCE";
     breakdown.duplicateReference = true;
     breakdown.failureReason = "Reference already used in another payment";
@@ -676,60 +651,39 @@ export function verifySlipData(
     return result;
   }
 
-  // 8. Merchant code validation (IMPROVED: warning-only, not hard fail)
-  // Merchant code may vary by bank or payment method
-  let merchantCodeWarning: string | undefined;
+  // 8. Merchant code validation (if present)
   if (
     extracted.merchantCode &&
     extracted.merchantCode !== MERCHANT_CONFIG.merchantCode
   ) {
-    merchantCodeWarning = `Merchant code mismatch: ${extracted.merchantCode} (expected: ${MERCHANT_CONFIG.merchantCode})`;
-    console.log(
-      `[OCR] MERCHANT_CODE_MISMATCH for order ${context.orderId}: ${extracted.merchantCode} (expected: ${MERCHANT_CONFIG.merchantCode}), but continuing...`
-    );
-    // Don't fail - merchant code may vary by bank
+    result.reviewReason = "MERCHANT_CODE_MISMATCH";
+    breakdown.failureReason = `Merchant code mismatch: ${extracted.merchantCode}`;
+    return result;
   }
 
-  // 9. Merchant transaction code validation (IMPROVED: warning-only, not hard fail)
-  // Transaction code may not always be present or may vary
-  let transactionCodeWarning: string | undefined;
+  // 9. Merchant transaction code validation (if present)
   if (
     extracted.merchantTransactionCode &&
     extracted.merchantTransactionCode !== MERCHANT_CONFIG.merchantTransactionCode
   ) {
-    transactionCodeWarning = `Transaction code mismatch: ${extracted.merchantTransactionCode}`;
-    console.log(
-      `[OCR] MERCHANT_TRANSACTION_CODE_MISMATCH for order ${context.orderId}: ${extracted.merchantTransactionCode}, but continuing...`
-    );
-    // Don't fail - transaction code may not always be present
+    result.reviewReason = "MERCHANT_TRANSACTION_CODE_MISMATCH";
+    breakdown.failureReason = `Transaction code mismatch: ${extracted.merchantTransactionCode}`;
+    return result;
   }
 
-  // ===== OPTIONAL MERCHANT CHECKS (IMPROVED: warning-only) ==================
+  // ===== OPTIONAL MERCHANT CHECKS ============================================
 
-  // 10. Shop name validation (IMPROVED: warning-only, not hard fail)
-  // Shop name may vary by bank or payment method
-  let shopNameWarning: string | undefined;
+  // 10. Shop name validation (if present)
   if (extracted.shopName) {
     const normalizedShopName = normalizeText(extracted.shopName);
     const shopNameMatches = MERCHANT_CONFIG.shopNameAliases.some(
       (alias) => normalizeText(alias) === normalizedShopName
     );
     if (!shopNameMatches) {
-      shopNameWarning = `Shop name mismatch: ${extracted.shopName}`;
-      console.log(
-        `[OCR] SHOP_NAME_MISMATCH for order ${context.orderId}: ${extracted.shopName}, but continuing...`
-      );
-      // Don't fail - shop name may vary by bank
+      result.reviewReason = "SHOP_NAME_MISMATCH";
+      breakdown.failureReason = `Shop name mismatch: ${extracted.shopName}`;
+      return result;
     }
-  }
-
-  // Collect warnings for admin visibility
-  const warnings: string[] = [];
-  if (merchantCodeWarning) warnings.push(merchantCodeWarning);
-  if (transactionCodeWarning) warnings.push(transactionCodeWarning);
-  if (shopNameWarning) warnings.push(shopNameWarning);
-  if (warnings.length > 0) {
-    breakdown.warnings = warnings;
   }
 
   // ===== CONFIDENCE AND STRUCTURED DATA GATE ================================
@@ -839,14 +793,10 @@ Do NOT translate or interpret — just extract the raw text.`,
       warnings.push("Very short OCR output - may indicate poor image quality");
     }
 
-    // Extract structured data from the OCR text
-    const extracted = extractSlipData(content);
-
     return {
       text: content,
       ocrConfidence,
       warnings,
-      extracted,
     };
   } catch (error) {
     console.error("[OCR] Error parsing slip image:", error);
@@ -854,7 +804,6 @@ Do NOT translate or interpret — just extract the raw text.`,
       text: "",
       ocrConfidence: 0,
       warnings: ["Error parsing image - check URL and image format"],
-      extracted: undefined,
     };
   }
 }

@@ -19,7 +19,7 @@ import AdminPaymentsPage from "@/pages/AdminPaymentsPage";
 import AdminWalletTopupsPage from "@/pages/AdminWalletTopupsPage";
 import AdminTopupLogsPage from "@/pages/AdminTopupLogsPage";
 import AdminEntitlementsPage from "@/pages/AdminEntitlementsPage";
-import AdminSettingsPage from "@/pages/AdminSettingsPage";
+// import AdminSettingsPage from "@/pages/AdminSettingsPage";
 import AdminBulkUploadPage from "@/pages/AdminBulkUploadPage";
 import AdminNovelManagePage from "@/pages/AdminNovelManagePage";
 import AdminLoginPage from "@/pages/AdminLoginPage";
@@ -63,9 +63,8 @@ function Router() {
         <Route path={"/admin/payments"} component={AdminPaymentsPage} />
         <Route path={"/admin/wallet-topups"} component={AdminWalletTopupsPage} />
         <Route path={"/admin/topup-logs"} component={AdminTopupLogsPage} />
-        <Route path={"admin/entitlements"} component={AdminEntitlementsPage} />
-        <Route path="/admin/settings" component={AdminSettingsPage} />
-        <Route path="/admin/bulk-upload" component={AdminBulkUploadPage} />
+        <Route path={"/admin/entitlements"} component={AdminEntitlementsPage} />        {/* <Route path={"/admin/settings"} component={AdminSettingsPage} /> */}
+         <Route path="/admin/bulk-upload" component={AdminBulkUploadPage} />
         <Route path="/admin/analytics" component={AdminAnalyticsPage} />
         <Route path="/404" component={NotFound} />
         {/* Final fallback route */}

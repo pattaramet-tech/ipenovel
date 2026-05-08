@@ -113,13 +113,7 @@ export async function processSlipVerificationStaging(
   const order = orderResult[0];
 
   // ── Extract slip data ─────────────────────────────────────────────────────
-  // Use pre-extracted data from parseSlipImage if available, otherwise extract from text
-  const extracted = slipOcrResult.extracted || extractSlipData(slipOcrResult.text);
-  
-  // Merge OCR confidence from parseSlipImage if not already set
-  if (extracted && !extracted.confidence) {
-    extracted.confidence = slipOcrResult.ocrConfidence;
-  }
+  const extracted = extractSlipData(slipOcrResult.text);
 
   if (!extracted || Object.keys(extracted).length === 0) {
     OCRMetrics.recordFailedExtraction();
