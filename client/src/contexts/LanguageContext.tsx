@@ -262,6 +262,9 @@ const translations: Record<Language, Record<string, string>> = {
 
     // Wallet
     "wallet.title": "กระเป๋าเงินของฉัน",
+
+    "wallet.topupTitle": "เติมเงินเข้ากระเป๋า",
+    "wallet.createTopup": "แจ้งเติมเงิน",
     "wallet.currentBalance": "ยอดเงินคงเหลือ",
     "wallet.topupRequests": "คำขอเติมเงิน",
     "wallet.requestTopup": "ขอเติมเงิน",
@@ -564,6 +567,9 @@ const translations: Record<Language, Record<string, string>> = {
 
     // Wallet
     "wallet.title": "My Wallet",
+
+    "wallet.topupTitle": "Wallet Top-up",
+    "wallet.createTopup": "Create Top-up Request",
     "wallet.currentBalance": "Current Balance",
     "wallet.topupRequests": "Top-up Requests",
     "wallet.requestTopup": "Request Top-up",
