@@ -34,30 +34,22 @@ export default function AdminSettingsPage() {
   const [newRuleLabel, setNewRuleLabel] = useState("");
 
   // Fetch OCR status and bonus rules on mount
+  const { data: ocrData } = trpc.admin.settings.getOCRToggle.useQuery();
+  const { data: bonusData } = trpc.admin.settings.getWalletBonusRules.useQuery();
+
   useEffect(() => {
-    const fetchSettings = async () => {
-      try {
-        const status = await trpc.admin.settings.getOCRToggle.useQuery();
-        setOcrStatus(status.data);
-        setOcrEnabled(status.data?.ocrEnabled ?? true);
-      } catch (error) {
-        console.error("Failed to fetch OCR status:", error);
-        toast.error("Failed to load OCR settings");
-      }
-      
-      try {
-        setBonusLoading(true);
-        const result = await trpc.admin.settings.getWalletBonusRules.useQuery();
-        setBonusRules(result.data?.rules || []);
-      } catch (error) {
-        console.error("Failed to fetch bonus rules:", error);
-        toast.error("Failed to load bonus rules");
-      } finally {
-        setBonusLoading(false);
-      }
+    if (ocrData) {
+      setOcrStatus(ocrData);
+      setOcrEnabled(ocrData?.ocrEnabled ?? true);
     }
-    fetchSettings();
-  }, []);
+  }, [ocrData]);
+
+  useEffect(() => {
+    if (bonusData) {
+      setBonusRules(bonusData?.rules || []);
+      setBonusLoading(false);
+    }
+  }, [bonusData]);
 
   const handleOCRToggle = async (enabled: boolean) => {
     setOcrLoading(true);
@@ -79,6 +71,8 @@ export default function AdminSettingsPage() {
       setOcrLoading(false);
     }
   };
+
+  const utils = trpc.useUtils();
 
   const handleAddBonusRule = async () => {
     if (!newRuleThreshold || !newRuleBonus) {
@@ -110,8 +104,7 @@ export default function AdminSettingsPage() {
       setNewRuleBonus("");
       setNewRuleLabel("");
       // Refresh rules
-      const result = await trpc.admin.settings.getWalletBonusRules.useQuery();
-      setBonusRules(result.data?.rules || []);
+      await utils.admin.settings.getWalletBonusRules.invalidate();
     } catch (error: any) {
       toast.error(error.message || "Failed to add bonus rule");
     } finally {
@@ -125,8 +118,7 @@ export default function AdminSettingsPage() {
       await trpc.admin.settings.deleteWalletBonusRule.useMutation().mutateAsync({ ruleId });
       toast.success("Bonus rule deleted successfully");
       // Refresh rules
-      const result = await trpc.admin.settings.getWalletBonusRules.useQuery();
-      setBonusRules(result.data?.rules || []);
+      await utils.admin.settings.getWalletBonusRules.invalidate();
     } catch (error: any) {
       toast.error(error.message || "Failed to delete bonus rule");
     } finally {
@@ -140,8 +132,7 @@ export default function AdminSettingsPage() {
       await trpc.admin.settings.toggleWalletBonusRule.useMutation().mutateAsync({ ruleId, enabled });
       toast.success(`Bonus rule ${enabled ? "enabled" : "disabled"} successfully`);
       // Refresh rules
-      const result = await trpc.admin.settings.getWalletBonusRules.useQuery();
-      setBonusRules(result.data?.rules || []);
+      await utils.admin.settings.getWalletBonusRules.invalidate();
     } catch (error: any) {
       toast.error(error.message || "Failed to toggle bonus rule");
     } finally {

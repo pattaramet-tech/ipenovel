@@ -1034,3 +1034,10 @@
 - [x] Verify route works and admin auth is enforced
 - [x] Test wallet bonus settings from admin settings page
 - [x] Save checkpoint
+
+
+## Admin Page Bug Fixes
+- [x] Test all admin routes and identify bugs
+- [x] Fix identified bugs (AdminSettingsPage hook violation)
+- [x] Verify fixes and run tests
+- [x] Save checkpoint
