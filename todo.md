@@ -1072,3 +1072,12 @@
 - [x] Secure /api/upload endpoint and fix bonus preview
 - [x] Clean up obsolete state and test all flows
 - [x] Verify and save checkpoint
+
+
+## Wallet History Restoration (Phase 6)
+- [x] Inspect WalletPage and identify missing history sections
+- [x] Check backend endpoints and database helpers for wallet history
+- [x] Restore wallet history UI sections to WalletPage
+- [x] Add missing tRPC queries if needed (already exist in backend)
+- [x] Test all flows and verify data integrity
+- [x] Save checkpoint
