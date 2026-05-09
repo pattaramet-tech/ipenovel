@@ -25,31 +25,27 @@ export default function AdminSettingsPage() {
   const [ocrLoading, setOcrLoading] = useState(false);
   const [ocrStatus, setOcrStatus] = useState<any>(null);
 
+  // Move hooks to top level (React rule)
+  const getOCRToggleQuery = trpc.admin.settings.getOCRToggle.useQuery();
+  const setOCRToggleMutation = trpc.admin.settings.setOCRToggle.useMutation();
+
   // Fetch OCR status on mount
   useEffect(() => {
-    const fetchOCRStatus = async () => {
-      try {
-        const status = await trpc.admin.settings.getOCRToggle.useQuery();
-        setOcrStatus(status.data);
-        setOcrEnabled(status.data?.ocrEnabled ?? true);
-      } catch (error) {
-        console.error("Failed to fetch OCR status:", error);
-        toast.error("Failed to load OCR settings");
-      }
-    };
-    fetchOCRStatus();
-  }, []);
+    if (getOCRToggleQuery.data) {
+      setOcrStatus(getOCRToggleQuery.data);
+      setOcrEnabled(getOCRToggleQuery.data?.ocrEnabled ?? true);
+    }
+  }, [getOCRToggleQuery.data]);
 
   const handleOCRToggle = async (enabled: boolean) => {
     setOcrLoading(true);
     try {
-      const result = await trpc.admin.settings.setOCRToggle.useMutation().mutateAsync({ enabled });
+      const result = await setOCRToggleMutation.mutateAsync({ enabled });
       if (result.success) {
         setOcrEnabled(enabled);
         toast.success(`OCR ${enabled ? "enabled" : "disabled"} successfully`);
         // Refresh status
-        const status = await trpc.admin.settings.getOCRToggle.useQuery();
-        setOcrStatus(status.data);
+        getOCRToggleQuery.refetch();
       } else {
         toast.error("Failed to update OCR toggle");
       }
@@ -142,6 +138,9 @@ export default function AdminSettingsPage() {
                     ? "OCR is enabled. Payment slips will be automatically processed and approved if verification is strong."
                     : "OCR is disabled. All payment slips will be sent to manual review."}
                 </p>
+                {getOCRToggleQuery.isLoading && (
+                  <p className="text-xs text-gray-500 mt-2">Loading OCR settings...</p>
+                )}
                 {ocrStatus && (
                   <p className="text-xs text-gray-500 mt-2">
                     Source: {ocrStatus.source}

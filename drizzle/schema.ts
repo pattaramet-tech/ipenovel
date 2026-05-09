@@ -253,6 +253,9 @@ export const payments = mysqlTable(
     autoApprovedAt: timestamp("autoApprovedAt"), // When auto-approval occurred
     linkedOrderId: int("linkedOrderId"), // Order ID this slip was verified against
     linkedPaymentId: int("linkedPaymentId"), // Payment ID this slip was verified against
+    // OCR decision and confidence
+    ocrConfidence: int("ocrConfidence"), // OCR confidence score (0-100)
+    ocrDecision: mysqlEnum("ocrDecision", ["auto_approved", "needs_review", "rejected", "ocr_disabled", "shadow_auto_approved"]), // OCR decision state
     // Approval metadata
     approvalSource: mysqlEnum("approvalSource", ["manual", "auto", "wallet", "legacy"]).default("legacy"),
     approvedByAdminId: int("approvedByAdminId"), // Admin user ID for manual approvals
@@ -268,11 +271,15 @@ export const payments = mysqlTable(
     statusIdx: index("payments_status_idx").on(table.status),
     approvalSourceIdx: index("payments_approvalSource_idx").on(table.approvalSource),
     approvedByAdminIdIdx: index("payments_approvedByAdminId_idx").on(table.approvedByAdminId),
+    ocrConfidenceIdx: index("payments_ocrConfidence_idx").on(table.ocrConfidence),
+    ocrDecisionIdx: index("payments_ocrDecision_idx").on(table.ocrDecision),
   })
 );
 
 export type Payment = typeof payments.$inferSelect;
 export type InsertPayment = typeof payments.$inferInsert;
+export type OCRDecision = "auto_approved" | "needs_review" | "rejected" | "ocr_disabled" | "shadow_auto_approved";
+
 
 /**
  * Purchase entitlements (source of truth for content access)

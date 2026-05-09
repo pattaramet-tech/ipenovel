@@ -31,8 +31,10 @@ export interface OCRVerificationResultStaging {
   extractedData?: ExtractedSlipData;
   linkedOrderId?: number;
   linkedPaymentId?: number;
+  fingerprint?: string; // NEW: Add fingerprint from verification
   breakdown?: any;
   ocrConfidence?: number;
+  ocrDecision?: "auto_approved" | "needs_review" | "rejected" | "ocr_disabled" | "shadow_auto_approved"; // NEW: Add OCR decision state
   detectedBank?: string;
   duplicateStatus?: {
     isDuplicateReference: boolean;
@@ -221,8 +223,14 @@ export async function processSlipVerificationStaging(
     extractedData: extracted,
     linkedOrderId: verificationResult.linkedOrderId,
     linkedPaymentId: verificationResult.linkedPaymentId,
+    fingerprint: verificationResult.fingerprint, // NEW: Add fingerprint from verification
     breakdown: verificationResult.breakdown,
     ocrConfidence: extracted.confidence,
+    ocrDecision: isShadowMode
+      ? "shadow_auto_approved"
+      : verificationResult.isAutoApproved
+        ? "auto_approved"
+        : "needs_review", // NEW: Add OCR decision state
     detectedBank: extracted.detectedBank,
     duplicateStatus: {
       isDuplicateReference: verificationResult.reviewReason === "DUPLICATE_REFERENCE",

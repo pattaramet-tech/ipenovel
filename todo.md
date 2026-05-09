@@ -1003,3 +1003,85 @@
 - [x] Verify all flows: create, edit, replace, remove
 - [x] Verify payment slip upload still works
 - [x] Save checkpoint with cover upload feature
+
+
+## OCR System Improvements (Phase 2) - 11 Issues
+
+### Issue 1: Missing OCR Payment Columns
+- [ ] Add ocrConfidence column to payments table
+- [ ] Add ocrDecision enum column to payments table
+- [ ] Run database migration
+- [ ] Update schema types
+
+### Issue 2: Fingerprint Persistence
+- [ ] Add fingerprint field to OCRVerificationResultStaging
+- [ ] Update processSlipVerificationStaging to return fingerprint
+- [ ] Fix routers.ts to save fingerprint from correct location
+- [ ] Ensure both auto-approved and needs-review save fingerprint
+
+### Issue 3: updatePayment Type Fix
+- [ ] Add pending_review to payment status type
+- [ ] Verify all fields in updatePayment match schema
+
+### Issue 4: Mount OCR Metrics Router
+- [ ] Import ocrMetricsRouter in routers.ts
+- [ ] Mount under admin-only access
+- [ ] Verify admin can fetch metrics
+
+### Issue 5: Fix Admin Settings OCR Hook
+- [ ] Move useQuery to top level of component
+- [ ] Move useMutation to top level
+- [ ] Fix OCR toggle load/save/refresh
+- [ ] Verify Wallet Bonus Settings not broken
+
+### Issue 6: Improve Confidence Model
+- [ ] Add visionConfidence to ExtractedSlipData
+- [ ] Add structuredConfidence calculation
+- [ ] Calculate finalConfidence as weighted score
+- [ ] Use finalConfidence in verifySlipData
+
+### Issue 7: Make Time Window Configurable
+- [ ] Add maxTimeWindowMinutes to OCR config
+- [ ] Pass into verifySlipData function
+- [ ] Update time window checks to use config
+- [ ] Keep safe defaults
+
+### Issue 8: Improve OCR Settings Source of Truth
+- [ ] Create getEffectiveOCRConfig function
+- [ ] Merge env, database, and defaults
+- [ ] Add admin settings for auto-approve, shadow mode, confidence, time window
+- [ ] Ensure OCR_ENABLED=false overrides everything
+
+### Issue 9: Make OCR Persistence Atomic
+- [ ] Add transaction support to auto-approval flow
+- [ ] Add guards against double-approval
+- [ ] Add guards against double-finalization
+- [ ] Add guards against double coupon usage
+- [ ] Add guards against double points award
+
+### Issue 10: Improve Admin Visibility
+- [ ] Show OCR decision badge
+- [ ] Show OCR confidence score
+- [ ] Show vision confidence if available
+- [ ] Show structured confidence if available
+- [ ] Show extracted amount vs expected
+- [ ] Show extracted date/time
+- [ ] Show reference number
+- [ ] Show fingerprint duplicate status
+- [ ] Show review reason
+- [ ] Show approval source
+- [ ] Show matched checks and warnings
+
+### Issue 11: Add Comprehensive Tests
+- [ ] Test auto-approved OCR updates payment status
+- [ ] Test auto-approved OCR updates order status
+- [ ] Test auto-approved OCR stores all metadata
+- [ ] Test needs-review OCR updates payment status
+- [ ] Test needs-review OCR stores metadata
+- [ ] Test duplicate reference detection
+- [ ] Test duplicate fingerprint detection
+- [ ] Test OCR disabled sends to manual review
+- [ ] Test admin OCR toggle works
+- [ ] Test OCR metrics router reachable
+- [ ] Test manual approval after pending_review
+- [ ] Test payment slip upload still works

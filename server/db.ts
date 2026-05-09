@@ -837,7 +837,7 @@ export async function updateOrder(orderId: number, data: { status?: string; paym
   await db.update(orders).set(updateData).where(eq(orders.id, orderId));
 }
 
-export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected"; rejectionReason?: string; extractedData?: string | null; reviewReason?: string | null; fingerprint?: string | null; linkedOrderId?: number | null; linkedPaymentId?: number | null; ocrConfidence?: number | null; ocrDecision?: string | null }, tx?: any) {
+export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected" | "pending_review"; rejectionReason?: string; extractedData?: string | null; reviewReason?: string | null; fingerprint?: string | null; linkedOrderId?: number | null; linkedPaymentId?: number | null; ocrConfidence?: number | null; ocrDecision?: string | null }, tx?: any) {
   const db = tx || await getDb();
   if (!db) return;
   await db.update(payments).set(data).where(eq(payments.id, paymentId));

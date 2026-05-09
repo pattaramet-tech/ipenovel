@@ -10,6 +10,7 @@ import * as orderService from "./services/orderService";
 import * as walletService from "./services/walletService";
 import { ApprovalService } from "./services/approvalService";
 import { fileRouter } from "./routers/fileRouter";
+import { ocrMetricsRouter } from "./routers/ocrMetricsRouter";
 import { storagePut } from "./storage";
 import { parseSlipImage } from "./ocr-slip-verification-v2";
 import { processSlipVerificationStaging } from "./ocr-slip-integration-staging";
@@ -808,6 +809,7 @@ export const appRouter = router({
 
   // ============ ADMIN ROUTES ============
   admin: router({
+    ocr: ocrMetricsRouter,
     login: publicProcedure
       .input(z.object({ email: z.string().email(), password: z.string() }))
       .mutation(async ({ input, ctx }) => {

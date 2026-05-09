@@ -120,6 +120,13 @@
       "when": 1777101990045,
       "tag": "0016_fancy_stranger",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "5",
+      "when": 1778351128046,
+      "tag": "0017_nosy_newton_destine",
+      "breakpoints": true
     }
   ]
 }
