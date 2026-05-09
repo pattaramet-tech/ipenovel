@@ -115,7 +115,7 @@ export async function processSlipVerificationStaging(
   const order = orderResult[0];
 
   // ── Extract slip data ─────────────────────────────────────────────────────
-  const extracted = extractSlipData(slipOcrResult.text);
+  const extracted = extractSlipData(slipOcrResult.text, slipOcrResult.ocrConfidence);
 
   if (!extracted || Object.keys(extracted).length === 0) {
     OCRMetrics.recordFailedExtraction();
@@ -177,13 +177,14 @@ export async function processSlipVerificationStaging(
     }
   }
 
-  // ── Verify slip data ──────────────────────────────────────────────────────
+   // ── Verify slip data ─────────────────────────────────────────────────────
   const verificationResult = verifySlipData(
     extracted,
     context,
     existingReferences,
     existingFingerprints,
-    config.minConfidence
+    config.minConfidence,
+    config.maxTimeWindowMinutes
   );
 
   // Record metrics based on verification result

@@ -456,8 +456,8 @@ function detectBank(text: string): { code?: string; name?: string } {
   return {};
 }
 
-// ─── Main extraction function ─────────────────────────────────────────────────
-export function extractSlipData(ocrText: string): ExtractedSlipData {
+// ─── Main extraction function ────────────────────────────────────────────────────
+export function extractSlipData(ocrText: string, visionConfidence?: number): ExtractedSlipData {
   if (!ocrText || ocrText.trim().length === 0) {
     return { confidence: 0 };
   }
@@ -553,7 +553,8 @@ export function verifySlipData(
   context: OrderPaymentContext,
   existingReferences: Set<string>,
   existingFingerprints: Set<string> = new Set(),
-  minConfidence: number = 85
+  minConfidence: number = 85,
+  maxTimeWindowMinutes: number = 120
 ): VerificationResult {
   const fingerprint = generateFingerprint(extracted);
   const breakdown: VerificationBreakdown = {

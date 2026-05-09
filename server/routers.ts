@@ -505,7 +505,12 @@ export const appRouter = router({
             detectedBank: null,
             extractedData: null,
             breakdown: { reason: "OCR processing is disabled" },
-            duplicateStatus: "not_checked",
+            duplicateStatus: {
+              isDuplicateReference: false,
+              isDuplicateFingerprint: false,
+            },
+            ocrDecision: "ocr_disabled",
+            fingerprint: null,
           };
           shouldApprove = false;
         }
@@ -526,11 +531,11 @@ export const appRouter = router({
           await db.updatePayment(payment.id, {
             extractedData: verificationResult.extractedData ? JSON.stringify(verificationResult.extractedData) : null,
             reviewReason: null,
-            fingerprint: verificationResult.breakdown?.fingerprint || null,
+            fingerprint: verificationResult.fingerprint || null,
             linkedOrderId: order.id,
             linkedPaymentId: payment.id,
             ocrConfidence: verificationResult.ocrConfidence,
-            ocrDecision: "auto_approved",
+            ocrDecision: verificationResult.ocrDecision || "auto_approved",
           });
           
           // Auto-approved: mark order as approved (valid enum value)
@@ -575,15 +580,20 @@ export const appRouter = router({
             payment.id,
             verificationResult.reviewReason || "MANUAL_REVIEW_REQUIRED",
             verificationResult.extractedData,
-            verificationResult.breakdown?.fingerprint || null
+            verificationResult.fingerprint || null
           );
           
+          const ocrDecision = verificationResult.ocrDecision
+            || (verificationResult.reviewReason === "OCR_DISABLED"
+              ? "ocr_disabled"
+              : "needs_review");
+
           // Also save additional OCR metadata
           await db.updatePayment(payment.id, {
             linkedOrderId: order.id,
             linkedPaymentId: payment.id,
-            ocrConfidence: verificationResult.ocrConfidence,
-            ocrDecision: "needs_review",
+            ocrConfidence: verificationResult.ocrConfidence ?? null,
+            ocrDecision,
           });
           
           // Pending review: keep order pending
