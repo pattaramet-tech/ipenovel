@@ -180,7 +180,8 @@ export async function processSlipVerificationStaging(
     extracted,
     context,
     existingReferences,
-    existingFingerprints
+    existingFingerprints,
+    config.minConfidence
   );
 
   // Record metrics based on verification result

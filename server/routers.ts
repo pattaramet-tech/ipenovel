@@ -513,6 +513,25 @@ export const appRouter = router({
 
         // Sync order status based on verification result
         if (shouldApprove) {
+          // Auto-approved: update payment record with OCR metadata
+          const { ApprovalService } = await import("./services/approvalService");
+          await ApprovalService.approvePaymentWithSource(
+            payment.id,
+            "auto",
+            { autoApprovedAt: new Date() }
+          );
+          
+          // Also save OCR metadata to payment record
+          await db.updatePayment(payment.id, {
+            extractedData: verificationResult.extractedData ? JSON.stringify(verificationResult.extractedData) : null,
+            reviewReason: null,
+            fingerprint: verificationResult.breakdown?.fingerprint || null,
+            linkedOrderId: order.id,
+            linkedPaymentId: payment.id,
+            ocrConfidence: verificationResult.ocrConfidence,
+            ocrDecision: "auto_approved",
+          });
+          
           // Auto-approved: mark order as approved (valid enum value)
           await db.updateOrder(order.id, {
             paymentStatus: "approved",
@@ -549,6 +568,23 @@ export const appRouter = router({
           // Finalize order: create purchase records, award loyalty points, record coupon usage
           await orderService.finalizeOrderCompletion(order.id, ctx.user.id);
         } else {
+          // Pending review: update payment record with OCR metadata
+          const { ApprovalService } = await import("./services/approvalService");
+          await ApprovalService.sendToReview(
+            payment.id,
+            verificationResult.reviewReason || "MANUAL_REVIEW_REQUIRED",
+            verificationResult.extractedData,
+            verificationResult.breakdown?.fingerprint || null
+          );
+          
+          // Also save additional OCR metadata
+          await db.updatePayment(payment.id, {
+            linkedOrderId: order.id,
+            linkedPaymentId: payment.id,
+            ocrConfidence: verificationResult.ocrConfidence,
+            ocrDecision: "needs_review",
+          });
+          
           // Pending review: keep order pending
           await db.updateOrder(order.id, {
             paymentStatus: "submitted",

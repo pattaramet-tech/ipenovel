@@ -552,7 +552,8 @@ export function verifySlipData(
   extracted: ExtractedSlipData,
   context: OrderPaymentContext,
   existingReferences: Set<string>,
-  existingFingerprints: Set<string> = new Set()
+  existingFingerprints: Set<string> = new Set(),
+  minConfidence: number = 85
 ): VerificationResult {
   const fingerprint = generateFingerprint(extracted);
   const breakdown: VerificationBreakdown = {
@@ -688,10 +689,10 @@ export function verifySlipData(
 
   // ===== CONFIDENCE AND STRUCTURED DATA GATE ================================
 
-  // 11. Confidence must be ≥ 80 for auto-approval (IMPROVED: lowered from 85)
-  if ((extracted.confidence ?? 0) < 80) {
+  // 11. Confidence must meet minimum threshold for auto-approval (configurable via OCR_MIN_CONFIDENCE)
+  if ((extracted.confidence ?? 0) < minConfidence) {
     result.reviewReason = "LOW_CONFIDENCE";
-    breakdown.failureReason = `OCR confidence too low: ${extracted.confidence}%`;
+    breakdown.failureReason = `OCR confidence too low: ${extracted.confidence}% (minimum: ${minConfidence}%)`;
     return result;
   }
 
