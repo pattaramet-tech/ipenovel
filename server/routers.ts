@@ -1492,6 +1492,49 @@ export const appRouter = router({
           }
           return { success };
         }),
+
+      // OCR Settings (Phase 4)
+      getOCRSettings: adminProcedure.query(async () => {
+        const { getOCRSettingsForAdmin } = await import("./_core/ocr-effective-config");
+        return getOCRSettingsForAdmin();
+      }),
+
+      updateOCRSettings: adminProcedure
+        .input(
+          z.object({
+            enabled: z.boolean().optional(),
+            autoApproveEnabled: z.boolean().optional(),
+            shadowModeEnabled: z.boolean().optional(),
+            minConfidence: z.number().int().min(0).max(100).optional(),
+            maxTimeWindowMinutes: z.number().int().min(1).max(1440).optional(),
+          })
+        )
+        .mutation(async ({ input }) => {
+          const { saveOCRSettingsToDatabase, validateAdminOCRSettings } = await import(
+            "./_core/ocr-effective-config"
+          );
+
+          // Validate input
+          const validation = validateAdminOCRSettings(input);
+          if (!validation.valid) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: validation.errors.join(", "),
+            });
+          }
+
+          // Save to database
+          const success = await saveOCRSettingsToDatabase(input);
+          if (!success) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "Failed to save OCR settings",
+            });
+          }
+
+          console.log(`[Admin] OCR settings updated:`, input);
+          return { success: true };
+        }),
     }),
 
     bulkUpload: router({

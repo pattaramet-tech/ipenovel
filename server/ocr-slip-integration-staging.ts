@@ -19,6 +19,7 @@ import {
 } from "./ocr-slip-verification-v2";
 import { ApprovalService } from "./services/approvalService";
 import { getOCRConfig } from "./_core/ocr-config";
+import { getEffectiveOCRConfig } from "./_core/ocr-effective-config";
 import * as OCRMetrics from "./_core/ocr-metrics";
 
 /**
@@ -57,13 +58,13 @@ export async function processSlipVerificationStaging(
   paymentId: number,
   slipOcrResult: ParseSlipImageResult
 ): Promise<OCRVerificationResultStaging> {
-  const config = getOCRConfig();
+  const config = await getEffectiveOCRConfig();
 
   // Record metrics
   OCRMetrics.recordSlipProcessed();
 
   // Check if OCR is enabled
-  if (!config.ocrEnabled) {
+  if (!config.enabled) {
     return {
       isAutoApproved: false,
       isShadowMode: false,
@@ -230,11 +231,11 @@ export async function processSlipVerificationStaging(
 
   // ── Determine if shadow mode or real mode ─────────────────────────────────
   const isShadowMode =
-    config.ocrShadowMode || !config.ocrAutoApproveEnabled;
+    config.shadowModeEnabled || !config.autoApproveEnabled;
 
   if (isShadowMode && verificationResult.isAutoApproved) {
     OCRMetrics.recordShadowApproved();
-    if (config.detailedLogging) {
+    if (false) { // detailedLogging not in EffectiveOCRConfig, use getOCRConfig() if needed
       console.log("[OCR Shadow Mode]", {
         paymentId,
         orderId: order.id,

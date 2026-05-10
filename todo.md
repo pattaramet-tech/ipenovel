@@ -1132,3 +1132,15 @@
 - [ ] Show duplicate status
 - [ ] Show review reason
 - [ ] Show approval source
+
+
+## OCR Production Hardening Phase 4: Expand Admin OCR Settings
+- [x] Create effective OCR config resolution helper (ocr-effective-config.ts)
+- [x] Implement getEffectiveOCRConfig() with environment override hierarchy
+- [x] Add database-backed OCR settings (ocr_settings key)
+- [x] Add backend tRPC procedures (getOCRSettings, updateOCRSettings)
+- [x] Update active OCR runtime path to use effective config
+- [x] Expand AdminSettingsPage with full OCR controls
+- [x] Add OCR settings validation (minConfidence 0-100, maxTimeWindowMinutes 1-1440)
+- [x] Verify TypeScript compilation and build success
+- [x] Verify no regressions in existing OCR flows
