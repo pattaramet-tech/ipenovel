@@ -68,6 +68,14 @@ export async function processSlipVerificationStaging(
       isAutoApproved: false,
       isShadowMode: false,
       reviewReason: "OCR_DISABLED",
+      ocrConfidence: 0,
+      ocrDecision: "ocr_disabled",
+      fingerprint: undefined,
+      duplicateStatus: {
+        isDuplicateReference: false,
+        isDuplicateFingerprint: false,
+      },
+      breakdown: { reason: "OCR processing is disabled by effective config" },
     };
   }
 
@@ -227,11 +235,11 @@ export async function processSlipVerificationStaging(
     fingerprint: verificationResult.fingerprint, // NEW: Add fingerprint from verification
     breakdown: verificationResult.breakdown,
     ocrConfidence: extracted.confidence,
-    ocrDecision: isShadowMode
+    ocrDecision: isShadowMode && verificationResult.isAutoApproved
       ? "shadow_auto_approved"
       : verificationResult.isAutoApproved
         ? "auto_approved"
-        : "needs_review", // NEW: Add OCR decision state
+        : "needs_review",
     detectedBank: extracted.detectedBank,
     duplicateStatus: {
       isDuplicateReference: verificationResult.reviewReason === "DUPLICATE_REFERENCE",

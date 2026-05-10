@@ -131,7 +131,14 @@ export interface ExtractedSlipData {
   maskedAccount?: string;
   merchantCode?: string;
   merchantTransactionCode?: string;
+  /** Final combined confidence used for verification. */
   confidence?: number;
+  /** Confidence reported by the vision/OCR extraction step. */
+  visionConfidence?: number;
+  /** Confidence based on extracted structured fields. */
+  structuredConfidence?: number;
+  /** Same as confidence, included explicitly for admin/debug display. */
+  finalConfidence?: number;
   rawText?: string;
 }
 
@@ -457,9 +464,18 @@ function detectBank(text: string): { code?: string; name?: string } {
 }
 
 // ─── Main extraction function ────────────────────────────────────────────────────
-export function extractSlipData(ocrText: string, visionConfidence?: number): ExtractedSlipData {
+export function extractSlipData(
+  ocrText: string,
+  visionConfidence?: number
+): ExtractedSlipData {
   if (!ocrText || ocrText.trim().length === 0) {
-    return { confidence: 0 };
+    const safeVisionConfidence = typeof visionConfidence === "number" ? visionConfidence : 0;
+    return {
+      confidence: 0,
+      visionConfidence: safeVisionConfidence,
+      structuredConfidence: 0,
+      finalConfidence: 0,
+    };
   }
 
   const text = preprocessOcrText(ocrText);
@@ -474,18 +490,31 @@ export function extractSlipData(ocrText: string, visionConfidence?: number): Ext
   const reference = extractReference(text);
   const { code: detectedBank, name: detectedBankName } = detectBank(text);
 
-  // ─── Confidence scoring (improved) ───────────────────────────────────────
-  let confidence = 0;
-  if (amount) confidence += 25;
-  if (transactionDate) confidence += 20;
-  if (reference) confidence += 20;
-  if (detectedBank) confidence += 10;
-  if (shopName) confidence += 10;
-  if (merchantCode) confidence += 10;
-  if (merchantTransactionCode) confidence += 5;
-  if (transactionDateTime) confidence += 5;
-  if (receiverName || maskedAccount) confidence += 5;
-  confidence = Math.min(confidence, 100);
+  // ─── Confidence scoring ─────────────────────────────────────────────────
+  // Structured confidence measures how complete and useful the extracted fields are.
+  let structuredConfidence = 0;
+  if (amount) structuredConfidence += 25;
+  if (transactionDate) structuredConfidence += 20;
+  if (reference) structuredConfidence += 20;
+  if (detectedBank) structuredConfidence += 10;
+  if (shopName) structuredConfidence += 10;
+  if (merchantCode) structuredConfidence += 10;
+  if (merchantTransactionCode) structuredConfidence += 5;
+  if (transactionDateTime) structuredConfidence += 5;
+  if (receiverName || maskedAccount) structuredConfidence += 5;
+  structuredConfidence = Math.min(structuredConfidence, 100);
+
+  const normalizedVisionConfidence = Math.max(
+    0,
+    Math.min(100, typeof visionConfidence === "number" ? visionConfidence : structuredConfidence)
+  );
+
+  // Final confidence combines image/OCR quality with field completeness.
+  // Field completeness is weighted slightly higher because auto-approval depends on
+  // exact amount/date/reference extraction, not only image clarity.
+  const finalConfidence = Math.round(
+    normalizedVisionConfidence * 0.4 + structuredConfidence * 0.6
+  );
 
   return {
     amount,
@@ -499,7 +528,10 @@ export function extractSlipData(ocrText: string, visionConfidence?: number): Ext
     maskedAccount,
     merchantCode,
     merchantTransactionCode,
-    confidence,
+    confidence: finalConfidence,
+    visionConfidence: normalizedVisionConfidence,
+    structuredConfidence,
+    finalConfidence,
     rawText: ocrText,
   };
 }
@@ -604,22 +636,24 @@ export function verifySlipData(
   }
   breakdown.datePresent = true;
 
-  // 4. Transaction must be within tightened time window
-  //    - If full datetime: 2-hour window
-  //    - If date-only: 24-hour window
-  //    - Clock skew: 5 minutes after
+  // 4. Transaction must be within the configured time window.
+  //    - Full datetime uses OCR_MAX_TIME_WINDOW_MINUTES / config.maxTimeWindowMinutes.
+  //    - Date-only slips keep a wider minimum window because exact time is unknown.
+  //    - Clock skew: allow 5 minutes after the payment request time.
   const paymentTime = context.paymentCreatedAt.getTime();
   const transactionTime = extracted.transactionDate.getTime();
   const timeDiffMs = paymentTime - transactionTime;
   const clockSkewMs = 5 * 60 * 1000; // 5 min after
 
+  const safeMaxWindowMinutes = Number.isFinite(maxTimeWindowMinutes)
+    ? Math.max(5, maxTimeWindowMinutes)
+    : 120;
+
   let maxAgeMs: number;
   if (extracted.transactionDateTime) {
-    // Full datetime: use 2-hour window (tighter)
-    maxAgeMs = 2 * 60 * 60 * 1000;
+    maxAgeMs = safeMaxWindowMinutes * 60 * 1000;
   } else {
-    // Date-only: use 24-hour window (but more conservative)
-    maxAgeMs = 24 * 60 * 60 * 1000;
+    maxAgeMs = Math.max(safeMaxWindowMinutes, 24 * 60) * 60 * 1000;
   }
 
   if (timeDiffMs > maxAgeMs || timeDiffMs < -clockSkewMs) {
