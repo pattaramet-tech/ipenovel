@@ -1,0 +1,82 @@
+{
+  "query": "SELECT \n  id,\n  code,\n  discountType,\n  discountValue,\n  minPurchaseAmount,\n  maxUsageCount,\n  usageCount,\n  isActive,\n  expiresAt,\n  CASE\n    WHEN isActive != 1 THEN 'HIDDEN: inactive'\n    WHEN expiresAt IS NOT NULL AND expiresAt <= NOW() THEN 'HIDDEN: expired'\n    WHEN maxUsageCount IS NOT NULL AND usageCount >= maxUsageCount THEN 'HIDDEN: usage limit reached'\n    WHEN discountValue IS NULL OR discountValue <= 0 THEN 'INVALID: discount value'\n    ELSE 'SHOULD_SHOW'\n  END AS coupon_status\nFROM coupons\nORDER BY id;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT \n  id,\n  code,\n  discountType,\n  discountValue,\n  minPurchaseAmount,\n  maxUsageCount,\n  usageCount,\n  isActive,\n  expiresAt,\n  CASE\n    WHEN isActive != 1 THEN 'HIDDEN: inactive'\n    WHEN expiresAt IS NOT NULL AND expiresAt <= NOW() THEN 'HIDDEN: expired'\n    WHEN maxUsageCount IS NOT NULL AND usageCount >= maxUsageCount THEN 'HIDDEN: usage limit reached'\n    WHEN discountValue IS NULL OR discountValue <= 0 THEN 'INVALID: discount value'\n    ELSE 'SHOULD_SHOW'\n  END AS coupon_status\nFROM coupons\nORDER BY id;",
+  "rows": [
+    {
+      "id": "30035",
+      "code": "NEWZ",
+      "discountType": "percentage",
+      "discountValue": "10.00",
+      "minPurchaseAmount": "0.00",
+      "maxUsageCount": "NULL",
+      "usageCount": "290",
+      "isActive": "0",
+      "expiresAt": "2026-04-08 00:00:00",
+      "coupon_status": "HIDDEN: inactive"
+    },
+    {
+      "id": "540001",
+      "code": "SAVE5",
+      "discountType": "percentage",
+      "discountValue": "5.00",
+      "minPurchaseAmount": "300.00",
+      "maxUsageCount": "NULL",
+      "usageCount": "53",
+      "isActive": "1",
+      "expiresAt": "NULL",
+      "coupon_status": "SHOULD_SHOW"
+    },
+    {
+      "id": "540002",
+      "code": "SAVE10",
+      "discountType": "percentage",
+      "discountValue": "10.00",
+      "minPurchaseAmount": "800.00",
+      "maxUsageCount": "NULL",
+      "usageCount": "15",
+      "isActive": "1",
+      "expiresAt": "NULL",
+      "coupon_status": "SHOULD_SHOW"
+    },
+    {
+      "id": "540003",
+      "code": "SAVE15",
+      "discountType": "percentage",
+      "discountValue": "15.00",
+      "minPurchaseAmount": "2000.00",
+      "maxUsageCount": "NULL",
+      "usageCount": "0",
+      "isActive": "1",
+      "expiresAt": "NULL",
+      "coupon_status": "SHOULD_SHOW"
+    },
+    {
+      "id": "930001",
+      "code": "LABOR",
+      "discountType": "percentage",
+      "discountValue": "5.00",
+      "minPurchaseAmount": "0.00",
+      "maxUsageCount": "NULL",
+      "usageCount": "2",
+      "isActive": "0",
+      "expiresAt": "2026-05-01 00:00:00",
+      "coupon_status": "HIDDEN: inactive"
+    },
+    {
+      "id": "960001",
+      "code": "MANUWIN",
+      "discountType": "percentage",
+      "discountValue": "5.00",
+      "minPurchaseAmount": "0.00",
+      "maxUsageCount": "NULL",
+      "usageCount": "7",
+      "isActive": "0",
+      "expiresAt": "2026-05-04 00:00:00",
+      "coupon_status": "HIDDEN: inactive"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tcode\tdiscountType\tdiscountValue\tminPurchaseAmount\tmaxUsageCount\tusageCount\tisActive\texpiresAt\tcoupon_status\n30035\tNEWZ\tpercentage\t10.00\t0.00\tNULL\t290\t0\t2026-04-08 00:00:00\tHIDDEN: inactive\n540001\tSAVE5\tpercentage\t5.00\t300.00\tNULL\t53\t1\tNULL\tSHOULD_SHOW\n540002\tSAVE10\tpercentage\t10.00\t800.00\tNULL\t15\t1\tNULL\tSHOULD_SHOW\n540003\tSAVE15\tpercentage\t15.00\t2000.00\tNULL\t0\t1\tNULL\tSHOULD_SHOW\n930001\tLABOR\tpercentage\t5.00\t0.00\tNULL\t2\t0\t2026-05-01 00:00:00\tHIDDEN: inactive\n960001\tMANUWIN\tpercentage\t5.00\t0.00\tNULL\t7\t0\t2026-05-04 00:00:00\tHIDDEN: inactive\n",
+  "stderr": "",
+  "execution_time_ms": 1839
+}

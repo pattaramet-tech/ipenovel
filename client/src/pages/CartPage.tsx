@@ -46,7 +46,7 @@ export default function CartPage() {
   const subtotal = items.reduce((sum, item) => sum + parseFloat(item.price.toString()), 0).toFixed(2);
 
   const { data: activeCoupons = [], isLoading: couponsLoading } = trpc.checkout.activeCoupons.useQuery(
-    { subtotal },
+    items.length > 0 ? { subtotal } : undefined,
     { enabled: isAuthenticated && items.length > 0 }
   );
 

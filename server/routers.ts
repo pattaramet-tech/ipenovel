@@ -264,7 +264,7 @@ export const appRouter = router({
   // ============ CHECKOUT & ORDERS ============
   checkout: router({
     activeCoupons: protectedProcedure
-      .input(z.object({ subtotal: z.string().optional() }).optional())
+      .input(z.object({ subtotal: z.string() }).optional())
       .query(async ({ input }) => {
         return db.getActiveCouponsForCart(input?.subtotal);
       }),
