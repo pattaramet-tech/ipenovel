@@ -16,6 +16,10 @@ interface ExtractedData {
   visionConfidence?: number;
   structuredConfidence?: number;
   finalConfidence?: number;
+  duplicateStatus?: string;
+  duplicatePaymentId?: number;
+  duplicateReferencePaymentId?: number;
+  duplicateFingerprintPaymentId?: number;
   [key: string]: any;
 }
 
@@ -265,18 +269,51 @@ export function OCRResultPanel({ payment }: OCRResultPanelProps) {
         )}
 
         {/* Duplicate Detection */}
-        {payment.fingerprint && (
+        {(payment.fingerprint || extractedData?.duplicateStatus) && (
           <div>
             <p className="text-sm font-semibold text-slate-700 mb-2">Duplicate Detection</p>
             <div className="space-y-2 text-sm bg-white p-3 rounded border border-blue-200">
-              <div>
-                <p className="text-slate-600 break-all">
-                  <span className="font-semibold">Fingerprint:</span> {payment.fingerprint.substring(0, 32)}...
-                </p>
-              </div>
-              <div className="pt-2 border-t border-slate-200">
-                <Badge className="bg-blue-100 text-blue-800">Fingerprint Stored</Badge>
-              </div>
+              {/* Duplicate Status Warning */}
+              {extractedData?.duplicateStatus && (
+                <div className="mb-2 p-2 bg-red-50 rounded border border-red-200">
+                  <p className="text-red-900 font-semibold text-xs mb-1">⚠️ Duplicate Detected</p>
+                  <p className="text-red-800 text-xs">{extractedData.duplicateStatus}</p>
+                </div>
+              )}
+
+              {/* Duplicate Reference */}
+              {extractedData?.duplicateReferencePaymentId && (
+                <div className="p-2 bg-orange-50 rounded border border-orange-200">
+                  <p className="text-orange-900 font-semibold text-xs">Duplicate Reference</p>
+                  <p className="text-orange-800 text-xs">Payment ID: {extractedData.duplicateReferencePaymentId}</p>
+                </div>
+              )}
+
+              {/* Duplicate Fingerprint */}
+              {extractedData?.duplicateFingerprintPaymentId && (
+                <div className="p-2 bg-orange-50 rounded border border-orange-200">
+                  <p className="text-orange-900 font-semibold text-xs">Duplicate Fingerprint</p>
+                  <p className="text-orange-800 text-xs">Payment ID: {extractedData.duplicateFingerprintPaymentId}</p>
+                </div>
+              )}
+
+              {/* Generic Duplicate Payment ID */}
+              {extractedData?.duplicatePaymentId && !extractedData?.duplicateReferencePaymentId && !extractedData?.duplicateFingerprintPaymentId && (
+                <div className="p-2 bg-orange-50 rounded border border-orange-200">
+                  <p className="text-orange-900 font-semibold text-xs">Duplicate Payment</p>
+                  <p className="text-orange-800 text-xs">Payment ID: {extractedData.duplicatePaymentId}</p>
+                </div>
+              )}
+
+              {/* Fingerprint */}
+              {payment.fingerprint && (
+                <div className="pt-2 border-t border-slate-200">
+                  <p className="text-slate-600 break-all text-xs">
+                    <span className="font-semibold">Fingerprint:</span> {payment.fingerprint.substring(0, 32)}...
+                  </p>
+                  <Badge className="bg-blue-100 text-blue-800 text-xs mt-1">Stored</Badge>
+                </div>
+              )}
             </div>
           </div>
         )}

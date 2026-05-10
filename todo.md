@@ -1165,3 +1165,12 @@
 - [x] Test OCR panel with old payment (no OCR data)
 - [x] Verify all 16 verification checklist items
 - [x] TypeScript check and production build
+
+
+## OCR Production Hardening Phase 5: Gap Fixes
+- [x] Fix admin pending payments query to include pending_review status
+- [x] Add duplicate status visibility to OCRResultPanel
+- [x] Fix JSON parsing in AdminPaymentsPage to prevent crashes
+- [x] Inspect AdminOrdersPage and add OCR panel if applicable
+- [x] Run verification checklist (12 items)
+- [x] TypeScript check and production build

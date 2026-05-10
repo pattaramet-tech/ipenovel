@@ -895,9 +895,13 @@ export async function getPendingPayments(limit?: number, offset?: number) {
   const db = await getDb();
   if (!db) return [];
   // Exclude wallet payments - they don't need slip review
+  // Include both pending and pending_review payments for admin review
   let query: any = db.select().from(payments).where(
     and(
-      eq(payments.status, "pending"),
+      or(
+        eq(payments.status, "pending"),
+        eq(payments.status, "pending_review")
+      ),
       ne(payments.approvalSource, "wallet")
     )
   ).orderBy(desc(payments.createdAt));

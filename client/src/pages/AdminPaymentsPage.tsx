@@ -111,7 +111,17 @@ export default function AdminPaymentsPage() {
         ) : (
           <div className="space-y-4">
             {payments.map((payment: any) => {
-              const extractedData = payment.extractedData ? JSON.parse(payment.extractedData) : null;
+              // Safely parse extractedData - OCRResultPanel handles parsing, so we don't need it here
+              // But keep for backward compatibility if needed elsewhere
+              let extractedData = null;
+              if (payment.extractedData) {
+                try {
+                  extractedData = typeof payment.extractedData === 'string' ? JSON.parse(payment.extractedData) : payment.extractedData;
+                } catch (e) {
+                  console.error('Failed to parse extractedData for payment', payment.id, e);
+                  extractedData = null;
+                }
+              }
               const isAutoApproved = payment.autoApprovedAt !== null;
 
               return (

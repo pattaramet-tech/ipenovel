@@ -9,6 +9,7 @@ import { Loader2, ArrowLeft, Eye } from "lucide-react";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { OCRResultPanel } from "@/components/OCRResultPanel";
 
 /** Derive a color class for a payment status string */
 function paymentStatusColor(status: string | undefined | null): string {
@@ -317,6 +318,13 @@ export default function AdminOrderDetailPage() {
               <div className="mt-6 p-3 bg-purple-50 rounded-lg border border-purple-200">
                 <p className="text-sm text-purple-700 font-medium">Wallet Payment — No slip required</p>
                 <p className="text-xs text-purple-500 mt-1">This order was paid directly from the customer's wallet balance.</p>
+              </div>
+            )}
+
+            {/* OCR Result Panel - Show OCR metadata if available */}
+            {!isWalletPayment && order.payment && (
+              <div className="mt-6">
+                <OCRResultPanel payment={order.payment} />
               </div>
             )}
           </Card>
