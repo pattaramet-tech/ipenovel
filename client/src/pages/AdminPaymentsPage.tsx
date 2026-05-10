@@ -10,6 +10,7 @@ import { useState } from "react";
 import { SlipPreviewModal } from "@/components/SlipPreviewModal";
 import AdminLayout from "@/components/AdminLayout";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { OCRResultPanel } from "@/components/OCRResultPanel";
 
 export default function AdminPaymentsPage() {
   const { user, isAuthenticated } = useAuth();
@@ -150,47 +151,10 @@ export default function AdminPaymentsPage() {
                   </CardHeader>
 
                   <CardContent className="pt-6">
-                    {/* OCR Verification Status */}
-                    {payment.reviewReason && (
-                      <div className="mb-4 p-3 bg-red-50 rounded border border-red-200">
-                        <div className="flex items-start gap-2">
-                          <AlertCircle className="w-4 h-4 text-red-600 mt-0.5 flex-shrink-0" />
-                          <div>
-                            <p className="text-sm font-semibold text-red-900">Verification Issue</p>
-                            <p className="text-sm text-red-700">{getReasonCodeLabel(payment.reviewReason)}</p>
-                          </div>
-                        </div>
-                      </div>
-                    )}
+                    {/* OCR Result Panel - Comprehensive OCR Display */}
+                    <OCRResultPanel payment={payment} />
 
-                    {/* OCR Extracted Data */}
-                    {extractedData && (
-                      <div className="mb-4 p-3 bg-blue-50 rounded border border-blue-200">
-                        <p className="text-sm font-semibold mb-2 text-blue-900">OCR Extracted Data:</p>
-                        <div className="space-y-1 text-xs text-blue-800">
-                          {extractedData.shopName && (
-                            <p><span className="font-semibold">Shop Name:</span> {extractedData.shopName}</p>
-                          )}
-                          {extractedData.merchantCode && (
-                            <p><span className="font-semibold">Merchant Code:</span> {extractedData.merchantCode}</p>
-                          )}
-                          {extractedData.amount !== undefined && (
-                            <p><span className="font-semibold">Extracted Amount:</span> ฿{extractedData.amount.toFixed(2)}</p>
-                          )}
-                          {extractedData.reference && (
-                            <p><span className="font-semibold">Reference:</span> {extractedData.reference}</p>
-                          )}
-                          {extractedData.confidence !== undefined && (
-                            <p><span className="font-semibold">Confidence:</span> {extractedData.confidence}%</p>
-                          )}
-                          {extractedData.transactionDate && (
-                            <p><span className="font-semibold">Transaction Date:</span> {extractedData.transactionDate}</p>
-                          )}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Auto-Approval Info */}
+                    {/* Additional Info */}
                     {isAutoApproved && payment.autoApprovedAt && (
                       <div className="mb-4 p-3 bg-green-50 rounded border border-green-200">
                         <p className="text-sm font-semibold mb-1 text-green-900">Auto-Approved</p>

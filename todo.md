@@ -1154,3 +1154,14 @@
 - [x] Update admin OCR metrics route to show effective config
 - [x] Run validation checklist (all items passed)
 - [x] TypeScript check and production build
+
+
+## OCR Production Hardening Phase 5: Improve Admin Payment OCR Visibility
+- [x] Inspect AdminPaymentsPage and AdminOrdersPage components
+- [x] Create OCRResultPanel component for displaying OCR data
+- [x] Integrate OCR panel into admin payment detail view
+- [x] Verify backend returns all OCR fields (extractedData, fingerprint, reviewReason, approvalSource, ocrConfidence, ocrDecision)
+- [x] Test OCR panel with OCR-processed payment
+- [x] Test OCR panel with old payment (no OCR data)
+- [x] Verify all 16 verification checklist items
+- [x] TypeScript check and production build
