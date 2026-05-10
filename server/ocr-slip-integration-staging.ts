@@ -7,7 +7,7 @@
 
 import { getDb } from "./db";
 import { payments, orders } from "../drizzle/schema";
-import { eq, or } from "drizzle-orm";
+import { eq, or, and, ne, sql } from "drizzle-orm";
 import {
   extractSlipData,
   verifySlipData,
@@ -154,36 +154,57 @@ export async function processSlipVerificationStaging(
     paymentCreatedAt: payment.createdAt,
   };
 
-  // ── Load existing references and fingerprints for duplicate detection ─────
-  const existingPayments = await db
-    .select({
-      id: payments.id,
-      status: payments.status,
-      extractedData: payments.extractedData,
-      fingerprint: payments.fingerprint,
-    })
-    .from(payments)
-    .where(or(eq(payments.status, "approved"), eq(payments.status, "pending_review")))
-    .limit(1000);
+  // ── Helper: Check duplicate fingerprint directly in database ────────────────
+  const checkDuplicateFingerprint = async (fingerprint: string | undefined): Promise<{ isDuplicate: boolean; duplicatePaymentId?: string }> => {
+    if (!fingerprint) return { isDuplicate: false };
+    const existing = await db
+      .select({ id: payments.id })
+      .from(payments)
+      .where(
+        and(
+          ne(payments.id, paymentId),
+          or(eq(payments.status, "approved"), eq(payments.status, "pending_review")),
+          eq(payments.fingerprint, fingerprint)
+        )
+      )
+      .limit(1);
+    return {
+      isDuplicate: existing.length > 0,
+      duplicatePaymentId: existing[0]?.id ? String(existing[0].id) : undefined,
+    };
+  };
 
-  const existingReferences = new Set<string>();
-  const existingFingerprints = new Set<string>();
+  // ── Helper: Check duplicate reference directly in database ──────────────────
+  const checkDuplicateReference = async (reference: string | undefined): Promise<{ isDuplicate: boolean; duplicatePaymentId?: string }> => {
+    if (!reference) return { isDuplicate: false };
+    // For MySQL/TiDB, use JSON_EXTRACT to search within extractedData
+    const existing = await db
+      .select({ id: payments.id })
+      .from(payments)
+      .where(
+        and(
+          ne(payments.id, paymentId),
+          or(eq(payments.status, "approved"), eq(payments.status, "pending_review")),
+          sql`JSON_EXTRACT(${payments.extractedData}, '$.reference') = ${reference}`
+        )
+      )
+      .limit(1);
+    return {
+      isDuplicate: existing.length > 0,
+      duplicatePaymentId: existing[0]?.id ? String(existing[0].id) : undefined,
+    };
+  };
 
-  for (const p of existingPayments) {
-    if (p.extractedData) {
-      try {
-        const prevData = JSON.parse(p.extractedData);
-        if (prevData.reference) {
-          existingReferences.add(prevData.reference);
-        }
-      } catch (e) {
-        // Skip malformed JSON
-      }
-    }
-    if (p.fingerprint) {
-      existingFingerprints.add(p.fingerprint);
-    }
-  }
+  // ── Generate fingerprint for current slip ───────────────────────────────
+  const currentFingerprint = generateFingerprint(extracted);
+
+  // ── Check for duplicates using database queries (no limit) ──────────────────
+  const duplicateFingerprint = await checkDuplicateFingerprint(currentFingerprint);
+  const duplicateReference = await checkDuplicateReference(extracted.reference);
+
+  // ── Create Sets for backward compatibility with verifySlipData ───────────────
+  const existingReferences = duplicateReference.isDuplicate && extracted.reference ? new Set([extracted.reference]) : new Set<string>();
+  const existingFingerprints = duplicateFingerprint.isDuplicate && currentFingerprint ? new Set([currentFingerprint]) : new Set<string>();
 
    // ── Verify slip data ─────────────────────────────────────────────────────
   const verificationResult = verifySlipData(

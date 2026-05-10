@@ -1085,3 +1085,50 @@
 - [ ] Test OCR metrics router reachable
 - [ ] Test manual approval after pending_review
 - [ ] Test payment slip upload still works
+
+
+## OCR Production Hardening (Phase 4)
+
+### Phase 1: Database-Backed Duplicate Detection
+- [ ] Replace limit(1000) duplicate detection with direct database queries
+- [ ] Check duplicate reference against database
+- [ ] Check duplicate fingerprint against database
+- [ ] Exclude current payment id from duplicate check
+- [ ] Check approved and pending_review payments only
+- [ ] Verify duplicate detection works with many payment records
+
+### Phase 2: Idempotent Auto-Approval Flow
+- [ ] Prevent approving already approved/rejected payment
+- [ ] Prevent finalizing order twice
+- [ ] Prevent duplicate purchase records
+- [ ] Prevent duplicate coupon usage
+- [ ] Prevent duplicate loyalty points
+- [ ] Add transaction support if DB layer supports it
+- [ ] Add strong guards before each step
+
+### Phase 3: Persistent OCR Metrics
+- [ ] Add database-backed metrics or daily snapshots
+- [ ] Keep existing admin OCR metrics router working
+- [ ] Migrate in-memory metrics to persistent storage
+
+### Phase 4: Expand Admin OCR Settings
+- [ ] Keep OCR enabled toggle
+- [ ] Add auto approve enabled setting
+- [ ] Add shadow mode enabled setting
+- [ ] Add minimum confidence threshold setting
+- [ ] Add max time window minutes setting
+- [ ] Environment OCR_ENABLED=false must override everything
+
+### Phase 5: Improve Admin Payment OCR Visibility
+- [ ] Show OCR decision
+- [ ] Show OCR confidence
+- [ ] Show vision confidence
+- [ ] Show structured confidence
+- [ ] Show final confidence
+- [ ] Show extracted amount
+- [ ] Show expected amount
+- [ ] Show reference
+- [ ] Show fingerprint
+- [ ] Show duplicate status
+- [ ] Show review reason
+- [ ] Show approval source

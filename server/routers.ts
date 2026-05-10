@@ -519,6 +519,21 @@ export const appRouter = router({
 
         // Sync order status based on verification result
         if (shouldApprove) {
+          // ── GUARD: Check if payment is already approved or rejected ──────────────────────
+          const currentPayment = await db.getPaymentById(payment.id);
+          if (currentPayment?.status === "approved" || currentPayment?.status === "rejected") {
+            console.log(`[OCR] Payment ${payment.id} is already ${currentPayment.status}, skipping re-approval`);
+            // Return safe no-op result
+            return {
+              success: true,
+              message: `Payment already ${currentPayment.status}`,
+              orderId: order.id,
+              paymentId: payment.id,
+              status: currentPayment.status,
+              slipImageUrl: payment.slipImageUrl,
+            };
+          }
+
           // Auto-approved: update payment record with OCR metadata
           const { ApprovalService } = await import("./services/approvalService");
           await ApprovalService.approvePaymentWithSource(
