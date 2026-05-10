@@ -12,6 +12,7 @@ import {
   resetOCRMetrics,
 } from "../ocr-slip-integration-staging";
 import { getOCRConfig, logOCRConfig } from "../_core/ocr-config";
+import { getEffectiveOCRConfig } from "../_core/ocr-effective-config";
 
 export const ocrMetricsRouter = router({
   /**
@@ -43,7 +44,7 @@ export const ocrMetricsRouter = router({
   }),
 
   /**
-   * Get current OCR configuration
+   * Get current OCR configuration (effective config used by runtime)
    */
   getConfig: protectedProcedure
     .use(async ({ ctx, next }) => {
@@ -53,18 +54,17 @@ export const ocrMetricsRouter = router({
       return next({ ctx });
     })
     .query(async () => {
-    const config = getOCRConfig();
+    const { getEffectiveOCRConfig } = await import("../_core/ocr-effective-config");
+    const effective = await getEffectiveOCRConfig();
     return {
-      ocrEnabled: config.ocrEnabled,
-      ocrAutoApproveEnabled: config.ocrAutoApproveEnabled,
-      ocrShadowMode: config.ocrShadowMode,
-      minConfidence: config.minConfidence,
-      maxTimeWindowMinutes: config.maxTimeWindowMinutes,
-      strictDuplicateCheck: config.strictDuplicateCheck,
-      metricsEnabled: config.metricsEnabled,
-      detailedLogging: config.detailedLogging,
-      showVerificationBreakdown: config.showVerificationBreakdown,
-      showOCRMetadata: config.showOCRMetadata,
+      // Effective config (what runtime actually uses)
+      enabled: effective.enabled,
+      autoApproveEnabled: effective.autoApproveEnabled,
+      shadowModeEnabled: effective.shadowModeEnabled,
+      minConfidence: effective.minConfidence,
+      maxTimeWindowMinutes: effective.maxTimeWindowMinutes,
+      source: effective.source,
+      environmentOverride: effective.environmentOverride,
     };
   }),
 
@@ -84,7 +84,7 @@ export const ocrMetricsRouter = router({
   }),
 
   /**
-   * Get OCR configuration info (for debugging)
+   * Get OCR configuration info (for debugging - shows both effective and raw env)
    */
   getConfigInfo: protectedProcedure
     .use(async ({ ctx, next }) => {
@@ -95,7 +95,9 @@ export const ocrMetricsRouter = router({
     })
     .query(async () => {
     const config = getOCRConfig();
+    const effective = await getEffectiveOCRConfig();
     logOCRConfig(config);
+    console.log("[OCR Metrics] Effective config:", effective);
     return {
       environment: process.env.NODE_ENV || "development",
       config,

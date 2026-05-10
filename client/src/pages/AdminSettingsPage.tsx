@@ -20,12 +20,7 @@ export default function AdminSettingsPage() {
   });
   const [isSaving, setIsSaving] = useState(false);
 
-  // OCR toggle state (legacy)
-  const [ocrEnabled, setOcrEnabled] = useState(true);
-  const [ocrLoading, setOcrLoading] = useState(false);
-  const [ocrStatus, setOcrStatus] = useState<any>(null);
-
-  // OCR Settings state (Phase 4)
+  // OCR Settings state (Phase 4 - single source of truth)
   const [ocrSettings, setOcrSettings] = useState({
     enabled: true,
     autoApproveEnabled: true,
@@ -36,21 +31,9 @@ export default function AdminSettingsPage() {
   const [ocrSettingsLoading, setOcrSettingsLoading] = useState(false);
   const [ocrSettingsEdited, setOcrSettingsEdited] = useState(false);
 
-  // Move hooks to top level (React rule)
-  const getOCRToggleQuery = trpc.admin.settings.getOCRToggle.useQuery();
-  const setOCRToggleMutation = trpc.admin.settings.setOCRToggle.useMutation();
-  
-  // Phase 4 hooks
+  // Phase 4 hooks (single source of truth)
   const getOCRSettingsQuery = trpc.admin.settings.getOCRSettings.useQuery();
   const updateOCRSettingsMutation = trpc.admin.settings.updateOCRSettings.useMutation();
-
-  // Fetch OCR status on mount
-  useEffect(() => {
-    if (getOCRToggleQuery.data) {
-      setOcrStatus(getOCRToggleQuery.data);
-      setOcrEnabled(getOCRToggleQuery.data?.ocrEnabled ?? true);
-    }
-  }, [getOCRToggleQuery.data]);
 
   // Fetch Phase 4 OCR settings
   useEffect(() => {
@@ -59,26 +42,6 @@ export default function AdminSettingsPage() {
       setOcrSettingsEdited(false);
     }
   }, [getOCRSettingsQuery.data]);
-
-  const handleOCRToggle = async (enabled: boolean) => {
-    setOcrLoading(true);
-    try {
-      const result = await setOCRToggleMutation.mutateAsync({ enabled });
-      if (result.success) {
-        setOcrEnabled(enabled);
-        toast.success(`OCR ${enabled ? "enabled" : "disabled"} successfully`);
-        // Refresh status
-        getOCRToggleQuery.refetch();
-      } else {
-        toast.error("Failed to update OCR toggle");
-      }
-    } catch (error) {
-      console.error("Failed to update OCR toggle:", error);
-      toast.error("Failed to update OCR toggle");
-    } finally {
-      setOcrLoading(false);
-    }
-  };
 
   const handleOCRSettingChange = (key: keyof typeof ocrSettings, value: any) => {
     setOcrSettings((prev) => ({
@@ -169,7 +132,7 @@ export default function AdminSettingsPage() {
           </div>
         </Card>
 
-        {/* OCR Settings - Phase 4 */}
+        {/* OCR Settings - Phase 4 (Single Source of Truth) */}
         <Card className="p-6 border-2 border-blue-200 bg-blue-50">
           <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
             <Info className="w-5 h-5 text-blue-600" />

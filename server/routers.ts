@@ -477,9 +477,10 @@ export const appRouter = router({
           status: "pending",
         });
 
-        // Check if OCR is enabled
-        const { getOCREnabled } = await import("./_core/ocr-settings");
-        const ocrEnabled = await getOCREnabled();
+        // Check if OCR is enabled using effective config (Phase 4)
+        const { getEffectiveOCRConfig } = await import("./_core/ocr-effective-config");
+        const effectiveConfig = await getEffectiveOCRConfig();
+        const ocrEnabled = effectiveConfig.enabled;
 
         let verificationResult: any;
         let shouldApprove = false;
@@ -491,7 +492,6 @@ export const appRouter = router({
           const slipOcrResult = await parseSlipImage(input.slipImageUrl);
           // Process slip verification with staging enhancements (shadow mode, metrics)
           verificationResult = await processSlipVerificationStaging(payment.id, slipOcrResult);
-          const config = getOCRConfig();
           // Determine if we should actually approve or just simulate
           shouldApprove = verificationResult.isAutoApproved && !verificationResult.isShadowMode;
         } else {
@@ -504,7 +504,7 @@ export const appRouter = router({
             ocrConfidence: 0,
             detectedBank: null,
             extractedData: null,
-            breakdown: { reason: "OCR processing is disabled" },
+            breakdown: { reason: "OCR processing is disabled by effective config" },
             duplicateStatus: {
               isDuplicateReference: false,
               isDuplicateFingerprint: false,
@@ -515,7 +515,8 @@ export const appRouter = router({
           shouldApprove = false;
         }
 
-        const config = getOCRConfig();
+        // Use effective config for all OCR decisions (already fetched above)
+        const config = effectiveConfig;
 
         // Sync order status based on verification result
         if (shouldApprove) {
@@ -1478,22 +1479,7 @@ export const appRouter = router({
           await db.setSetting(input.key, input.value, input.description);
           return { success: true };
         }),
-      getOCRToggle: adminProcedure.query(async () => {
-        const { getOCRSettingsSummary } = await import("./_core/ocr-settings");
-        return getOCRSettingsSummary();
-      }),
-      setOCRToggle: adminProcedure
-        .input(z.object({ enabled: z.boolean() }))
-        .mutation(async ({ input }) => {
-          const { setOCREnabled } = await import("./_core/ocr-settings");
-          const success = await setOCREnabled(input.enabled);
-          if (success) {
-            console.log(`[Admin] OCR toggle updated to: ${input.enabled}`);
-          }
-          return { success };
-        }),
-
-      // OCR Settings (Phase 4)
+      // OCR Settings (Phase 4 - Single Source of Truth)
       getOCRSettings: adminProcedure.query(async () => {
         const { getOCRSettingsForAdmin } = await import("./_core/ocr-effective-config");
         return getOCRSettingsForAdmin();

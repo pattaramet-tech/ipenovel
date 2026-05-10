@@ -1144,3 +1144,13 @@
 - [x] Add OCR settings validation (minConfidence 0-100, maxTimeWindowMinutes 1-1440)
 - [x] Verify TypeScript compilation and build success
 - [x] Verify no regressions in existing OCR flows
+
+
+## OCR Production Hardening Phase 4: Gap Fixes
+- [x] Fix uploadPaymentSlip route to use getEffectiveOCRConfig()
+- [x] Remove legacy OCR toggle UI from AdminSettingsPage
+- [x] Remove legacy getOCRToggle and setOCRToggle procedures
+- [x] Verify config resolution order (OCR_ENABLED > database > env > defaults)
+- [x] Update admin OCR metrics route to show effective config
+- [x] Run validation checklist (all items passed)
+- [x] TypeScript check and production build
