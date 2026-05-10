@@ -1,4 +1,4 @@
-import { useState } from "react";
+
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -6,9 +6,19 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
-import { Trash2, ShoppingCart, Maximize2, X } from "lucide-react";
+import {
+  Trash2,
+  ShoppingCart,
+  Maximize2,
+  X,
+  TicketPercent,
+  CheckCircle2,
+  ChevronRight,
+  Tag,
+} from "lucide-react";
 import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { useEffect, useState } from "react";
 
 export default function CartPage() {
   const { isAuthenticated, user } = useAuth();
@@ -22,6 +32,8 @@ export default function CartPage() {
   const [isUploadingSlip, setIsUploadingSlip] = useState(false);
   const [showQRFullscreen, setShowQRFullscreen] = useState(false);
   const [slipPreview, setSlipPreview] = useState<string | null>(null);
+  const [appliedCoupon, setAppliedCoupon] = useState<any | null>(null);
+  const [showCouponPicker, setShowCouponPicker] = useState(false);
   const utils = trpc.useUtils();
 
   const { data: cartData, isLoading: cartLoading, refetch: refetchCart } = trpc.cart.get.useQuery(undefined, {
@@ -32,6 +44,16 @@ export default function CartPage() {
 
   const items = cartData?.items || [];
   const subtotal = items.reduce((sum, item) => sum + parseFloat(item.price.toString()), 0).toFixed(2);
+
+  const { data: activeCoupons = [], isLoading: couponsLoading } = trpc.checkout.activeCoupons.useQuery(
+    { subtotal },
+    { enabled: isAuthenticated && items.length > 0 }
+  );
+
+  useEffect(() => {
+    setDiscountAmount("0.00");
+    setAppliedCoupon(null);
+  }, [subtotal]);
 
   const removeFromCartMutation = trpc.cart.remove.useMutation({
     onSuccess: () => {
@@ -44,20 +66,47 @@ export default function CartPage() {
     },
   });
 
-  const handleValidateCoupon = async () => {
-    if (!couponCode) {
+  const formatBaht = (value: string | number | undefined | null) => {
+    const amount = Number.parseFloat(String(value ?? "0"));
+    const safeAmount = Number.isFinite(amount) ? amount : 0;
+    return safeAmount.toLocaleString("th-TH", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  };
+
+  const handleApplyCoupon = async (code: string, coupon?: any) => {
+    const normalizedCode = String(code || "").trim().toUpperCase();
+
+    if (!normalizedCode) {
       toast.error(t("common.error"));
       return;
     }
+
     try {
-      const result = await utils.checkout.validateCoupon.fetch({ couponCode, subtotal });
+      const result = await utils.checkout.validateCoupon.fetch({
+        couponCode: normalizedCode,
+        subtotal,
+      });
+
+      setCouponCode(normalizedCode);
       setDiscountAmount(result.discountAmount);
+      setAppliedCoupon(coupon || result.coupon || { code: normalizedCode });
+      setShowCouponPicker(false);
       toast.success(t("common.success"));
     } catch (error: any) {
-      // Show real error message from server
       const errorMessage = error?.message || t("common.error");
       toast.error(errorMessage);
     }
+  };
+
+  const handleValidateCoupon = () => handleApplyCoupon(couponCode);
+
+  const handleClearCoupon = () => {
+    setCouponCode("");
+    setDiscountAmount("0.00");
+    setAppliedCoupon(null);
+    toast.success("Coupon removed");
   };
 
   const createOrderMutation = trpc.checkout.create.useMutation({
@@ -256,25 +305,89 @@ export default function CartPage() {
                 </div>
 
                 {/* Coupon */}
-                <div className="border-t pt-4">
-                  <p className="text-sm font-semibold mb-2">{t("cart.applyCoupon")}</p>
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder={t("cart.applyCoupon")}
-                      value={couponCode}
-                      onChange={(e) => setCouponCode(e.target.value)}
-                    />
+                <div className="border-t pt-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <TicketPercent className="w-4 h-4 text-orange-500" />
+                      <p className="text-sm font-semibold">Discount Coupons</p>
+                    </div>
+
                     <Button
+                      type="button"
+                      variant="ghost"
                       size="sm"
-                      onClick={handleValidateCoupon}
-                      disabled={!couponCode}
+                      onClick={() => setShowCouponPicker(true)}
+                      disabled={items.length === 0}
+                      className="h-8 px-2 text-orange-600 hover:text-orange-700"
                     >
-                      {t("common.apply")}
+                      Select Coupon <ChevronRight className="w-4 h-4 ml-1" />
                     </Button>
                   </div>
-                  {discountAmount !== "0.00" && (
-                    <p className="text-xs text-green-600 mt-2">Discount: -฿{discountAmount}</p>
+
+                  {appliedCoupon ? (
+                    <div className="rounded-xl border border-orange-200 bg-orange-50 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <CheckCircle2 className="w-4 h-4 text-green-600" />
+                            <p className="text-sm font-bold text-orange-700 truncate">
+                              {appliedCoupon.code || couponCode}
+                            </p>
+                          </div>
+                          <p className="mt-1 text-xs text-slate-600">
+                            Applied. Instant discount ฿{formatBaht(discountAmount)}
+                          </p>
+                        </div>
+
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={handleClearCoupon}
+                          className="h-8 px-2 text-slate-500"
+                        >
+                          Remove
+                        </Button>
+                      </div>
+                    </div>
+                  ) : activeCoupons.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowCouponPicker(true)}
+                      className="w-full rounded-xl border border-dashed border-orange-300 bg-orange-50/60 p-3 text-left transition hover:bg-orange-50"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Tag className="w-4 h-4 text-orange-500 flex-shrink-0" />
+                          <span className="text-sm text-slate-700 truncate">
+                            {activeCoupons.length} coupon{activeCoupons.length > 1 ? "s" : ""} available
+                          </span>
+                        </div>
+                        <span className="text-xs font-semibold text-orange-600">Use</span>
+                      </div>
+                    </button>
+                  ) : (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">
+                      No active coupons available right now.
+                    </div>
                   )}
+
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="Enter coupon code"
+                      value={couponCode}
+                      onChange={(e) => {
+                        setCouponCode(e.target.value);
+                        if (appliedCoupon) {
+                          setAppliedCoupon(null);
+                          setDiscountAmount("0.00");
+                        }
+                      }}
+                    />
+                    <Button size="sm" onClick={handleValidateCoupon} disabled={!couponCode.trim()}>
+                      Apply
+                    </Button>
+                  </div>
                 </div>
 
                 {/* Points */}
@@ -449,6 +562,104 @@ export default function CartPage() {
           </div>
         </div>
       </div>
+
+      {/* Coupon Picker Modal */}
+      {showCouponPicker && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4">
+          <Card className="w-full max-w-lg rounded-b-none sm:rounded-2xl max-h-[85vh] overflow-hidden">
+            <CardHeader className="border-b">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <CardTitle className="flex items-center gap-2 text-lg">
+                    <TicketPercent className="w-5 h-5 text-orange-500" />
+                    Select Discount Coupon
+                  </CardTitle>
+                  <p className="mt-1 text-xs text-slate-500">Cart subtotal ฿{formatBaht(subtotal)}</p>
+                </div>
+
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowCouponPicker(false)}
+                  className="h-9 w-9 p-0"
+                >
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
+            </CardHeader>
+
+            <CardContent className="space-y-3 overflow-y-auto p-4 max-h-[65vh]">
+              {couponsLoading ? (
+                <div className="space-y-3">
+                  <Skeleton className="h-24 w-full rounded-xl" />
+                  <Skeleton className="h-24 w-full rounded-xl" />
+                </div>
+              ) : activeCoupons.length === 0 ? (
+                <div className="py-10 text-center">
+                  <TicketPercent className="mx-auto mb-3 h-10 w-10 text-slate-300" />
+                  <p className="text-sm text-slate-500">No active coupons available.</p>
+                </div>
+              ) : (
+                activeCoupons.map((coupon: any) => (
+                  <div
+                    key={coupon.id}
+                    className={`relative overflow-hidden rounded-2xl border bg-white ${
+                      coupon.canUse ? "border-orange-200" : "border-slate-200 opacity-70"
+                    }`}
+                  >
+                    <div className="flex">
+                      <div className="flex w-28 flex-shrink-0 flex-col items-center justify-center bg-gradient-to-br from-orange-500 to-red-500 p-4 text-white">
+                        <TicketPercent className="mb-2 h-6 w-6" />
+                        <p className="text-center text-sm font-bold leading-tight">{coupon.discountLabel}</p>
+                      </div>
+
+                      <div className="min-w-0 flex-1 p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="font-bold text-slate-900 truncate">{coupon.code}</p>
+                            <p className="mt-1 text-xs text-slate-500">
+                              Min. spend ฿{formatBaht(coupon.minPurchaseAmount)}
+                            </p>
+
+                            {coupon.remainingUsageCount !== null && (
+                              <p className="mt-1 text-xs text-slate-400">
+                                Remaining: {coupon.remainingUsageCount}
+                              </p>
+                            )}
+
+                            {coupon.expiresAt && (
+                              <p className="mt-1 text-xs text-slate-400">
+                                Expires: {new Date(coupon.expiresAt).toLocaleDateString("th-TH")}
+                              </p>
+                            )}
+                          </div>
+
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={!coupon.canUse}
+                            onClick={() => handleApplyCoupon(coupon.code, coupon)}
+                            className="shrink-0"
+                          >
+                            Use
+                          </Button>
+                        </div>
+
+                        {!coupon.canUse && (
+                          <p className="mt-3 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-600">
+                            Buy ฿{formatBaht(coupon.needMoreAmount)} more to use this coupon.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }

@@ -980,6 +980,63 @@ export async function getAllCoupons() {
   return db.select().from(coupons).orderBy(desc(coupons.createdAt));
 }
 
+export async function getActiveCouponsForCart(subtotal?: string | number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const now = new Date();
+  const subtotalNum = Number.parseFloat(String(subtotal ?? "0"));
+  const safeSubtotal = Number.isFinite(subtotalNum) ? subtotalNum : 0;
+
+  const result = await db
+    .select()
+    .from(coupons)
+    .where(
+      and(
+        eq(coupons.isActive, true),
+        or(isNull(coupons.expiresAt), gt(coupons.expiresAt, now)),
+        or(
+          isNull(coupons.maxUsageCount),
+          sql`${coupons.maxUsageCount} > ${coupons.usageCount}`
+        )
+      )
+    )
+    .orderBy(asc(coupons.minPurchaseAmount), desc(coupons.createdAt));
+
+  return result.map((coupon: any) => {
+    const discountValueNum = Number.parseFloat(String(coupon.discountValue ?? "0"));
+    const minPurchaseNum = Number.parseFloat(String(coupon.minPurchaseAmount ?? "0"));
+
+    const discountValue = Number.isFinite(discountValueNum) ? discountValueNum : 0;
+    const minPurchaseAmount = Number.isFinite(minPurchaseNum) ? minPurchaseNum : 0;
+
+    const canUse = safeSubtotal >= minPurchaseAmount;
+    const needMoreAmount = Math.max(0, minPurchaseAmount - safeSubtotal);
+    const usageCount = coupon.usageCount ?? 0;
+    const remainingUsageCount = coupon.maxUsageCount
+      ? Math.max(0, coupon.maxUsageCount - usageCount)
+      : null;
+
+    return {
+      id: coupon.id,
+      code: coupon.code,
+      discountType: coupon.discountType,
+      discountValue: discountValue.toFixed(2),
+      minPurchaseAmount: minPurchaseAmount.toFixed(2),
+      maxUsageCount: coupon.maxUsageCount,
+      usageCount,
+      remainingUsageCount,
+      expiresAt: coupon.expiresAt,
+      canUse,
+      needMoreAmount: needMoreAmount.toFixed(2),
+      discountLabel:
+        coupon.discountType === "percentage"
+          ? `Discount ${discountValue.toFixed(discountValue % 1 === 0 ? 0 : 2)}%`
+          : `Discount ฿${discountValue.toFixed(2)}`,
+    };
+  });
+}
+
 export async function createCoupon(data: {
   code: string;
   discountType: "flat" | "percentage";

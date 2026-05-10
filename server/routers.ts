@@ -263,12 +263,29 @@ export const appRouter = router({
 
   // ============ CHECKOUT & ORDERS ============
   checkout: router({
+    activeCoupons: protectedProcedure
+      .input(z.object({ subtotal: z.string().optional() }).optional())
+      .query(async ({ input }) => {
+        return db.getActiveCouponsForCart(input?.subtotal);
+      }),
+
     validateCoupon: publicProcedure
       .input(z.object({ couponCode: z.string(), subtotal: z.string() }))
       .query(async ({ input }) => {
         try {
-          const { discountAmount } = await orderService.validateAndApplyCoupon(input.couponCode, input.subtotal);
-          return { discountAmount, valid: true };
+          const { discountAmount, coupon, normalizedCode } = await orderService.validateAndApplyCoupon(input.couponCode, input.subtotal);
+          return {
+            discountAmount,
+            valid: true,
+            coupon: {
+              id: coupon.id,
+              code: normalizedCode || coupon.code,
+              discountType: coupon.discountType,
+              discountValue: coupon.discountValue ? String(coupon.discountValue).trim() : "0.00",
+              minPurchaseAmount: coupon.minPurchaseAmount ? String(coupon.minPurchaseAmount).trim() : "0.00",
+              expiresAt: coupon.expiresAt,
+            },
+          };
         } catch (error: any) {
           const message = error?.message || "Invalid coupon";
           throw new TRPCError({ code: "BAD_REQUEST", message });

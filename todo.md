@@ -1174,3 +1174,14 @@
 - [x] Inspect AdminOrdersPage and add OCR panel if applicable
 - [x] Run verification checklist (12 items)
 - [x] TypeScript check and production build
+
+
+## Active Coupon Cart Selector Feature
+- [x] Add getActiveCouponsForCart backend function to db.ts
+- [x] Add checkout.activeCoupons tRPC procedure
+- [x] Update checkout.validateCoupon response to include coupon details
+- [x] Update CartPage imports and state
+- [x] Add coupon picker modal UI
+- [x] Verify checkout flows send couponCode
+- [x] TypeScript check and build
+- [ ] QA checklist verification (15 items)
