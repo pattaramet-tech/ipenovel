@@ -1224,3 +1224,16 @@
 - [ ] Add PDF support to SlipPreviewModal
 - [ ] Run TypeScript check and production build
 - [ ] Verify all 15 checklist items
+
+
+## Cart Checkout Bug Fixes
+- [ ] Wire slip submission service into checkout.create and orders.uploadPaymentSlip
+- [ ] Fix CartPage upload loading state with try/catch/finally
+- [ ] Separate coupon input from applied coupon state
+- [ ] Fix subtotal-change coupon reset
+- [ ] Implement safe points redemption clamping
+- [ ] Add slip file validation to CartPage
+- [ ] Add cart item re-check at checkout
+- [ ] Add coupon query error visibility
+- [ ] TypeScript check and production build
+- [ ] Manual test all 10 test cases

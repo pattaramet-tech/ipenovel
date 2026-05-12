@@ -9,6 +9,7 @@ import * as db from "./db";
 import * as orderService from "./services/orderService";
 import * as walletService from "./services/walletService";
 import { ApprovalService } from "./services/approvalService";
+import { submitPaymentSlip } from "./services/slipSubmissionService";
 import { fileRouter } from "./routers/fileRouter";
 import { ocrMetricsRouter } from "./routers/ocrMetricsRouter";
 import { storagePut } from "./storage";
@@ -310,12 +311,23 @@ export const appRouter = router({
         }
 
         try {
-          const order = await orderService.createOrderFromCart(String(ctx.user.id), cartItems, input.couponCode, input.pointsToRedeem, input.slipImageUrl);
+          // Create order WITHOUT slipImageUrl - let submitPaymentSlip handle the slip flow
+          const order = await orderService.createOrderFromCart(String(ctx.user.id), cartItems, input.couponCode, input.pointsToRedeem, undefined);
 
-          // Clear cart after successful order creation
+          let slipResult = undefined;
+          if (input.slipImageUrl) {
+            // Call shared slip submission service
+            slipResult = await submitPaymentSlip({
+              orderId: order.id,
+              slipImageUrl: input.slipImageUrl,
+              userId: ctx.user.id,
+            });
+          }
+
+          // Clear cart only after order and slip submission both succeed
           await db.clearCart(cart.id);
 
-          return order;
+          return { ...order, slipResult };
         } catch (error: any) {
           const message = error?.message || "Failed to create order";
           throw new TRPCError({ code: "BAD_REQUEST", message });
