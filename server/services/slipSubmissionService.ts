@@ -22,7 +22,7 @@ export interface SlipSubmissionResult {
   success: boolean;
   message?: string;
   orderId: number;
-  paymentId: string;
+  paymentId: number;
   status: string;
   slipImageUrl: string;
   isAutoApproved: boolean;
