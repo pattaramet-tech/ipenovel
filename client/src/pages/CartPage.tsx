@@ -52,8 +52,10 @@ export default function CartPage() {
   );
 
   useEffect(() => {
-    setDiscountAmount("0.00");
+    setCouponInput("");
+    setAppliedCouponCode("");
     setAppliedCoupon(null);
+    setDiscountAmount("0.00");
   }, [subtotal]);
 
   const removeFromCartMutation = trpc.cart.remove.useMutation({
@@ -158,7 +160,14 @@ export default function CartPage() {
     return <Skeleton className="h-96" />;
   }
 
-  const total = (parseFloat(subtotal) - parseFloat(discountAmount) - parseFloat(pointsToRedeem || "0")).toFixed(2);
+  // Safe points redemption clamping
+  const subtotalNum = Number(subtotal) || 0;
+  const discountNum = Number(discountAmount) || 0;
+  const requestedPoints = Math.max(0, Number(pointsToRedeem) || 0);
+  const pointBalance = Number(pointsData?.balance) || 0;
+  const maxRedeemable = Math.max(0, subtotalNum - discountNum);
+  const safePointsToRedeem = Math.min(requestedPoints, pointBalance, maxRedeemable);
+  const total = Math.max(0, subtotalNum - discountNum - safePointsToRedeem).toFixed(2);
 
 
 
@@ -207,7 +216,7 @@ export default function CartPage() {
       // Step 2: Create order with slip URL using mutateAsync
       await createOrderMutation.mutateAsync({
         couponCode: appliedCouponCode || undefined,
-        pointsToRedeem: pointsToRedeem ? pointsToRedeem.trim() : undefined,
+        pointsToRedeem: safePointsToRedeem > 0 ? safePointsToRedeem.toFixed(2) : undefined,
         slipImageUrl,
       });
     } catch (error: any) {
@@ -227,8 +236,32 @@ export default function CartPage() {
   };
 
   const handleSlipFileSelect = (file: File | null) => {
+    if (!file) {
+      setSelectedSlipFile(null);
+      setSlipPreview(null);
+      return;
+    }
+
+    // Validate file type
+    const allowedTypes = ["image/jpeg", "image/png", "application/pdf"];
+    if (!allowedTypes.includes(file.type)) {
+      toast.error("Invalid file type. Please upload JPG, PNG, or PDF.");
+      setSelectedSlipFile(null);
+      setSlipPreview(null);
+      return;
+    }
+
+    // Validate file size (5 MB max)
+    const maxSize = 5 * 1024 * 1024;
+    if (file.size > maxSize) {
+      toast.error("File size exceeds 5 MB limit.");
+      setSelectedSlipFile(null);
+      setSlipPreview(null);
+      return;
+    }
+
     setSelectedSlipFile(file);
-    if (file && file.type.startsWith("image/")) {
+    if (file.type.startsWith("image/")) {
       const reader = new FileReader();
       reader.onload = (e) => {
         setSlipPreview(e.target?.result as string);
@@ -419,7 +452,7 @@ export default function CartPage() {
                     <Button
                       className="w-full"
                       variant="outline"
-                      onClick={() => walletCheckoutMutation.mutate({ couponCode: appliedCouponCode || undefined, pointsToRedeem: pointsToRedeem ? pointsToRedeem.trim() : undefined })}
+                      onClick={() => walletCheckoutMutation.mutate({ couponCode: appliedCouponCode || undefined, pointsToRedeem: safePointsToRedeem > 0 ? safePointsToRedeem.toFixed(2) : undefined })}
                       disabled={items.length === 0 || walletCheckoutMutation.isPending}
                     >
                       {t("wallet.payWithWallet")}
