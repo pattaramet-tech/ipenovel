@@ -24,7 +24,8 @@ export default function CartPage() {
   const { isAuthenticated, user } = useAuth();
   const [, navigate] = useLocation();
   const { t } = useLanguage();
-  const [couponCode, setCouponCode] = useState("");
+  const [couponInput, setCouponInput] = useState("");
+  const [appliedCouponCode, setAppliedCouponCode] = useState("");
   const [pointsToRedeem, setPointsToRedeem] = useState("");
   const [discountAmount, setDiscountAmount] = useState("0.00");
   const [showSlipUpload, setShowSlipUpload] = useState(false);
@@ -89,7 +90,7 @@ export default function CartPage() {
         subtotal,
       });
 
-      setCouponCode(normalizedCode);
+      setAppliedCouponCode(normalizedCode);
       setDiscountAmount(result.discountAmount);
       setAppliedCoupon(coupon || result.coupon || { code: normalizedCode });
       setShowCouponPicker(false);
@@ -100,10 +101,11 @@ export default function CartPage() {
     }
   };
 
-  const handleValidateCoupon = () => handleApplyCoupon(couponCode);
+  const handleValidateCoupon = () => handleApplyCoupon(couponInput);
 
   const handleClearCoupon = () => {
-    setCouponCode("");
+    setCouponInput("");
+    setAppliedCouponCode("");
     setDiscountAmount("0.00");
     setAppliedCoupon(null);
     toast.success("Coupon removed");
@@ -202,15 +204,15 @@ export default function CartPage() {
       // Step 1: Upload slip first
       const slipImageUrl = await uploadSlipFile(selectedSlipFile);
 
-      // Step 2: Create order with slip URL
-      const normalizedCoupon = couponCode ? couponCode.trim().toUpperCase() : undefined;
-      createOrderMutation.mutate({
-        couponCode: normalizedCoupon,
+      // Step 2: Create order with slip URL using mutateAsync
+      await createOrderMutation.mutateAsync({
+        couponCode: appliedCouponCode || undefined,
         pointsToRedeem: pointsToRedeem ? pointsToRedeem.trim() : undefined,
         slipImageUrl,
       });
     } catch (error: any) {
-      toast.error(error.message || t("payment.uploadFailed"));
+      toast.error(error?.message || t("payment.uploadFailed"));
+    } finally {
       setIsUploadingSlip(false);
     }
   };
@@ -331,7 +333,7 @@ export default function CartPage() {
                           <div className="flex items-center gap-2">
                             <CheckCircle2 className="w-4 h-4 text-green-600" />
                             <p className="text-sm font-bold text-orange-700 truncate">
-                              {appliedCoupon.code || couponCode}
+                              {appliedCoupon.code || appliedCouponCode}
                             </p>
                           </div>
                           <p className="mt-1 text-xs text-slate-600">
@@ -375,16 +377,10 @@ export default function CartPage() {
                   <div className="flex gap-2">
                     <Input
                       placeholder="Enter coupon code"
-                      value={couponCode}
-                      onChange={(e) => {
-                        setCouponCode(e.target.value);
-                        if (appliedCoupon) {
-                          setAppliedCoupon(null);
-                          setDiscountAmount("0.00");
-                        }
-                      }}
+                      value={couponInput}
+                      onChange={(e) => setCouponInput(e.target.value)}
                     />
-                    <Button size="sm" onClick={handleValidateCoupon} disabled={!couponCode.trim()}>
+                    <Button size="sm" onClick={handleValidateCoupon} disabled={!couponInput.trim()}>
                       Apply
                     </Button>
                   </div>
@@ -423,7 +419,7 @@ export default function CartPage() {
                     <Button
                       className="w-full"
                       variant="outline"
-                      onClick={() => walletCheckoutMutation.mutate({ couponCode: couponCode.trim().toUpperCase() || undefined, pointsToRedeem: pointsToRedeem ? pointsToRedeem.trim() : undefined })}
+                      onClick={() => walletCheckoutMutation.mutate({ couponCode: appliedCouponCode || undefined, pointsToRedeem: pointsToRedeem ? pointsToRedeem.trim() : undefined })}
                       disabled={items.length === 0 || walletCheckoutMutation.isPending}
                     >
                       {t("wallet.payWithWallet")}
