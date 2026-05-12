@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
-import { Loader2, CheckCircle, XCircle, Image as ImageIcon, AlertCircle, CheckCheckIcon } from "lucide-react";
+import { Loader2, CheckCircle, XCircle, Image as ImageIcon, AlertCircle, CheckCheckIcon, FileText, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
 import { SlipPreviewModal } from "@/components/SlipPreviewModal";
@@ -43,9 +43,17 @@ export default function AdminPaymentsPage() {
     },
   });
 
+  const isPdfUrl = (url: string): boolean => {
+    return url.toLowerCase().split("?")[0].endsWith(".pdf");
+  };
+
   const handleSlipPreview = (slipUrl: string) => {
-    setSelectedSlipUrl(slipUrl);
-    setSlipPreviewOpen(true);
+    if (isPdfUrl(slipUrl)) {
+      window.open(slipUrl, "_blank");
+    } else {
+      setSelectedSlipUrl(slipUrl);
+      setSlipPreviewOpen(true);
+    }
   };
 
   const getReasonCodeLabel = (code: string): string => {
@@ -204,22 +212,42 @@ export default function AdminPaymentsPage() {
                     <div className="mb-4">
                       <p className="text-sm font-semibold mb-2">Payment Slip:</p>
                       {payment.slipImageUrl ? (
-                        <div className="flex gap-2 items-start">
-                          <img
-                            src={payment.slipImageUrl}
-                            alt="Payment slip"
-                            className="max-w-xs max-h-32 rounded border border-slate-200 cursor-pointer hover:opacity-80 transition"
-                            onClick={() => handleSlipPreview(payment.slipImageUrl)}
-                          />
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleSlipPreview(payment.slipImageUrl)}
-                          >
-                            <ImageIcon className="w-4 h-4 mr-1" />
-                            View Full
-                          </Button>
-                        </div>
+                        isPdfUrl(payment.slipImageUrl) ? (
+                          <div className="flex gap-2 items-start">
+                            <div className="flex items-center gap-2 p-3 bg-blue-50 rounded border border-blue-200">
+                              <FileText className="w-6 h-6 text-blue-600" />
+                              <div>
+                                <p className="text-sm font-semibold text-blue-900">PDF Document</p>
+                                <p className="text-xs text-blue-700">Payment slip (PDF)</p>
+                              </div>
+                            </div>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleSlipPreview(payment.slipImageUrl)}
+                            >
+                              <ExternalLink className="w-4 h-4 mr-1" />
+                              Open PDF
+                            </Button>
+                          </div>
+                        ) : (
+                          <div className="flex gap-2 items-start">
+                            <img
+                              src={payment.slipImageUrl}
+                              alt="Payment slip"
+                              className="max-w-xs max-h-32 rounded border border-slate-200 cursor-pointer hover:opacity-80 transition"
+                              onClick={() => handleSlipPreview(payment.slipImageUrl)}
+                            />
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleSlipPreview(payment.slipImageUrl)}
+                            >
+                              <ImageIcon className="w-4 h-4 mr-1" />
+                              View Full
+                            </Button>
+                          </div>
+                        )
                       ) : (
                         <div className="bg-slate-100 rounded border border-slate-300 p-4 text-center text-slate-600 text-sm">
                           No slip uploaded

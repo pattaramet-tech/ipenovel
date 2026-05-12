@@ -1213,3 +1213,14 @@
 - [x] Verify all admin tRPC routes present (all 15 routers confirmed)
 - [x] TypeScript check and production build successful (1807 modules, no errors)
 - [x] All 18 verification checklist items passed
+
+
+## Admin OCR Display Polish Fixes
+- [ ] Fix OCRResultPanel duplicateStatus type to handle string or object
+- [ ] Update OCRResultPanel rendering to safely display duplicate object data
+- [ ] Persist duplicate payment IDs in extractedData in ocr-slip-integration-staging.ts
+- [ ] Add PDF support to AdminPaymentsPage slip preview
+- [ ] Add PDF support to AdminOrderDetailPage slip preview
+- [ ] Add PDF support to SlipPreviewModal
+- [ ] Run TypeScript check and production build
+- [ ] Verify all 15 checklist items

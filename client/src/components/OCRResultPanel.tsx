@@ -1,4 +1,4 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { AlertCircle, CheckCircle2, AlertTriangle, Eye, EyeOff } from "lucide-react";
 import { useState } from "react";
@@ -16,7 +16,13 @@ interface ExtractedData {
   visionConfidence?: number;
   structuredConfidence?: number;
   finalConfidence?: number;
-  duplicateStatus?: string;
+  duplicateStatus?: string | {
+    isDuplicateReference?: boolean;
+    isDuplicateFingerprint?: boolean;
+    duplicateReferencePaymentId?: string | number;
+    duplicateFingerprintPaymentId?: string | number;
+    duplicatePaymentId?: string | number;
+  };
   duplicatePaymentId?: number;
   duplicateReferencePaymentId?: number;
   duplicateFingerprintPaymentId?: number;
@@ -53,304 +59,296 @@ export function OCRResultPanel({ payment }: OCRResultPanelProps) {
     }
   }
 
-  // If no OCR data, don't show panel
-  if (!extractedData && !payment.ocrDecision && !payment.ocrConfidence) {
+  if (!extractedData && !payment.ocrDecision && !payment.fingerprint && !payment.reviewReason && !payment.approvalSource) {
     return null;
   }
 
-  // Helper to get OCR decision badge
-  const getOCRDecisionBadge = (decision?: string | null) => {
-    if (!decision) return null;
-
-    const badges: Record<string, { color: string; icon: React.ReactNode; label: string }> = {
-      auto_approved: {
-        color: "bg-green-100 text-green-800",
-        icon: <CheckCircle2 className="w-4 h-4" />,
-        label: "Auto-Approved",
-      },
-      needs_review: {
-        color: "bg-yellow-100 text-yellow-800",
-        icon: <AlertTriangle className="w-4 h-4" />,
-        label: "Needs Review",
-      },
-      rejected: {
-        color: "bg-red-100 text-red-800",
-        icon: <AlertCircle className="w-4 h-4" />,
-        label: "Rejected",
-      },
-      ocr_disabled: {
-        color: "bg-gray-100 text-gray-800",
-        icon: <EyeOff className="w-4 h-4" />,
-        label: "OCR Disabled",
-      },
-      shadow_auto_approved: {
-        color: "bg-blue-100 text-blue-800",
-        icon: <CheckCircle2 className="w-4 h-4" />,
-        label: "Shadow Auto-Approved",
-      },
-    };
-
-    const badge = badges[decision];
-    if (!badge) return null;
-
-    return (
-      <Badge className={`${badge.color} flex items-center gap-1 w-fit`}>
-        {badge.icon}
-        {badge.label}
-      </Badge>
-    );
+  // Helper to safely get duplicate status object
+  const getDuplicateStatusObject = () => {
+    if (!extractedData?.duplicateStatus) return null;
+    if (typeof extractedData.duplicateStatus === "object") {
+      return extractedData.duplicateStatus;
+    }
+    return null;
   };
 
-  // Expected amount from order
-  const expectedAmount = payment.order?.totalAmount
-    ? parseFloat(payment.order.totalAmount.toString())
-    : null;
+  const duplicateStatusObj = getDuplicateStatusObject();
+
+  // Calculate expected vs extracted amount
+  const expectedAmount = payment.order?.totalAmount ? parseFloat(String(payment.order.totalAmount)) : null;
   const extractedAmount = extractedData?.amount;
-  const amountMatch =
-    expectedAmount && extractedAmount ? Math.abs(expectedAmount - extractedAmount) < 0.01 : null;
+  const amountMatch = expectedAmount !== null && extractedAmount !== undefined ? Math.abs(expectedAmount - extractedAmount) < 0.01 : null;
 
   return (
-    <Card className="border-blue-200 bg-blue-50">
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-base flex items-center gap-2">
-            <CheckCircle2 className="w-5 h-5 text-blue-600" />
-            OCR Verification Result
-          </CardTitle>
+    <div className="space-y-4">
+      {/* OCR Decision */}
+      {payment.ocrDecision && (
+        <div>
+          <p className="text-sm font-semibold text-slate-700 mb-2">OCR Decision</p>
+          <div className="bg-white p-3 rounded border border-blue-200">
+            <div className="flex items-center gap-2">
+              {payment.ocrDecision === "auto_approved" && <CheckCircle2 className="w-4 h-4 text-green-600" />}
+              {payment.ocrDecision === "needs_review" && <AlertTriangle className="w-4 h-4 text-yellow-600" />}
+              {payment.ocrDecision === "rejected" && <AlertCircle className="w-4 h-4 text-red-600" />}
+              {payment.ocrDecision === "shadow_auto_approved" && <Eye className="w-4 h-4 text-blue-600" />}
+              {payment.ocrDecision === "ocr_disabled" && <EyeOff className="w-4 h-4 text-slate-600" />}
+              <Badge className={
+                payment.ocrDecision === "auto_approved" ? "bg-green-100 text-green-800" :
+                payment.ocrDecision === "needs_review" ? "bg-yellow-100 text-yellow-800" :
+                payment.ocrDecision === "rejected" ? "bg-red-100 text-red-800" :
+                payment.ocrDecision === "shadow_auto_approved" ? "bg-blue-100 text-blue-800" :
+                "bg-slate-100 text-slate-800"
+              }>
+                {payment.ocrDecision.replace(/_/g, " ").toUpperCase()}
+              </Badge>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confidence Scores */}
+      {(extractedData?.visionConfidence !== undefined || extractedData?.structuredConfidence !== undefined || extractedData?.finalConfidence !== undefined || payment.ocrConfidence !== null) && (
+        <div>
+          <p className="text-sm font-semibold text-slate-700 mb-2">Confidence Scores</p>
+          <div className="grid grid-cols-2 gap-2 bg-white p-3 rounded border border-blue-200">
+            {extractedData?.visionConfidence !== undefined && (
+              <div className="bg-white p-2 rounded border border-blue-200">
+                <p className="text-slate-600">Vision</p>
+                <p className="font-semibold text-blue-700">{extractedData.visionConfidence}%</p>
+              </div>
+            )}
+            {extractedData?.structuredConfidence !== undefined && (
+              <div className="bg-white p-2 rounded border border-blue-200">
+                <p className="text-slate-600">Structured</p>
+                <p className="font-semibold text-blue-700">{extractedData.structuredConfidence}%</p>
+              </div>
+            )}
+            {extractedData?.finalConfidence !== undefined && (
+              <div className="bg-white p-2 rounded border border-blue-200">
+                <p className="text-slate-600">Final</p>
+                <p className="font-semibold text-blue-700">{extractedData.finalConfidence}%</p>
+              </div>
+            )}
+            {payment.ocrConfidence !== null && (
+              <div className="bg-white p-2 rounded border border-blue-200">
+                <p className="text-slate-600">Overall</p>
+                <p className="font-semibold text-blue-700">{payment.ocrConfidence}%</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Payment Matching Details */}
+      {extractedData && (
+        <div>
+          <p className="text-sm font-semibold text-slate-700 mb-2">Payment Details</p>
+          <div className="space-y-2 text-sm bg-white p-3 rounded border border-blue-200">
+            {/* Amount */}
+            {expectedAmount !== null && (
+              <div className="flex justify-between items-center">
+                <span className="text-slate-600">Expected Amount:</span>
+                <span className="font-semibold">฿{expectedAmount.toFixed(2)}</span>
+              </div>
+            )}
+            {extractedAmount !== undefined && (
+              <div className="flex justify-between items-center">
+                <span className="text-slate-600">Extracted Amount:</span>
+                <span className={`font-semibold ${amountMatch ? "text-green-700" : "text-red-700"}`}>
+                  ฿{extractedAmount.toFixed(2)}
+                </span>
+              </div>
+            )}
+            {amountMatch !== null && (
+              <div className="flex justify-between items-center pt-1 border-t border-slate-200">
+                <span className="text-slate-600">Amount Match:</span>
+                <Badge className={amountMatch ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}>
+                  {amountMatch ? "✓ Match" : "✗ Mismatch"}
+                </Badge>
+              </div>
+            )}
+
+            {/* Transaction Date/Time */}
+            {(extractedData.transactionDate || extractedData.transactionTime) && (
+              <div className="pt-2 border-t border-slate-200">
+                {extractedData.transactionDate && (
+                  <p className="text-slate-600">
+                    <span className="font-semibold">Date:</span> {extractedData.transactionDate}
+                  </p>
+                )}
+                {extractedData.transactionTime && (
+                  <p className="text-slate-600">
+                    <span className="font-semibold">Time:</span> {extractedData.transactionTime}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Reference */}
+            {extractedData.reference && (
+              <div className="pt-2 border-t border-slate-200">
+                <p className="text-slate-600">
+                  <span className="font-semibold">Reference:</span> {extractedData.reference}
+                </p>
+              </div>
+            )}
+
+            {/* Bank/Source */}
+            {extractedData.bankName && (
+              <div className="text-slate-600">
+                <span className="font-semibold">Bank:</span> {extractedData.bankName}
+              </div>
+            )}
+
+            {/* Recipient/Merchant */}
+            {(extractedData.recipientName || extractedData.shopName || extractedData.merchantCode) && (
+              <div className="pt-2 border-t border-slate-200">
+                {extractedData.shopName && (
+                  <p className="text-slate-600">
+                    <span className="font-semibold">Shop:</span> {extractedData.shopName}
+                  </p>
+                )}
+                {extractedData.recipientName && (
+                  <p className="text-slate-600">
+                    <span className="font-semibold">Recipient:</span> {extractedData.recipientName}
+                  </p>
+                )}
+                {extractedData.merchantCode && (
+                  <p className="text-slate-600">
+                    <span className="font-semibold">Merchant:</span> {extractedData.merchantCode}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate Detection */}
+      {(payment.fingerprint || extractedData?.duplicateStatus) && (
+        <div>
+          <p className="text-sm font-semibold text-slate-700 mb-2">Duplicate Detection</p>
+          <div className="space-y-2 text-sm bg-white p-3 rounded border border-blue-200">
+            {/* Duplicate Status Warning - Handle string or object */}
+            {extractedData?.duplicateStatus && (
+              <>
+                {typeof extractedData.duplicateStatus === "string" ? (
+                  <div className="mb-2 p-2 bg-red-50 rounded border border-red-200">
+                    <p className="text-red-900 font-semibold text-xs mb-1">⚠️ Duplicate Detected</p>
+                    <p className="text-red-800 text-xs">{extractedData.duplicateStatus}</p>
+                  </div>
+                ) : (
+                  <>
+                    {(duplicateStatusObj?.isDuplicateReference || duplicateStatusObj?.isDuplicateFingerprint) && (
+                      <div className="mb-2 p-2 bg-red-50 rounded border border-red-200">
+                        <p className="text-red-900 font-semibold text-xs mb-1">⚠️ Duplicate Detected</p>
+                        {duplicateStatusObj?.isDuplicateReference && (
+                          <p className="text-red-800 text-xs">Duplicate Reference: Yes</p>
+                        )}
+                        {duplicateStatusObj?.isDuplicateFingerprint && (
+                          <p className="text-red-800 text-xs">Duplicate Fingerprint: Yes</p>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+
+            {/* Duplicate Reference from object */}
+            {duplicateStatusObj?.duplicateReferencePaymentId && (
+              <div className="p-2 bg-orange-50 rounded border border-orange-200">
+                <p className="text-orange-900 font-semibold text-xs">Duplicate Reference</p>
+                <p className="text-orange-800 text-xs">Payment ID: {duplicateStatusObj.duplicateReferencePaymentId}</p>
+              </div>
+            )}
+
+            {/* Duplicate Fingerprint from object */}
+            {duplicateStatusObj?.duplicateFingerprintPaymentId && (
+              <div className="p-2 bg-orange-50 rounded border border-orange-200">
+                <p className="text-orange-900 font-semibold text-xs">Duplicate Fingerprint</p>
+                <p className="text-orange-800 text-xs">Payment ID: {duplicateStatusObj.duplicateFingerprintPaymentId}</p>
+              </div>
+            )}
+
+            {/* Duplicate Reference from flat fields (legacy) */}
+            {extractedData?.duplicateReferencePaymentId && typeof extractedData.duplicateStatus !== "object" && (
+              <div className="p-2 bg-orange-50 rounded border border-orange-200">
+                <p className="text-orange-900 font-semibold text-xs">Duplicate Reference</p>
+                <p className="text-orange-800 text-xs">Payment ID: {extractedData.duplicateReferencePaymentId}</p>
+              </div>
+            )}
+
+            {/* Duplicate Fingerprint from flat fields (legacy) */}
+            {extractedData?.duplicateFingerprintPaymentId && typeof extractedData.duplicateStatus !== "object" && (
+              <div className="p-2 bg-orange-50 rounded border border-orange-200">
+                <p className="text-orange-900 font-semibold text-xs">Duplicate Fingerprint</p>
+                <p className="text-orange-800 text-xs">Payment ID: {extractedData.duplicateFingerprintPaymentId}</p>
+              </div>
+            )}
+
+            {/* Generic Duplicate Payment ID */}
+            {extractedData?.duplicatePaymentId && !extractedData?.duplicateReferencePaymentId && !extractedData?.duplicateFingerprintPaymentId && (
+              <div className="p-2 bg-orange-50 rounded border border-orange-200">
+                <p className="text-orange-900 font-semibold text-xs">Duplicate Payment</p>
+                <p className="text-orange-800 text-xs">Payment ID: {extractedData.duplicatePaymentId}</p>
+              </div>
+            )}
+
+            {/* Fingerprint */}
+            {payment.fingerprint && (
+              <div className="pt-2 border-t border-slate-200">
+                <p className="text-slate-600 break-all text-xs">
+                  <span className="font-semibold">Fingerprint:</span> {payment.fingerprint.substring(0, 32)}...
+                </p>
+                <Badge className="bg-blue-100 text-blue-800 text-xs mt-1">Stored</Badge>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Review/Admin Details */}
+      {(payment.reviewReason || payment.approvalSource) && (
+        <div>
+          <p className="text-sm font-semibold text-slate-700 mb-2">Review Details</p>
+          <div className="space-y-2 text-sm bg-white p-3 rounded border border-blue-200">
+            {payment.reviewReason && (
+              <div>
+                <p className="text-slate-600">
+                  <span className="font-semibold">Review Reason:</span> {payment.reviewReason}
+                </p>
+              </div>
+            )}
+            {payment.approvalSource && (
+              <div>
+                <p className="text-slate-600">
+                  <span className="font-semibold">Approval Source:</span> {payment.approvalSource}
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Raw JSON Toggle */}
+      {extractedData && (
+        <div>
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
             onClick={() => setShowRawJson(!showRawJson)}
             className="text-xs"
           >
-            {showRawJson ? (
-              <>
-                <EyeOff className="w-3 h-3 mr-1" />
-                Hide JSON
-              </>
-            ) : (
-              <>
-                <Eye className="w-3 h-3 mr-1" />
-                Show JSON
-              </>
-            )}
+            {showRawJson ? "Hide" : "Show"} Raw JSON
           </Button>
-        </div>
-      </CardHeader>
-
-      <CardContent className="space-y-4">
-        {/* OCR Decision */}
-        {payment.ocrDecision && (
-          <div>
-            <p className="text-sm font-semibold text-slate-700 mb-2">OCR Decision</p>
-            {getOCRDecisionBadge(payment.ocrDecision)}
-          </div>
-        )}
-
-        {/* OCR Confidence Scores */}
-        {(payment.ocrConfidence !== null ||
-          extractedData?.visionConfidence !== undefined ||
-          extractedData?.structuredConfidence !== undefined ||
-          extractedData?.finalConfidence !== undefined) && (
-          <div>
-            <p className="text-sm font-semibold text-slate-700 mb-2">Confidence Scores</p>
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              {extractedData?.visionConfidence !== undefined && (
-                <div className="bg-white p-2 rounded border border-blue-200">
-                  <p className="text-slate-600">Vision</p>
-                  <p className="font-semibold text-blue-700">{extractedData.visionConfidence}%</p>
-                </div>
-              )}
-              {extractedData?.structuredConfidence !== undefined && (
-                <div className="bg-white p-2 rounded border border-blue-200">
-                  <p className="text-slate-600">Structured</p>
-                  <p className="font-semibold text-blue-700">{extractedData.structuredConfidence}%</p>
-                </div>
-              )}
-              {extractedData?.finalConfidence !== undefined && (
-                <div className="bg-white p-2 rounded border border-blue-200">
-                  <p className="text-slate-600">Final</p>
-                  <p className="font-semibold text-blue-700">{extractedData.finalConfidence}%</p>
-                </div>
-              )}
-              {payment.ocrConfidence !== null && (
-                <div className="bg-white p-2 rounded border border-blue-200">
-                  <p className="text-slate-600">Overall</p>
-                  <p className="font-semibold text-blue-700">{payment.ocrConfidence}%</p>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Payment Matching Details */}
-        {extractedData && (
-          <div>
-            <p className="text-sm font-semibold text-slate-700 mb-2">Payment Details</p>
-            <div className="space-y-2 text-sm bg-white p-3 rounded border border-blue-200">
-              {/* Amount */}
-              {expectedAmount !== null && (
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-600">Expected Amount:</span>
-                  <span className="font-semibold">฿{expectedAmount.toFixed(2)}</span>
-                </div>
-              )}
-              {extractedAmount !== undefined && (
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-600">Extracted Amount:</span>
-                  <span className={`font-semibold ${amountMatch ? "text-green-700" : "text-red-700"}`}>
-                    ฿{extractedAmount.toFixed(2)}
-                  </span>
-                </div>
-              )}
-              {amountMatch !== null && (
-                <div className="flex justify-between items-center pt-1 border-t border-slate-200">
-                  <span className="text-slate-600">Amount Match:</span>
-                  <Badge className={amountMatch ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}>
-                    {amountMatch ? "✓ Match" : "✗ Mismatch"}
-                  </Badge>
-                </div>
-              )}
-
-              {/* Transaction Date/Time */}
-              {(extractedData.transactionDate || extractedData.transactionTime) && (
-                <div className="pt-2 border-t border-slate-200">
-                  {extractedData.transactionDate && (
-                    <p className="text-slate-600">
-                      <span className="font-semibold">Date:</span> {extractedData.transactionDate}
-                    </p>
-                  )}
-                  {extractedData.transactionTime && (
-                    <p className="text-slate-600">
-                      <span className="font-semibold">Time:</span> {extractedData.transactionTime}
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {/* Reference */}
-              {extractedData.reference && (
-                <div className="pt-2 border-t border-slate-200">
-                  <p className="text-slate-600">
-                    <span className="font-semibold">Reference:</span> {extractedData.reference}
-                  </p>
-                </div>
-              )}
-
-              {/* Bank/Source */}
-              {extractedData.bankName && (
-                <div className="text-slate-600">
-                  <span className="font-semibold">Bank:</span> {extractedData.bankName}
-                </div>
-              )}
-
-              {/* Recipient/Merchant */}
-              {(extractedData.recipientName || extractedData.shopName || extractedData.merchantCode) && (
-                <div className="pt-2 border-t border-slate-200">
-                  {extractedData.shopName && (
-                    <p className="text-slate-600">
-                      <span className="font-semibold">Shop:</span> {extractedData.shopName}
-                    </p>
-                  )}
-                  {extractedData.recipientName && (
-                    <p className="text-slate-600">
-                      <span className="font-semibold">Recipient:</span> {extractedData.recipientName}
-                    </p>
-                  )}
-                  {extractedData.merchantCode && (
-                    <p className="text-slate-600">
-                      <span className="font-semibold">Merchant Code:</span> {extractedData.merchantCode}
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Duplicate Detection */}
-        {(payment.fingerprint || extractedData?.duplicateStatus) && (
-          <div>
-            <p className="text-sm font-semibold text-slate-700 mb-2">Duplicate Detection</p>
-            <div className="space-y-2 text-sm bg-white p-3 rounded border border-blue-200">
-              {/* Duplicate Status Warning */}
-              {extractedData?.duplicateStatus && (
-                <div className="mb-2 p-2 bg-red-50 rounded border border-red-200">
-                  <p className="text-red-900 font-semibold text-xs mb-1">⚠️ Duplicate Detected</p>
-                  <p className="text-red-800 text-xs">{extractedData.duplicateStatus}</p>
-                </div>
-              )}
-
-              {/* Duplicate Reference */}
-              {extractedData?.duplicateReferencePaymentId && (
-                <div className="p-2 bg-orange-50 rounded border border-orange-200">
-                  <p className="text-orange-900 font-semibold text-xs">Duplicate Reference</p>
-                  <p className="text-orange-800 text-xs">Payment ID: {extractedData.duplicateReferencePaymentId}</p>
-                </div>
-              )}
-
-              {/* Duplicate Fingerprint */}
-              {extractedData?.duplicateFingerprintPaymentId && (
-                <div className="p-2 bg-orange-50 rounded border border-orange-200">
-                  <p className="text-orange-900 font-semibold text-xs">Duplicate Fingerprint</p>
-                  <p className="text-orange-800 text-xs">Payment ID: {extractedData.duplicateFingerprintPaymentId}</p>
-                </div>
-              )}
-
-              {/* Generic Duplicate Payment ID */}
-              {extractedData?.duplicatePaymentId && !extractedData?.duplicateReferencePaymentId && !extractedData?.duplicateFingerprintPaymentId && (
-                <div className="p-2 bg-orange-50 rounded border border-orange-200">
-                  <p className="text-orange-900 font-semibold text-xs">Duplicate Payment</p>
-                  <p className="text-orange-800 text-xs">Payment ID: {extractedData.duplicatePaymentId}</p>
-                </div>
-              )}
-
-              {/* Fingerprint */}
-              {payment.fingerprint && (
-                <div className="pt-2 border-t border-slate-200">
-                  <p className="text-slate-600 break-all text-xs">
-                    <span className="font-semibold">Fingerprint:</span> {payment.fingerprint.substring(0, 32)}...
-                  </p>
-                  <Badge className="bg-blue-100 text-blue-800 text-xs mt-1">Stored</Badge>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Review/Admin Details */}
-        {(payment.reviewReason || payment.approvalSource) && (
-          <div>
-            <p className="text-sm font-semibold text-slate-700 mb-2">Review Details</p>
-            <div className="space-y-2 text-sm bg-white p-3 rounded border border-blue-200">
-              {payment.reviewReason && (
-                <div>
-                  <p className="text-slate-600">
-                    <span className="font-semibold">Review Reason:</span> {payment.reviewReason}
-                  </p>
-                </div>
-              )}
-              {payment.approvalSource && (
-                <div className="pt-2 border-t border-slate-200">
-                  <p className="text-slate-600">
-                    <span className="font-semibold">Approval Source:</span> {payment.approvalSource}
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Raw JSON (Collapsed by default) */}
-        {showRawJson && extractedData && (
-          <div>
-            <p className="text-xs font-semibold text-slate-600 mb-2">Raw OCR Data (Debug)</p>
-            <pre className="bg-white p-2 rounded border border-slate-200 text-xs overflow-auto max-h-40 text-slate-700">
+          {showRawJson && (
+            <pre className="mt-2 p-2 bg-slate-100 rounded text-xs overflow-auto max-h-48 border border-slate-300">
               {JSON.stringify(extractedData, null, 2)}
             </pre>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

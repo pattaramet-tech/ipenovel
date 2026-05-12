@@ -5,7 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
-import { Loader2, ArrowLeft, Eye } from "lucide-react";
+import { Loader2, ArrowLeft, Eye, FileText, ExternalLink } from "lucide-react";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
@@ -296,20 +296,44 @@ export default function AdminOrderDetailPage() {
               <div className="mt-6">
                 <p className="text-sm text-muted-foreground mb-2">Payment Slip</p>
                 <div className="flex gap-2">
-                  <img
-                    src={order.payment.slipImageUrl}
-                    alt="Payment slip"
-                    className="w-32 h-32 object-cover rounded border"
-                  />
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setShowSlipPreview(true)}
-                    className="h-fit"
-                  >
-                    <Eye className="w-4 h-4 mr-2" />
-                    View Full
-                  </Button>
+                  {order.payment.slipImageUrl.toLowerCase().split("?")[0].endsWith(".pdf") ? (
+                    <>
+                      <div className="flex items-center gap-2 p-3 bg-blue-50 rounded border border-blue-200">
+                        <FileText className="w-6 h-6 text-blue-600" />
+                        <div>
+                          <p className="text-sm font-semibold text-blue-900">PDF Document</p>
+                          <p className="text-xs text-blue-700">Payment slip (PDF)</p>
+                        </div>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => window.open(order.payment.slipImageUrl, "_blank")}
+                        className="h-fit"
+                      >
+                        <ExternalLink className="w-4 h-4 mr-2" />
+                        Open PDF
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <img
+                        src={order.payment.slipImageUrl}
+                        alt="Payment slip"
+                        className="w-32 h-32 object-cover rounded border cursor-pointer hover:opacity-80 transition"
+                        onClick={() => setShowSlipPreview(true)}
+                      />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowSlipPreview(true)}
+                        className="h-fit"
+                      >
+                        <Eye className="w-4 h-4 mr-2" />
+                        View Full
+                      </Button>
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -429,7 +453,26 @@ export default function AdminOrderDetailPage() {
             <DialogTitle>Payment Slip</DialogTitle>
           </DialogHeader>
           {order.payment?.slipImageUrl && (
-            <img src={order.payment.slipImageUrl} alt="Payment slip" className="w-full" />
+            order.payment.slipImageUrl.toLowerCase().split("?")[0].endsWith(".pdf") ? (
+              <div className="flex flex-col items-center gap-4 p-4">
+                <div className="flex items-center gap-2 p-4 bg-blue-50 rounded border border-blue-200 w-full">
+                  <FileText className="w-8 h-8 text-blue-600" />
+                  <div>
+                    <p className="text-sm font-semibold text-blue-900">PDF Document</p>
+                    <p className="text-xs text-blue-700">Payment slip (PDF)</p>
+                  </div>
+                </div>
+                <Button
+                  onClick={() => window.open(order.payment.slipImageUrl, "_blank")}
+                  className="w-full"
+                >
+                  <ExternalLink className="w-4 h-4 mr-2" />
+                  Open PDF in New Tab
+                </Button>
+              </div>
+            ) : (
+              <img src={order.payment.slipImageUrl} alt="Payment slip" className="w-full" />
+            )
           )}
         </DialogContent>
       </Dialog>

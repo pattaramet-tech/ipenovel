@@ -246,12 +246,32 @@ export async function processSlipVerificationStaging(
     }
   }
 
+  // ── Enrich extracted data with duplicate payment IDs ──────────────────────
+  const duplicateStatus = {
+    isDuplicateReference: duplicateReference.isDuplicate,
+    isDuplicateFingerprint: duplicateFingerprint.isDuplicate,
+    duplicateReferencePaymentId: duplicateReference.duplicatePaymentId,
+    duplicateFingerprintPaymentId: duplicateFingerprint.duplicatePaymentId,
+    duplicatePaymentId:
+      duplicateReference.duplicatePaymentId ||
+      duplicateFingerprint.duplicatePaymentId ||
+      undefined,
+  };
+
+  const enrichedExtractedData = {
+    ...extracted,
+    duplicateStatus,
+    duplicatePaymentId: duplicateStatus.duplicatePaymentId ? Number(duplicateStatus.duplicatePaymentId) : undefined,
+    duplicateReferencePaymentId: duplicateStatus.duplicateReferencePaymentId ? Number(duplicateStatus.duplicateReferencePaymentId) : undefined,
+    duplicateFingerprintPaymentId: duplicateStatus.duplicateFingerprintPaymentId ? Number(duplicateStatus.duplicateFingerprintPaymentId) : undefined,
+  };
+
   // ── Build response ────────────────────────────────────────────────────────
   const response: OCRVerificationResultStaging = {
     isAutoApproved: !isShadowMode && verificationResult.isAutoApproved,
     isShadowMode,
     reviewReason: verificationResult.reviewReason,
-    extractedData: extracted,
+    extractedData: enrichedExtractedData,
     linkedOrderId: verificationResult.linkedOrderId,
     linkedPaymentId: verificationResult.linkedPaymentId,
     fingerprint: verificationResult.fingerprint, // NEW: Add fingerprint from verification
@@ -263,10 +283,7 @@ export async function processSlipVerificationStaging(
         ? "auto_approved"
         : "needs_review",
     detectedBank: extracted.detectedBank,
-    duplicateStatus: {
-      isDuplicateReference: verificationResult.reviewReason === "DUPLICATE_REFERENCE",
-      isDuplicateFingerprint: verificationResult.reviewReason === "DUPLICATE_FINGERPRINT",
-    },
+    duplicateStatus,
     failureReason: verificationResult.reviewReason,
     simulatedDecision: verificationResult.isAutoApproved
       ? "approved"
