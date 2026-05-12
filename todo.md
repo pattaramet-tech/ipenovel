@@ -1185,3 +1185,31 @@
 - [x] Verify checkout flows send couponCode
 - [x] TypeScript check and build
 - [ ] QA checklist verification (15 items)
+
+
+## Payment System Bug Fixes (Phase 1-8)
+- [ ] Extract slip submission + OCR logic into shared service
+- [ ] Fix order payment status when created with slipImageUrl
+- [ ] Make finalizeOrderCompletion idempotent for coupon usage
+- [ ] Guard admin payment approval/rejection
+- [ ] Fix CartPage slip checkout loading state
+- [ ] Fix CartPage coupon state mismatch
+- [ ] Add slip file validation to CartPage
+- [ ] Guard wallet top-up rejection
+- [ ] Run TypeScript check and build
+- [ ] Test all 8 scenarios
+
+
+## Admin Regression Fixes (Completed)
+- [x] Fix AdminSettingsPage route registration in App.tsx (uncommented import, added route)
+- [x] Fix AdminLayout active state logic for /admin exact match (special case for dashboard)
+- [x] Fix AdminSidebar Dashboard link from /admin/dashboard to /admin
+- [x] Verify admin OCR settings response shape (already using getOCRSettingsForAdmin)
+- [x] Verify admin payment approve/reject input types (already using z.number())
+- [x] Fix getPendingPayments query to include pending_review status
+- [x] Fix getPendingPayments query to include legacy null approvalSource records
+- [x] Verify OCRResultPanel JSX and duplicate status handling (already correct)
+- [x] Verify PDF slip preview handling (already implemented)
+- [x] Verify all admin tRPC routes present (all 15 routers confirmed)
+- [x] TypeScript check and production build successful (1807 modules, no errors)
+- [x] All 18 verification checklist items passed

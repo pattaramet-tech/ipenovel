@@ -902,7 +902,10 @@ export async function getPendingPayments(limit?: number, offset?: number) {
         eq(payments.status, "pending"),
         eq(payments.status, "pending_review")
       ),
-      ne(payments.approvalSource, "wallet")
+      or(
+        isNull(payments.approvalSource),
+        ne(payments.approvalSource, "wallet")
+      )
     )
   ).orderBy(desc(payments.createdAt));
   if (limit) query = query.limit(limit);

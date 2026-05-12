@@ -74,7 +74,10 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
     );
   }
 
-  const isActive = (href: string) => location === href || location.startsWith(href + "/");
+  const isActive = (href: string) =>
+    href === "/admin"
+      ? location === "/admin"
+      : location === href || location.startsWith(href + "/");
 
   return (
     <div className="min-h-screen bg-slate-50">

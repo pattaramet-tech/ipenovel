@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 
 const adminMenuItems = [
-  { label: "Dashboard", href: "/admin/dashboard", icon: LayoutDashboard },
+  { label: "Dashboard", href: "/admin", icon: LayoutDashboard },
   { label: "Payments", href: "/admin/payments", icon: CreditCard },
   { label: "Novels", href: "/admin/novels", icon: BookOpen },
   { label: "Episodes", href: "/admin/episodes", icon: FileText },
