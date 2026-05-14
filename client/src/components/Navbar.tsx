@@ -1,7 +1,7 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { useLocation } from "wouter";
-import { BookOpen, ShoppingCart, LogOut, Menu, X, Settings, Heart } from "lucide-react";
+import { BookOpen, ShoppingCart, LogOut, Menu, X, Settings, Heart, Trophy } from "lucide-react";
 import { useState } from "react";
 import { getLoginUrl } from "@/const";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
@@ -31,6 +31,7 @@ export default function Navbar() {
     { label: t("nav.orders"), href: "/orders", auth: true, icon: ShoppingCart },
     { label: t("nav.wallet"), href: "/wallet", auth: true, icon: Heart },
     { label: t("nav.points"), href: "/points", auth: true, icon: Heart },
+    { label: "Football Votes", href: "/sports-votes", auth: true, icon: Trophy },
   ];
 
   return (
@@ -67,13 +68,22 @@ export default function Navbar() {
             
             {/* Admin Link Desktop */}
             {user?.role === "admin" && (
-              <button
-                onClick={() => navigate("/admin")}
-                className="flex items-center gap-2 px-4 py-2 rounded-full text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium transition text-sm whitespace-nowrap"
-              >
-                <Settings className="w-4 h-4" />
-                {t("nav.admin")}
-              </button>
+              <>
+                <button
+                  onClick={() => navigate("/admin/sports-votes")}
+                  className="flex items-center gap-2 px-4 py-2 rounded-full text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium transition text-sm whitespace-nowrap"
+                >
+                  <Trophy className="w-4 h-4" />
+                  Admin Votes
+                </button>
+                <button
+                  onClick={() => navigate("/admin")}
+                  className="flex items-center gap-2 px-4 py-2 rounded-full text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium transition text-sm whitespace-nowrap"
+                >
+                  <Settings className="w-4 h-4" />
+                  {t("nav.admin")}
+                </button>
+              </>
             )}
           </div>
 
