@@ -1237,3 +1237,12 @@
 - [ ] Add coupon query error visibility
 - [ ] TypeScript check and production build
 - [ ] Manual test all 10 test cases
+## Sports Match Prediction Voting Feature
+- [x] Phase 1: Update drizzle/schema.ts with sportsMatches and sportsMatchVotes tables
+- [x] Phase 2: Create SQL migration file drizzle/0018_sports_match_votes.sql (manually applied to database)
+- [x] Phase 3: Implement DB helper functions in server/db.ts (getPublicSportsMatches, castSportsVote, settleSportsMatch, cancelSportsMatch)
+- [x] Phase 4: Add tRPC procedures (sports.list, sports.vote, admin.sportsMatches.*)
+- [x] Phase 5: Create SportsVotesPage user page at /sports-votes
+- [x] Phase 6: Create AdminSportsVotesPage at /admin/sports-votes
+- [x] Phase 7: Run TypeScript check and production build
+- [x] Phase 8: Verify integration and test key flowspon generation, and refunds

@@ -1,0 +1,9 @@
+{
+  "query": "CREATE TABLE IF NOT EXISTS `__drizzle_migrations__` (\n  `id` SERIAL PRIMARY KEY,\n  `hash` text NOT NULL,\n  `created_at` bigint\n);\nINSERT INTO `__drizzle_migrations__` (hash, created_at) VALUES\n('0001_initial', 1000),\n('0002_add_tables', 2000),\n('0003_add_indexes', 3000),\n('0004_add_more', 4000),\n('0005_add_more', 5000),\n('0006_add_more', 6000),\n('0007_add_more', 7000),\n('0008_add_more', 8000),\n('0009_add_more', 9000),\n('0010_add_more', 10000),\n('0011_add_more', 11000),\n('0012_add_more', 12000),\n('0013_add_more', 13000),\n('0014_add_more', 14000),\n('0015_colossal_hobgoblin', 15000),\n('0016_fancy_stranger', 16000),\n('0017_nosy_newton_destine', 17000)",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute CREATE TABLE IF NOT EXISTS `__drizzle_migrations__` (\n  `id` SERIAL PRIMARY KEY,\n  `hash` text NOT NULL,\n  `created_at` bigint\n);\nINSERT INTO `__drizzle_migrations__` (hash, created_at) VALUES\n('0001_initial', 1000),\n('0002_add_tables', 2000),\n('0003_add_indexes', 3000),\n('0004_add_more', 4000),\n('0005_add_more', 5000),\n('0006_add_more', 6000),\n('0007_add_more', 7000),\n('0008_add_more', 8000),\n('0009_add_more', 9000),\n('0010_add_more', 10000),\n('0011_add_more', 11000),\n('0012_add_more', 12000),\n('0013_add_more', 13000),\n('0014_add_more', 14000),\n('0015_colossal_hobgoblin', 15000),\n('0016_fancy_stranger', 16000),\n('0017_nosy_newton_destine', 17000)",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 2106
+}

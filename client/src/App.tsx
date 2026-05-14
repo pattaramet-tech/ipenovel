@@ -1,4 +1,4 @@
-import { Toaster } from "@/components/ui/sonner";
+import { Toaster } from "sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/NotFound";
 import Home from "@/pages/Home";
@@ -28,6 +28,8 @@ import NovelDetailPage from "@/pages/NovelDetailPage";
 import PointsPage from "@/pages/PointsPage";
 import PaymentPage from "@/pages/PaymentPage";
 import WalletPage from "@/pages/WalletPage";
+import SportsVotesPage from "@/pages/SportsVotesPage";
+import AdminSportsVotesPage from "@/pages/AdminSportsVotesPage";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
@@ -49,6 +51,7 @@ function Router() {
         <Route path={"/points"} component={PointsPage} />
         <Route path={"/wallet"} component={WalletPage} />
         <Route path={"/payment/:orderId"} component={PaymentPage} />
+        <Route path={"/sports-votes"} component={SportsVotesPage} />
         <Route path={"/admin/login"} component={AdminLoginPage} />
         <Route path={"/admin"} component={AdminDashboard} />
         <Route path={"/admin/novels/:novelId"} component={AdminNovelManagePage} />
@@ -58,7 +61,7 @@ function Router() {
         <Route path={"/admin/categories"} component={AdminCategoriesPage} />
         <Route path={"/admin/banners"} component={AdminBannersPage} />
         <Route path={"/admin/coupons"} component={AdminCouponsPage} />
-          <Route path="/admin/orders" component={AdminOrdersPage} />
+        <Route path="/admin/orders" component={AdminOrdersPage} />
         <Route path="/admin/orders/:orderId" component={AdminOrderDetailPage} />
         <Route path={"/admin/payments"} component={AdminPaymentsPage} />
         <Route path={"/admin/wallet-topups"} component={AdminWalletTopupsPage} />
@@ -67,6 +70,7 @@ function Router() {
         <Route path="/admin/settings" component={AdminSettingsPage} />
         <Route path="/admin/bulk-upload" component={AdminBulkUploadPage} />
         <Route path="/admin/analytics" component={AdminAnalyticsPage} />
+        <Route path="/admin/sports-votes" component={AdminSportsVotesPage} />
         <Route path="/404" component={NotFound} />
         {/* Final fallback route */}
         <Route component={NotFound} />

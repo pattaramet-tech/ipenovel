@@ -127,6 +127,13 @@
       "when": 1778351128046,
       "tag": "0017_nosy_newton_destine",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "5",
+      "when": 1778778863477,
+      "tag": "0018_strong_thanos",
+      "breakpoints": true
     }
   ]
 }

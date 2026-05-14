@@ -546,3 +546,86 @@ export const topupLogs = mysqlTable(
 
 export type TopupLog = typeof topupLogs.$inferSelect;
 export type InsertTopupLog = typeof topupLogs.$inferInsert;
+
+/**
+ * Sports Matches (Football prediction voting)
+ * Admin creates matches with team info, vote cost, and reward coupon settings.
+ * Users vote on match results and spend points.
+ * Admin settles matches and generates reward coupons for winners.
+ */
+export const sportsMatches = mysqlTable(
+  "sportsMatches",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    title: varchar("title", { length: 255 }).notNull(),
+    leagueName: varchar("leagueName", { length: 255 }),
+
+    homeTeamName: varchar("homeTeamName", { length: 255 }).notNull(),
+    awayTeamName: varchar("awayTeamName", { length: 255 }).notNull(),
+    homeTeamImageUrl: text("homeTeamImageUrl"),
+    awayTeamImageUrl: text("awayTeamImageUrl"),
+    coverImageUrl: text("coverImageUrl"),
+
+    matchStartAt: timestamp("matchStartAt"),
+    voteDeadlineAt: timestamp("voteDeadlineAt").notNull(),
+
+    voteCostPoints: decimal("voteCostPoints", { precision: 10, scale: 2 }).default("0.00").notNull(),
+
+    rewardDiscountType: mysqlEnum("rewardDiscountType", ["flat", "percentage"]).notNull(),
+    rewardDiscountValue: decimal("rewardDiscountValue", { precision: 10, scale: 2 }).notNull(),
+    rewardMinPurchaseAmount: decimal("rewardMinPurchaseAmount", { precision: 10, scale: 2 }).default("0.00"),
+    rewardCouponExpiresAt: timestamp("rewardCouponExpiresAt"),
+
+    status: mysqlEnum("status", ["draft", "open", "closed", "settled", "cancelled"]).default("draft").notNull(),
+    result: mysqlEnum("result", ["home_win", "draw", "away_win"]),
+
+    isActive: boolean("isActive").default(true).notNull(),
+    displayOrder: int("displayOrder").default(0).notNull(),
+
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    statusIdx: index("sportsMatches_status_idx").on(table.status),
+    activeIdx: index("sportsMatches_isActive_idx").on(table.isActive),
+    deadlineIdx: index("sportsMatches_voteDeadlineAt_idx").on(table.voteDeadlineAt),
+    displayOrderIdx: index("sportsMatches_displayOrder_idx").on(table.displayOrder),
+  })
+);
+
+export type SportsMatch = typeof sportsMatches.$inferSelect;
+export type InsertSportsMatch = typeof sportsMatches.$inferInsert;
+
+/**
+ * Sports Match Votes (User predictions)
+ * Tracks each user's vote on a match.
+ * One vote per user per match (enforced by unique index).
+ * Stores prediction, points spent, vote status, and reward coupon if won.
+ */
+export const sportsMatchVotes = mysqlTable(
+  "sportsMatchVotes",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    matchId: int("matchId").notNull(),
+    userId: int("userId").notNull(),
+
+    prediction: mysqlEnum("prediction", ["home_win", "draw", "away_win"]).notNull(),
+    pointsSpent: decimal("pointsSpent", { precision: 10, scale: 2 }).default("0.00").notNull(),
+
+    status: mysqlEnum("status", ["pending", "won", "lost", "refunded"]).default("pending").notNull(),
+    rewardCouponId: int("rewardCouponId"),
+    rewardCouponCode: varchar("rewardCouponCode", { length: 50 }),
+
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    matchIdIdx: index("sportsMatchVotes_matchId_idx").on(table.matchId),
+    userIdIdx: index("sportsMatchVotes_userId_idx").on(table.userId),
+    statusIdx: index("sportsMatchVotes_status_idx").on(table.status),
+    uniqueUserMatchVote: uniqueIndex("unique_sports_match_user_vote").on(table.matchId, table.userId),
+  })
+);
+
+export type SportsMatchVote = typeof sportsMatchVotes.$inferSelect;
+export type InsertSportsMatchVote = typeof sportsMatchVotes.$inferInsert;

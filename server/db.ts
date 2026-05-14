@@ -26,6 +26,8 @@ import {
   walletTransactions,
   walletTopups,
   topupLogs,
+  sportsMatches,
+  sportsMatchVotes,
   Novel,
   couponUsages as couponUsagesTable,
 } from "../drizzle/schema";
@@ -2976,4 +2978,291 @@ export async function getRecentlyApprovedPayments(limit?: number, offset?: numbe
   let query: any = db.select().from(payments).where(eq(payments.status, "approved")).orderBy(desc(payments.approvedAt)).limit(limit || 50);
   if (offset) query = query.offset(offset);
   return query;
+}
+
+
+// ============================================================================
+// Sports Match Prediction Voting
+// ============================================================================
+
+type SportsPrediction = "home_win" | "draw" | "away_win";
+type SportsMatchStatus = "draft" | "open" | "closed" | "settled" | "cancelled";
+
+function extractInsertId(result: any): number {
+  let insertedId: number | undefined;
+  if (typeof result === "object" && result !== null) {
+    insertedId = result.insertId;
+    if (!insertedId && Array.isArray(result) && result[0]) insertedId = result[0].insertId;
+    if (!insertedId && result.meta) insertedId = result.meta.insertId;
+  }
+  if (!insertedId) throw new Error("Failed to extract inserted ID");
+  return insertedId;
+}
+
+export async function getPublicSportsMatches(userId?: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const matches = await db
+    .select()
+    .from(sportsMatches)
+    .where(eq(sportsMatches.isActive, true))
+    .orderBy(asc(sportsMatches.displayOrder), asc(sportsMatches.voteDeadlineAt));
+
+  if (!userId) return matches.map((match: any) => ({ ...match, myVote: null }));
+
+  const votes = await db
+    .select()
+    .from(sportsMatchVotes)
+    .where(eq(sportsMatchVotes.userId, userId));
+
+  const voteByMatchId = new Map(votes.map((vote: any) => [vote.matchId, vote]));
+  return matches.map((match: any) => ({ ...match, myVote: voteByMatchId.get(match.id) || null }));
+}
+
+export async function getAdminSportsMatches() {
+  const db = await getDb();
+  if (!db) return [];
+
+  const matches = await db
+    .select()
+    .from(sportsMatches)
+    .orderBy(desc(sportsMatches.createdAt));
+
+  return Promise.all(
+    matches.map(async (match: any) => {
+      const voteRows = await db
+        .select({ status: sportsMatchVotes.status, prediction: sportsMatchVotes.prediction })
+        .from(sportsMatchVotes)
+        .where(eq(sportsMatchVotes.matchId, match.id));
+
+      return {
+        ...match,
+        voteCount: voteRows.length,
+        homeVoteCount: voteRows.filter((v: any) => v.prediction === "home_win").length,
+        drawVoteCount: voteRows.filter((v: any) => v.prediction === "draw").length,
+        awayVoteCount: voteRows.filter((v: any) => v.prediction === "away_win").length,
+        winnerCount: voteRows.filter((v: any) => v.status === "won").length,
+      };
+    })
+  );
+}
+
+export async function getSportsMatchById(matchId: number, tx?: any) {
+  const db = tx || await getDb();
+  if (!db) return undefined;
+  const rows = await db.select().from(sportsMatches).where(eq(sportsMatches.id, matchId)).limit(1);
+  return rows[0];
+}
+
+export async function getSportsVoteByMatchAndUser(matchId: number, userId: number, tx?: any) {
+  const db = tx || await getDb();
+  if (!db) return undefined;
+  const rows = await db
+    .select()
+    .from(sportsMatchVotes)
+    .where(and(eq(sportsMatchVotes.matchId, matchId), eq(sportsMatchVotes.userId, userId)))
+    .limit(1);
+  return rows[0];
+}
+
+export async function createSportsMatch(data: {
+  title: string;
+  leagueName?: string;
+  homeTeamName: string;
+  awayTeamName: string;
+  homeTeamImageUrl?: string;
+  awayTeamImageUrl?: string;
+  coverImageUrl?: string;
+  matchStartAt?: Date;
+  voteDeadlineAt: Date;
+  voteCostPoints: string;
+  rewardDiscountType: "flat" | "percentage";
+  rewardDiscountValue: string;
+  rewardMinPurchaseAmount?: string;
+  rewardCouponExpiresAt?: Date;
+  status?: SportsMatchStatus;
+  isActive?: boolean;
+  displayOrder?: number;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const result = await db.insert(sportsMatches).values({
+    ...data,
+    voteCostPoints: data.voteCostPoints as any,
+    rewardDiscountValue: data.rewardDiscountValue as any,
+    rewardMinPurchaseAmount: (data.rewardMinPurchaseAmount || "0.00") as any,
+    status: data.status || "draft",
+    isActive: data.isActive ?? true,
+    displayOrder: data.displayOrder ?? 0,
+  });
+
+  return { id: extractInsertId(result) };
+}
+
+export async function updateSportsMatch(matchId: number, data: Partial<{
+  title: string;
+  leagueName: string | null;
+  homeTeamName: string;
+  awayTeamName: string;
+  homeTeamImageUrl: string | null;
+  awayTeamImageUrl: string | null;
+  coverImageUrl: string | null;
+  matchStartAt: Date | null;
+  voteDeadlineAt: Date;
+  voteCostPoints: string;
+  rewardDiscountType: "flat" | "percentage";
+  rewardDiscountValue: string;
+  rewardMinPurchaseAmount: string | null;
+  rewardCouponExpiresAt: Date | null;
+  status: SportsMatchStatus;
+  result: SportsPrediction | null;
+  isActive: boolean;
+  displayOrder: number;
+}>, tx?: any) {
+  const db = tx || await getDb();
+  if (!db) return;
+  await db.update(sportsMatches).set(data as any).where(eq(sportsMatches.id, matchId));
+}
+
+export async function castSportsVote(userId: number, matchId: number, prediction: SportsPrediction) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db.transaction(async (tx: any) => {
+    const match = await getSportsMatchById(matchId, tx);
+    if (!match) throw new Error("Match not found");
+    if (!match.isActive || match.status !== "open") throw new Error("Voting is not open for this match");
+    if (new Date(match.voteDeadlineAt).getTime() <= Date.now()) throw new Error("Voting deadline has passed");
+
+    const existing = await getSportsVoteByMatchAndUser(matchId, userId, tx);
+    if (existing) throw new Error("You have already voted for this match");
+
+    const cost = Math.max(0, Number(match.voteCostPoints || 0));
+    const currentBalance = Number(await getUserPointsBalance(userId, tx));
+    if (!Number.isFinite(currentBalance) || currentBalance < cost) {
+      throw new Error(`Insufficient points. This vote requires ${cost.toFixed(2)} points.`);
+    }
+
+    const insertResult = await tx.insert(sportsMatchVotes).values({
+      matchId,
+      userId,
+      prediction,
+      pointsSpent: cost.toFixed(2) as any,
+      status: "pending",
+    });
+    const voteId = extractInsertId(insertResult);
+
+    const newBalance = (currentBalance - cost).toFixed(2);
+    await recordPointsTransaction({
+      userId,
+      type: "redeem",
+      amount: cost.toFixed(2),
+      balanceAfter: newBalance,
+      referenceType: "sports_vote",
+      referenceId: voteId,
+      note: `Sports vote for match #${matchId}`,
+    }, tx);
+
+    const vote = await tx.select().from(sportsMatchVotes).where(eq(sportsMatchVotes.id, voteId)).limit(1);
+    return vote[0];
+  });
+}
+
+function buildRewardCouponCode(matchId: number, voteId: number): string {
+  const random = Math.random().toString(36).slice(2, 8).toUpperCase();
+  return `FB${matchId}V${voteId}${random}`.slice(0, 50);
+}
+
+export async function settleSportsMatch(matchId: number, result: SportsPrediction) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db.transaction(async (tx: any) => {
+    const match = await getSportsMatchById(matchId, tx);
+    if (!match) throw new Error("Match not found");
+    if (match.status === "settled") throw new Error("Match has already been settled");
+    if (match.status === "cancelled") throw new Error("Cancelled match cannot be settled");
+
+    await updateSportsMatch(matchId, { status: "settled", result }, tx);
+
+    const votes = await tx
+      .select()
+      .from(sportsMatchVotes)
+      .where(eq(sportsMatchVotes.matchId, matchId));
+
+    let winnerCount = 0;
+
+    for (const vote of votes) {
+      if (vote.status !== "pending") continue;
+
+      if (vote.prediction === result) {
+        const code = buildRewardCouponCode(matchId, vote.id);
+        const couponResult = await tx.insert(coupons).values({
+          code,
+          discountType: match.rewardDiscountType,
+          discountValue: match.rewardDiscountValue as any,
+          minPurchaseAmount: (match.rewardMinPurchaseAmount || "0.00") as any,
+          maxUsageCount: 1,
+          usageCount: 0,
+          isActive: true,
+          expiresAt: match.rewardCouponExpiresAt || null,
+        });
+        const couponId = extractInsertId(couponResult);
+
+        await tx
+          .update(sportsMatchVotes)
+          .set({ status: "won", rewardCouponId: couponId, rewardCouponCode: code })
+          .where(eq(sportsMatchVotes.id, vote.id));
+
+        winnerCount += 1;
+      } else {
+        await tx
+          .update(sportsMatchVotes)
+          .set({ status: "lost" })
+          .where(eq(sportsMatchVotes.id, vote.id));
+      }
+    }
+
+    return { success: true, winnerCount };
+  });
+}
+
+export async function cancelSportsMatch(matchId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db.transaction(async (tx: any) => {
+    const match = await getSportsMatchById(matchId, tx);
+    if (!match) throw new Error("Match not found");
+    if (match.status === "settled") throw new Error("Settled match cannot be cancelled");
+
+    await updateSportsMatch(matchId, { status: "cancelled" }, tx);
+
+    const pendingVotes = await tx
+      .select()
+      .from(sportsMatchVotes)
+      .where(and(eq(sportsMatchVotes.matchId, matchId), eq(sportsMatchVotes.status, "pending")));
+
+    for (const vote of pendingVotes) {
+      const refundAmount = Number(vote.pointsSpent || 0);
+      const currentBalance = Number(await getUserPointsBalance(vote.userId, tx));
+      const newBalance = (currentBalance + refundAmount).toFixed(2);
+
+      await recordPointsTransaction({
+        userId: vote.userId,
+        type: "refund",
+        amount: refundAmount.toFixed(2),
+        balanceAfter: newBalance,
+        referenceType: "sports_vote_refund",
+        referenceId: vote.id,
+        note: `Refund for cancelled sports match #${matchId}`,
+      }, tx);
+
+      await tx.update(sportsMatchVotes).set({ status: "refunded" }).where(eq(sportsMatchVotes.id, vote.id));
+    }
+
+    return { success: true, refundedCount: pendingVotes.length };
+  });
 }

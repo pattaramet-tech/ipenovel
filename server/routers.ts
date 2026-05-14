@@ -1372,6 +1372,99 @@ export const appRouter = router({
           return { novels, stats };
         }),
     }),
+
+    sportsMatches: router({
+      list: adminProcedure.query(async () => {
+        return db.getAdminSportsMatches();
+      }),
+
+      uploadImage: adminProcedure
+        .input(z.object({
+          fileName: z.string().min(1),
+          mimeType: z.enum(["image/jpeg", "image/png", "image/webp"]),
+          fileBase64: z.string().min(1),
+        }))
+        .mutation(async ({ input, ctx }) => {
+          const base64Data = input.fileBase64.split(",")[1] || input.fileBase64;
+          const fileBuffer = Buffer.from(base64Data, "base64");
+
+          const maxSize = 2 * 1024 * 1024;
+          if (fileBuffer.length > maxSize) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Sports image must be 2MB or smaller" });
+          }
+
+          const timestamp = Date.now();
+          const randomSuffix = Math.random().toString(36).substring(2, 8);
+          const sanitizedFileName = input.fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+          const fileKey = `sports-matches/${ctx.user.id}/${timestamp}-${randomSuffix}-${sanitizedFileName}`;
+
+          const { url, key } = await storagePut(fileKey, fileBuffer, input.mimeType);
+          return { url, key };
+        }),
+
+      create: adminProcedure
+        .input(z.object({
+          title: z.string().min(1),
+          leagueName: z.string().optional(),
+          homeTeamName: z.string().min(1),
+          awayTeamName: z.string().min(1),
+          homeTeamImageUrl: z.string().optional(),
+          awayTeamImageUrl: z.string().optional(),
+          coverImageUrl: z.string().optional(),
+          matchStartAt: z.date().optional(),
+          voteDeadlineAt: z.date(),
+          voteCostPoints: z.string(),
+          rewardDiscountType: z.enum(["flat", "percentage"]),
+          rewardDiscountValue: z.string(),
+          rewardMinPurchaseAmount: z.string().optional(),
+          rewardCouponExpiresAt: z.date().optional(),
+          status: z.enum(["draft", "open", "closed", "settled", "cancelled"]).optional(),
+          isActive: z.boolean().optional(),
+          displayOrder: z.number().optional(),
+        }))
+        .mutation(async ({ input }) => {
+          return db.createSportsMatch(input);
+        }),
+
+      update: adminProcedure
+        .input(z.object({
+          matchId: z.number(),
+          title: z.string().optional(),
+          leagueName: z.string().nullable().optional(),
+          homeTeamName: z.string().optional(),
+          awayTeamName: z.string().optional(),
+          homeTeamImageUrl: z.string().nullable().optional(),
+          awayTeamImageUrl: z.string().nullable().optional(),
+          coverImageUrl: z.string().nullable().optional(),
+          matchStartAt: z.date().nullable().optional(),
+          voteDeadlineAt: z.date().optional(),
+          voteCostPoints: z.string().optional(),
+          rewardDiscountType: z.enum(["flat", "percentage"]).optional(),
+          rewardDiscountValue: z.string().optional(),
+          rewardMinPurchaseAmount: z.string().nullable().optional(),
+          rewardCouponExpiresAt: z.date().nullable().optional(),
+          status: z.enum(["draft", "open", "closed", "settled", "cancelled"]).optional(),
+          isActive: z.boolean().optional(),
+          displayOrder: z.number().optional(),
+        }))
+        .mutation(async ({ input }) => {
+          const { matchId, ...data } = input;
+          await db.updateSportsMatch(matchId, data as any);
+          return { success: true };
+        }),
+
+      settle: adminProcedure
+        .input(z.object({ matchId: z.number(), result: z.enum(["home_win", "draw", "away_win"]) }))
+        .mutation(async ({ input }) => {
+          return db.settleSportsMatch(input.matchId, input.result);
+        }),
+
+      cancel: adminProcedure
+        .input(z.object({ matchId: z.number() }))
+        .mutation(async ({ input }) => {
+          return db.cancelSportsMatch(input.matchId);
+        }),
+    }),
   }),
   wallet: router({
     getBalance: protectedProcedure.query(async ({ ctx }) => {
@@ -1487,6 +1580,27 @@ export const appRouter = router({
           );
         }),
     }),
+  }),
+
+  // ============ SPORTS MATCH PREDICTION VOTING ============
+  sports: router({
+    list: protectedProcedure.query(async ({ ctx }) => {
+      return db.getPublicSportsMatches(ctx.user.id);
+    }),
+
+    vote: protectedProcedure
+      .input(z.object({
+        matchId: z.number(),
+        prediction: z.enum(["home_win", "draw", "away_win"]),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        try {
+          const vote = await db.castSportsVote(ctx.user.id, input.matchId, input.prediction);
+          return { success: true, vote };
+        } catch (error: any) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Vote failed" });
+        }
+      }),
   }),
 
 });
