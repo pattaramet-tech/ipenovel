@@ -143,24 +143,60 @@ export default function AdminSportsVotesPage() {
         <Card>
           <CardHeader><CardTitle>{editingId ? "Edit Match" : "Create Match"}</CardTitle></CardHeader>
           <CardContent className="grid md:grid-cols-2 gap-4">
-            <Input placeholder="Match title" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
-            <Input placeholder="League" value={form.leagueName} onChange={(e) => setForm({ ...form, leagueName: e.target.value })} />
-            <Input placeholder="Home team" value={form.homeTeamName} onChange={(e) => setForm({ ...form, homeTeamName: e.target.value })} />
-            <Input placeholder="Away team" value={form.awayTeamName} onChange={(e) => setForm({ ...form, awayTeamName: e.target.value })} />
-            <Input type="datetime-local" value={form.matchStartAt} onChange={(e) => setForm({ ...form, matchStartAt: e.target.value })} />
-            <Input type="datetime-local" value={form.voteDeadlineAt} onChange={(e) => setForm({ ...form, voteDeadlineAt: e.target.value })} />
-            <Input placeholder="Vote cost points" value={form.voteCostPoints} onChange={(e) => setForm({ ...form, voteCostPoints: e.target.value })} />
-            <Input placeholder="Reward value" value={form.rewardDiscountValue} onChange={(e) => setForm({ ...form, rewardDiscountValue: e.target.value })} />
-            <Select value={form.rewardDiscountType} onValueChange={(value: any) => setForm({ ...form, rewardDiscountType: value })}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="flat">Flat</SelectItem>
-                <SelectItem value="percentage">Percentage</SelectItem>
-              </SelectContent>
-            </Select>
-            <Input placeholder="Reward min purchase" value={form.rewardMinPurchaseAmount} onChange={(e) => setForm({ ...form, rewardMinPurchaseAmount: e.target.value })} />
-            <Input type="datetime-local" value={form.rewardCouponExpiresAt} onChange={(e) => setForm({ ...form, rewardCouponExpiresAt: e.target.value })} />
-            <Input placeholder="Display order" value={form.displayOrder} onChange={(e) => setForm({ ...form, displayOrder: e.target.value })} />
+            <div>
+              <label className="text-xs font-semibold text-slate-600 mb-1 block">Match Title *</label>
+              <Input placeholder="e.g., Premier League Final" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-600 mb-1 block">League</label>
+              <Input placeholder="e.g., Premier League" value={form.leagueName} onChange={(e) => setForm({ ...form, leagueName: e.target.value })} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-600 mb-1 block">Home Team *</label>
+              <Input placeholder="e.g., Manchester United" value={form.homeTeamName} onChange={(e) => setForm({ ...form, homeTeamName: e.target.value })} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-600 mb-1 block">Away Team *</label>
+              <Input placeholder="e.g., Liverpool" value={form.awayTeamName} onChange={(e) => setForm({ ...form, awayTeamName: e.target.value })} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-600 mb-1 block">Match Start Time</label>
+              <Input type="datetime-local" value={form.matchStartAt} onChange={(e) => setForm({ ...form, matchStartAt: e.target.value })} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-600 mb-1 block">Vote Deadline *</label>
+              <Input type="datetime-local" value={form.voteDeadlineAt} onChange={(e) => setForm({ ...form, voteDeadlineAt: e.target.value })} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-600 mb-1 block">Vote Cost (Points)</label>
+              <Input placeholder="e.g., 10" value={form.voteCostPoints} onChange={(e) => setForm({ ...form, voteCostPoints: e.target.value })} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-600 mb-1 block">Reward Discount Value</label>
+              <Input placeholder="e.g., 10" value={form.rewardDiscountValue} onChange={(e) => setForm({ ...form, rewardDiscountValue: e.target.value })} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-600 mb-1 block">Reward Type</label>
+              <Select value={form.rewardDiscountType} onValueChange={(value: any) => setForm({ ...form, rewardDiscountType: value })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="flat">Flat Amount</SelectItem>
+                  <SelectItem value="percentage">Percentage Off</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-600 mb-1 block">Min Purchase Amount</label>
+              <Input placeholder="0 for no minimum" value={form.rewardMinPurchaseAmount} onChange={(e) => setForm({ ...form, rewardMinPurchaseAmount: e.target.value })} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-600 mb-1 block">Coupon Expiration</label>
+              <Input type="datetime-local" value={form.rewardCouponExpiresAt} onChange={(e) => setForm({ ...form, rewardCouponExpiresAt: e.target.value })} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-600 mb-1 block">Display Order</label>
+              <Input placeholder="0" value={form.displayOrder} onChange={(e) => setForm({ ...form, displayOrder: e.target.value })} />
+            </div>
 
             <div>
               <label className="text-sm font-semibold">Cover image</label>
