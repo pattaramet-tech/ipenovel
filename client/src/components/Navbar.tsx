@@ -68,22 +68,13 @@ export default function Navbar() {
             
             {/* Admin Link Desktop */}
             {user?.role === "admin" && (
-              <>
-                <button
-                  onClick={() => navigate("/admin/sports-votes")}
-                  className="flex items-center gap-2 px-4 py-2 rounded-full text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium transition text-sm whitespace-nowrap"
-                >
-                  <Trophy className="w-4 h-4" />
-                  Admin Votes
-                </button>
-                <button
-                  onClick={() => navigate("/admin")}
-                  className="flex items-center gap-2 px-4 py-2 rounded-full text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium transition text-sm whitespace-nowrap"
-                >
-                  <Settings className="w-4 h-4" />
-                  {t("nav.admin")}
-                </button>
-              </>
+              <button
+                onClick={() => navigate("/admin")}
+                className="flex items-center gap-2 px-4 py-2 rounded-full text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium transition text-sm whitespace-nowrap"
+              >
+                <Settings className="w-4 h-4" />
+                {t("nav.admin")}
+              </button>
             )}
           </div>
 
