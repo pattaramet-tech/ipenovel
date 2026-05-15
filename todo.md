@@ -1246,3 +1246,19 @@
 - [x] Phase 6: Create AdminSportsVotesPage at /admin/sports-votes
 - [x] Phase 7: Run TypeScript check and production build
 - [x] Phase 8: Verify integration and test key flowspon generation, and refunds
+
+
+## Sports Voting Reward Coupon Bug Fixes
+
+- [ ] Phase 1: Add sportsMatchRewards table to track coupon ownership
+- [ ] Phase 2: Update DB functions to create sportsMatchRewards on settle
+- [ ] Phase 3: Add userId to coupon validation and enforce ownership checks
+- [ ] Phase 4: Update getActiveCouponsForCart to filter by user ownership
+- [ ] Phase 5: Add sports.myRewards procedure and update SportsVotesPage UI
+- [ ] Phase 6: Make settleSportsMatch idempotent with unique constraints
+- [ ] Phase 7: Prevent status bypass in updateSportsMatch
+- [ ] Phase 8: Add numeric input validation for admin form
+- [ ] Phase 9: Improve voting race safety with row locking
+- [ ] Phase 10: Add coupon used status sync in order finalization
+- [ ] Phase 11: Write comprehensive tests for all reward coupon scenarios
+- [ ] Phase 12: Run TypeScript check and production build

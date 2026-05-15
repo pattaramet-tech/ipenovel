@@ -28,6 +28,7 @@ import {
   topupLogs,
   sportsMatches,
   sportsMatchVotes,
+  sportsMatchRewards,
   Novel,
   couponUsages as couponUsagesTable,
 } from "../drizzle/schema";
@@ -985,7 +986,7 @@ export async function getAllCoupons() {
   return db.select().from(coupons).orderBy(desc(coupons.createdAt));
 }
 
-export async function getActiveCouponsForCart(subtotal?: string | number) {
+export async function getActiveCouponsForCart(subtotal?: string | number, userId?: number) {
   const db = await getDb();
   if (!db) return [];
 
@@ -1008,7 +1009,25 @@ export async function getActiveCouponsForCart(subtotal?: string | number) {
     )
     .orderBy(asc(coupons.minPurchaseAmount), desc(coupons.createdAt));
 
-  return result.map((coupon: any) => {
+  // Filter out reward coupons that don't belong to the user
+  let filteredResult = result;
+  if (userId) {
+    filteredResult = [];
+    for (const coupon of result) {
+      const rewardCheck = await db
+        .select()
+        .from(sportsMatchRewards)
+        .where(eq(sportsMatchRewards.couponId, coupon.id))
+        .limit(1);
+
+      // Include coupon if it's not a reward coupon, or if it belongs to this user
+      if (rewardCheck.length === 0 || rewardCheck[0].userId === userId) {
+        filteredResult.push(coupon);
+      }
+    }
+  }
+
+  return filteredResult.map((coupon: any) => {
     const discountValueNum = Number.parseFloat(String(coupon.discountValue ?? "0"));
     const minPurchaseNum = Number.parseFloat(String(coupon.minPurchaseAmount ?? "0"));
 
@@ -3210,6 +3229,25 @@ export async function settleSportsMatch(matchId: number, result: SportsPredictio
           expiresAt: match.rewardCouponExpiresAt || null,
         });
         const couponId = extractInsertId(couponResult);
+
+        // Check if reward already exists (idempotency)
+        const existingReward = await tx
+          .select()
+          .from(sportsMatchRewards)
+          .where(eq(sportsMatchRewards.voteId, vote.id))
+          .limit(1);
+
+        if (!existingReward.length) {
+          // Create sportsMatchRewards entry to track ownership
+          await tx.insert(sportsMatchRewards).values({
+            matchId,
+            voteId: vote.id,
+            userId: vote.userId,
+            couponId,
+            status: "issued",
+            issuedAt: new Date(),
+          });
+        }
 
         await tx
           .update(sportsMatchVotes)

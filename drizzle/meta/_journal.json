@@ -134,6 +134,13 @@
       "when": 1778778863477,
       "tag": "0018_strong_thanos",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "5",
+      "when": 1778881642457,
+      "tag": "0019_milky_tarot",
+      "breakpoints": true
     }
   ]
 }

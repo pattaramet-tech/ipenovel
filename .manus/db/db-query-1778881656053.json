@@ -1,0 +1,9 @@
+{
+  "query": "INSERT IGNORE INTO __drizzle_migrations__ (hash, created_at) VALUES ('8d5c9e5b8e5f5b5e5c5e5b5e5c5e5b5e', 1715800000000);",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute INSERT IGNORE INTO __drizzle_migrations__ (hash, created_at) VALUES ('8d5c9e5b8e5f5b5e5c5e5b5e5c5e5b5e', 1715800000000);",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 1755
+}

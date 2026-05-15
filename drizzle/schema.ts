@@ -629,3 +629,38 @@ export const sportsMatchVotes = mysqlTable(
 
 export type SportsMatchVote = typeof sportsMatchVotes.$inferSelect;
 export type InsertSportsMatchVote = typeof sportsMatchVotes.$inferInsert;
+
+/**
+ * Sports Match Rewards (Reward coupon tracking)
+ * Links winning votes to their issued reward coupons.
+ * Tracks ownership, status (issued/used/expired/void), and timestamps.
+ * Ensures only the vote owner can use the reward coupon.
+ */
+export const sportsMatchRewards = mysqlTable(
+  "sportsMatchRewards",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    matchId: int("matchId").notNull(),
+    voteId: int("voteId").notNull(),
+    userId: int("userId").notNull(),
+    couponId: int("couponId").notNull(),
+
+    status: mysqlEnum("status", ["issued", "used", "expired", "void"]).default("issued").notNull(),
+    issuedAt: timestamp("issuedAt").defaultNow().notNull(),
+    usedAt: timestamp("usedAt"),
+    expiredAt: timestamp("expiredAt"),
+
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    matchIdIdx: index("sportsMatchRewards_matchId_idx").on(table.matchId),
+    userIdIdx: index("sportsMatchRewards_userId_idx").on(table.userId),
+    statusIdx: index("sportsMatchRewards_status_idx").on(table.status),
+    uniqueVoteId: uniqueIndex("unique_sports_match_rewards_vote").on(table.voteId),
+    uniqueCouponId: uniqueIndex("unique_sports_match_rewards_coupon").on(table.couponId),
+  })
+);
+
+export type SportsMatchReward = typeof sportsMatchRewards.$inferSelect;
+export type InsertSportsMatchReward = typeof sportsMatchRewards.$inferInsert;

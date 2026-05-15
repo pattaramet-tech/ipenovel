@@ -1,6 +1,8 @@
 import * as db from "../db";
+import { sportsMatchRewards } from "../../drizzle/schema";
 
 import { ApprovalService } from "./approvalService";
+import { eq } from "drizzle-orm";
 
 /**
  * Generate order number in MMDDNNNNNNN format
@@ -21,14 +23,32 @@ export function generateOrderNumber(): string {
 /**
  * Validate coupon for an order
  * Returns discount amount or throws error with specific reason
+ * If userId is provided, checks that reward coupons belong to the user
  */
-export async function validateAndApplyCoupon(couponCode: string, subtotal: string, tx?: any): Promise<{ discountAmount: string; coupon: any; normalizedCode?: string }> {
+export async function validateAndApplyCoupon(couponCode: string, subtotal: string, tx?: any, userId?: number): Promise<{ discountAmount: string; coupon: any; normalizedCode?: string }> {
   // Normalize coupon code: trim and uppercase for consistent lookup
   const normalizedCode = String(couponCode || "").trim().toUpperCase();
   const coupon = await db.getCouponByCode(normalizedCode, tx);
 
   if (!coupon) {
     throw new Error("Coupon not found");
+  }
+
+  // Check if this is a reward coupon and enforce ownership
+  if (userId && coupon.id) {
+    const dbInstance = tx || (await db.getDb());
+    if (dbInstance) {
+      // Check if this coupon is a reward coupon owned by another user
+      const rewards = await dbInstance
+        .select()
+        .from(sportsMatchRewards)
+        .where(eq(sportsMatchRewards.couponId, coupon.id))
+        .limit(1);
+
+      if (rewards.length > 0 && rewards[0].userId !== userId) {
+        throw new Error("This coupon belongs to another user");
+      }
+    }
   }
 
   // Validate discount value first - this is critical
