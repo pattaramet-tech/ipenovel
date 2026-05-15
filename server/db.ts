@@ -3304,3 +3304,27 @@ export async function cancelSportsMatch(matchId: number) {
     return { success: true, refundedCount: pendingVotes.length };
   });
 }
+
+
+export async function markSportsRewardCouponUsed(couponId: number, userId: number, tx?: any) {
+  const db = tx || (await getDb());
+  if (!db) throw new Error("Database not available");
+
+  // Find reward record for this coupon and user
+  const reward = await db
+    .select()
+    .from(sportsMatchRewards)
+    .where(and(eq(sportsMatchRewards.couponId, couponId), eq(sportsMatchRewards.userId, userId)))
+    .limit(1);
+
+  if (reward.length > 0 && reward[0].status === "issued") {
+    // Mark reward as used
+    await db
+      .update(sportsMatchRewards)
+      .set({
+        status: "used",
+        usedAt: new Date(),
+      })
+      .where(eq(sportsMatchRewards.id, reward[0].id));
+  }
+}

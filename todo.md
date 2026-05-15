@@ -1262,3 +1262,18 @@
 - [ ] Phase 10: Add coupon used status sync in order finalization
 - [ ] Phase 11: Write comprehensive tests for all reward coupon scenarios
 - [ ] Phase 12: Run TypeScript check and production build
+
+
+## Sports Voting Bug Fixes (Critical Ownership & Validation Issues)
+
+- [x] Phase 1: Fix active coupon listing to pass userId in checkout.activeCoupons
+- [x] Phase 2: Make checkout.validateCoupon protected and enforce ownership
+- [x] Phase 3: Pass userId to all coupon validation paths in checkout procedures
+- [x] Phase 4: Add markSportsRewardCouponUsed helper and update reward status
+- [ ] Phase 5: Add sports.myRewards procedure
+- [ ] Phase 6: Add My Rewards UI section to SportsVotesPage
+- [ ] Phase 7: Prevent admin status bypass in create/update
+- [ ] Phase 8: Add numeric input validation for admin form
+- [ ] Phase 9: Fix settleSportsMatch idempotency and concurrency
+- [ ] Phase 10: Run tests and build verification
+- [x] Phase 11: Export complete ZIP file

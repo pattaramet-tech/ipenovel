@@ -266,15 +266,15 @@ export const appRouter = router({
   checkout: router({
     activeCoupons: protectedProcedure
       .input(z.object({ subtotal: z.string() }).optional())
-      .query(async ({ input }) => {
-        return db.getActiveCouponsForCart(input?.subtotal);
+      .query(async ({ input, ctx }) => {
+        return db.getActiveCouponsForCart(input?.subtotal, ctx.user.id);
       }),
 
-    validateCoupon: publicProcedure
+    validateCoupon: protectedProcedure
       .input(z.object({ couponCode: z.string(), subtotal: z.string() }))
-      .query(async ({ input }) => {
+      .query(async ({ input, ctx }) => {
         try {
-          const { discountAmount, coupon, normalizedCode } = await orderService.validateAndApplyCoupon(input.couponCode, input.subtotal);
+          const { discountAmount, coupon, normalizedCode } = await orderService.validateAndApplyCoupon(input.couponCode, input.subtotal, undefined, ctx.user.id);
           return {
             discountAmount,
             valid: true,
@@ -357,7 +357,7 @@ export const appRouter = router({
           // Apply coupon if provided
           let discountAmount = 0;
           if (input.couponCode) {
-            const { discountAmount: discount } = await orderService.validateAndApplyCoupon(input.couponCode, subtotal.toString());
+            const { discountAmount: discount } = await orderService.validateAndApplyCoupon(input.couponCode, subtotal.toString(), undefined, ctx.user.id);
             discountAmount = parseFloat(discount);
           }
 

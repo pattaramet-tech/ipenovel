@@ -118,7 +118,8 @@ export async function createOrderFromCart(
   couponCode?: string,
   pointsToRedeem?: string,
   slipImageUrl?: string,
-  tx?: any
+  tx?: any,
+  userIdNum?: number
 ): Promise<any> {
   // Calculate subtotal
   let subtotal = 0;
@@ -131,18 +132,19 @@ export async function createOrderFromCart(
   let discountAmount = 0;
   let normalizedCouponCode: string | undefined;
   if (couponCode) {
-    const { discountAmount: discount, normalizedCode } = await validateAndApplyCoupon(couponCode, subtotal.toString(), tx);
+    const userIdForValidation = userIdNum || (userId ? parseInt(userId, 10) : undefined);
+    const { discountAmount: discount, normalizedCode } = await validateAndApplyCoupon(couponCode, subtotal.toString(), tx, userIdForValidation);
     discountAmount = parseFloat(discount);
     normalizedCouponCode = normalizedCode;
   }
 
   // Apply points redemption if provided
   let pointsDiscountAmount = 0;
-  const userIdNum = parseInt(userId);
+  const userIdNumParsed = userIdNum || parseInt(userId);
   if (pointsToRedeem && parseFloat(pointsToRedeem) > 0) {
     const requestedPoints = parseFloat(pointsToRedeem);
     // Validate user has enough points
-    const balanceStr = await db.getUserPointsBalance(userIdNum, tx);
+    const balanceStr = await db.getUserPointsBalance(userIdNumParsed, tx);
     const balance = parseFloat(balanceStr);
     if (requestedPoints > balance) {
       throw new Error(`Insufficient points balance. You have ${balance.toFixed(2)} points.`);
@@ -309,6 +311,8 @@ export async function finalizeOrderCompletion(orderId: number, userId: number, t
     const coupon = await db.getCouponByCode(order.couponCodeSnapshot, tx);
     if (coupon) {
       await db.recordCouponUsage(coupon.id, userId, orderId, tx);
+      // Update sports reward coupon status if this is a reward coupon
+      await db.markSportsRewardCouponUsed(coupon.id, userId, tx);
     }
   }
 }
