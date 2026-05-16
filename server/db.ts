@@ -3107,6 +3107,39 @@ export async function createSportsMatch(data: {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
+  // Validate numeric fields
+  const voteCostPoints = parseFloat(data.voteCostPoints || "0");
+  if (!Number.isFinite(voteCostPoints) || voteCostPoints < 0) {
+    throw new Error("voteCostPoints must be a finite number >= 0");
+  }
+
+  const rewardDiscountValue = parseFloat(data.rewardDiscountValue || "0");
+  if (!Number.isFinite(rewardDiscountValue) || rewardDiscountValue <= 0) {
+    throw new Error("rewardDiscountValue must be a finite number > 0");
+  }
+
+  if (data.rewardDiscountType === "percentage" && rewardDiscountValue > 100) {
+    throw new Error("Percentage discount cannot exceed 100");
+  }
+
+  const minPurchaseAmount = parseFloat(data.rewardMinPurchaseAmount || "0");
+  if (!Number.isFinite(minPurchaseAmount) || minPurchaseAmount < 0) {
+    throw new Error("rewardMinPurchaseAmount must be a finite number >= 0");
+  }
+
+  // Validate dates
+  if (!data.voteDeadlineAt || !(data.voteDeadlineAt instanceof Date)) {
+    throw new Error("voteDeadlineAt must be a valid date");
+  }
+
+  if ((data.status || "draft") === "open" && data.voteDeadlineAt.getTime() <= Date.now()) {
+    throw new Error("voteDeadlineAt must be in the future for open matches");
+  }
+
+  if (data.rewardCouponExpiresAt && data.rewardCouponExpiresAt.getTime() <= Date.now()) {
+    throw new Error("rewardCouponExpiresAt must be in the future");
+  }
+
   const result = await db.insert(sportsMatches).values({
     ...data,
     voteCostPoints: data.voteCostPoints as any,
@@ -3217,6 +3250,20 @@ export async function settleSportsMatch(matchId: number, result: SportsPredictio
       if (vote.status !== "pending") continue;
 
       if (vote.prediction === result) {
+        // Check if reward already exists (idempotency) - BEFORE creating coupon
+        const existingReward = await tx
+          .select()
+          .from(sportsMatchRewards)
+          .where(eq(sportsMatchRewards.voteId, vote.id))
+          .limit(1);
+
+        if (existingReward.length) {
+          // Reward already exists, skip coupon creation
+          winnerCount += 1;
+          continue;
+        }
+
+        // Reward does not exist, create coupon and reward
         const code = buildRewardCouponCode(matchId, vote.id);
         const couponResult = await tx.insert(coupons).values({
           code,
@@ -3230,24 +3277,15 @@ export async function settleSportsMatch(matchId: number, result: SportsPredictio
         });
         const couponId = extractInsertId(couponResult);
 
-        // Check if reward already exists (idempotency)
-        const existingReward = await tx
-          .select()
-          .from(sportsMatchRewards)
-          .where(eq(sportsMatchRewards.voteId, vote.id))
-          .limit(1);
-
-        if (!existingReward.length) {
-          // Create sportsMatchRewards entry to track ownership
-          await tx.insert(sportsMatchRewards).values({
-            matchId,
-            voteId: vote.id,
-            userId: vote.userId,
-            couponId,
-            status: "issued",
-            issuedAt: new Date(),
-          });
-        }
+        // Create sportsMatchRewards entry to track ownership
+        await tx.insert(sportsMatchRewards).values({
+          matchId,
+          voteId: vote.id,
+          userId: vote.userId,
+          couponId,
+          status: "issued",
+          issuedAt: new Date(),
+        });
 
         await tx
           .update(sportsMatchVotes)

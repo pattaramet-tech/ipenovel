@@ -1418,7 +1418,7 @@ export const appRouter = router({
           rewardDiscountValue: z.string(),
           rewardMinPurchaseAmount: z.string().optional(),
           rewardCouponExpiresAt: z.date().optional(),
-          status: z.enum(["draft", "open", "closed", "settled", "cancelled"]).optional(),
+          status: z.enum(["draft", "open", "closed"]).optional(),
           isActive: z.boolean().optional(),
           displayOrder: z.number().optional(),
         }))
@@ -1443,7 +1443,7 @@ export const appRouter = router({
           rewardDiscountValue: z.string().optional(),
           rewardMinPurchaseAmount: z.string().nullable().optional(),
           rewardCouponExpiresAt: z.date().nullable().optional(),
-          status: z.enum(["draft", "open", "closed", "settled", "cancelled"]).optional(),
+          status: z.enum(["draft", "open", "closed"]).optional(),
           isActive: z.boolean().optional(),
           displayOrder: z.number().optional(),
         }))

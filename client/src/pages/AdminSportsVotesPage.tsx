@@ -22,7 +22,7 @@ const emptyForm = {
   rewardDiscountValue: "10",
   rewardMinPurchaseAmount: "0",
   rewardCouponExpiresAt: "",
-  status: "open" as "draft" | "open" | "closed" | "settled" | "cancelled",
+  status: "open" as "draft" | "open" | "closed",
   isActive: true,
   displayOrder: "0",
 };
