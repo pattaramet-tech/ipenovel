@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
-import { Trophy, Gift, Clock, Coins } from "lucide-react";
+import { Trophy, Gift, Clock, Coins, Copy } from "lucide-react";
 import { toast } from "sonner";
 
 const predictionLabel: Record<string, string> = {
@@ -30,6 +30,7 @@ export default function SportsVotesPage() {
 
   const { data: points } = trpc.points.balance.useQuery(undefined, { enabled: isAuthenticated });
   const { data: matches = [], isLoading } = trpc.sports.list.useQuery(undefined, { enabled: isAuthenticated });
+  const { data: rewards = [], isLoading: rewardsLoading } = trpc.sports.myRewards.useQuery(undefined, { enabled: isAuthenticated });
 
   const voteMutation = trpc.sports.vote.useMutation({
     onSuccess: () => {
@@ -66,6 +67,54 @@ export default function SportsVotesPage() {
             <Coins className="w-4 h-4 mr-1" /> Points: {points?.balance || "0.00"}
           </Badge>
         </div>
+
+        {rewards.length > 0 && (
+          <div className="mb-8">
+            <h2 className="text-2xl font-bold mb-4 flex items-center gap-2">
+              <Gift className="w-6 h-6" /> My Rewards
+            </h2>
+            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {rewards.map((reward: any) => {
+                const statusColor = reward.rewardStatus === "used" ? "bg-green-50" : reward.rewardStatus === "issued" ? "bg-blue-50" : "bg-slate-50";
+                const statusText = reward.rewardStatus === "used" ? "✓ Used" : reward.rewardStatus === "issued" ? "Available" : "Expired";
+                return (
+                  <Card key={`${reward.matchId}-${reward.couponCode}`} className={statusColor}>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-base">{reward.matchTitle}</CardTitle>
+                      <p className="text-xs text-slate-600">{reward.homeTeamName} vs {reward.awayTeamName}</p>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      <div className="text-xs space-y-1">
+                        <p>Your prediction: <b>{predictionLabel[reward.prediction]}</b></p>
+                        <p>Result: <b>{reward.result || "Pending"}</b></p>
+                        <p>Status: <Badge variant={reward.rewardStatus === "used" ? "default" : "secondary"}>{statusText}</Badge></p>
+                      </div>
+                      <div className="bg-white rounded p-2 text-center">
+                        <p className="text-xs text-slate-600">Coupon Code</p>
+                        <code className="font-bold text-sm">{reward.couponCode}</code>
+                      </div>
+                      <div className="text-xs text-slate-600 space-y-1">
+                        <p>Discount: {reward.discountType === "percentage" ? `${reward.discountValue}%` : `฿${reward.discountValue}`}</p>
+                        {reward.minPurchaseAmount && <p>Min: ฿{reward.minPurchaseAmount}</p>}
+                        {reward.expiresAt && <p>Expires: {formatDate(reward.expiresAt)}</p>}
+                      </div>
+                      <Button size="sm" className="w-full" onClick={() => {
+                        navigator.clipboard.writeText(reward.couponCode);
+                        toast.success("Coupon copied!");
+                      }}>
+                        <Copy className="w-3 h-3 mr-1" /> Copy Coupon
+                      </Button>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        <h2 className="text-2xl font-bold mb-4 flex items-center gap-2">
+          <Trophy className="w-6 h-6" /> Active Matches
+        </h2>
 
         {isLoading ? (
           <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">

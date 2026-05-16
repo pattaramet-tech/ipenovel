@@ -3328,3 +3328,33 @@ export async function markSportsRewardCouponUsed(couponId: number, userId: numbe
       .where(eq(sportsMatchRewards.id, reward[0].id));
   }
 }
+
+export async function getSportsRewardsForUser(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db
+    .select({
+      matchId: sportsMatches.id,
+      matchTitle: sportsMatches.title,
+      homeTeamName: sportsMatches.homeTeamName,
+      awayTeamName: sportsMatches.awayTeamName,
+      prediction: sportsMatchVotes.prediction,
+      result: sportsMatches.result,
+      voteStatus: sportsMatchVotes.status,
+      rewardStatus: sportsMatchRewards.status,
+      couponCode: coupons.code,
+      discountType: coupons.discountType,
+      discountValue: coupons.discountValue,
+      minPurchaseAmount: coupons.minPurchaseAmount,
+      expiresAt: coupons.expiresAt,
+      usedAt: sportsMatchRewards.usedAt,
+      issuedAt: sportsMatchRewards.createdAt,
+    })
+    .from(sportsMatchRewards)
+    .innerJoin(sportsMatches, eq(sportsMatchRewards.matchId, sportsMatches.id))
+    .innerJoin(sportsMatchVotes, eq(sportsMatchRewards.voteId, sportsMatchVotes.id))
+    .innerJoin(coupons, eq(sportsMatchRewards.couponId, coupons.id))
+    .where(eq(sportsMatchRewards.userId, userId))
+    .orderBy(desc(sportsMatchRewards.createdAt));
+}

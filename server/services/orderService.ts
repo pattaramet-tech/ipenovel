@@ -140,7 +140,12 @@ export async function createOrderFromCart(
 
   // Apply points redemption if provided
   let pointsDiscountAmount = 0;
-  const userIdNumParsed = userIdNum || parseInt(userId);
+  const userIdNumParsed = userIdNum ?? parseInt(userId, 10);
+  
+  if (!Number.isFinite(userIdNumParsed)) {
+    throw new Error("Invalid user ID");
+  }
+  
   if (pointsToRedeem && parseFloat(pointsToRedeem) > 0) {
     const requestedPoints = parseFloat(pointsToRedeem);
     // Validate user has enough points
@@ -159,7 +164,7 @@ export async function createOrderFromCart(
   // Create order
   const orderNumber = generateOrderNumber();
   const result = await db.createOrder({
-    userId: userIdNum,
+    userId: userIdNumParsed,
     orderNumber,
     subtotal: subtotal.toString(),
     discountAmount: discountAmount.toString(),

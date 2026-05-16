@@ -1601,6 +1601,10 @@ export const appRouter = router({
           throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Vote failed" });
         }
       }),
+
+    myRewards: protectedProcedure.query(async ({ ctx }) => {
+      return db.getSportsRewardsForUser(ctx.user.id);
+    }),
   }),
 
 });
