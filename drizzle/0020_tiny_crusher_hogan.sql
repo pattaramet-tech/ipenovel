@@ -1,0 +1,1 @@
+ALTER TABLE `couponUsages` ADD CONSTRAINT `couponUsages_couponId_orderId_unique` UNIQUE(`couponId`,`orderId`);

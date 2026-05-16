@@ -1,0 +1,8 @@
+{
+  "query": "ALTER TABLE couponUsages ADD UNIQUE KEY couponUsages_couponId_orderId_unique (couponId, orderId)",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute ALTER TABLE couponUsages ADD UNIQUE KEY couponUsages_couponId_orderId_unique (couponId, orderId)",
+  "returncode": 1,
+  "logs": [
+    "ERROR 1062 (23000) at line 1: Duplicate entry '?' for key 'couponUsages.couponUsages_couponId_orderId_unique'"
+  ]
+}

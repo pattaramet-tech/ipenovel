@@ -9,6 +9,7 @@ import {
   boolean,
   uniqueIndex,
   index,
+  unique,
 } from "drizzle-orm/mysql-core";
 
 /**
@@ -350,6 +351,7 @@ export const couponUsages = mysqlTable(
     couponIdIdx: index("couponUsages_couponId_idx").on(table.couponId),
     userIdIdx: index("couponUsages_userId_idx").on(table.userId),
     orderIdIdx: index("couponUsages_orderId_idx").on(table.orderId),
+    couponOrderUnique: unique("couponUsages_couponId_orderId_unique").on(table.couponId, table.orderId),
   })
 );
 

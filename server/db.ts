@@ -1113,10 +1113,31 @@ export async function deleteCoupon(couponId: number) {
 
 export async function recordCouponUsage(couponId: number, userId: number | undefined, orderId: number, tx?: any) {
   const db = tx || await getDb();
-  if (!db) return;
-  await db.insert(couponUsages).values({ couponId, userId, orderId });
-  // Increment usageCount on the coupon itself
-  await db.update(coupons).set({ usageCount: sql`${coupons.usageCount} + 1` }).where(eq(coupons.id, couponId));
+  if (!db) return { recorded: false };
+
+  try {
+    // Check if this coupon + order combination already exists
+    const existing = await db.select().from(couponUsages)
+      .where(and(eq(couponUsages.couponId, couponId), eq(couponUsages.orderId, orderId)));
+    
+    if (existing && existing.length > 0) {
+      // Already recorded - skip to prevent duplicate increment
+      return { alreadyRecorded: true };
+    }
+    
+    // Insert new usage record
+    await db.insert(couponUsages).values({ couponId, userId, orderId });
+    // Increment usageCount on the coupon itself
+    await db.update(coupons).set({ usageCount: sql`${coupons.usageCount} + 1` }).where(eq(coupons.id, couponId));
+    return { recorded: true };
+  } catch (err: any) {
+    // Handle unique constraint violation gracefully (duplicate key error)
+    if (err.code === "ER_DUP_ENTRY" || err.message?.includes("UNIQUE constraint failed")) {
+      // Duplicate key - already recorded, skip silently
+      return { alreadyRecorded: true };
+    }
+    throw err;
+  }
 }
 
 export async function getCouponUsageByUserId(userId: number) {
@@ -3175,6 +3196,69 @@ export async function updateSportsMatch(matchId: number, data: Partial<{
 }>, tx?: any) {
   const db = tx || await getDb();
   if (!db) return;
+
+  // Load existing match for context
+  const existing = await getSportsMatchById(matchId, tx);
+  if (!existing) throw new Error("Match not found");
+
+  // Merge existing values with incoming updates
+  const merged = {
+    voteCostPoints: data.voteCostPoints !== undefined ? data.voteCostPoints : existing.voteCostPoints,
+    rewardDiscountType: data.rewardDiscountType !== undefined ? data.rewardDiscountType : existing.rewardDiscountType,
+    rewardDiscountValue: data.rewardDiscountValue !== undefined ? data.rewardDiscountValue : existing.rewardDiscountValue,
+    rewardMinPurchaseAmount: data.rewardMinPurchaseAmount !== undefined ? data.rewardMinPurchaseAmount : existing.rewardMinPurchaseAmount,
+    voteDeadlineAt: data.voteDeadlineAt !== undefined ? data.voteDeadlineAt : existing.voteDeadlineAt,
+    rewardCouponExpiresAt: data.rewardCouponExpiresAt !== undefined ? data.rewardCouponExpiresAt : existing.rewardCouponExpiresAt,
+    status: data.status !== undefined ? data.status : existing.status,
+  };
+
+  // Validate voteCostPoints
+  const voteCost = Number(merged.voteCostPoints);
+  if (!Number.isFinite(voteCost) || voteCost < 0) {
+    throw new Error("voteCostPoints must be a finite number >= 0");
+  }
+
+  // Validate rewardDiscountValue
+  const discountValue = Number(merged.rewardDiscountValue);
+  if (!Number.isFinite(discountValue) || discountValue <= 0) {
+    throw new Error("rewardDiscountValue must be a finite number > 0");
+  }
+
+  // Validate percentage discount <= 100
+  if (merged.rewardDiscountType === "percentage" && discountValue > 100) {
+    throw new Error("rewardDiscountValue cannot exceed 100 for percentage discounts");
+  }
+
+  // Validate rewardMinPurchaseAmount
+  const minPurchase = Number(merged.rewardMinPurchaseAmount);
+  if (merged.rewardMinPurchaseAmount !== null && (!Number.isFinite(minPurchase) || minPurchase < 0)) {
+    throw new Error("rewardMinPurchaseAmount must be a finite number >= 0");
+  }
+
+  // Validate voteDeadlineAt is a valid date
+  if (merged.voteDeadlineAt) {
+    const deadline = new Date(merged.voteDeadlineAt);
+    if (isNaN(deadline.getTime())) {
+      throw new Error("voteDeadlineAt must be a valid date");
+    }
+    // If status is open, deadline must be in the future
+    if (merged.status === "open" && deadline.getTime() <= Date.now()) {
+      throw new Error("voteDeadlineAt must be in the future for open matches");
+    }
+  }
+
+  // Validate rewardCouponExpiresAt is in the future if provided
+  if (merged.rewardCouponExpiresAt) {
+    const expiresAt = new Date(merged.rewardCouponExpiresAt);
+    if (isNaN(expiresAt.getTime())) {
+      throw new Error("rewardCouponExpiresAt must be a valid date");
+    }
+    if (expiresAt.getTime() <= Date.now()) {
+      throw new Error("rewardCouponExpiresAt must be in the future");
+    }
+  }
+
+  // All validations passed, perform update
   await db.update(sportsMatches).set(data as any).where(eq(sportsMatches.id, matchId));
 }
 
@@ -3371,7 +3455,7 @@ export async function getSportsRewardsForUser(userId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  return db
+  const rewards = await db
     .select({
       matchId: sportsMatches.id,
       matchTitle: sportsMatches.title,
@@ -3380,7 +3464,7 @@ export async function getSportsRewardsForUser(userId: number) {
       prediction: sportsMatchVotes.prediction,
       result: sportsMatches.result,
       voteStatus: sportsMatchVotes.status,
-      rewardStatus: sportsMatchRewards.status,
+      rewardStatusRaw: sportsMatchRewards.status,
       couponCode: coupons.code,
       discountType: coupons.discountType,
       discountValue: coupons.discountValue,
@@ -3395,4 +3479,13 @@ export async function getSportsRewardsForUser(userId: number) {
     .innerJoin(coupons, eq(sportsMatchRewards.couponId, coupons.id))
     .where(eq(sportsMatchRewards.userId, userId))
     .orderBy(desc(sportsMatchRewards.createdAt));
+
+  // Compute rewardStatus based on rewardStatusRaw and coupon expiration
+  return rewards.map((reward: any) => ({
+    ...reward,
+    rewardStatus: reward.rewardStatusRaw === "used" ? "used" : 
+                  reward.rewardStatusRaw === "void" ? "void" :
+                  reward.expiresAt && new Date(reward.expiresAt).getTime() <= Date.now() ? "expired" :
+                  "issued",
+  }));
 }

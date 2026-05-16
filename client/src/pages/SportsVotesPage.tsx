@@ -98,11 +98,11 @@ export default function SportsVotesPage() {
                         {reward.minPurchaseAmount && <p>Min: ฿{reward.minPurchaseAmount}</p>}
                         {reward.expiresAt && <p>Expires: {formatDate(reward.expiresAt)}</p>}
                       </div>
-                      <Button size="sm" className="w-full" onClick={() => {
+                      <Button size="sm" className="w-full" disabled={reward.rewardStatus !== "issued"} onClick={() => {
                         navigator.clipboard.writeText(reward.couponCode);
                         toast.success("Coupon copied!");
                       }}>
-                        <Copy className="w-3 h-3 mr-1" /> Copy Coupon
+                        <Copy className="w-3 h-3 mr-1" /> {reward.rewardStatus === "used" ? "Already Used" : reward.rewardStatus === "expired" ? "Expired" : "Copy Coupon"}
                       </Button>
                     </CardContent>
                   </Card>

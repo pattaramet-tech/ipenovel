@@ -1,0 +1,60 @@
+{
+  "query": "SELECT couponId, orderId, COUNT(*) as cnt FROM couponUsages GROUP BY couponId, orderId HAVING cnt > 1 LIMIT 10",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT couponId, orderId, COUNT(*) as cnt FROM couponUsages GROUP BY couponId, orderId HAVING cnt > 1 LIMIT 10",
+  "rows": [
+    {
+      "couponId": "30035",
+      "orderId": "6330001",
+      "cnt": "2"
+    },
+    {
+      "couponId": "540001",
+      "orderId": "14610001",
+      "cnt": "2"
+    },
+    {
+      "couponId": "30035",
+      "orderId": "2340002",
+      "cnt": "2"
+    },
+    {
+      "couponId": "30035",
+      "orderId": "1320001",
+      "cnt": "2"
+    },
+    {
+      "couponId": "30035",
+      "orderId": "3990045",
+      "cnt": "2"
+    },
+    {
+      "couponId": "30035",
+      "orderId": "3060003",
+      "cnt": "2"
+    },
+    {
+      "couponId": "30035",
+      "orderId": "3270001",
+      "cnt": "2"
+    },
+    {
+      "couponId": "30035",
+      "orderId": "570004",
+      "cnt": "2"
+    },
+    {
+      "couponId": "30035",
+      "orderId": "1560001",
+      "cnt": "2"
+    },
+    {
+      "couponId": "30035",
+      "orderId": "3600001",
+      "cnt": "2"
+    }
+  ],
+  "messages": [],
+  "stdout": "couponId\torderId\tcnt\n30035\t6330001\t2\n540001\t14610001\t2\n30035\t2340002\t2\n30035\t1320001\t2\n30035\t3990045\t2\n30035\t3060003\t2\n30035\t3270001\t2\n30035\t570004\t2\n30035\t1560001\t2\n30035\t3600001\t2\n",
+  "stderr": "",
+  "execution_time_ms": 1739
+}
