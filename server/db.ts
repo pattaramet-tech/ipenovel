@@ -3137,7 +3137,9 @@ export async function createSportsMatch(data: {
     throw new Error("voteCostPoints must be a finite number >= 0");
   }
 
-  const rewardDiscountValue = parseFloat(data.rewardDiscountValue || "0");
+  const rewardDiscountValueStr = (data.rewardDiscountValue || "0").trim();
+  if (!numericRegex.test(rewardDiscountValueStr)) throw new Error("rewardDiscountValue must be a valid number");
+  const rewardDiscountValue = parseFloat(rewardDiscountValueStr);
   if (!Number.isFinite(rewardDiscountValue) || rewardDiscountValue <= 0) {
     throw new Error("rewardDiscountValue must be a finite number > 0");
   }
@@ -3146,7 +3148,9 @@ export async function createSportsMatch(data: {
     throw new Error("Percentage discount cannot exceed 100");
   }
 
-  const minPurchaseAmount = parseFloat(data.rewardMinPurchaseAmount || "0");
+  const minPurchaseAmountStr = (data.rewardMinPurchaseAmount || "0").trim();
+  if (!numericRegex.test(minPurchaseAmountStr)) throw new Error("rewardMinPurchaseAmount must be a valid number");
+  const minPurchaseAmount = parseFloat(minPurchaseAmountStr);
   if (!Number.isFinite(minPurchaseAmount) || minPurchaseAmount < 0) {
     throw new Error("rewardMinPurchaseAmount must be a finite number >= 0");
   }
@@ -3280,8 +3284,8 @@ export async function castSportsVote(userId: number, matchId: number, prediction
 
     const cost = Math.max(0, Number(match.voteCostPoints || 0));
     
-    // Lock user row to prevent concurrent points overspend
-    const userRow = await tx.select().from(users).where(eq(users.id, userId)).limit(1);
+    // Lock user row with SELECT FOR UPDATE to prevent concurrent points overspend
+    const userRow = await tx.execute(sql`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`);
     if (!userRow || userRow.length === 0) throw new Error("User not found");
     
     const currentBalance = Number(await getUserPointsBalance(userId, tx));

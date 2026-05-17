@@ -24,9 +24,11 @@ If duplicates are found, keep only the oldest row for each (couponId, orderId) p
 ```sql
 DELETE FROM couponUsages
 WHERE id NOT IN (
-  SELECT MIN(id)
-  FROM couponUsages
-  GROUP BY couponId, orderId
+  SELECT keep_id FROM (
+    SELECT MIN(id) AS keep_id
+    FROM couponUsages
+    GROUP BY couponId, orderId
+  ) AS keep_rows
 );
 ```
 

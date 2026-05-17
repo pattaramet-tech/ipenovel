@@ -157,16 +157,34 @@ export async function createOrderFromCart(
   // Apply points redemption if provided
   let pointsDiscountAmount = 0;
   
-  if (pointsToRedeem && parseFloat(pointsToRedeem) > 0) {
-    const requestedPoints = parseFloat(pointsToRedeem);
-    // Validate user has enough points
-    const balanceStr = await db.getUserPointsBalance(userIdNumParsed, tx);
-    const balance = parseFloat(balanceStr);
-    if (requestedPoints > balance) {
-      throw new Error(`Insufficient points balance. You have ${balance.toFixed(2)} points.`);
+  if (pointsToRedeem) {
+    // Strict validation: reject invalid numeric strings like "10abc", "abc", "", "NaN"
+    const numericRegex = /^\d+(\.\d+)?$/;
+    const pointsStr = (pointsToRedeem || "").trim();
+    if (!numericRegex.test(pointsStr)) {
+      throw new Error("Invalid points value. Must be a valid number.");
     }
-    // Points: 1 point = 1 currency unit discount
-    pointsDiscountAmount = Math.min(requestedPoints, subtotal - discountAmount);
+    
+    const requestedPoints = parseFloat(pointsStr);
+    if (!Number.isFinite(requestedPoints) || requestedPoints < 0) {
+      throw new Error("Points must be a finite number >= 0.");
+    }
+    
+    if (requestedPoints > 0) {
+      // Validate user has enough points
+      const balanceStr = await db.getUserPointsBalance(userIdNumParsed, tx);
+      const balance = parseFloat(balanceStr);
+      if (requestedPoints > balance) {
+        throw new Error(`Insufficient points balance. You have ${balance.toFixed(2)} points.`);
+      }
+      // Points cannot exceed subtotal - couponDiscount
+      const maxPointsDiscount = Math.max(0, subtotal - discountAmount);
+      if (requestedPoints > maxPointsDiscount) {
+        throw new Error(`Points cannot exceed remaining balance of ${maxPointsDiscount.toFixed(2)}.`);
+      }
+      // Points: 1 point = 1 currency unit discount
+      pointsDiscountAmount = requestedPoints;
+    }
   }
 
   // Calculate total

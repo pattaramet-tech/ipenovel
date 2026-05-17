@@ -87,14 +87,32 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
   let shouldApprove = false;
 
   if (ocrEnabled) {
-    // OCR is enabled: run OCR processing
+    // OCR is enabled: run OCR processing with error handling
     console.log(`[OCR] Processing slip for order ${order.id} (OCR enabled)`);
-    // Extract OCR text from slip image (returns structured result with confidence)
-    const slipOcrResult = await parseSlipImage(input.slipImageUrl);
-    // Process slip verification with staging enhancements (shadow mode, metrics)
-    verificationResult = await processSlipVerificationStaging(payment.id, slipOcrResult);
-    // Determine if we should actually approve or just simulate
-    shouldApprove = verificationResult.isAutoApproved && !verificationResult.isShadowMode;
+    try {
+      // Extract OCR text from slip image (returns structured result with confidence)
+      const slipOcrResult = await parseSlipImage(input.slipImageUrl);
+      // Process slip verification with staging enhancements (shadow mode, metrics)
+      verificationResult = await processSlipVerificationStaging(payment.id, slipOcrResult);
+      // Determine if we should actually approve or just simulate
+      shouldApprove = verificationResult.isAutoApproved && !verificationResult.isShadowMode;
+    } catch (ocrError) {
+      // OCR technical error: send to manual review instead of crashing
+      console.error(`[OCR] Technical error processing slip for order ${order.id}:`, ocrError);
+      verificationResult = {
+        isAutoApproved: false,
+        isShadowMode: false,
+        reviewReason: "OCR_PROCESSING_ERROR",
+        ocrConfidence: 0,
+        detectedBank: null,
+        extractedData: null,
+        breakdown: { reason: "OCR processing failed. Slip sent to manual review." },
+        duplicateStatus: {
+          isDuplicateReference: false,
+        },
+      };
+      shouldApprove = false;
+    }
   } else {
     // OCR is disabled: skip OCR and send to manual review
     console.log(`[OCR] Skipping OCR for order ${order.id} (OCR disabled) - sending to manual review`);

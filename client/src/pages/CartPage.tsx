@@ -15,6 +15,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Tag,
+  AlertCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
@@ -46,7 +47,7 @@ export default function CartPage() {
   const items = cartData?.items || [];
   const subtotal = items.reduce((sum, item) => sum + parseFloat(item.price.toString()), 0).toFixed(2);
 
-  const { data: activeCoupons = [], isLoading: couponsLoading } = trpc.checkout.activeCoupons.useQuery(
+  const { data: activeCoupons = [], isLoading: couponsLoading, error: couponsError } = trpc.checkout.activeCoupons.useQuery(
     items.length > 0 ? { subtotal } : undefined,
     { enabled: isAuthenticated && items.length > 0 }
   );
@@ -619,7 +620,12 @@ export default function CartPage() {
             </CardHeader>
 
             <CardContent className="space-y-3 overflow-y-auto p-4 max-h-[65vh]">
-              {couponsLoading ? (
+              {couponsError ? (
+                <div className="py-10 text-center">
+                  <AlertCircle className="mx-auto mb-3 h-10 w-10 text-red-400" />
+                  <p className="text-sm text-red-600">Unable to load coupons. Please try again.</p>
+                </div>
+              ) : couponsLoading ? (
                 <div className="space-y-3">
                   <Skeleton className="h-24 w-full rounded-xl" />
                   <Skeleton className="h-24 w-full rounded-xl" />
