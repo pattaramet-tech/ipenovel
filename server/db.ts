@@ -3129,7 +3129,10 @@ export async function createSportsMatch(data: {
   if (!db) throw new Error("Database not available");
 
   // Validate numeric fields
-  const voteCostPoints = parseFloat(data.voteCostPoints || "0");
+  const voteCostPointsStr = (data.voteCostPoints || "0").trim();
+  const numericRegex = /^\d+(\.\d+)?$/;
+  if (!numericRegex.test(voteCostPointsStr)) throw new Error("voteCostPoints must be a valid number");
+  const voteCostPoints = parseFloat(voteCostPointsStr);
   if (!Number.isFinite(voteCostPoints) || voteCostPoints < 0) {
     throw new Error("voteCostPoints must be a finite number >= 0");
   }
@@ -3276,6 +3279,11 @@ export async function castSportsVote(userId: number, matchId: number, prediction
     if (existing) throw new Error("You have already voted for this match");
 
     const cost = Math.max(0, Number(match.voteCostPoints || 0));
+    
+    // Lock user row to prevent concurrent points overspend
+    const userRow = await tx.select().from(users).where(eq(users.id, userId)).limit(1);
+    if (!userRow || userRow.length === 0) throw new Error("User not found");
+    
     const currentBalance = Number(await getUserPointsBalance(userId, tx));
     if (!Number.isFinite(currentBalance) || currentBalance < cost) {
       throw new Error(`Insufficient points. This vote requires ${cost.toFixed(2)} points.`);

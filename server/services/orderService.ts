@@ -121,6 +121,22 @@ export async function createOrderFromCart(
   tx?: any,
   userIdNum?: number
 ): Promise<any> {
+  // Parse userId first
+  const userIdNumParsed = userIdNum ?? parseInt(userId, 10);
+  if (!Number.isFinite(userIdNumParsed)) {
+    throw new Error("Invalid user ID");
+  }
+
+  // Check for already purchased episodes
+  for (const item of cartItems) {
+    if (item.episodeId) {
+      const existingPurchase = await db.getPurchaseByUserAndEpisode(userIdNumParsed, item.episodeId, tx);
+      if (existingPurchase) {
+        throw new Error("Some items in your cart have already been purchased. Please refresh your cart.");
+      }
+    }
+  }
+
   // Calculate subtotal
   let subtotal = 0;
   for (const item of cartItems) {
@@ -140,11 +156,6 @@ export async function createOrderFromCart(
 
   // Apply points redemption if provided
   let pointsDiscountAmount = 0;
-  const userIdNumParsed = userIdNum ?? parseInt(userId, 10);
-  
-  if (!Number.isFinite(userIdNumParsed)) {
-    throw new Error("Invalid user ID");
-  }
   
   if (pointsToRedeem && parseFloat(pointsToRedeem) > 0) {
     const requestedPoints = parseFloat(pointsToRedeem);

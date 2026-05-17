@@ -233,7 +233,7 @@ export default function AdminSportsVotesPage() {
                 </div>
 
                 <div className="flex flex-wrap gap-2">
-                  <Button size="sm" variant="outline" onClick={() => {
+                  <Button size="sm" variant="outline" disabled={match.status === "settled" || match.status === "cancelled"} onClick={() => {
                     setEditingId(match.id);
                     setForm({
                       ...emptyForm,
