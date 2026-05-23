@@ -1277,3 +1277,16 @@
 - [ ] Phase 9: Fix settleSportsMatch idempotency and concurrency
 - [ ] Phase 10: Run tests and build verification
 - [x] Phase 11: Export complete ZIP file
+
+
+## OCR Slip Auto-Approval Hardening
+
+- [ ] Phase 1: Review current OCR implementation and identify gaps
+- [ ] Phase 2: Implement canonical OCR normalization layer (JSON parsing, field mapping)
+- [ ] Phase 3: Fix Thai Buddhist year parsing and datetime handling
+- [ ] Phase 4: Improve OCR confidence and reference extraction
+- [ ] Phase 5: Enhance duplicate fingerprinting and error handling
+- [ ] Phase 6: Update submitPaymentSlip response and safety behavior
+- [ ] Phase 7: Write comprehensive tests for OCR hardening
+- [ ] Phase 8: Run build, tests, and type checks
+- [ ] Phase 9: Create and deliver final ZIP export
