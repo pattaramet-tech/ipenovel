@@ -279,7 +279,8 @@ function getFieldBySuffixMatch(flattened: Record<string, any>, suffixes: string[
 
 function extractOcrConfidence(text: string): number {
   const patterns = [
-    /\*\*OCR\s*Confidence\s*Score\s*:\s*\*\*(\d+)\/100/i,
+    /\*\*OCR\s*Confidence\s*Score\s*:\s*\*\*\s*(\d+)\/100/i,
+    /\*\*OCR\s*Confidence\s*Score\s*:\s*\*\*\s*(\d+)/i,
     /OCR\s*Confidence\s*Score\s*:\s*(\d+)\s*\/\s*100/i,
     /OCR\s*Confidence\s*Score\s*:\s*(\d+)/i,
     /"ocr_confidence"\s*:\s*(\d+)/i,
@@ -523,6 +524,33 @@ function extractMerchantTransactionCode(flattened: Record<string, any>, text: st
   return undefined;
 }
 
+function extractBillerId(flattened: Record<string, any>, text: string): string | undefined {
+  let billerIdVal = getFieldBySuffixMatch(flattened, [
+    "biller_id",
+    "billerId",
+    "รหัสบิลเลอร์",
+    "Biller ID",
+  ]);
+
+  if (billerIdVal) {
+    return String(billerIdVal).trim();
+  }
+
+  const patterns = [
+    /รหัสบิลเลอร์\s*[:：]\s*([0-9]+)/i,
+    /biller\s*id\s*[:：]\s*([0-9]+)/i,
+    /biller_id\s*[:：]\s*([0-9]+)/i,
+    /([0-9]{12,15})/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return match[1].trim();
+  }
+
+  return undefined;
+}
+
 function detectBank(flattened: Record<string, any>, text: string): { code?: string; name?: string } {
   let bankVal = getFieldBySuffixMatch(flattened, [
     "bank_name",
@@ -671,6 +699,41 @@ function extractTransactionDate(flattened: Record<string, any>, text: string): {
         }
       }
     }
+
+  // ── SCB separate date + time fields ────────────────────────────────────────
+  // SCB JSON has: date = "23 พ.ค. 2569", time = "23:01"
+  // SCB plain text has: วันที่: 23 พ.ค. 2569, เวลา: 17:29
+  const dateVal = getFieldBySuffixMatch(flattened, ["date", "วันที่"]);
+  const timeVal = getFieldBySuffixMatch(flattened, ["time", "เวลา"]);
+
+  if (dateVal && timeVal) {
+    const dateStr = String(dateVal);
+    const timeStr = String(timeVal);
+    const monthNames = Object.keys(THAI_MONTHS).join("|");
+
+    // Parse date: "23 พ.ค. 2569" or "23 พ.ค. 69"
+    const dateRe = new RegExp(`(\d{1,2})\s+(${monthNames})\s+(\d{2,4})`, "i");
+    const dateMatch = dateStr.match(dateRe);
+
+    // Parse time: "23:01" or "17:29"
+    const timeRe = /(\d{1,2}):(\d{2})(?::(\d{2}))?/;
+    const timeMatch = timeStr.match(timeRe);
+
+    if (dateMatch && timeMatch) {
+      const month = THAI_MONTHS[dateMatch[2]];
+      if (month) {
+        const r = buildDate(
+          parseInt(dateMatch[1]),
+          month,
+          parseInt(dateMatch[3]),
+          parseInt(timeMatch[1]),
+          parseInt(timeMatch[2]),
+          timeMatch[3] !== undefined ? parseInt(timeMatch[3]) : undefined
+        );
+        if (r) return r;
+      }
+    }
+  }
   }
 
   // Pattern: "23 พ.ค. 2569" or "23 พ.ค. 69"
@@ -744,6 +807,7 @@ export function extractSlipData(ocrText: string, visionConfidence?: number): Ext
   const maskedAccount = extractMaskedAccount(flattened, text);
   const merchantCode = extractMerchantCode(flattened, text);
   const merchantTransactionCode = extractMerchantTransactionCode(flattened, text);
+  const billerId = extractBillerId(flattened, text);
   const { code: detectedBank, name: detectedBankName } = detectBank(flattened, text);
 
   // ─── Confidence scoring ─────────────────────────────────────────────────
@@ -775,6 +839,7 @@ export function extractSlipData(ocrText: string, visionConfidence?: number): Ext
     reference,
     detectedBank,
     detectedBankName,
+    billerId,
     shopName,
     maskedAccount,
     merchantCode,

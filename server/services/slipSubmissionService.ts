@@ -296,7 +296,7 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
     success: true,
     orderId: order.id,
     paymentId: payment.id,
-    status: shouldApprove ? "approved" : "pending",
+    status: shouldApprove ? "approved" : "pending_review",
     slipImageUrl: input.slipImageUrl,
     isAutoApproved: verificationResult.isAutoApproved,
     isShadowMode: verificationResult.isShadowMode,

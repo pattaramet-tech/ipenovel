@@ -153,6 +153,7 @@ export async function processSlipVerificationStaging(
         : (order.totalAmount as number),
     orderCreatedAt: order.createdAt,
     paymentCreatedAt: payment.createdAt,
+    slipSubmittedAt: payment.slipSubmittedAt ?? payment.createdAt,
   };
 
   // ── Helper: Check duplicate fingerprint directly in database ────────────────
@@ -196,16 +197,63 @@ export async function processSlipVerificationStaging(
     };
   };
 
+  // ── Helper: Check legacy fingerprints for backward compatibility ──────────────
+  const checkLegacyFingerprints = async (extracted: any): Promise<{ isDuplicate: boolean; duplicatePaymentId?: string }> => {
+    if (!extracted.detectedBank || !extracted.maskedAccount || !extracted.amount) {
+      return { isDuplicate: false };
+    }
+
+    // Legacy fingerprint: bank + maskedAccount + amount + date
+    const legacyKey = `${extracted.detectedBank}|${extracted.maskedAccount}|${extracted.amount}|${
+      extracted.transactionDate ? extracted.transactionDate.toISOString().split("T")[0] : ""
+    }`;
+    const legacyFingerprint = require("crypto")
+      .createHash("sha256")
+      .update(legacyKey)
+      .digest("hex");
+
+    // Weak legacy fingerprint: bank + maskedAccount + amount (no date)
+    const weakKey = `${extracted.detectedBank}|${extracted.maskedAccount}|${extracted.amount}`;
+    const weakFingerprint = require("crypto")
+      .createHash("sha256")
+      .update(weakKey)
+      .digest("hex");
+
+    // Check both legacy fingerprints
+    const existing = await db
+      .select({ id: payments.id })
+      .from(payments)
+      .where(
+        and(
+          ne(payments.id, paymentId),
+          or(eq(payments.status, "approved"), eq(payments.status, "pending_review")),
+          or(
+            eq(payments.fingerprint, legacyFingerprint),
+            eq(payments.fingerprint, weakFingerprint)
+          )
+        )
+      )
+      .limit(1);
+
+    return {
+      isDuplicate: existing.length > 0,
+      duplicatePaymentId: existing[0]?.id ? String(existing[0].id) : undefined,
+    };
+  };
+
   // ── Generate fingerprint for current slip ───────────────────────────────
   const currentFingerprint = generateFingerprint(extracted);
 
   // ── Check for duplicates using database queries (no limit) ──────────────────
   const duplicateFingerprint = await checkDuplicateFingerprint(currentFingerprint);
   const duplicateReference = await checkDuplicateReference(extracted.reference);
+  const legacyDuplicate = await checkLegacyFingerprints(extracted);
 
   // ── Create Sets for backward compatibility with verifySlipData ───────────────
   const existingReferences = duplicateReference.isDuplicate && extracted.reference ? new Set([extracted.reference]) : new Set<string>();
-  const existingFingerprints = duplicateFingerprint.isDuplicate && currentFingerprint ? new Set([currentFingerprint]) : new Set<string>();
+  const existingFingerprints = new Set<string>();
+  if (duplicateFingerprint.isDuplicate && currentFingerprint) existingFingerprints.add(currentFingerprint);
+  if (legacyDuplicate.isDuplicate && currentFingerprint) existingFingerprints.add(currentFingerprint); // Prevent auto-approval if legacy duplicate found
 
    // ── Verify slip data ─────────────────────────────────────────────────────
   const verificationResult = verifySlipData(
