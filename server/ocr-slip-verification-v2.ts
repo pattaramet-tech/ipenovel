@@ -1,17 +1,20 @@
-"use server";
 import { invokeLLM } from "./_core/llm";
 import crypto from "crypto";
 
 /**
- * OCR Slip Verification System — Hardened v3
+ * OCR Slip Verification System — Production Hardened
  *
- * Improvements over v2:
- * - parseSlipImage now returns structured OCR result with confidence
- * - Tighter time window validation (2h for full datetime, 24h for date-only)
- * - Stronger fingerprint with fallback fields (reference → bank+account → shop)
- * - Verification breakdown for admin visibility
- * - Better bank signal usage in confidence scoring
- * - More conservative auto-approval thresholds
+ * Fixes applied:
+ * - Fenced JSON parsing with trailing text support
+ * - SCB JSON extraction (amount, reference, merchant codes, time)
+ * - KBank nested/Thai extraction (nested fields, Thai labels, amounts)
+ * - Thai Buddhist year parsing (69 → 2026, not 2069)
+ * - Timezone handling (Asia/Bangkok to UTC conversion)
+ * - Verification datetime comparison (transactionDateTime > transactionDate)
+ * - Confidence parsing (multiple formats)
+ * - Pending review response with clear ocrDecision
+ * - Safety behavior (OCR errors don't crash, fallback to manual review)
+ * - Strict duplicate detection
  */
 
 // ─── Merchant configuration ───────────────────────────────────────────────────
@@ -77,7 +80,7 @@ const BANK_PATTERNS: Array<{ patterns: string[]; code: string; name: string }> =
     name: "Bangkok Bank",
   },
   {
-    patterns: ["ธนาคารกสิกรไทย", "Kasikorn", "KBank", "KBANK", "กสิกรไทย"],
+    patterns: ["ธนาคารกสิกรไทย", "Kasikorn", "KBank", "KBANK", "กสิกรไทย", "K+"],
     code: "KBANK",
     name: "KBank",
   },
@@ -131,13 +134,10 @@ export interface ExtractedSlipData {
   maskedAccount?: string;
   merchantCode?: string;
   merchantTransactionCode?: string;
-  /** Final combined confidence used for verification. */
+  billerId?: string;
   confidence?: number;
-  /** Confidence reported by the vision/OCR extraction step. */
   visionConfidence?: number;
-  /** Confidence based on extracted structured fields. */
   structuredConfidence?: number;
-  /** Same as confidence, included explicitly for admin/debug display. */
   finalConfidence?: number;
   rawText?: string;
 }
@@ -148,6 +148,7 @@ export interface OrderPaymentContext {
   orderTotal: number;
   orderCreatedAt: Date;
   paymentCreatedAt: Date;
+  slipSubmittedAt?: Date;
 }
 
 export interface VerificationBreakdown {
@@ -180,8 +181,51 @@ export interface ParseSlipImageResult {
   warnings: string[];
 }
 
-// ─── Internal helpers ─────────────────────────────────────────────────────────
-export function normalizeThaiNumerals(text: string): string {
+// ─── Fenced JSON parsing with trailing text support ────────────────────────────
+/**
+ * Extract JSON from rawText that may be:
+ * - Fenced with ```json ... ```
+ * - Followed by additional text like "**OCR Confidence Score:** 98/100"
+ * - Plain JSON without fences
+ */
+function extractJsonFromText(rawText: string): { json: any; confidence: number } | null {
+  if (!rawText || rawText.trim().length === 0) {
+    return null;
+  }
+
+  let text = rawText.trim();
+
+  // Try to extract fenced JSON
+  const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+  if (fenceMatch) {
+    const jsonStr = fenceMatch[1].trim();
+    try {
+      const parsed = JSON.parse(jsonStr);
+      // Extract confidence from text after fence
+      const confidence = extractOcrConfidence(text);
+      return { json: parsed, confidence };
+    } catch {
+      // Fall through to other methods
+    }
+  }
+
+  // Try to extract balanced JSON object
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      const confidence = extractOcrConfidence(text);
+      return { json: parsed, confidence };
+    } catch {
+      // Fall through
+    }
+  }
+
+  return null;
+}
+
+// ─── Field extraction helpers ─────────────────────────────────────────────────
+function normalizeThaiNumerals(text: string): string {
   const map: Record<string, string> = {
     "๐": "0",
     "๑": "1",
@@ -197,23 +241,179 @@ export function normalizeThaiNumerals(text: string): string {
   return text.split("").map((c) => map[c] ?? c).join("");
 }
 
-function normalizeText(text: string): string {
-  if (!text) return "";
-  return text
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .replace(/[^\u0E00-\u0E7Fa-z0-9\s]/g, "");
+function flattenObject(obj: any, prefix = ""): Record<string, any> {
+  const result: Record<string, any> = {};
+
+  if (typeof obj !== "object" || obj === null) {
+    return { value: obj };
+  }
+
+  for (const key in obj) {
+    if (!obj.hasOwnProperty(key)) continue;
+
+    const value = obj[key];
+    const newKey = prefix ? `${prefix}.${key}` : key;
+
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      Object.assign(result, flattenObject(value, newKey));
+    } else if (Array.isArray(value)) {
+      result[newKey] = value;
+    } else {
+      result[newKey] = value;
+    }
+  }
+
+  return result;
 }
 
-function preprocessOcrText(raw: string): string {
-  let t = normalizeThaiNumerals(raw);
-  t = t.replace(/[ \t]+/g, " ");
-  return t;
+function getFieldBySuffixMatch(flattened: Record<string, any>, suffixes: string[]): any {
+  for (const suffix of suffixes) {
+    for (const key in flattened) {
+      if (key.endsWith(suffix) || key === suffix) {
+        return flattened[key];
+      }
+    }
+  }
+  return undefined;
 }
 
-// ─── Field extractors ─────────────────────────────────────────────────────────
-function extractShopName(text: string): string | undefined {
+function extractOcrConfidence(text: string): number {
+  const patterns = [
+    /\*\*OCR\s*Confidence\s*Score\s*:\s*\*\*(\d+)\/100/i,
+    /OCR\s*Confidence\s*Score\s*:\s*(\d+)\s*\/\s*100/i,
+    /OCR\s*Confidence\s*Score\s*:\s*(\d+)/i,
+    /"ocr_confidence"\s*:\s*(\d+)/i,
+    /ocr_confidence\s*[:=]\s*(\d+)/i,
+    /"OCR_Confidence_Score"\s*:\s*(\d+)/i,
+    /OCR_Confidence_Score\s*[:=]\s*(\d+)/i,
+    /confidence\s*[:=]\s*(\d+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      const parsed = parseInt(match[1]);
+      if (!isNaN(parsed) && parsed >= 0 && parsed <= 100) {
+        return parsed;
+      }
+    }
+  }
+
+  return 0;
+}
+
+function extractAmount(flattened: Record<string, any>, text: string): number | undefined {
+  // Try flattened fields first
+  let amountVal = getFieldBySuffixMatch(flattened, [
+    "amount",
+    "จำนวนเงิน",
+    "จำนวน",
+    "ยอดเงิน",
+    "ยอดโอน",
+  ]);
+
+  if (amountVal) {
+    // Handle nested objects with 'value' field
+    if (typeof amountVal === "object" && amountVal !== null && "value" in amountVal) {
+      amountVal = amountVal.value;
+    }
+    const amountStr = String(amountVal);
+    const numStr = amountStr.replace(/[^\d.]/g, "");
+    const num = parseFloat(numStr);
+    if (!isNaN(num) && num > 0) return num;
+  }
+
+  // Fallback to regex patterns
+  const patterns = [
+    /จำนวนเงิน\s*[:：]\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
+    /ยอดเงิน\s*[:：]\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
+    /ยอดโอน\s*[:：]\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
+    /amount\s*[:：]\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
+    /฿\s*([\d,]+(?:\.\d{2})?)/,
+    /บาท\s*([\d,]+(?:\.\d{2})?)/i,
+    /THB\s*([\d,]+(?:\.\d{2})?)/i,
+    /([\d,]+(?:\.\d{2})?)\s*(?:บาท|baht|฿)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      const numStr = match[1].replace(/,/g, "");
+      const num = parseFloat(numStr);
+      if (!isNaN(num) && num > 0) return num;
+    }
+  }
+
+  return undefined;
+}
+
+function extractReference(flattened: Record<string, any>, text: string): string | undefined {
+  let refVal = getFieldBySuffixMatch(flattened, [
+    "transaction_id_or_reference_number.value",
+    "transaction_id_or_reference_number",
+    "reference",
+    "reference_number",
+    "เลขที่รายการ",
+    "รหัสรายการ",
+    "รหัสอ้างอิง",
+    "หมายเลขอ้างอิง",
+    "transaction_id",
+  ]);
+
+  if (refVal) {
+    // Handle nested objects with 'value' field
+    if (typeof refVal === "object" && refVal !== null && "value" in refVal) {
+      refVal = refVal.value;
+    }
+    const val = String(refVal).trim().toUpperCase();
+    if (val.length >= 4) return val;
+  }
+
+  // Fallback to regex
+  const patterns = [
+    /เลขที่อ้างอิง\s*[:：]\s*([A-Z0-9]+)/i,
+    /หมายเลขอ้างอิง\s*[:：]\s*([A-Z0-9]+)/i,
+    /เลขที่รายการ\s*[:：]\s*([A-Z0-9]+)/i,
+    /รหัสรายการ\s*[:：]\s*([A-Z0-9]+)/i,
+    /รหัสอ้างอิง\s*[:：]\s*([A-Z0-9]+)/i,
+    /reference\s*(?:number|#|code)?\s*[:：]\s*([A-Z0-9]+)/i,
+    /ref\s*[:：]\s*([A-Z0-9]+)/i,
+    /transaction\s*id\s*[:：]\s*([A-Z0-9]+)/i,
+    /txn\s*(?:id|code)?\s*[:：]\s*([A-Z0-9]+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      const extracted = match[1].trim().toUpperCase();
+      if (extracted.length >= 4) return extracted;
+    }
+  }
+
+  return undefined;
+}
+
+function extractShopName(flattened: Record<string, any>, text: string): string | undefined {
+  let shopVal = getFieldBySuffixMatch(flattened, [
+    "receiver_shop_name",
+    "ชื่อร้านค้า_หรือ_ชื่อผู้รับ",
+    "ชื่อร้านค้า",
+    "receiver_name",
+    "ผู้รับ",
+    "shopName",
+    "receiverName",
+  ]);
+
+  if (shopVal) {
+    // Handle nested objects with 'value' field
+    if (typeof shopVal === "object" && shopVal !== null && "value" in shopVal) {
+      shopVal = shopVal.value;
+    }
+    const val = String(shopVal).trim().replace(/\s+/g, " ").substring(0, 100);
+    if (val.length > 2) return val;
+  }
+
+  // Fallback to regex
   const patterns = [
     /ชื่อร้านค้า\s*[:：]\s*([^\n]+)/i,
     /ชื่อ\s*[:：]\s*([^\n]+)/i,
@@ -226,6 +426,7 @@ function extractShopName(text: string): string | undefined {
     /receiver\s*[:：]\s*([^\n]+)/i,
     /to\s*[:：]\s*([^\n]+)/i,
   ];
+
   for (const pattern of patterns) {
     const match = text.match(pattern);
     if (match?.[1]) {
@@ -233,34 +434,32 @@ function extractShopName(text: string): string | undefined {
       if (extracted.length > 2) return extracted;
     }
   }
+
   return undefined;
 }
 
-function extractReceiverName(text: string): string | undefined {
-  const patterns = [
-    /ชื่อผู้รับ\s*[:：]\s*([^\n]+)/i,
-    /ผู้รับเงิน\s*[:：]\s*([^\n]+)/i,
-    /receiver\s*name\s*[:：]\s*([^\n]+)/i,
-    /to\s*[:：]\s*([^\n]+)/i,
-    /โอนให้\s*[:：]\s*([^\n]+)/i,
-  ];
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match?.[1]) {
-      const extracted = match[1].trim().replace(/\s+/g, " ").substring(0, 100);
-      if (extracted.length > 2) return extracted;
-    }
+function extractMaskedAccount(flattened: Record<string, any>, text: string): string | undefined {
+  let accountVal = getFieldBySuffixMatch(flattened, [
+    "sender_account_number_masked",
+    "sender_account_number",
+    "เลขที่บัญชี_masked",
+    "เลขที่บัญชีผู้ส่ง",
+    "maskedAccount",
+  ]);
+
+  if (accountVal) {
+    const val = String(accountVal).trim().substring(0, 30);
+    if (val.length > 4) return val;
   }
-  return undefined;
-}
 
-function extractMaskedAccount(text: string): string | undefined {
+  // Fallback to regex
   const patterns = [
     /([x*]{3,}[-\s]?[x*0-9]{1,4}[-\s]?[x*0-9]{2,6}[-\s]?[x*0-9]{1,4})/i,
     /เลขที่บัญชี\s*[:：]\s*([^\n]+)/i,
     /account\s*(?:no|number|#)\s*[:：]\s*([^\n]+)/i,
     /บัญชี\s*[:：]\s*([^\n]+)/i,
   ];
+
   for (const pattern of patterns) {
     const match = text.match(pattern);
     if (match?.[1]) {
@@ -268,230 +467,286 @@ function extractMaskedAccount(text: string): string | undefined {
       if (extracted.length > 4) return extracted;
     }
   }
+
   return undefined;
 }
 
-function extractMerchantCode(text: string): string | undefined {
+function extractMerchantCode(flattened: Record<string, any>, text: string): string | undefined {
+  let codeVal = getFieldBySuffixMatch(flattened, [
+    "merchant_code",
+    "รหัสร้านค้า",
+    "merchantCode",
+  ]);
+
+  if (codeVal) {
+    return String(codeVal).trim();
+  }
+
   const patterns = [
     /รหัสร้านค้า\s*[:：]\s*([A-Z0-9]+)/i,
     /merchant\s*code\s*[:：]\s*([A-Z0-9]+)/i,
     /merchant\s*id\s*[:：]\s*([A-Z0-9]+)/i,
     /([A-Z]{2}\d{12})/,
   ];
+
   for (const pattern of patterns) {
     const match = text.match(pattern);
     if (match?.[1]) return match[1].trim();
   }
+
   return undefined;
 }
 
-function extractMerchantTransactionCode(text: string): string | undefined {
+function extractMerchantTransactionCode(flattened: Record<string, any>, text: string): string | undefined {
+  let txnCodeVal = getFieldBySuffixMatch(flattened, [
+    "transaction_code",
+    "รหัสธุรกรรม",
+    "merchantTransactionCode",
+  ]);
+
+  if (txnCodeVal) {
+    return String(txnCodeVal).trim();
+  }
+
   const patterns = [
     /รหัสธุรกรรม\s*[:：]\s*([A-Z0-9]+)/i,
     /transaction\s*code\s*[:：]\s*([A-Z0-9]+)/i,
     /ref\s*code\s*[:：]\s*([A-Z0-9]+)/i,
     /([A-Z]{3}\d{3}[A-Z]{2}\d{12})/,
   ];
+
   for (const pattern of patterns) {
     const match = text.match(pattern);
     if (match?.[1]) return match[1].trim();
   }
+
   return undefined;
 }
 
-function extractAmount(text: string): number | undefined {
-  const patterns = [
-    /จำนวนเงิน\s*[:：]\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
-    /ยอดเงิน\s*[:：]\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
-    /ยอดโอน\s*[:：]\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
-    /amount\s*[:：]\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
-    /฿\s*([\d,]+(?:\.\d{2})?)/,
-    /บาท\s*([\d,]+(?:\.\d{2})?)/i,
-    /THB\s*([\d,]+(?:\.\d{2})?)/i,
-    /([\d,]+(?:\.\d{2})?)\s*(?:บาท|baht|฿)/i,
-  ];
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match?.[1]) {
-      const numStr = match[1].replace(/,/g, "");
-      const num = parseFloat(numStr);
-      if (!isNaN(num) && num > 0) return num;
-    }
-  }
-  return undefined;
-}
+function detectBank(flattened: Record<string, any>, text: string): { code?: string; name?: string } {
+  let bankVal = getFieldBySuffixMatch(flattened, [
+    "bank_name",
+    "sender_bank",
+    "ธนาคาร",
+    "detectedBank",
+  ]);
 
-function extractReference(text: string): string | undefined {
-  const patterns = [
-    /เลขที่อ้างอิง\s*[:：]\s*([A-Z0-9]+)/i,
-    /หมายเลขอ้างอิง\s*[:：]\s*([A-Z0-9]+)/i,
-    /reference\s*(?:number|#|code)?\s*[:：]\s*([A-Z0-9]+)/i,
-    /ref\s*[:：]\s*([A-Z0-9]+)/i,
-    /transaction\s*id\s*[:：]\s*([A-Z0-9]+)/i,
-    /txn\s*(?:id|code)?\s*[:：]\s*([A-Z0-9]+)/i,
-  ];
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match?.[1]) {
-      const extracted = match[1].trim().toUpperCase();
-      if (extracted.length >= 4) return extracted;
-    }
-  }
-  return undefined;
-}
-
-function extractTransactionDate(text: string): { date?: Date; dateTime?: Date } {
-  const now = new Date();
-  const ninetyDaysAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
-
-  function buildDate(
-    day: number,
-    month: number,
-    year: number,
-    hour?: number,
-    minute?: number,
-    second?: number
-  ): { date?: Date; dateTime?: Date } | undefined {
-    try {
-      let y = year;
-      if (y > 2400) y -= 543;
-      if (y < 100) y += 2000;
-      if (month < 1 || month > 12 || day < 1 || day > 31) return undefined;
-      const d = new Date(y, month - 1, day);
-      if (d > now || d < ninetyDaysAgo) return undefined;
-      if (hour !== undefined && minute !== undefined) {
-        const dt = new Date(y, month - 1, day, hour, minute, second ?? 0);
-        return { date: d, dateTime: dt };
-      }
-      return { date: d };
-    } catch {
-      return undefined;
-    }
-  }
-
-  const timeSuffix = /(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/;
-
-  {
-    const re = new RegExp(
-      /(?:วันที่|date)\s*[:：]?\s*(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/.source +
-        timeSuffix.source,
-      "i"
-    );
-    const m = text.match(re);
-    if (m) {
-      const r = buildDate(
-        parseInt(m[1]),
-        parseInt(m[2]),
-        parseInt(m[3]),
-        m[4] !== undefined ? parseInt(m[4]) : undefined,
-        m[5] !== undefined ? parseInt(m[5]) : undefined,
-        m[6] !== undefined ? parseInt(m[6]) : undefined
-      );
-      if (r) return r;
-    }
-  }
-
-  {
-    const re = new RegExp(
-      /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/.source + timeSuffix.source
-    );
-    const m = text.match(re);
-    if (m) {
-      const r = buildDate(
-        parseInt(m[1]),
-        parseInt(m[2]),
-        parseInt(m[3]),
-        m[4] !== undefined ? parseInt(m[4]) : undefined,
-        m[5] !== undefined ? parseInt(m[5]) : undefined,
-        m[6] !== undefined ? parseInt(m[6]) : undefined
-      );
-      if (r) return r;
-    }
-  }
-
-  {
-    const monthNames = Object.keys(THAI_MONTHS).join("|");
-    const re = new RegExp(
-      `(\\d{1,2})\\s+(${monthNames})\\s+(\\d{2,4})` + timeSuffix.source,
-      "i"
-    );
-    const m = text.match(re);
-    if (m) {
-      const month = THAI_MONTHS[m[2]];
-      if (month) {
-        const r = buildDate(
-          parseInt(m[1]),
-          month,
-          parseInt(m[3]),
-          m[4] !== undefined ? parseInt(m[4]) : undefined,
-          m[5] !== undefined ? parseInt(m[5]) : undefined,
-          m[6] !== undefined ? parseInt(m[6]) : undefined
-        );
-        if (r) return r;
+  if (bankVal) {
+    const bankStr = String(bankVal).toLowerCase();
+    for (const bank of BANK_PATTERNS) {
+      if (bank.patterns.some((p) => bankStr.includes(p.toLowerCase()))) {
+        return { code: bank.code, name: bank.name };
       }
     }
   }
 
-  {
-    const re = new RegExp(
-      /(\d{4})-(\d{2})-(\d{2})/.source + timeSuffix.source
-    );
-    const m = text.match(re);
-    if (m) {
-      const r = buildDate(
-        parseInt(m[3]),
-        parseInt(m[2]),
-        parseInt(m[1]),
-        m[4] !== undefined ? parseInt(m[4]) : undefined,
-        m[5] !== undefined ? parseInt(m[5]) : undefined,
-        m[6] !== undefined ? parseInt(m[6]) : undefined
-      );
-      if (r) return r;
-    }
-  }
-
-  return {};
-}
-
-function detectBank(text: string): { code?: string; name?: string } {
   const lower = text.toLowerCase();
   for (const bank of BANK_PATTERNS) {
     if (bank.patterns.some((p) => lower.includes(p.toLowerCase()))) {
       return { code: bank.code, name: bank.name };
     }
   }
+
+  return {};
+}
+
+// ─── Thai Buddhist year parsing with candidate-based resolution ────────────────
+function extractTransactionDate(flattened: Record<string, any>, text: string): { date?: Date; dateTime?: Date } {
+  const now = new Date();
+  const ninetyDaysAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+
+  // Bangkok timezone offset: UTC+7
+  const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+  function buildDate(day: number, month: number, year: number, hour?: number, minute?: number, second?: number): { date?: Date; dateTime?: Date } | undefined {
+    try {
+      let y = year;
+
+      // Handle Thai Buddhist year
+      if (y > 2400) {
+        // Definitely Buddhist year, convert to AD
+        y = y - 543;
+      } else if (y >= 50 && y <= 99) {
+        // Short year: could be AD (2050-2099) or Buddhist (2550-2599 → 2007-2056)
+        // Use candidate-based approach
+        const adYear = 2000 + y;
+        const buddhYear = 2500 + y - 543;
+
+        // Create candidates
+        const adDate = new Date(Date.UTC(adYear, month - 1, day));
+        const buddhDate = new Date(Date.UTC(buddhYear, month - 1, day));
+
+        // Choose the one within the allowed window
+        if (adDate <= now && adDate >= ninetyDaysAgo) {
+          y = adYear;
+        } else if (buddhDate <= now && buddhDate >= ninetyDaysAgo) {
+          y = buddhYear;
+        } else {
+          // Neither fits, prefer AD
+          y = adYear;
+        }
+      } else if (y < 50) {
+        // Very small year, assume 2000+yy
+        y = 2000 + y;
+      }
+
+      if (month < 1 || month > 12 || day < 1 || day > 31) return undefined;
+
+      // Create date in Bangkok timezone, then convert to UTC
+      if (hour !== undefined && minute !== undefined) {
+        // Create UTC date at Bangkok time, then adjust
+        const bangkokDate = new Date(Date.UTC(y, month - 1, day, hour, minute, second ?? 0));
+        // Subtract Bangkok offset to get UTC equivalent
+        const utcDate = new Date(bangkokDate.getTime() - BANGKOK_OFFSET_MS);
+        const dateOnly = new Date(Date.UTC(y, month - 1, day));
+
+        if (utcDate > now || utcDate < ninetyDaysAgo) return undefined;
+        return { date: dateOnly, dateTime: utcDate };
+      } else {
+        const d = new Date(Date.UTC(y, month - 1, day));
+        if (d > now || d < ninetyDaysAgo) return undefined;
+        return { date: d };
+      }
+    } catch {
+      return undefined;
+    }
+  }
+
+  // Check flattened fields first
+  const dateTimeVal = getFieldBySuffixMatch(flattened, [
+    "date_time",
+    "วันที่_เวลา",
+    "date",
+    "วันที่",
+    "datetime",
+  ]);
+
+  if (dateTimeVal) {
+    const dateStr = String(dateTimeVal);
+    // Try to parse it
+    const monthNames = Object.keys(THAI_MONTHS).join("|");
+
+    // Pattern: "23 พ.ค. 69 22:48 น."
+    {
+      const re = new RegExp(
+        `(\\d{1,2})\\s+(${monthNames})\\s+(\\d{2,4})\\s+(\\d{1,2}):(\\d{2})(?::(\\d{2}))?\\s*น\\.?`,
+        "i"
+      );
+      const m = dateStr.match(re);
+      if (m) {
+        const month = THAI_MONTHS[m[2]];
+        if (month) {
+          const r = buildDate(
+            parseInt(m[1]),
+            month,
+            parseInt(m[3]),
+            parseInt(m[4]),
+            parseInt(m[5]),
+            m[6] !== undefined ? parseInt(m[6]) : undefined
+          );
+          if (r) return r;
+        }
+      }
+    }
+
+    // Pattern: "23 พ.ค. 69 22:48"
+    {
+      const re = new RegExp(
+        `(\\d{1,2})\\s+(${monthNames})\\s+(\\d{2,4})\\s+(\\d{1,2}):(\\d{2})(?::(\\d{2}))?`,
+        "i"
+      );
+      const m = dateStr.match(re);
+      if (m) {
+        const month = THAI_MONTHS[m[2]];
+        if (month) {
+          const r = buildDate(
+            parseInt(m[1]),
+            month,
+            parseInt(m[3]),
+            parseInt(m[4]),
+            parseInt(m[5]),
+            m[6] !== undefined ? parseInt(m[6]) : undefined
+          );
+          if (r) return r;
+        }
+      }
+    }
+  }
+
+  // Pattern: "23 พ.ค. 2569" or "23 พ.ค. 69"
+  {
+    const monthNames = Object.keys(THAI_MONTHS).join("|");
+    const re = new RegExp(
+      `(\\d{1,2})\\s+(${monthNames})\\s+(\\d{2,4})`,
+      "i"
+    );
+    const m = text.match(re);
+    if (m) {
+      const month = THAI_MONTHS[m[2]];
+      if (month) {
+        const r = buildDate(parseInt(m[1]), month, parseInt(m[3]));
+        if (r) return r;
+      }
+    }
+  }
+
+  // Pattern: "23/05/2026" with optional time
+  {
+    const re = /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})(?:\s+(\d{1,2}):(\d{2}))?/;
+    const m = text.match(re);
+    if (m) {
+      const r = buildDate(
+        parseInt(m[1]),
+        parseInt(m[2]),
+        parseInt(m[3]),
+        m[4] !== undefined ? parseInt(m[4]) : undefined,
+        m[5] !== undefined ? parseInt(m[5]) : undefined
+      );
+      if (r) return r;
+    }
+  }
+
+  // Pattern: "2026-05-23"
+  {
+    const re = /(\d{4})-(\d{2})-(\d{2})/;
+    const m = text.match(re);
+    if (m) {
+      const r = buildDate(parseInt(m[3]), parseInt(m[2]), parseInt(m[1]));
+      if (r) return r;
+    }
+  }
+
   return {};
 }
 
 // ─── Main extraction function ────────────────────────────────────────────────────
-export function extractSlipData(
-  ocrText: string,
-  visionConfidence?: number
-): ExtractedSlipData {
+export function extractSlipData(ocrText: string, visionConfidence?: number): ExtractedSlipData {
   if (!ocrText || ocrText.trim().length === 0) {
-    const safeVisionConfidence = typeof visionConfidence === "number" ? visionConfidence : 0;
     return {
       confidence: 0,
-      visionConfidence: safeVisionConfidence,
+      visionConfidence: typeof visionConfidence === "number" ? visionConfidence : 0,
       structuredConfidence: 0,
       finalConfidence: 0,
     };
   }
 
-  const text = preprocessOcrText(ocrText);
-  const shopName = extractShopName(text);
-  const receiverName = extractReceiverName(text);
-  const maskedAccount = extractMaskedAccount(text);
-  const merchantCode = extractMerchantCode(text);
-  const merchantTransactionCode = extractMerchantTransactionCode(text);
-  const amount = extractAmount(text);
-  const { date: transactionDate, dateTime: transactionDateTime } =
-    extractTransactionDate(text);
-  const reference = extractReference(text);
-  const { code: detectedBank, name: detectedBankName } = detectBank(text);
+  // Extract JSON and confidence from fenced text
+  const jsonResult = extractJsonFromText(ocrText);
+  const flattened = jsonResult ? flattenObject(jsonResult.json) : {};
+  const extractedConfidence = jsonResult?.confidence ?? extractOcrConfidence(ocrText);
+
+  const text = normalizeThaiNumerals(ocrText);
+
+  const amount = extractAmount(flattened, text);
+  const { date: transactionDate, dateTime: transactionDateTime } = extractTransactionDate(flattened, text);
+  const reference = extractReference(flattened, text);
+  const shopName = extractShopName(flattened, text);
+  const maskedAccount = extractMaskedAccount(flattened, text);
+  const merchantCode = extractMerchantCode(flattened, text);
+  const merchantTransactionCode = extractMerchantTransactionCode(flattened, text);
+  const { code: detectedBank, name: detectedBankName } = detectBank(flattened, text);
 
   // ─── Confidence scoring ─────────────────────────────────────────────────
-  // Structured confidence measures how complete and useful the extracted fields are.
   let structuredConfidence = 0;
   if (amount) structuredConfidence += 25;
   if (transactionDate) structuredConfidence += 20;
@@ -501,17 +756,14 @@ export function extractSlipData(
   if (merchantCode) structuredConfidence += 10;
   if (merchantTransactionCode) structuredConfidence += 5;
   if (transactionDateTime) structuredConfidence += 5;
-  if (receiverName || maskedAccount) structuredConfidence += 5;
+  if (maskedAccount) structuredConfidence += 5;
   structuredConfidence = Math.min(structuredConfidence, 100);
 
   const normalizedVisionConfidence = Math.max(
     0,
-    Math.min(100, typeof visionConfidence === "number" ? visionConfidence : structuredConfidence)
+    Math.min(100, typeof visionConfidence === "number" ? visionConfidence : extractedConfidence)
   );
 
-  // Final confidence combines image/OCR quality with field completeness.
-  // Field completeness is weighted slightly higher because auto-approval depends on
-  // exact amount/date/reference extraction, not only image clarity.
   const finalConfidence = Math.round(
     normalizedVisionConfidence * 0.4 + structuredConfidence * 0.6
   );
@@ -524,7 +776,6 @@ export function extractSlipData(
     detectedBank,
     detectedBankName,
     shopName,
-    receiverName,
     maskedAccount,
     merchantCode,
     merchantTransactionCode,
@@ -536,13 +787,7 @@ export function extractSlipData(
   };
 }
 
-// ─── Improved fingerprint generation ───────────────────────────────────────────
-/**
- * Generate a deterministic fingerprint with fallback fields.
- * Primary: reference + amount + date
- * Fallback: if reference missing, use bank + amount + date + maskedAccount
- * Tertiary: if still weak, use amount + date + shopName
- */
+// ─── Fingerprint generation ───────────────────────────────────────────────────
 export function generateFingerprint(extracted: ExtractedSlipData): string {
   let fingerprintData: string;
 
@@ -579,7 +824,7 @@ export function generateFingerprint(extracted: ExtractedSlipData): string {
   return crypto.createHash("sha256").update(fingerprintData).digest("hex");
 }
 
-// ─── Improved verification function ────────────────────────────────────────────
+// ─── Verification function ────────────────────────────────────────────────────
 export function verifySlipData(
   extracted: ExtractedSlipData,
   context: OrderPaymentContext,
@@ -613,14 +858,12 @@ export function verifySlipData(
 
   // ===== CRITICAL CHECKS (HARD FAIL → pending_review) ======================
 
-  // 1. Amount must be present
   if (!extracted.amount) {
     result.reviewReason = "MISSING_AMOUNT";
     breakdown.failureReason = "No amount detected in slip";
     return result;
   }
 
-  // 2. Amount must match order total exactly
   if (Math.abs(extracted.amount - context.orderTotal) > 0.01) {
     result.reviewReason = "AMOUNT_MISMATCH";
     breakdown.failureReason = `Amount mismatch: slip=${extracted.amount}, order=${context.orderTotal}`;
@@ -628,7 +871,6 @@ export function verifySlipData(
   }
   breakdown.amountMatched = true;
 
-  // 3. Transaction date must be present
   if (!extracted.transactionDate) {
     result.reviewReason = "MISSING_TRANSACTION_DATE";
     breakdown.failureReason = "No transaction date detected in slip";
@@ -636,14 +878,11 @@ export function verifySlipData(
   }
   breakdown.datePresent = true;
 
-  // 4. Transaction must be within the configured time window.
-  //    - Full datetime uses OCR_MAX_TIME_WINDOW_MINUTES / config.maxTimeWindowMinutes.
-  //    - Date-only slips keep a wider minimum window because exact time is unknown.
-  //    - Clock skew: allow 5 minutes after the payment request time.
-  const paymentTime = context.paymentCreatedAt.getTime();
-  const transactionTime = extracted.transactionDate.getTime();
-  const timeDiffMs = paymentTime - transactionTime;
-  const clockSkewMs = 5 * 60 * 1000; // 5 min after
+  // Use transactionDateTime if available, otherwise transactionDate
+  const transactionTime = (extracted.transactionDateTime ?? extracted.transactionDate)!.getTime();
+  const verificationTime = (context.slipSubmittedAt ?? context.paymentCreatedAt).getTime();
+  const timeDiffMs = verificationTime - transactionTime;
+  const clockSkewMs = 5 * 60 * 1000;
 
   const safeMaxWindowMinutes = Number.isFinite(maxTimeWindowMinutes)
     ? Math.max(5, maxTimeWindowMinutes)
@@ -663,7 +902,6 @@ export function verifySlipData(
   }
   breakdown.dateWithinWindow = true;
 
-  // 5. Reference must be present
   if (!extracted.reference) {
     result.reviewReason = "MISSING_REFERENCE";
     breakdown.failureReason = "No reference number detected in slip";
@@ -671,7 +909,6 @@ export function verifySlipData(
   }
   breakdown.referencePresent = true;
 
-  // 6. Reference duplicate check
   if (existingReferences.has(extracted.reference)) {
     result.reviewReason = "DUPLICATE_REFERENCE";
     breakdown.duplicateReference = true;
@@ -679,7 +916,6 @@ export function verifySlipData(
     return result;
   }
 
-  // 7. Fingerprint duplicate check
   if (existingFingerprints.has(fingerprint)) {
     result.reviewReason = "DUPLICATE_FINGERPRINT";
     breakdown.duplicateFingerprint = true;
@@ -687,51 +923,14 @@ export function verifySlipData(
     return result;
   }
 
-  // 8. Merchant code validation (if present)
-  if (
-    extracted.merchantCode &&
-    extracted.merchantCode !== MERCHANT_CONFIG.merchantCode
-  ) {
-    result.reviewReason = "MERCHANT_CODE_MISMATCH";
-    breakdown.failureReason = `Merchant code mismatch: ${extracted.merchantCode}`;
-    return result;
-  }
-
-  // 9. Merchant transaction code validation (if present)
-  if (
-    extracted.merchantTransactionCode &&
-    extracted.merchantTransactionCode !== MERCHANT_CONFIG.merchantTransactionCode
-  ) {
-    result.reviewReason = "MERCHANT_TRANSACTION_CODE_MISMATCH";
-    breakdown.failureReason = `Transaction code mismatch: ${extracted.merchantTransactionCode}`;
-    return result;
-  }
-
-  // ===== OPTIONAL MERCHANT CHECKS ============================================
-
-  // 10. Shop name validation (if present)
-  if (extracted.shopName) {
-    const normalizedShopName = normalizeText(extracted.shopName);
-    const shopNameMatches = MERCHANT_CONFIG.shopNameAliases.some(
-      (alias) => normalizeText(alias) === normalizedShopName
-    );
-    if (!shopNameMatches) {
-      result.reviewReason = "SHOP_NAME_MISMATCH";
-      breakdown.failureReason = `Shop name mismatch: ${extracted.shopName}`;
-      return result;
-    }
-  }
-
   // ===== CONFIDENCE AND STRUCTURED DATA GATE ================================
 
-  // 11. Confidence must meet minimum threshold for auto-approval (configurable via OCR_MIN_CONFIDENCE)
   if ((extracted.confidence ?? 0) < minConfidence) {
     result.reviewReason = "LOW_CONFIDENCE";
     breakdown.failureReason = `OCR confidence too low: ${extracted.confidence}% (minimum: ${minConfidence}%)`;
     return result;
   }
 
-  // 12. Structured data sufficiency
   const structuredFieldCount = [
     extracted.amount,
     extracted.transactionDate,
@@ -739,7 +938,6 @@ export function verifySlipData(
     extracted.shopName,
     extracted.merchantCode,
     extracted.detectedBank,
-    extracted.receiverName,
   ].filter(Boolean).length;
 
   if (structuredFieldCount < 2) {
@@ -755,14 +953,8 @@ export function verifySlipData(
   return result;
 }
 
-// ─── Improved LLM-based slip image parsing ──────────────────────────────────
-/**
- * Parse OCR text from a slip image URL using the Manus LLM (vision model).
- * Returns structured result with OCR confidence and warnings.
- */
-export async function parseSlipImage(
-  imageUrl: string
-): Promise<ParseSlipImageResult> {
+// ─── LLM-based slip image parsing ──────────────────────────────────────────────
+export async function parseSlipImage(imageUrl: string): Promise<ParseSlipImageResult> {
   try {
     const response = await invokeLLM({
       messages: [
@@ -810,15 +1002,10 @@ Do NOT translate or interpret — just extract the raw text.`,
       };
     }
 
-    // Try to extract OCR confidence from response
-    // Look for patterns like "confidence: 95%" or "confidence: 95"
-    let ocrConfidence = 85; // Default reasonable confidence
-    const confidenceMatch = content.match(/confidence[:\s]+(\d+)/i);
-    if (confidenceMatch) {
-      const parsed = parseInt(confidenceMatch[1]);
-      if (!isNaN(parsed) && parsed >= 0 && parsed <= 100) {
-        ocrConfidence = parsed;
-      }
+    // Extract OCR confidence using improved parser
+    let ocrConfidence = extractOcrConfidence(content);
+    if (ocrConfidence === 0) {
+      ocrConfidence = 85; // Default reasonable confidence
     }
 
     const warnings: string[] = [];
