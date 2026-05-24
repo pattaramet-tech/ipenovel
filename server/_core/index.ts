@@ -37,7 +37,8 @@ async function startServer() {
   // OAuth callback under /api/oauth/callback
   registerOAuthRoutes(app);
   
-  // File upload endpoint for payment slips
+  // DEPRECATED: File upload endpoint for payment slips
+  // Use tRPC payment.uploadSlipFile instead for consistent validation and error handling
   app.post("/api/upload", async (req, res) => {
     try {
       const { file, filename, type } = req.body;

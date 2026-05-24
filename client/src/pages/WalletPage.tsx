@@ -26,8 +26,27 @@ export default function WalletPage() {
   const uploadSlipFileMutation = trpc.payment.uploadSlipFile.useMutation();
 
   const handleFileSelect = (file: File | null) => {
+    if (!file) {
+      setSelectedFile(null);
+      setFilePreview(null);
+      return;
+    }
+
+    // Validate MIME type
+    const validMimeTypes = ["image/jpeg", "image/png", "application/pdf"];
+    if (!validMimeTypes.includes(file.type)) {
+      toast.error(t("payment.invalidFileType"));
+      return;
+    }
+
+    // Validate file size (max 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error(t("payment.fileTooLarge"));
+      return;
+    }
+
     setSelectedFile(file);
-    if (file && file.type.startsWith("image/")) {
+    if (file.type.startsWith("image/")) {
       const reader = new FileReader();
       reader.onload = (e) => {
         setFilePreview(e.target?.result as string);

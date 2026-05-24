@@ -37,8 +37,6 @@ export default function PaymentPage() {
   const uploadSlipFileMutation = trpc.payment.uploadSlipFile.useMutation();
   const submitPaymentSlipMutation = trpc.orders.uploadPaymentSlip.useMutation({
     onSuccess: () => {
-      setIsUploading(false);
-      toast.success(t("payment.slipUploadSuccess"));
       setSelectedFile(null);
       navigate("/orders");
     },
@@ -93,12 +91,34 @@ export default function PaymentPage() {
       });
 
       // Step 2: Submit uploaded slip to order
-      await submitPaymentSlipMutation.mutateAsync({
+      const submitResult = await submitPaymentSlipMutation.mutateAsync({
         orderId: orderId || 0,
         slipImageUrl: uploadResult.slipImageUrl,
       });
 
-      toast.success(uploadResult.userMessage);
+      // Show message based on OCR/payment result, not upload result
+      setIsUploading(false);
+      if (submitResult) {
+        let msg = "Payment submitted successfully.";
+        
+        if (submitResult.status === "approved") {
+          msg = "Payment approved automatically! Your order is confirmed.";
+        } else if (submitResult.status === "pending_review") {
+          if (submitResult.reviewReason === "OCR_PROCESSING_ERROR") {
+            msg = "Payment slip received. Our system encountered an issue, but our team will review it manually.";
+          } else if (submitResult.duplicateStatus?.isDuplicateReference || submitResult.duplicateStatus?.isDuplicateFingerprint) {
+            msg = "Payment slip received. It appears to be a duplicate, but our team will review it.";
+          } else if (submitResult.ocrConfidence && submitResult.ocrConfidence < 85) {
+            msg = `Payment slip received (confidence: ${submitResult.ocrConfidence}%). Our team will review it shortly.`;
+          } else {
+            msg = "Payment slip received. Our team will review and approve it shortly.";
+          }
+        }
+        
+        toast.success(msg);
+      } else {
+        toast.success("Payment slip submitted successfully.");
+      }
     } catch (error) {
       console.error("Upload error:", error);
       setIsUploading(false);

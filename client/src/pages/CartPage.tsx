@@ -211,8 +211,29 @@ export default function CartPage() {
         slipImageUrl: uploadResult.slipImageUrl,
       });
 
-      // Show user-friendly message based on OCR result
-      toast.success(uploadResult.userMessage);
+      // Show user-friendly message based on OCR/payment result
+      if (orderResult?.slipResult) {
+        const sr = orderResult.slipResult;
+        let msg = "Payment submitted successfully.";
+        
+        if (sr.status === "approved") {
+          msg = "Payment approved automatically! Your order is confirmed.";
+        } else if (sr.status === "pending_review") {
+          if (sr.reviewReason === "OCR_PROCESSING_ERROR") {
+            msg = "Payment slip received. Our system encountered an issue, but our team will review it manually.";
+          } else if (sr.duplicateStatus?.isDuplicateReference || sr.duplicateStatus?.isDuplicateFingerprint) {
+            msg = "Payment slip received. It appears to be a duplicate, but our team will review it.";
+          } else if (sr.ocrConfidence && sr.ocrConfidence < 85) {
+            msg = `Payment slip received (confidence: ${sr.ocrConfidence}%). Our team will review it shortly.`;
+          } else {
+            msg = "Payment slip received. Our team will review and approve it shortly.";
+          }
+        }
+        
+        toast.success(msg);
+      } else {
+        toast.success("Order created successfully.");
+      }
     } catch (error: any) {
       toast.error(error?.message || t("payment.uploadFailed"));
     } finally {
