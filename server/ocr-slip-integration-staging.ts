@@ -36,7 +36,7 @@ export interface OCRVerificationResultStaging {
   fingerprint?: string; // NEW: Add fingerprint from verification
   breakdown?: any;
   ocrConfidence?: number;
-  ocrDecision?: "auto_approved" | "needs_review" | "rejected" | "ocr_disabled" | "shadow_auto_approved" | "ocr_processing_error"; // NEW: Add OCR decision state
+  ocrDecision?: "auto_approved" | "needs_review" | "rejected" | "ocr_disabled" | "shadow_auto_approved"; // OCR decision state (use reviewReason for OCR_PROCESSING_ERROR)
   detectedBank?: string;
   duplicateStatus?: {
     isDuplicateReference: boolean;
@@ -188,7 +188,7 @@ export async function processSlipVerificationStaging(
         and(
           ne(payments.id, paymentId),
           or(eq(payments.status, "approved"), eq(payments.status, "pending_review")),
-          sql`JSON_UNQUOTE(JSON_EXTRACT(${payments.extractedData}, '$.reference')) = ${reference.toUpperCase()}`
+          sql`UPPER(JSON_UNQUOTE(JSON_EXTRACT(${payments.extractedData}, '$.reference'))) = ${reference.toUpperCase()}`
         )
       )
       .limit(1);
@@ -298,12 +298,13 @@ export async function processSlipVerificationStaging(
   // ── Enrich extracted data with duplicate payment IDs ──────────────────────
   const duplicateStatus = {
     isDuplicateReference: duplicateReference.isDuplicate,
-    isDuplicateFingerprint: duplicateFingerprint.isDuplicate,
+    isDuplicateFingerprint: duplicateFingerprint.isDuplicate || legacyDuplicate.isDuplicate,
     duplicateReferencePaymentId: duplicateReference.duplicatePaymentId,
-    duplicateFingerprintPaymentId: duplicateFingerprint.duplicatePaymentId,
+    duplicateFingerprintPaymentId: duplicateFingerprint.duplicatePaymentId || legacyDuplicate.duplicatePaymentId,
     duplicatePaymentId:
       duplicateReference.duplicatePaymentId ||
       duplicateFingerprint.duplicatePaymentId ||
+      legacyDuplicate.duplicatePaymentId ||
       undefined,
   };
 
