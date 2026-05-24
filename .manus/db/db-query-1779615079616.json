@@ -1,0 +1,9 @@
+{
+  "query": "UPDATE `payments` SET `ocrConfidence` = 0 WHERE `ocrConfidence` IS NULL;\n\nUPDATE `payments` SET `ocrDecision` = 'needs_review' WHERE `ocrDecision` IS NULL;\n\nALTER TABLE `payments` \nMODIFY COLUMN `ocrConfidence` INT NOT NULL DEFAULT 0;\n\nALTER TABLE `payments` \nMODIFY COLUMN `ocrDecision` ENUM('auto_approved', 'needs_review', 'rejected', 'ocr_disabled', 'shadow_auto_approved') NOT NULL DEFAULT 'needs_review';",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute UPDATE `payments` SET `ocrConfidence` = 0 WHERE `ocrConfidence` IS NULL;\n\nUPDATE `payments` SET `ocrDecision` = 'needs_review' WHERE `ocrDecision` IS NULL;\n\nALTER TABLE `payments` \nMODIFY COLUMN `ocrConfidence` INT NOT NULL DEFAULT 0;\n\nALTER TABLE `payments` \nMODIFY COLUMN `ocrDecision` ENUM('auto_approved', 'needs_review', 'rejected', 'ocr_disabled', 'shadow_auto_approved') NOT NULL DEFAULT 'needs_review';",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 2952
+}

@@ -227,7 +227,7 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
     await db.updatePayment(payment.id, {
       linkedOrderId: order.id,
       linkedPaymentId: payment.id,
-      ocrConfidence: verificationResult.ocrConfidence ?? null,
+      ocrConfidence: verificationResult.ocrConfidence ?? 0,
       ocrDecision,
     });
     

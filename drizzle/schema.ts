@@ -255,8 +255,8 @@ export const payments = mysqlTable(
     linkedOrderId: int("linkedOrderId"), // Order ID this slip was verified against
     linkedPaymentId: int("linkedPaymentId"), // Payment ID this slip was verified against
     // OCR decision and confidence
-    ocrConfidence: int("ocrConfidence"), // OCR confidence score (0-100)
-    ocrDecision: mysqlEnum("ocrDecision", ["auto_approved", "needs_review", "rejected", "ocr_disabled", "shadow_auto_approved"]), // OCR decision state
+    ocrConfidence: int("ocrConfidence").notNull().default(0), // OCR confidence score (0-100)
+    ocrDecision: mysqlEnum("ocrDecision", ["auto_approved", "needs_review", "rejected", "ocr_disabled", "shadow_auto_approved"]).notNull().default("needs_review"), // OCR decision state
     // Approval metadata
     approvalSource: mysqlEnum("approvalSource", ["manual", "auto", "wallet", "legacy"]).default("legacy"),
     approvedByAdminId: int("approvedByAdminId"), // Admin user ID for manual approvals

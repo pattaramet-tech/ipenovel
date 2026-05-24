@@ -1,0 +1,8 @@
+{
+  "query": "ALTER TABLE `payments` \nMODIFY COLUMN `ocrConfidence` INT NOT NULL DEFAULT 0;\n\nALTER TABLE `payments` \nMODIFY COLUMN `ocrDecision` ENUM('auto_approved', 'needs_review', 'rejected', 'ocr_disabled', 'shadow_auto_approved') NOT NULL DEFAULT 'needs_review';",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute ALTER TABLE `payments` \nMODIFY COLUMN `ocrConfidence` INT NOT NULL DEFAULT 0;\n\nALTER TABLE `payments` \nMODIFY COLUMN `ocrDecision` ENUM('auto_approved', 'needs_review', 'rejected', 'ocr_disabled', 'shadow_auto_approved') NOT NULL DEFAULT 'needs_review';",
+  "returncode": 1,
+  "logs": [
+    "ERROR 1265 (01000) at line 1: Data truncated for column 'ocrconfidence' at row 1"
+  ]
+}

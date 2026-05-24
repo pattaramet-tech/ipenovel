@@ -148,6 +148,13 @@
       "when": 1778950276493,
       "tag": "0020_tiny_crusher_hogan",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "5",
+      "when": 1779615055016,
+      "tag": "0021_skinny_slayback",
+      "breakpoints": true
     }
   ]
 }
