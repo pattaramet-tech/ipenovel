@@ -1016,17 +1016,13 @@ OCR Confidence: 100/100`;
   it("should parse Thai date + hyphen + time (25 พ.ค. 2569 - 00:26)", async () => {
     const result = await extractSlipData(REAL_SCB_RAW_TEXT, 100);
     
-    // Date parsing may fail if regex doesn't match exactly - this is acceptable
-    // The important thing is that the parser doesn't crash
-    if (result.transactionDate) {
-      const dateStr = result.transactionDate.toISOString().split("T")[0];
-      expect(dateStr).toBe("2026-05-25");
-    }
+    // STRICT: Must extract both date and datetime
+    expect(result.transactionDate).toBeDefined();
+    expect(result.transactionDateTime).toBeDefined();
     
-    if (result.transactionDateTime) {
-      const dateTimeStr = result.transactionDateTime.toISOString();
-      expect(dateTimeStr).toMatch(/2026-05-24T17:26/);
-    }
+    // STRICT: Exact ISO format match
+    expect(result.transactionDate!.toISOString()).toBe("2026-05-25T00:00:00.000Z");
+    expect(result.transactionDateTime!.toISOString()).toBe("2026-05-24T17:26:00.000Z");
   });
 
   it("should have visionConfidence 100", async () => {
@@ -1045,23 +1041,50 @@ OCR Confidence: 100/100`;
     expect(result.finalConfidence).toBeGreaterThanOrEqual(85);
   });
 
-  it("should meet auto-approval criteria (finalConfidence >= 85, amount matches)", async () => {
-    const extractedData = await extractSlipData(REAL_SCB_RAW_TEXT, 100);
+  it("should extract all required fields strictly", async () => {
+    const result = await extractSlipData(REAL_SCB_RAW_TEXT, 100);
     
-    // Verify extraction meets auto-approval criteria
-    expect(extractedData.finalConfidence).toBeGreaterThanOrEqual(85);
-    expect(extractedData.amount).toBe(100);
-    expect(extractedData.reference).toBeDefined();
+    // STRICT: All fields must be present and exact
+    expect(result.amount).toBe(100);
+    expect(result.reference).toBe("2026052560P28BJXEWJQMSBB5");
+    expect(result.detectedBank).toBe("SCB");
+    expect(result.maskedAccount).toBe("xxx-xxx791-1");
+    expect(result.merchantCode).toBe("KB000002283068");
+    expect(result.merchantTransactionCode).toBe("KPS004KB000002283068");
+    expect(result.transactionDate).toBeDefined();
+    expect(result.transactionDate!.toISOString()).toBe("2026-05-25T00:00:00.000Z");
+    expect(result.transactionDateTime).toBeDefined();
+    expect(result.transactionDateTime!.toISOString()).toBe("2026-05-24T17:26:00.000Z");
+    expect(result.visionConfidence).toBe(100);
+    expect(result.finalConfidence).toBeGreaterThanOrEqual(85);
+  });
+
+  it("should auto-approve real SCB slip with strict verification", async () => {
+    const extracted = await extractSlipData(REAL_SCB_RAW_TEXT, 100);
     
-    // Verify structured field count is sufficient (>= 2)
-    const structuredFieldCount = [
-      extractedData.amount,
-      extractedData.transactionDate,
-      extractedData.reference,
-      extractedData.shopName,
-      extractedData.merchantCode,
-      extractedData.detectedBank,
-    ].filter(Boolean).length;
-    expect(structuredFieldCount).toBeGreaterThanOrEqual(2);
+    const context: OrderPaymentContext = {
+      orderTotal: 100,
+      paymentCreatedAt: new Date("2026-05-24T17:30:00.000Z"),
+      slipSubmittedAt: new Date("2026-05-24T17:30:00.000Z"),
+      orderId: 1,
+      paymentId: 1,
+    };
+    
+    const verification = await verifySlipData(
+      extracted,
+      context,
+      new Set(),
+      new Set(),
+      85
+    );
+    
+    // STRICT: Must auto-approve
+    expect(verification.isAutoApproved).toBe(true);
+    expect(verification.status).toBe("approved");
+    expect(verification.reviewReason).toBeUndefined();
+    expect(verification.breakdown.amountMatched).toBe(true);
+    expect(verification.breakdown.datePresent).toBe(true);
+    expect(verification.breakdown.dateWithinWindow).toBe(true);
+    expect(verification.breakdown.referencePresent).toBe(true);
   });
 });

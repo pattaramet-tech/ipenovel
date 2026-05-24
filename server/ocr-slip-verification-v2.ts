@@ -752,7 +752,7 @@ function extractTransactionDate(flattened: Record<string, any>, text: string): {
     
     // Pattern: "25 พ.ค. 2569 - 00:26" or "25 พ.ค. 2569 – 00:26" or "25 พ.ค. 2569 เวลา 00:26"
     {
-      const re = new RegExp(`(\d{1,2})\s+(${monthNames})\s+(\d{2,4})\s+[\-–]?\s*(?:เวลา)?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?`, "i");
+      const re = new RegExp(`(\\d{1,2})\\s+(${monthNames})\\s+(\\d{2,4})\\s+[\\-–]?\\s*(?:เวลา)?\\s*(\\d{1,2}):(\\d{2})(?::(\\d{2}))?`, "i");
       const m = text.match(re);
       if (m) {
         const month = THAI_MONTHS[m[2]];
