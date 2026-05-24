@@ -699,6 +699,7 @@ function extractTransactionDate(flattened: Record<string, any>, text: string): {
         }
       }
     }
+  }
 
   // ── SCB separate date + time fields (JSON) ────────────────────────────────────────
   // SCB JSON has: date = "23 พ.ค. 2569", time = "23:01"
@@ -810,7 +811,6 @@ function extractTransactionDate(flattened: Record<string, any>, text: string): {
   }
 
   return {};
-}
 }
 
 // ─── Main extraction function ────────────────────────────────────────────────────

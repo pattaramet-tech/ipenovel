@@ -5,6 +5,7 @@
  * for safe staging rollout while preserving production behavior.
  */
 
+import crypto from "crypto";
 import { getDb } from "./db";
 import { payments, orders } from "../drizzle/schema";
 import { eq, or, and, ne, sql } from "drizzle-orm";
@@ -187,7 +188,7 @@ export async function processSlipVerificationStaging(
         and(
           ne(payments.id, paymentId),
           or(eq(payments.status, "approved"), eq(payments.status, "pending_review")),
-          sql`JSON_EXTRACT(${payments.extractedData}, '$.reference') = ${reference}`
+          sql`JSON_UNQUOTE(JSON_EXTRACT(${payments.extractedData}, '$.reference')) = ${reference.toUpperCase()}`
         )
       )
       .limit(1);
@@ -207,14 +208,14 @@ export async function processSlipVerificationStaging(
     const legacyKey = `${extracted.detectedBank}|${extracted.maskedAccount}|${extracted.amount}|${
       extracted.transactionDate ? extracted.transactionDate.toISOString().split("T")[0] : ""
     }`;
-    const legacyFingerprint = require("crypto")
+    const legacyFingerprint = crypto
       .createHash("sha256")
       .update(legacyKey)
       .digest("hex");
 
     // Weak legacy fingerprint: bank + maskedAccount + amount (no date)
     const weakKey = `${extracted.detectedBank}|${extracted.maskedAccount}|${extracted.amount}`;
-    const weakFingerprint = require("crypto")
+    const weakFingerprint = crypto
       .createHash("sha256")
       .update(weakKey)
       .digest("hex");

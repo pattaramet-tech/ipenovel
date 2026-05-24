@@ -34,6 +34,7 @@ export interface SlipSubmissionResult {
     isDuplicateReference: boolean;
     isDuplicateFingerprint: boolean;
   };
+  ocrDecision?: string;
 }
 
 /**
@@ -304,5 +305,6 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
     ocrConfidence: verificationResult.ocrConfidence,
     detectedBank: verificationResult.detectedBank,
     duplicateStatus: verificationResult.duplicateStatus,
+    ocrDecision: verificationResult.ocrDecision,
   };
 }
