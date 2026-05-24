@@ -327,10 +327,17 @@ function extractAmount(flattened: Record<string, any>, text: string): number | u
 
   // Fallback to regex patterns
   const patterns = [
+    // Amount labels with colon/colon-like separator
     /จำนวนเงิน\s*[:：]\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
     /ยอดเงิน\s*[:：]\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
     /ยอดโอน\s*[:：]\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
     /amount\s*[:：]\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
+    // Amount labels followed by newline (SCB pattern)
+    /จำนวนเงิน\s*\n\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
+    /ยอดเงิน\s*\n\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
+    /ยอดโอน\s*\n\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
+    /amount\s*\n\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
+    // Currency symbols
     /฿\s*([\d,]+(?:\.\d{2})?)/,
     /บาท\s*([\d,]+(?:\.\d{2})?)/i,
     /THB\s*([\d,]+(?:\.\d{2})?)/i,
@@ -738,11 +745,33 @@ function extractTransactionDate(flattened: Record<string, any>, text: string): {
 
   // ── SCB separate date + time fields (plain text) ────────────────────────────────────────
   // SCB plain text has: วันที่: 23 พ.ค. 2569, เวลา: 17:29
+  // Or: 25 พ.ค. 2569 - 00:26 (Thai date - hyphen - time)
   // Extract from raw text before JSON parsing
   {
     const monthNames = Object.keys(THAI_MONTHS).join("|");
-    // Match Thai date pattern: "23 พ.ค. 2569" or "23 พ.ค. 69"
-    const dateRe = new RegExp(`(\\d{1,2})\\s+(${monthNames})\\s+(\\d{2,4})`, "i");
+    
+    // Pattern: "25 พ.ค. 2569 - 00:26" or "25 พ.ค. 2569 – 00:26" or "25 พ.ค. 2569 เวลา 00:26"
+    {
+      const re = new RegExp(`(\d{1,2})\s+(${monthNames})\s+(\d{2,4})\s+[\-–]?\s*(?:เวลา)?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?`, "i");
+      const m = text.match(re);
+      if (m) {
+        const month = THAI_MONTHS[m[2]];
+        if (month) {
+          const r = buildDate(
+            parseInt(m[1]),
+            month,
+            parseInt(m[3]),
+            parseInt(m[4]),
+            parseInt(m[5]),
+            m[6] !== undefined ? parseInt(m[6]) : undefined
+          );
+          if (r) return r;
+        }
+      }
+    }
+    
+    // Fallback: Match Thai date pattern: "23 พ.ค. 2569" or "23 พ.ค. 69"
+    const dateRe = new RegExp(`(\d{1,2})\s+(${monthNames})\s+(\d{2,4})`, "i");
     const dateMatch = text.match(dateRe);
     
     if (dateMatch) {
