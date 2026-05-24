@@ -114,10 +114,9 @@ export default function CartPage() {
 
   const createOrderMutation = trpc.checkout.create.useMutation({
     onSuccess: (order) => {
-      toast.success(t("common.success"));
+      // Don't show toast here - handleCheckoutWithSlip shows OCR/payment result message
       setShowSlipUpload(false);
       setSelectedSlipFile(null);
-      navigate("/orders");
       utils.cart.get.invalidate();
     },
     onError: (error: any) => {
@@ -231,8 +230,10 @@ export default function CartPage() {
         }
         
         toast.success(msg);
+        navigate("/orders");
       } else {
         toast.success("Order created successfully.");
+        navigate("/orders");
       }
     } catch (error: any) {
       toast.error(error?.message || t("payment.uploadFailed"));

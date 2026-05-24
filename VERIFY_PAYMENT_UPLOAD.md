@@ -109,9 +109,9 @@ Output:
 ### Backend Audit
 
 **Files Updated:**
-- ✅ `server/services/slipFileUploadService.ts` - New shared upload helper
-- ✅ `server/routers.ts` - New `payment.uploadSlipFile` endpoint
-- ✅ `server/_core/index.ts` - `/api/upload` marked deprecated (optional fallback)
+- ✅ `server/services/slipFileUploadService.ts` - Shared upload helper
+- ✅ `server/routers.ts` - `payment.uploadSlipFile` endpoint
+- ✅ `server/_core/index.ts` - `/api/upload` endpoint removed (no longer active)
 
 **Validation:**
 - ✅ MIME type validation: JPG, PNG, PDF only
@@ -187,9 +187,12 @@ $ npm run build
 
 - ✅ All frontend pages use `payment.uploadSlipFile`
 - ✅ No `fetch("/api/upload")` in production code
+- ✅ `/api/upload` endpoint removed (no public unauthenticated uploads)
 - ✅ File validation (MIME type, size) implemented on both frontend and backend
 - ✅ S3 upload working with unique keys per user
 - ✅ OCR/payment result messages shown to users
+- ✅ CartPage: no duplicate success toast
+- ✅ Dead `getSlipUploadMessage` helper removed
 - ✅ All tests passing (233/233)
 - ✅ TypeScript clean (0 errors)
 - ✅ Production build successful

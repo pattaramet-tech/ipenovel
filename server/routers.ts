@@ -39,40 +39,6 @@ function sanitizeUploadFileName(fileName: string): string {
   return fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
-function getSlipUploadMessage(result: any): string {
-  const { ocrDecision, reviewReason, isAutoApproved, duplicateStatus, ocrConfidence } = result;
-
-  if (isAutoApproved) {
-    return "Payment approved automatically! Your order is confirmed.";
-  }
-
-  if (duplicateStatus?.isDuplicateReference) {
-    return "This slip appears to be a duplicate. Please verify and contact support if needed.";
-  }
-
-  if (duplicateStatus?.isDuplicateFingerprint) {
-    return "This slip matches a previously submitted slip. Please verify and contact support if needed.";
-  }
-
-  if (ocrConfidence && ocrConfidence < 85) {
-    return `Your slip is being reviewed (confidence: ${ocrConfidence}%). We will notify you once approved.`;
-  }
-
-  if (reviewReason === "OCR_PROCESSING_ERROR") {
-    return "Your slip is being reviewed manually. We will notify you once approved.";
-  }
-
-  if (reviewReason === "PDF_SUBMITTED") {
-    return "PDF slips require manual review. We will notify you once approved.";
-  }
-
-  if (ocrDecision === "ocr_disabled") {
-    return "Your slip is being reviewed manually. We will notify you once approved.";
-  }
-
-  return "Your slip is being reviewed. We will notify you once approved.";
-}
-
   // ============ MAIN ROUTER ============
 
 const dashboardRouter = router({
