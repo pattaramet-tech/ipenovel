@@ -579,7 +579,7 @@ function detectBank(flattened: Record<string, any>, text: string): { code?: stri
 }
 
 // ─── Thai Buddhist year parsing with candidate-based resolution ────────────────
-function extractTransactionDate(flattened: Record<string, any>, text: string): { date?: Date; dateTime?: Date } {
+function extractTransactionDate(flattened: Record<string, any>, text: string): { date?: Date; dateTime?: Date } | undefined {
   const now = new Date();
   const ninetyDaysAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
 
@@ -700,19 +700,18 @@ function extractTransactionDate(flattened: Record<string, any>, text: string): {
       }
     }
 
-  // ── SCB separate date + time fields ────────────────────────────────────────
+  // ── SCB separate date + time fields (JSON) ────────────────────────────────────────
   // SCB JSON has: date = "23 พ.ค. 2569", time = "23:01"
-  // SCB plain text has: วันที่: 23 พ.ค. 2569, เวลา: 17:29
-  const dateVal = getFieldBySuffixMatch(flattened, ["date", "วันที่"]);
-  const timeVal = getFieldBySuffixMatch(flattened, ["time", "เวลา"]);
+  const dateVal = getFieldBySuffixMatch(flattened, ["date"]);
+  const timeVal = getFieldBySuffixMatch(flattened, ["time"]);
 
   if (dateVal && timeVal) {
     const dateStr = String(dateVal);
     const timeStr = String(timeVal);
     const monthNames = Object.keys(THAI_MONTHS).join("|");
 
-    // Parse date: "23 พ.ค. 2569" or "23 พ.ค. 69"
-    const dateRe = new RegExp(`(\d{1,2})\s+(${monthNames})\s+(\d{2,4})`, "i");
+    // Parse date: "23 พ.ค. 2569" or "23 พ.ค. 69" (FIXED: properly escape regex)
+    const dateRe = new RegExp(`(\\d{1,2})\\s+(${monthNames})\\s+(\\d{2,4})`, "i");
     const dateMatch = dateStr.match(dateRe);
 
     // Parse time: "23:01" or "17:29"
@@ -734,9 +733,40 @@ function extractTransactionDate(flattened: Record<string, any>, text: string): {
       }
     }
   }
+
+  // ── SCB separate date + time fields (plain text) ────────────────────────────────────────
+  // SCB plain text has: วันที่: 23 พ.ค. 2569, เวลา: 17:29
+  // Extract from raw text before JSON parsing
+  {
+    const monthNames = Object.keys(THAI_MONTHS).join("|");
+    // Match Thai date pattern: "23 พ.ค. 2569" or "23 พ.ค. 69"
+    const dateRe = new RegExp(`(\\d{1,2})\\s+(${monthNames})\\s+(\\d{2,4})`, "i");
+    const dateMatch = text.match(dateRe);
+    
+    if (dateMatch) {
+      // Look for separate time pattern: "HH:MM" or "HH:MM:SS"
+      const timeRe = /(\d{1,2}):(\d{2})(?::(\d{2}))?/;
+      const timeMatch = text.match(timeRe);
+      
+      if (timeMatch) {
+        const month = THAI_MONTHS[dateMatch[2]];
+        if (month) {
+          const r = buildDate(
+            parseInt(dateMatch[1]),
+            month,
+            parseInt(dateMatch[3]),
+            parseInt(timeMatch[1]),
+            parseInt(timeMatch[2]),
+            timeMatch[3] !== undefined ? parseInt(timeMatch[3]) : undefined
+          );
+          if (r) return r;
+        }
+      }
+    }
   }
 
-  // Pattern: "23 พ.ค. 2569" or "23 พ.ค. 69"
+  // Pattern: "23 พ.ค. 2569" or "23 พ.ค. 69" (date only, no time)
+  // Only use this if no time was found in plain text fallback above
   {
     const monthNames = Object.keys(THAI_MONTHS).join("|");
     const re = new RegExp(
@@ -781,6 +811,7 @@ function extractTransactionDate(flattened: Record<string, any>, text: string): {
 
   return {};
 }
+}
 
 // ─── Main extraction function ────────────────────────────────────────────────────
 export function extractSlipData(ocrText: string, visionConfidence?: number): ExtractedSlipData {
@@ -801,7 +832,8 @@ export function extractSlipData(ocrText: string, visionConfidence?: number): Ext
   const text = normalizeThaiNumerals(ocrText);
 
   const amount = extractAmount(flattened, text);
-  const { date: transactionDate, dateTime: transactionDateTime } = extractTransactionDate(flattened, text);
+  const transactionDateResult = extractTransactionDate(flattened, text);
+  const { date: transactionDate, dateTime: transactionDateTime } = transactionDateResult || {};
   const reference = extractReference(flattened, text);
   const shopName = extractShopName(flattened, text);
   const maskedAccount = extractMaskedAccount(flattened, text);
@@ -813,7 +845,7 @@ export function extractSlipData(ocrText: string, visionConfidence?: number): Ext
   // ─── Confidence scoring ─────────────────────────────────────────────────
   let structuredConfidence = 0;
   if (amount) structuredConfidence += 25;
-  if (transactionDate) structuredConfidence += 20;
+  if (transactionDate || transactionDateTime) structuredConfidence += 20;
   if (reference) structuredConfidence += 20;
   if (detectedBank) structuredConfidence += 10;
   if (shopName) structuredConfidence += 10;
