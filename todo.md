@@ -1290,3 +1290,17 @@
 - [ ] Phase 7: Write comprehensive tests for OCR hardening
 - [ ] Phase 8: Run build, tests, and type checks
 - [ ] Phase 9: Create and deliver final ZIP export
+
+
+## Consolidated Payment Slip Upload Flow (Phase 2)
+- [x] Create unified tRPC.payment.uploadSlip endpoint
+- [x] Replace fetch("/api/upload") in CartPage.tsx with tRPC call
+- [x] Replace fetch("/api/upload") in PaymentPage.tsx with tRPC call
+- [x] Replace fetch("/api/upload") in WalletPage.tsx with tRPC call
+- [x] Implement detailed error message mapping (approved/pending_review/OCR_PROCESSING_ERROR/DUPLICATE/LOW_CONFIDENCE)
+- [ ] Add orphan slip cleanup logic and clear status tracking
+- [x] Implement PDF format guidance (manual review only)
+- [x] Add file type validation (JPG/PNG for auto-approval, PDF for manual review)
+- [ ] Test all three upload paths with unified endpoint
+- [x] Verify error messages display correctly for each OCR result (getSlipUploadMessage helper)
+- [ ] Run full test suite (target: 233+ tests passing)

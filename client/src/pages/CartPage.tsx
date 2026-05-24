@@ -1,4 +1,3 @@
-
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -62,7 +61,6 @@ export default function CartPage() {
   const removeFromCartMutation = trpc.cart.remove.useMutation({
     onSuccess: () => {
       toast.success(t("common.success"));
-      // Invalidate cart query to update badge and cart state
       utils.cart.get.invalidate();
     },
     onError: () => {
@@ -117,10 +115,8 @@ export default function CartPage() {
   const createOrderMutation = trpc.checkout.create.useMutation({
     onSuccess: (order) => {
       toast.success(t("common.success"));
-      // Reset slip upload state
       setShowSlipUpload(false);
       setSelectedSlipFile(null);
-      // Navigate to orders page (order already has slip attached)
       navigate("/orders");
       utils.cart.get.invalidate();
     },
@@ -142,38 +138,10 @@ export default function CartPage() {
     },
   });
 
-  if (!isAuthenticated) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Card className="w-full max-w-md">
-          <CardContent className="pt-6 text-center">
-            <p className="text-slate-600 mb-4">Please sign in to view your cart</p>
-            <Button asChild>
-              <a href="/login">Sign In</a>
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+  const uploadPaymentSlipMutation = trpc.payment.uploadSlip.useMutation();
 
-  if (cartLoading) {
-    return <Skeleton className="h-96" />;
-  }
-
-  // Safe points redemption clamping
-  const subtotalNum = Number(subtotal) || 0;
-  const discountNum = Number(discountAmount) || 0;
-  const requestedPoints = Math.max(0, Number(pointsToRedeem) || 0);
-  const pointBalance = Number(pointsData?.balance) || 0;
-  const maxRedeemable = Math.max(0, subtotalNum - discountNum);
-  const safePointsToRedeem = Math.min(requestedPoints, pointBalance, maxRedeemable);
-  const total = Math.max(0, subtotalNum - discountNum - safePointsToRedeem).toFixed(2);
-
-
-
-  const uploadSlipFile = async (file: File): Promise<string> => {
-    const base64 = await new Promise<string>((resolve, reject) => {
+  const fileToBase64 = async (file: File): Promise<string> => {
+    return new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => {
         const result = e.target?.result as string;
@@ -182,21 +150,36 @@ export default function CartPage() {
       reader.onerror = () => reject(new Error("File read failed"));
       reader.readAsDataURL(file);
     });
-
-    const response = await fetch("/api/upload", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        file: base64,
-        filename: file.name,
-        type: file.type,
-      }),
-    });
-
-    if (!response.ok) throw new Error("Upload failed");
-    const data = await response.json();
-    return data.url;
   };
+
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardContent className="pt-6 text-center">
+            <p className="text-slate-600 mb-4">Please sign in to view your cart</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (cartLoading) {
+    return (
+      <div className="container max-w-4xl py-8">
+        <div className="space-y-4">
+          {[1, 2, 3].map((i) => (
+            <Skeleton key={i} className="h-20 w-full" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const subtotalNum = parseFloat(subtotal);
+  const discountNum = parseFloat(discountAmount);
+  const safePointsToRedeem = pointsToRedeem ? Math.min(parseFloat(pointsToRedeem), subtotalNum - discountNum) : 0;
+  const total = Math.max(0, subtotalNum - discountNum - safePointsToRedeem).toFixed(2);
 
   const handleCheckoutWithSlip = async () => {
     if (items.length === 0) {
@@ -211,14 +194,18 @@ export default function CartPage() {
     try {
       setIsUploadingSlip(true);
 
-      // Step 1: Upload slip first
-      const slipImageUrl = await uploadSlipFile(selectedSlipFile);
+      const base64 = await fileToBase64(selectedSlipFile);
+      const uploadResult = await uploadPaymentSlipMutation.mutateAsync({
+        slipImageUrl: base64,
+        context: "checkout",
+      });
 
-      // Step 2: Create order with slip URL using mutateAsync
+      toast.success(uploadResult.userMessage);
+
       await createOrderMutation.mutateAsync({
         couponCode: appliedCouponCode || undefined,
         pointsToRedeem: safePointsToRedeem > 0 ? safePointsToRedeem.toFixed(2) : undefined,
-        slipImageUrl,
+        slipImageUrl: uploadResult.slipImageUrl,
       });
     } catch (error: any) {
       toast.error(error?.message || t("payment.uploadFailed"));
@@ -232,7 +219,6 @@ export default function CartPage() {
       toast.error(t("cart.empty"));
       return;
     }
-    // Show slip upload dialog for manual slip-payment
     setShowSlipUpload(true);
   };
 
@@ -243,456 +229,281 @@ export default function CartPage() {
       return;
     }
 
-    // Validate file type
-    const allowedTypes = ["image/jpeg", "image/png", "application/pdf"];
-    if (!allowedTypes.includes(file.type)) {
-      toast.error("Invalid file type. Please upload JPG, PNG, or PDF.");
-      setSelectedSlipFile(null);
-      setSlipPreview(null);
+    if (!["image/jpeg", "image/png", "application/pdf"].includes(file.type)) {
+      toast.error(t("payment.invalidFileType"));
       return;
     }
 
-    // Validate file size (5 MB max)
-    const maxSize = 5 * 1024 * 1024;
-    if (file.size > maxSize) {
-      toast.error("File size exceeds 5 MB limit.");
-      setSelectedSlipFile(null);
-      setSlipPreview(null);
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error(t("payment.fileTooLarge"));
       return;
     }
 
     setSelectedSlipFile(file);
-    if (file.type.startsWith("image/")) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        setSlipPreview(e.target?.result as string);
-      };
-      reader.readAsDataURL(file);
-    } else {
-      setSlipPreview(null);
-    }
-  };
 
-  const resetSlipUploadState = () => {
-    setShowSlipUpload(false);
-    setSelectedSlipFile(null);
-    setSlipPreview(null);
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      setSlipPreview(e.target?.result as string);
+    };
+    reader.readAsDataURL(file);
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 py-8">
-      <div className="container mx-auto px-4">
-        <h1 className="text-3xl font-bold mb-8">{t("cart.title")}</h1>
+    <div className="container max-w-4xl py-8">
+      <div className="flex items-center justify-between mb-8">
+        <h1 className="text-3xl font-bold">{t("nav.cart")}</h1>
+        <ShoppingCart className="w-8 h-8 text-blue-600" />
+      </div>
 
-        <div className="grid lg:grid-cols-3 gap-8">
-          {/* Cart Items */}
-          <div className="lg:col-span-2">
-            {items.length === 0 ? (
-              <Card>
-                <CardContent className="pt-6 text-center py-12">
-                  <ShoppingCart className="w-12 h-12 text-slate-300 mx-auto mb-4" />
-                  <p className="text-slate-600 text-lg">{t("cart.empty")}</p>
-                  <Button asChild className="mt-4">
-                    <a href="/novels">{t("cart.continueShopping")}</a>
-                  </Button>
+      {items.length === 0 ? (
+        <Card>
+          <CardContent className="pt-6 text-center">
+            <ShoppingCart className="w-12 h-12 text-slate-400 mx-auto mb-4" />
+            <p className="text-slate-600">{t("cart.empty")}</p>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 space-y-4">
+            {items.map((item: any) => (
+              <Card key={item.id}>
+                <CardContent className="pt-6">
+                  <div className="flex justify-between items-start">
+                    <div className="flex-1">
+                      <h3 className="font-semibold text-lg">{item.novelTitle}</h3>
+                      <p className="text-sm text-slate-600">{item.episodeTitle}</p>
+                      <p className="text-sm text-slate-500 mt-1">{t("common.episode")}: {item.episodeNumber}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="font-bold text-lg">{formatBaht(item.price)} {t("common.baht")}</p>
+                      <button
+                        onClick={() => removeFromCartMutation.mutate({ cartItemId: item.id })}
+                        className="text-red-600 hover:text-red-700 mt-2 flex items-center gap-1"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        {t("common.remove")}
+                      </button>
+                    </div>
+                  </div>
                 </CardContent>
               </Card>
-            ) : (
-              <div className="space-y-4">
-                {items.map((item: any) => (
-                  <Card key={item.id}>
-                    <CardContent className="pt-6">
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <h3 className="font-semibold text-slate-900">{item.novel?.title}</h3>
-                          <p className="text-sm text-slate-600">Episode {item.episode?.episodeNumber}</p>
-                          <p className="text-sm text-slate-600">{item.episode?.title}</p>
-                        </div>
-                        <div className="text-right">
-                          <p className="font-semibold text-slate-900">฿{parseFloat(item.price.toString()).toFixed(2)}</p>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => removeFromCartMutation.mutate({ cartItemId: item.id })}
-                            disabled={removeFromCartMutation.isPending}
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </Button>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            )}
+            ))}
           </div>
 
-          {/* Order Summary */}
-          <div>
+          <div className="lg:col-span-1">
             <Card className="sticky top-4">
               <CardHeader>
-                <CardTitle>{t("cart.orderSummary")}</CardTitle>
+                <CardTitle>{t("cart.summary")}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                {/* Subtotal */}
                 <div className="flex justify-between text-sm">
-                  <span className="text-slate-600">{t("cart.subtotal")}</span>
-                  <span className="font-semibold">฿{subtotal}</span>
+                  <span>{t("cart.subtotal")}</span>
+                  <span>{formatBaht(subtotal)} {t("common.baht")}</span>
                 </div>
 
-                {/* Coupon */}
-                <div className="border-t pt-4 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <TicketPercent className="w-4 h-4 text-orange-500" />
-                      <p className="text-sm font-semibold">Discount Coupons</p>
-                    </div>
-
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setShowCouponPicker(true)}
-                      disabled={items.length === 0}
-                      className="h-8 px-2 text-orange-600 hover:text-orange-700"
-                    >
-                      Select Coupon <ChevronRight className="w-4 h-4 ml-1" />
-                    </Button>
+                {appliedCoupon && (
+                  <div className="flex justify-between text-sm text-green-600">
+                    <span>{t("cart.discount")}</span>
+                    <span>-{formatBaht(discountAmount)} {t("common.baht")}</span>
                   </div>
+                )}
 
-                  {appliedCoupon ? (
-                    <div className="rounded-xl border border-orange-200 bg-orange-50 p-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <CheckCircle2 className="w-4 h-4 text-green-600" />
-                            <p className="text-sm font-bold text-orange-700 truncate">
-                              {appliedCoupon.code || appliedCouponCode}
-                            </p>
-                          </div>
-                          <p className="mt-1 text-xs text-slate-600">
-                            Applied. Instant discount ฿{formatBaht(discountAmount)}
-                          </p>
-                        </div>
-
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={handleClearCoupon}
-                          className="h-8 px-2 text-slate-500"
-                        >
-                          Remove
-                        </Button>
-                      </div>
-                    </div>
-                  ) : activeCoupons.length > 0 ? (
-                    <button
-                      type="button"
-                      onClick={() => setShowCouponPicker(true)}
-                      className="w-full rounded-xl border border-dashed border-orange-300 bg-orange-50/60 p-3 text-left transition hover:bg-orange-50"
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <Tag className="w-4 h-4 text-orange-500 flex-shrink-0" />
-                          <span className="text-sm text-slate-700 truncate">
-                            {activeCoupons.length} coupon{activeCoupons.length > 1 ? "s" : ""} available
-                          </span>
-                        </div>
-                        <span className="text-xs font-semibold text-orange-600">Use</span>
-                      </div>
-                    </button>
-                  ) : (
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">
-                      No active coupons available right now.
-                    </div>
-                  )}
-
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder="Enter coupon code"
-                      value={couponInput}
-                      onChange={(e) => setCouponInput(e.target.value)}
-                    />
-                    <Button size="sm" onClick={handleValidateCoupon} disabled={!couponInput.trim()}>
-                      Apply
-                    </Button>
+                {safePointsToRedeem > 0 && (
+                  <div className="flex justify-between text-sm text-blue-600">
+                    <span>{t("cart.pointsRedeemed")}</span>
+                    <span>-{formatBaht(safePointsToRedeem)} {t("common.baht")}</span>
                   </div>
+                )}
+
+                <div className="border-t pt-4 flex justify-between font-bold">
+                  <span>{t("cart.total")}</span>
+                  <span>{formatBaht(total)} {t("common.baht")}</span>
                 </div>
 
-                {/* Points */}
-                <div className="border-t pt-4">
-                  <p className="text-sm font-semibold mb-2">{t("cart.redeemPoints")}</p>
-                  <p className="text-xs text-slate-600 mb-2">{t("cart.availablePoints")}: {pointsData?.balance || "0"} pts</p>
-                  <Input
-                    placeholder="Points to redeem"
-                    type="number"
-                    value={pointsToRedeem}
-                    onChange={(e) => setPointsToRedeem(e.target.value)}
-                  />
-                  {pointsToRedeem && (
-                    <p className="text-xs text-blue-600 mt-2">Discount: -฿{pointsToRedeem}</p>
-                  )}
-                </div>
-
-                {/* Total */}
-                <div className="border-t pt-4">
-                  <div className="flex justify-between mb-4">
-                    <span className="font-semibold text-slate-900">{t("cart.total")}</span>
-                    <span className="font-bold text-lg text-blue-600">฿{total}</span>
-                  </div>
-
+                {!appliedCoupon && (
                   <div className="space-y-2">
-                    <Button
-                      className="w-full"
-                      onClick={handleCheckout}
-                      disabled={items.length === 0 || createOrderMutation.isPending || isUploadingSlip}
+                    <button
+                      onClick={() => setShowCouponPicker(true)}
+                      className="w-full px-3 py-2 border rounded text-sm hover:bg-slate-50 flex items-center justify-center gap-2"
                     >
-                      {isUploadingSlip ? t("common.uploading") : t("checkout.proceedToCheckout")}
-                    </Button>
-                    <Button
-                      className="w-full"
-                      variant="outline"
-                      onClick={() => walletCheckoutMutation.mutate({ couponCode: appliedCouponCode || undefined, pointsToRedeem: safePointsToRedeem > 0 ? safePointsToRedeem.toFixed(2) : undefined })}
-                      disabled={items.length === 0 || walletCheckoutMutation.isPending}
-                    >
-                      {t("wallet.payWithWallet")}
-                    </Button>
+                      <TicketPercent className="w-4 h-4" />
+                      {t("cart.applyCoupon")}
+                    </button>
                   </div>
+                )}
 
-                  {/* Slip Upload Modal */}
-                  {showSlipUpload && (
-                    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-y-auto">
-                      <Card className="w-full max-w-md my-8">
-                        <CardHeader>
-                          <CardTitle>{t("payment.uploadSlip")}</CardTitle>
-                        </CardHeader>
-                        <CardContent className="space-y-4">
-                          {/* Transfer Amount Label */}
-                          <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
-                            <p className="text-sm text-blue-700 mb-1">ยอดที่ต้องโอน</p>
-                            <p className="text-3xl font-bold text-blue-900">฿{total}</p>
-                          </div>
+                {appliedCoupon && (
+                  <div className="bg-green-50 p-3 rounded border border-green-200 flex items-center justify-between">
+                    <span className="text-sm text-green-700 font-semibold">{appliedCoupon.code}</span>
+                    <button onClick={handleClearCoupon} className="text-green-600 hover:text-green-700">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
 
-                          {/* QR Payment Block */}
-                          <div>
-                            <h3 className="text-lg font-semibold mb-3 text-slate-800">{t("payment.scanQRToPayment")}</h3>
-                            <Card className="p-4 bg-slate-50 border-2 border-slate-200 relative">
-                              <div className="flex flex-col items-center">
-                                <img
-                                  src="https://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/IMG_8158_19d96370.JPG"
-                                  alt="QR Payment"
-                                  className="w-full max-w-xs aspect-square object-contain rounded-lg"
-                                />
-                              </div>
-                              {/* Fullscreen QR Button */}
-                              <button
-                                onClick={() => setShowQRFullscreen(true)}
-                                className="absolute top-2 right-2 p-2 bg-white rounded-lg shadow hover:bg-slate-100 transition"
-                                title="Expand QR"
-                              >
-                                <Maximize2 className="w-5 h-5 text-slate-700" />
-                              </button>
-                            </Card>
-                            <p className="text-sm text-slate-600 mt-3 text-center">
-                              {t("payment.qrPaymentHelper")}
-                            </p>
-                          </div>
-
-                          {/* Slip Upload Section */}
-                          <div className="space-y-3">
-                            <label className="block text-sm font-medium text-slate-700">
-                              {t("payment.selectFile")}
-                            </label>
-                            <input
-                              type="file"
-                              accept="image/jpeg,image/png,application/pdf"
-                              onChange={(e) => handleSlipFileSelect(e.target.files?.[0] || null)}
-                              disabled={isUploadingSlip}
-                              className="w-full px-3 py-2 border rounded text-sm"
-                            />
-                            <p className="text-xs text-slate-500">{t("payment.fileRequirements")}</p>
-
-                            {/* Selected File Info */}
-                            {selectedSlipFile && (
-                              <div className="bg-green-50 p-3 rounded-lg border border-green-200 flex items-start justify-between gap-2">
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-sm font-medium text-green-900 truncate">{selectedSlipFile.name}</p>
-                                  <p className="text-xs text-green-700">{(selectedSlipFile.size / 1024).toFixed(1)} KB</p>
-                                </div>
-                                <button
-                                  onClick={() => handleSlipFileSelect(null)}
-                                  className="text-green-600 hover:text-green-700 flex-shrink-0"
-                                >
-                                  <X className="w-4 h-4" />
-                                </button>
-                              </div>
-                            )}
-
-                            {/* Slip Image Preview */}
-                            {slipPreview && (
-                              <div className="rounded-lg overflow-hidden border border-slate-200 bg-slate-50 p-2">
-                                <img
-                                  src={slipPreview}
-                                  alt="Slip preview"
-                                  className="w-full max-h-48 object-contain rounded"
-                                />
-                              </div>
-                            )}
-                          </div>
-
-                          <div className="flex gap-2">
-                            <Button
-                              className="flex-1"
-                              onClick={handleCheckoutWithSlip}
-                              disabled={!selectedSlipFile || isUploadingSlip || createOrderMutation.isPending}
-                            >
-                              {isUploadingSlip || createOrderMutation.isPending ? t("common.pleaseWait") : t("checkout.proceedToCheckout")}
-                            </Button>
-                            <Button
-                              className="flex-1"
-                              variant="outline"
-                              onClick={resetSlipUploadState}
-                              disabled={isUploadingSlip}
-                            >
-                              {t("common.cancel")}
-                            </Button>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    </div>
-                  )}
-
-                  {/* Fullscreen QR Modal */}
-                  {showQRFullscreen && (
-                    <div className="fixed inset-0 bg-black/75 flex items-center justify-center z-50 p-4">
-                      <div className="relative bg-white rounded-lg p-4 max-w-2xl w-full">
-                        <button
-                          onClick={() => setShowQRFullscreen(false)}
-                          className="absolute top-4 right-4 p-2 bg-slate-100 rounded-lg hover:bg-slate-200 transition"
-                        >
-                          <X className="w-6 h-6 text-slate-700" />
-                        </button>
-                        <div className="flex flex-col items-center">
-                          <img
-                            src="https://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/IMG_8158_19d96370.JPG"
-                            alt="QR Payment - Full Screen"
-                            className="w-full max-w-lg aspect-square object-contain"
-                          />
-                        </div>
-                        <p className="text-center text-slate-600 mt-4 text-sm">
-                          {t("payment.qrPaymentHelper")}
-                        </p>
-                      </div>
-                    </div>
-                  )}
+                <div className="space-y-2 pt-4 border-t">
+                  <Button
+                    onClick={handleCheckout}
+                    className="w-full bg-blue-600 hover:bg-blue-700"
+                    disabled={isUploadingSlip || createOrderMutation.isPending}
+                  >
+                    {isUploadingSlip ? t("common.loading") : t("cart.proceedToPayment")}
+                  </Button>
+                  <Button
+                    onClick={() => walletCheckoutMutation.mutate({ couponCode: appliedCouponCode || undefined, pointsToRedeem: safePointsToRedeem > 0 ? safePointsToRedeem.toFixed(2) : undefined })}
+                    variant="outline"
+                    className="w-full"
+                    disabled={walletCheckoutMutation.isPending}
+                  >
+                    {t("wallet.payWithWallet")}
+                  </Button>
                 </div>
               </CardContent>
             </Card>
           </div>
         </div>
-      </div>
+      )}
 
-      {/* Coupon Picker Modal */}
       {showCouponPicker && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4">
-          <Card className="w-full max-w-lg rounded-b-none sm:rounded-2xl max-h-[85vh] overflow-hidden">
-            <CardHeader className="border-b">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <CardTitle className="flex items-center gap-2 text-lg">
-                    <TicketPercent className="w-5 h-5 text-orange-500" />
-                    Select Discount Coupon
-                  </CardTitle>
-                  <p className="mt-1 text-xs text-slate-500">Cart subtotal ฿{formatBaht(subtotal)}</p>
-                </div>
-
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowCouponPicker(false)}
-                  className="h-9 w-9 p-0"
-                >
-                  <X className="w-4 h-4" />
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <Card className="w-full max-w-md">
+            <CardHeader>
+              <CardTitle>{t("cart.applyCoupon")}</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex gap-2">
+                <Input
+                  value={couponInput}
+                  onChange={(e) => setCouponInput(e.target.value)}
+                  placeholder={t("cart.couponCode")}
+                  onKeyPress={(e) => e.key === "Enter" && handleValidateCoupon()}
+                />
+                <Button onClick={handleValidateCoupon} className="bg-blue-600 hover:bg-blue-700">
+                  {t("common.apply")}
                 </Button>
               </div>
-            </CardHeader>
 
-            <CardContent className="space-y-3 overflow-y-auto p-4 max-h-[65vh]">
-              {couponsError ? (
-                <div className="py-10 text-center">
-                  <AlertCircle className="mx-auto mb-3 h-10 w-10 text-red-400" />
-                  <p className="text-sm text-red-600">Unable to load coupons. Please try again.</p>
-                </div>
-              ) : couponsLoading ? (
-                <div className="space-y-3">
-                  <Skeleton className="h-24 w-full rounded-xl" />
-                  <Skeleton className="h-24 w-full rounded-xl" />
-                </div>
-              ) : activeCoupons.length === 0 ? (
-                <div className="py-10 text-center">
-                  <TicketPercent className="mx-auto mb-3 h-10 w-10 text-slate-300" />
-                  <p className="text-sm text-slate-500">No active coupons available.</p>
-                </div>
-              ) : (
-                activeCoupons.map((coupon: any) => (
-                  <div
-                    key={coupon.id}
-                    className={`relative overflow-hidden rounded-2xl border bg-white ${
-                      coupon.canUse ? "border-orange-200" : "border-slate-200 opacity-70"
-                    }`}
-                  >
-                    <div className="flex">
-                      <div className="flex w-28 flex-shrink-0 flex-col items-center justify-center bg-gradient-to-br from-orange-500 to-red-500 p-4 text-white">
-                        <TicketPercent className="mb-2 h-6 w-6" />
-                        <p className="text-center text-sm font-bold leading-tight">{coupon.discountLabel}</p>
+              {activeCoupons.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-sm font-semibold text-slate-700">{t("cart.availableCoupons")}</p>
+                  {activeCoupons.map((coupon: any) => (
+                    <button
+                      key={coupon.id}
+                      onClick={() => handleApplyCoupon(coupon.code, coupon)}
+                      className="w-full p-3 border rounded text-left hover:bg-blue-50 transition"
+                    >
+                      <div className="flex justify-between items-center">
+                        <span className="font-semibold text-blue-600">{coupon.code}</span>
+                        <span className="text-sm text-slate-600">
+                          {coupon.discountType === "percentage" ? `${coupon.discountValue}%` : `${formatBaht(coupon.discountValue)}`}
+                        </span>
                       </div>
-
-                      <div className="min-w-0 flex-1 p-4">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="font-bold text-slate-900 truncate">{coupon.code}</p>
-                            <p className="mt-1 text-xs text-slate-500">
-                              Min. spend ฿{formatBaht(coupon.minPurchaseAmount)}
-                            </p>
-
-                            {coupon.remainingUsageCount !== null && (
-                              <p className="mt-1 text-xs text-slate-400">
-                                Remaining: {coupon.remainingUsageCount}
-                              </p>
-                            )}
-
-                            {coupon.expiresAt && (
-                              <p className="mt-1 text-xs text-slate-400">
-                                Expires: {new Date(coupon.expiresAt).toLocaleDateString("th-TH")}
-                              </p>
-                            )}
-                          </div>
-
-                          <Button
-                            type="button"
-                            size="sm"
-                            disabled={!coupon.canUse}
-                            onClick={() => handleApplyCoupon(coupon.code, coupon)}
-                            className="shrink-0"
-                          >
-                            Use
-                          </Button>
-                        </div>
-
-                        {!coupon.canUse && (
-                          <p className="mt-3 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-600">
-                            Buy ฿{formatBaht(coupon.needMoreAmount)} more to use this coupon.
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))
+                    </button>
+                  ))}
+                </div>
               )}
+
+              <Button onClick={() => setShowCouponPicker(false)} variant="outline" className="w-full">
+                {t("common.close")}
+              </Button>
             </CardContent>
           </Card>
+        </div>
+      )}
+
+      {showSlipUpload && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <Card className="w-full max-w-md my-8">
+            <CardHeader>
+              <CardTitle>{t("payment.uploadSlip")}</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
+                <p className="text-sm text-blue-700 mb-1">ยอดที่ต้องโอน</p>
+                <p className="text-2xl font-bold text-blue-900">{formatBaht(total)} {t("common.baht")}</p>
+              </div>
+
+              <div className="bg-amber-50 p-3 rounded-lg border border-amber-200 flex gap-2">
+                <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                <p className="text-sm text-amber-800">
+                  {t("payment.pdfNote") || "PDF files will be reviewed manually. JPG/PNG files may be auto-approved."}
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-slate-700">{t("payment.selectFile")}</label>
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,application/pdf"
+                  onChange={(e) => handleSlipFileSelect(e.target.files?.[0] || null)}
+                  disabled={isUploadingSlip}
+                  className="w-full px-3 py-2 border rounded text-sm"
+                />
+                <p className="text-xs text-slate-500">{t("payment.fileRequirements")}</p>
+
+                {selectedSlipFile && (
+                  <div className="bg-green-50 p-3 rounded border border-green-200 flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-green-700">{selectedSlipFile.name}</p>
+                      <p className="text-xs text-green-700">{(selectedSlipFile.size / 1024).toFixed(1)} KB</p>
+                    </div>
+                    <button
+                      onClick={() => handleSlipFileSelect(null)}
+                      className="text-green-600 hover:text-green-700 flex-shrink-0"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+
+                {slipPreview && (
+                  <div className="relative">
+                    <img src={slipPreview} alt="Preview" className="w-full h-48 object-cover rounded border" />
+                    <button
+                      onClick={() => setShowQRFullscreen(true)}
+                      className="absolute top-2 right-2 bg-white/80 hover:bg-white p-2 rounded"
+                    >
+                      <Maximize2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-2">
+                <Button
+                  onClick={handleCheckoutWithSlip}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700"
+                  disabled={!selectedSlipFile || isUploadingSlip}
+                >
+                  {isUploadingSlip ? t("common.uploading") : t("payment.uploadAndCheckout")}
+                </Button>
+                <Button
+                  onClick={() => {
+                    setShowSlipUpload(false);
+                    setSelectedSlipFile(null);
+                    setSlipPreview(null);
+                  }}
+                  variant="outline"
+                >
+                  {t("common.cancel")}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {showQRFullscreen && slipPreview && (
+        <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50 p-4">
+          <div className="relative max-w-2xl w-full">
+            <img src={slipPreview} alt="Full Preview" className="w-full h-auto rounded" />
+            <button
+              onClick={() => setShowQRFullscreen(false)}
+              className="absolute top-4 right-4 bg-white/80 hover:bg-white p-2 rounded"
+            >
+              <X className="w-6 h-6" />
+            </button>
+          </div>
         </div>
       )}
     </div>

@@ -34,17 +34,16 @@ export default function PaymentPage() {
 
 
 
-  const uploadPaymentSlipMutation = trpc.orders.uploadPaymentSlip.useMutation({
-    onSuccess: () => {
+  const uploadPaymentSlipMutation = trpc.payment.uploadSlip.useMutation({
+    onSuccess: (result) => {
       setIsUploading(false);
-      toast.success(t("payment.slipUploadSuccess"));
+      toast.success(result.userMessage);
       setSelectedFile(null);
-      // Redirect to orders page after successful upload
       navigate("/orders");
     },
     onError: (error) => {
       setIsUploading(false);
-      toast.error(t("payment.slipUploadError"));
+      toast.error(error?.message || t("payment.slipUploadError"));
     },
   });
 
@@ -73,7 +72,6 @@ export default function PaymentPage() {
 
     setIsUploading(true);
     try {
-      // Convert file to base64 and wait for it properly
       const base64 = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = (e) => {
@@ -84,40 +82,15 @@ export default function PaymentPage() {
         reader.readAsDataURL(selectedFile);
       });
 
-      // Upload to S3 via backend
-      const uploadResponse = await fetch("/api/upload", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          file: base64,
-          filename: selectedFile.name,
-          type: selectedFile.type,
-        }),
-      });
-
-      if (!uploadResponse.ok) {
-        const errorData = await uploadResponse.json().catch(() => ({}));
-        throw new Error(errorData.error || "Upload failed");
-      }
-
-      const uploadResult = await uploadResponse.json();
-      const url = uploadResult.url;
-      
-      if (!url) {
-        throw new Error("No upload URL returned");
-      }
-
-      console.log("Upload successful, URL:", url);
-
-      // Submit payment slip with the uploaded URL
       await uploadPaymentSlipMutation.mutateAsync({
+        slipImageUrl: base64,
         orderId: orderId || 0,
-        slipImageUrl: url,
+        context: "payment_page",
       });
     } catch (error) {
       console.error("Upload error:", error);
       setIsUploading(false);
-      toast.error(t("payment.uploadFailed"));
+      toast.error(error instanceof Error ? error.message : t("payment.uploadFailed"));
     }
   };
 

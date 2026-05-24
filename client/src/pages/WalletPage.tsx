@@ -23,6 +23,7 @@ export default function WalletPage() {
 
   const { data: summary, isLoading, refetch: refetchSummary } = trpc.wallet.getSummary.useQuery();
   const createTopupMutation = trpc.wallet.createTopupRequest.useMutation();
+  const uploadPaymentSlipMutation = trpc.payment.uploadSlip.useMutation();
 
   const handleFileSelect = (file: File | null) => {
     setSelectedFile(file);
@@ -77,7 +78,6 @@ export default function WalletPage() {
   };
 
   const uploadFile = async (file: File): Promise<string> => {
-    // Convert file to base64 and upload via JSON (same as PaymentPage)
     const base64 = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => {
@@ -88,19 +88,12 @@ export default function WalletPage() {
       reader.readAsDataURL(file);
     });
 
-    const response = await fetch("/api/upload", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        file: base64,
-        filename: file.name,
-        type: file.type,
-      }),
+    const result = await uploadPaymentSlipMutation.mutateAsync({
+      slipImageUrl: base64,
+      context: "wallet",
     });
 
-    if (!response.ok) throw new Error("Upload failed");
-    const data = await response.json();
-    return data.url;
+    return result.slipImageUrl;
   };
 
   if (isLoading) return <div className="p-4 text-center">{t("common.loading")}</div>;

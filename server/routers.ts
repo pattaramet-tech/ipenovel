@@ -38,6 +38,40 @@ function sanitizeUploadFileName(fileName: string): string {
   return fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
+function getSlipUploadMessage(result: any): string {
+  const { ocrDecision, reviewReason, isAutoApproved, duplicateStatus, ocrConfidence } = result;
+
+  if (isAutoApproved) {
+    return "Payment approved automatically! Your order is confirmed.";
+  }
+
+  if (duplicateStatus?.isDuplicateReference) {
+    return "This slip appears to be a duplicate. Please verify and contact support if needed.";
+  }
+
+  if (duplicateStatus?.isDuplicateFingerprint) {
+    return "This slip matches a previously submitted slip. Please verify and contact support if needed.";
+  }
+
+  if (ocrConfidence && ocrConfidence < 85) {
+    return `Your slip is being reviewed (confidence: ${ocrConfidence}%). We will notify you once approved.`;
+  }
+
+  if (reviewReason === "OCR_PROCESSING_ERROR") {
+    return "Your slip is being reviewed manually. We will notify you once approved.";
+  }
+
+  if (reviewReason === "PDF_SUBMITTED") {
+    return "PDF slips require manual review. We will notify you once approved.";
+  }
+
+  if (ocrDecision === "ocr_disabled") {
+    return "Your slip is being reviewed manually. We will notify you once approved.";
+  }
+
+  return "Your slip is being reviewed. We will notify you once approved.";
+}
+
   // ============ MAIN ROUTER ============
 
 const dashboardRouter = router({
@@ -483,6 +517,56 @@ export const appRouter = router({
         });
 
         return result;
+      }),
+  }),
+
+  // ============ PAYMENT SLIP UPLOAD (UNIFIED ENDPOINT) ============
+  payment: router({
+    uploadSlip: protectedProcedure
+      .input(
+        z.object({
+          slipImageUrl: z.string().min(1, "Payment slip is required"),
+          orderId: z.number().optional(), // For PaymentPage re-upload
+          context: z.enum(["checkout", "payment_page", "wallet"]).default("checkout"), // Where the upload came from
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        // Validate file type from URL (basic check)
+        const urlLower = input.slipImageUrl.toLowerCase();
+        const isPDF = urlLower.includes(".pdf") || input.slipImageUrl.includes("application/pdf");
+        const isImage = urlLower.includes(".jpg") || urlLower.includes(".jpeg") || urlLower.includes(".png");
+
+        // If PDF, warn user it will go to manual review
+        if (isPDF) {
+          console.log(`[Payment] PDF slip uploaded for context=${input.context}, will go to manual review`);
+        }
+
+        // For checkout context, we need an orderId
+        if (input.context === "checkout" && !input.orderId) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Order ID required for checkout context" });
+        }
+
+        // For payment_page context, we need an orderId
+        if (input.context === "payment_page" && !input.orderId) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Order ID required for payment page context" });
+        }
+
+        // Use shared slip submission service
+        const result = await submitPaymentSlip({
+          orderId: input.orderId || 0,
+          slipImageUrl: input.slipImageUrl,
+          userId: ctx.user.id,
+        });
+
+        // Enrich result with user-friendly message based on OCR decision
+        const userMessage = getSlipUploadMessage(result);
+
+        return {
+          ...result,
+          userMessage,
+          isPDF,
+          isImage,
+        };
       }),
   }),
 
