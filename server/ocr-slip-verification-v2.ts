@@ -134,7 +134,7 @@ export interface ExtractedSlipData {
   maskedAccount?: string;
   merchantCode?: string;
   merchantTransactionCode?: string;
-  billerId?: string;
+  receiverAccountOrId?: string; // KBank receiver account or biller ID
   confidence?: number;
   visionConfidence?: number;
   structuredConfidence?: number;
@@ -525,15 +525,15 @@ function extractMerchantTransactionCode(flattened: Record<string, any>, text: st
 }
 
 function extractBillerId(flattened: Record<string, any>, text: string): string | undefined {
-  let billerIdVal = getFieldBySuffixMatch(flattened, [
+  let receiverAccountOrIdVal = getFieldBySuffixMatch(flattened, [
     "biller_id",
-    "billerId",
+    "receiverAccountOrId",
     "รหัสบิลเลอร์",
     "Biller ID",
   ]);
 
-  if (billerIdVal) {
-    return String(billerIdVal).trim();
+  if (receiverAccountOrIdVal) {
+    return String(receiverAccountOrIdVal).trim();
   }
 
   const patterns = [
@@ -839,7 +839,7 @@ export function extractSlipData(ocrText: string, visionConfidence?: number): Ext
   const maskedAccount = extractMaskedAccount(flattened, text);
   const merchantCode = extractMerchantCode(flattened, text);
   const merchantTransactionCode = extractMerchantTransactionCode(flattened, text);
-  const billerId = extractBillerId(flattened, text);
+  const receiverAccountOrId = extractBillerId(flattened, text);
   const { code: detectedBank, name: detectedBankName } = detectBank(flattened, text);
 
   // ─── Confidence scoring ─────────────────────────────────────────────────
@@ -871,7 +871,7 @@ export function extractSlipData(ocrText: string, visionConfidence?: number): Ext
     reference,
     detectedBank,
     detectedBankName,
-    billerId,
+    receiverAccountOrId,
     shopName,
     maskedAccount,
     merchantCode,

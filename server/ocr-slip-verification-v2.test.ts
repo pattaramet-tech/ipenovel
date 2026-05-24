@@ -144,6 +144,7 @@ const SCB_PLAINTEXT_SAMPLE = `\`\`\`
 let testContext: OrderPaymentContext;
 
 beforeEach(() => {
+  // Default context for SCB plain text (transaction at 10:29 UTC)
   testContext = {
     orderId: 1,
     paymentId: 100,
@@ -153,6 +154,46 @@ beforeEach(() => {
     slipSubmittedAt: new Date("2026-05-23T10:35:00Z"), // Within 120-minute window of SCB plain text transaction (10:29)
   };
 });
+
+// Context for SCB JSON (transaction at 16:01 UTC)
+const contextSCBJson: OrderPaymentContext = {
+  orderId: 2,
+  paymentId: 101,
+  orderTotal: 100,
+  orderCreatedAt: new Date("2026-05-23T15:30:00Z"),
+  paymentCreatedAt: new Date("2026-05-23T15:35:00Z"),
+  slipSubmittedAt: new Date("2026-05-23T16:10:00Z"), // Within 120-minute window of SCB JSON transaction (16:01)
+};
+
+// Context for KBank nested (transaction at 15:48 UTC)
+const contextKBankNested: OrderPaymentContext = {
+  orderId: 3,
+  paymentId: 102,
+  orderTotal: 200,
+  orderCreatedAt: new Date("2026-05-23T15:15:00Z"),
+  paymentCreatedAt: new Date("2026-05-23T15:20:00Z"),
+  slipSubmittedAt: new Date("2026-05-23T15:55:00Z"), // Within 120-minute window of KBank nested transaction (15:48)
+};
+
+// Context for duplicate tests
+const contextDuplicate: OrderPaymentContext = {
+  orderId: 4,
+  paymentId: 103,
+  orderTotal: 100,
+  orderCreatedAt: new Date("2026-05-23T10:00:00Z"),
+  paymentCreatedAt: new Date("2026-05-23T10:05:00Z"),
+  slipSubmittedAt: new Date("2026-05-23T10:35:00Z"),
+};
+
+// Context for low confidence test
+const contextLowConfidence: OrderPaymentContext = {
+  orderId: 5,
+  paymentId: 104,
+  orderTotal: 100,
+  orderCreatedAt: new Date("2026-05-23T10:00:00Z"),
+  paymentCreatedAt: new Date("2026-05-23T10:05:00Z"),
+  slipSubmittedAt: new Date("2026-05-23T10:35:00Z"),
+};
 
 // ─── Test suite ───────────────────────────────────────────────────────────
 
@@ -218,7 +259,7 @@ describe("OCR Slip Verification v2 - Production Hardening", () => {
 
     it("should extract biller ID", () => {
       const extracted = extractSlipData(SCB_JSON_SAMPLE, 85);
-      expect(extracted.billerId).toBe("010753600031501");
+      expect(extracted.receiverAccountOrId).toBe("010753600031501");
     });
   });
 
@@ -377,7 +418,7 @@ describe("OCR Slip Verification v2 - Production Hardening", () => {
       }
     });
 
-    it.skip("should extract date from plain text Thai Buddhist year 2569", () => {
+    it("should extract date from plain text Thai Buddhist year 2569", () => {
       const extracted = extractSlipData(SCB_PLAINTEXT_SAMPLE, 85);
       expect(extracted.transactionDate).toBeDefined();
       if (extracted.transactionDate) {
@@ -387,7 +428,7 @@ describe("OCR Slip Verification v2 - Production Hardening", () => {
       }
     });
 
-    it.skip("should extract time 17:29 when date and time are separate fields", () => {
+    it("should extract time 17:29 when date and time are separate fields", () => {
       const extracted = extractSlipData(SCB_PLAINTEXT_SAMPLE, 85);
       expect(extracted.transactionDate).toBeDefined();
       if (extracted.transactionDateTime) {
@@ -421,7 +462,7 @@ describe("OCR Slip Verification v2 - Production Hardening", () => {
   describe("Thai Buddhist year parsing", () => {
     
     
-    it.skip("should parse short Buddhist year 69 → 2026", () => {
+    it("should parse short Buddhist year 69 → 2026", () => {
       const text = "23 พ.ค. 69 22:48 น.";
       const extracted = extractSlipData(text, 85);
       expect(extracted.transactionDate).toBeDefined();
@@ -430,7 +471,7 @@ describe("OCR Slip Verification v2 - Production Hardening", () => {
       }
     });
 
-    it.skip("should parse full Buddhist year 2569 → 2026", () => {
+    it("should parse full Buddhist year 2569 → 2026", () => {
       const text = "23 พ.ค. 2569";
       const extracted = extractSlipData(text, 85);
       expect(extracted.transactionDate).toBeDefined();
@@ -441,7 +482,7 @@ describe("OCR Slip Verification v2 - Production Hardening", () => {
   });
 
   describe("Timezone handling", () => {
-    it.skip("should convert Bangkok time to UTC correctly (22:48 Bangkok → 15:48 UTC)", () => {
+    it("should convert Bangkok time to UTC correctly (22:48 Bangkok → 15:48 UTC)", () => {
       const text = "23 พ.ค. 69 22:48 น.";
       const extracted = extractSlipData(text, 85);
       expect(extracted.transactionDate).toBeDefined();
@@ -482,11 +523,11 @@ describe("OCR Slip Verification v2 - Production Hardening", () => {
   });
 
   describe("verifySlipData - Auto-approval", () => {
-    it.skip("should auto-approve SCB JSON when amount matches, duplicate false, config enabled", () => {
+    it("should auto-approve SCB JSON when amount matches, duplicate false, config enabled", () => {
       const extracted = extractSlipData(SCB_JSON_SAMPLE, 85);
       const result = verifySlipData(
         extracted,
-        testContext,
+        contextSCBJson,
         new Set(),
         new Set(),
         85,
@@ -497,7 +538,7 @@ describe("OCR Slip Verification v2 - Production Hardening", () => {
       expect(result.status).toBe("approved");
     });
 
-    it.skip("should auto-approve SCB plain text when config allows and amount matches", () => {
+    it("should auto-approve SCB plain text when config allows and amount matches", () => {
       const extracted = extractSlipData(SCB_PLAINTEXT_SAMPLE, 85);
       const result = verifySlipData(
         extracted,
@@ -512,16 +553,11 @@ describe("OCR Slip Verification v2 - Production Hardening", () => {
       expect(result.status).toBe("approved");
     });
 
-    it.skip("should auto-approve KBank nested when amount matches and duplicate false", () => {
+    it("should auto-approve KBank nested when amount matches and duplicate false", () => {
       const extracted = extractSlipData(KBANK_NESTED_JSON_SAMPLE, 85);
-      const context: OrderPaymentContext = {
-        ...testContext,
-        orderTotal: 200,
-      };
-
       const result = verifySlipData(
         extracted,
-        context,
+        contextKBankNested,
         new Set(),
         new Set(),
         85,
@@ -534,12 +570,8 @@ describe("OCR Slip Verification v2 - Production Hardening", () => {
   });
 
   describe("verifySlipData - Duplicate detection", () => {
-    it.skip("should NOT auto-approve when duplicateFingerprint=true", () => {
+    it("should NOT auto-approve when duplicateFingerprint=true", () => {
       const extracted = extractSlipData(KBANK_NESTED_JSON_SAMPLE, 85);
-      const context: OrderPaymentContext = {
-        ...testContext,
-        orderTotal: 200,
-      };
 
       // Simulate existing duplicate fingerprint
       const fingerprint = generateFingerprint(extracted);
@@ -547,7 +579,7 @@ describe("OCR Slip Verification v2 - Production Hardening", () => {
 
       const result = verifySlipData(
         extracted,
-        context,
+        contextKBankNested,
         new Set(),
         existingFingerprints,
         85,
@@ -559,13 +591,13 @@ describe("OCR Slip Verification v2 - Production Hardening", () => {
       expect(result.reviewReason).toBe("DUPLICATE_FINGERPRINT");
     });
 
-    it.skip("should NOT auto-approve when duplicate reference exists", () => {
+    it("should NOT auto-approve when duplicate reference exists", () => {
       const extracted = extractSlipData(SCB_JSON_SAMPLE, 85);
       const existingReferences = new Set([extracted.reference!]);
 
       const result = verifySlipData(
         extracted,
-        testContext,
+        contextSCBJson,
         existingReferences,
         new Set(),
         85,
@@ -662,11 +694,11 @@ describe("OCR Slip Verification v2 - Production Hardening", () => {
       expect(result.reviewReason).toBe("MISSING_REFERENCE");
     });
 
-    it.skip("should return pending_review when confidence is below minimum", () => {
+    it("should return pending_review when confidence is below minimum", () => {
       const extracted = extractSlipData(SCB_JSON_SAMPLE, 50);
       const result = verifySlipData(
         extracted,
-        testContext,
+        contextSCBJson,
         new Set(),
         new Set(),
         85,
@@ -680,7 +712,7 @@ describe("OCR Slip Verification v2 - Production Hardening", () => {
     it("should return pending_review when transaction is outside time window", () => {
       const extracted = extractSlipData(SCB_JSON_SAMPLE, 85);
       const context: OrderPaymentContext = {
-        ...testContext,
+        ...contextSCBJson,
         slipSubmittedAt: new Date("2026-05-25T16:10:00Z"), // 2 days later
       };
 

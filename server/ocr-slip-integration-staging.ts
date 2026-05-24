@@ -36,7 +36,7 @@ export interface OCRVerificationResultStaging {
   fingerprint?: string; // NEW: Add fingerprint from verification
   breakdown?: any;
   ocrConfidence?: number;
-  ocrDecision?: "auto_approved" | "needs_review" | "rejected" | "ocr_disabled" | "shadow_auto_approved"; // NEW: Add OCR decision state
+  ocrDecision?: "auto_approved" | "needs_review" | "rejected" | "ocr_disabled" | "shadow_auto_approved" | "ocr_processing_error"; // NEW: Add OCR decision state
   detectedBank?: string;
   duplicateStatus?: {
     isDuplicateReference: boolean;
