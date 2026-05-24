@@ -34,10 +34,11 @@ export default function PaymentPage() {
 
 
 
-  const uploadPaymentSlipMutation = trpc.payment.uploadSlip.useMutation({
-    onSuccess: (result) => {
+  const uploadSlipFileMutation = trpc.payment.uploadSlipFile.useMutation();
+  const submitPaymentSlipMutation = trpc.orders.uploadPaymentSlip.useMutation({
+    onSuccess: () => {
       setIsUploading(false);
-      toast.success(result.userMessage);
+      toast.success(t("payment.slipUploadSuccess"));
       setSelectedFile(null);
       navigate("/orders");
     },
@@ -82,11 +83,22 @@ export default function PaymentPage() {
         reader.readAsDataURL(selectedFile);
       });
 
-      await uploadPaymentSlipMutation.mutateAsync({
-        slipImageUrl: base64,
-        orderId: orderId || 0,
+      // Step 1: Upload file to S3
+      const mimeType = selectedFile.type as "image/jpeg" | "image/png" | "application/pdf";
+      const uploadResult = await uploadSlipFileMutation.mutateAsync({
+        fileName: selectedFile.name,
+        mimeType,
+        fileBase64: base64,
         context: "payment_page",
       });
+
+      // Step 2: Submit uploaded slip to order
+      await submitPaymentSlipMutation.mutateAsync({
+        orderId: orderId || 0,
+        slipImageUrl: uploadResult.slipImageUrl,
+      });
+
+      toast.success(uploadResult.userMessage);
     } catch (error) {
       console.error("Upload error:", error);
       setIsUploading(false);

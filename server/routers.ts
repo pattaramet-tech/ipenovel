@@ -10,6 +10,7 @@ import * as orderService from "./services/orderService";
 import * as walletService from "./services/walletService";
 import { ApprovalService } from "./services/approvalService";
 import { submitPaymentSlip } from "./services/slipSubmissionService";
+import { uploadPaymentSlipFile } from "./services/slipFileUploadService";
 import { fileRouter } from "./routers/fileRouter";
 import { ocrMetricsRouter } from "./routers/ocrMetricsRouter";
 import { storagePut } from "./storage";
@@ -520,53 +521,28 @@ export const appRouter = router({
       }),
   }),
 
-  // ============ PAYMENT SLIP UPLOAD (UNIFIED ENDPOINT) ============
+  // ============ PAYMENT SLIP FILE UPLOAD (REAL S3 UPLOAD) ============
   payment: router({
-    uploadSlip: protectedProcedure
+    uploadSlipFile: protectedProcedure
       .input(
         z.object({
-          slipImageUrl: z.string().min(1, "Payment slip is required"),
-          orderId: z.number().optional(), // For PaymentPage re-upload
-          context: z.enum(["checkout", "payment_page", "wallet"]).default("checkout"), // Where the upload came from
+          fileName: z.string().min(1, "File name required"),
+          mimeType: z.enum(["image/jpeg", "image/png", "application/pdf"]),
+          fileBase64: z.string().min(1, "File data required"),
+          context: z.enum(["checkout", "payment_page", "wallet"]).default("checkout"),
         })
       )
       .mutation(async ({ input, ctx }) => {
-        // Validate file type from URL (basic check)
-        const urlLower = input.slipImageUrl.toLowerCase();
-        const isPDF = urlLower.includes(".pdf") || input.slipImageUrl.includes("application/pdf");
-        const isImage = urlLower.includes(".jpg") || urlLower.includes(".jpeg") || urlLower.includes(".png");
-
-        // If PDF, warn user it will go to manual review
-        if (isPDF) {
-          console.log(`[Payment] PDF slip uploaded for context=${input.context}, will go to manual review`);
-        }
-
-        // For checkout context, we need an orderId
-        if (input.context === "checkout" && !input.orderId) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "Order ID required for checkout context" });
-        }
-
-        // For payment_page context, we need an orderId
-        if (input.context === "payment_page" && !input.orderId) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "Order ID required for payment page context" });
-        }
-
-        // Use shared slip submission service
-        const result = await submitPaymentSlip({
-          orderId: input.orderId || 0,
-          slipImageUrl: input.slipImageUrl,
+        // Upload file to S3 using shared service
+        const result = await uploadPaymentSlipFile({
           userId: ctx.user.id,
+          fileName: input.fileName,
+          mimeType: input.mimeType,
+          fileBase64: input.fileBase64,
+          context: input.context,
         });
 
-        // Enrich result with user-friendly message based on OCR decision
-        const userMessage = getSlipUploadMessage(result);
-
-        return {
-          ...result,
-          userMessage,
-          isPDF,
-          isImage,
-        };
+        return result;
       }),
   }),
 

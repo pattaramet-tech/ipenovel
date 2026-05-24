@@ -23,7 +23,7 @@ export default function WalletPage() {
 
   const { data: summary, isLoading, refetch: refetchSummary } = trpc.wallet.getSummary.useQuery();
   const createTopupMutation = trpc.wallet.createTopupRequest.useMutation();
-  const uploadPaymentSlipMutation = trpc.payment.uploadSlip.useMutation();
+  const uploadSlipFileMutation = trpc.payment.uploadSlipFile.useMutation();
 
   const handleFileSelect = (file: File | null) => {
     setSelectedFile(file);
@@ -88,8 +88,11 @@ export default function WalletPage() {
       reader.readAsDataURL(file);
     });
 
-    const result = await uploadPaymentSlipMutation.mutateAsync({
-      slipImageUrl: base64,
+    const mimeType = file.type as "image/jpeg" | "image/png" | "application/pdf";
+    const result = await uploadSlipFileMutation.mutateAsync({
+      fileName: file.name,
+      mimeType,
+      fileBase64: base64,
       context: "wallet",
     });
 

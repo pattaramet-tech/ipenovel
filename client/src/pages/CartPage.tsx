@@ -138,7 +138,7 @@ export default function CartPage() {
     },
   });
 
-  const uploadPaymentSlipMutation = trpc.payment.uploadSlip.useMutation();
+  const uploadSlipFileMutation = trpc.payment.uploadSlipFile.useMutation();
 
   const fileToBase64 = async (file: File): Promise<string> => {
     return new Promise<string>((resolve, reject) => {
@@ -194,19 +194,25 @@ export default function CartPage() {
     try {
       setIsUploadingSlip(true);
 
+      // Step 1: Upload file to S3
       const base64 = await fileToBase64(selectedSlipFile);
-      const uploadResult = await uploadPaymentSlipMutation.mutateAsync({
-        slipImageUrl: base64,
+      const mimeType = selectedSlipFile.type as "image/jpeg" | "image/png" | "application/pdf";
+      const uploadResult = await uploadSlipFileMutation.mutateAsync({
+        fileName: selectedSlipFile.name,
+        mimeType,
+        fileBase64: base64,
         context: "checkout",
       });
 
-      toast.success(uploadResult.userMessage);
-
-      await createOrderMutation.mutateAsync({
+      // Step 2: Create order with the uploaded slip URL
+      const orderResult = await createOrderMutation.mutateAsync({
         couponCode: appliedCouponCode || undefined,
         pointsToRedeem: safePointsToRedeem > 0 ? safePointsToRedeem.toFixed(2) : undefined,
         slipImageUrl: uploadResult.slipImageUrl,
       });
+
+      // Show user-friendly message based on OCR result
+      toast.success(uploadResult.userMessage);
     } catch (error: any) {
       toast.error(error?.message || t("payment.uploadFailed"));
     } finally {
