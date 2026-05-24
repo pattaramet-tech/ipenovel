@@ -179,6 +179,7 @@ export interface ParseSlipImageResult {
   text: string;
   ocrConfidence: number;
   warnings: string[];
+  technicalError?: boolean; // true if OCR/LLM technical error occurred
 }
 
 // ─── Fenced JSON parsing with trailing text support ────────────────────────────
@@ -1124,6 +1125,7 @@ Do NOT translate or interpret — just extract the raw text.`,
       text: "",
       ocrConfidence: 0,
       warnings: ["Error parsing image - check URL and image format"],
+      technicalError: true, // Flag OCR/LLM technical failure
     };
   }
 }

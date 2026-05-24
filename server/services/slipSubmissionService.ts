@@ -93,10 +93,32 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
     try {
       // Extract OCR text from slip image (returns structured result with confidence)
       const slipOcrResult = await parseSlipImage(input.slipImageUrl);
-      // Process slip verification with staging enhancements (shadow mode, metrics)
-      verificationResult = await processSlipVerificationStaging(payment.id, slipOcrResult);
-      // Determine if we should actually approve or just simulate
-      shouldApprove = verificationResult.isAutoApproved && !verificationResult.isShadowMode;
+      
+      // Check if OCR/LLM technical error occurred
+      if (slipOcrResult.technicalError) {
+        console.error(`[OCR] Technical error detected for order ${order.id}`);
+        verificationResult = {
+          isAutoApproved: false,
+          isShadowMode: false,
+          reviewReason: "OCR_PROCESSING_ERROR",
+          ocrConfidence: 0,
+          detectedBank: null,
+          extractedData: null,
+          breakdown: { reason: "OCR processing failed. Slip sent to manual review." },
+          duplicateStatus: {
+            isDuplicateReference: false,
+            isDuplicateFingerprint: false,
+          },
+          ocrDecision: "needs_review",
+          fingerprint: null,
+        };
+        shouldApprove = false;
+      } else {
+        // Process slip verification with staging enhancements (shadow mode, metrics)
+        verificationResult = await processSlipVerificationStaging(payment.id, slipOcrResult);
+        // Determine if we should actually approve or just simulate
+        shouldApprove = verificationResult.isAutoApproved && !verificationResult.isShadowMode;
+      }
     } catch (ocrError) {
       // OCR technical error: send to manual review instead of crashing
       console.error(`[OCR] Technical error processing slip for order ${order.id}:`, ocrError);

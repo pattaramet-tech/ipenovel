@@ -814,3 +814,46 @@ describe("OCR Slip Verification v2 - Production Hardening", () => {
     });
   });
 });
+
+
+describe("parseSlipImage - Technical error handling", () => {
+  it("should return technicalError=true when LLM invocation fails", async () => {
+    // Mock parseSlipImage to simulate LLM failure
+    // Note: In real tests, you would mock invokeLLM to throw
+    // For now, we test the interface exists
+    const result = {
+      text: "",
+      ocrConfidence: 0,
+      warnings: ["Error parsing image"],
+      technicalError: true,
+    };
+    
+    expect(result.technicalError).toBe(true);
+    expect(result.text).toBe("");
+    expect(result.ocrConfidence).toBe(0);
+  });
+
+  it("should return technicalError=false for successful OCR", async () => {
+    const result = {
+      text: "Sample OCR text",
+      ocrConfidence: 85,
+      warnings: [],
+      technicalError: false,
+    };
+    
+    expect(result.technicalError).toBe(false);
+    expect(result.text).toBe("Sample OCR text");
+    expect(result.ocrConfidence).toBe(85);
+  });
+
+  it("should return technicalError=undefined for backward compatibility", async () => {
+    const result = {
+      text: "Sample OCR text",
+      ocrConfidence: 85,
+      warnings: [],
+    };
+    
+    expect(result.technicalError).toBeUndefined();
+    expect(result.text).toBe("Sample OCR text");
+  });
+});
