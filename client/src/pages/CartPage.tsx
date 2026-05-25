@@ -19,6 +19,7 @@ import {
 import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { useEffect, useState } from "react";
+import { QR_PAYMENT_IMAGE, PAYMENT_DETAILS } from "@/constants/payment";
 
 export default function CartPage() {
   const { isAuthenticated, user } = useAuth();
@@ -298,9 +299,14 @@ export default function CartPage() {
                 <CardContent className="pt-6">
                   <div className="flex justify-between items-start">
                     <div className="flex-1">
-                      <h3 className="font-semibold text-lg">{item.novelTitle}</h3>
-                      <p className="text-sm text-slate-600">{item.episodeTitle}</p>
-                      <p className="text-sm text-slate-500 mt-1">{t("common.episode")}: {item.episodeNumber}</p>
+                      <h3 className="font-semibold text-lg">{item.novel?.title || t("cart.selectedItem")}</h3>
+                      <p className="text-sm text-slate-600">
+                        {item.episode?.episodeNumber && item.episode?.title
+                          ? `ตอนที่ ${item.episode.episodeNumber}: ${item.episode.title}`
+                          : item.episode?.episodeNumber
+                          ? `ตอนที่ ${item.episode.episodeNumber}`
+                          : t("cart.selectedItem")}
+                      </p>
                     </div>
                     <div className="text-right">
                       <p className="font-bold text-lg">{formatBaht(item.price)} {t("common.baht")}</p>
@@ -451,10 +457,24 @@ export default function CartPage() {
                 <p className="text-2xl font-bold text-blue-900">{formatBaht(total)} {t("common.baht")}</p>
               </div>
 
+              <div className="bg-white p-4 rounded-lg border border-slate-200">
+                <p className="text-sm font-medium text-slate-700 mb-3">{t("payment.qrPayment")}</p>
+                <img src={QR_PAYMENT_IMAGE} alt="QR Code" className="w-48 h-48 mx-auto rounded" />
+              </div>
+
+              <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 text-sm">
+                <p className="font-medium text-slate-700 mb-2">{t("payment.bankDetails")}</p>
+                <div className="space-y-1 text-slate-600 text-xs">
+                  <p><span className="font-medium">ธนาคาร:</span> {PAYMENT_DETAILS.bankName}</p>
+                  <p><span className="font-medium">ชื่อบัญชี:</span> {PAYMENT_DETAILS.accountName}</p>
+                  <p><span className="font-medium">เลขบัญชี:</span> {PAYMENT_DETAILS.accountNumber}</p>
+                </div>
+              </div>
+
               <div className="bg-amber-50 p-3 rounded-lg border border-amber-200 flex gap-2">
                 <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
                 <p className="text-sm text-amber-800">
-                  {t("payment.pdfNote") || "PDF files will be reviewed manually. JPG/PNG files may be auto-approved."}
+                  {t("payment.pdfNote")}
                 </p>
               </div>
 

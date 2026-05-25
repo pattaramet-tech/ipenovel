@@ -1304,3 +1304,15 @@
 - [ ] Test all three upload paths with unified endpoint
 - [x] Verify error messages display correctly for each OCR result (getSlipUploadMessage helper)
 - [ ] Run full test suite (target: 233+ tests passing)
+
+
+## UI Regression Fixes (Phase 3 - May 25, 2026)
+- [ ] Restore QR payment display in CartPage slip upload modal
+- [ ] Move QR image to shared constant (client/src/constants/payment.ts)
+- [ ] Fix cart item title rendering to use item.novel?.title and item.episode?.title
+- [ ] Add missing i18n keys (payment.pdfNote, payment.autoApprovedMessage, etc.)
+- [ ] Replace hardcoded English toast messages with i18n keys
+- [ ] Fix all user login links to use getLoginUrl() instead of /login
+- [ ] Add login button to unauthenticated CartPage state
+- [ ] Audit all pages for raw i18n keys and fix
+- [ ] Run tests, build, and create VERIFY_UI_FIXES.md

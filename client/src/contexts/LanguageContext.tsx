@@ -169,6 +169,14 @@ const translations: Record<Language, Record<string, string>> = {
     "payment.invalidOrder": "ลำดับที่คำสั่งซื้อไม่ถูกต้อง",
     "payment.pfNote": "กรุณาโอนเงินตามยอดที่แสดง แล้วอัปโหลดสลิปเพื่อยืนยันการชำระเงิน",
     "payment.uploadAndCheckout": "อัปโหลดสลิปและยืนยันคำสั่งซื้อ",
+    "payment.bankDetails": "รายละเอียดธนาคาร",
+    "payment.pdfNote": "ไฟล์ PDF จะถูกตรวจสอบด้วยตนเอง ไฟล์ JPG/PNG อาจได้รับการอนุมัติโดยอัตโนมัติ",
+    "payment.autoApprovedMessage": "ชำระเงินได้รับการอนุมัติโดยอัตโนมัติ",
+    "payment.manualReviewMessage": "ชำระเงินรอการตรวจสอบจากผู้ดูแล",
+    "payment.ocrErrorMessage": "ไม่สามารถตรวจสอบสลิป กรุณาลองใหม่",
+    "payment.duplicateMessage": "สลิปนี้ถูกส่งแล้ว กรุณาอัปโหลดสลิปใหม่",
+    "payment.lowConfidenceMessage": "ไม่สามารถตรวจสอบสลิปได้ชัดเจน กรุณาอัปโหลดสลิปใหม่",
+    "cart.selectedItem": "รายการที่เลือก",
 
     // Admin
     "admin.dashboard": "แดชบอร์ด",
@@ -482,6 +490,14 @@ const translations: Record<Language, Record<string, string>> = {
     "payment.invalidOrder": "Invalid order ID",
     "payment.pfNote": "Please transfer the exact amount shown, then upload the payment slip to confirm the transaction",
     "payment.uploadAndCheckout": "Upload Slip and Confirm Order",
+    "payment.bankDetails": "Bank Details",
+    "payment.pdfNote": "PDF files will be reviewed manually. JPG/PNG files may be auto-approved.",
+    "payment.autoApprovedMessage": "Payment auto-approved",
+    "payment.manualReviewMessage": "Payment pending manual review",
+    "payment.ocrErrorMessage": "Unable to verify payment slip. Please try again.",
+    "payment.duplicateMessage": "This payment slip has already been submitted. Please upload a new one.",
+    "payment.lowConfidenceMessage": "Unable to clearly verify the payment slip. Please upload a new one.",
+    "cart.selectedItem": "Selected item",
 
     // Admin
     "admin.dashboard": "Dashboard",
