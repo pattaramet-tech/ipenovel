@@ -3,6 +3,7 @@ import { sportsMatchRewards } from "../../drizzle/schema";
 
 import { ApprovalService } from "./approvalService";
 import { eq } from "drizzle-orm";
+import { normalizeMoneyAmount, formatMoney } from "../helpers/moneyNormalizer";
 
 /**
  * Generate order number in MMDDNNNNNNN format
@@ -69,8 +70,8 @@ export async function validateAndApplyCoupon(couponCode: string, subtotal: strin
     throw new Error("Coupon usage limit reached");
   }
 
-  const subtotalNum = parseFloat(subtotal);
-  const minPurchase = coupon.minPurchaseAmount ? parseFloat(String(coupon.minPurchaseAmount).trim()) : 0;
+  const subtotalNum = normalizeMoneyAmount(subtotal, "subtotal");
+  const minPurchase = coupon.minPurchaseAmount ? normalizeMoneyAmount(coupon.minPurchaseAmount, "minPurchaseAmount") : 0;
 
   if (subtotalNum < minPurchase) {
     throw new Error(`Minimum purchase amount of ฿${minPurchase.toFixed(2)} required`);
@@ -84,10 +85,10 @@ export async function validateAndApplyCoupon(couponCode: string, subtotal: strin
   let discountAmount = "0.00";
 
   if (coupon.discountType === "flat") {
-    discountAmount = Math.min(subtotalNum, discountValue).toFixed(2);
+    discountAmount = formatMoney(Math.min(subtotalNum, discountValue), "discountAmount");
   } else if (coupon.discountType === "percentage") {
     const percentDiscount = (subtotalNum * discountValue) / 100;
-    discountAmount = percentDiscount.toFixed(2);
+    discountAmount = formatMoney(percentDiscount, "percentDiscount");
   }
 
   return { discountAmount, coupon, normalizedCode };
@@ -173,12 +174,14 @@ export async function createOrderFromCart(
     if (requestedPoints > 0) {
       // Validate user has enough points
       const balanceStr = await db.getUserPointsBalance(userIdNumParsed, tx);
-      const balance = parseFloat(balanceStr);
+      const balance = normalizeMoneyAmount(balanceStr, "pointsBalance");
       if (requestedPoints > balance) {
         throw new Error(`Insufficient points balance. You have ${balance.toFixed(2)} points.`);
       }
       // Points cannot exceed subtotal - couponDiscount
-      const maxPointsDiscount = Math.max(0, subtotal - discountAmount);
+      const subtotalNum = normalizeMoneyAmount(subtotal, "subtotal");
+      const discountNum = normalizeMoneyAmount(discountAmount, "discountAmount");
+      const maxPointsDiscount = Math.max(0, subtotalNum - discountNum);
       if (requestedPoints > maxPointsDiscount) {
         throw new Error(`Points cannot exceed remaining balance of ${maxPointsDiscount.toFixed(2)}.`);
       }
@@ -306,18 +309,18 @@ export async function finalizeOrderCompletion(orderId: number, userId: number, t
   }
 
   // 1. Deduct redeemed points (if any) - only if not already deducted
-  const pointsDiscountNum = parseFloat(order.pointsDiscountAmount?.toString() || "0");
+  const pointsDiscountNum = normalizeMoneyAmount(order.pointsDiscountAmount?.toString() || "0", "pointsDiscountAmount");
   if (pointsDiscountNum > 0) {
     const alreadyDeducted = await db.hasPointsBeenRedeemedForOrder(orderId, tx);
     if (!alreadyDeducted) {
       const currentBalanceStr = await db.getUserPointsBalance(userId, tx);
-      const currentBalance = parseFloat(currentBalanceStr);
+      const currentBalance = normalizeMoneyAmount(currentBalanceStr, "currentBalance");
       const newBalance = Math.max(0, currentBalance - pointsDiscountNum);
       await db.recordPointsTransaction({
         userId,
         type: "redeem",
-        amount: pointsDiscountNum.toString(),
-        balanceAfter: newBalance.toFixed(2),
+        amount: formatMoney(pointsDiscountNum, "pointsDiscountNum"),
+        balanceAfter: formatMoney(newBalance, "newBalance"),
         referenceType: "order",
         referenceId: orderId,
         note: `Points redeemed for order ${order.orderNumber}`,
@@ -365,7 +368,7 @@ async function awardPointsForOrder(orderId: number, userId: number, amount: stri
   }
 
   // Calculate points: 100 currency units = 1 point
-  const amountNum = parseFloat(amount);
+  const amountNum = normalizeMoneyAmount(amount, "amount");
   const pointsToAward = Math.floor(amountNum / 100);
 
   if (pointsToAward <= 0) {
@@ -375,8 +378,8 @@ async function awardPointsForOrder(orderId: number, userId: number, amount: stri
 
   // Get current balance
   const currentBalance = await db.getUserPointsBalance(userId, tx);
-  const currentBalanceNum = parseFloat(currentBalance);
-  const newBalance = (currentBalanceNum + pointsToAward).toFixed(2);
+  const currentBalanceNum = normalizeMoneyAmount(currentBalance, "currentBalance");
+  const newBalance = formatMoney(currentBalanceNum + pointsToAward, "newBalance");
 
   // Record the transaction
   await db.recordPointsTransaction({
@@ -448,12 +451,12 @@ export async function calculatePointsRedemption(
   tx?: any
 ): Promise<{ pointsToRedeem: number; pointsDiscount: string }> {
   const balance = await db.getUserPointsBalance(userId, tx);
-  const balanceNum = parseFloat(balance || "0");
-  const subtotalNum = parseFloat(subtotal);
+  const balanceNum = normalizeMoneyAmount(balance || "0", "balance");
+  const subtotalNum = normalizeMoneyAmount(subtotal, "subtotal");
 
   // Cap redemption at the lower of balance or subtotal
   const pointsToRedeem = Math.min(Math.floor(balanceNum), Math.floor(subtotalNum));
-  const pointsDiscount = pointsToRedeem.toFixed(2);
+  const pointsDiscount = formatMoney(pointsToRedeem, "pointsDiscount");
 
   return { pointsToRedeem, pointsDiscount };
 }

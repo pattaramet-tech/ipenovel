@@ -1316,3 +1316,15 @@
 - [ ] Add login button to unauthenticated CartPage state
 - [ ] Audit all pages for raw i18n keys and fix
 - [ ] Run tests, build, and create VERIFY_UI_FIXES.md
+
+
+## Money Normalization Fix (Phase 1-8)
+
+- [x] Phase 1: Audit all .toFixed() usages in OCR and payment files
+- [x] Phase 2: Create normalizeMoneyAmount() and formatMoney() helpers
+- [x] Phase 3: Fix ocr-slip-verification-v2.ts to use normalized amounts
+- [x] Phase 4: Fix payment submission services to normalize amounts
+- [x] Phase 5: Add unit tests for normalization helpers and edge cases (31/31 tests passing)
+- [x] Phase 6: Test frontend regression after slip upload (TypeScript clean, build clean)
+- [x] Phase 7: Run full test suite and build verification
+- [ ] Phase 8: Update VERIFY_PAYMENT_UPLOAD.md with root cause analysis

@@ -1,5 +1,6 @@
 import { invokeLLM } from "./_core/llm";
 import crypto from "crypto";
+import { formatMoney } from "./helpers/moneyNormalizer";
 
 /**
  * OCR Slip Verification System — Production Hardened
@@ -920,28 +921,31 @@ export function generateFingerprint(extracted: ExtractedSlipData): string {
 
   if (extracted.reference) {
     // Primary: reference-based (most reliable)
+    const amountStr = extracted.amount !== undefined ? formatMoney(extracted.amount, "amount") : "";
     fingerprintData = [
       extracted.reference,
-      extracted.amount !== undefined ? extracted.amount.toFixed(2) : "",
+      amountStr,
       extracted.transactionDate
         ? extracted.transactionDate.toISOString().split("T")[0]
         : "",
     ].join("|");
   } else if (extracted.detectedBank && extracted.maskedAccount) {
     // Fallback: bank + account + amount + date
+    const amountStr = extracted.amount !== undefined ? formatMoney(extracted.amount, "amount") : "";
     fingerprintData = [
       extracted.detectedBank,
       extracted.maskedAccount,
-      extracted.amount !== undefined ? extracted.amount.toFixed(2) : "",
+      amountStr,
       extracted.transactionDate
         ? extracted.transactionDate.toISOString().split("T")[0]
         : "",
     ].join("|");
   } else {
     // Tertiary: shop + amount + date
+    const amountStr = extracted.amount !== undefined ? formatMoney(extracted.amount, "amount") : "";
     fingerprintData = [
       extracted.shopName ?? "",
-      extracted.amount !== undefined ? extracted.amount.toFixed(2) : "",
+      amountStr,
       extracted.transactionDate
         ? extracted.transactionDate.toISOString().split("T")[0]
         : "",
@@ -983,6 +987,18 @@ export function verifySlipData(
     breakdown,
   };
 
+  // Normalize orderTotal once at the start
+  let normalizedOrderTotal: number;
+  try {
+    const orderTotalStr = formatMoney(context.orderTotal, "orderTotal");
+    normalizedOrderTotal = Number(orderTotalStr);
+  } catch (e) {
+    // If normalization fails, send to manual review
+    result.reviewReason = "INVALID_PAYMENT_AMOUNT";
+    breakdown.failureReason = `Failed to normalize order total: ${String(context.orderTotal)}`;
+    return result;
+  }
+
   // ===== CRITICAL CHECKS (HARD FAIL → pending_review) ======================
 
   if (!extracted.amount) {
@@ -991,9 +1007,9 @@ export function verifySlipData(
     return result;
   }
 
-  if (Math.abs(extracted.amount - context.orderTotal) > 0.01) {
+  if (Math.abs(extracted.amount - normalizedOrderTotal) > 0.01) {
     result.reviewReason = "AMOUNT_MISMATCH";
-    breakdown.failureReason = `Amount mismatch: slip=${extracted.amount}, order=${context.orderTotal}`;
+    breakdown.failureReason = `Amount mismatch: slip=${extracted.amount}, order=${normalizedOrderTotal}`;
     return result;
   }
   breakdown.amountMatched = true;

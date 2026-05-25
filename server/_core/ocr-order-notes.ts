@@ -8,6 +8,7 @@
  */
 
 import { VerificationBreakdown } from "../ocr-slip-verification-v2";
+import { formatMoney } from "../helpers/moneyNormalizer";
 
 export interface OrderNoteContext {
   isAutoApproved: boolean;
@@ -58,9 +59,14 @@ export function generateApprovalNote(context: OrderNoteContext): string {
 
   // Amount verification
   if (context.extractedAmount !== undefined && context.orderTotal !== undefined) {
-    lines.push(
-      `• Amount: ฿${context.extractedAmount.toFixed(2)} (matches order exactly)`
-    );
+    try {
+      const formattedAmount = formatMoney(context.extractedAmount, "extractedAmount");
+      lines.push(
+        `• Amount: ฿${formattedAmount} (matches order exactly)`
+      );
+    } catch (e) {
+      // Silently skip if normalization fails
+    }
   }
 
   // Date verification
@@ -154,14 +160,22 @@ export function generateManualReviewNote(context: OrderNoteContext): string {
 
   // Amount details
   if (context.extractedAmount !== undefined && context.orderTotal !== undefined) {
-    const diff = context.orderTotal - context.extractedAmount;
-    if (Math.abs(diff) > 0.01) {
-      const sign = diff > 0 ? "short" : "over";
-      lines.push(`• Amount: ฿${context.extractedAmount.toFixed(2)} (extracted from slip)`);
-      lines.push(`• Expected: ฿${context.orderTotal.toFixed(2)} (order total)`);
-      lines.push(`• Mismatch: ฿${Math.abs(diff).toFixed(2)} ${sign}`);
-    } else {
-      lines.push(`• Amount: ฿${context.extractedAmount.toFixed(2)} (matches order)`);
+    try {
+      const extractedFormatted = formatMoney(context.extractedAmount, "extractedAmount");
+      const orderFormatted = formatMoney(context.orderTotal, "orderTotal");
+      const extractedNum = Number(extractedFormatted);
+      const orderNum = Number(orderFormatted);
+      const diff = orderNum - extractedNum;
+      if (Math.abs(diff) > 0.01) {
+        const sign = diff > 0 ? "short" : "over";
+        lines.push(`• Amount: ฿${extractedFormatted} (extracted from slip)`);
+        lines.push(`• Expected: ฿${orderFormatted} (order total)`);
+        lines.push(`• Mismatch: ฿${Math.abs(diff).toFixed(2)} ${sign}`);
+      } else {
+        lines.push(`• Amount: ฿${extractedFormatted} (matches order)`);
+      }
+    } catch (e) {
+      // Silently skip if normalization fails
     }
   }
 
@@ -232,9 +246,14 @@ export function generateShadowModeNote(context: OrderNoteContext): string {
 
   // Amount verification
   if (context.extractedAmount !== undefined && context.orderTotal !== undefined) {
-    lines.push(
-      `• Amount: ฿${context.extractedAmount.toFixed(2)} (matches order)`
-    );
+    try {
+      const formattedAmount = formatMoney(context.extractedAmount, "extractedAmount");
+      lines.push(
+        `• Amount: ฿${formattedAmount} (matches order)`
+      );
+    } catch (e) {
+      // Silently skip if normalization fails
+    }
   }
 
   // Date verification
