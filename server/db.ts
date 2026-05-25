@@ -1020,10 +1020,15 @@ export async function getActiveCouponsForCart(subtotal?: string | number, userId
         .where(eq(sportsMatchRewards.couponId, coupon.id))
         .limit(1);
 
-      // Include coupon if it's not a reward coupon, or if it belongs to this user
-      if (rewardCheck.length === 0 || rewardCheck[0].userId === userId) {
+      // Include coupon if it's not a reward coupon, or if it belongs to this user AND has issued status
+      if (rewardCheck.length === 0) {
+        // Not a sports reward coupon, include it
+        filteredResult.push(coupon);
+      } else if (rewardCheck[0].userId === userId && rewardCheck[0].status === "issued") {
+        // Sports reward coupon that belongs to this user and is still issued (not used/expired/void)
         filteredResult.push(coupon);
       }
+      // Otherwise exclude: either belongs to different user, or status is used/expired/void
     }
   }
 
@@ -3128,31 +3133,14 @@ export async function createSportsMatch(data: {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  // Validate numeric fields
-  const voteCostPointsStr = (data.voteCostPoints || "0").trim();
-  const numericRegex = /^\d+(\.\d+)?$/;
-  if (!numericRegex.test(voteCostPointsStr)) throw new Error("voteCostPoints must be a valid number");
-  const voteCostPoints = parseFloat(voteCostPointsStr);
-  if (!Number.isFinite(voteCostPoints) || voteCostPoints < 0) {
-    throw new Error("voteCostPoints must be a finite number >= 0");
-  }
+  // Validate numeric fields using shared strict helpers
+  const voteCostPoints = parseStrictNonNegativeDecimal(data.voteCostPoints, "voteCostPoints");
+  const rewardDiscountValue = parseStrictPositiveDecimal(data.rewardDiscountValue, "rewardDiscountValue");
+  const minPurchaseAmount = parseStrictNonNegativeDecimal(data.rewardMinPurchaseAmount, "rewardMinPurchaseAmount");
 
-  const rewardDiscountValueStr = (data.rewardDiscountValue || "0").trim();
-  if (!numericRegex.test(rewardDiscountValueStr)) throw new Error("rewardDiscountValue must be a valid number");
-  const rewardDiscountValue = parseFloat(rewardDiscountValueStr);
-  if (!Number.isFinite(rewardDiscountValue) || rewardDiscountValue <= 0) {
-    throw new Error("rewardDiscountValue must be a finite number > 0");
-  }
-
+  // Validate discount percentage
   if (data.rewardDiscountType === "percentage" && rewardDiscountValue > 100) {
     throw new Error("Percentage discount cannot exceed 100");
-  }
-
-  const minPurchaseAmountStr = (data.rewardMinPurchaseAmount || "0").trim();
-  if (!numericRegex.test(minPurchaseAmountStr)) throw new Error("rewardMinPurchaseAmount must be a valid number");
-  const minPurchaseAmount = parseFloat(minPurchaseAmountStr);
-  if (!Number.isFinite(minPurchaseAmount) || minPurchaseAmount < 0) {
-    throw new Error("rewardMinPurchaseAmount must be a finite number >= 0");
   }
 
   // Validate dates
@@ -3160,8 +3148,9 @@ export async function createSportsMatch(data: {
     throw new Error("voteDeadlineAt must be a valid date");
   }
 
-  if ((data.status || "draft") === "open" && data.voteDeadlineAt.getTime() <= Date.now()) {
-    throw new Error("voteDeadlineAt must be in the future for open matches");
+  // Always require deadline in future (regardless of status)
+  if (data.voteDeadlineAt.getTime() <= Date.now()) {
+    throw new Error("voteDeadlineAt must be in the future");
   }
 
   if (data.rewardCouponExpiresAt && data.rewardCouponExpiresAt.getTime() <= Date.now()) {
@@ -3303,6 +3292,20 @@ export function parseStrictPositiveDecimal(value: any, fieldName: string): numbe
   return num;
 }
 
+/**
+ * Shared helper to lock user row for points-changing operations.
+ * Prevents concurrent overspend by acquiring SELECT FOR UPDATE lock.
+ */
+export async function lockUserForPoints(userId: number, tx?: any) {
+  const database = tx || (await getDb());
+  if (!database) throw new Error("Database not available");
+  
+  const userRow = await database.execute(sql`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`);
+  if (!userRow || userRow.length === 0) throw new Error("User not found");
+  
+  return userRow[0];
+}
+
 export async function castSportsVote(userId: number, matchId: number, prediction: SportsPrediction) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -3319,8 +3322,7 @@ export async function castSportsVote(userId: number, matchId: number, prediction
     const cost = Math.max(0, Number(match.voteCostPoints || 0));
     
     // Lock user row with SELECT FOR UPDATE to prevent concurrent points overspend
-    const userRow = await tx.execute(sql`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`);
-    if (!userRow || userRow.length === 0) throw new Error("User not found");
+    await lockUserForPoints(userId, tx);
     
     const currentBalance = Number(await getUserPointsBalance(userId, tx));
     if (!Number.isFinite(currentBalance) || currentBalance < cost) {
@@ -3366,6 +3368,16 @@ export async function settleSportsMatch(matchId: number, result: SportsPredictio
     if (!match) throw new Error("Match not found");
     if (match.status === "settled") throw new Error("Match has already been settled");
     if (match.status === "cancelled") throw new Error("Cancelled match cannot be settled");
+    
+    // Settle policy guard: reject draft matches
+    if (match.status === "draft") {
+      throw new Error("Cannot settle draft match. Must be closed or deadline must have passed.");
+    }
+    
+    // Settle policy guard: reject open matches before deadline
+    if (match.status === "open" && new Date(match.voteDeadlineAt).getTime() > Date.now()) {
+      throw new Error("Cannot settle open match before voting deadline has passed.");
+    }
 
     await updateSportsMatch(matchId, { status: "settled", result }, tx);
 
