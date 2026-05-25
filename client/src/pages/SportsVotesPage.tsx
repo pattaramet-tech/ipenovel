@@ -4,13 +4,20 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
-import { Trophy, Gift, Clock, Coins, Copy } from "lucide-react";
+import { Trophy, Gift, Clock, Coins, Copy, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 
 const predictionLabel: Record<string, string> = {
   home_win: "Home Win",
   draw: "Draw",
   away_win: "Away Win",
+};
+
+const rewardStatusConfig: Record<string, { text: string; color: string; badgeVariant: string }> = {
+  issued: { text: "Available", color: "bg-blue-50", badgeVariant: "secondary" },
+  used: { text: "✓ Used", color: "bg-green-50", badgeVariant: "default" },
+  expired: { text: "Expired", color: "bg-slate-50", badgeVariant: "outline" },
+  void: { text: "Voided", color: "bg-red-50", badgeVariant: "destructive" }
 };
 
 function formatDate(value?: string | Date | null) {
@@ -75,8 +82,9 @@ export default function SportsVotesPage() {
             </h2>
             <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
               {rewards.map((reward: any) => {
-                const statusColor = reward.rewardStatus === "used" ? "bg-green-50" : reward.rewardStatus === "issued" ? "bg-blue-50" : "bg-slate-50";
-                const statusText = reward.rewardStatus === "used" ? "✓ Used" : reward.rewardStatus === "issued" ? "Available" : "Expired";
+                const config = rewardStatusConfig[reward.rewardStatus] || rewardStatusConfig.expired;
+                const statusColor = config.color;
+                const statusText = config.text;
                 return (
                   <Card key={`${reward.matchId}-${reward.couponCode}`} className={statusColor}>
                     <CardHeader className="pb-3">
@@ -87,7 +95,10 @@ export default function SportsVotesPage() {
                       <div className="text-xs space-y-1">
                         <p>Your prediction: <b>{predictionLabel[reward.prediction]}</b></p>
                         <p>Result: <b>{reward.result || "Pending"}</b></p>
-                        <p>Status: <Badge variant={reward.rewardStatus === "used" ? "default" : "secondary"}>{statusText}</Badge></p>
+                        <p className="flex items-center gap-1">
+                          Status: <Badge variant={config.badgeVariant as any}>{statusText}</Badge>
+                          {reward.rewardStatus === "void" && <AlertCircle className="w-3 h-3 text-red-500" />}
+                        </p>
                       </div>
                       <div className="bg-white rounded p-2 text-center">
                         <p className="text-xs text-slate-600">Coupon Code</p>
@@ -102,7 +113,11 @@ export default function SportsVotesPage() {
                         navigator.clipboard.writeText(reward.couponCode);
                         toast.success("Coupon copied!");
                       }}>
-                        <Copy className="w-3 h-3 mr-1" /> {reward.rewardStatus === "used" ? "Already Used" : reward.rewardStatus === "expired" ? "Expired" : "Copy Coupon"}
+                        <Copy className="w-3 h-3 mr-1" /> 
+                        {reward.rewardStatus === "issued" ? "Copy Coupon" : 
+                         reward.rewardStatus === "used" ? "Already Used" : 
+                         reward.rewardStatus === "void" ? "Voided" : 
+                         "Expired"}
                       </Button>
                     </CardContent>
                   </Card>

@@ -3208,6 +3208,21 @@ export async function updateSportsMatch(matchId: number, data: Partial<{
   const existing = await getSportsMatchById(matchId, tx);
   if (!existing) throw new Error("Match not found");
 
+  // Guard: Reject updates to critical fields if match is settled or cancelled
+  const CRITICAL_FIELDS = [
+    "title", "leagueName", "homeTeamName", "awayTeamName",
+    "matchStartAt", "voteDeadlineAt",
+    "voteCostPoints",
+    "rewardDiscountType", "rewardDiscountValue", "rewardMinPurchaseAmount",
+    "rewardCouponExpiresAt",
+    "status", "result"
+  ];
+  
+  if ((existing.status === "settled" || existing.status === "cancelled") && 
+      Object.keys(data).some(key => CRITICAL_FIELDS.includes(key))) {
+    throw new Error(`Cannot update critical fields on a ${existing.status} match`);
+  }
+
   // Merge existing values with incoming updates
   const merged = {
     voteCostPoints: data.voteCostPoints !== undefined ? data.voteCostPoints : existing.voteCostPoints,
@@ -3219,27 +3234,20 @@ export async function updateSportsMatch(matchId: number, data: Partial<{
     status: data.status !== undefined ? data.status : existing.status,
   };
 
-  // Validate voteCostPoints
-  const voteCost = Number(merged.voteCostPoints);
-  if (!Number.isFinite(voteCost) || voteCost < 0) {
-    throw new Error("voteCostPoints must be a finite number >= 0");
-  }
+  // Validate voteCostPoints using strict helper
+  const voteCost = parseStrictNonNegativeDecimal(merged.voteCostPoints, "voteCostPoints");
 
-  // Validate rewardDiscountValue
-  const discountValue = Number(merged.rewardDiscountValue);
-  if (!Number.isFinite(discountValue) || discountValue <= 0) {
-    throw new Error("rewardDiscountValue must be a finite number > 0");
-  }
+  // Validate rewardDiscountValue using strict helper
+  const discountValue = parseStrictPositiveDecimal(merged.rewardDiscountValue, "rewardDiscountValue");
 
   // Validate percentage discount <= 100
   if (merged.rewardDiscountType === "percentage" && discountValue > 100) {
     throw new Error("rewardDiscountValue cannot exceed 100 for percentage discounts");
   }
 
-  // Validate rewardMinPurchaseAmount
-  const minPurchase = Number(merged.rewardMinPurchaseAmount);
-  if (merged.rewardMinPurchaseAmount !== null && (!Number.isFinite(minPurchase) || minPurchase < 0)) {
-    throw new Error("rewardMinPurchaseAmount must be a finite number >= 0");
+  // Validate rewardMinPurchaseAmount using strict helper
+  if (merged.rewardMinPurchaseAmount !== null) {
+    parseStrictNonNegativeDecimal(merged.rewardMinPurchaseAmount, "rewardMinPurchaseAmount");
   }
 
   // Validate voteDeadlineAt is a valid date
@@ -3266,7 +3274,33 @@ export async function updateSportsMatch(matchId: number, data: Partial<{
   }
 
   // All validations passed, perform update
+  // Only update fields that are explicitly provided (not all merged fields)
   await db.update(sportsMatches).set(data as any).where(eq(sportsMatches.id, matchId));
+}
+
+// Strict numeric validation helpers
+export function parseStrictNonNegativeDecimal(value: any, fieldName: string): number {
+  if (value === undefined || value === null) return 0;
+  const str = String(value).trim();
+  if (str === "") throw new Error(`${fieldName} cannot be empty string`);
+  if (!/^\d+(\.\d+)?$/.test(str)) {
+    throw new Error(`${fieldName} must be a non-negative decimal number, got: ${str}`);
+  }
+  const num = parseFloat(str);
+  if (num < 0) throw new Error(`${fieldName} must be >= 0`);
+  return num;
+}
+
+export function parseStrictPositiveDecimal(value: any, fieldName: string): number {
+  if (value === undefined || value === null) throw new Error(`${fieldName} is required`);
+  const str = String(value).trim();
+  if (str === "") throw new Error(`${fieldName} cannot be empty string`);
+  if (!/^\d+(\.\d+)?$/.test(str)) {
+    throw new Error(`${fieldName} must be a positive decimal number, got: ${str}`);
+  }
+  const num = parseFloat(str);
+  if (num <= 0) throw new Error(`${fieldName} must be > 0`);
+  return num;
 }
 
 export async function castSportsVote(userId: number, matchId: number, prediction: SportsPrediction) {

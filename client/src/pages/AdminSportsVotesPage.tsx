@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { useState } from "react";
@@ -42,6 +43,8 @@ export default function AdminSportsVotesPage() {
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [settleResultById, setSettleResultById] = useState<Record<number, "home_win" | "draw" | "away_win">>({});
+  const [settleConfirmId, setSettleConfirmId] = useState<number | null>(null);
+  const [cancelConfirmId, setCancelConfirmId] = useState<number | null>(null);
 
   const { data: matches = [], isLoading } = trpc.admin.sportsMatches.list.useQuery(undefined, {
     enabled: !!user && user.role === "admin",
@@ -257,17 +260,57 @@ export default function AdminSportsVotesPage() {
                     </SelectContent>
                   </Select>
 
-                  <Button size="sm" disabled={match.status === "settled" || match.status === "cancelled"} onClick={() => {
-                    if (confirm("Settle this match? This will generate coupons for winners.")) {
-                      settleMutation.mutate({ matchId: match.id, result: settleResultById[match.id] || "home_win" });
-                    }
-                  }}>Settle</Button>
+                  <Button size="sm" disabled={match.status === "settled" || match.status === "cancelled"} onClick={() => setSettleConfirmId(match.id)}>Settle</Button>
 
-                  <Button size="sm" variant="destructive" disabled={match.status === "settled" || match.status === "cancelled"} onClick={() => {
-                    if (confirm("Cancel this match and refund pending votes?")) {
-                      cancelMutation.mutate({ matchId: match.id });
-                    }
-                  }}>Cancel Match</Button>
+                  <Button size="sm" variant="destructive" disabled={match.status === "settled" || match.status === "cancelled"} onClick={() => setCancelConfirmId(match.id)}>Cancel Match</Button>
+
+                  {/* Settle Confirmation Dialog */}
+                  <AlertDialog open={settleConfirmId === match.id} onOpenChange={(open) => !open && setSettleConfirmId(null)}>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Settle Match?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          This will finalize the match result and generate reward coupons for users who voted correctly.
+                          This action cannot be undone.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <div className="bg-blue-50 p-3 rounded text-sm space-y-1">
+                        <p><strong>Match:</strong> {match.homeTeamName} vs {match.awayTeamName}</p>
+                        <p><strong>Result:</strong> {settleResultById[match.id] || "home_win"}</p>
+                      </div>
+                      <div className="flex gap-2 justify-end">
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={() => {
+                          settleMutation.mutate({ matchId: match.id, result: settleResultById[match.id] || "home_win" });
+                          setSettleConfirmId(null);
+                        }}>Settle</AlertDialogAction>
+                      </div>
+                    </AlertDialogContent>
+                  </AlertDialog>
+
+                  {/* Cancel Confirmation Dialog */}
+                  <AlertDialog open={cancelConfirmId === match.id} onOpenChange={(open) => !open && setCancelConfirmId(null)}>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Cancel Match?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          This will cancel the match and refund all pending votes. Users will receive their points back.
+                          This action cannot be undone.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <div className="bg-red-50 p-3 rounded text-sm">
+                        <p><strong>Match:</strong> {match.homeTeamName} vs {match.awayTeamName}</p>
+                        <p className="text-red-700 font-semibold mt-2">All pending votes will be refunded.</p>
+                      </div>
+                      <div className="flex gap-2 justify-end">
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={() => {
+                          cancelMutation.mutate({ matchId: match.id });
+                          setCancelConfirmId(null);
+                        }} className="bg-red-600 hover:bg-red-700">Cancel Match</AlertDialogAction>
+                      </div>
+                    </AlertDialogContent>
+                  </AlertDialog>
                 </div>
               </CardContent>
             </Card>
