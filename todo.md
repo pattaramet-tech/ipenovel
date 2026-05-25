@@ -1328,3 +1328,15 @@
 - [x] Phase 6: Test frontend regression after slip upload (TypeScript clean, build clean)
 - [x] Phase 7: Run full test suite and build verification
 - [ ] Phase 8: Update VERIFY_PAYMENT_UPLOAD.md with root cause analysis
+
+
+## Wallet Top-up Critical Bug Fixes (High Risk)
+
+- [x] Phase 1: Audit wallet top-up flow and identify risks
+- [x] Phase 2: Add strict amount validation (numbers only, > 0, no NaN/negative)
+- [x] Phase 3: Implement idempotency check to prevent duplicate credits (verified)
+- [x] Phase 4: Create walletOCRVerification helper for amount matching
+- [x] Phase 5: Add status check to prevent re-approval
+- [x] Phase 6: Add unit tests for wallet validation and idempotency (17/17 passing)
+- [x] Phase 7: Verify no regression (TypeScript clean, build successful)
+- [x] Phase 8: Create checkpoint and deliver results

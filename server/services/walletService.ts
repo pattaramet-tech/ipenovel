@@ -7,8 +7,20 @@ import * as db from "../db";
 import { TRPCError } from "@trpc/server";
 
 export async function createWalletTopupRequest(userId: number, requestedAmount: string, slipImageUrl?: string) {
-  const amount = parseFloat(requestedAmount);
-  if (isNaN(amount) || amount <= 0) {
+  // STRICT validation: must be a valid positive number only
+  // Reject: "100abc", "NaN", "-100", "0", "", null, undefined, etc.
+  const trimmed = String(requestedAmount || "").trim();
+  
+  // Check if it's a valid number format (digits and optional decimal point)
+  if (!/^\d+(\.\d{1,2})?$/.test(trimmed)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Top-up amount must be a valid positive number (e.g., 100 or 100.50)",
+    });
+  }
+  
+  const amount = parseFloat(trimmed);
+  if (!Number.isFinite(amount) || amount <= 0) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: "Top-up amount must be greater than 0",
@@ -73,6 +85,14 @@ export async function adminApproveWalletTopup(topupId: number, adminUserId: numb
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: "Cannot approve top-up without slip image",
+    });
+  }
+
+  // CRITICAL: Check if topup is already approved/rejected (prevent re-approval)
+  if (topup.status !== "pending") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `Cannot approve a ${topup.status} top-up request`,
     });
   }
 
