@@ -84,6 +84,8 @@ const translations: Record<Language, Record<string, string>> = {
     "cart.applyCoupon": "ใช้คูปอง",
     "cart.redeemPoints": "แลกคะแนน",
     "cart.availablePoints": "คะแนนคงเหลือ",
+    "cart.summary": "สรุปรายการ",
+    "cart.proceedToPayment": "ดำเนินการชำระเงิน",
 
     // Checkout
     "checkout.proceedToCheckout": "ไปที่หน้าชำระเงิน",
@@ -165,6 +167,8 @@ const translations: Record<Language, Record<string, string>> = {
     "payment.uploadNewSlip": "อัปโหลดสลิปใหม่",
     "payment.orderNotFound": "ไม่พบคำสั่งซื้อ",
     "payment.invalidOrder": "ลำดับที่คำสั่งซื้อไม่ถูกต้อง",
+    "payment.pfNote": "กรุณาโอนเงินตามยอดที่แสดง แล้วอัปโหลดสลิปเพื่อยืนยันการชำระเงิน",
+    "payment.uploadAndCheckout": "อัปโหลดสลิปและยืนยันคำสั่งซื้อ",
 
     // Admin
     "admin.dashboard": "แดชบอร์ด",
@@ -222,6 +226,8 @@ const translations: Record<Language, Record<string, string>> = {
     "common.tryAgain": "ลองอีกครั้ง",
     "common.errorOccurred": "เกิดข้อผิดพลาด",
     "common.pleaseWait": "กรุณารอสักครู่...",
+    "common.episode": "ตอน",
+    "common.baht": "บาท",
 
     // Status labels
     "status.published": "ตีพิมพ์",
@@ -403,6 +409,8 @@ const translations: Record<Language, Record<string, string>> = {
     "cart.empty": "Your cart is empty",
     "cart.checkout": "Checkout",
     "cart.total": "Total",
+    "cart.summary": "Order Summary",
+    "cart.proceedToPayment": "Proceed to Payment",
 
     // Checkout
     "checkout.proceedToCheckout": "Go to Payment Page",
@@ -472,6 +480,8 @@ const translations: Record<Language, Record<string, string>> = {
     "payment.uploadNewSlip": "Upload New Payment Slip",
     "payment.orderNotFound": "Order Not Found",
     "payment.invalidOrder": "Invalid order ID",
+    "payment.pfNote": "Please transfer the exact amount shown, then upload the payment slip to confirm the transaction",
+    "payment.uploadAndCheckout": "Upload Slip and Confirm Order",
 
     // Admin
     "admin.dashboard": "Dashboard",
@@ -529,6 +539,8 @@ const translations: Record<Language, Record<string, string>> = {
     "common.tryAgain": "Try Again",
     "common.errorOccurred": "An error occurred",
     "common.pleaseWait": "Please wait...",
+    "common.episode": "Episode",
+    "common.baht": "THB",
 
     // Status labels
     "status.published": "Published",

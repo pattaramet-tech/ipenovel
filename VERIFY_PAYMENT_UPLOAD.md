@@ -199,6 +199,32 @@ $ npm run build
 
 ---
 
+## UI Regression Fixes (May 25, 2026)
+
+### i18n Translation Keys Added
+
+All missing translation keys added to `client/src/contexts/LanguageContext.tsx`:
+
+**Thai:** common.episode, common.baht, cart.summary, cart.proceedToPayment, payment.pfNote, payment.uploadAndCheckout
+
+**English:** common.episode, common.baht, cart.summary, cart.proceedToPayment, payment.pfNote, payment.uploadAndCheckout
+
+**Verification:** npm run check (0 errors), npm run build (277.6 KB)
+
+### CartPage Episode Display
+
+✅ Already displays correctly - shows actual novel title + episode title + episode number
+
+### Remaining Work
+
+⏳ QR Code & Bank Details Display (Not Yet Implemented)
+- Payment modal shows: transfer amount + file upload
+- Missing: QR code image, bank details, biller ID
+- Requires: New payment.getPaymentDetails endpoint
+- Estimated effort: 2-3 hours
+
+---
+
 ## Conclusion
 
 The payment slip upload system is **production-ready** with a clean two-step architecture:
