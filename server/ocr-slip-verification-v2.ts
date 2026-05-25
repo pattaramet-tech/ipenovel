@@ -332,11 +332,11 @@ function extractAmount(flattened: Record<string, any>, text: string): number | u
     /ยอดเงิน\s*[:：]\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
     /ยอดโอน\s*[:：]\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
     /amount\s*[:：]\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
-    // Amount labels followed by newline (SCB pattern)
-    /จำนวนเงิน\s*\n\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
-    /ยอดเงิน\s*\n\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
-    /ยอดโอน\s*\n\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
-    /amount\s*\n\s*฿?\s*([\d,]+(?:\.\d{2})?)/i,
+    // Amount labels followed by newline (SCB pattern) - flexible whitespace
+    /จำนวนเงิน[\s\n]+฿?\s*([\d,]+(?:\.\d{2})?)/i,
+    /ยอดเงิน[\s\n]+฿?\s*([\d,]+(?:\.\d{2})?)/i,
+    /ยอดโอน[\s\n]+฿?\s*([\d,]+(?:\.\d{2})?)/i,
+    /amount[\s\n]+฿?\s*([\d,]+(?:\.\d{2})?)/i,
     // Currency symbols
     /฿\s*([\d,]+(?:\.\d{2})?)/,
     /บาท\s*([\d,]+(?:\.\d{2})?)/i,

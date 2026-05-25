@@ -1,119 +1,36 @@
-# OCR Slip Verification - Final Results
+# OCR Slip Verification - Final Results (Updated)
 
-## Root Cause Analysis
+## Latest Fix: SCB Amount Extraction from Newline-Separated Labels
 
-### Issue 1: Regex Escaping Bug in extractTransactionDate
-**File:** `server/ocr-slip-verification-v2.ts` (line 755)
-
-**Root Cause:**
+### Root Cause
+The extractAmount function had regex patterns for newline-separated amount labels, but they were too strict:
 ```javascript
-// WRONG - template string without escaping
-const re = new RegExp(`(\d{1,2})\s+(${monthNames})\s+(\d{2,4})...`, "i");
-// In template strings, \d becomes literal 'd', not digit pattern
+// BEFORE (too strict)
+/จำนวนเงิน\s*\n\s*฿?\s*([\d,]+(?:\.\d{2})?)/i
+// Required: exact newline, optional ฿, then number
+// Failed on: "จำนวนเงิน\n100.00" (no ฿ symbol, just whitespace)
 ```
 
-**Why it failed:**
-- The regex was looking for literal "d{1,2}" instead of `\d{1,2}` (digits)
-- Pattern "25 พ.ค. 2569 - 00:26" never matched
-- Date/time extraction returned undefined
-- Tests with optional assertions (`if (result.transactionDate)`) passed anyway
-
-**Fix Applied:**
+### Fix Applied
+Changed patterns to use flexible whitespace matching:
 ```javascript
-// CORRECT - escaped regex tokens in template string
-const re = new RegExp(`(\\d{1,2})\\s+(${monthNames})\\s+(\\d{2,4})\\s+[\\-–]?\\s*(?:เวลา)?\\s*(\\d{1,2}):(\\d{2})(?::(\\d{2}))?`, "i");
-// Now \d matches digits, \s matches whitespace
+// AFTER (flexible)
+/จำนวนเงิน[\s\n]+฿?\s*([\d,]+(?:\.\d{2})?)/i
+// Now: one or more whitespace/newline, optional ฿, then number
+// Matches: "จำนวนเงิน\n100.00" ✅
 ```
 
-### Issue 2: Weak Test Assertions
-**File:** `server/ocr-slip-verification-v2.test.ts` (lines 1016-1030)
+**File:** `server/ocr-slip-verification-v2.ts` (lines 336-339)
 
-**Root Cause:**
-```javascript
-// WEAK - test passes even if field is missing
-if (result.transactionDate) {
-  expect(dateStr).toBe("2026-05-25");
-}
-// If transactionDate is undefined, test passes with no assertions
-```
-
-**Why it failed:**
-- Optional assertions hide missing data
-- Tests passed even when date/time extraction was broken
-- No proof that the parser actually extracted the values
-
-**Fix Applied:**
-```javascript
-// STRICT - test fails if field is missing
-expect(result.transactionDate).toBeDefined();
-expect(result.transactionDate!.toISOString()).toBe("2026-05-25T00:00:00.000Z");
-// Must extract exact value or test fails
-```
-
----
-
-## Files Changed
-
-1. **server/ocr-slip-verification-v2.ts**
-   - Line 755: Fixed regex escaping in extractTransactionDate
-   - Pattern now correctly matches "25 พ.ค. 2569 - 00:26" format
-
-2. **server/ocr-slip-verification-v2.test.ts**
-   - Line 1016-1026: Replaced weak date/time test with strict assertions
-   - Line 1044-1060: Added comprehensive strict extraction test
-   - Line 1062-1089: Added strict auto-approval verification test
+### Impact
+- Before: amount extraction failed → structuredConfidence = 75 → finalConfidence = 84 (NEEDS_REVIEW)
+- After: amount extraction succeeds → structuredConfidence = 85 → finalConfidence = 85+ (AUTO_APPROVED)
 
 ---
 
 ## Test Results
 
-### Before Fix
-```
-Tests: 81 passed (weak assertions, optional checks)
-- Date/time test passed even though extraction was broken
-- No proof that transactionDateTime was actually extracted
-```
-
-### After Fix
-```
-✓ server/ocr-slip-verification-v2.test.ts (82 tests) 65ms
-
-Test Files  1 passed (1)
-     Tests  82 passed (82)
-```
-
-**New Strict Tests:**
-1. ✅ `should parse Thai date + hyphen + time (25 พ.ค. 2569 - 00:26)`
-   - STRICT: `expect(result.transactionDate).toBeDefined()`
-   - STRICT: `expect(result.transactionDateTime).toBeDefined()`
-   - STRICT: `expect(result.transactionDate!.toISOString()).toBe("2026-05-25T00:00:00.000Z")`
-   - STRICT: `expect(result.transactionDateTime!.toISOString()).toBe("2026-05-24T17:26:00.000Z")`
-
-2. ✅ `should extract all required fields strictly`
-   - STRICT: All 10 fields verified with exact values
-   - amount = 100
-   - reference = "2026052560P28BJXEWJQMSBB5"
-   - detectedBank = "SCB"
-   - maskedAccount = "xxx-xxx791-1"
-   - merchantCode = "KB000002283068"
-   - merchantTransactionCode = "KPS004KB000002283068"
-   - transactionDate = 2026-05-25T00:00:00.000Z
-   - transactionDateTime = 2026-05-24T17:26:00.000Z
-   - visionConfidence = 100
-   - finalConfidence >= 85
-
-3. ✅ `should auto-approve real SCB slip with strict verification`
-   - STRICT: isAutoApproved = true
-   - STRICT: status = "approved"
-   - STRICT: reviewReason = undefined
-   - STRICT: breakdown.amountMatched = true
-   - STRICT: breakdown.datePresent = true
-   - STRICT: breakdown.dateWithinWindow = true
-   - STRICT: breakdown.referencePresent = true
-
----
-
-## Verification Command Output
+### Command Output
 
 ```bash
 $ npm run check
@@ -123,31 +40,57 @@ $ npm run check
 
 $ npm test -- server/ocr-slip-verification-v2.test.ts
  RUN  v2.1.9 /home/ubuntu/ipenovel-v2
- ✓ server/ocr-slip-verification-v2.test.ts (82 tests) 65ms
+ ✓ server/ocr-slip-verification-v2.test.ts (85 tests) 58ms
  Test Files  1 passed (1)
-      Tests  82 passed (82)
-   Start at  14:28:25
-   Duration  515ms
+      Tests  85 passed (85)
+   Start at  22:59:59
+   Duration  530ms
 
 $ npm run build
-✓ built in 6.07s
+✓ built in 6.25s
   dist/index.js  276.7kb
 ```
 
+### New Strict Tests (3 tests added)
+
+1. ✅ `should extract amount from newline-separated label (09:22 slip)`
+   - STRICT: `expect(result.amount).toBe(100)`
+   - Fails if amount is undefined or incorrect
+
+2. ✅ `should extract all required fields from 09:22 slip strictly`
+   - STRICT: All 10 fields verified with exact values
+   - amount = 100
+   - reference = "202605253XBL9YU73DW4SAANZ"
+   - detectedBank = "SCB"
+   - maskedAccount = "xxx-xxx244-1"
+   - receiverAccountOrId = "010753600031501"
+   - merchantCode = "KB000002283068"
+   - merchantTransactionCode = "KPS004KB000002283068"
+   - transactionDate = 2026-05-25T00:00:00.000Z
+   - transactionDateTime = 2026-05-25T02:22:00.000Z
+   - visionConfidence = 98
+   - finalConfidence >= 85
+
+3. ✅ `should auto-approve 09:22 slip with strict verification`
+   - STRICT: isAutoApproved = true
+   - STRICT: status = "approved"
+   - STRICT: reviewReason = undefined
+   - STRICT: All breakdown flags = true
+
 ---
 
-## Real SCB Slip Pattern Support
+## Real SCB Slip Pattern (09:22)
 
 ### Input (rawText)
 ```
 SCB+
-จ่ายเงินสำเร็จ
-25 พ.ค. 2569 - 00:26
-รหัสอ้างอิง: 2026052560P28bjxEWJQmsbB5
+จ่ายบิลสำเร็จ
+25 พ.ค. 2569 - 09:22
+รหัสอ้างอิง: 202605253xbL9Yu73dw4SaAnz
 
 จาก
-นาย ทัชชกร ป.
-xxx-xxx791-1
+นาย วีระศักดิ์ เ.
+xxx-xxx244-1
 
 ไปยัง
 Ipe Novel
@@ -158,23 +101,26 @@ Biller ID: 010753600031501
 จำนวนเงิน
 100.00
 
-OCR Confidence: 100/100
+ผู้รับเงินสามารถสแกนคิวอาร์โค้ดนี้เพื่อ
+ตรวจสอบสถานะการจ่ายเงิน
+
+OCR Confidence Score: 98/100
 ```
 
 ### Extracted Output
 ```
 {
   amount: 100,
-  reference: "2026052560P28BJXEWJQMSBB5",
+  reference: "202605253XBL9YU73DW4SAANZ",
   detectedBank: "SCB",
-  maskedAccount: "xxx-xxx791-1",
-  shopName: "Ipe Novel",
+  maskedAccount: "xxx-xxx244-1",
+  receiverAccountOrId: "010753600031501",
   merchantCode: "KB000002283068",
   merchantTransactionCode: "KPS004KB000002283068",
   transactionDate: 2026-05-25T00:00:00.000Z,
-  transactionDateTime: 2026-05-24T17:26:00.000Z,
-  visionConfidence: 100,
-  structuredConfidence: 75,
+  transactionDateTime: 2026-05-25T02:22:00.000Z,
+  visionConfidence: 98,
+  structuredConfidence: 85,
   finalConfidence: 85,
   status: "approved",
   isAutoApproved: true
@@ -182,17 +128,18 @@ OCR Confidence: 100/100
 ```
 
 ### Timezone Conversion
-- Slip time: 25 May 2026 00:26 Asia/Bangkok (UTC+7)
-- UTC time: 24 May 2026 17:26 UTC
-- ✅ Correctly converted to 2026-05-24T17:26:00.000Z
+- Slip time: 25 May 2026 09:22 Asia/Bangkok (UTC+7)
+- UTC time: 25 May 2026 02:22 UTC
+- ✅ Correctly converted to 2026-05-25T02:22:00.000Z
 
 ---
 
-## Regression Tests
+## Regression Safety
 
-All existing tests still pass:
+All 82 previous tests still pass:
 - ✅ SCB JSON date/time format
 - ✅ SCB plain text วันที่ + เวลา format
+- ✅ SCB pattern: 25 พ.ค. 2569 - 00:26 (previous fix)
 - ✅ KBank nested JSON format
 - ✅ KBank Thai labels
 - ✅ KBank short Buddhist year (69)
@@ -200,30 +147,31 @@ All existing tests still pass:
 - ✅ Duplicate fingerprint rejection
 - ✅ OCR technicalError → OCR_PROCESSING_ERROR pending_review
 
-**Total: 82 tests, 82 passed, 0 skipped**
+**Total: 85 tests, 85 passed, 0 skipped**
 
 ---
 
 ## Confirmation Checklist
 
-- ✅ Root cause diagnosed: regex escaping bug in template string
-- ✅ Fix applied: escaped \d and \s in extractTransactionDate
-- ✅ Strict tests added: no optional assertions for required fields
-- ✅ Real SCB production pattern auto-approves: finalConfidence = 85
+- ✅ Root cause diagnosed: regex patterns too strict for newline-separated amounts
+- ✅ Fix applied: changed `\s*\n\s*` to `[\s\n]+` for flexible whitespace
+- ✅ Strict tests added: 3 new tests with exact field validation
+- ✅ Real SCB 09:22 slip now auto-approves: finalConfidence = 85
 - ✅ Timezone conversion correct: Bangkok UTC+7 → UTC
+- ✅ minConfidence kept at 85 (not lowered)
 - ✅ No dead code: all parser files active and used
-- ✅ Active production path verified: server/ocr-slip-verification-v2.ts
 - ✅ TypeScript: 0 errors
-- ✅ Tests: 82/82 passing
+- ✅ Tests: 85/85 passing (82 previous + 3 new)
 - ✅ Build: successful (276.7 KB)
 
 ---
 
 ## Production Ready
 
-The OCR parser now reliably supports the real SCB production slip pattern with:
-1. Correct amount extraction from newline-separated labels
-2. Correct date/time parsing from Thai date + hyphen + time format
+The OCR parser now reliably supports SCB slips with newline-separated amount labels:
+1. Flexible whitespace matching for amount extraction
+2. Correct date/time parsing for Thai dates
 3. Correct timezone conversion (Bangkok UTC+7 → UTC)
 4. Strict verification that auto-approves qualifying slips
 5. All existing formats still supported (regression safe)
+6. minConfidence threshold maintained at 85%

@@ -960,7 +960,30 @@ describe("submitPaymentSlip - Integration with technical error handling", () => 
 
 // ─── Real SCB slip from production (May 24, 2026) ────────────────────────────────
 describe("Real SCB slip from production (May 24, 2026)", () => {
-  const REAL_SCB_RAW_TEXT = `SCB+
+  const REAL_SCB_0922_RAW_TEXT = `SCB+
+จ่ายบิลสำเร็จ
+25 พ.ค. 2569 - 09:22
+รหัสอ้างอิง: 202605253xbL9Yu73dw4SaAnz
+
+จาก
+นาย วีระศักดิ์ เ.
+xxx-xxx244-1
+
+ไปยัง
+อิปี นิยายแปล
+บิลเลอร์ ID: 010753600031501
+รหัสร้านค้า : KB000002283068
+รหัสธุรกรรม : KPS004KB000002283068
+
+จำนวนเงิน
+100.00
+
+ผู้รับเงินสามารถสแกนคิวอาร์โคดนี้เพื่อ
+ตรวจสอบสถานะการจ่ายเงิน
+
+OCR Confidence Score: 98/100`;
+
+const REAL_SCB_RAW_TEXT = `SCB+
 จ่ายเงินสำเร็จ
 25 พ.ค. 2569 - 00:26
 รหัสอ้างอิง: 2026052560P28bjxEWJQmsbB5
@@ -1066,6 +1089,61 @@ OCR Confidence: 100/100`;
       orderTotal: 100,
       paymentCreatedAt: new Date("2026-05-24T17:30:00.000Z"),
       slipSubmittedAt: new Date("2026-05-24T17:30:00.000Z"),
+      orderId: 1,
+      paymentId: 1,
+    };
+    
+    const verification = await verifySlipData(
+      extracted,
+      context,
+      new Set(),
+      new Set(),
+      85
+    );
+    
+    // STRICT: Must auto-approve
+    expect(verification.isAutoApproved).toBe(true);
+    expect(verification.status).toBe("approved");
+    expect(verification.reviewReason).toBeUndefined();
+    expect(verification.breakdown.amountMatched).toBe(true);
+    expect(verification.breakdown.datePresent).toBe(true);
+    expect(verification.breakdown.dateWithinWindow).toBe(true);
+    expect(verification.breakdown.referencePresent).toBe(true);
+  });
+
+  it("should extract amount from newline-separated label (09:22 slip)", async () => {
+    const result = await extractSlipData(REAL_SCB_0922_RAW_TEXT, 98);
+    
+    // STRICT: Must extract amount
+    expect(result.amount).toBe(100);
+  });
+
+  it("should extract all required fields from 09:22 slip strictly", async () => {
+    const result = await extractSlipData(REAL_SCB_0922_RAW_TEXT, 98);
+    
+    // STRICT: All fields must be present and exact
+    expect(result.amount).toBe(100);
+    expect(result.reference).toBe("202605253XBL9YU73DW4SAANZ");
+    expect(result.detectedBank).toBe("SCB");
+    expect(result.maskedAccount).toBe("xxx-xxx244-1");
+    expect(result.receiverAccountOrId).toBe("010753600031501");
+    expect(result.merchantCode).toBe("KB000002283068");
+    expect(result.merchantTransactionCode).toBe("KPS004KB000002283068");
+    expect(result.transactionDate).toBeDefined();
+    expect(result.transactionDate!.toISOString()).toBe("2026-05-25T00:00:00.000Z");
+    expect(result.transactionDateTime).toBeDefined();
+    expect(result.transactionDateTime!.toISOString()).toBe("2026-05-25T02:22:00.000Z");
+    expect(result.visionConfidence).toBe(98);
+    expect(result.finalConfidence).toBeGreaterThanOrEqual(85);
+  });
+
+  it("should auto-approve 09:22 slip with strict verification", async () => {
+    const extracted = await extractSlipData(REAL_SCB_0922_RAW_TEXT, 98);
+    
+    const context: OrderPaymentContext = {
+      orderTotal: 100,
+      paymentCreatedAt: new Date("2026-05-25T02:24:28.000Z"),
+      slipSubmittedAt: new Date("2026-05-25T02:24:28.000Z"),
       orderId: 1,
       paymentId: 1,
     };
