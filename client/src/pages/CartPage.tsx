@@ -472,13 +472,6 @@ export default function CartPage() {
                 </div>
               </div>
 
-              <div className="bg-amber-50 p-3 rounded-lg border border-amber-200 flex gap-2">
-                <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
-                <p className="text-sm text-amber-800">
-                  {t("payment.pdfNote")}
-                </p>
-              </div>
-
               <div className="space-y-2">
                 <label className="block text-sm font-medium text-slate-700">{t("payment.selectFile")}</label>
                 <input
