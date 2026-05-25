@@ -496,6 +496,7 @@ export const appRouter = router({
           mimeType: z.enum(["image/jpeg", "image/png", "application/pdf"]),
           fileBase64: z.string().min(1, "File data required"),
           context: z.enum(["checkout", "payment_page", "wallet"]).default("checkout"),
+          orderTotal: z.number().optional(),
         })
       )
       .mutation(async ({ input, ctx }) => {
@@ -506,6 +507,7 @@ export const appRouter = router({
           mimeType: input.mimeType,
           fileBase64: input.fileBase64,
           context: input.context,
+          orderTotal: input.orderTotal,
         });
 
         return result;

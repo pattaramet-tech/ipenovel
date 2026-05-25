@@ -202,6 +202,7 @@ export default function CartPage() {
         mimeType,
         fileBase64: base64,
         context: "checkout",
+        orderTotal: Number(total),
       });
 
       // Step 2: Create order with the uploaded slip URL

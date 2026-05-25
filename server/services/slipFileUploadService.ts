@@ -16,6 +16,7 @@ export interface UploadPaymentSlipFileInput {
   mimeType: string;
   fileBase64: string;
   context: "checkout" | "payment_page" | "wallet";
+  orderTotal?: number;
 }
 
 export interface UploadPaymentSlipFileResult {
@@ -25,6 +26,7 @@ export interface UploadPaymentSlipFileResult {
   size: number;
   isPDF: boolean;
   userMessage: string;
+  orderTotal?: number;
 }
 
 /**
@@ -79,6 +81,14 @@ export async function uploadPaymentSlipFile(
     });
   }
 
+  // Validate orderTotal if provided
+  if (input.orderTotal !== undefined && typeof input.orderTotal !== "number") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Invalid order total format",
+    });
+  }
+
   // Sanitize filename
   const sanitized = sanitizeFileName(input.fileName);
   const timestamp = Date.now();
@@ -101,6 +111,7 @@ export async function uploadPaymentSlipFile(
       size: fileBuffer.length,
       isPDF,
       userMessage,
+      orderTotal: input.orderTotal,
     };
   } catch (error: any) {
     console.error("[SlipUpload] S3 upload failed:", error);
