@@ -771,7 +771,7 @@ function extractTransactionDate(flattened: Record<string, any>, text: string): {
     }
     
     // Fallback: Match Thai date pattern: "23 พ.ค. 2569" or "23 พ.ค. 69"
-    const dateRe = new RegExp(`(\d{1,2})\s+(${monthNames})\s+(\d{2,4})`, "i");
+    const dateRe = new RegExp(`(\\d{1,2})\\s+(${monthNames})\\s+(\\d{2,4})`, "i");
     const dateMatch = text.match(dateRe);
     
     if (dateMatch) {
