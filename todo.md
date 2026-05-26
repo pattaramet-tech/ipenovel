@@ -1354,3 +1354,15 @@
 - [x] Phase 8: Run full test suite and build verification (clean, no errors)
 - [x] Phase 9: Update documentation (OCR_EXTRACTION_IMPROVEMENTS.md created)
 - [ ] Phase 10: Package and deliver updated project
+
+
+## OCR Extraction Lockdown (Phase 1-8)
+
+- [ ] Phase 1: Add strict OCR rawText tests for 5 real Slipupgrade samples
+- [ ] Phase 2: Add verifySlipData tests for auto-approval and duplicate detection
+- [ ] Phase 3: Implement shopName fallback with merchant aliases
+- [ ] Phase 4: Implement KTB split transaction code support
+- [ ] Phase 5: Add merchant verification safety rule for auto-approval
+- [ ] Phase 6: Run full test suite and build verification
+- [ ] Phase 7: Create VERIFY_RESULTS_FINAL.md with before/after results
+- [ ] Phase 8: Create checkpoint and deliver

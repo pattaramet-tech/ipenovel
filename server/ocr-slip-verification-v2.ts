@@ -482,6 +482,13 @@ function extractShopName(flattened: Record<string, any>, text: string): string |
     }
   }
 
+  // Fallback: Check if any merchant alias appears in the text
+  for (const alias of MERCHANT_CONFIG.shopNameAliases) {
+    if (text.includes(alias)) {
+      return "Ipe Novel"; // Normalize to canonical name
+    }
+  }
+
   return undefined;
 }
 
@@ -553,6 +560,18 @@ function extractMerchantTransactionCode(flattened: Record<string, any>, text: st
 
   if (txnCodeVal) {
     return String(txnCodeVal).trim();
+  }
+
+  // Support KTB split transaction code pattern:
+  // รหัสธุรกรรม
+  // KPS004KB00000228
+  // 3068
+  // → KPS004KB000002283068
+  const ktbSplitPattern = /รหัสธุรกรรม[\s\n]+([A-Z0-9]+)[\s\n]+([0-9]+)/i;
+  const ktbMatch = text.match(ktbSplitPattern);
+  if (ktbMatch?.[1] && ktbMatch?.[2]) {
+    const combined = ktbMatch[1] + ktbMatch[2];
+    if (combined.length >= 10) return combined;
   }
 
   const patterns = [
