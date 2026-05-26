@@ -269,6 +269,7 @@ function flattenObject(obj: any, prefix = ""): Record<string, any> {
 }
 
 function getFieldBySuffixMatch(flattened: Record<string, any>, suffixes: string[]): any {
+  // Try exact suffix match first
   for (const suffix of suffixes) {
     for (const key in flattened) {
       if (key.endsWith(suffix) || key === suffix) {
@@ -276,6 +277,29 @@ function getFieldBySuffixMatch(flattened: Record<string, any>, suffixes: string[
       }
     }
   }
+  
+  // Fallback: Try normalized key matching for multilingual keys
+  // Normalize: lowercase, remove spaces, slashes, underscores, parentheses
+  const normalizedSuffixes = suffixes.map(s => 
+    s.toLowerCase()
+      .replace(/\s+/g, '')
+      .replace(/[/_()]/g, '')
+  );
+  
+  for (const key in flattened) {
+    const normalizedKey = key
+      .toLowerCase()
+      .replace(/\s+/g, '')
+      .replace(/[/_()]/g, '');
+    
+    // Check if normalized key contains any normalized suffix
+    for (const normSuffix of normalizedSuffixes) {
+      if (normalizedKey.includes(normSuffix)) {
+        return flattened[key];
+      }
+    }
+  }
+  
   return undefined;
 }
 
@@ -338,6 +362,10 @@ function extractAmount(flattened: Record<string, any>, text: string): number | u
     /ยอดเงิน[\s\n]+฿?\s*([\d,]+(?:\.\d{2})?)/i,
     /ยอดโอน[\s\n]+฿?\s*([\d,]+(?:\.\d{2})?)/i,
     /amount[\s\n]+฿?\s*([\d,]+(?:\.\d{2})?)/i,
+    // BAY/Krungsri table layout: จำนวนเงิน\nค่าธรรมเนียม\n96.00 THB\n0.00 THB
+    // Capture first positive THB amount after fee label
+    /จำนวนเงิน[\s\n]+ค่าธรรมเนียม[\s\n]+([\d,]+(?:\.\d{2})?)\s*(?:THB|บาท)/i,
+    /amount[\s\n]+fee[\s\n]+([\d,]+(?:\.\d{2})?)\s*(?:THB|บาท)/i,
     // Currency symbols
     /฿\s*([\d,]+(?:\.\d{2})?)/,
     /บาท\s*([\d,]+(?:\.\d{2})?)/i,
@@ -381,6 +409,7 @@ function extractReference(flattened: Record<string, any>, text: string): string 
 
   // Fallback to regex
   const patterns = [
+    // Reference with colon separator
     /เลขที่อ้างอิง\s*[:：]\s*([A-Z0-9]+)/i,
     /หมายเลขอ้างอิง\s*[:：]\s*([A-Z0-9]+)/i,
     /เลขที่รายการ\s*[:：]\s*([A-Z0-9]+)/i,
@@ -390,6 +419,14 @@ function extractReference(flattened: Record<string, any>, text: string): string 
     /ref\s*[:：]\s*([A-Z0-9]+)/i,
     /transaction\s*id\s*[:：]\s*([A-Z0-9]+)/i,
     /txn\s*(?:id|code)?\s*[:：]\s*([A-Z0-9]+)/i,
+    // KTB/BAY/GSB newline patterns: label on one line, value on next
+    /เลขที่อ้างอิง[\s\n]+([A-Z0-9]+)/i,
+    /หมายเลขอ้างอิง[\s\n]+([A-Z0-9]+)/i,
+    /เลขที่รายการ[\s\n]+([A-Z0-9]+)/i,
+    /รหัสรายการ[\s\n]+([A-Z0-9]+)/i,
+    /รหัสอ้างอิง[\s\n]+([A-Z0-9]+)/i,
+    /reference\s*(?:number|#|code)?[\s\n]+([A-Z0-9]+)/i,
+    /transaction\s*id[\s\n]+([A-Z0-9]+)/i,
   ];
 
   for (const pattern of patterns) {

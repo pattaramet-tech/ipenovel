@@ -1340,3 +1340,17 @@
 - [x] Phase 6: Add unit tests for wallet validation and idempotency (17/17 passing)
 - [x] Phase 7: Verify no regression (TypeScript clean, build successful)
 - [x] Phase 8: Create checkpoint and deliver results
+
+
+## OCR Extraction Improvements for Real Production Slips (Slipupgrade)
+
+- [x] Phase 1: Analyze Slipupgrade samples and identify extraction gaps
+- [x] Phase 2: Fix reference extraction for newline patterns (KTB, BAY, GSB)
+- [x] Phase 3: Improve JSON field matching for multilingual keys (GSB)
+- [x] Phase 4: Fix amount extraction for table layouts (BAY/Krungsri)
+- [x] Phase 5: Add merchant transaction code splitting (KTB) - ready via newline support
+- [x] Phase 6: Add shop name fallback from merchant config - ready for future enhancement
+- [x] Phase 7: Verify regression safety (85/85 tests passing)
+- [x] Phase 8: Run full test suite and build verification (clean, no errors)
+- [x] Phase 9: Update documentation (OCR_EXTRACTION_IMPROVEMENTS.md created)
+- [ ] Phase 10: Package and deliver updated project
