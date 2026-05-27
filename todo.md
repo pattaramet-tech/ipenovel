@@ -1356,6 +1356,7 @@
 - [ ] Phase 10: Package and deliver updated project
 
 
+<<<<<<< Updated upstream
 ## OCR Extraction Lockdown (Phase 1-8)
 
 - [ ] Phase 1: Add strict OCR rawText tests for 5 real Slipupgrade samples
@@ -1366,3 +1367,30 @@
 - [ ] Phase 6: Run full test suite and build verification
 - [ ] Phase 7: Create VERIFY_RESULTS_FINAL.md with before/after results
 - [ ] Phase 8: Create checkpoint and deliver
+=======
+## Slip File Upload Hardening (Critical Bug Fix)
+
+- [ ] Phase 1: Add detailed server-side diagnostics to slipFileUploadService and storage
+- [ ] Phase 2: Improve storagePut error visibility with structured errors
+- [ ] Phase 3: Map errors to specific TRPC error codes with Thai messages
+- [ ] Phase 4: Add MIME type validation and normalization
+- [ ] Phase 5: Add magic bytes validation for file type verification
+- [ ] Phase 6: Add upload health check at server startup
+- [ ] Phase 7: Add comprehensive unit tests for all upload scenarios
+- [ ] Phase 8: Update frontend to display real error messages
+- [ ] Phase 9: Create VERIFY_UPLOAD_FAILURE.md and run full verification
+- [ ] Phase 10: Create checkpoint and package for delivery
+
+## Slip File Upload Hardening (Phase 1-10)
+
+- [x] Phase 1: Add detailed server-side diagnostics (storageErrorHandler.ts)
+- [x] Phase 2: Improve storagePut error visibility with structured errors
+- [x] Phase 3: Map errors to specific TRPC error codes with Thai messages
+- [x] Phase 4: Add MIME type validation and normalization (image/jpg → image/jpeg)
+- [x] Phase 5: Add magic bytes validation (JPEG, PNG, PDF)
+- [x] Phase 6: Add upload health check at server startup
+- [x] Phase 7: Add comprehensive unit tests (18/18 passing)
+- [x] Phase 8: Update PaymentPage.tsx to display real error messages
+- [x] Phase 9: Create SLIP_UPLOAD_DIAGNOSTICS.md with troubleshooting guide
+- [ ] Phase 10: Create checkpoint and package
+>>>>>>> Stashed changes

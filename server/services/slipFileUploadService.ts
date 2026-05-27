@@ -6,6 +6,12 @@
 
 import { storagePut } from "../storage";
 import { TRPCError } from "@trpc/server";
+import {
+  StorageUploadError,
+  normalizeMimeType,
+  validateMagicBytes,
+  sanitizeLogData,
+} from "../helpers/storageErrorHandler";
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 const ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "application/pdf"] as const;
@@ -17,6 +23,7 @@ export interface UploadPaymentSlipFileInput {
   fileBase64: string;
   context: "checkout" | "payment_page" | "wallet";
   orderTotal?: number;
+  requestId?: string;
 }
 
 export interface UploadPaymentSlipFileResult {
@@ -54,70 +61,176 @@ function base64ToBuffer(base64: string): Buffer {
 export async function uploadPaymentSlipFile(
   input: UploadPaymentSlipFileInput
 ): Promise<UploadPaymentSlipFileResult> {
-  // Validate MIME type
-  if (!ALLOWED_MIME_TYPES.includes(input.mimeType as any)) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: `Invalid file type. Allowed: JPG, PNG, PDF. Got: ${input.mimeType}`,
-    });
-  }
+  const requestId = input.requestId || `upload-${Date.now()}`;
+  const context = {
+    userId: input.userId,
+    context: input.context,
+    fileName: sanitizeFileName(input.fileName),
+    requestId,
+  };
 
-  // Decode base64 to buffer
-  let fileBuffer: Buffer;
   try {
-    fileBuffer = base64ToBuffer(input.fileBase64);
-  } catch (error) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: "Invalid base64 encoding",
-    });
-  }
+    // Step 1: Normalize and validate MIME type
+    let normalizedMimeType: string;
+    try {
+      normalizedMimeType = normalizeMimeType(input.mimeType);
+    } catch (error: any) {
+      console.warn("[SlipUpload]", requestId, "MIME type not supported:", {
+        ...context,
+        mimeType: input.mimeType,
+        error: error.message,
+      });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: error.message || "ไฟล์นี้ยังไม่รองรับ กรุณาอัปโหลด JPG, PNG หรือ PDF",
+      });
+    }
 
-  // Validate file size
-  if (fileBuffer.length > MAX_FILE_SIZE) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: `File too large. Maximum 5MB, got ${(fileBuffer.length / 1024 / 1024).toFixed(1)}MB`,
-    });
-  }
+    if (!ALLOWED_MIME_TYPES.includes(normalizedMimeType as any)) {
+      console.warn("[SlipUpload]", requestId, "MIME type not allowed:", {
+        ...context,
+        mimeType: normalizedMimeType,
+      });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "ไฟล์นี้ยังไม่รองรับ กรุณาอัปโหลด JPG, PNG หรือ PDF",
+      });
+    }
 
-  // Validate orderTotal if provided
-  if (input.orderTotal !== undefined && typeof input.orderTotal !== "number") {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: "Invalid order total format",
-    });
-  }
+    // Step 2: Decode base64 to buffer
+    let fileBuffer: Buffer;
+    try {
+      fileBuffer = base64ToBuffer(input.fileBase64);
+    } catch (error: any) {
+      console.warn("[SlipUpload]", requestId, "Invalid base64:", {
+        ...context,
+        error: error.message,
+      });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "ไฟล์ไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง",
+      });
+    }
 
-  // Sanitize filename
-  const sanitized = sanitizeFileName(input.fileName);
-  const timestamp = Date.now();
-  const random = Math.random().toString(36).substring(2, 8);
-  const fileKey = `payment-slips/${input.userId}/${timestamp}-${random}-${sanitized}`;
+    // Step 3: Validate file size
+    if (fileBuffer.length > MAX_FILE_SIZE) {
+      const sizeMB = (fileBuffer.length / 1024 / 1024).toFixed(1);
+      console.warn("[SlipUpload]", requestId, "File too large:", {
+        ...context,
+        size: fileBuffer.length,
+        sizeMB,
+        maxSize: MAX_FILE_SIZE,
+      });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `ไฟล์ใหญ่เกินไป (${sizeMB}MB) กรุณาอัปโหลดไฟล์ที่เล็กกว่า 5MB`,
+      });
+    }
 
-  // Upload to S3
-  try {
-    const { url } = await storagePut(fileKey, fileBuffer, input.mimeType);
+    // Step 4: Validate magic bytes
+    if (!validateMagicBytes(fileBuffer, normalizedMimeType)) {
+      console.warn("[SlipUpload]", requestId, "Magic bytes mismatch:", {
+        ...context,
+        mimeType: normalizedMimeType,
+        firstBytes: fileBuffer.slice(0, 4).toString("hex"),
+      });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "ไฟล์ไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง",
+      });
+    }
 
-    const isPDF = input.mimeType === "application/pdf";
-    const userMessage = isPDF
-      ? "PDF slips require manual review. We will notify you once approved."
-      : "Your slip is being processed. We will notify you once approved.";
+    // Step 5: Validate orderTotal if provided
+    if (input.orderTotal !== undefined && typeof input.orderTotal !== "number") {
+      console.warn("[SlipUpload]", requestId, "Invalid order total:", {
+        ...context,
+        orderTotal: input.orderTotal,
+      });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "ข้อมูลการสั่งซื้อไม่ถูกต้อง",
+      });
+    }
 
-    return {
-      slipImageUrl: url,
-      key: fileKey,
-      mimeType: input.mimeType,
+    // Step 6: Prepare file key
+    const sanitized = sanitizeFileName(input.fileName);
+    const timestamp = Date.now();
+    const random = Math.random().toString(36).substring(2, 8);
+    const fileKey = `payment-slips/${input.userId}/${timestamp}-${random}-${sanitized}`;
+
+    console.info("[SlipUpload]", requestId, "File ready for upload:", {
+      ...context,
+      fileKey,
       size: fileBuffer.length,
-      isPDF,
-      userMessage,
-      orderTotal: input.orderTotal,
-    };
+      mimeType: normalizedMimeType,
+    });
+
+    // Step 7: Upload to S3
+    try {
+      const { url } = await storagePut(fileKey, fileBuffer, normalizedMimeType);
+
+      const isPDF = normalizedMimeType === "application/pdf";
+      const userMessage = isPDF
+        ? "PDF slips require manual review. We will notify you once approved."
+        : "Your slip is being processed. We will notify you once approved.";
+
+      console.info("[SlipUpload]", requestId, "Upload successful:", {
+        ...context,
+        fileKey,
+        url: url.substring(0, 100) + "...",
+        isPDF,
+      });
+
+      return {
+        slipImageUrl: url,
+        key: fileKey,
+        mimeType: normalizedMimeType,
+        size: fileBuffer.length,
+        isPDF,
+        userMessage,
+        orderTotal: input.orderTotal,
+      };
+    } catch (error: any) {
+      // Handle StorageUploadError
+      if (error instanceof StorageUploadError) {
+        console.error("[SlipUpload]", requestId, "Storage upload failed:", {
+          ...context,
+          ...error.getSafeDetails(),
+        });
+
+        const trpcError = error.toTRPCError();
+        throw new TRPCError({
+          code: trpcError.code,
+          message: trpcError.message,
+        });
+      }
+
+      // Handle other errors
+      console.error("[SlipUpload]", requestId, "Upload error:", {
+        ...context,
+        error: error.message,
+      });
+
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "อัปโหลดไฟล์ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
+      });
+    }
   } catch (error: any) {
-    console.error("[SlipUpload] S3 upload failed:", error);
+    // Re-throw TRPC errors
+    if (error instanceof TRPCError) {
+      throw error;
+    }
+
+    // Catch-all for unexpected errors
+    console.error("[SlipUpload]", requestId, "Unexpected error:", {
+      ...context,
+      error: error.message,
+    });
+
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
-      message: "File upload failed. Please try again.",
+      message: "อัปโหลดไฟล์ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
     });
   }
 }

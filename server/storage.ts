@@ -2,6 +2,7 @@
 // Uses the Biz-provided storage proxy (Authorization: Bearer <token>)
 
 import { ENV } from './_core/env';
+import { StorageUploadError } from './helpers/storageErrorHandler';
 
 type StorageConfig = { baseUrl: string; apiKey: string };
 
@@ -72,31 +73,102 @@ export async function storagePut(
   data: Buffer | Uint8Array | string,
   contentType = "application/octet-stream"
 ): Promise<{ key: string; url: string }> {
-  const { baseUrl, apiKey } = getStorageConfig();
+  let baseUrl: string;
+  let apiKey: string;
+  let hasBaseUrl = false;
+  let hasApiKey = false;
+
+  try {
+    const config = getStorageConfig();
+    baseUrl = config.baseUrl;
+    apiKey = config.apiKey;
+    hasBaseUrl = true;
+    hasApiKey = true;
+  } catch (error: any) {
+    throw new StorageUploadError(
+      null,
+      null,
+      error.message || "Missing storage configuration",
+      relKey,
+      false,
+      false,
+      "Storage credentials not configured"
+    );
+  }
+
   const key = normalizeKey(relKey);
   const uploadUrl = buildUploadUrl(baseUrl, key);
   const formData = toFormData(data, contentType, key.split("/").pop() ?? key);
-  const response = await fetch(uploadUrl, {
-    method: "POST",
-    headers: buildAuthHeaders(apiKey),
-    body: formData,
-  });
 
-  if (!response.ok) {
-    const message = await response.text().catch(() => response.statusText);
-    throw new Error(
-      `Storage upload failed (${response.status} ${response.statusText}): ${message}`
+  let response: Response;
+  try {
+    response = await fetch(uploadUrl, {
+      method: "POST",
+      headers: buildAuthHeaders(apiKey),
+      body: formData,
+      signal: AbortSignal.timeout(30000),
+    });
+  } catch (error: any) {
+    throw new StorageUploadError(
+      null,
+      null,
+      error.message || "Network error",
+      relKey,
+      hasBaseUrl,
+      hasApiKey,
+      "Network error during upload"
     );
   }
+
+  if (!response.ok) {
+    const responseText = await response.text().catch(() => response.statusText);
+    throw new StorageUploadError(
+      response.status,
+      response.statusText,
+      responseText,
+      relKey,
+      hasBaseUrl,
+      hasApiKey,
+      `Storage upload failed (${response.status} ${response.statusText})`
+    );
+  }
+
   const url = (await response.json()).url;
   return { key, url };
 }
 
 export async function storageGet(relKey: string): Promise<{ key: string; url: string; }> {
-  const { baseUrl, apiKey } = getStorageConfig();
+  let baseUrl: string;
+  let apiKey: string;
+
+  try {
+    const config = getStorageConfig();
+    baseUrl = config.baseUrl;
+    apiKey = config.apiKey;
+  } catch (error: any) {
+    throw new StorageUploadError(
+      null,
+      null,
+      error.message || "Missing storage configuration",
+      relKey,
+      false,
+      false,
+      "Storage credentials not configured"
+    );
+  }
+
   const key = normalizeKey(relKey);
   return {
     key,
     url: await buildDownloadUrl(baseUrl, key, apiKey),
   };
+}
+
+export function isStorageReady(): boolean {
+  try {
+    getStorageConfig();
+    return true;
+  } catch {
+    return false;
+  }
 }
