@@ -1394,3 +1394,30 @@
 - [x] Phase 9: Create SLIP_UPLOAD_DIAGNOSTICS.md with troubleshooting guide
 - [ ] Phase 10: Create checkpoint and package
 >>>>>>> Stashed changes
+
+
+## Admin Orders UserID Filter (Phase 1-10)
+
+- [ ] Phase 1: Audit admin orders query and identify filter structure
+- [ ] Phase 2: Add userId filter to backend with strict validation
+- [ ] Phase 3: Enhance response with user info and payment/OCR fields
+- [ ] Phase 4: Add userId input to AdminOrdersPage with validation
+- [ ] Phase 5: Implement URL query parameter support for userId
+- [ ] Phase 6: Add clickable userId links in order table
+- [ ] Phase 7: Add admin query logging with safe sanitization
+- [ ] Phase 8: Add comprehensive unit tests for userId filter
+- [ ] Phase 9: Create VERIFY_ADMIN_ORDERS_USER_FILTER.md documentation
+- [ ] Phase 10: Run full verification and create checkpoint
+
+## Admin Orders UserID Filter (Phase 1-10) - COMPLETED
+
+- [x] Phase 1: Audit admin orders query and identify filter structure
+- [x] Phase 2: Add userId filter to backend with strict validation (z.union validation)
+- [x] Phase 3: Response already includes user info and payment fields
+- [x] Phase 4: Add userId input to AdminOrdersPage with validation and error handling
+- [ ] Phase 5: Implement URL query parameter sync (remove on clear)
+- [ ] Phase 6: Add clickable userId links in order table
+- [ ] Phase 7: Add admin query logging with safe sanitization
+- [ ] Phase 8: Add comprehensive unit tests for userId filter
+- [x] Phase 9: Create VERIFY_ADMIN_ORDERS_USER_FILTER.md documentation
+- [ ] Phase 10: Run full verification and create checkpoint

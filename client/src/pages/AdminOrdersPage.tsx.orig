@@ -2,7 +2,6 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useLanguage } from "@/contexts/LanguageContext";
 import { trpc } from "@/lib/trpc";
 import { Loader2, Search, ChevronLeft, ChevronRight } from "lucide-react";
 import { useLocation } from "wouter";
@@ -19,7 +18,6 @@ interface AdminOrdersResult {
 
 export default function AdminOrdersPage() {
   const [, setLocation] = useLocation();
-  const { t } = useLanguage();
   
   // Pagination and filtering state
   const [page, setPage] = useState(1);
@@ -30,8 +28,6 @@ export default function AdminOrdersPage() {
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [paymentStatusFilter, setPaymentStatusFilter] = useState<string>("");
   const [hasDiscountFilter, setHasDiscountFilter] = useState<boolean | undefined>(undefined);
-  const [userIdInput, setUserIdInput] = useState<string>("");
-  const [userIdError, setUserIdError] = useState<string>("");
 
   // Fetch orders with filters
   const queryInput = {
@@ -42,7 +38,6 @@ export default function AdminOrdersPage() {
     sortOrder,
     status: statusFilter || undefined,
     paymentStatus: paymentStatusFilter || undefined,
-    userId: userIdInput ? parseInt(userIdInput, 10) : undefined,
     hasDiscount: hasDiscountFilter,
   };
   
