@@ -776,7 +776,7 @@ export const appRouter = router({
         .input(
           z.object({
             page: z.number().int().positive().default(1),
-            userId: z.union([z.number().int().positive(), z.string().regex(/^\d+$/)]).transform(val => typeof val === 'string' ? parseInt(val, 10) : val).optional(),
+            userId: z.union([z.number().int().positive(), z.string().regex(/^[1-9]\d*$/)]).transform(val => typeof val === 'string' ? parseInt(val, 10) : val).optional(),
             pageSize: z.number().int().positive().default(20),
             search: z.string().optional(),
             sortBy: z.enum(['createdAt', 'updatedAt', 'amount', 'discount']).default('createdAt'),

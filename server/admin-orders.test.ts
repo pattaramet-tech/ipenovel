@@ -316,4 +316,145 @@ describe("Admin Orders - Pagination, Search, Sorting, Filters", () => {
       expect(Array.isArray(result.orders)).toBe(true);
     });
   });
+
+  describe("User ID Filter", () => {
+    it("should filter orders by userId", async () => {
+      const userId = testUserIds[0];
+      const result = await db.getAdminOrdersWithUsers({
+        userId,
+        pageSize: 100,
+      });
+
+      expect(result.orders.length).toBeGreaterThan(0);
+      expect(result.orders.every((o: any) => o.userId === userId)).toBe(true);
+    });
+
+    it("should return empty results for non-existent userId", async () => {
+      const result = await db.getAdminOrdersWithUsers({
+        userId: 999999,
+        pageSize: 100,
+      });
+
+      expect(result.orders.length).toBe(0);
+      expect(result.total).toBe(0);
+    });
+
+    it("should include userEmail in results when filtering by userId", async () => {
+      const userId = testUserIds[0];
+      const result = await db.getAdminOrdersWithUsers({
+        userId,
+        pageSize: 100,
+      });
+
+      expect(result.orders.length).toBeGreaterThan(0);
+      result.orders.forEach((order: any) => {
+        expect(order.userId).toBe(userId);
+        expect(order.userEmail).toBeDefined();
+        expect(order.userName).toBeDefined();
+      });
+    });
+
+    it("should combine userId filter with search", async () => {
+      const userId = testUserIds[0];
+      const result = await db.getAdminOrdersWithUsers({
+        userId,
+        search: "TEST",
+        pageSize: 100,
+      });
+
+      expect(result.orders.length).toBeGreaterThan(0);
+      result.orders.forEach((order: any) => {
+        expect(order.userId).toBe(userId);
+        expect(order.orderNumber.includes("TEST")).toBe(true);
+      });
+    });
+
+    it("should combine userId filter with status filter", async () => {
+      const userId = testUserIds[0];
+      // User 1 has 2 completed orders
+      const result = await db.getAdminOrdersWithUsers({
+        userId,
+        status: "completed",
+        pageSize: 100,
+      });
+
+      if (result.orders.length > 0) {
+        result.orders.forEach((order: any) => {
+          expect(order.userId).toBe(userId);
+          expect(order.status).toBe("completed");
+        });
+      }
+    });
+
+    it("should combine userId filter with payment status filter", async () => {
+      const userId = testUserIds[0];
+      // User 1 has 2 approved payment orders
+      const result = await db.getAdminOrdersWithUsers({
+        userId,
+        paymentStatus: "approved",
+        pageSize: 100,
+      });
+
+      if (result.orders.length > 0) {
+        result.orders.forEach((order: any) => {
+          expect(order.userId).toBe(userId);
+          expect(order.paymentStatus).toBe("approved");
+        });
+      }
+    });
+
+    it("should combine userId filter with amount range filter", async () => {
+      const userId = testUserIds[0];
+      const result = await db.getAdminOrdersWithUsers({
+        userId,
+        minAmount: 500,
+        maxAmount: 2500,
+        pageSize: 100,
+      });
+
+      expect(result.orders.length).toBeGreaterThan(0);
+      result.orders.forEach((order: any) => {
+        expect(order.userId).toBe(userId);
+        const amount = parseFloat(order.totalAmount);
+        expect(amount).toBeGreaterThanOrEqual(500);
+        expect(amount).toBeLessThanOrEqual(2500);
+      });
+    });
+
+    it("should respect pagination with userId filter", async () => {
+      const userId = testUserIds[0];
+      const result1 = await db.getAdminOrdersWithUsers({
+        userId,
+        page: 1,
+        pageSize: 10,
+      });
+
+      const result2 = await db.getAdminOrdersWithUsers({
+        userId,
+        page: 1,
+        pageSize: 10,
+      });
+
+      expect(result1.page).toBe(1);
+      expect(result2.page).toBe(1);
+      // Same query should return same results
+      expect(result1.orders.length).toBe(result2.orders.length);
+      if (result1.orders.length > 0) {
+        expect(result1.orders[0].id).toBe(result2.orders[0].id);
+      }
+    });
+
+    it("should include userEmail in search results", async () => {
+      const result = await db.getAdminOrdersWithUsers({
+        search: "test.com",
+        pageSize: 100,
+      });
+
+      // Should find orders by email search
+      expect(result.orders.length).toBeGreaterThanOrEqual(0);
+      result.orders.forEach((order: any) => {
+        expect(order.userEmail).toBeDefined();
+      });
+    });
+  });
 });

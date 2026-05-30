@@ -776,6 +776,7 @@ export const appRouter = router({
         .input(
           z.object({
             page: z.number().int().positive().default(1),
+            userId: z.union([z.number().int().positive(), z.string().regex(/^\d+$/)]).transform(val => typeof val === 'string' ? parseInt(val, 10) : val).optional(),
             pageSize: z.number().int().positive().default(20),
             search: z.string().optional(),
             sortBy: z.enum(['createdAt', 'updatedAt', 'amount', 'discount']).default('createdAt'),
@@ -793,6 +794,7 @@ export const appRouter = router({
           const result = await db.getAdminOrdersWithUsers({
             page: input.page,
             pageSize: input.pageSize,
+            userId: input.userId,
             search: input.search,
             sortBy: input.sortBy,
             sortOrder: input.sortOrder,

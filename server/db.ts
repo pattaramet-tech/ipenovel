@@ -632,6 +632,10 @@ export async function getAdminOrdersWithUsers(options: {
   const page = Math.max(1, options.page || 1);
   const offset = (page - 1) * pageSize;
 
+  // Create aliases for order user and approver user (must be before using in conditions)
+  const orderUser = alias(users, "orderUser");
+  const approverUser = alias(users, "approverUser");
+
   // Build where conditions
   const conditions: any[] = [];
 
@@ -642,7 +646,8 @@ export async function getAdminOrdersWithUsers(options: {
       or(
         sql`LOWER(${orders.orderNumber}) LIKE ${searchLower}`,
         sql`LOWER(CAST(${orders.userId} AS CHAR)) LIKE ${searchLower}`,
-        sql`LOWER(${users.name}) LIKE ${searchLower}`
+        sql`LOWER(${orderUser.name}) LIKE ${searchLower}`,
+        sql`LOWER(${orderUser.email}) LIKE ${searchLower}`
       )
     );
   }
@@ -695,9 +700,7 @@ export async function getAdminOrdersWithUsers(options: {
     conditions.push(lte(orders.totalAmount, options.maxAmount.toString()));
   }
 
-  // Create aliases for order user and approver user
-  const orderUser = alias(users, "orderUser");
-  const approverUser = alias(users, "approverUser");
+
 
   // Build query with user joins and payment data
   let query: any = db

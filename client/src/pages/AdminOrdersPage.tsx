@@ -6,7 +6,7 @@ import { useLanguage } from "@/contexts/LanguageContext";
 import { trpc } from "@/lib/trpc";
 import { Loader2, Search, ChevronLeft, ChevronRight } from "lucide-react";
 import { useLocation } from "wouter";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import AdminLayout from "@/components/AdminLayout";
 
 interface AdminOrdersResult {
@@ -18,8 +18,12 @@ interface AdminOrdersResult {
 }
 
 export default function AdminOrdersPage() {
-  const [, setLocation] = useLocation();
+  const [location, setLocation] = useLocation();
   const { t } = useLanguage();
+  
+  // Parse URL query parameters
+  const queryParams = new URLSearchParams(location.split('?')[1] || '');
+  const urlUserId = queryParams.get('userId');
   
   // Pagination and filtering state
   const [page, setPage] = useState(1);
@@ -31,7 +35,16 @@ export default function AdminOrdersPage() {
   const [paymentStatusFilter, setPaymentStatusFilter] = useState<string>("");
   const [hasDiscountFilter, setHasDiscountFilter] = useState<boolean | undefined>(undefined);
   const [userIdInput, setUserIdInput] = useState<string>("");
+  const [appliedUserId, setAppliedUserId] = useState<string>("");
   const [userIdError, setUserIdError] = useState<string>("");
+
+  // Sync userId from URL on mount
+  useEffect(() => {
+    if (urlUserId) {
+      setUserIdInput(urlUserId);
+      setAppliedUserId(urlUserId);
+    }
+  }, [urlUserId]);
 
   // Fetch orders with filters
   const queryInput = {
@@ -42,7 +55,7 @@ export default function AdminOrdersPage() {
     sortOrder,
     status: statusFilter || undefined,
     paymentStatus: paymentStatusFilter || undefined,
-    userId: userIdInput ? parseInt(userIdInput, 10) : undefined,
+    userId: appliedUserId ? parseInt(appliedUserId, 10) : undefined,
     hasDiscount: hasDiscountFilter,
   };
   
@@ -83,6 +96,37 @@ export default function AdminOrdersPage() {
 
   const handleDiscountFilter = (value: boolean | undefined) => {
     setHasDiscountFilter(hasDiscountFilter === value ? undefined : value);
+    setPage(1);
+  };
+
+  // Handle userId filter
+  const handleUserIdChange = (value: string) => {
+    setUserIdInput(value);
+    setUserIdError("");
+    
+    if (value === "") {
+      setAppliedUserId("");
+      // Remove userId from URL
+      const newParams = new URLSearchParams(location.split('?')[1] || '');
+      newParams.delete('userId');
+      const newUrl = newParams.toString() ? `?${newParams.toString()}` : '';
+      setLocation(newUrl);
+      setPage(1);
+      return;
+    }
+    
+    // Strict validation: positive integers only
+    const regex = /^[1-9]\d*$/;
+    if (!regex.test(value)) {
+      setUserIdError("User ID must be a positive integer (no 0, decimals, or letters)");
+      return;
+    }
+    
+    setAppliedUserId(value);
+    // Add userId to URL
+    const newParams = new URLSearchParams(location.split('?')[1] || '');
+    newParams.set('userId', value);
+    setLocation(`?${newParams.toString()}`);
     setPage(1);
   };
 
@@ -289,6 +333,7 @@ export default function AdminOrdersPage() {
                     </th>
                     <th className="text-left p-3 font-semibold">User Name</th>
                     <th className="text-left p-3 font-semibold">User ID</th>
+                    <th className="text-left p-3 font-semibold">User Email</th>
                     <th className="text-left p-3 font-semibold cursor-pointer hover:bg-slate-100" onClick={() => handleSort('amount')}>
                       Amount{getSortIndicator('amount')}
                     </th>
@@ -310,6 +355,7 @@ export default function AdminOrdersPage() {
                       <td className="p-3 font-medium text-blue-600 hover:underline">{order.orderNumber}</td>
                       <td className="p-3 text-sm">{order.userName || "—"}</td>
                       <td className="p-3 text-sm text-slate-600">{order.userId || "—"}</td>
+                      <td className="p-3 text-sm text-slate-600">{order.userEmail || "—"}</td>
                       <td className="p-3 font-medium">฿{parseFloat(order.totalAmount.toString()).toFixed(2)}</td>
                       <td className="p-3 text-sm">
                         {parseFloat(order.discountAmount.toString()) > 0 || parseFloat(order.pointsDiscountAmount.toString()) > 0 ? (

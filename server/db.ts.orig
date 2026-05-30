@@ -613,6 +613,7 @@ export async function getAdminOrdersWithUsers(options: {
   page?: number;
   pageSize?: number;
   search?: string;
+  userId?: number;
   sortBy?: 'createdAt' | 'updatedAt' | 'amount' | 'discount';
   sortOrder?: 'asc' | 'desc';
   status?: string;
@@ -644,6 +645,11 @@ export async function getAdminOrdersWithUsers(options: {
         sql`LOWER(${users.name}) LIKE ${searchLower}`
       )
     );
+  }
+
+  // UserID filter
+  if (options.userId !== undefined) {
+    conditions.push(eq(orders.userId, options.userId));
   }
 
   // Status filter
