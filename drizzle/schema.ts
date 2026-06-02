@@ -506,10 +506,27 @@ export const walletTopups = mysqlTable("walletTopups", {
   bonusAmount: decimal("bonusAmount", { precision: 12, scale: 2 }).default("0").notNull(),
   creditedAmount: decimal("creditedAmount", { precision: 12, scale: 2 }),
   slipImageUrl: text("slipImageUrl"),
-  status: mysqlEnum("status", ["pending", "approved", "rejected", "cancelled"]).default("pending").notNull(),
+  slipSubmittedAt: timestamp("slipSubmittedAt"),
+  status: mysqlEnum("status", ["pending", "pending_review", "approved", "rejected", "cancelled"]).default("pending").notNull(),
   rejectionReason: text("rejectionReason"),
   reviewedByUserId: int("reviewedByUserId"),
   reviewedAt: timestamp("reviewedAt"),
+  approvedAt: timestamp("approvedAt"),
+  approvedByAdminId: int("approvedByAdminId"),
+  rejectedAt: timestamp("rejectedAt"),
+  // OCR extracted data and confidence scores
+  extractedData: text("extractedData"), // JSON: { amount, reference, transactionDate, bank, merchant, shopName }
+  ocrConfidence: decimal("ocrConfidence", { precision: 5, scale: 2 }),
+  visionConfidence: decimal("visionConfidence", { precision: 5, scale: 2 }),
+  structuredConfidence: decimal("structuredConfidence", { precision: 5, scale: 2 }),
+  finalConfidence: decimal("finalConfidence", { precision: 5, scale: 2 }),
+  // Duplicate detection
+  duplicateStatus: text("duplicateStatus"), // JSON: { isDuplicate, type, reference, fingerprint }
+  // OCR decision and review reason
+  ocrDecision: mysqlEnum("ocrDecision", ["approved", "needs_review", "rejected"]),
+  reviewReason: text("reviewReason"), // e.g., AMOUNT_MISMATCH, LOW_CONFIDENCE, DUPLICATE_REFERENCE, OCR_PROCESSING_ERROR, PDF_MANUAL_REVIEW
+  // Approval source tracking
+  approvalSource: mysqlEnum("approvalSource", ["manual", "ocr_auto"]).default("manual"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 }, (table) => ({

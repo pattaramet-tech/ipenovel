@@ -1420,3 +1420,32 @@
 - [x] Phase 8: Fix orderUser alias declaration order in db.ts
 - [x] Phase 9: Verify all fixes and create checkpoint
 - [x] Phase 10: Final verification complete - all 44 tests passing
+
+## Wallet OCR Auto-Approval Feature (In Progress)
+- [ ] Phase 1: Add OCR fields to walletTopups schema (slipSubmittedAt, extractedData, ocrConfidence, finalConfidence, visionConfidence, structuredConfidence, duplicateStatus, ocrDecision, reviewReason, approvalSource, approvedAt, approvedByAdminId, rejectedAt)
+- [ ] Phase 2: Create walletTopupSubmissionService.ts with OCR submission logic
+- [ ] Phase 3: Implement idempotent wallet credit with transaction locks
+- [ ] Phase 4: Update wallet.createTopupRequest route with OCR integration
+- [ ] Phase 5: Update WalletPage UI with file validation and status messages
+- [ ] Phase 6: Add admin wallet top-up review support
+- [ ] Phase 7: Write comprehensive wallet OCR tests (10+ scenarios)
+- [ ] Phase 8: Create VERIFY_WALLET_TOPUP_OCR.md documentation
+- [ ] Phase 9: Run full test suite and create checkpoint
+
+
+## Wallet Top-up OCR Critical Fixes (Phase 1-15) - IN PROGRESS
+- [x] Phase 1: Wire OCR into active wallet top-up flow (walletService.ts)
+- [x] Phase 2: Fix admin visibility for pending_review top-ups (db.ts)
+- [x] Phase 3: Allow admin approve for pending_review status (walletService.ts + db.ts)
+- [x] Phase 4: Fix auto-approve credit amount to include bonus (walletTopupSubmissionService.ts)
+- [x] Phase 5: Create transactional approveWalletTopupWithOCR helper (db.ts)
+- [ ] Phase 6: Standardize referenceType to wallet_topup (db.ts + services)
+- [ ] Phase 7: Use effective OCR config (walletTopupSubmissionService.ts)
+- [ ] Phase 8: Implement global cross-table duplicate detection (db.ts + service)
+- [ ] Phase 9: Fix confidence metadata fields (walletTopupSubmissionService.ts)
+- [ ] Phase 10: Update WalletPage result handling (WalletPage.tsx)
+- [ ] Phase 11: Ensure admin wallet review UI shows all fields
+- [ ] Phase 12: Handle PDF behavior (walletTopupSubmissionService.ts)
+- [ ] Phase 13: Write comprehensive wallet OCR tests
+- [ ] Phase 14: Create VERIFY_WALLET_TOPUP_OCR.md documentation
+- [ ] Phase 15: Run full test suite and create checkpoint

@@ -155,6 +155,13 @@
       "when": 1779615055016,
       "tag": "0021_skinny_slayback",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "5",
+      "when": 1780336176724,
+      "tag": "0022_rich_spectrum",
+      "breakpoints": true
     }
   ]
 }

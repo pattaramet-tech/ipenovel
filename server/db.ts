@@ -2617,6 +2617,7 @@ export async function listPendingWalletTopups(limit: number = 20, offset: number
   if (!db) throw new Error("Database not available");
 
   // Join with users to enrich topup data with user info
+  // Include both pending and pending_review statuses for admin review queue
   const result = await db
     .select({
       ...getTableColumns(walletTopups),
@@ -2628,7 +2629,12 @@ export async function listPendingWalletTopups(limit: number = 20, offset: number
     })
     .from(walletTopups)
     .leftJoin(users, eq(walletTopups.userId, users.id))
-    .where(eq(walletTopups.status, "pending"))
+    .where(
+      or(
+        eq(walletTopups.status, "pending"),
+        eq(walletTopups.status, "pending_review")
+      )
+    )
     .orderBy(asc(walletTopups.createdAt))
     .limit(limit)
     .offset(offset);
@@ -3555,4 +3561,243 @@ export async function getSportsRewardsForUser(userId: number) {
                   reward.expiresAt && new Date(reward.expiresAt).getTime() <= Date.now() ? "expired" :
                   "issued",
   }));
+}
+
+/**
+ * Update wallet top-up with OCR results and approval
+ */
+export async function updateWalletTopupWithOCRApproval(
+  topupId: number,
+  updates: {
+    status?: string;
+    slipSubmittedAt?: Date;
+    extractedData?: string;
+    ocrConfidence?: number;
+    visionConfidence?: number;
+    structuredConfidence?: number;
+    finalConfidence?: number;
+    duplicateStatus?: string;
+    ocrDecision?: string;
+    reviewReason?: string;
+    approvalSource?: string;
+    approvedAt?: Date;
+    creditedAmount?: string;
+  }
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const updateData: any = {
+    updatedAt: new Date(),
+  };
+
+  if (updates.status) updateData.status = updates.status;
+  if (updates.slipSubmittedAt) updateData.slipSubmittedAt = updates.slipSubmittedAt;
+  if (updates.extractedData) updateData.extractedData = updates.extractedData;
+  if (updates.ocrConfidence !== undefined) updateData.ocrConfidence = updates.ocrConfidence;
+  if (updates.visionConfidence !== undefined) updateData.visionConfidence = updates.visionConfidence;
+  if (updates.structuredConfidence !== undefined) updateData.structuredConfidence = updates.structuredConfidence;
+  if (updates.finalConfidence !== undefined) updateData.finalConfidence = updates.finalConfidence;
+  if (updates.duplicateStatus) updateData.duplicateStatus = updates.duplicateStatus;
+  if (updates.ocrDecision) updateData.ocrDecision = updates.ocrDecision;
+  if (updates.reviewReason) updateData.reviewReason = updates.reviewReason;
+  if (updates.approvalSource) updateData.approvalSource = updates.approvalSource;
+  if (updates.approvedAt) updateData.approvedAt = updates.approvedAt;
+  if (updates.creditedAmount) updateData.creditedAmount = updates.creditedAmount;
+
+  await db.update(walletTopups).set(updateData).where(eq(walletTopups.id, topupId));
+
+  return (await db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1))[0];
+}
+
+/**
+ * Get wallet transaction by reference (for idempotency check)
+ */
+export async function getWalletTransactionByReference(
+  userId: number,
+  referenceType: string,
+  referenceId: string
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return (
+    await db
+      .select()
+      .from(walletTransactions)
+      .where(
+        and(
+          eq(walletTransactions.userId, userId),
+          eq(walletTransactions.referenceType, referenceType),
+          eq(walletTransactions.referenceId, parseInt(referenceId))
+        )
+      )
+      .limit(1)
+  )[0];
+}
+
+/**
+ * Get all wallet top-ups for a user (for duplicate detection)
+ */
+export async function getWalletTopupsByUserId(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return await db
+    .select()
+    .from(walletTopups)
+    .where(eq(walletTopups.userId, userId))
+    .orderBy(desc(walletTopups.createdAt));
+}
+
+
+/**
+ * Transactional approve wallet top-up with OCR data (idempotent)
+ * Used by OCR auto-approval flow to ensure atomicity and prevent double-crediting
+ */
+export async function approveWalletTopupWithOCR(
+  topupId: number,
+  ocrData: {
+    status: "approved" | "pending_review";
+    slipSubmittedAt: Date;
+    extractedData: string;
+    ocrConfidence?: number;
+    visionConfidence?: number;
+    structuredConfidence?: number;
+    finalConfidence?: number;
+    duplicateStatus?: string;
+    ocrDecision: string;
+    reviewReason?: string;
+    approvalSource: string;
+    approvedAt?: Date;
+    creditedAmount: string;
+  },
+  adminUserId?: number
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  // REAL DATABASE TRANSACTION: All operations succeed or all rollback
+  return await db.transaction(async (tx) => {
+    // Step 1: Fetch topup INSIDE transaction for consistency
+    const topupResult = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
+    if (!topupResult || topupResult.length === 0) {
+      throw new Error("Wallet top-up not found");
+    }
+    const topup = topupResult[0];
+
+    // Step 2: Only proceed if status is pending or pending_review (idempotency)
+    if (ocrData.status === "approved") {
+      // For auto-approval: only update if still pending
+      const updateResult = await tx
+        .update(walletTopups)
+        .set({
+          status: "approved" as any,
+          slipSubmittedAt: ocrData.slipSubmittedAt,
+          extractedData: ocrData.extractedData,
+          ocrConfidence: ocrData.ocrConfidence ? String(ocrData.ocrConfidence) : undefined,
+          visionConfidence: ocrData.visionConfidence ? String(ocrData.visionConfidence) : undefined,
+          structuredConfidence: ocrData.structuredConfidence ? String(ocrData.structuredConfidence) : undefined,
+          finalConfidence: ocrData.finalConfidence ? String(ocrData.finalConfidence) : undefined,
+          duplicateStatus: ocrData.duplicateStatus,
+          ocrDecision: ocrData.ocrDecision as any,
+          reviewReason: ocrData.reviewReason,
+          approvalSource: ocrData.approvalSource as any,
+          approvedAt: ocrData.approvedAt || new Date(),
+          creditedAmount: ocrData.creditedAmount,
+          reviewedByUserId: adminUserId,
+          reviewedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(walletTopups.id, topupId), eq(walletTopups.status, "pending" as any)));
+
+      const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
+      const affectedRows = (resultHeader as any)?.affectedRows || 0;
+      if (affectedRows === 0) {
+        // Already processed - return existing topup without crediting again
+        const existing = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
+        return existing[0];
+      }
+    } else {
+      // For pending_review: update regardless of current status (admin review)
+      await tx
+        .update(walletTopups)
+        .set({
+          status: "pending_review" as any,
+          slipSubmittedAt: ocrData.slipSubmittedAt,
+          extractedData: ocrData.extractedData,
+          ocrConfidence: ocrData.ocrConfidence ? String(ocrData.ocrConfidence) : undefined,
+          visionConfidence: ocrData.visionConfidence ? String(ocrData.visionConfidence) : undefined,
+          structuredConfidence: ocrData.structuredConfidence ? String(ocrData.structuredConfidence) : undefined,
+          finalConfidence: ocrData.finalConfidence ? String(ocrData.finalConfidence) : undefined,
+          duplicateStatus: ocrData.duplicateStatus,
+          ocrDecision: ocrData.ocrDecision as any,
+          reviewReason: ocrData.reviewReason,
+          approvalSource: ocrData.approvalSource as any,
+          updatedAt: new Date(),
+        })
+        .where(eq(walletTopups.id, topupId));
+      
+      const updated = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
+      return updated[0];
+    }
+
+    // Step 3: Credit wallet only if approved (not for pending_review)
+    if (ocrData.status === "approved") {
+      const creditAmount = ocrData.creditedAmount;
+      
+      // Get or create wallet account
+      let account = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, topup.userId)).limit(1);
+      if (!account || account.length === 0) {
+        await tx.insert(walletAccounts).values({
+          userId: topup.userId,
+          balance: "0.00",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+        account = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, topup.userId)).limit(1);
+        if (!account || account.length === 0) {
+          throw new Error("Failed to create wallet account");
+        }
+      }
+
+      const currentBalance = parseFloat(account[0].balance);
+      const creditAmountNum = parseFloat(creditAmount);
+      const newBalance = (currentBalance + creditAmountNum).toFixed(2);
+
+      // Update wallet balance
+      await tx
+        .update(walletAccounts)
+        .set({ balance: newBalance, updatedAt: new Date() })
+        .where(eq(walletAccounts.userId, topup.userId));
+
+      // Create wallet transaction record
+      await tx.insert(walletTransactions).values({
+        userId: topup.userId,
+        type: "topup_approved" as any,
+        amount: creditAmount,
+        balanceBefore: account[0].balance,
+        balanceAfter: newBalance,
+        referenceType: "wallet_topup",
+        referenceId: topupId,
+      });
+
+      // Create topup log
+      await tx.insert(topupLogs).values({
+        userId: topup.userId,
+        amount: topup.requestedAmount,
+        bonus: topup.bonusAmount || "0.00",
+        total: creditAmount,
+        method: "slip" as any,
+        reference: `topup-${topupId}`,
+        note: `Slip approved by ${ocrData.approvalSource === "ocr_auto" ? "OCR" : "admin"}`,
+        createdBy: adminUserId || 0,
+        createdAt: new Date(),
+      });
+    }
+
+    // Return updated topup
+    const updated = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
+    return updated[0];
+  });
 }

@@ -5,6 +5,7 @@
 
 import * as db from "../db";
 import { TRPCError } from "@trpc/server";
+import { submitWalletTopupSlip } from "./walletTopupSubmissionService";
 
 export async function createWalletTopupRequest(userId: number, requestedAmount: string, slipImageUrl?: string) {
   // STRICT validation: must be a valid positive number only
@@ -43,7 +44,26 @@ export async function createWalletTopupRequest(userId: number, requestedAmount: 
     });
   }
 
-  return topup;
+  // Wire OCR into active flow: submit slip for OCR processing
+  try {
+    const ocrResult = await submitWalletTopupSlip(userId, topup.id, requestedAmount, slipImageUrl);
+    return {
+      ...topup,
+      // Return OCR result to frontend
+      ocrStatus: ocrResult.status,
+      ocrDecision: ocrResult.ocrDecision,
+      ocrConfidence: ocrResult.ocrConfidence,
+      finalConfidence: ocrResult.finalConfidence,
+      reviewReason: ocrResult.reviewReason,
+      duplicateStatus: ocrResult.duplicateStatus,
+      userMessage: ocrResult.userMessage,
+      creditedAmount: ocrResult.creditedAmount,
+    };
+  } catch (ocrError) {
+    // OCR error should not crash the flow - log and return pending status
+    console.error("[Wallet OCR] Submission error:", ocrError);
+    return topup;
+  }
 }
 
 export async function uploadWalletTopupSlip(topupId: number, userId: number, slipImageUrl: string) {
@@ -89,7 +109,8 @@ export async function adminApproveWalletTopup(topupId: number, adminUserId: numb
   }
 
   // CRITICAL: Check if topup is already approved/rejected (prevent re-approval)
-  if (topup.status !== "pending") {
+  // Allow both pending and pending_review statuses for admin approval
+  if (topup.status !== "pending" && topup.status !== "pending_review") {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: `Cannot approve a ${topup.status} top-up request`,
