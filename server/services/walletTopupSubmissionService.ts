@@ -16,7 +16,7 @@ import {
   type ExtractedSlipData,
   type VerificationResult,
 } from "../ocr-slip-verification-v2";
-import { getOCRConfig } from "../_core/ocr-config";
+import { getEffectiveOCRConfig } from "../_core/ocr-effective-config";
 import { formatMoney } from "../helpers/moneyNormalizer";
 
 export interface WalletTopupSubmissionResult {
@@ -63,7 +63,7 @@ export async function submitWalletTopupSlip(
     });
   }
 
-  const ocrConfig = getOCRConfig();
+  const ocrConfig = await getEffectiveOCRConfig();
   const requestedAmountNum = parseFloat(requestedAmount);
 
   try {
@@ -81,7 +81,7 @@ export async function submitWalletTopupSlip(
     }
 
     // Handle OCR disabled
-    if (!ocrConfig.ocrEnabled) {
+    if (!ocrConfig.enabled) {
       return await handlePendingReview(
         topupId,
         userId,
@@ -91,7 +91,7 @@ export async function submitWalletTopupSlip(
     }
 
     // Handle shadow mode
-    if (ocrConfig.ocrShadowMode) {
+    if (ocrConfig.shadowModeEnabled) {
       return await handlePendingReview(
         topupId,
         userId,
@@ -181,7 +181,7 @@ export async function submitWalletTopupSlip(
     }
 
     // Step 8: Auto-approve if all checks pass
-    if (ocrConfig.ocrAutoApproveEnabled && verificationResult.status === "approved") {
+    if (ocrConfig.autoApproveEnabled && verificationResult.status === "approved") {
       return await autoApproveWalletTopup(
         topupId,
         userId,
@@ -238,16 +238,26 @@ async function autoApproveWalletTopup(
   // Calculate credited amount: requestedAmount + bonus (same as admin approval)
   const bonusAmount = topup.bonusAmount ? parseFloat(String(topup.bonusAmount)) : 0;
   const creditedAmount = amount + bonusAmount;
+  const creditedAmountStr = String(creditedAmount);
   
-  // Update top-up with OCR results and approval
-  const updatedTopup = await db.updateWalletTopupWithOCRApproval(topupId, {
+  // Use parseResult fields for confidence (Phase 8: Fix confidence metadata)
+  // parseResult contains visionConfidence from image analysis
+  // verificationResult.breakdown contains ocrConfidence from text verification
+  const ocrConfidenceValue = verificationResult?.breakdown ? Math.round(verificationResult.breakdown.ocrConfidence) : 0;
+  const visionConfidenceValue = parseResult ? Math.round(parseResult.visionConfidence || 0) : 0;
+  const structuredConfidenceValue = ocrConfidenceValue; // Use OCR confidence for structure
+  const finalConfidenceValue = ocrConfidenceValue; // Final is OCR confidence
+  
+  // Phase 2: Use transactional approveWalletTopupWithOCR for approval + wallet credit in one transaction
+  // This ensures atomicity: if approval succeeds, wallet is credited; if either fails, both rollback
+  const updatedTopup = await db.approveWalletTopupWithOCR(topupId, {
     status: "approved",
     slipSubmittedAt: new Date(),
     extractedData: JSON.stringify(extractedData),
-    ocrConfidence: verificationResult?.breakdown ? Math.round(verificationResult.breakdown.ocrConfidence) : undefined,
-    visionConfidence: parseResult ? Math.round(parseResult.visionConfidence || 0) : undefined,
-    structuredConfidence: verificationResult?.breakdown ? Math.round(verificationResult.breakdown.ocrConfidence) : undefined,
-    finalConfidence: verificationResult?.breakdown ? Math.round(verificationResult.breakdown.ocrConfidence) : undefined,
+    ocrConfidence: ocrConfidenceValue,
+    visionConfidence: visionConfidenceValue,
+    structuredConfidence: structuredConfidenceValue,
+    finalConfidence: finalConfidenceValue,
     duplicateStatus: JSON.stringify({
       isDuplicate: false,
       type: null,
@@ -257,7 +267,7 @@ async function autoApproveWalletTopup(
     ocrDecision: "approved",
     approvalSource: "ocr_auto",
     approvedAt: new Date(),
-    creditedAmount: String(creditedAmount),
+    creditedAmount: creditedAmountStr,
   });
 
   if (!updatedTopup) {
@@ -267,16 +277,12 @@ async function autoApproveWalletTopup(
     });
   }
 
-  // Credit wallet with creditedAmount (includes bonus) - idempotent
-  const creditedAmountStr = String(creditedAmount);
-  await creditWalletIdempotent(userId, topupId, creditedAmountStr);
-
   return {
     topupId,
     status: "approved",
     ocrDecision: "approved",
-    ocrConfidence: verificationResult?.breakdown ? Math.round(verificationResult.breakdown.ocrConfidence) : 0,
-    finalConfidence: verificationResult?.breakdown ? Math.round(verificationResult.breakdown.ocrConfidence) : 0,
+    ocrConfidence: ocrConfidenceValue,
+    finalConfidence: finalConfidenceValue,
     userMessage: "เติมเงินสำเร็จ ระบบอนุมัติอัตโนมัติแล้ว",
     creditedAmount: creditedAmountStr,
   };

@@ -1449,3 +1449,18 @@
 - [ ] Phase 13: Write comprehensive wallet OCR tests
 - [ ] Phase 14: Create VERIFY_WALLET_TOPUP_OCR.md documentation
 - [ ] Phase 15: Run full test suite and create checkpoint
+
+
+## Wallet OCR Production Safety Fixes (Phase 1-12) - IN PROGRESS
+- [x] Phase 1: Fix duplicate creditedAmount property in walletTopupSubmissionService.ts
+- [x] Phase 2: Use db.approveWalletTopupWithOCR in autoApproveWalletTopup for transactional safety
+- [x] Phase 3: Use getEffectiveOCRConfig instead of getOCRConfig in wallet OCR
+- [x] Phase 8: Fix confidence metadata to use extractedData fields correctly
+- [ ] Phase 4: Fix db.approveWalletTopup to allow pending_review status approval
+- [ ] Phase 5: Standardize referenceType to wallet_topup everywhere
+- [ ] Phase 6: Implement global cross-table duplicate detection (wallet + order)
+- [ ] Phase 7: Fix OCR error fallback to update topup status instead of hiding errors
+- [ ] Phase 9: Update WalletPage UX to show OCR status messages
+- [ ] Phase 10: Write comprehensive real wallet OCR tests
+- [ ] Phase 11: Run full test suite and verify all checks pass
+- [ ] Phase 12: Update VERIFY_WALLET_TOPUP_OCR.md with exact changes and test results
