@@ -5,6 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
 import { BookOpen } from "lucide-react";
+import { getLoginUrl } from "@/const";
 
 export default function MyNovelsPage() {
   const { isAuthenticated } = useAuth();
@@ -21,7 +22,7 @@ export default function MyNovelsPage() {
           <CardContent className="pt-6 text-center">
             <p className="text-slate-600 mb-4">Please sign in to view your novels</p>
             <Button asChild>
-              <a href="/login">Sign In</a>
+              <a href={getLoginUrl()}>Sign In</a>
             </Button>
           </CardContent>
         </Card>

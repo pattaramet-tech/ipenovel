@@ -1464,3 +1464,25 @@
 - [ ] Phase 10: Write comprehensive real wallet OCR tests
 - [ ] Phase 11: Run full test suite and verify all checks pass
 - [ ] Phase 12: Update VERIFY_WALLET_TOPUP_OCR.md with exact changes and test results
+
+
+## User-Facing Login Links Fixed - COMPLETED
+- [x] Fixed Home.tsx: href="/login" → href={getLoginUrl()}
+- [x] Fixed MyNovelsPage.tsx: href="/login" → href={getLoginUrl()}
+- [x] Fixed OrderDetailPage.tsx: href="/login" → href={getLoginUrl()}
+- [x] Fixed OrdersPage.tsx: href="/login" → href={getLoginUrl()}
+- [x] Fixed PaymentPage.tsx: href="/login" → href={getLoginUrl()}
+- [x] Added login button to CartPage unauthenticated state
+- [x] Verified no remaining /login references (except /admin/login)
+- [x] npm run check: PASS
+- [x] npm run build: PASS
+
+Files changed:
+- client/src/pages/Home.tsx
+- client/src/pages/MyNovelsPage.tsx
+- client/src/pages/OrderDetailPage.tsx
+- client/src/pages/OrdersPage.tsx
+- client/src/pages/PaymentPage.tsx
+- client/src/pages/CartPage.tsx
+
+All user-facing pages now use getLoginUrl() for login links. /admin/login remains separate for admin access.

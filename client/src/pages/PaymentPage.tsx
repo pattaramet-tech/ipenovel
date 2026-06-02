@@ -9,6 +9,7 @@ import { trpc } from "@/lib/trpc";
 import { useLocation, useParams } from "wouter";
 import { Upload, CheckCircle, AlertCircle, QrCode } from "lucide-react";
 import { toast } from "sonner";
+import { getLoginUrl } from "@/const";
 
 const QR_PAYMENT_IMAGE = "https://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/IMG_8158_8beb9f9a.jpeg";
 
@@ -134,7 +135,7 @@ export default function PaymentPage() {
           <CardContent className="pt-6 text-center">
             <p className="text-slate-600 mb-4">{t("common.pleaseSignIn")}</p>
             <Button asChild>
-              <a href="/login">{t("nav.login")}</a>
+              <a href={getLoginUrl()}>{t("nav.login")}</a>
             </Button>
           </CardContent>
         </Card>

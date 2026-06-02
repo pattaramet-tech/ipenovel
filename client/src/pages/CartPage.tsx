@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
+import { getLoginUrl } from "@/const";
 import {
   Trash2,
   ShoppingCart,
@@ -158,6 +159,9 @@ export default function CartPage() {
         <Card className="w-full max-w-md">
           <CardContent className="pt-6 text-center">
             <p className="text-slate-600 mb-4">Please sign in to view your cart</p>
+            <Button asChild>
+              <a href={getLoginUrl()}>Sign In</a>
+            </Button>
           </CardContent>
         </Card>
       </div>
