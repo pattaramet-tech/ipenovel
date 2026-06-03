@@ -158,9 +158,9 @@ export default function CartPage() {
       <div className="min-h-screen flex items-center justify-center">
         <Card className="w-full max-w-md">
           <CardContent className="pt-6 text-center">
-            <p className="text-slate-600 mb-4">Please sign in to view your cart</p>
+            <p className="text-slate-600 mb-4">{t("common.pleaseSignIn")}</p>
             <Button asChild>
-              <a href={getLoginUrl()}>Sign In</a>
+              <a href={getLoginUrl()}>{t("nav.login")}</a>
             </Button>
           </CardContent>
         </Card>
@@ -222,23 +222,23 @@ export default function CartPage() {
         let msg = "Payment submitted successfully.";
         
         if (sr.status === "approved") {
-          msg = "Payment approved automatically! Your order is confirmed.";
+          msg = t("payment.autoApprovedOrderMessage");
         } else if (sr.status === "pending_review") {
           if (sr.reviewReason === "OCR_PROCESSING_ERROR") {
-            msg = "Payment slip received. Our system encountered an issue, but our team will review it manually.";
+            msg = t("payment.ocrErrorReviewMessage");
           } else if (sr.duplicateStatus?.isDuplicateReference || sr.duplicateStatus?.isDuplicateFingerprint) {
-            msg = "Payment slip received. It appears to be a duplicate, but our team will review it.";
+            msg = t("payment.duplicateReviewMessage");
           } else if (sr.ocrConfidence && sr.ocrConfidence < 85) {
-            msg = `Payment slip received (confidence: ${sr.ocrConfidence}%). Our team will review it shortly.`;
+            msg = t("payment.lowConfidenceReviewMessage");
           } else {
-            msg = "Payment slip received. Our team will review and approve it shortly.";
+            msg = t("payment.pendingReviewOrderMessage");
           }
         }
         
         toast.success(msg);
         navigate("/orders");
       } else {
-        toast.success("Order created successfully.");
+        toast.success(t("order.createdSuccess"));
         navigate("/orders");
       }
     } catch (error: any) {

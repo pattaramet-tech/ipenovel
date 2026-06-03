@@ -1486,3 +1486,19 @@ Files changed:
 - client/src/pages/CartPage.tsx
 
 All user-facing pages now use getLoginUrl() for login links. /admin/login remains separate for admin access.
+
+
+## UI/i18n Regressions Fixed - COMPLETED
+- [x] Added missing Thai/English translations to LanguageContext.tsx
+- [x] Added common.pleaseSignIn, common.uploading, common.startShopping
+- [x] Added cart.availableCoupons, cart.couponCode, cart.pointsRedeemed
+- [x] Added payment.* keys for OCR status messages (autoApproved, pendingReview, ocrError, duplicate, lowConfidence)
+- [x] Added order.createdSuccess translation
+- [x] Replaced hardcoded English in CartPage.tsx with translation keys
+- [x] Verified no user-facing /login links remain (only /admin/login)
+- [x] npm run check: PASS
+- [x] npm run build: PASS (1810 modules)
+Files changed:
+- client/src/contexts/LanguageContext.tsx (added 18 translation keys)
+- client/src/pages/CartPage.tsx (replaced hardcoded text with t() calls)
+All missing translations added. All hardcoded English replaced with i18n keys.
