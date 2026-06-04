@@ -48,6 +48,7 @@ const translations: Record<Language, Record<string, string>> = {
     "home.latestEpisodesDesc": "ตอนที่อัปโหลดล่าสุดจากนวนิยายต่างๆ",
     "home.episode": "ตอน",
     "home.noEpisodes": "ยังไม่มีตอนที่อัปโหลด",
+    "home.learnMore": "เรียนรู้เพิ่มเติม",
     "home.ctaTitle": "พร้อมเริ่มอ่านหรือ",
     "home.ctaDescription": "สำรวจคนหาที่สุดของนวนิยายแปลไทยที่สมบูรณ์และหาความสนใจใหม่ที่คุณชอบคหรณ์",
     "home.browseAll": "เริ่มอ่านทั้งหมด",
@@ -89,6 +90,13 @@ const translations: Record<Language, Record<string, string>> = {
     "cart.availableCoupons": "คูปองที่ใช้ได้",
     "cart.couponCode": "รหัสคูปอง",
     "cart.pointsRedeemed": "ใช้พอยท์",
+    "cart.discount": "ส่วนลด",
+
+    // Payment
+    "payment.transferAmount": "ยอดที่ต้องโอน",
+    "payment.bank": "ธนาคาร",
+    "payment.accountName": "ชื่อบัญชี",
+    "payment.accountNumber": "เลขบัญชี",
 
     // Checkout
     "checkout.proceedToCheckout": "ไปที่หน้าชำระเงิน",
@@ -372,6 +380,13 @@ const translations: Record<Language, Record<string, string>> = {
     "wallet.policyPoint5": "แต้มที่ใช้แลกส่วนลดจะถูกหักเมื่อคำสั่งซื้อสำเร็จเท่านั้น",
     "wallet.policyPoint6": "แต้มสะสมที่ได้รับจากคำสั่งซื้อสำเร็จถือเป็นที่สิ้นสุด และจะไม่มีการย้อนคืนอัตโนมัติ",
     "wallet.policyPoint7": "ในกรณีที่เกิดข้อผิดพลาดจากระบบ การตรวจสอบและแก้ไขจะดำเนินการโดยผู้ดูแลระบบตามความเหมาะสม",
+    "myNovels.untitledNovel": "นิยายไม่มีชื่อ",
+    "myNovels.published": "เผยแล้ว",
+    "myNovels.archived": "เก็บไว้",
+    "myNovels.noEpisodes": "ไม่มีตอนที่ใช้ได้",
+    "myNovels.purchasedOn": "ซื้อเมื่อ",
+    "myNovels.read": "อ่าน",
+    "myNovels.readFileNotAvailable": "อ่าน (ไม่มีไฟล์)",
   },
   en: {
     // Navbar
@@ -409,6 +424,7 @@ const translations: Record<Language, Record<string, string>> = {
     "home.latestEpisodesDesc": "Latest episodes uploaded from various novels",
     "home.episode": "Episode",
     "home.noEpisodes": "No episodes uploaded yet",
+    "home.learnMore": "Learn More",
     "home.ctaTitle": "Ready to Start Reading?",
     "home.ctaDescription": "Browse our collection of translated novels and find your next favorite read.",
     "home.browseAll": "Browse All Novels",
@@ -449,6 +465,13 @@ const translations: Record<Language, Record<string, string>> = {
     "cart.availableCoupons": "Available Coupons",
     "cart.couponCode": "Coupon Code",
     "cart.pointsRedeemed": "Points Redeemed",
+    "cart.discount": "Discount",
+
+    // Payment
+    "payment.transferAmount": "Amount to Transfer",
+    "payment.bank": "Bank",
+    "payment.accountName": "Account Name",
+    "payment.accountNumber": "Account Number",
 
     // Checkout
     "checkout.proceedToCheckout": "Go to Payment Page",
@@ -461,6 +484,13 @@ const translations: Record<Language, Record<string, string>> = {
     "myNovels.title": "My Novels",
     "myNovels.noPurchases": "You haven't purchased any novels yet",
     "myNovels.download": "Download",
+    "myNovels.untitledNovel": "Untitled Novel",
+    "myNovels.published": "Published",
+    "myNovels.archived": "Archived",
+    "myNovels.noEpisodes": "No episodes available",
+    "myNovels.purchasedOn": "Purchased on",
+    "myNovels.read": "Read",
+    "myNovels.readFileNotAvailable": "Read (File Not Available)",
 
     // Points
     "points.title": "My Points",

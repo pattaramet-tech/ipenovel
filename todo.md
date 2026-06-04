@@ -1502,3 +1502,14 @@ Files changed:
 - client/src/contexts/LanguageContext.tsx (added 18 translation keys)
 - client/src/pages/CartPage.tsx (replaced hardcoded text with t() calls)
 All missing translations added. All hardcoded English replaced with i18n keys.
+
+## UI/i18n Regressions Fixed (Phase 1-9) - COMPLETED
+- [x] Phase 1: Add missing i18n keys (cart.discount, home.learnMore) to LanguageContext.tsx
+- [x] Phase 2: Audit all t() usages and fix any raw keys showing in UI
+- [x] Phase 3: Convert hardcoded Thai labels in CartPage payment modal to i18n keys
+- [x] Phase 4: Harden MyNovelsPage against null/undefined novel and episode data
+- [x] Phase 5: Translate MyNovelsPage hardcoded English text to i18n keys
+- [x] Phase 6: Add error/empty state handling for My Novels API failures
+- [x] Phase 7: Run npm run check and npm run build verification
+- [x] Phase 8: Create VERIFY_UI_FIXES.md documentation
+- [x] Phase 9: Create checkpoint and package ZIP export

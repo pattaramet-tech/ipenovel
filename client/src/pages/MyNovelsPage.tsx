@@ -6,12 +6,14 @@ import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
 import { BookOpen } from "lucide-react";
 import { getLoginUrl } from "@/const";
+import { useLanguage } from "@/contexts/LanguageContext";
 
 export default function MyNovelsPage() {
   const { isAuthenticated } = useAuth();
   const [, navigate] = useLocation();
+  const { t } = useLanguage();
 
-  const { data: myNovels, isLoading } = trpc.myNovels.list.useQuery(undefined, {
+  const { data: myNovels, isLoading, error } = trpc.myNovels.list.useQuery(undefined, {
     enabled: isAuthenticated,
   });
 
@@ -20,9 +22,9 @@ export default function MyNovelsPage() {
       <div className="min-h-screen flex items-center justify-center">
         <Card className="w-full max-w-md">
           <CardContent className="pt-6 text-center">
-            <p className="text-slate-600 mb-4">Please sign in to view your novels</p>
+            <p className="text-slate-600 mb-4">{t("common.pleaseSignIn")}</p>
             <Button asChild>
-              <a href={getLoginUrl()}>Sign In</a>
+              <a href={getLoginUrl()}>{t("nav.login")}</a>
             </Button>
           </CardContent>
         </Card>
@@ -33,9 +35,16 @@ export default function MyNovelsPage() {
   return (
     <div className="min-h-screen bg-slate-50 py-8">
       <div className="container mx-auto px-4">
-        <h1 className="text-3xl font-bold mb-8">My Novels</h1>
+        <h1 className="text-3xl font-bold mb-8">{t("nav.myNovels")}</h1>
 
-        {isLoading ? (
+        {error ? (
+          <Card>
+            <CardContent className="pt-6 text-center py-12">
+              <p className="text-red-600 text-lg mb-4">{t("common.errorOccurred")}</p>
+              <Button onClick={() => window.location.reload()}>{t("common.tryAgain")}</Button>
+            </CardContent>
+          </Card>
+        ) : isLoading ? (
           <div className="space-y-4">
             {[...Array(3)].map((_, i) => (
               <Skeleton key={i} className="h-40" />
@@ -45,74 +54,87 @@ export default function MyNovelsPage() {
           <Card>
             <CardContent className="pt-6 text-center py-12">
               <BookOpen className="w-12 h-12 text-slate-300 mx-auto mb-4" />
-              <p className="text-slate-600 text-lg">You haven't purchased any novels yet</p>
+              <p className="text-slate-600 text-lg">{t("myNovels.noPurchases")}</p>
               <Button asChild className="mt-4">
-                <a href="/novels">Browse Novels</a>
+                <a href="/novels">{t("nav.browse")}</a>
               </Button>
             </CardContent>
           </Card>
         ) : (
           <div className="space-y-6">
-            {myNovels.map((item: any) => (
-              <Card key={item.novel.id} className="overflow-hidden">
-                <CardHeader className="pb-4 bg-gradient-to-r from-blue-50 to-blue-100">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <CardTitle className="text-xl">{item.novel.title}</CardTitle>
-                    </div>
-                    <div className="flex gap-2">
-                      <span className="text-xs px-3 py-1 bg-blue-200 text-blue-800 rounded-full capitalize">
-                        {item.novel.publicationStatus === "published" ? "Published" : "Archived"}
-                      </span>
-                      <span className="text-xs px-3 py-1 bg-purple-200 text-purple-800 rounded-full capitalize">
-                        {item.novel.storyStatus === "finished" ? "Finished" : "Ongoing"}
-                      </span>
-                    </div>
-                  </div>
-                </CardHeader>
-
-                <CardContent className="pt-6">
-                  <div className="space-y-3">
-                    {item.episodes.map((episode: any) => (
-                      <div
-                        key={episode.id}
-                        className="flex items-center justify-between p-4 bg-slate-50 rounded-lg hover:bg-slate-100 transition"
-                      >
-                        <div className="flex-1">
-                          <p className="font-semibold text-slate-900">
-                            Episode {episode.episodeNumber}
-                          </p>
-                          <p className="text-sm text-slate-600">{episode.title}</p>
-                          <p className="text-xs text-slate-500 mt-1">
-                            Purchased on{" "}
-                            {new Date(episode.purchasedAt).toLocaleDateString()}
-                          </p>
-                        </div>
-
-                        <div className="flex gap-2">
-                          {episode.fileUrl ? (
-                            <a
-                              href={episode.fileUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
-                            >
-                              <BookOpen className="w-4 h-4 mr-2" />
-                              Read
-                            </a>
-                          ) : (
-                            <Button size="sm" disabled>
-                              <BookOpen className="w-4 h-4 mr-2" />
-                              Read (File Not Available)
-                            </Button>
-                          )}
-                        </div>
+            {myNovels.map((item: any) => {
+              const novel = item?.novel;
+              const novelId = novel?.id;
+              const novelTitle = novel?.title ?? t("myNovels.untitledNovel");
+              const publicationStatus = novel?.publicationStatus ?? "published";
+              const storyStatus = novel?.storyStatus ?? "ongoing";
+              const episodes = Array.isArray(item?.episodes) ? item.episodes : [];
+              
+              return (
+                <Card key={novelId || Math.random()} className="overflow-hidden">
+                  <CardHeader className="pb-4 bg-gradient-to-r from-blue-50 to-blue-100">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <CardTitle className="text-xl">{novelTitle}</CardTitle>
                       </div>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+                      <div className="flex gap-2">
+                        <span className="text-xs px-3 py-1 bg-blue-200 text-blue-800 rounded-full capitalize">
+                          {publicationStatus === "published" ? t("myNovels.published") : t("myNovels.archived")}
+                        </span>
+                        <span className="text-xs px-3 py-1 bg-purple-200 text-purple-800 rounded-full capitalize">
+                          {storyStatus === "finished" ? t("myNovels.finished") : t("myNovels.ongoing")}
+                        </span>
+                      </div>
+                    </div>
+                  </CardHeader>
+
+                  <CardContent className="pt-6">
+                    <div className="space-y-3">
+                      {episodes.length === 0 ? (
+                        <p className="text-slate-500 text-center py-4">{t("myNovels.noEpisodes")}</p>
+                      ) : (
+                        episodes.map((episode: any) => (
+                          <div
+                            key={episode?.id || Math.random()}
+                            className="flex items-center justify-between p-4 bg-slate-50 rounded-lg hover:bg-slate-100 transition"
+                          >
+                            <div className="flex-1">
+                              <p className="font-semibold text-slate-900">
+                                {t("common.episode")} {episode?.episodeNumber ?? "?"}
+                              </p>
+                              <p className="text-sm text-slate-600">{episode?.title ?? ""}</p>
+                              <p className="text-xs text-slate-500 mt-1">
+                                {t("myNovels.purchasedOn")}{" "}
+                                {episode?.purchasedAt ? new Date(episode.purchasedAt).toLocaleDateString() : "?"}
+                              </p>
+                            </div>
+
+                            <div className="flex gap-2">
+                              {episode?.fileUrl ? (
+                                <a
+                                  href={episode.fileUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
+                                >
+                                  <BookOpen className="w-4 h-4 mr-2" />
+                                  {t("myNovels.read")}
+                                </a>
+                              ) : (
+                                <Button size="sm" disabled>
+                                  <BookOpen className="w-4 h-4 mr-2" />
+                                  {t("myNovels.readFileNotAvailable")}
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
           </div>
         )}
       </div>

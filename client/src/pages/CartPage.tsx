@@ -458,7 +458,7 @@ export default function CartPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
-                <p className="text-sm text-blue-700 mb-1">ยอดที่ต้องโอน</p>
+                <p className="text-sm text-blue-700 mb-1">{t("payment.transferAmount")}</p>
                 <p className="text-2xl font-bold text-blue-900">{formatBaht(total)} {t("common.baht")}</p>
               </div>
 
@@ -470,9 +470,9 @@ export default function CartPage() {
               <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 text-sm">
                 <p className="font-medium text-slate-700 mb-2">{t("payment.bankDetails")}</p>
                 <div className="space-y-1 text-slate-600 text-xs">
-                  <p><span className="font-medium">ธนาคาร:</span> {PAYMENT_DETAILS.bankName}</p>
-                  <p><span className="font-medium">ชื่อบัญชี:</span> {PAYMENT_DETAILS.accountName}</p>
-                  <p><span className="font-medium">เลขบัญชี:</span> {PAYMENT_DETAILS.accountNumber}</p>
+                  <p><span className="font-medium">{t("payment.bank")}:</span> {PAYMENT_DETAILS.bankName}</p>
+                  <p><span className="font-medium">{t("payment.accountName")}:</span> {PAYMENT_DETAILS.accountName}</p>
+                  <p><span className="font-medium">{t("payment.accountNumber")}:</span> {PAYMENT_DETAILS.accountNumber}</p>
                 </div>
               </div>
 
