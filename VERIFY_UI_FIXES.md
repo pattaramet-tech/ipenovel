@@ -70,6 +70,54 @@ Fixed critical UI regressions in CartPage and payment modal:
 - [x] Mobile layout responsive (QR/details visible without overflow)
 - [x] File upload section appears after QR/details
 
+## Final Robustness Cleanup - MyNovelsPage
+
+### 1. Fixed React Keys (No Math.random())
+**Before:**
+```tsx
+<Card key={novelId || Math.random()} className="overflow-hidden">
+  {episodes.map((episode: any) => (
+    <div key={episode?.id || Math.random()}>
+```
+
+**After:**
+```tsx
+{myNovels.map((item: any, itemIndex: number) => {
+  ...
+  <Card key={novelId || `novel-${itemIndex}`} className="overflow-hidden">
+    {episodes.map((episode: any, episodeIndex: number) => (
+      <div key={episode?.id || `episode-${itemIndex}-${episodeIndex}`}>
+```
+
+**Impact:** Stable keys prevent React reconciliation issues and console warnings.
+
+### 2. Safe Date Formatter for purchasedAt
+**Before:**
+```tsx
+{episode?.purchasedAt ? new Date(episode.purchasedAt).toLocaleDateString() : "?"}
+```
+
+**After:**
+```tsx
+function formatSafeDate(value: unknown) {
+  if (!value) return "-";
+  const date = new Date(String(value));
+  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleDateString();
+}
+
+// Usage:
+{formatSafeDate(episode?.purchasedAt)}
+```
+
+**Impact:** Shows "-" instead of "Invalid Date" for missing/invalid dates.
+
+## Final Verification Results
+- ✅ npm run check: PASS (0 errors)
+- ✅ npm run build: PASS (313.9kb)
+- ✅ No Math.random() in React keys
+- ✅ Safe date formatting for all date fields
+- ✅ No console warnings for missing keys
+
 ## Next Steps
 1. Test payment flow end-to-end in browser
 2. Verify QR code is clickable/scannable

@@ -8,6 +8,12 @@ import { BookOpen } from "lucide-react";
 import { getLoginUrl } from "@/const";
 import { useLanguage } from "@/contexts/LanguageContext";
 
+function formatSafeDate(value: unknown) {
+  if (!value) return "-";
+  const date = new Date(String(value));
+  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleDateString();
+}
+
 export default function MyNovelsPage() {
   const { isAuthenticated } = useAuth();
   const [, navigate] = useLocation();
@@ -62,7 +68,7 @@ export default function MyNovelsPage() {
           </Card>
         ) : (
           <div className="space-y-6">
-            {myNovels.map((item: any) => {
+            {myNovels.map((item: any, itemIndex: number) => {
               const novel = item?.novel;
               const novelId = novel?.id;
               const novelTitle = novel?.title ?? t("myNovels.untitledNovel");
@@ -71,7 +77,7 @@ export default function MyNovelsPage() {
               const episodes = Array.isArray(item?.episodes) ? item.episodes : [];
               
               return (
-                <Card key={novelId || Math.random()} className="overflow-hidden">
+                <Card key={novelId || `novel-${itemIndex}`} className="overflow-hidden">
                   <CardHeader className="pb-4 bg-gradient-to-r from-blue-50 to-blue-100">
                     <div className="flex items-start justify-between">
                       <div>
@@ -93,9 +99,9 @@ export default function MyNovelsPage() {
                       {episodes.length === 0 ? (
                         <p className="text-slate-500 text-center py-4">{t("myNovels.noEpisodes")}</p>
                       ) : (
-                        episodes.map((episode: any) => (
+                        episodes.map((episode: any, episodeIndex: number) => (
                           <div
-                            key={episode?.id || Math.random()}
+                            key={episode?.id || `episode-${itemIndex}-${episodeIndex}`}
                             className="flex items-center justify-between p-4 bg-slate-50 rounded-lg hover:bg-slate-100 transition"
                           >
                             <div className="flex-1">
@@ -105,7 +111,7 @@ export default function MyNovelsPage() {
                               <p className="text-sm text-slate-600">{episode?.title ?? ""}</p>
                               <p className="text-xs text-slate-500 mt-1">
                                 {t("myNovels.purchasedOn")}{" "}
-                                {episode?.purchasedAt ? new Date(episode.purchasedAt).toLocaleDateString() : "?"}
+                                {formatSafeDate(episode?.purchasedAt)}
                               </p>
                             </div>
 
