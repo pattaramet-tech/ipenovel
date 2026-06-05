@@ -82,11 +82,37 @@ export default function WalletPage() {
         slipImageUrl,
       });
 
-      // Success: Reset form and show confirmation
+      // Success: Reset form and show confirmation based on OCR outcome
       setTopupAmount("");
       setSelectedFile(null);
       setShowTopupForm(false);
-      toast.success(t("wallet.topupRequestCreated"));
+
+      // Display OCR outcome message
+      const ocrDecision = (result as any)?.ocrDecision;
+      const reviewReason = (result as any)?.reviewReason;
+      const userMessage = (result as any)?.userMessage;
+
+      if (ocrDecision === "approved") {
+        // Auto-approved by OCR
+        toast.success(userMessage || t("payment.autoApprovedOrderMessage"));
+      } else if (ocrDecision === "needs_review") {
+        // Pending manual review
+        const reason = reviewReason || "UNKNOWN";
+        if (reason === "DUPLICATE_REFERENCE" || reason === "DUPLICATE_FINGERPRINT") {
+          toast.info(userMessage || t("payment.duplicateReviewMessage"));
+        } else if (reason === "LOW_CONFIDENCE") {
+          toast.info(userMessage || t("payment.lowConfidenceReviewMessage"));
+        } else {
+          toast.info(userMessage || t("payment.pendingReviewOrderMessage"));
+        }
+      } else if (reviewReason === "OCR_PROCESSING_ERROR") {
+        // OCR technical error
+        toast.warning(userMessage || t("payment.ocrErrorReviewMessage"));
+      } else {
+        // Fallback message
+        toast.success(t("wallet.topupRequestCreated"));
+      }
+
       refetchSummary();
     } catch (error: any) {
       toast.error(error.message || t("wallet.failedToCreateTopup"));

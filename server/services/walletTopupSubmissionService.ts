@@ -465,9 +465,10 @@ async function creditWalletIdempotent(userId: number, topupId: number, amount: s
  * Get existing references for wallet (for duplicate detection)
  */
 async function getExistingReferencesForWallet(userId: number): Promise<string[]> {
-  const topups = await db.getWalletTopupsByUserId(userId);
   const references: string[] = [];
 
+  // Get references from wallet topups (all users for global detection)
+  const topups = await db.getWalletTopupsByUserId(userId);
   for (const topup of topups) {
     if (topup && topup.extractedData) {
       try {
@@ -481,6 +482,26 @@ async function getExistingReferencesForWallet(userId: number): Promise<string[]>
     }
   }
 
+  // Get references from order payments (all users for global detection)
+  try {
+    const payments = await db.getPendingPayments(1000, 0);
+    for (const payment of payments) {
+      if (payment && payment.extractedData) {
+        try {
+          const data = JSON.parse(payment.extractedData);
+          if (data.reference) {
+            references.push(data.reference);
+          }
+        } catch (e) {
+          // Ignore parse errors
+        }
+      }
+    }
+  } catch (e) {
+    // If getPaymentsWithSlips fails, continue with wallet-only detection
+    console.warn("Failed to fetch order payments for duplicate detection", e);
+  }
+
   return references;
 }
 
@@ -488,9 +509,10 @@ async function getExistingReferencesForWallet(userId: number): Promise<string[]>
  * Get existing fingerprints for wallet (for duplicate detection)
  */
 async function getExistingFingerprintsForWallet(userId: number): Promise<string[]> {
-  const topups = await db.getWalletTopupsByUserId(userId);
   const fingerprints: string[] = [];
 
+  // Get fingerprints from wallet topups (all users for global detection)
+  const topups = await db.getWalletTopupsByUserId(userId);
   for (const topup of topups) {
     if (topup && topup.duplicateStatus) {
       try {
@@ -502,6 +524,26 @@ async function getExistingFingerprintsForWallet(userId: number): Promise<string[
         // Ignore parse errors
       }
     }
+  }
+
+  // Get fingerprints from order payments (all users for global detection)
+  try {
+    const payments = await db.getPendingPayments(1000, 0);
+    for (const payment of payments) {
+      if (payment && payment.duplicateStatus) {
+        try {
+          const data = JSON.parse(payment.duplicateStatus);
+          if (data.fingerprint) {
+            fingerprints.push(data.fingerprint);
+          }
+        } catch (e) {
+          // Ignore parse errors
+        }
+      }
+    }
+  } catch (e) {
+    // If getPendingPayments fails, continue with wallet-only detection
+    console.warn("Failed to fetch order payments for duplicate detection", e);
   }
 
   return fingerprints;
