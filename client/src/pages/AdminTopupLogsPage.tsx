@@ -4,8 +4,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
-import { Loader2, RefreshCw } from "lucide-react";
+import { Loader2, RefreshCw, Eye } from "lucide-react";
 import { useState, useMemo } from "react";
+import { useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
 
 type TopupLog = {
@@ -26,6 +27,7 @@ type TopupLog = {
 
 export default function AdminTopupLogsPage() {
   const { user, isAuthenticated } = useAuth();
+  const [, navigate] = useLocation();
   const [limit] = useState(50);
   const [offset, setOffset] = useState(0);
   const [userFilter, setUserFilter] = useState("");
@@ -217,6 +219,7 @@ export default function AdminTopupLogsPage() {
                   <th className="text-left p-3 font-semibold text-slate-700">อ้างอิง</th>
                   <th className="text-left p-3 font-semibold text-slate-700">หมายเหตุ</th>
                   <th className="text-left p-3 font-semibold text-slate-700">อนุมัติโดย</th>
+                  <th className="text-left p-3 font-semibold text-slate-700">การกระทำ</th>
                 </tr>
               </thead>
               <tbody>
@@ -246,6 +249,16 @@ export default function AdminTopupLogsPage() {
                       {log.note || "—"}
                     </td>
                     <td className="p-3 text-slate-600 text-xs">{log.createdByName || log.createdBy || "—"}</td>
+                    <td className="p-3">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => navigate(`/admin/topup-logs/${log.id}`)}
+                      >
+                        <Eye className="w-4 h-4 mr-1" />
+                        View
+                      </Button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

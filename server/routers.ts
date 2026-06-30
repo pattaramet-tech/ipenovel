@@ -1625,6 +1625,56 @@ export const appRouter = router({
           const total = await db.getTopupLogsCount(input.userId, input.startDate, input.endDate);
           return { logs, total };
         }),
+      logDetail: adminProcedure
+        .input(z.object({ logId: z.number() }))
+        .query(async ({ input }) => {
+          const log = await db.getTopupLogById(input.logId);
+          if (!log) throw new TRPCError({ code: "NOT_FOUND" });
+
+          // Get user info
+          const user = log.userId ? await db.getUserById(log.userId) : null;
+
+          // Get created by admin info if available
+          let createdByUser: any = null;
+          if (log.createdBy && log.createdBy !== 0) {
+            createdByUser = await db.getUserById(log.createdBy);
+          }
+
+          // Parse topupId from reference if possible
+          let relatedTopup = null;
+          if (log.reference) {
+            const topupIdMatch = log.reference.match(/^topup-(\d+)/);
+            if (topupIdMatch) {
+              const topupId = parseInt(topupIdMatch[1], 10);
+              relatedTopup = await db.getWalletTopupById(topupId);
+            }
+          }
+
+          // Get related wallet transactions
+          let relatedTransactions: any[] = [];
+          if (relatedTopup?.id) {
+            relatedTransactions = await db.getWalletTransactionsByReference(
+              log.userId,
+              "topup",
+              relatedTopup.id.toString()
+            ).catch(() => []);
+          }
+
+          // Get related user logs (latest 10)
+          let userRecentLogs: any[] = [];
+          if (log.userId) {
+            userRecentLogs = (await db.getTopupLogs(log.userId, undefined, undefined, 10, 0)) || [];
+          }
+
+          return {
+            log,
+            user,
+            createdByUser,
+            relatedTopup,
+            relatedTransactions,
+            userRecentLogs,
+          };
+        }),
       createTopupLog: adminProcedure
         .input(z.object({
           userId: z.number(),

@@ -19,6 +19,7 @@ import AdminPaymentsPage from "@/pages/AdminPaymentsPage";
 import AdminWalletTopupsPage from "@/pages/AdminWalletTopupsPage";
 import AdminWalletTopupDetailPage from "@/pages/AdminWalletTopupDetailPage";
 import AdminTopupLogsPage from "@/pages/AdminTopupLogsPage";
+import AdminTopupLogDetailPage from "@/pages/AdminTopupLogDetailPage";
 import AdminEntitlementsPage from "@/pages/AdminEntitlementsPage";
 import AdminSettingsPage from "@/pages/AdminSettingsPage";
 import AdminBulkUploadPage from "@/pages/AdminBulkUploadPage";
@@ -67,6 +68,7 @@ function Router() {
         <Route path={"/admin/wallet-topups"} component={AdminWalletTopupsPage} />
         <Route path={"/admin/wallet-topups/:topupId"} component={AdminWalletTopupDetailPage} />
         <Route path={"/admin/topup-logs"} component={AdminTopupLogsPage} />
+        <Route path={"/admin/topup-logs/:logId"} component={AdminTopupLogDetailPage} />
         <Route path={"/admin/entitlements"} component={AdminEntitlementsPage} />
         <Route path="/admin/settings" component={AdminSettingsPage} />
         <Route path="/admin/bulk-upload" component={AdminBulkUploadPage} />

@@ -3270,6 +3270,13 @@ export async function createTopupLog(
   return result;
 }
 
+export async function getTopupLogById(logId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return (await db.select().from(topupLogs).where(eq(topupLogs.id, logId)).limit(1))[0];
+}
+
 export async function getTopupLogs(
   userId?: number,
   startDate?: Date,
@@ -3973,6 +3980,29 @@ export async function getWalletTransactionByReference(
       )
       .limit(1)
   )[0];
+}
+
+export async function getWalletTransactionsByReference(
+  userId: number,
+  referenceType: string,
+  referenceId: string,
+  limit: number = 20
+) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return await db
+    .select()
+    .from(walletTransactions)
+    .where(
+      and(
+        eq(walletTransactions.userId, userId),
+        eq(walletTransactions.referenceType, referenceType),
+        eq(walletTransactions.referenceId, parseInt(referenceId))
+      )
+    )
+    .orderBy(desc(walletTransactions.createdAt))
+    .limit(limit);
 }
 
 /**
