@@ -35,19 +35,42 @@ export async function validateAndApplyCoupon(couponCode: string, subtotal: strin
     throw new Error("Coupon not found");
   }
 
-  // Check if this is a reward coupon and enforce ownership
+  // Check if this is a reward coupon and enforce ownership + status
   if (userId && coupon.id) {
     const dbInstance = tx || (await db.getDb());
     if (dbInstance) {
-      // Check if this coupon is a reward coupon owned by another user
+      // Check if this coupon is a reward coupon
       const rewards = await dbInstance
         .select()
         .from(sportsMatchRewards)
         .where(eq(sportsMatchRewards.couponId, coupon.id))
         .limit(1);
 
-      if (rewards.length > 0 && rewards[0].userId !== userId) {
-        throw new Error("This coupon belongs to another user");
+      if (rewards.length > 0) {
+        const reward = rewards[0];
+
+        // Enforce ownership: reward coupon must belong to this user
+        if (reward.userId !== userId) {
+          throw new Error("This coupon belongs to another user");
+        }
+
+        // Enforce one-time use: reward coupon must be in "issued" status
+        if (reward.status !== "issued") {
+          if (reward.status === "used") {
+            throw new Error("This reward coupon has already been used");
+          } else if (reward.status === "expired") {
+            throw new Error("This reward coupon has expired");
+          } else if (reward.status === "void") {
+            throw new Error("This reward coupon has been cancelled");
+          } else {
+            throw new Error(`Invalid reward coupon status: ${reward.status}`);
+          }
+        }
+
+        // Double-check: if usedAt is set, reject even if status says issued
+        if (reward.usedAt) {
+          throw new Error("This reward coupon has already been used");
+        }
       }
     }
   }
