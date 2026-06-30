@@ -67,6 +67,12 @@ export async function submitWalletTopupSlip(
   const requestedAmountNum = parseFloat(requestedAmount);
 
   try {
+    // CRITICAL: OCR verification must compare OCR-extracted amount against requestedAmount (actual money paid),
+    // NOT creditedAmount. The bonus is a system reward, not part of the payment.
+    // Example: 250 baht top-up → requestedAmount=250, bonusAmount=10, creditedAmount=260
+    // OCR slip shows 250 (what user paid) → amountMatched should be TRUE
+    // If OCR reads 260, that's a mismatch because user never paid 260.
+
     // Step 1: Parse slip image with OCR
     const parseResult = await parseSlipImage(slipImageUrl);
 

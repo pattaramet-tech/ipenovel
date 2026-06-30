@@ -1044,6 +1044,10 @@ export function verifySlipData(
   };
 
   // Normalize orderTotal once at the start
+  // CRITICAL NOTE (Wallet Top-ups): context.orderTotal is ALWAYS requestedAmount, never creditedAmount.
+  // For wallet topups: requestedAmount = actual money paid by user, creditedAmount = amount + bonus (system reward)
+  // Example: 250 baht top-up → orderTotal=250, bonus=10, credited=260
+  // OCR must match against 250 (actual payment), not 260 (which user never paid)
   let normalizedOrderTotal: number;
   try {
     const orderTotalStr = formatMoney(context.orderTotal, "orderTotal");
@@ -1063,9 +1067,12 @@ export function verifySlipData(
     return result;
   }
 
+  // Amount verification: OCR-extracted amount must match orderTotal (requested payment amount)
+  // For order payments: orderTotal = order.totalAmount
+  // For wallet topups: orderTotal = requestedAmount (not creditedAmount which includes bonus)
   if (Math.abs(extracted.amount - normalizedOrderTotal) > 0.01) {
     result.reviewReason = "AMOUNT_MISMATCH";
-    breakdown.failureReason = `Amount mismatch: slip=${extracted.amount}, order=${normalizedOrderTotal}`;
+    breakdown.failureReason = `Amount mismatch: slip=${extracted.amount}, expected=${normalizedOrderTotal}`;
     return result;
   }
   breakdown.amountMatched = true;
