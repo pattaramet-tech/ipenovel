@@ -135,16 +135,17 @@ export default function SportsVotesPage() {
 
   const confirmDialogMessage = () => {
     if (!confirmVoteData) return "";
-    const cost = confirmVoteData.cost;
-    const home = confirmVoteData.homeTeam;
-    const away = confirmVoteData.awayTeam;
+    return t("sports.confirmVoteDescription").replace("{cost}", confirmVoteData.cost);
+  };
 
+  const getPredictionText = () => {
+    if (!confirmVoteData) return "";
     if (confirmVoteData.prediction === "home_win") {
-      return t("sports.confirmVoteMessage").replace("{cost}", cost).replace("{home}", home).replace("{away}", away);
-    } else if (confirmVoteData.prediction === "draw") {
-      return t("sports.confirmVoteDrawMessage").replace("{cost}", cost).replace("{home}", home).replace("{away}", away);
+      return `${confirmVoteData.homeTeam} ${t("sports.homeWinLabel")}`;
+    } else if (confirmVoteData.prediction === "away_win") {
+      return `${confirmVoteData.awayTeam} ${t("sports.awayWinLabel")}`;
     } else {
-      return t("sports.confirmVoteAwayMessage").replace("{cost}", cost).replace("{away}", away).replace("{home}", home);
+      return t("sports.drawLabel");
     }
   };
 
@@ -404,16 +405,24 @@ export default function SportsVotesPage() {
               <AlertDialogTitle>{t("sports.confirmVote")}</AlertDialogTitle>
               <AlertDialogDescription>{confirmDialogMessage()}</AlertDialogDescription>
             </AlertDialogHeader>
-            <div className="bg-blue-50 p-3 rounded text-sm space-y-1">
-              <p>
-                <strong>{t("sports.homeWin")}:</strong> {confirmVoteData?.homeTeam}
-              </p>
-              <p>
-                <strong>{t("sports.awayWin")}:</strong> {confirmVoteData?.awayTeam}
-              </p>
+            <div className="bg-blue-50 p-4 rounded text-sm space-y-2">
+              <div>
+                <p className="text-slate-600">{t("sports.matchup")}</p>
+                <p className="font-semibold text-slate-900">
+                  {confirmVoteData?.homeTeam} vs {confirmVoteData?.awayTeam}
+                </p>
+              </div>
+              <div>
+                <p className="text-slate-600">{t("sports.yourPrediction")}</p>
+                <p className="font-semibold text-slate-900">{getPredictionText()}</p>
+              </div>
+              <div>
+                <p className="text-slate-600">{t("sports.pointsUsed")}</p>
+                <p className="font-semibold text-slate-900">{confirmVoteData?.cost} {t("sports.pts")}</p>
+              </div>
             </div>
             <div className="flex gap-2 justify-end">
-              <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+              <AlertDialogCancel>{t("sports.btnCancel")}</AlertDialogCancel>
               <AlertDialogAction onClick={confirmVote} disabled={voteMutation.isPending}>
                 {voteMutation.isPending ? t("common.loading") : t("sports.btnConfirm")}
               </AlertDialogAction>
