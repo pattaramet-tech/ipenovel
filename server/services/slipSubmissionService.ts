@@ -11,6 +11,7 @@ import { processSlipVerificationStaging } from "../ocr-slip-integration-staging"
 import { getEffectiveOCRConfig } from "../_core/ocr-effective-config";
 import { generateApprovalNote, generateShadowModeNote, generateManualReviewNote } from "../_core/ocr-order-notes";
 import * as orderService from "./orderService";
+import { sendOCRReviewNotification } from "./discordNotificationService";
 
 export interface SlipSubmissionInput {
   orderId: number;
@@ -312,6 +313,31 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
       toStatus: "pending",
       actorUserId: Number(input.userId),
       note: reviewNote,
+    });
+
+    // Send Discord notification for payment OCR review (fire-and-forget, no error thrown)
+    const user = await db.getUserById(order.userId);
+    sendOCRReviewNotification({
+      type: "payment",
+      id: payment.id,
+      userId: order.userId,
+      userName: user?.name || "Unknown",
+      userEmail: user?.email || "unknown@example.com",
+      expectedAmount: parseFloat(order.totalAmount.toString()),
+      ocrAmount: verificationResult.extractedData?.amount
+        ? parseFloat(verificationResult.extractedData.amount.toString())
+        : undefined,
+      reviewReason: verificationResult.reviewReason,
+      ocrDecision: "needs_review",
+      finalConfidence: verificationResult.ocrConfidence,
+      duplicateStatus: verificationResult.duplicateStatus,
+      slipImageUrl: input.slipImageUrl,
+    }).catch((error) => {
+      // Silently log Discord errors - payment flow must not fail
+      console.warn("[Discord OCR] Failed to send payment notification", {
+        paymentId: payment.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
   }
 
