@@ -1,75 +1,6 @@
 import { useLocation } from "wouter";
-import {
-  LayoutDashboard,
-  BookOpen,
-  FileText,
-  Tag,
-  Image,
-  Ticket,
-  ShoppingCart,
-  CreditCard,
-  Gift,
-  Settings,
-  ChevronRight,
-  Trophy,
-  Upload,
-} from "lucide-react";
-
-// Organized admin menu by sections
-interface MenuSection {
-  title: string;
-  items: Array<{
-    label: string;
-    href: string;
-    icon: React.ComponentType<{ className?: string }>;
-  }>;
-}
-
-const adminMenuSections: MenuSection[] = [
-  {
-    title: "Overview",
-    items: [
-      { label: "Dashboard", href: "/admin", icon: LayoutDashboard },
-    ],
-  },
-  {
-    title: "Payments & Wallet",
-    items: [
-      { label: "Payments", href: "/admin/payments", icon: CreditCard },
-      { label: "Wallet Top-ups", href: "/admin/wallet-topups", icon: Gift },
-    ],
-  },
-  {
-    title: "Votes & Campaigns",
-    items: [
-      { label: "Votes Manager", href: "/admin/sports-votes", icon: Trophy },
-      { label: "Coupons", href: "/admin/coupons", icon: Ticket },
-      { label: "Banners", href: "/admin/banners", icon: Image },
-    ],
-  },
-  {
-    title: "Content Management",
-    items: [
-      { label: "Novels", href: "/admin/novels", icon: BookOpen },
-      { label: "Episodes", href: "/admin/episodes", icon: FileText },
-      { label: "Categories", href: "/admin/categories", icon: Tag },
-      { label: "Bulk Upload", href: "/admin/bulk-upload", icon: Upload },
-    ],
-  },
-  {
-    title: "Orders & Access",
-    items: [
-      { label: "Orders", href: "/admin/orders", icon: ShoppingCart },
-      { label: "Entitlements", href: "/admin/entitlements", icon: Gift },
-    ],
-  },
-  {
-    title: "Settings",
-    items: [
-      { label: "Settings", href: "/admin/settings", icon: Settings },
-    ],
-  },
-];
+import { ChevronRight } from "lucide-react";
+import { adminNavSections } from "@/config/adminNavItems";
 
 export default function AdminSidebar() {
   const [location, navigate] = useLocation();
@@ -83,7 +14,7 @@ export default function AdminSidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto p-4">
-        {adminMenuSections.map((section) => (
+        {adminNavSections.map((section) => (
           <div key={section.title} className="mb-6">
             {/* Section Title */}
             <div className="px-4 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wide">

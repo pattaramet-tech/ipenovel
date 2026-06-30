@@ -2,57 +2,25 @@ import { useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { useLocation } from "wouter";
 import {
-  LayoutDashboard,
-  BookOpen,
-  Layers,
-  Tag,
-  Image,
-  Ticket,
-  ShoppingCart,
-  CreditCard,
-  Gift,
-  Settings,
   Menu,
   X,
   LogOut,
   ChevronRight,
-  Upload,
   Home,
-  Wallet,
-  History,
-  Trophy,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { getAdminNavItemsFlat } from "@/config/adminNavItems";
 
 interface AdminLayoutProps {
   children: React.ReactNode;
 }
 
-interface NavItem {
-  label: string;
-  icon: React.ReactNode;
-  href: string;
-  badge?: number;
-}
-
-const navItems: NavItem[] = [
-  { label: "Dashboard", icon: <LayoutDashboard className="w-5 h-5" />, href: "/admin" },
-  { label: "Payments", icon: <CreditCard className="w-5 h-5" />, href: "/admin/payments" },
-  { label: "Wallet Top-ups", icon: <Wallet className="w-5 h-5" />, href: "/admin/wallet-topups" },
-  { label: "Top-up Logs", icon: <History className="w-5 h-5" />, href: "/admin/topup-logs" },
-  { label: "Votes Manager", icon: <Trophy className="w-5 h-5" />, href: "/admin/sports-votes" },
-  { label: "Novels", icon: <BookOpen className="w-5 h-5" />, href: "/admin/novels" },
-  { label: "Episodes", icon: <Layers className="w-5 h-5" />, href: "/admin/episodes" },
-  { label: "Categories", icon: <Tag className="w-5 h-5" />, href: "/admin/categories" },
-  { label: "Banners", icon: <Image className="w-5 h-5" />, href: "/admin/banners" },
-  { label: "Coupons", icon: <Ticket className="w-5 h-5" />, href: "/admin/coupons" },
-  { label: "Orders", icon: <ShoppingCart className="w-5 h-5" />, href: "/admin/orders" },
-  { label: "Entitlements", icon: <Gift className="w-5 h-5" />, href: "/admin/entitlements" },
-  { label: "Bulk Upload", icon: <Upload className="w-5 h-5" />, href: "/admin/bulk-upload" },
-  { label: "Analytics", icon: <LayoutDashboard className="w-5 h-5" />, href: "/admin/analytics" },
-  { label: "Settings", icon: <Settings className="w-5 h-5" />, href: "/admin/settings" },
-];
+// Get flattened nav items from shared config
+const navItems = getAdminNavItemsFlat().map((item) => ({
+  ...item,
+  icon: <item.icon className="w-5 h-5" />,
+}));
 
 export default function AdminLayout({ children }: AdminLayoutProps) {
   const { user } = useAuth();
