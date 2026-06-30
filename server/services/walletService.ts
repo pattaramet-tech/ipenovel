@@ -36,12 +36,26 @@ export async function createWalletTopupRequest(userId: number, requestedAmount: 
     });
   }
 
-  const topup = await db.createWalletTopup(userId, requestedAmount, slipImageUrl);
-  if (!topup) {
-    throw new TRPCError({
-      code: "INTERNAL_SERVER_ERROR",
-      message: "Failed to create wallet top-up request",
+  let topup: any;
+  try {
+    topup = await db.createWalletTopup(userId, requestedAmount, slipImageUrl);
+    if (!topup) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to create wallet top-up request",
+      });
+    }
+  } catch (createError: any) {
+    // createWalletTopup failed - this is a critical error that should be surfaced
+    console.error("[Wallet] Create topup failed:", {
+      message: createError?.message,
+      code: createError?.code,
+      userId,
+      requestedAmount,
+      hasSlipImageUrl: !!slipImageUrl,
+      error: createError,
     });
+    throw createError;
   }
 
   // Wire OCR into active flow: submit slip for OCR processing
@@ -61,7 +75,14 @@ export async function createWalletTopupRequest(userId: number, requestedAmount: 
     };
   } catch (ocrError) {
     // OCR error should not crash the flow - log and return pending status
-    console.error("[Wallet OCR] Submission error:", ocrError);
+    console.error("[Wallet OCR] Submission error:", {
+      message: ocrError instanceof Error ? ocrError.message : String(ocrError),
+      topupId: topup.id,
+      userId,
+      error: ocrError,
+    });
+    // If topup was created but OCR failed, return the topup anyway
+    // User will see it as pending_review
     return topup;
   }
 }

@@ -2596,18 +2596,39 @@ export async function createWalletTopup(userId: number, requestedAmount: string,
   // Use explicit timestamps to avoid production DB default mismatch
   const now = new Date();
 
-  const result = await db.insert(walletTopups).values({
-    userId,
-    requestedAmount,
-    bonusAmount,
-    creditedAmount,
-    slipImageUrl: slipImageUrl || null,
-    slipSubmittedAt: now,
-    status: "pending" as any,
-    approvalSource: "manual",
-    createdAt: now,
-    updatedAt: now,
-  });
+  let result: any;
+  try {
+    result = await db.insert(walletTopups).values({
+      userId,
+      requestedAmount,
+      bonusAmount,
+      creditedAmount,
+      slipImageUrl: slipImageUrl || null,
+      slipSubmittedAt: now,
+      status: "pending" as any,
+      approvalSource: "manual",
+      createdAt: now,
+      updatedAt: now,
+    });
+  } catch (insertError: any) {
+    console.error("[createWalletTopup] insert walletTopups failed", {
+      message: insertError?.message,
+      code: insertError?.code,
+      errno: insertError?.errno,
+      sqlState: insertError?.sqlState,
+      sqlMessage: insertError?.sqlMessage,
+      sql: insertError?.sql,
+      userId,
+      requestedAmount,
+      bonusAmount,
+      creditedAmount,
+      hasSlipImageUrl: !!slipImageUrl,
+      slipImageUrl,
+      now: now.toISOString(),
+      fullError: insertError,
+    });
+    throw insertError;
+  }
 
   return (await db.select().from(walletTopups).where(eq(walletTopups.id, result[0].insertId)).limit(1))[0];
 }
