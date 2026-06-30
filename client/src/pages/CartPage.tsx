@@ -180,9 +180,13 @@ export default function CartPage() {
     );
   }
 
-  const subtotalNum = parseFloat(subtotal);
-  const discountNum = parseFloat(discountAmount);
-  const safePointsToRedeem = pointsToRedeem ? Math.min(parseFloat(pointsToRedeem), subtotalNum - discountNum) : 0;
+  // Safe points redemption clamping
+  const subtotalNum = Number(subtotal) || 0;
+  const discountNum = Number(discountAmount) || 0;
+  const requestedPoints = Math.max(0, Number(pointsToRedeem) || 0);
+  const pointBalance = Number(pointsData?.balance) || 0;
+  const maxRedeemable = Math.max(0, subtotalNum - discountNum);
+  const safePointsToRedeem = Math.min(requestedPoints, pointBalance, maxRedeemable);
   const total = Math.max(0, subtotalNum - discountNum - safePointsToRedeem).toFixed(2);
 
   const handleCheckoutWithSlip = async () => {
@@ -379,6 +383,31 @@ export default function CartPage() {
                     </button>
                   </div>
                 )}
+
+                <div className="border-t pt-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-semibold">{t("cart.redeemPoints")}</p>
+                    <p className="text-xs text-slate-600">
+                      {t("cart.availablePoints")}: {formatBaht(pointsData?.balance || "0")} pts
+                    </p>
+                  </div>
+
+                  <Input
+                    placeholder="Points to redeem"
+                    type="number"
+                    min="0"
+                    max={Math.min(pointBalance, maxRedeemable)}
+                    value={pointsToRedeem}
+                    onChange={(e) => setPointsToRedeem(e.target.value)}
+                    disabled={pointBalance <= 0 || maxRedeemable <= 0}
+                  />
+
+                  {requestedPoints > safePointsToRedeem && (
+                    <p className="text-xs text-orange-600">
+                      ระบบจะใช้พอยท์ได้สูงสุด {formatBaht(safePointsToRedeem)} พอยท์ ตามยอดคงเหลือและยอดหลังหักคูปอง
+                    </p>
+                  )}
+                </div>
 
                 <div className="space-y-2 pt-4 border-t">
                   <Button
