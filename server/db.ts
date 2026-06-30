@@ -2896,6 +2896,112 @@ export async function rejectWalletTopup(topupId: number, adminUserId: number, re
 }
 
 /**
+ * Repair wallet credit for approved top-ups that didn't get credited
+ * Used for orphan records: topup.status = approved but no walletTransactions
+ * Ensures credit is only applied once
+ */
+export async function repairWalletTopupCredit(
+  topupId: number,
+  adminUserId: number,
+  reason: string
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return await db.transaction(async (tx) => {
+    // Step 1: Fetch topup
+    const topupResult = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
+    if (!topupResult || topupResult.length === 0) {
+      throw new Error("Wallet top-up not found");
+    }
+    const topup = topupResult[0];
+
+    // Step 2: Must be approved
+    if (topup.status !== "approved") {
+      throw new Error(`Cannot repair top-up with status ${topup.status}. Only approved top-ups can be repaired.`);
+    }
+
+    // Step 3: Check if already credited
+    const existingTransaction = await tx
+      .select()
+      .from(walletTransactions)
+      .where(
+        and(
+          eq(walletTransactions.referenceType, "topup"),
+          eq(walletTransactions.referenceId, topupId),
+          eq(walletTransactions.type, "topup_approved" as any)
+        )
+      )
+      .limit(1);
+
+    if (existingTransaction && existingTransaction.length > 0) {
+      throw new Error("This top-up has already been credited. Cannot repair.");
+    }
+
+    // Step 4: Get or create wallet account
+    let account = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, topup.userId)).limit(1);
+    if (!account || account.length === 0) {
+      await tx.insert(walletAccounts).values({
+        userId: topup.userId,
+        balance: "0.00",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      account = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, topup.userId)).limit(1);
+      if (!account || account.length === 0) {
+        throw new Error("Failed to create wallet account");
+      }
+    }
+
+    // Step 5: Calculate credit amount
+    const creditAmount = topup.creditedAmount || topup.requestedAmount;
+    const currentBalance = parseFloat(account[0].balance);
+    const creditAmountNum = parseFloat(creditAmount);
+    const newBalance = (currentBalance + creditAmountNum).toFixed(2);
+
+    // Step 6: Update wallet balance
+    await tx
+      .update(walletAccounts)
+      .set({ balance: newBalance, updatedAt: new Date() })
+      .where(eq(walletAccounts.userId, topup.userId));
+
+    // Step 7: Create wallet transaction record
+    await tx.insert(walletTransactions).values({
+      userId: topup.userId,
+      type: "topup_approved" as any,
+      amount: creditAmount,
+      balanceBefore: account[0].balance,
+      balanceAfter: newBalance,
+      referenceType: "topup",
+      referenceId: topupId,
+      note: `Repair credit by admin ${adminUserId}: ${reason}`,
+    });
+
+    // Step 8: Create topup log for audit trail
+    const absAmount = Math.abs(parseFloat(creditAmount)).toFixed(2);
+    await tx.insert(topupLogs).values({
+      userId: topup.userId,
+      amount: absAmount,
+      bonus: topup.bonusAmount || "0.00",
+      total: absAmount,
+      method: "slip",
+      reference: `topup-${topupId}-repair`,
+      note: `Repair wallet credit: ${reason}`,
+      createdBy: adminUserId,
+      createdAt: new Date(),
+    });
+
+    return {
+      success: true,
+      topupId,
+      balanceBefore: account[0].balance,
+      balanceAfter: newBalance,
+      creditAmount,
+    };
+  });
+}
+
+/**
  * Admin wallet balance adjustment with transaction
  * Ensures balance changes are always accompanied by transaction records
  * Prevents orphan balance changes without audit trail

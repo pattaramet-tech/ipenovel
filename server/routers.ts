@@ -1566,6 +1566,34 @@ export const appRouter = router({
             });
           }
         }),
+      repairTopupCredit: adminProcedure
+        .input(z.object({
+          topupId: z.number().int().positive(),
+          reason: z.string().min(3),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          try {
+            const result = await db.repairWalletTopupCredit(
+              input.topupId,
+              ctx.user.id,
+              input.reason
+            );
+
+            return {
+              success: true,
+              message: "Top-up credit repaired successfully",
+              balanceBefore: result.balanceBefore,
+              balanceAfter: result.balanceAfter,
+              creditAmount: result.creditAmount,
+            };
+          } catch (error: any) {
+            console.error("[admin.wallet.repairTopupCredit] Error:", error);
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: error?.message || "Failed to repair top-up credit",
+            });
+          }
+        }),
       listTopupLogs: adminProcedure
         .input(z.object({
           userId: z.number().optional(),
