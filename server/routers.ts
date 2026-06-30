@@ -1533,40 +1533,38 @@ export const appRouter = router({
           return walletService.adminRejectWalletTopup(input.topupId, ctx.user.id, input.reason);
         }),
       adjustBalance: adminProcedure
-        .input(z.object({ userId: z.number(), amount: z.string(), reason: z.string() }))
+        .input(z.object({
+          userId: z.number().int().positive(),
+          amount: z.string(),
+          mode: z.enum(["add", "subtract", "set"]).default("add"),
+          reason: z.string().min(3),
+        }))
         .mutation(async ({ ctx, input }) => {
-          const amountNum = parseFloat(input.amount);
-          if (isNaN(amountNum)) {
-            throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid amount" });
+          try {
+            const result = await db.adjustWalletBalance(
+              input.userId,
+              input.amount,
+              ctx.user.id,
+              input.reason,
+              input.mode
+            );
+
+            const newBalance = await db.getWalletBalance(input.userId);
+            return {
+              success: true,
+              message: `Wallet adjusted (${input.mode})`,
+              balanceBefore: result.balanceBefore,
+              balanceAfter: result.balanceAfter,
+              newBalance,
+              transactionAmount: result.transactionAmount,
+            };
+          } catch (error: any) {
+            console.error("[admin.wallet.adjustBalance] Error:", error);
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: error?.message || "Failed to adjust wallet balance",
+            });
           }
-          // Bidirectional wallet adjustment: positive = credit, negative = debit
-          const reference = `admin-adjust-${Date.now()}`;
-          const absAmount = Math.abs(amountNum).toString();
-          let operation = 'credit';
-          
-          if (amountNum > 0) {
-            // Credit operation
-            await db.creditWalletBalance(input.userId, absAmount, "admin_adjust", 0);
-          } else if (amountNum < 0) {
-            // Debit operation
-            await db.debitWalletBalance(input.userId, absAmount, "admin_adjust", 0);
-            operation = 'debit';
-          } else {
-            throw new TRPCError({ code: "BAD_REQUEST", message: "Amount must be non-zero" });
-          }
-          
-          // Create topup log for audit trail
-          await db.createTopupLog(
-            input.userId,
-            absAmount,
-            "0.00",
-            "admin_adjust",
-            reference,
-            `Admin ${operation}: ${input.reason}`,
-            ctx.user.id
-          );
-          const newBalance = await db.getWalletBalance(input.userId);
-          return { success: true, newBalance, operation };
         }),
       listTopupLogs: adminProcedure
         .input(z.object({

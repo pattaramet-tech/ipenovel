@@ -2895,6 +2895,113 @@ export async function rejectWalletTopup(topupId: number, adminUserId: number, re
   return db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1).then(r => r[0]);
 }
 
+/**
+ * Admin wallet balance adjustment with transaction
+ * Ensures balance changes are always accompanied by transaction records
+ * Prevents orphan balance changes without audit trail
+ */
+export async function adjustWalletBalance(
+  userId: number,
+  amount: string,
+  adminUserId: number,
+  reason: string,
+  mode: "add" | "subtract" | "set" = "add"
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  // Validate amount format: must be valid positive number
+  if (!/^\d+(\.\d{1,2})?$/.test(String(amount || "").trim())) {
+    throw new Error("Invalid amount format. Must be a positive number (e.g., 100 or 100.50)");
+  }
+
+  const amountNum = parseFloat(amount);
+  if (!Number.isFinite(amountNum) || amountNum < 0) {
+    throw new Error("Amount must be a valid positive number");
+  }
+
+  // Use transaction to ensure atomicity
+  return await db.transaction(async (tx) => {
+    // Get or create wallet account
+    let account = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1);
+    if (!account || account.length === 0) {
+      await tx.insert(walletAccounts).values({
+        userId,
+        balance: "0.00",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      account = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1);
+      if (!account || account.length === 0) {
+        throw new Error("Failed to create wallet account");
+      }
+    }
+
+    const currentBalance = parseFloat(account[0].balance);
+    let newBalance: number;
+
+    if (mode === "add") {
+      newBalance = currentBalance + amountNum;
+    } else if (mode === "subtract") {
+      newBalance = currentBalance - amountNum;
+    } else if (mode === "set") {
+      newBalance = amountNum;
+    } else {
+      throw new Error("Invalid mode");
+    }
+
+    // Prevent negative balance
+    if (newBalance < 0) {
+      throw new Error(`Cannot set balance to negative. Current: ${currentBalance}, requested: ${newBalance}`);
+    }
+
+    const newBalanceStr = newBalance.toFixed(2);
+
+    // Calculate transaction amount (the difference)
+    const transactionAmount = (newBalance - currentBalance).toFixed(2);
+
+    // Update wallet balance
+    await tx
+      .update(walletAccounts)
+      .set({ balance: newBalanceStr, updatedAt: new Date() })
+      .where(eq(walletAccounts.userId, userId));
+
+    // Create wallet transaction record
+    await tx.insert(walletTransactions).values({
+      userId,
+      type: "adjust" as any,
+      amount: transactionAmount,
+      balanceBefore: account[0].balance,
+      balanceAfter: newBalanceStr,
+      referenceType: "admin_adjust",
+      note: `Admin adjustment by user ${adminUserId}: ${reason}`,
+    });
+
+    // Create topup log for audit trail
+    const absAmount = Math.abs(parseFloat(transactionAmount)).toFixed(2);
+    await tx.insert(topupLogs).values({
+      userId,
+      amount: absAmount,
+      bonus: "0.00",
+      total: absAmount,
+      method: "admin_adjust",
+      reference: `admin-adjust-${Date.now()}`,
+      note: reason,
+      createdBy: adminUserId,
+      createdAt: new Date(),
+    });
+
+    return {
+      userId,
+      balanceBefore: account[0].balance,
+      balanceAfter: newBalanceStr,
+      transactionAmount,
+      mode,
+      reason,
+    };
+  });
+}
+
 export async function getWalletSummary(userId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
