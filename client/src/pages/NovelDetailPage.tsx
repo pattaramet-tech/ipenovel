@@ -366,15 +366,43 @@ export default function NovelDetailPage() {
                 const inCart = cartItems.some((item: any) => item.episodeId === episode.id);
                 const isPurchased = episode.isPurchased || false;
                 const isLoading = addToCartMutation.isPending || removeFromCartMutation.isPending;
+                const isSelected = inCart || selectedEpisodes.includes(episode.id);
+
                 return (
                   <Card
                     key={episode.id}
-                    className="p-3 flex items-center justify-between transition-colors"
+                    role={!isPurchased ? "button" : undefined}
+                    tabIndex={!isPurchased ? 0 : undefined}
+                    aria-pressed={!isPurchased ? isSelected : undefined}
+                    aria-label={!isPurchased ? `${isSelected ? "Remove" : "Select"} Episode ${episode.episodeNumber} - ${episode.title}` : undefined}
+                    onClick={() => {
+                      if (isPurchased || isLoading) return;
+                      handleEpisodeToggle(episode.id, !isSelected);
+                    }}
+                    onKeyDown={(e) => {
+                      if (isPurchased || isLoading) return;
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        handleEpisodeToggle(episode.id, !isSelected);
+                      }
+                    }}
+                    className={`p-3 flex items-center justify-between transition-all cursor-pointer ${
+                      isPurchased
+                        ? "cursor-default"
+                        : isSelected
+                          ? "border-blue-500 bg-blue-50 ring-1 ring-blue-300"
+                          : "hover:bg-slate-50"
+                    } ${isLoading ? "opacity-60 cursor-wait" : ""}`}
                   >
                     <div className="flex-1 min-w-0">
                       <p className="font-semibold text-sm">
                         Episode {episode.episodeNumber || "?"} - {episode.title || "Untitled"}
                       </p>
+                      {!isPurchased && (
+                        <p className="text-xs text-slate-500 mt-1">
+                          {isSelected ? "เลือกไว้ในตะกร้าแล้ว" : isLoading ? "กำลังอัปเดต..." : "กดการ์ดเพื่อเลือกซื้อ"}
+                        </p>
+                      )}
                     </div>
                     <div className="flex items-center gap-3 ml-3 flex-shrink-0">
                       {isPurchased ? (
@@ -399,8 +427,9 @@ export default function NovelDetailPage() {
                           <p className="font-semibold text-sm whitespace-nowrap">฿{episode.price ?? "N/A"}</p>
                           <input
                             type="checkbox"
-                            checked={inCart || selectedEpisodes.includes(episode.id)}
+                            checked={isSelected}
                             onChange={(e) => {
+                              e.stopPropagation();
                               try {
                                 handleEpisodeToggle(episode.id, e.target.checked);
                               } catch (err) {
@@ -408,6 +437,7 @@ export default function NovelDetailPage() {
                                 toast.error("Failed to update cart");
                               }
                             }}
+                            onClick={(e) => e.stopPropagation()}
                             disabled={isLoading}
                             className="w-4 h-4 cursor-pointer"
                           />
