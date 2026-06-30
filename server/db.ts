@@ -3152,8 +3152,22 @@ export async function getWalletSummary(userId: number) {
         .where(eq(walletTransactions.userId, userId))
         .orderBy(desc(walletTransactions.createdAt))
         .limit(10),
+      // Select only necessary columns to avoid schema mismatch issues
       db
-        .select()
+        .select({
+          id: walletTopups.id,
+          userId: walletTopups.userId,
+          requestedAmount: walletTopups.requestedAmount,
+          bonusAmount: walletTopups.bonusAmount,
+          creditedAmount: walletTopups.creditedAmount,
+          slipImageUrl: walletTopups.slipImageUrl,
+          slipSubmittedAt: walletTopups.slipSubmittedAt,
+          status: walletTopups.status,
+          rejectionReason: walletTopups.rejectionReason,
+          reviewReason: walletTopups.reviewReason,
+          approvedAt: walletTopups.approvedAt,
+          createdAt: walletTopups.createdAt,
+        })
         .from(walletTopups)
         .where(eq(walletTopups.userId, userId))
         .orderBy(desc(walletTopups.createdAt))
