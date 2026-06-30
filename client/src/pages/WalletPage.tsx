@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
-import { Upload, CheckCircle, AlertCircle, X } from "lucide-react";
+import { Upload, CheckCircle, AlertCircle, X, Loader2 } from "lucide-react";
 
 const QR_PAYMENT_IMAGE = "https://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/IMG_8158_19d96370.JPG";
 
@@ -21,7 +21,7 @@ export default function WalletPage() {
   const [isCreatingRequest, setIsCreatingRequest] = useState(false);
   const [filePreview, setFilePreview] = useState<string | null>(null);
 
-  const { data: summary, isLoading, refetch: refetchSummary } = trpc.wallet.getSummary.useQuery();
+  const { data: summary, isLoading, error, refetch: refetchSummary } = trpc.wallet.getSummary.useQuery();
   const createTopupMutation = trpc.wallet.createTopupRequest.useMutation();
   const uploadSlipFileMutation = trpc.payment.uploadSlipFile.useMutation();
 
@@ -163,7 +163,62 @@ export default function WalletPage() {
     return result.slipImageUrl;
   };
 
-  if (isLoading) return <div className="p-4 text-center">{t("common.loading")}</div>;
+  // Loading state: show skeleton
+  if (isLoading) {
+    return (
+      <div className="container max-w-2xl py-8">
+        <div className="space-y-6">
+          <div>
+            <h1 className="text-3xl font-bold mb-6">{t("wallet.title")}</h1>
+          </div>
+          <Card className="p-6 bg-slate-100 animate-pulse">
+            <div className="space-y-3">
+              <div className="h-4 bg-slate-300 rounded w-32"></div>
+              <div className="h-8 bg-slate-300 rounded w-48"></div>
+            </div>
+          </Card>
+          <Card className="p-6 bg-slate-100 animate-pulse">
+            <div className="space-y-3">
+              <div className="h-4 bg-slate-300 rounded w-40"></div>
+              <div className="h-10 bg-slate-300 rounded w-full"></div>
+            </div>
+          </Card>
+          <div className="flex items-center justify-center gap-2 text-slate-600">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <span>{t("common.loading") || "กำลังโหลดกระเป๋าเงิน..."}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Error state: show error card with retry button
+  if (error) {
+    return (
+      <div className="container max-w-2xl py-8">
+        <h1 className="text-3xl font-bold mb-6">{t("wallet.title")}</h1>
+        <Card className="p-8 border-red-200 bg-red-50">
+          <div className="flex gap-4">
+            <AlertCircle className="w-8 h-8 text-red-600 shrink-0" />
+            <div className="flex-1">
+              <h2 className="text-lg font-bold text-red-900 mb-2">
+                ไม่สามารถโหลดกระเป๋าเงินได้
+              </h2>
+              <p className="text-red-800 text-sm mb-4">
+                เกิดข้อผิดพลาดในการโหลดข้อมูล กรุณาลองใหม่อีกครั้ง
+              </p>
+              <Button
+                onClick={() => refetchSummary()}
+                className="bg-red-600 hover:bg-red-700"
+              >
+                ลองใหม่
+              </Button>
+            </div>
+          </div>
+        </Card>
+      </div>
+    );
+  }
 
   // Policy message for non-refundable wallet (use translation keys)
 

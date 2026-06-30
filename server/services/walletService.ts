@@ -55,7 +55,14 @@ export async function createWalletTopupRequest(userId: number, requestedAmount: 
       hasSlipImageUrl: !!slipImageUrl,
       error: createError,
     });
-    throw createError;
+    // Wrap error for user - don't expose SQL details
+    if (createError instanceof TRPCError) {
+      throw createError;
+    }
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "บันทึกรายการเติมเงินไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
+    });
   }
 
   // Wire OCR into active flow: submit slip for OCR processing

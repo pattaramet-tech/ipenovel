@@ -2532,8 +2532,37 @@ export async function getOrCreateWalletAccount(userId: number, tx?: any) {
   let account = (await db.select().from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1))[0];
 
   if (!account) {
-    await db.insert(walletAccounts).values({ userId, balance: "0.00" });
-    account = (await db.select().from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1))[0];
+    const now = new Date();
+    try {
+      await db.insert(walletAccounts).values({
+        userId,
+        balance: "0.00",
+        totalTopupApproved: "0.00",
+        totalSpent: "0.00",
+        createdAt: now,
+        updatedAt: now,
+      });
+      account = (await db.select().from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1))[0];
+    } catch (insertError: any) {
+      console.error("[getOrCreateWalletAccount] insert wallet account failed", {
+        message: insertError?.message,
+        code: insertError?.code,
+        errno: insertError?.errno,
+        sqlState: insertError?.sqlState,
+        sqlMessage: insertError?.sqlMessage,
+        userId,
+        error: insertError,
+      });
+
+      // Handle concurrent insert: if another request already created the account, retry select
+      if (insertError?.errno === 1062 || insertError?.code === "ER_DUP_ENTRY") {
+        console.warn("[getOrCreateWalletAccount] concurrent insert detected, retrying select", { userId });
+        account = (await db.select().from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1))[0];
+        if (account) return account;
+      }
+
+      throw insertError;
+    }
   }
 
   return account;
@@ -3109,31 +3138,54 @@ export async function adjustWalletBalance(
 }
 
 export async function getWalletSummary(userId: number) {
+  const startedAt = Date.now();
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const account = await getOrCreateWalletAccount(userId);
-  const transactions = await db
-    .select()
-    .from(walletTransactions)
-    .where(eq(walletTransactions.userId, userId))
-    .orderBy(desc(walletTransactions.createdAt))
-    .limit(10);
+  try {
+    const account = await getOrCreateWalletAccount(userId);
 
-  const topups = await db
-    .select()
-    .from(walletTopups)
-    .where(eq(walletTopups.userId, userId))
-    .orderBy(desc(walletTopups.createdAt))
-    .limit(5);
+    const [transactions, topups] = await Promise.all([
+      db
+        .select()
+        .from(walletTransactions)
+        .where(eq(walletTransactions.userId, userId))
+        .orderBy(desc(walletTransactions.createdAt))
+        .limit(10),
+      db
+        .select()
+        .from(walletTopups)
+        .where(eq(walletTopups.userId, userId))
+        .orderBy(desc(walletTopups.createdAt))
+        .limit(5),
+    ]);
 
-  return {
-    balance: account.balance,
-    totalTopupApproved: account.totalTopupApproved,
-    totalSpent: account.totalSpent,
-    recentTransactions: transactions,
-    recentTopups: topups,
-  };
+    const durationMs = Date.now() - startedAt;
+    if (durationMs > 1000) {
+      console.warn("[getWalletSummary] slow query", {
+        userId,
+        durationMs,
+      });
+    }
+
+    return {
+      balance: account.balance,
+      totalTopupApproved: account.totalTopupApproved,
+      totalSpent: account.totalSpent,
+      recentTransactions: transactions,
+      recentTopups: topups,
+    };
+  } catch (error: any) {
+    const durationMs = Date.now() - startedAt;
+    console.error("[getWalletSummary] failed", {
+      userId,
+      durationMs,
+      message: error?.message,
+      code: error?.code,
+      error: error,
+    });
+    throw error;
+  }
 }
 
 
