@@ -2593,13 +2593,20 @@ export async function createWalletTopup(userId: number, requestedAmount: string,
   const bonusAmount = calculateBonus(amount);
   const creditedAmount = (amount + parseFloat(bonusAmount)).toFixed(2);
 
+  // Use explicit timestamps to avoid production DB default mismatch
+  const now = new Date();
+
   const result = await db.insert(walletTopups).values({
     userId,
     requestedAmount,
     bonusAmount,
     creditedAmount,
     slipImageUrl: slipImageUrl || null,
+    slipSubmittedAt: now,
     status: "pending" as any,
+    approvalSource: "manual",
+    createdAt: now,
+    updatedAt: now,
   });
 
   return (await db.select().from(walletTopups).where(eq(walletTopups.id, result[0].insertId)).limit(1))[0];

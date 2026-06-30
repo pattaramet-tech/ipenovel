@@ -69,53 +69,72 @@ export default function WalletPage() {
       return;
     }
 
+    let slipImageUrl: string | null = null;
+
     try {
       setIsUploading(true);
       setIsCreatingRequest(true);
 
       // Step 1: Upload slip first
-      const slipImageUrl = await uploadFile(selectedFile);
-
-      // Step 2: Create top-up request with slip URL
-      const result = await createTopupMutation.mutateAsync({
-        requestedAmount: topupAmount,
-        slipImageUrl,
-      });
-
-      // Success: Reset form and show confirmation based on OCR outcome
-      setTopupAmount("");
-      setSelectedFile(null);
-      setShowTopupForm(false);
-
-      // Display OCR outcome message
-      const ocrDecision = (result as any)?.ocrDecision;
-      const reviewReason = (result as any)?.reviewReason;
-      const userMessage = (result as any)?.userMessage;
-
-      if (ocrDecision === "approved") {
-        // Auto-approved by OCR
-        toast.success(userMessage || t("payment.autoApprovedOrderMessage"));
-      } else if (ocrDecision === "needs_review") {
-        // Pending manual review
-        const reason = reviewReason || "UNKNOWN";
-        if (reason === "DUPLICATE_REFERENCE" || reason === "DUPLICATE_FINGERPRINT") {
-          toast.info(userMessage || t("payment.duplicateReviewMessage"));
-        } else if (reason === "LOW_CONFIDENCE") {
-          toast.info(userMessage || t("payment.lowConfidenceReviewMessage"));
-        } else {
-          toast.info(userMessage || t("payment.pendingReviewOrderMessage"));
-        }
-      } else if (reviewReason === "OCR_PROCESSING_ERROR") {
-        // OCR technical error
-        toast.warning(userMessage || t("payment.ocrErrorReviewMessage"));
-      } else {
-        // Fallback message
-        toast.success(t("wallet.topupRequestCreated"));
+      try {
+        slipImageUrl = await uploadFile(selectedFile);
+      } catch (uploadError: any) {
+        // Upload failed before creating record
+        console.error("[WalletPage] Slip upload error:", uploadError);
+        toast.error(uploadError.message || t("payment.uploadError") || "Failed to upload slip");
+        return;
       }
 
-      refetchSummary();
+      // Step 2: Create top-up request with slip URL
+      try {
+        const result = await createTopupMutation.mutateAsync({
+          requestedAmount: topupAmount,
+          slipImageUrl,
+        });
+
+        // Success: Reset form and show confirmation based on OCR outcome
+        setTopupAmount("");
+        setSelectedFile(null);
+        setShowTopupForm(false);
+
+        // Display OCR outcome message
+        const ocrDecision = (result as any)?.ocrDecision;
+        const reviewReason = (result as any)?.reviewReason;
+        const userMessage = (result as any)?.userMessage;
+
+        if (ocrDecision === "approved") {
+          // Auto-approved by OCR
+          toast.success(userMessage || t("payment.autoApprovedOrderMessage"));
+        } else if (ocrDecision === "needs_review") {
+          // Pending manual review
+          const reason = reviewReason || "UNKNOWN";
+          if (reason === "DUPLICATE_REFERENCE" || reason === "DUPLICATE_FINGERPRINT") {
+            toast.info(userMessage || t("payment.duplicateReviewMessage"));
+          } else if (reason === "LOW_CONFIDENCE") {
+            toast.info(userMessage || t("payment.lowConfidenceReviewMessage"));
+          } else {
+            toast.info(userMessage || t("payment.pendingReviewOrderMessage"));
+          }
+        } else if (reviewReason === "OCR_PROCESSING_ERROR") {
+          // OCR technical error
+          toast.warning(userMessage || t("payment.ocrErrorReviewMessage"));
+        } else {
+          // Fallback message
+          toast.success(t("wallet.topupRequestCreated"));
+        }
+
+        refetchSummary();
+      } catch (createError: any) {
+        // Create topup request failed, but slip was uploaded
+        console.error("[WalletPage] Create topup error:", createError, { slipImageUrl });
+        toast.error(
+          "อัปโหลดสลิปแล้ว แต่บันทึกรายการเติมเงินไม่สำเร็จ กรุณาติดต่อแอดมิน"
+        );
+      }
     } catch (error: any) {
-      toast.error(error.message || t("wallet.failedToCreateTopup"));
+      // Catch-all for unexpected errors
+      console.error("[WalletPage] Unexpected error:", error, { slipImageUrl });
+      toast.error(t("wallet.failedToCreateTopup") || "Failed to create top-up request");
     } finally {
       setIsUploading(false);
       setIsCreatingRequest(false);
