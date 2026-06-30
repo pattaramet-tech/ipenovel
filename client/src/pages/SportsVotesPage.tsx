@@ -291,7 +291,9 @@ export default function SportsVotesPage() {
               return (
                 <Card key={match.id} className="overflow-hidden">
                   {match.coverImageUrl && (
-                    <img src={match.coverImageUrl} alt={match.title} className="w-full h-28 object-cover" />
+                    <div className="w-full h-40 sm:h-44 bg-slate-100 flex items-center justify-center overflow-hidden">
+                      <img src={match.coverImageUrl} alt={match.title} className="w-full h-full object-contain" />
+                    </div>
                   )}
                   <CardHeader className="pb-2">
                     <div className="flex items-start justify-between gap-2">
@@ -358,12 +360,12 @@ export default function SportsVotesPage() {
                             {t("sports.insufficientPoints").replace("{cost}", cost.toString())}
                           </Button>
                         ) : (
-                          <div className="grid grid-cols-3 gap-2">
+                          <div className="grid grid-cols-3 gap-1 sm:gap-2">
                             <Button
                               size="sm"
                               disabled={disabled}
                               onClick={() => handleVoteClick(match, "home_win")}
-                              className="text-xs"
+                              className="text-xs px-2 py-1 h-8 sm:h-9"
                             >
                               {t("sports.homeWin")}
                             </Button>
@@ -372,7 +374,7 @@ export default function SportsVotesPage() {
                               variant="outline"
                               disabled={disabled}
                               onClick={() => handleVoteClick(match, "draw")}
-                              className="text-xs"
+                              className="text-xs px-2 py-1 h-8 sm:h-9"
                             >
                               {t("sports.draw")}
                             </Button>
@@ -380,7 +382,7 @@ export default function SportsVotesPage() {
                               size="sm"
                               disabled={disabled}
                               onClick={() => handleVoteClick(match, "away_win")}
-                              className="text-xs"
+                              className="text-xs px-2 py-1 h-8 sm:h-9"
                             >
                               {t("sports.awayWin")}
                             </Button>
