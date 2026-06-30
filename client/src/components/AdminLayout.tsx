@@ -20,6 +20,7 @@ import {
   Home,
   Wallet,
   History,
+  Trophy,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -40,6 +41,7 @@ const navItems: NavItem[] = [
   { label: "Payments", icon: <CreditCard className="w-5 h-5" />, href: "/admin/payments" },
   { label: "Wallet Top-ups", icon: <Wallet className="w-5 h-5" />, href: "/admin/wallet-topups" },
   { label: "Top-up Logs", icon: <History className="w-5 h-5" />, href: "/admin/topup-logs" },
+  { label: "Votes Manager", icon: <Trophy className="w-5 h-5" />, href: "/admin/sports-votes" },
   { label: "Novels", icon: <BookOpen className="w-5 h-5" />, href: "/admin/novels" },
   { label: "Episodes", icon: <Layers className="w-5 h-5" />, href: "/admin/episodes" },
   { label: "Categories", icon: <Tag className="w-5 h-5" />, href: "/admin/categories" },
