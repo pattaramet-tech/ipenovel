@@ -1522,6 +1522,24 @@ export const appRouter = router({
         .query(async ({ input }) => {
           return db.listPendingWalletTopups(input.limit, input.offset);
         }),
+      detail: adminProcedure
+        .input(z.object({ topupId: z.number() }))
+        .query(async ({ input }) => {
+          const topup = await db.getWalletTopupById(input.topupId);
+          if (!topup) throw new TRPCError({ code: "NOT_FOUND" });
+
+          // Get user info
+          const user = topup.userId ? await db.getUserById(topup.userId) : null;
+
+          // Get topup logs related to this user (audit trail)
+          const logs = topup.userId ? await db.getTopupLogs(topup.userId, undefined, undefined, 50) : [];
+
+          return {
+            topup,
+            user,
+            logs: logs || [],
+          };
+        }),
       approveTopup: adminProcedure
         .input(z.object({ topupId: z.number() }))
         .mutation(async ({ ctx, input }) => {

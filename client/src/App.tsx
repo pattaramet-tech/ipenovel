@@ -17,6 +17,7 @@ import AdminOrdersPage from "@/pages/AdminOrdersPage";
 import AdminOrderDetailPage from "@/pages/AdminOrderDetailPage";
 import AdminPaymentsPage from "@/pages/AdminPaymentsPage";
 import AdminWalletTopupsPage from "@/pages/AdminWalletTopupsPage";
+import AdminWalletTopupDetailPage from "@/pages/AdminWalletTopupDetailPage";
 import AdminTopupLogsPage from "@/pages/AdminTopupLogsPage";
 import AdminEntitlementsPage from "@/pages/AdminEntitlementsPage";
 import AdminSettingsPage from "@/pages/AdminSettingsPage";
@@ -64,6 +65,7 @@ function Router() {
         <Route path="/admin/orders/:orderId" component={AdminOrderDetailPage} />
         <Route path={"/admin/payments"} component={AdminPaymentsPage} />
         <Route path={"/admin/wallet-topups"} component={AdminWalletTopupsPage} />
+        <Route path={"/admin/wallet-topups/:topupId"} component={AdminWalletTopupDetailPage} />
         <Route path={"/admin/topup-logs"} component={AdminTopupLogsPage} />
         <Route path={"/admin/entitlements"} component={AdminEntitlementsPage} />
         <Route path="/admin/settings" component={AdminSettingsPage} />

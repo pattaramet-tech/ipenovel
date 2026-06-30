@@ -3,15 +3,17 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
-import { Loader2, CheckCircle, XCircle, Image as ImageIcon, FileText, ExternalLink, Wrench, RefreshCw } from "lucide-react";
+import { Loader2, CheckCircle, XCircle, Image as ImageIcon, FileText, ExternalLink, Wrench, RefreshCw, Eye } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
+import { useLocation } from "wouter";
 import { SlipPreviewModal } from "@/components/SlipPreviewModal";
 import AdminLayout from "@/components/AdminLayout";
 import { useAuth } from "@/_core/hooks/useAuth";
 
 export default function AdminWalletTopupsPage() {
   const { user, isAuthenticated } = useAuth();
+  const [, navigate] = useLocation();
   const [slipPreviewOpen, setSlipPreviewOpen] = useState(false);
   const [selectedSlipUrl, setSelectedSlipUrl] = useState<string | null>(null);
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
@@ -229,6 +231,14 @@ export default function AdminWalletTopupsPage() {
 
                   {/* Actions */}
                   <div className="flex gap-2 pt-4 border-t flex-wrap">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => navigate(`/admin/wallet-topups/${topup.id}`)}
+                    >
+                      <Eye className="w-4 h-4 mr-2" />
+                      View Detail
+                    </Button>
                     {(topup.status === "pending" || topup.status === "pending_review") && (
                       <>
                         <Button
