@@ -229,7 +229,7 @@ export default function AdminWalletTopupsPage() {
 
                   {/* Actions */}
                   <div className="flex gap-2 pt-4 border-t flex-wrap">
-                    {topup.status === "pending" && (
+                    {(topup.status === "pending" || topup.status === "pending_review") && (
                       <>
                         <Button
                           className="flex-1"

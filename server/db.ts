@@ -2809,7 +2809,7 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
     }
     const topup = topupResult[0];
     
-    // Step 2: Conditional status update - ONLY update if still pending (idempotency)
+    // Step 2: Conditional status update - ONLY update if still pending or pending_review (idempotency)
     // CRITICAL: Only the winning concurrent request may proceed
     // Losing requests will have 0 rows affected and must abort immediately
     const updateResult = await tx
@@ -2820,7 +2820,15 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
         reviewedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(and(eq(walletTopups.id, topupId), eq(walletTopups.status, "pending" as any)));
+      .where(
+        and(
+          eq(walletTopups.id, topupId),
+          or(
+            eq(walletTopups.status, "pending" as any),
+            eq(walletTopups.status, "pending_review" as any)
+          )
+        )
+      );
     
     // CRITICAL: Check if update actually affected a row
     // Drizzle returns [ResultSetHeader, undefined] where ResultSetHeader has affectedRows
@@ -2896,32 +2904,56 @@ export async function rejectWalletTopup(topupId: number, adminUserId: number, re
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const topup = await getWalletTopupById(topupId);
-  if (!topup) throw new Error("Wallet top-up not found");
+  return await db.transaction(async (tx) => {
+    const topup = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
+    if (!topup || topup.length === 0) throw new Error("Wallet top-up not found");
 
-  await db
-    .update(walletTopups)
-    .set({
-      status: "rejected" as any,
-      rejectionReason: reason,
-      reviewedByUserId: adminUserId,
-      reviewedAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .where(eq(walletTopups.id, topupId));
+    // Conditional update - only reject if still pending or pending_review (idempotency)
+    const updateResult = await tx
+      .update(walletTopups)
+      .set({
+        status: "rejected" as any,
+        rejectionReason: reason,
+        reviewedByUserId: adminUserId,
+        reviewedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(walletTopups.id, topupId),
+          or(
+            eq(walletTopups.status, "pending" as any),
+            eq(walletTopups.status, "pending_review" as any)
+          )
+        )
+      );
 
-  // Log the rejection
-  await createTopupLog(
-    topup.userId,
-    "0.00",
-    "0.00",
-    "slip",
-    `topup-${topupId}`,
-    `Slip rejected: ${reason}`,
-    adminUserId
-  );
+    // Check if rejection actually affected a row
+    const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
+    const affectedRows = (resultHeader as any)?.affectedRows || 0;
+    if (affectedRows === 0) {
+      throw new Error("Wallet top-up cannot be rejected - already processed or not in pending state");
+    }
 
-  return db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1).then(r => r[0]);
+    // Log the rejection
+    const amountNum = parseFloat("0.00");
+    const bonusNum = parseFloat("0.00");
+    const total = (amountNum + bonusNum).toFixed(2);
+
+    await tx.insert(topupLogs).values({
+      userId: topup[0].userId,
+      amount: "0.00",
+      bonus: "0.00",
+      total: total,
+      method: "slip",
+      reference: `topup-${topupId}`,
+      note: `Slip rejected: ${reason}`,
+      createdBy: adminUserId,
+      createdAt: new Date(),
+    });
+
+    return tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1).then(r => r[0]);
+  });
 }
 
 /**
