@@ -14,9 +14,10 @@ import {
 } from "@/components/ui/alert-dialog";
 import { trpc } from "@/lib/trpc";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { getCountdownText, formatDateThai } from "@/lib/utils";
 import { toast } from "sonner";
 import { useState } from "react";
-import { Zap, Eye } from "lucide-react";
+import { Zap, Eye, AlertTriangle, Clock } from "lucide-react";
 
 const emptyForm = {
   title: "",
@@ -136,6 +137,17 @@ export default function AdminSportsVotesPage() {
     if (!form.title || !form.homeTeamName || !form.awayTeamName || !form.voteDeadlineAt) {
       toast.error("Title, teams, and vote deadline are required");
       return;
+    }
+
+    // Validate deadline for open matches
+    if (form.status === "open") {
+      const deadlineTime = new Date(form.voteDeadlineAt).getTime();
+      const nowTime = Date.now();
+
+      if (deadlineTime <= nowTime) {
+        toast.error("Deadline must be in the future for open matches");
+        return;
+      }
     }
 
     const payload = {
@@ -276,12 +288,33 @@ export default function AdminSportsVotesPage() {
               />
             </div>
             <div>
-              <label className="text-xs font-semibold text-slate-600 mb-1 block">Vote Deadline *</label>
+              <label className="text-xs font-semibold text-slate-600 mb-1 block">Voting Status *</label>
+              <Select value={form.status} onValueChange={(value: "draft" | "open" | "closed") => setForm({ ...form, status: value })}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="draft">แบบร่าง</SelectItem>
+                  <SelectItem value="open">เปิดรับโหวต</SelectItem>
+                  <SelectItem value="closed">ปิดรับโหวต</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-slate-500 mt-1">
+                {form.status === "draft" && "ยังไม่แสดงเป็นแมตช์ที่เปิดให้ทาย"}
+                {form.status === "open" && "ผู้ใช้สามารถทายได้จนถึงเวลาปิดรับ"}
+                {form.status === "closed" && "ผู้ใช้จะทายเพิ่มไม่ได้ แต่ยังประกาศผลภายหลังได้"}
+              </p>
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-600 mb-1 block">เวลาปิดรับโหวต *</label>
               <Input
                 type="datetime-local"
                 value={form.voteDeadlineAt}
                 onChange={(e) => setForm({ ...form, voteDeadlineAt: e.target.value })}
               />
+              <p className="text-xs text-slate-500 mt-1">
+                เมื่อถึงเวลานี้ ผู้ใช้จะไม่สามารถทายผลเพิ่มได้ แม้สถานะยังเป็นเปิดรับโหวต
+              </p>
             </div>
             <div>
               <label className="text-xs font-semibold text-slate-600 mb-1 block">Vote Cost (Points)</label>
@@ -403,6 +436,20 @@ export default function AdminSportsVotesPage() {
                     <p className="text-xs text-slate-500">
                       🏠 {match.homeVoteCount} 🤝 {match.drawVoteCount} 🚗 {match.awayVoteCount}
                     </p>
+                    {match.voteDeadlineAt && (
+                      <div className="text-xs text-slate-500 flex items-center gap-1 mt-1">
+                        <Clock className="w-3 h-3" />
+                        {new Date(match.voteDeadlineAt).getTime() > Date.now()
+                          ? `เหลือเวลา: ${getCountdownText(match.voteDeadlineAt)}`
+                          : "ครบเวลาปิดรับโหวตแล้ว"}
+                      </div>
+                    )}
+                    {match.status === "open" && new Date(match.voteDeadlineAt).getTime() <= Date.now() && (
+                      <div className="text-xs text-orange-600 flex items-center gap-1 mt-1 bg-orange-50 p-1 rounded">
+                        <AlertTriangle className="w-3 h-3" />
+                        ครบเวลาแล้ว ควรกดปิดรับโหวตหรือประกาศผล
+                      </div>
+                    )}
                   </div>
                 </div>
 
