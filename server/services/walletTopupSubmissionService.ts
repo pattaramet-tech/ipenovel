@@ -18,6 +18,7 @@ import {
 } from "../ocr-slip-verification-v2";
 import { getEffectiveOCRConfig } from "../_core/ocr-effective-config";
 import { formatMoney } from "../helpers/moneyNormalizer";
+import { sendOCRReviewNotification } from "./discordNotificationService";
 
 export interface WalletTopupSubmissionResult {
   topupId: number;
@@ -82,7 +83,8 @@ export async function submitWalletTopupSlip(
         topupId,
         userId,
         "OCR_PROCESSING_ERROR",
-        "ส่งสลิปแล้ว แต่ระบบ OCR ขัดข้อง แอดมินจะตรวจสอบให้"
+        "ส่งสลิปแล้ว แต่ระบบ OCR ขัดข้อง แอดมินจะตรวจสอบให้",
+        topup
       );
     }
 
@@ -92,7 +94,12 @@ export async function submitWalletTopupSlip(
         topupId,
         userId,
         "OCR_DISABLED",
-        "ส่งสลิปแล้ว รอแอดมินตรวจสอบ"
+        "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        topup
       );
     }
 
@@ -102,7 +109,12 @@ export async function submitWalletTopupSlip(
         topupId,
         userId,
         "SHADOW_MODE",
-        "ส่งสลิปแล้ว รอแอดมินตรวจสอบ"
+        "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        topup
       );
     }
 
@@ -143,7 +155,9 @@ export async function submitWalletTopupSlip(
         extractedData,
         fingerprint,
         verificationResult,
-        "พบความเสี่ยงสลิปซ้ำ รอแอดมินตรวจสอบ"
+        "พบความเสี่ยงสลิปซ้ำ รอแอดมินตรวจสอบ",
+        parseResult,
+        topup
       );
     }
 
@@ -156,7 +170,9 @@ export async function submitWalletTopupSlip(
         "ส่งสลิปแล้ว ระบบอ่านข้อมูลไม่มั่นใจ รอแอดมินตรวจสอบ",
         extractedData,
         fingerprint,
-        verificationResult
+        verificationResult,
+        parseResult,
+        topup
       );
     }
 
@@ -169,7 +185,9 @@ export async function submitWalletTopupSlip(
         "ส่งสลิปแล้ว จำนวนเงินไม่ตรงกัน รอแอดมินตรวจสอบ",
         extractedData,
         fingerprint,
-        verificationResult
+        verificationResult,
+        parseResult,
+        topup
       );
     }
 
@@ -182,7 +200,9 @@ export async function submitWalletTopupSlip(
         "ส่งสลิปแล้ว ข้อมูลไม่ครบถ้วน รอแอดมินตรวจสอบ",
         extractedData,
         fingerprint,
-        verificationResult
+        verificationResult,
+        parseResult,
+        topup
       );
     }
 
@@ -207,7 +227,9 @@ export async function submitWalletTopupSlip(
       "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
       extractedData,
       fingerprint,
-      verificationResult
+      verificationResult,
+      parseResult,
+      topup
     );
   } catch (error: any) {
     console.error("Wallet top-up OCR submission error:", error);
@@ -215,7 +237,8 @@ export async function submitWalletTopupSlip(
       topupId,
       userId,
       "OCR_PROCESSING_ERROR",
-      "ส่งสลิปแล้ว แต่ระบบ OCR ขัดข้อง แอดมินจะตรวจสอบให้"
+      "ส่งสลิปแล้ว แต่ระบบ OCR ขัดข้อง แอดมินจะตรวจสอบให้",
+      topup
     );
   }
 }
@@ -305,7 +328,8 @@ async function handlePendingReview(
   extractedData?: ExtractedSlipData,
   fingerprint?: string,
   verificationResult?: VerificationResult,
-  parseResult?: any
+  parseResult?: any,
+  topup?: any // Topup object for Discord notification
 ): Promise<WalletTopupSubmissionResult> {
   const updateData: any = {
     status: "pending_review",
@@ -344,6 +368,26 @@ async function handlePendingReview(
     });
   }
 
+  // Send Discord notification for OCR review (non-blocking)
+  if (topup) {
+    // Fire and forget - Discord notification should not block the flow
+    sendOCRReviewNotification({
+      type: "wallet_topup",
+      id: topupId,
+      userId,
+      expectedAmount: parseFloat(topup.requestedAmount),
+      ocrAmount: extractedData?.amount,
+      bonusAmount: topup.bonusAmount,
+      creditedAmount: topup.creditedAmount,
+      reviewReason,
+      ocrDecision: "needs_review",
+      finalConfidence: updateData.finalConfidence,
+      duplicateStatus: updateData.duplicateStatus ? JSON.parse(updateData.duplicateStatus) : undefined,
+    }).catch((err) => {
+      // Already logged in service, just silently ignore
+    });
+  }
+
   return {
     topupId,
     status: "pending_review",
@@ -366,7 +410,8 @@ async function handleDuplicate(
   fingerprint: string,
   verificationResult: VerificationResult,
   userMessage: string,
-  parseResult?: any
+  parseResult?: any,
+  topup?: any // Topup object for Discord notification
 ): Promise<WalletTopupSubmissionResult> {
   const duplicateType = verificationResult.reviewReason?.replace("DUPLICATE_", "") || "UNKNOWN";
   const updateData = {
@@ -397,6 +442,26 @@ async function handleDuplicate(
     });
   }
 
+  // Send Discord notification for duplicate detection (non-blocking)
+  if (topup) {
+    // Fire and forget - Discord notification should not block the flow
+    sendOCRReviewNotification({
+      type: "wallet_topup",
+      id: topupId,
+      userId,
+      expectedAmount: parseFloat(topup.requestedAmount),
+      ocrAmount: extractedData?.amount,
+      bonusAmount: topup.bonusAmount,
+      creditedAmount: topup.creditedAmount,
+      reviewReason: verificationResult.reviewReason || "DUPLICATE_UNKNOWN",
+      ocrDecision: "needs_review",
+      finalConfidence: updateData.finalConfidence,
+      duplicateStatus: updateData.duplicateStatus ? JSON.parse(updateData.duplicateStatus) : undefined,
+    }).catch((err) => {
+      // Already logged in service, just silently ignore
+    });
+  }
+
   return {
     topupId,
     status: "pending_review",
@@ -419,7 +484,8 @@ async function handleOCRError(
   topupId: number,
   userId: number,
   reviewReason: string,
-  userMessage: string
+  userMessage: string,
+  topup?: any // Topup object for Discord notification
 ): Promise<WalletTopupSubmissionResult> {
   const updateData = {
     status: "pending_review",
@@ -435,6 +501,23 @@ async function handleOCRError(
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
       message: "Failed to update wallet top-up",
+    });
+  }
+
+  // Send Discord notification for OCR error (non-blocking)
+  if (topup) {
+    // Fire and forget - Discord notification should not block the flow
+    sendOCRReviewNotification({
+      type: "wallet_topup",
+      id: topupId,
+      userId,
+      expectedAmount: parseFloat(topup.requestedAmount),
+      bonusAmount: topup.bonusAmount,
+      creditedAmount: topup.creditedAmount,
+      reviewReason,
+      ocrDecision: "needs_review",
+    }).catch((err) => {
+      // Already logged in service, just silently ignore
     });
   }
 
