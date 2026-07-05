@@ -249,14 +249,14 @@ export default function AdminWalletTopupDetailPage() {
               <p className="text-2xl font-bold text-green-600">
                 {formatMoney(topup.bonusAmount)}
               </p>
-              <p className="text-xs text-slate-500 mt-1">Snapshot at approval</p>
+              <p className="text-xs text-slate-500 mt-1">Snapshot at creation</p>
             </div>
             <div className="p-4 bg-white rounded border border-slate-200">
               <p className="text-sm text-slate-600 mb-1">Credited Amount</p>
               <p className="text-2xl font-bold text-blue-600">
                 {formatMoney(topup.creditedAmount)}
               </p>
-              <p className="text-xs text-slate-500 mt-1">Snapshot at approval</p>
+              <p className="text-xs text-slate-500 mt-1">Snapshot at creation</p>
             </div>
             {extractedData?.amount && (
               <div className="p-4 bg-white rounded border border-slate-200">
@@ -273,8 +273,8 @@ export default function AdminWalletTopupDetailPage() {
           <div className="mt-4 p-3 bg-white rounded border border-blue-200 flex gap-2 text-sm text-slate-700">
             <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
             <p>
-              <span className="font-semibold">Bonus & Credited amounts are snapshots</span> captured at approval time.
-              If bonus tiers are later modified, this transaction retains its historical bonus value.
+              <span className="font-semibold">Bonus & Credited amounts are snapshots</span> captured when the top-up request was created.
+              If bonus tiers are later modified, this transaction retains its original bonus value.
             </p>
           </div>
         </Card>
