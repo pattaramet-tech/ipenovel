@@ -11,6 +11,7 @@ import { Loader2, AlertCircle, CheckCircle2, Info } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Switch } from "@/components/ui/switch";
 import AdminLayout from "@/components/AdminLayout";
+import { X } from "lucide-react";
 
 export default function AdminSettingsPage() {
   const [settings, setSettings] = useState({
@@ -35,6 +36,22 @@ export default function AdminSettingsPage() {
   const getOCRSettingsQuery = trpc.admin.settings.getOCRSettings.useQuery();
   const updateOCRSettingsMutation = trpc.admin.settings.updateOCRSettings.useMutation();
 
+  // Wallet Bonus Settings state
+  const [bonusSettings, setBonusSettings] = useState({
+    enabled: true,
+    tiers: [
+      { minAmount: 250, bonusAmount: 10, label: "เติมครบ 250 รับโบนัส 10" },
+      { minAmount: 500, bonusAmount: 20, label: "เติมครบ 500 รับโบนัส 20" },
+    ],
+  });
+  const [bonusSettingsLoading, setBonusSettingsLoading] = useState(false);
+  const [bonusSettingsEdited, setBonusSettingsEdited] = useState(false);
+  const [newTierInput, setNewTierInput] = useState({ minAmount: "", bonusAmount: "" });
+
+  // Wallet Bonus hooks
+  const getBonusConfigQuery = trpc.wallet.admin.getBonusConfig.useQuery();
+  const updateBonusConfigMutation = trpc.wallet.admin.updateBonusConfig.useMutation();
+
   // Fetch Phase 4 OCR settings
   useEffect(() => {
     if (getOCRSettingsQuery.data?.settings) {
@@ -42,6 +59,14 @@ export default function AdminSettingsPage() {
       setOcrSettingsEdited(false);
     }
   }, [getOCRSettingsQuery.data]);
+
+  // Fetch bonus config
+  useEffect(() => {
+    if (getBonusConfigQuery.data) {
+      setBonusSettings(getBonusConfigQuery.data);
+      setBonusSettingsEdited(false);
+    }
+  }, [getBonusConfigQuery.data]);
 
   const handleOCRSettingChange = (key: keyof typeof ocrSettings, value: any) => {
     setOcrSettings((prev) => ({
@@ -67,6 +92,75 @@ export default function AdminSettingsPage() {
       toast.error(error?.message || "Failed to save OCR settings");
     } finally {
       setOcrSettingsLoading(false);
+    }
+  };
+
+  const handleBonusSettingChange = (key: keyof typeof bonusSettings, value: any) => {
+    setBonusSettings((prev) => ({
+      ...prev,
+      [key]: value,
+    }));
+    setBonusSettingsEdited(true);
+  };
+
+  const handleAddTier = () => {
+    if (!newTierInput.minAmount || !newTierInput.bonusAmount) {
+      toast.error("Please fill in both min amount and bonus amount");
+      return;
+    }
+
+    const minAmount = parseFloat(newTierInput.minAmount);
+    const bonusAmount = parseFloat(newTierInput.bonusAmount);
+
+    if (minAmount <= 0 || bonusAmount < 0) {
+      toast.error("Min amount must be positive, bonus amount must be non-negative");
+      return;
+    }
+
+    if (bonusSettings.tiers.some((t) => t.minAmount === minAmount)) {
+      toast.error("A tier with this min amount already exists");
+      return;
+    }
+
+    const newTier = {
+      minAmount,
+      bonusAmount,
+      label: `เติมครบ ${minAmount} รับโบนัส ${bonusAmount}`,
+    };
+
+    setBonusSettings((prev) => ({
+      ...prev,
+      tiers: [...prev.tiers, newTier].sort((a, b) => a.minAmount - b.minAmount),
+    }));
+    setNewTierInput({ minAmount: "", bonusAmount: "" });
+    setBonusSettingsEdited(true);
+    toast.success("Tier added successfully");
+  };
+
+  const handleRemoveTier = (index: number) => {
+    setBonusSettings((prev) => ({
+      ...prev,
+      tiers: prev.tiers.filter((_, i) => i !== index),
+    }));
+    setBonusSettingsEdited(true);
+  };
+
+  const handleSaveBonusSettings = async () => {
+    setBonusSettingsLoading(true);
+    try {
+      const result = await updateBonusConfigMutation.mutateAsync(bonusSettings);
+      if (result.success) {
+        toast.success("Bonus settings saved successfully!");
+        setBonusSettingsEdited(false);
+        getBonusConfigQuery.refetch();
+      } else {
+        toast.error("Failed to save bonus settings");
+      }
+    } catch (error: any) {
+      console.error("Failed to save bonus settings:", error);
+      toast.error(error?.message || "Failed to save bonus settings");
+    } finally {
+      setBonusSettingsLoading(false);
     }
   };
 
@@ -274,6 +368,145 @@ export default function AdminSettingsPage() {
                       </>
                     ) : (
                       "Save OCR Settings"
+                    )}
+                  </Button>
+                )}
+              </>
+            )}
+          </div>
+        </Card>
+
+        {/* Wallet Top-up Bonus Settings */}
+        <Card className="p-6 border-2 border-green-200 bg-green-50">
+          <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
+            <Info className="w-5 h-5 text-green-600" />
+            Wallet Top-up Bonus Settings
+          </h2>
+          <div className="space-y-6">
+            {getBonusConfigQuery.isLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                <span>Loading bonus settings...</span>
+              </div>
+            ) : (
+              <>
+                {/* Enable Bonus */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label className="text-base font-medium">Bonus Enabled</Label>
+                      <p className="text-sm text-gray-600 mt-1">
+                        Enable wallet top-up bonus rewards
+                      </p>
+                    </div>
+                    <Switch
+                      checked={bonusSettings.enabled}
+                      onCheckedChange={(value) => handleBonusSettingChange("enabled", value)}
+                      disabled={bonusSettingsLoading}
+                    />
+                  </div>
+                </div>
+
+                {/* Bonus Tiers Editor */}
+                <div className="space-y-3">
+                  <Label className="text-base font-medium">Bonus Tiers</Label>
+                  <p className="text-sm text-gray-600">
+                    Configure tier thresholds for bonus rewards. Users get bonus based on top-up amount.
+                  </p>
+
+                  {/* Existing Tiers */}
+                  <div className="space-y-2 bg-white p-4 rounded border border-green-200">
+                    {bonusSettings.tiers.length === 0 ? (
+                      <p className="text-gray-500 text-sm">No tiers configured</p>
+                    ) : (
+                      bonusSettings.tiers.map((tier, index) => (
+                        <div
+                          key={index}
+                          className="flex items-center justify-between p-3 bg-green-50 rounded border border-green-200"
+                        >
+                          <div className="flex-1">
+                            <p className="font-medium text-gray-900">
+                              Tier {index + 1}: Min ฿{tier.minAmount} → Bonus ฿{tier.bonusAmount}
+                            </p>
+                            <p className="text-sm text-gray-600">{tier.label}</p>
+                          </div>
+                          <button
+                            onClick={() => handleRemoveTier(index)}
+                            disabled={bonusSettingsLoading || bonusSettings.tiers.length === 1}
+                            className="ml-4 p-2 text-red-600 hover:bg-red-100 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  {/* Add New Tier */}
+                  <div className="space-y-3 bg-white p-4 rounded border border-green-200">
+                    <p className="text-sm font-medium text-gray-900">Add New Tier</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <Label className="text-sm">Min Amount (฿)</Label>
+                        <Input
+                          type="number"
+                          placeholder="e.g., 300"
+                          value={newTierInput.minAmount}
+                          onChange={(e) => setNewTierInput({ ...newTierInput, minAmount: e.target.value })}
+                          disabled={bonusSettingsLoading}
+                          min="1"
+                          step="1"
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-sm">Bonus Amount (฿)</Label>
+                        <Input
+                          type="number"
+                          placeholder="e.g., 15"
+                          value={newTierInput.bonusAmount}
+                          onChange={(e) => setNewTierInput({ ...newTierInput, bonusAmount: e.target.value })}
+                          disabled={bonusSettingsLoading}
+                          min="0"
+                          step="1"
+                        />
+                      </div>
+                    </div>
+                    <Button
+                      onClick={handleAddTier}
+                      disabled={bonusSettingsLoading}
+                      className="w-full bg-green-600 hover:bg-green-700"
+                      variant="default"
+                    >
+                      Add Tier
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Help Text */}
+                <div className="p-4 bg-white rounded border border-green-200 text-sm space-y-2">
+                  <p className="font-medium text-gray-900">How it works:</p>
+                  <ul className="list-disc list-inside space-y-1 text-gray-700">
+                    <li><strong>Bonus Enabled:</strong> Toggle wallet bonus rewards on/off</li>
+                    <li><strong>Bonus Tiers:</strong> Define minimum amounts that trigger bonus rewards</li>
+                    <li><strong>Examples:</strong> Min ฿250 → Bonus ฿10, Min ฿500 → Bonus ฿20</li>
+                    <li><strong>Auto Labels:</strong> Thai labels are auto-generated based on amounts</li>
+                  </ul>
+                </div>
+
+                {/* Save Button */}
+                {bonusSettingsEdited && (
+                  <Button
+                    onClick={handleSaveBonusSettings}
+                    disabled={bonusSettingsLoading}
+                    className="w-full bg-green-600 hover:bg-green-700"
+                  >
+                    {bonusSettingsLoading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Saving Bonus Settings...
+                      </>
+                    ) : (
+                      "Save Bonus Settings"
                     )}
                   </Button>
                 )}
