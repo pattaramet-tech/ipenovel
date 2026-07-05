@@ -228,11 +228,11 @@ export default function NovelDetailPage() {
           <div className="space-y-4">
             <div>
               <h3 className="font-semibold text-sm text-muted-foreground">{t("novel.author")}</h3>
-              <p className="text-lg">{novel?.novel?.author || "Unknown"}</p>
+              <p className="text-lg">{novel?.novel?.author || t("novel.unknownAuthor")}</p>
             </div>
             {novel?.categories && Array.isArray(novel.categories) && novel.categories.length > 0 && (
               <div>
-                <h3 className="font-semibold text-sm text-muted-foreground">Categories</h3>
+                <h3 className="font-semibold text-sm text-muted-foreground">{t("novel.categories")}</h3>
                 <div className="flex flex-wrap gap-2 mt-2">
                   {novel.categories.map((cat: any) => {
                     if (!cat) return null;
@@ -340,12 +340,12 @@ export default function NovelDetailPage() {
                           className="inline-flex items-center justify-center px-2 py-1 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition whitespace-nowrap"
                         >
                           <BookOpen className="w-3 h-3 mr-1" />
-                          Read
+                          {t("novel.read")}
                         </a>
                       ) : (
                         <Button size="sm" disabled className="text-xs px-2 py-1">
                           <BookOpen className="w-3 h-3 mr-1" />
-                          Read
+                          {t("novel.read")}
                         </Button>
                       )}
                     </div>

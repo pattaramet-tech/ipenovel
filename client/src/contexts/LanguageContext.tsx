@@ -444,6 +444,11 @@ const translations: Record<Language, Record<string, string>> = {
     "sports.mins": "นาที",
     "sports.won": "ทายถูก",
     "sports.lost": "ทายผิด",
+    "sports.open": "เปิดให้ทาย",
+    "sports.closed": "ปิดรับคำทาย",
+    "sports.settled": "ประกาศผลแล้ว",
+    "sports.cancelled": "ยกเลิกแล้ว",
+    "sports.draft": "แบบร่าง",
 
     // Home - Finished Novels Section
     "home.finishedNovels": "นิยายจบแล้ว",
@@ -468,6 +473,10 @@ const translations: Record<Language, Record<string, string>> = {
     "novel.oldestFirst": "เก่าสุดก่อน",
     "novel.titleAZ": "ชื่อเรื่อง A-Z",
     "novel.titleZA": "ชื่อเรื่อง Z-A",
+    "novel.unknownAuthor": "ไม่ระบุ",
+    "novel.read": "อ่าน",
+    "novel.episode": "ตอนที่",
+    "novel.untitled": "ไม่มีชื่อ",
 
     // Cart
     "cart.pointsToRedeem": "จำนวนคะแนนที่ต้องการใช้",
@@ -886,6 +895,11 @@ const translations: Record<Language, Record<string, string>> = {
     "sports.mins": "mins",
     "sports.won": "Won",
     "sports.lost": "Lost",
+    "sports.open": "Open",
+    "sports.closed": "Closed",
+    "sports.settled": "Settled",
+    "sports.cancelled": "Cancelled",
+    "sports.draft": "Draft",
 
     // Home - Finished Novels Section
     "home.finishedNovels": "Finished Novels",
@@ -910,6 +924,10 @@ const translations: Record<Language, Record<string, string>> = {
     "novel.oldestFirst": "Oldest First",
     "novel.titleAZ": "Title A-Z",
     "novel.titleZA": "Title Z-A",
+    "novel.unknownAuthor": "Unknown",
+    "novel.read": "Read",
+    "novel.episode": "Episode",
+    "novel.untitled": "Untitled",
 
     // Cart
     "cart.pointsToRedeem": "Points to redeem",
