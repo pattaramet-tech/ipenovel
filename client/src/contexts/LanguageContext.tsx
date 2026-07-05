@@ -442,6 +442,35 @@ const translations: Record<Language, Record<string, string>> = {
     "sports.pts": "แต้ม",
     "sports.hrs": "ชม.",
     "sports.mins": "นาที",
+    "sports.won": "ทายถูก",
+    "sports.lost": "ทายผิด",
+
+    // Home - Finished Novels Section
+    "home.finishedNovels": "นิยายจบแล้ว",
+    "home.finishedDesc": "เรื่องที่จบสมบูรณ์แล้ว อ่านได้ยาวตั้งแต่ต้นจนจบ",
+    "home.viewAllFinished": "ดูนิยายจบแล้วทั้งหมด",
+    "home.finishedBadge": "จบแล้ว",
+
+    // Wallet - Bonus Preview
+    "wallet.loadingBonusInfo": "กำลังโหลดข้อมูลโบนัส...",
+    "wallet.bonusLabel": "โบนัส",
+    "wallet.requestedAmountLabel": "ยอดเติม",
+    "wallet.totalToBeCredited": "ยอดที่จะเข้ากระเป๋า",
+    "wallet.nextTierLabel": "ขั้นโบนัสถัดไป",
+    "wallet.topupMoreForBonus": "เติมเพิ่มอีก ฿{amount} เพื่อรับโบนัสรวม ฿{bonus}",
+    "wallet.noBonus": "ไม่มีโบนัส",
+
+    // Novel Detail Page
+    "novel.author": "ผู้แต่ง",
+    "novel.noDescription": "ยังไม่มีคำอธิบาย",
+    "novel.searchPlaceholder": "ค้นหาจากชื่อตอนหรือหมายเลขตอน...",
+    "novel.newestFirst": "ล่าสุดก่อน",
+    "novel.oldestFirst": "เก่าสุดก่อน",
+    "novel.titleAZ": "ชื่อเรื่อง A-Z",
+    "novel.titleZA": "ชื่อเรื่อง Z-A",
+
+    // Cart
+    "cart.pointsToRedeem": "จำนวนคะแนนที่ต้องการใช้",
   },
   en: {
     // Navbar
@@ -855,6 +884,35 @@ const translations: Record<Language, Record<string, string>> = {
     "sports.pts": "pts",
     "sports.hrs": "hrs",
     "sports.mins": "mins",
+    "sports.won": "Won",
+    "sports.lost": "Lost",
+
+    // Home - Finished Novels Section
+    "home.finishedNovels": "Finished Novels",
+    "home.finishedDesc": "Complete stories — read from start to finish",
+    "home.viewAllFinished": "View All Finished",
+    "home.finishedBadge": "Finished",
+
+    // Wallet - Bonus Preview
+    "wallet.loadingBonusInfo": "Loading bonus info...",
+    "wallet.bonusLabel": "Bonus",
+    "wallet.requestedAmountLabel": "Requested Amount",
+    "wallet.totalToBeCredited": "Total to be Credited",
+    "wallet.nextTierLabel": "Next Tier",
+    "wallet.topupMoreForBonus": "Top up ฿{amount} more to get ฿{bonus} total bonus",
+    "wallet.noBonus": "No Bonus",
+
+    // Novel Detail Page
+    "novel.author": "Author",
+    "novel.noDescription": "No description available",
+    "novel.searchPlaceholder": "Search by title or episode number...",
+    "novel.newestFirst": "Newest First",
+    "novel.oldestFirst": "Oldest First",
+    "novel.titleAZ": "Title A-Z",
+    "novel.titleZA": "Title Z-A",
+
+    // Cart
+    "cart.pointsToRedeem": "Points to redeem",
   },
 };
 

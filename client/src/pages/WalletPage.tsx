@@ -322,31 +322,31 @@ export default function WalletPage() {
                   {getBonusPreviewQuery.isLoading ? (
                     <div className="flex items-center gap-2 text-sm text-slate-600">
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Loading bonus info...</span>
+                      <span>{t("wallet.loadingBonusInfo")}</span>
                     </div>
                   ) : bonusPreview ? (
                     <div className="space-y-2">
                       <div className="flex justify-between text-sm">
-                        <span className="text-slate-700">Requested Amount:</span>
+                        <span className="text-slate-700">{t("wallet.requestedAmountLabel")}:</span>
                         <span className="font-semibold">฿{bonusPreview.requestedAmount?.toFixed(2) || topupAmount}</span>
                       </div>
                       <div className="flex justify-between text-sm">
-                        <span className="text-slate-700">Bonus:</span>
+                        <span className="text-slate-700">{t("wallet.bonusLabel")}:</span>
                         <span className="font-semibold text-green-600">
-                          {bonusPreview.bonusAmount > 0 ? `+฿${bonusPreview.bonusAmount.toFixed(2)}` : "ไม่มีโบนัส"}
+                          {bonusPreview.bonusAmount > 0 ? `+฿${bonusPreview.bonusAmount.toFixed(2)}` : t("wallet.noBonus")}
                         </span>
                       </div>
                       <div className="border-t border-blue-200 pt-2 mt-2 flex justify-between">
-                        <span className="font-semibold text-slate-900">Total to be Credited:</span>
+                        <span className="font-semibold text-slate-900">{t("wallet.totalToBeCredited")}:</span>
                         <span className="font-bold text-lg text-green-700">
                           ฿{bonusPreview.creditedAmount?.toFixed(2)}
                         </span>
                       </div>
                       {bonusPreview.nextTier && (
                         <div className="mt-3 p-3 bg-white border border-blue-100 rounded text-xs text-slate-700">
-                          <p className="font-semibold text-slate-900 mb-1">Next Tier:</p>
+                          <p className="font-semibold text-slate-900 mb-1">{t("wallet.nextTierLabel")}:</p>
                           <p>
-                            Top up ฿{bonusPreview.nextTier.amountNeeded?.toFixed(2)} more to get ฿{bonusPreview.nextTier.bonusAmount} total bonus
+                            {t("wallet.topupMoreForBonus").replace("{amount}", bonusPreview.nextTier.amountNeeded?.toFixed(2) || "0").replace("{bonus}", bonusPreview.nextTier.bonusAmount || "0")}
                           </p>
                         </div>
                       )}

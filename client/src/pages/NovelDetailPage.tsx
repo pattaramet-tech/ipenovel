@@ -227,7 +227,7 @@ export default function NovelDetailPage() {
           )}
           <div className="space-y-4">
             <div>
-              <h3 className="font-semibold text-sm text-muted-foreground">Author</h3>
+              <h3 className="font-semibold text-sm text-muted-foreground">{t("novel.author")}</h3>
               <p className="text-lg">{novel?.novel?.author || "Unknown"}</p>
             </div>
             {novel?.categories && Array.isArray(novel.categories) && novel.categories.length > 0 && (
@@ -265,7 +265,7 @@ export default function NovelDetailPage() {
               </span>
             </div>
           )}
-          <p className="text-lg text-muted-foreground mb-6">{novel?.novel?.description || "No description available"}</p>
+          <p className="text-lg text-muted-foreground mb-6">{novel?.novel?.description || t("novel.noDescription")}</p>
 
           {/* Episode Stats */}
           <div className="grid grid-cols-3 gap-4 mb-8 p-4 bg-muted rounded-lg">
@@ -295,7 +295,7 @@ export default function NovelDetailPage() {
             <div className="flex-1 relative">
               <Search className="absolute left-3 top-3 w-4 h-4 text-muted-foreground" />
               <Input
-                placeholder="Search by title or episode number..."
+                placeholder={t("novel.searchPlaceholder")}
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="pl-10"
@@ -306,10 +306,10 @@ export default function NovelDetailPage() {
               onChange={(e) => setSortBy(e.target.value as any)}
               className="px-3 py-2 border border-input rounded-md bg-background text-foreground text-sm"
             >
-              <option value="newest">Newest First</option>
-              <option value="oldest">Oldest First</option>
-              <option value="titleAZ">Title A-Z</option>
-              <option value="titleZA">Title Z-A</option>
+              <option value="newest">{t("novel.newestFirst")}</option>
+              <option value="oldest">{t("novel.oldestFirst")}</option>
+              <option value="titleAZ">{t("novel.titleAZ")}</option>
+              <option value="titleZA">{t("novel.titleZA")}</option>
             </select>
           </div>
         </div>
