@@ -2590,22 +2590,27 @@ export async function listWalletTransactions(userId: number, limit: number = 20,
     .offset(offset);
 }
 
+// Cache for bonus config to support synchronous calculations
+let cachedBonusConfig: any = null;
+let configLoadPromise: Promise<any> | null = null;
+
+/**
+ * Initialize bonus config cache (call at app startup)
+ */
+export async function initializeBonusConfigCache(): Promise<void> {
+  const { getWalletBonusConfig } = await import("./services/walletBonusService");
+  cachedBonusConfig = await getWalletBonusConfig();
+}
+
 /**
  * Calculate bonus based on requested amount
- * - amount < 250 => bonus 0
- * - 250 <= amount < 500 => bonus 10
- * - amount >= 500 => bonus 20
+ * Uses cached or async-loaded dynamic bonus configuration
+ * Falls back to default tiers if config is not available
  */
-export function calculateBonus(requestedAmount: string | number): string {
-  const amount = typeof requestedAmount === 'string' ? parseFloat(requestedAmount) : requestedAmount;
-  
-  if (isNaN(amount) || amount <= 0) {
-    throw new Error("Invalid amount: must be a positive number");
-  }
-  
-  if (amount >= 500) return "20.00";
-  if (amount >= 250) return "10.00";
-  return "0.00";
+export async function calculateBonus(requestedAmount: string | number): Promise<string> {
+  const { calculateWalletTopupBonus } = await import("./services/walletBonusService");
+  const result = await calculateWalletTopupBonus(requestedAmount);
+  return result.bonusAmount.toFixed(2);
 }
 
 export async function createWalletTopup(userId: number, requestedAmount: string, slipImageUrl?: string) {
@@ -2619,7 +2624,7 @@ export async function createWalletTopup(userId: number, requestedAmount: string,
   }
 
   // Calculate bonus
-  const bonusAmount = calculateBonus(amount);
+  const bonusAmount = await calculateBonus(amount);
   const creditedAmount = (amount + parseFloat(bonusAmount)).toFixed(2);
 
   // Use explicit timestamps to avoid production DB default mismatch
