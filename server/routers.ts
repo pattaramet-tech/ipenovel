@@ -1827,14 +1827,27 @@ export const appRouter = router({
         const result = await purchaseEpisodeWithWallet(ctx.user.id, input.episodeId);
 
         if (!result.success) {
-          // Map error messages to user-friendly format
+          // Structured codes (from PurchaseError inside the service) are passed
+          // through verbatim so the frontend can match on the exact code rather
+          // than substring-matching a human-readable message. Legacy plain
+          // messages are translated to Thai for direct display.
+          const passthroughCodes = new Set([
+            "INSUFFICIENT_WALLET_BALANCE",
+            "INSUFFICIENT_WALLET_BALANCE_ATOMIC",
+            "INVALID_EPISODE_PRICE",
+            "INVALID_WALLET_BALANCE",
+          ]);
+
+          if (result.error && passthroughCodes.has(result.error)) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: result.error });
+          }
+
           const errorMap: Record<string, string> = {
             "Episode not found": "ไม่พบตอนนี้",
             "Free episodes do not require purchase": "ตอนฟรีไม่ต้องซื้อ",
             "Episode is not published": "ตอนนี้ยังไม่เปิดให้อ่าน",
             "Already purchased": "ซื้อไปแล้ว",
             "Wallet not found": "กระเป๋าไม่พบ",
-            "Insufficient wallet balance": "ยอดเงินในกระเป๋าไม่พอ",
             "Database not available": "ระบบขัดข้อง",
           };
 

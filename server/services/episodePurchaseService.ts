@@ -14,6 +14,26 @@ export interface PurchaseResult {
   episodePurchaseId?: number;
   newBalance?: string;
   alreadyPurchased?: boolean;
+  walletBalance?: string;
+  requiredAmount?: string;
+}
+
+/**
+ * Carries a structured error code (and optional balance/price context) across
+ * the db.transaction() boundary, so the outer catch block can map it precisely
+ * instead of relying on substring matching against a plain Error message.
+ */
+class PurchaseError extends Error {
+  code: string;
+  walletBalance?: string;
+  requiredAmount?: string;
+
+  constructor(code: string, details?: { walletBalance?: string; requiredAmount?: string }) {
+    super(code);
+    this.code = code;
+    this.walletBalance = details?.walletBalance;
+    this.requiredAmount = details?.requiredAmount;
+  }
 }
 
 /**
@@ -93,14 +113,56 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
     }
 
     const wallet = walletData[0];
-    const currentBalance = parseFloat(wallet.balance.toString());
-    const purchasePrice = parseFloat(episode.price.toString());
 
-    // 5. Check sufficient balance (pre-check, will be rechecked in transaction)
-    if (currentBalance < purchasePrice) {
+    // 4a. Strictly validate episode price format before trusting it
+    const priceRaw = String(episode.price ?? "").trim();
+    if (!/^\d+(\.\d{1,2})?$/.test(priceRaw)) {
+      console.error("[EpisodePurchase] Invalid episode price format", { userId, episodeId, priceRaw });
       return {
         success: false,
-        error: "Insufficient wallet balance",
+        error: "INVALID_EPISODE_PRICE",
+      };
+    }
+    const purchasePrice = Number(priceRaw);
+    if (!Number.isFinite(purchasePrice) || purchasePrice <= 0) {
+      console.error("[EpisodePurchase] Invalid episode price value", { userId, episodeId, priceRaw, purchasePrice });
+      return {
+        success: false,
+        error: "INVALID_EPISODE_PRICE",
+      };
+    }
+
+    // 4b. Strictly validate wallet balance format before trusting it
+    const balanceRaw = String(wallet.balance ?? "0").trim();
+    const currentBalance = Number(balanceRaw);
+    if (!Number.isFinite(currentBalance)) {
+      console.error("[EpisodePurchase] Invalid wallet balance value", { userId, episodeId, balanceRaw });
+      return {
+        success: false,
+        error: "INVALID_WALLET_BALANCE",
+      };
+    }
+
+    console.warn("[EpisodePurchase] Balance check", {
+      userId,
+      episodeId,
+      walletBalanceRaw: wallet.balance?.toString(),
+      episodePriceRaw: episode.price?.toString(),
+      walletBalanceNum: currentBalance,
+      purchasePrice,
+    });
+
+    // 5. Check sufficient balance (pre-check, will be rechecked in transaction)
+    // Compare in cents (integers) to avoid binary floating-point equality issues
+    // at exact-balance boundaries (e.g. balance === price).
+    const balanceCentsPreCheck = Math.round(currentBalance * 100);
+    const priceCentsPreCheck = Math.round(purchasePrice * 100);
+    if (balanceCentsPreCheck < priceCentsPreCheck) {
+      return {
+        success: false,
+        error: "INSUFFICIENT_WALLET_BALANCE",
+        walletBalance: currentBalance.toFixed(2),
+        requiredAmount: purchasePrice.toFixed(2),
       };
     }
 
@@ -114,18 +176,37 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
         .limit(1);
 
       if (existingPurchase.length > 0) {
-        throw new Error("Already purchased");
+        throw new PurchaseError("ALREADY_PURCHASED");
       }
 
       // 7. RE-FETCH wallet balance inside transaction (may have changed)
       const walletInTx = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1);
       if (walletInTx.length === 0) {
-        throw new Error("Wallet not found");
+        throw new PurchaseError("WALLET_NOT_FOUND");
       }
 
-      const currentBalanceInTx = parseFloat(walletInTx[0].balance.toString());
-      if (currentBalanceInTx < purchasePrice) {
-        throw new Error("Insufficient wallet balance");
+      const balanceRawInTx = String(walletInTx[0].balance ?? "0").trim();
+      const currentBalanceInTx = Number(balanceRawInTx);
+      if (!Number.isFinite(currentBalanceInTx)) {
+        console.error("[EpisodePurchase] Invalid wallet balance value in transaction", { userId, episodeId, balanceRawInTx });
+        throw new PurchaseError("INVALID_WALLET_BALANCE");
+      }
+
+      console.warn("[EpisodePurchase] Atomic debit attempt", {
+        userId,
+        episodeId,
+        priceStr: purchasePrice.toFixed(2),
+        currentBalanceInTx,
+      });
+
+      // Compare in cents to avoid binary floating-point equality issues
+      const balanceCentsInTx = Math.round(currentBalanceInTx * 100);
+      const priceCentsInTx = Math.round(purchasePrice * 100);
+      if (balanceCentsInTx < priceCentsInTx) {
+        throw new PurchaseError("INSUFFICIENT_WALLET_BALANCE", {
+          walletBalance: currentBalanceInTx.toFixed(2),
+          requiredAmount: purchasePrice.toFixed(2),
+        });
       }
 
       const priceStr = purchasePrice.toFixed(2);
@@ -133,24 +214,31 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
       // 8. ATOMIC UPDATE: Use SQL arithmetic to prevent race condition
       // This is critical - we must use SQL arithmetic (balance = balance - price)
       // not absolute assignment (balance = newBalance) to prevent lost updates
-      // when multiple requests for the same user execute concurrently
+      // when multiple requests for the same user execute concurrently.
+      // Explicit CAST(... AS DECIMAL) on both sides of the WHERE comparison
+      // removes any ambiguity in how the string-bound priceStr is compared
+      // against the DECIMAL column.
       const updateResult = await tx
         .update(walletAccounts)
         .set({
-          balance: sql`${walletAccounts.balance} - ${priceStr}`,
-          totalSpent: sql`COALESCE(${walletAccounts.totalSpent}, '0') + ${priceStr}`,
+          balance: sql`${walletAccounts.balance} - CAST(${priceStr} AS DECIMAL(12,2))`,
+          totalSpent: sql`COALESCE(${walletAccounts.totalSpent}, '0') + CAST(${priceStr} AS DECIMAL(12,2))`,
           updatedAt: new Date(),
         })
         .where(and(
           eq(walletAccounts.userId, userId),
           // Critical: Only update if balance >= purchase price
           // This prevents overdraft and ensures operation only succeeds if balance sufficient
-          gte(walletAccounts.balance, sql`${priceStr}`)
+          gte(walletAccounts.balance, sql`CAST(${priceStr} AS DECIMAL(12,2))`)
         ));
 
       const affectedRows = (updateResult as any)?.affectedRows || 0;
+      console.warn("[EpisodePurchase] Atomic debit result", { userId, episodeId, affectedRows });
       if (affectedRows === 0) {
-        throw new Error("Insufficient wallet balance");
+        throw new PurchaseError("INSUFFICIENT_WALLET_BALANCE_ATOMIC", {
+          walletBalance: currentBalanceInTx.toFixed(2),
+          requiredAmount: priceStr,
+        });
       }
 
       // 9. RE-FETCH wallet AFTER atomic update to get exact new balance
@@ -205,21 +293,29 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
   } catch (error) {
     console.error("[EpisodePurchase] Error purchasing episode:", error);
 
-    // Map errors to user-friendly messages
+    // Structured errors thrown inside the transaction carry a precise code
+    // plus optional balance/price context - prefer these over string matching.
+    if (error instanceof PurchaseError) {
+      if (error.code === "ALREADY_PURCHASED") {
+        return { success: false, error: "Already purchased", alreadyPurchased: true };
+      }
+      return {
+        success: false,
+        error: error.code,
+        walletBalance: error.walletBalance,
+        requiredAmount: error.requiredAmount,
+      };
+    }
+
+    // Fallback for unexpected/driver-level errors (e.g. MySQL duplicate key
+    // races on the unique_user_episode_purchase constraint)
     const errorMsg = (error as Error).message || "";
 
-    if (errorMsg.includes("Already purchased") || errorMsg.includes("Duplicate entry") || errorMsg.includes("unique")) {
+    if (errorMsg.includes("Duplicate entry") || errorMsg.includes("unique")) {
       return {
         success: false,
         error: "Already purchased",
         alreadyPurchased: true,
-      };
-    }
-
-    if (errorMsg.includes("Insufficient wallet balance")) {
-      return {
-        success: false,
-        error: "Insufficient wallet balance",
       };
     }
 

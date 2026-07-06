@@ -76,22 +76,31 @@ export default function NovelDetailPage() {
   const purchaseEpisodeMutation = trpc.reader.purchaseEpisode.useMutation({
     onSuccess: () => {
       toast.success("ซื้อบทสำเร็จ");
-      // Invalidate episodes to refresh isPurchased status
+      // Reader chapter purchases no longer go through the cart, so only
+      // refresh episode/wallet/library state - cart is intentionally left alone.
       utils.novels.episodes.invalidate();
-      // Invalidate cart in case cart state changed
-      utils.cart.get.invalidate();
+      utils.wallet.getSummary.invalidate();
+      utils.myNovels.list.invalidate();
     },
     onError: (error: any) => {
-      const errorMsg = (error as any)?.message || "Failed to purchase episode";
-      if (errorMsg.includes("Insufficient") || errorMsg.includes("ไม่พอ")) {
+      // Server passes structured codes through verbatim (see server/routers.ts
+      // reader.purchaseEpisode) for these specific cases, so match exactly
+      // instead of loosely substring-matching human text.
+      const errorMsg = (error as any)?.message || "";
+
+      if (errorMsg === "INSUFFICIENT_WALLET_BALANCE" || errorMsg === "INSUFFICIENT_WALLET_BALANCE_ATOMIC") {
         toast.error("ยอดเงินในกระเป๋าไม่พอ กรุณาเติมเงิน", {
           action: {
             label: "เติมเงิน",
             onClick: () => setLocation("/wallet"),
           },
         });
+      } else if (errorMsg === "INVALID_EPISODE_PRICE") {
+        toast.error("ราคาบทนี้ไม่ถูกต้อง กรุณาติดต่อแอดมิน");
+      } else if (errorMsg === "INVALID_WALLET_BALANCE") {
+        toast.error("ข้อมูลกระเป๋าเงินผิดปกติ กรุณาติดต่อแอดมิน");
       } else {
-        toast.error(errorMsg);
+        toast.error(errorMsg || "Failed to purchase episode");
       }
     },
     onSettled: () => {
