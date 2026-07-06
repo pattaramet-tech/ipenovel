@@ -7,6 +7,8 @@ import {
   users,
   novels,
   episodes,
+  episodePurchases,
+  readingProgress,
   categories,
   novelCategories,
   carts,

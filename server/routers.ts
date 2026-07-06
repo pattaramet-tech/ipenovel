@@ -1782,6 +1782,71 @@ export const appRouter = router({
     }),
   }),
 
+  // ============ NOVEL READER ============
+  reader: router({
+    getEpisode: protectedProcedure
+      .input(z.object({
+        episodeId: z.number(),
+      }))
+      .query(async ({ input, ctx }) => {
+        const { getReaderEpisode, getUserWalletBalance } = await import("./services/readerService");
+        const episodeData = await getReaderEpisode(ctx.user.id, input.episodeId, ctx.user.role === "admin");
+
+        if (!episodeData) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Episode not found" });
+        }
+
+        // Add wallet balance to response
+        const walletBalance = await getUserWalletBalance(ctx.user.id);
+
+        return {
+          ...episodeData,
+          walletBalance,
+        };
+      }),
+
+    purchaseEpisode: protectedProcedure
+      .input(z.object({
+        episodeId: z.number(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const { purchaseEpisodeWithWallet } = await import("./services/episodePurchaseService");
+
+        const result = await purchaseEpisodeWithWallet(ctx.user.id, input.episodeId);
+
+        if (!result.success) {
+          // Map error messages to user-friendly format
+          const errorMap: Record<string, string> = {
+            "Episode not found": "ไม่พบตอนนี้",
+            "Free episodes do not require purchase": "ตอนฟรีไม่ต้องซื้อ",
+            "Episode is not published": "ตอนนี้ยังไม่เปิดให้อ่าน",
+            "Already purchased": "ซื้อไปแล้ว",
+            "Wallet not found": "กระเป๋าไม่พบ",
+            "Insufficient wallet balance": "ยอดเงินในกระเป๋าไม่พอ",
+            "Database not available": "ระบบขัดข้อง",
+          };
+
+          const message = errorMap[result.error || ""] || result.error || "ซื้อไม่สำเร็จ";
+          throw new TRPCError({ code: "BAD_REQUEST", message });
+        }
+
+        return {
+          success: true,
+          episodePurchaseId: result.episodePurchaseId,
+          newBalance: result.newBalance,
+        };
+      }),
+
+    myPurchases: protectedProcedure
+      .input(z.object({
+        novelId: z.number(),
+      }))
+      .query(async ({ input, ctx }) => {
+        const { getUserPurchasedEpisodes } = await import("./services/episodePurchaseService");
+        return await getUserPurchasedEpisodes(ctx.user.id, input.novelId);
+      }),
+  }),
+
 });
 
 export type AppRouter = typeof appRouter;

@@ -32,6 +32,7 @@ import PaymentPage from "@/pages/PaymentPage";
 import WalletPage from "@/pages/WalletPage";
 import SportsVotesPage from "@/pages/SportsVotesPage";
 import AdminSportsVotesPage from "@/pages/AdminSportsVotesPage";
+import ReaderPage from "@/pages/ReaderPage";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
@@ -45,6 +46,7 @@ function Router() {
         <Route path={"/"} component={Home} />
         <Route path={"/novels"} component={NovelsPage} />
         <Route path={"/novels/:identifier"} component={NovelDetailPage} />
+        <Route path={"/read/:episodeId"} component={ReaderPage} />
         <Route path={"/cart"} component={CartPage} />
         <Route path={"/orders"} component={OrdersPage} />
         <Route path={"/orders/:id"} component={OrderDetailPage} />

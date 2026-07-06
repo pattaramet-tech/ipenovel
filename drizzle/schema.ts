@@ -106,6 +106,7 @@ export type InsertNovelCategory = typeof novelCategories.$inferInsert;
 /**
  * Episodes within novels (free or paid)
  * Supports episode ranges (e.g., "581 - 619") as a single entry
+ * Now includes reader content and metadata fields
  */
 export const episodes = mysqlTable(
   "episodes",
@@ -117,15 +118,24 @@ export const episodes = mysqlTable(
     description: text("description"),
     isFree: boolean("isFree").default(false).notNull(),
     price: decimal("price", { precision: 10, scale: 2 }).default("0.00").notNull(), // Price in currency units
-    fileUrl: text("fileUrl"), // S3 URL for the episode file
+    fileUrl: text("fileUrl"), // S3 URL for the episode file (legacy, optional)
     fileSize: int("fileSize"), // File size in bytes
     fileMimeType: varchar("fileMimeType", { length: 100 }), // e.g., "application/pdf"
+    // Reader content fields
+    content: text("content"), // Episode text content for web reader
+    contentFormat: varchar("contentFormat", { length: 50 }).default("plain_text"), // plain_text, markdown, html
+    isPublished: boolean("isPublished").default(true).notNull(), // Controls reader visibility
+    publishedAt: timestamp("publishedAt"), // When episode was published
+    wordCount: int("wordCount"), // For metadata/analytics
+    sortOrder: int("sortOrder"), // Manual sort order within novel
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (table) => ({
     novelIdIdx: index("episodes_novelId_idx").on(table.novelId),
     isFreeIdx: index("episodes_isFree_idx").on(table.isFree),
+    isPublishedIdx: index("episodes_isPublished_idx").on(table.isPublished),
+    sortOrderIdx: index("episodes_sortOrder_idx").on(table.sortOrder),
     uniqueEpisode: uniqueIndex("unique_novel_episode").on(table.novelId, table.episodeNumber),
   })
 );
@@ -308,6 +318,62 @@ export const purchases = mysqlTable(
 
 export type Purchase = typeof purchases.$inferSelect;
 export type InsertPurchase = typeof purchases.$inferInsert;
+
+/**
+ * Episode purchases via wallet (reader system)
+ * One entry per user-episode wallet purchase
+ * Separated from order-based purchases (which use the purchases table)
+ */
+export const episodePurchases = mysqlTable(
+  "episodePurchases",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    novelId: int("novelId").notNull(),
+    episodeId: int("episodeId").notNull(),
+    pricePaid: decimal("pricePaid", { precision: 10, scale: 2 }).notNull(),
+    walletTransactionId: int("walletTransactionId"), // Reference to wallet debit transaction
+    purchasedAt: timestamp("purchasedAt").defaultNow().notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    userIdIdx: index("episodePurchases_userId_idx").on(table.userId),
+    novelIdIdx: index("episodePurchases_novelId_idx").on(table.novelId),
+    episodeIdIdx: index("episodePurchases_episodeId_idx").on(table.episodeId),
+    walletTransactionIdIdx: index("episodePurchases_walletTransactionId_idx").on(table.walletTransactionId),
+    uniqueUserEpisode: uniqueIndex("unique_user_episode_purchase").on(table.userId, table.episodeId),
+  })
+);
+
+export type EpisodePurchase = typeof episodePurchases.$inferSelect;
+export type InsertEpisodePurchase = typeof episodePurchases.$inferInsert;
+
+/**
+ * Reading progress tracking
+ * Stores user progress within each episode for resume functionality
+ */
+export const readingProgress = mysqlTable(
+  "readingProgress",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    novelId: int("novelId").notNull(),
+    episodeId: int("episodeId").notNull(),
+    progressPercent: int("progressPercent").default(0).notNull(),
+    scrollPosition: int("scrollPosition").default(0).notNull(),
+    lastReadAt: timestamp("lastReadAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    userIdIdx: index("readingProgress_userId_idx").on(table.userId),
+    novelIdIdx: index("readingProgress_novelId_idx").on(table.novelId),
+    episodeIdIdx: index("readingProgress_episodeId_idx").on(table.episodeId),
+    uniqueUserEpisodeProgress: uniqueIndex("unique_user_episode_progress").on(table.userId, table.episodeId),
+  })
+);
+
+export type ReadingProgress = typeof readingProgress.$inferSelect;
+export type InsertReadingProgress = typeof readingProgress.$inferInsert;
 
 /**
  * Coupons for discounts

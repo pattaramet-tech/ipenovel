@@ -332,21 +332,23 @@ export default function NovelDetailPage() {
                       <Badge variant="secondary" className="text-xs bg-green-100 text-green-700">
                         {t("status.free")}
                       </Badge>
-                      {episode.fileUrl ? (
+                      <button
+                        onClick={() => setLocation(`/read/${episode.id}`)}
+                        className="inline-flex items-center justify-center px-2 py-1 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition whitespace-nowrap"
+                      >
+                        <BookOpen className="w-3 h-3 mr-1" />
+                        {t("reader.readNow")}
+                      </button>
+                      {episode.fileUrl && (
                         <a
                           href={episode.fileUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center justify-center px-2 py-1 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition whitespace-nowrap"
+                          className="inline-flex items-center justify-center px-2 py-1 text-xs font-medium rounded-md bg-gray-500 text-white hover:bg-gray-600 transition whitespace-nowrap"
+                          title="Download file"
                         >
-                          <BookOpen className="w-3 h-3 mr-1" />
-                          {t("novel.read")}
+                          ⬇
                         </a>
-                      ) : (
-                        <Button size="sm" disabled className="text-xs px-2 py-1">
-                          <BookOpen className="w-3 h-3 mr-1" />
-                          {t("novel.read")}
-                        </Button>
                       )}
                     </div>
                   </Card>
@@ -406,22 +408,26 @@ export default function NovelDetailPage() {
                     </div>
                     <div className="flex items-center gap-3 ml-3 flex-shrink-0">
                       {isPurchased ? (
-                        episode.fileUrl ? (
-                          <a
-                            href={episode.fileUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
+                        <>
+                          <button
+                            onClick={() => setLocation(`/read/${episode.id}`)}
                             className="inline-flex items-center justify-center px-2 py-1 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition whitespace-nowrap"
                           >
                             <BookOpen className="w-3 h-3 mr-1" />
-                            Read
-                          </a>
-                        ) : (
-                          <Button size="sm" disabled className="text-xs px-2 py-1">
-                            <BookOpen className="w-3 h-3 mr-1" />
-                            Read
-                          </Button>
-                        )
+                            {t("reader.readNow")}
+                          </button>
+                          {episode.fileUrl && (
+                            <a
+                              href={episode.fileUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center justify-center px-2 py-1 text-xs font-medium rounded-md bg-gray-500 text-white hover:bg-gray-600 transition whitespace-nowrap"
+                              title="Download file"
+                            >
+                              ⬇
+                            </a>
+                          )}
+                        </>
                       ) : (
                         <>
                           <p className="font-semibold text-sm whitespace-nowrap">฿{episode.price ?? "N/A"}</p>

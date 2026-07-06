@@ -1,0 +1,470 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background-color: #ffffff;
+  color: #000000;
+  transition: background-color 0.3s, color 0.3s;
+}
+
+.container.dark {
+  background-color: #1a1a1a;
+  color: #e0e0e0;
+}
+
+.container.sepia {
+  background-color: #f5f1de;
+  color: #3d3d3d;
+}
+
+.header {
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.05), transparent);
+  border-bottom: 1px solid #e0e0e0;
+  padding: 1rem;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.dark .header {
+  border-bottom-color: #333;
+}
+
+.sepia .header {
+  border-bottom-color: #d4c8b8;
+}
+
+.headerContent {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.backButton {
+  background: none;
+  border: none;
+  color: #0066cc;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.backButton:hover {
+  background-color: rgba(0, 102, 204, 0.1);
+}
+
+.dark .backButton {
+  color: #4da6ff;
+}
+
+.titleSection {
+  flex: 1;
+}
+
+.novelTitle {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.episodeTitle {
+  margin: 0.25rem 0 0 0;
+  font-size: 0.9rem;
+  font-weight: 400;
+  opacity: 0.7;
+}
+
+.controls {
+  display: flex;
+  gap: 1.5rem;
+  align-items: center;
+}
+
+.fontSizeControl {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: rgba(0, 0, 0, 0.05);
+  padding: 0.5rem;
+  border-radius: 4px;
+}
+
+.dark .fontSizeControl {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.fontSizeControl button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  font-weight: 600;
+  border-radius: 3px;
+  transition: background-color 0.2s;
+}
+
+.fontSizeControl button:hover {
+  background-color: rgba(0, 0, 0, 0.1);
+}
+
+.dark .fontSizeControl button:hover {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+.themeControl {
+  display: flex;
+  gap: 0.5rem;
+  background: rgba(0, 0, 0, 0.05);
+  padding: 0.5rem;
+  border-radius: 4px;
+}
+
+.dark .themeControl {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.themeControl button {
+  background: none;
+  border: 1px solid transparent;
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+  border-radius: 4px;
+  font-size: 1rem;
+  transition: all 0.2s;
+}
+
+.themeControl button:hover {
+  background-color: rgba(0, 0, 0, 0.1);
+}
+
+.themeControl button.active {
+  background-color: #0066cc;
+  color: white;
+}
+
+.dark .themeControl button.active {
+  background-color: #4da6ff;
+  color: #000;
+}
+
+.content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 2rem;
+  max-width: 900px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.episodeContent {
+  line-height: 1.8;
+  text-align: justify;
+}
+
+.episodeContent p {
+  margin: 1.5rem 0;
+  text-indent: 2em;
+}
+
+.episodeContent p:first-child {
+  text-indent: 0;
+}
+
+.lockedSection {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.previewContent {
+  position: relative;
+  line-height: 1.8;
+  text-align: justify;
+  max-height: 300px;
+  overflow: hidden;
+}
+
+.previewContent p {
+  margin: 1.5rem 0;
+  text-indent: 2em;
+}
+
+.previewFade {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 100px;
+  background: linear-gradient(to bottom, transparent, white);
+  pointer-events: none;
+}
+
+.dark .previewFade {
+  background: linear-gradient(to bottom, transparent, #1a1a1a);
+}
+
+.sepia .previewFade {
+  background: linear-gradient(to bottom, transparent, #f5f1de);
+}
+
+.purchasePrompt {
+  background: rgba(0, 102, 204, 0.05);
+  border: 1px solid #0066cc;
+  border-radius: 8px;
+  padding: 1.5rem;
+  text-align: center;
+}
+
+.dark .purchasePrompt {
+  background: rgba(77, 166, 255, 0.05);
+  border-color: #4da6ff;
+}
+
+.purchasePrompt h3 {
+  margin: 0 0 0.5rem 0;
+  font-size: 1.1rem;
+}
+
+.purchasePrompt p {
+  margin: 0.5rem 0;
+  font-size: 0.95rem;
+}
+
+.priceInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 1rem 0;
+  text-align: center;
+}
+
+.priceRow {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 1rem;
+}
+
+.priceRow span {
+  font-size: 0.95rem;
+}
+
+.priceRow strong {
+  font-size: 1.2rem;
+  color: #d84315;
+}
+
+.warnings {
+  background: rgba(0, 0, 0, 0.02);
+  padding: 1rem;
+  border-radius: 4px;
+  margin: 1rem 0;
+  text-align: left;
+}
+
+.dark .warnings {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.warnings p {
+  margin: 0.5rem 0;
+  font-size: 0.9rem;
+}
+
+.purchaseButton,
+.topupButton {
+  background-color: #0066cc;
+  color: white;
+  border: none;
+  padding: 0.75rem 2rem;
+  font-size: 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  margin: 0.5rem;
+  transition: background-color 0.2s;
+}
+
+.purchaseButton:hover:not(:disabled) {
+  background-color: #0052a3;
+}
+
+.purchaseButton:disabled {
+  background-color: #ccc;
+  cursor: not-allowed;
+}
+
+.topupButton {
+  background-color: #4caf50;
+}
+
+.topupButton:hover {
+  background-color: #45a049;
+}
+
+.navigation {
+  display: flex;
+  justify-content: space-between;
+  padding: 1.5rem;
+  border-top: 1px solid #e0e0e0;
+  gap: 1rem;
+}
+
+.dark .navigation {
+  border-top-color: #333;
+}
+
+.navButton {
+  background-color: #0066cc;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.navButton:hover {
+  background-color: #0052a3;
+}
+
+.loading,
+.error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 1.2rem;
+}
+
+.errorContent {
+  text-align: center;
+  padding: 2rem;
+  color: #d84315;
+}
+
+.modalOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal {
+  background: white;
+  border-radius: 8px;
+  padding: 2rem;
+  max-width: 500px;
+  width: 90%;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+}
+
+.dark .modal {
+  background: #2a2a2a;
+}
+
+.sepia .modal {
+  background: #f5f1de;
+}
+
+.modal h3 {
+  margin: 0 0 1rem 0;
+  font-size: 1.2rem;
+}
+
+.confirmContent {
+  margin: 1.5rem 0;
+}
+
+.confirmContent p {
+  margin: 0.5rem 0;
+}
+
+.confirmContent strong {
+  color: #0066cc;
+}
+
+.dark .confirmContent strong {
+  color: #4da6ff;
+}
+
+.confirmDetails {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 1rem;
+  border-radius: 4px;
+  margin: 1rem 0;
+}
+
+.dark .confirmDetails {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.confirmDetails > div {
+  display: flex;
+  justify-content: space-between;
+  margin: 0.5rem 0;
+}
+
+.confirmWarning {
+  font-size: 0.9rem;
+  color: #666;
+  font-style: italic;
+}
+
+.dark .confirmWarning {
+  color: #aaa;
+}
+
+.modalButtons {
+  display: flex;
+  gap: 1rem;
+  justify-content: flex-end;
+  margin-top: 1.5rem;
+}
+
+.cancelButton {
+  background-color: #ccc;
+  color: #000;
+  border: none;
+  padding: 0.5rem 1.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.cancelButton:hover:not(:disabled) {
+  background-color: #bbb;
+}
+
+.cancelButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.confirmButton {
+  background-color: #4caf50;
+  color: white;
+  border: none;
+  padding: 0.5rem 1.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.confirmButton:hover:not(:disabled) {
+  background-color: #45a049;
+}
+
+.confirmButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
