@@ -20,6 +20,7 @@ export default function NovelDetailPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [sortBy, setSortBy] = useState<"newest" | "oldest" | "titleAZ" | "titleZA">("newest");
   const [saleType, setSaleType] = useState<"all" | "file" | "chapter">("all");
+  const [purchasingEpisodeId, setPurchasingEpisodeId] = useState<number | null>(null);
 
   // Parse identifier as number (id) - guard against NaN
   const novelId = identifier ? parseInt(identifier, 10) : 0;
@@ -83,12 +84,32 @@ export default function NovelDetailPage() {
     onError: (error: any) => {
       const errorMsg = (error as any)?.message || "Failed to purchase episode";
       if (errorMsg.includes("Insufficient") || errorMsg.includes("ไม่พอ")) {
-        toast.error("ยอดเงินในกระเป๋าไม่พอ กรุณาเติมเงิน");
+        toast.error("ยอดเงินในกระเป๋าไม่พอ กรุณาเติมเงิน", {
+          action: {
+            label: "เติมเงิน",
+            onClick: () => setLocation("/wallet"),
+          },
+        });
       } else {
         toast.error(errorMsg);
       }
     },
+    onSettled: () => {
+      setPurchasingEpisodeId(null);
+    },
   });
+
+  const handleBuyNow = (episodeId: number) => {
+    setPurchasingEpisodeId(episodeId);
+    purchaseEpisodeMutation.mutate(
+      { episodeId },
+      {
+        onSuccess: () => {
+          setLocation(`/read/${episodeId}`);
+        },
+      }
+    );
+  };
 
   // IMPORTANT: useMemo MUST be called before any early returns to avoid React Hook Order Violation
   // Filter and sort episodes
@@ -407,7 +428,7 @@ export default function NovelDetailPage() {
                 return (
                   <Card
                     key={episode.id}
-                    className={`p-4 transition-all border border-border ${purchaseEpisodeMutation.isPending ? "opacity-60" : ""}`}
+                    className={`p-4 transition-all border border-border ${purchasingEpisodeId === episode.id ? "opacity-60" : ""}`}
                   >
                     {/* Episode Content */}
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -481,21 +502,12 @@ export default function NovelDetailPage() {
                               ฿{episode.price ?? "ไม่ระบุ"}
                             </span>
                             <button
-                              onClick={() => {
-                                purchaseEpisodeMutation.mutate(
-                                  { episodeId: episode.id },
-                                  {
-                                    onSuccess: () => {
-                                      setLocation(`/read/${episode.id}`);
-                                    },
-                                  }
-                                );
-                              }}
-                              disabled={purchaseEpisodeMutation.isPending}
+                              onClick={() => handleBuyNow(episode.id)}
+                              disabled={purchasingEpisodeId === episode.id}
                               className="inline-flex items-center justify-center px-4 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition disabled:opacity-60 disabled:cursor-wait"
                               title="ซื้อบทนี้ด้วยเงินในกระเป๋า"
                             >
-                              {purchaseEpisodeMutation.isPending ? "กำลังซื้อ..." : "ซื้อทันที"}
+                              {purchasingEpisodeId === episode.id ? "กำลังซื้อ..." : "ซื้อทันที"}
                             </button>
                           </div>
                         )}
