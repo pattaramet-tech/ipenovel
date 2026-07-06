@@ -104,6 +104,11 @@ export const adminNavSections: NavSection[] = [
         icon: Tag,
       },
       {
+        label: "Import Episodes",
+        href: "/admin/import-episodes",
+        icon: Upload,
+      },
+      {
         label: "Bulk Upload",
         href: "/admin/bulk-upload",
         icon: Upload,
