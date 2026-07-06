@@ -39,9 +39,15 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
     novelId: scopedNovelId || 0,
     episodeNumber: "",
     title: "",
+    description: "",
     price: "0",
     isFree: false,
     fileUrl: "",
+    content: "",
+    contentFormat: "plain_text" as "plain_text" | "markdown" | "html",
+    isPublished: true,
+    publishedAt: new Date(),
+    sortOrder: 0,
   });
 
   const { data: episodes, isLoading, refetch } = trpc.admin.getAllEpisodes.useQuery();
@@ -51,14 +57,7 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
     onSuccess: () => {
       toast.success("Episode created successfully!");
       setOpenDialog(false);
-      setFormData({
-        novelId: scopedNovelId || 0,
-        episodeNumber: "",
-        title: "",
-        price: "0",
-        isFree: false,
-        fileUrl: "",
-      });
+      resetForm();
       refetch();
     },
     onError: (error) => {
@@ -88,20 +87,48 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
     },
   });
 
+  const resetForm = () => {
+    setFormData({
+      novelId: scopedNovelId || 0,
+      episodeNumber: "",
+      title: "",
+      description: "",
+      price: "0",
+      isFree: false,
+      fileUrl: "",
+      content: "",
+      contentFormat: "plain_text",
+      isPublished: true,
+      publishedAt: new Date(),
+      sortOrder: 0,
+    });
+  };
+
   const handleSubmit = () => {
     if (!formData.title || !formData.novelId) {
       toast.error("Title and novel are required");
       return;
     }
 
+    if (!formData.isFree && (!formData.price || parseFloat(formData.price) <= 0)) {
+      toast.error("Paid episodes must have a price greater than 0");
+      return;
+    }
+
     if (editingEpisode) {
       updateMutation.mutate({
         episodeId: editingEpisode.id,
-        episodeNumber: formData.episodeNumber,
-        title: formData.title,
-        price: formData.price,
+        episodeNumber: formData.episodeNumber || undefined,
+        title: formData.title || undefined,
+        description: formData.description || undefined,
+        price: formData.price || undefined,
         isFree: formData.isFree,
-        fileUrl: formData.fileUrl,
+        fileUrl: formData.fileUrl || undefined,
+        content: formData.content || undefined,
+        contentFormat: formData.contentFormat || undefined,
+        isPublished: formData.isPublished,
+        publishedAt: formData.publishedAt || undefined,
+        sortOrder: formData.sortOrder || undefined,
       });
     } else {
       createMutation.mutate(formData as any);
@@ -113,10 +140,16 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
     setFormData({
       novelId: episode.novelId,
       episodeNumber: String(episode.episodeNumber) || "",
-      title: episode.title,
+      title: episode.title || "",
+      description: episode.description || "",
       price: episode.price || "0",
       isFree: episode.isFree || false,
       fileUrl: episode.fileUrl || "",
+      content: episode.content || "",
+      contentFormat: episode.contentFormat || "plain_text",
+      isPublished: episode.isPublished !== false,
+      publishedAt: episode.publishedAt ? new Date(episode.publishedAt) : new Date(),
+      sortOrder: episode.sortOrder || 0,
     });
     setOpenDialog(true);
   };
@@ -124,14 +157,7 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
   const handleCloseDialog = () => {
     setOpenDialog(false);
     setEditingEpisode(null);
-    setFormData({
-      novelId: scopedNovelId || 0,
-      episodeNumber: "",
-      title: "",
-      price: "0",
-      isFree: false,
-      fileUrl: "",
-    });
+    resetForm();
   };
 
   // Filter by novel
@@ -217,86 +243,156 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
                 <Button
                   onClick={() => {
                     setEditingEpisode(null);
-                    setFormData({
-                      novelId: scopedNovelId || 0,
-                      episodeNumber: "",
-                      title: "",
-                      price: "0",
-                      isFree: false,
-                      fileUrl: "",
-                    });
+                    resetForm();
                   }}
                 >
                   <Plus className="w-4 h-4 mr-2" />
                   Create Episode
                 </Button>
               </DialogTrigger>
-              <DialogContent className="max-w-md">
+              <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
                 <DialogHeader>
                   <DialogTitle>{editingEpisode ? "Edit Episode" : "Create New Episode"}</DialogTitle>
                 </DialogHeader>
-                <div className="space-y-4">
-                  {!isScoped && (
-                    <div>
-                      <Label>Novel</Label>
-                      <select
-                        value={formData.novelId}
-                        onChange={(e) => setFormData({ ...formData, novelId: parseInt(e.target.value) })}
-                        className="w-full px-3 py-2 border rounded-md"
-                      >
-                        <option value={0}>Select a novel</option>
-                        {novels?.map((novel: any) => (
-                          <option key={novel.id} value={novel.id}>
-                            {novel.title}
-                          </option>
-                        ))}
-                      </select>
+                <div className="space-y-6 py-4">
+                  {/* Basic Info Section */}
+                  <div>
+                    <h3 className="font-semibold text-sm mb-3">Basic Info</h3>
+                    <div className="space-y-3">
+                      {!isScoped && (
+                        <div>
+                          <Label>Novel</Label>
+                          <select
+                            value={formData.novelId}
+                            onChange={(e) => setFormData({ ...formData, novelId: parseInt(e.target.value) })}
+                            className="w-full px-3 py-2 border rounded-md"
+                          >
+                            <option value={0}>Select a novel</option>
+                            {novels?.map((novel: any) => (
+                              <option key={novel.id} value={novel.id}>
+                                {novel.title}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                      <div>
+                        <Label>Episode Number</Label>
+                        <Input
+                          type="text"
+                          value={formData.episodeNumber}
+                          onChange={(e) => setFormData({ ...formData, episodeNumber: e.target.value })}
+                          placeholder="e.g., 001 - 030 or 1"
+                        />
+                      </div>
+                      <div>
+                        <Label>Title</Label>
+                        <Input
+                          value={formData.title}
+                          onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                          placeholder="Episode title"
+                        />
+                      </div>
+                      <div>
+                        <Label>Description</Label>
+                        <Input
+                          value={formData.description}
+                          onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                          placeholder="Brief episode description"
+                        />
+                      </div>
                     </div>
-                  )}
+                  </div>
+
+                  {/* Pricing & Access Section */}
                   <div>
-                    <Label>Episode Number</Label>
-                    <Input
-                      type="text"
-                      value={formData.episodeNumber}
-                      onChange={(e) => setFormData({ ...formData, episodeNumber: e.target.value })}
-                      placeholder="e.g., 001 - 030 or 1"
-                    />
+                    <h3 className="font-semibold text-sm mb-3">Pricing & Access</h3>
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={formData.isFree}
+                          onChange={(e) => setFormData({ ...formData, isFree: e.target.checked })}
+                          id="isFree"
+                        />
+                        <Label htmlFor="isFree" className="cursor-pointer">Free Episode</Label>
+                      </div>
+                      {!formData.isFree && (
+                        <div>
+                          <Label>Price (฿)</Label>
+                          <Input
+                            type="number"
+                            step="0.01"
+                            value={formData.price}
+                            onChange={(e) => setFormData({ ...formData, price: e.target.value })}
+                            placeholder="0.00"
+                          />
+                        </div>
+                      )}
+                      <div>
+                        <Label>File URL (Legacy Download)</Label>
+                        <Input
+                          value={formData.fileUrl}
+                          onChange={(e) => setFormData({ ...formData, fileUrl: e.target.value })}
+                          placeholder="https://..."
+                        />
+                      </div>
+                    </div>
                   </div>
+
+                  {/* Content Section */}
                   <div>
-                    <Label>Title</Label>
-                    <Input
-                      value={formData.title}
-                      onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                      placeholder="Episode title"
-                    />
+                    <h3 className="font-semibold text-sm mb-3">Web Reader Content</h3>
+                    <div className="space-y-3">
+                      <div>
+                        <Label>Content Format</Label>
+                        <select
+                          value={formData.contentFormat}
+                          onChange={(e) => setFormData({ ...formData, contentFormat: e.target.value as any })}
+                          className="w-full px-3 py-2 border rounded-md"
+                        >
+                          <option value="plain_text">Plain Text</option>
+                          <option value="markdown">Markdown (future)</option>
+                          <option value="html">HTML (future)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <Label>Episode Content</Label>
+                        <textarea
+                          value={formData.content}
+                          onChange={(e) => setFormData({ ...formData, content: e.target.value })}
+                          placeholder="Enter episode content here..."
+                          rows={6}
+                          className="w-full px-3 py-2 border rounded-md font-mono text-sm"
+                        />
+                        {formData.content && (
+                          <p className="text-xs text-muted-foreground mt-1">
+                            ~{Math.round(formData.content.split(/\s+/).length)} words
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={formData.isPublished}
+                          onChange={(e) => setFormData({ ...formData, isPublished: e.target.checked })}
+                          id="isPublished"
+                        />
+                        <Label htmlFor="isPublished" className="cursor-pointer">Published</Label>
+                      </div>
+                      <div>
+                        <Label>Sort Order</Label>
+                        <Input
+                          type="number"
+                          value={formData.sortOrder}
+                          onChange={(e) => setFormData({ ...formData, sortOrder: parseInt(e.target.value) || 0 })}
+                          placeholder="0"
+                        />
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <Label>Price (฿)</Label>
-                    <Input
-                      type="number"
-                      step="0.01"
-                      value={formData.price}
-                      onChange={(e) => setFormData({ ...formData, price: e.target.value })}
-                      placeholder="0.00"
-                    />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={formData.isFree}
-                      onChange={(e) => setFormData({ ...formData, isFree: e.target.checked })}
-                      id="isFree"
-                    />
-                    <Label htmlFor="isFree">Free Episode</Label>
-                  </div>
-                  <div>
-                    <Label>File URL</Label>
-                    <Input
-                      value={formData.fileUrl}
-                      onChange={(e) => setFormData({ ...formData, fileUrl: e.target.value })}
-                      placeholder="https://..."
-                    />
-                  </div>
+
+                  {/* Save Button */}
                   <Button
                     onClick={handleSubmit}
                     disabled={createMutation.isPending || updateMutation.isPending}
@@ -379,15 +475,29 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
                 <Card key={episode.id} className="p-4">
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <h3 className="font-semibold text-lg">{episode.title}</h3>
                         <Badge variant={episode.isFree ? "default" : "secondary"}>
                           {episode.isFree ? "Free" : `฿${episode.price}`}
                         </Badge>
+                        {episode.content && (
+                          <Badge variant="outline" className="text-xs">
+                            Content ✓
+                          </Badge>
+                        )}
+                        {!episode.isPublished && (
+                          <Badge variant="outline" className="text-xs bg-yellow-50">
+                            Draft
+                          </Badge>
+                        )}
                       </div>
-                      <p className="text-sm text-muted-foreground">
+                      <p className="text-sm text-muted-foreground mt-1">
                         {!isScoped && `${novel?.title} • `}Episode {episode.episodeNumber}
+                        {episode.wordCount && ` • ${episode.wordCount} words`}
                       </p>
+                      {episode.description && (
+                        <p className="text-sm mt-1 text-slate-600">{episode.description}</p>
+                      )}
                     </div>
                     <div className="flex gap-2">
                       <Button

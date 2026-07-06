@@ -1031,6 +1031,12 @@ export const appRouter = router({
             price: z.string(),
             isFree: z.boolean().optional(),
             fileUrl: z.string().optional(),
+            content: z.string().optional(),
+            contentFormat: z.enum(["plain_text", "markdown", "html"]).default("plain_text").optional(),
+            description: z.string().optional(),
+            isPublished: z.boolean().default(true).optional(),
+            publishedAt: z.date().optional(),
+            sortOrder: z.number().optional(),
           })
         )
         .mutation(async ({ input }) => {
@@ -1047,6 +1053,12 @@ export const appRouter = router({
             price: z.string().optional(),
             isFree: z.boolean().optional(),
             fileUrl: z.string().optional(),
+            content: z.string().optional(),
+            contentFormat: z.enum(["plain_text", "markdown", "html"]).optional(),
+            description: z.string().optional(),
+            isPublished: z.boolean().optional(),
+            publishedAt: z.date().optional(),
+            sortOrder: z.number().optional(),
           })
         )
         .mutation(async ({ input }) => {

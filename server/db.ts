@@ -280,12 +280,22 @@ export async function createEpisode(data: {
   price: string;
   isFree?: boolean;
   fileUrl?: string;
+  content?: string;
+  contentFormat?: string;
+  description?: string;
+  isPublished?: boolean;
+  publishedAt?: Date;
+  sortOrder?: number;
 }) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   if (!data.episodeNumber || !data.episodeNumber.trim()) {
     throw new Error("Episode number is required");
   }
+
+  // Auto-calculate wordCount if content provided
+  const wordCount = data.content ? Math.round(data.content.split(/\s+/).length) : null;
+
   const result = await db.insert(episodes).values({
     novelId: data.novelId,
     episodeNumber: data.episodeNumber.trim(),
@@ -293,6 +303,13 @@ export async function createEpisode(data: {
     price: data.price,
     isFree: data.isFree || false,
     fileUrl: data.fileUrl || "",
+    content: data.content || null,
+    contentFormat: data.contentFormat || "plain_text",
+    description: data.description || null,
+    isPublished: data.isPublished !== false,
+    publishedAt: data.publishedAt || null,
+    sortOrder: data.sortOrder || null,
+    wordCount: wordCount,
   });
   // Extract insertId from Drizzle MySQL result
   let insertedId: number | undefined;
@@ -314,6 +331,12 @@ export async function createEpisode(data: {
 export async function updateEpisode(episodeId: number, data: any) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+
+  // Auto-calculate wordCount if content is being updated
+  if (data.content !== undefined) {
+    data.wordCount = data.content ? Math.round(data.content.split(/\s+/).length) : null;
+  }
+
   await db.update(episodes).set(data).where(eq(episodes.id, episodeId));
 }
 
