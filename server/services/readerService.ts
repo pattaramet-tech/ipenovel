@@ -38,9 +38,9 @@ export async function canReadEpisode(userId: number | undefined, episodeId: numb
   // Free episodes are readable by everyone
   if (ep.isFree) return true;
 
-  // Check wallet-based purchase
+  // Check wallet-based purchase (minimal select for existence check)
   const walletPurchase = await db
-    .select()
+    .select({ id: episodePurchases.id })
     .from(episodePurchases)
     .where(and(eq(episodePurchases.userId, userId), eq(episodePurchases.episodeId, episodeId)))
     .limit(1);
@@ -101,11 +101,11 @@ export async function getReaderEpisode(userId: number | undefined, episodeId: nu
     .orderBy(episodes.id)
     .limit(1);
 
-  // Check if already purchased
+  // Check if already purchased (minimal select for existence check)
   let alreadyPurchased = false;
   if (userId && !ep.isFree) {
     const purchase = await db
-      .select()
+      .select({ id: episodePurchases.id })
       .from(episodePurchases)
       .where(and(eq(episodePurchases.userId, userId), eq(episodePurchases.episodeId, episodeId)))
       .limit(1);

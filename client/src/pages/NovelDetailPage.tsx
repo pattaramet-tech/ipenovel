@@ -72,6 +72,24 @@ export default function NovelDetailPage() {
     },
   });
 
+  const purchaseEpisodeMutation = trpc.reader.purchaseEpisode.useMutation({
+    onSuccess: () => {
+      toast.success("ซื้อบทสำเร็จ");
+      // Invalidate episodes to refresh isPurchased status
+      utils.novels.episodes.invalidate();
+      // Invalidate cart in case cart state changed
+      utils.cart.get.invalidate();
+    },
+    onError: (error: any) => {
+      const errorMsg = (error as any)?.message || "Failed to purchase episode";
+      if (errorMsg.includes("Insufficient") || errorMsg.includes("ไม่พอ")) {
+        toast.error("ยอดเงินในกระเป๋าไม่พอ กรุณาเติมเงิน");
+      } else {
+        toast.error(errorMsg);
+      }
+    },
+  });
+
   // IMPORTANT: useMemo MUST be called before any early returns to avoid React Hook Order Violation
   // Filter and sort episodes
   const filteredAndSortedEpisodes = useMemo(() => {
@@ -389,30 +407,7 @@ export default function NovelDetailPage() {
                 return (
                   <Card
                     key={episode.id}
-                    role={!isPurchased && !isFree ? "button" : undefined}
-                    tabIndex={!isPurchased && !isFree ? 0 : undefined}
-                    aria-pressed={!isPurchased && !isFree ? isSelected : undefined}
-                    aria-label={!isPurchased && !isFree ? `${isSelected ? "Remove" : "Select"} Episode ${episode.episodeNumber} - ${episode.title}` : undefined}
-                    onClick={() => {
-                      if (isFree || isPurchased || isLoading) return;
-                      handleEpisodeToggle(episode.id, !isSelected);
-                    }}
-                    onKeyDown={(e) => {
-                      if (isFree || isPurchased || isLoading) return;
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        handleEpisodeToggle(episode.id, !isSelected);
-                      }
-                    }}
-                    className={`p-4 transition-all ${
-                      !isPurchased && !isFree
-                        ? "cursor-pointer"
-                        : "cursor-default"
-                    } ${
-                      isSelected && !isFree && !isPurchased
-                        ? "border-2 border-blue-500 bg-blue-50 dark:bg-blue-950"
-                        : "border border-border hover:border-slate-400"
-                    } ${isLoading ? "opacity-60" : ""}`}
+                    className={`p-4 transition-all border border-border ${purchaseEpisodeMutation.isPending ? "opacity-60" : ""}`}
                   >
                     {/* Episode Content */}
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -433,11 +428,6 @@ export default function NovelDetailPage() {
                             </Badge>
                           )}
                         </div>
-                        {!isFree && !isPurchased && (
-                          <p className="text-xs text-muted-foreground">
-                            เลือกวิธีการอ่าน
-                          </p>
-                        )}
                       </div>
 
                       {/* Right: Actions */}
@@ -485,42 +475,28 @@ export default function NovelDetailPage() {
                             )}
                           </>
                         ) : (
-                          // Unpurchased paid chapter
-                          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                          // Unpurchased paid chapter - direct wallet purchase
+                          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
                             <span className="font-semibold text-sm text-foreground">
                               ฿{episode.price ?? "ไม่ระบุ"}
                             </span>
-                            <div className="flex items-center gap-2">
-                              {/* Primary: Direct unlock button */}
-                              <button
-                                onClick={() => setLocation(`/read/${episode.id}`)}
-                                className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition active:bg-blue-800"
-                                title="Open reader with wallet purchase option"
-                              >
-                                ซื้อ
-                              </button>
-                              {/* Secondary: Add to cart button */}
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  try {
-                                    handleEpisodeToggle(episode.id, !isSelected);
-                                  } catch (err) {
-                                    console.error("Error toggling episode:", err);
-                                    toast.error("Failed to update cart");
+                            <button
+                              onClick={() => {
+                                purchaseEpisodeMutation.mutate(
+                                  { episodeId: episode.id },
+                                  {
+                                    onSuccess: () => {
+                                      setLocation(`/read/${episode.id}`);
+                                    },
                                   }
-                                }}
-                                disabled={isLoading}
-                                className={`inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md transition ${
-                                  isSelected
-                                    ? "bg-blue-100 text-blue-700 hover:bg-blue-200"
-                                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                                } ${isLoading ? "opacity-60 cursor-wait" : "cursor-pointer"}`}
-                                title={isSelected ? "Remove from cart" : "Add to cart"}
-                              >
-                                {isSelected ? "อยู่ในตะกร้า" : "เพิ่มลงตะกร้า"}
-                              </button>
-                            </div>
+                                );
+                              }}
+                              disabled={purchaseEpisodeMutation.isPending}
+                              className="inline-flex items-center justify-center px-4 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition disabled:opacity-60 disabled:cursor-wait"
+                              title="ซื้อบทนี้ด้วยเงินในกระเป๋า"
+                            >
+                              {purchaseEpisodeMutation.isPending ? "กำลังซื้อ..." : "ซื้อทันที"}
+                            </button>
                           </div>
                         )}
                       </div>

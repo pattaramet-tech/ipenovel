@@ -24,7 +24,7 @@ async function checkExistingPurchase(userId: number, episodeId: number): Promise
   if (!db) return false;
 
   const existing = await db
-    .select()
+    .select({ id: episodePurchases.id })
     .from(episodePurchases)
     .where(and(eq(episodePurchases.userId, userId), eq(episodePurchases.episodeId, episodeId)))
     .limit(1);
@@ -106,9 +106,9 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
 
     // ATOMIC TRANSACTION: All following operations must succeed together or all fail
     return await db.transaction(async (tx) => {
-      // 6. RE-CHECK if user already purchased (within transaction for safety)
+      // 6. RE-CHECK if user already purchased (within transaction for safety - minimal select)
       const existingPurchase = await tx
-        .select()
+        .select({ id: episodePurchases.id })
         .from(episodePurchases)
         .where(and(eq(episodePurchases.userId, userId), eq(episodePurchases.episodeId, episodeId)))
         .limit(1);
@@ -238,7 +238,7 @@ export async function getUserPurchasedEpisodes(userId: number, novelId: number):
   if (!db) return [];
 
   const purchases = await db
-    .select()
+    .select({ episodeId: episodePurchases.episodeId })
     .from(episodePurchases)
     .where(and(eq(episodePurchases.userId, userId), eq(episodePurchases.novelId, novelId)));
 
