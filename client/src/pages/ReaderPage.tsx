@@ -148,6 +148,31 @@ export default function ReaderPage() {
               <p key={idx}>{para}</p>
             ))}
           </div>
+        ) : episode.canRead && !episode.content ? (
+          // User has access but content is empty
+          <div className={styles.noContentSection}>
+            <h3>{t("reader.noContentTitle")}</h3>
+            {episode.fileUrl ? (
+              <>
+                <p>{t("reader.noContentWithFile")}</p>
+                <a
+                  href={episode.fileUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={styles.openFileButton}
+                >
+                  {t("reader.openOriginalFile")}
+                </a>
+              </>
+            ) : (
+              <>
+                <p>{t("reader.noContentNoFile")}</p>
+                {user?.role === "admin" && (
+                  <p className={styles.adminHint}>{t("reader.noContentAdminHint")}</p>
+                )}
+              </>
+            )}
+          </div>
         ) : episode.isLocked && episode.preview ? (
           <div className={styles.lockedSection}>
             <div

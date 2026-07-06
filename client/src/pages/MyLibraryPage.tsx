@@ -15,67 +15,44 @@ export default function MyLibraryPage() {
   const [, navigate] = useLocation();
   const [novelFilter, setNovelFilter] = useState<number | undefined>();
 
-  // Fetch user's purchases and novel data
-  const { data: purchasesData, isLoading: purchasesLoading } = trpc.reader.myPurchases.useQuery(
-    { novelId: novelFilter || 0 },
-    { enabled: !!user && !!novelFilter }
+  // Fetch all user's purchases and episode/novel data
+  const { data: libraryData, isLoading: libraryLoading } = trpc.reader.myLibrary.useQuery(
+    { novelId: novelFilter },
+    { enabled: !!user }
   );
 
-  const { data: allNovels } = trpc.novels.list.useQuery();
-  const { data: allEpisodes } = trpc.admin.getAllEpisodes.useQuery();
-
-  // Group purchases by novel
-  const purchasedEpisodesByNovel = useMemo(() => {
-    if (!purchasesData || !allNovels || !allEpisodes) return {};
-
-    const grouped: Record<number, any[]> = {};
-
-    for (const novelId of Object.keys(grouped)) {
-      const numId = parseInt(novelId);
-      const episodes = allEpisodes!.filter(
-        (ep: any) => ep.novelId === numId && purchasesData.includes(ep.id)
-      );
-      grouped[numId] = episodes;
-    }
-
-    return grouped;
-  }, [purchasesData, allEpisodes]);
-
-  // Get all novels with purchases
+  // Get all unique novels from library data
   const novelsWithPurchases = useMemo(() => {
-    if (!allNovels || !purchasesData || !allEpisodes) return [];
+    if (!libraryData) return [];
+    const novelIds = new Set(libraryData.map((item: any) => item.novel.id));
+    return Array.from(novelIds).map((novelId) =>
+      libraryData.find((item: any) => item.novel.id === novelId)?.novel
+    ).filter(Boolean);
+  }, [libraryData]);
 
-    const novelIds = new Set<number>();
+  // Filter episodes based on selected novel
+  const filteredPurchases = useMemo(() => {
+    if (!libraryData) return [];
+    if (!novelFilter) return libraryData;
+    return libraryData.filter((item: any) => item.novel.id === novelFilter);
+  }, [libraryData, novelFilter]);
 
-    allEpisodes.forEach((ep: any) => {
-      if (purchasesData.includes(ep.id)) {
-        novelIds.add(ep.novelId);
+  // Group by novel for "all novels" view
+  const groupedByNovel = useMemo(() => {
+    if (!libraryData || novelFilter) return {};
+    const grouped: Record<number, any[]> = {};
+    libraryData.forEach((item: any) => {
+      if (!grouped[item.novel.id]) {
+        grouped[item.novel.id] = [];
       }
+      grouped[item.novel.id].push(item);
     });
-
-    return Array.from(novelIds)
-      .map((id) => allNovels.find((n: any) => n.id === id))
-      .filter(Boolean);
-  }, [allNovels, purchasesData, allEpisodes]);
-
-  // Get purchased episodes for current novel
-  const purchasedEpisodes = useMemo(() => {
-    if (!novelFilter || !purchasesData || !allEpisodes) return [];
-
-    return allEpisodes
-      .filter((ep: any) => ep.novelId === novelFilter && purchasesData.includes(ep.id))
-      .sort((a: any, b: any) => {
-        // Sort by episode number (numeric if possible)
-        const aNum = parseInt(a.episodeNumber);
-        const bNum = parseInt(b.episodeNumber);
-        if (!isNaN(aNum) && !isNaN(bNum)) return aNum - bNum;
-        return a.episodeNumber.localeCompare(b.episodeNumber);
-      });
-  }, [novelFilter, purchasesData, allEpisodes]);
+    return grouped;
+  }, [libraryData, novelFilter]);
 
   if (!user) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <Card className="p-8 text-center">
           <p className="text-lg text-muted-foreground">Please log in to view your library</p>
           <Button onClick={() => navigate("/auth")} className="mt-4">
@@ -95,19 +72,23 @@ export default function MyLibraryPage() {
           <p className="text-slate-600 mt-2">Episodes you've purchased and can read</p>
         </div>
 
-        {/* Novel Selection */}
-        {novelsWithPurchases.length > 0 && (
+        {/* Novel Selection Buttons */}
+        {libraryLoading ? (
+          <div className="mb-8 space-y-2">
+            <Skeleton className="h-10 w-1/3" />
+          </div>
+        ) : novelsWithPurchases.length > 0 && (
           <div className="mb-8">
             <div className="flex flex-wrap gap-2">
               <Button
                 variant={!novelFilter ? "default" : "outline"}
                 onClick={() => setNovelFilter(undefined)}
               >
-                All Novels ({novelsWithPurchases.length})
+                All Novels ({libraryData?.length || 0})
               </Button>
               {novelsWithPurchases.map((novel: any) => {
-                const count = (allEpisodes || []).filter(
-                  (ep: any) => ep.novelId === novel.id && purchasesData?.includes(ep.id)
+                const count = (libraryData || []).filter(
+                  (item: any) => item.novel.id === novel.id
                 ).length;
                 return (
                   <Button
@@ -123,8 +104,8 @@ export default function MyLibraryPage() {
           </div>
         )}
 
-        {/* Episodes Grid */}
-        {purchasesLoading ? (
+        {/* Episodes List */}
+        {libraryLoading ? (
           <div className="grid gap-4">
             {[1, 2, 3].map((i) => (
               <Card key={i} className="p-4">
@@ -141,7 +122,7 @@ export default function MyLibraryPage() {
               Browse Novels
             </Button>
           </Card>
-        ) : novelFilter && purchasedEpisodes.length === 0 ? (
+        ) : filteredPurchases.length === 0 ? (
           <Card className="p-8 text-center">
             <p className="text-muted-foreground">No episodes for this novel</p>
           </Card>
@@ -149,20 +130,20 @@ export default function MyLibraryPage() {
           <div className="space-y-3">
             {!novelFilter ? (
               // Show all novels with their episodes
-              novelsWithPurchases.map((novel: any) => {
-                const episodes = (allEpisodes || []).filter(
-                  (ep: any) => ep.novelId === novel.id && purchasesData?.includes(ep.id)
-                );
+              Object.entries(groupedByNovel).map(([novelIdStr, items]: [string, any[]]) => {
+                const novelId = parseInt(novelIdStr);
+                const novel = novelsWithPurchases.find((n: any) => n.id === novelId);
+                if (!novel) return null;
+
                 return (
-                  <div key={novel.id}>
+                  <div key={novelId}>
                     <h3 className="font-semibold text-lg mb-3">{novel.title}</h3>
                     <div className="grid gap-2 mb-6">
-                      {episodes.map((ep: any) => (
+                      {items.map((item: any) => (
                         <EpisodeCard
-                          key={ep.id}
-                          episode={ep}
-                          novelId={novel.id}
-                          onRead={() => navigate(`/read/${ep.id}`)}
+                          key={item.episode.id}
+                          item={item}
+                          onRead={() => navigate(`/read/${item.episode.id}`)}
                         />
                       ))}
                     </div>
@@ -171,12 +152,11 @@ export default function MyLibraryPage() {
               })
             ) : (
               // Show episodes for selected novel
-              purchasedEpisodes.map((ep: any) => (
+              filteredPurchases.map((item: any) => (
                 <EpisodeCard
-                  key={ep.id}
-                  episode={ep}
-                  novelId={novelFilter}
-                  onRead={() => navigate(`/read/${ep.id}`)}
+                  key={item.episode.id}
+                  item={item}
+                  onRead={() => navigate(`/read/${item.episode.id}`)}
                 />
               ))
             )}
@@ -188,34 +168,42 @@ export default function MyLibraryPage() {
 }
 
 interface EpisodeCardProps {
-  episode: any;
-  novelId: number;
+  item: any;
   onRead: () => void;
 }
 
-function EpisodeCard({ episode, onRead }: EpisodeCardProps) {
+function EpisodeCard({ item, onRead }: EpisodeCardProps) {
   const { t } = useLanguage();
-  const wordCount = episode.wordCount || 0;
 
   return (
     <Card className="p-4 hover:shadow-md transition-shadow">
       <div className="flex items-start justify-between">
         <div className="flex-1">
           <h4 className="font-semibold">
-            {t("novel.episode")} {episode.episodeNumber}: {episode.title}
+            {t("novel.episode")} {item.episode.episodeNumber}: {item.episode.title}
           </h4>
-          <div className="flex items-center gap-2 mt-2">
-            {wordCount > 0 && (
+          <div className="flex items-center gap-2 mt-2 flex-wrap">
+            {item.episode.wordCount > 0 && (
               <span className="text-sm text-muted-foreground">
-                {wordCount} {t("reader.words") || "words"}
+                {item.episode.wordCount} {t("reader.words") || "words"}
               </span>
             )}
-            {episode.description && (
-              <span className="text-sm text-slate-600">{episode.description}</span>
+            {item.episode.description && (
+              <span className="text-sm text-slate-600">{item.episode.description}</span>
+            )}
+            {!item.episode.isPublished && (
+              <Badge variant="outline" className="text-xs bg-yellow-50">
+                Draft
+              </Badge>
             )}
           </div>
+          {item.purchasedAt && (
+            <p className="text-xs text-muted-foreground mt-1">
+              Purchased: {new Date(item.purchasedAt).toLocaleDateString()}
+            </p>
+          )}
         </div>
-        <Button onClick={onRead} className="gap-2">
+        <Button onClick={onRead} className="gap-2 ml-4 shrink-0">
           {t("reader.readNow") || "Read"}
           <ChevronRight className="w-4 h-4" />
         </Button>

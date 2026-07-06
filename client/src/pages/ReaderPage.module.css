@@ -346,6 +346,63 @@
   color: #d84315;
 }
 
+.noContentSection {
+  background: rgba(255, 152, 0, 0.05);
+  border: 2px solid #ff9800;
+  border-radius: 8px;
+  padding: 2rem;
+  text-align: center;
+  color: #e65100;
+}
+
+.dark .noContentSection {
+  background: rgba(255, 152, 0, 0.1);
+  border-color: #ffb74d;
+  color: #ffb74d;
+}
+
+.sepia .noContentSection {
+  background: rgba(255, 152, 0, 0.08);
+  border-color: #d4a574;
+  color: #7d5d46;
+}
+
+.noContentSection h3 {
+  margin: 0 0 1rem 0;
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+.noContentSection p {
+  margin: 0.5rem 0;
+  font-size: 0.95rem;
+}
+
+.adminHint {
+  margin-top: 1rem !important;
+  padding-top: 1rem !important;
+  border-top: 1px solid rgba(255, 152, 0, 0.3) !important;
+  font-size: 0.85rem !important;
+  font-style: italic !important;
+  opacity: 0.8 !important;
+}
+
+.openFileButton {
+  display: inline-block;
+  background-color: #ff9800;
+  color: white;
+  padding: 0.75rem 2rem;
+  border-radius: 4px;
+  text-decoration: none;
+  font-weight: 600;
+  margin-top: 1rem;
+  transition: background-color 0.2s;
+}
+
+.openFileButton:hover {
+  background-color: #f57c00;
+}
+
 .modalOverlay {
   position: fixed;
   top: 0;

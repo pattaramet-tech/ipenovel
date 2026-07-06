@@ -513,6 +513,11 @@ const translations: Record<Language, Record<string, string>> = {
     "reader.errorLoadingEpisode": "เกิดข้อผิดพลาดในการโหลดบท",
     "reader.noAccess": "คุณไม่มีสิทธิ์อ่านบทนี้",
     "reader.words": "คำ",
+    "reader.noContentTitle": "ตอนนี้ยังไม่มีเนื้อหา",
+    "reader.noContentWithFile": "ตอนนี้ยังไม่มีเนื้อหาสำหรับอ่านในเว็บ แต่สามารถเปิดไฟล์เดิมได้",
+    "reader.noContentNoFile": "ตอนนี้ยังไม่มีเนื้อหาสำหรับอ่านในเว็บ กรุณาติดต่อแอดมิน",
+    "reader.noContentAdminHint": "กรุณาเพิ่ม content ในหน้า Admin Episodes",
+    "reader.openOriginalFile": "เปิดไฟล์นิยาย",
   },
   en: {
     // Navbar
@@ -997,6 +1002,11 @@ const translations: Record<Language, Record<string, string>> = {
     "reader.errorLoadingEpisode": "Error loading episode",
     "reader.noAccess": "You don't have access to read this episode",
     "reader.words": "words",
+    "reader.noContentTitle": "No Content Available",
+    "reader.noContentWithFile": "This episode doesn't have web content yet, but you can open the original file",
+    "reader.noContentNoFile": "This episode doesn't have web content available. Please contact admin",
+    "reader.noContentAdminHint": "Please add content in the Admin Episodes page",
+    "reader.openOriginalFile": "Open Original File",
   },
 };
 

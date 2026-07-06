@@ -1857,6 +1857,67 @@ export const appRouter = router({
         const { getUserPurchasedEpisodes } = await import("./services/episodePurchaseService");
         return await getUserPurchasedEpisodes(ctx.user.id, input.novelId);
       }),
+
+    myLibrary: protectedProcedure
+      .input(z.object({
+        novelId: z.number().optional(),
+      }))
+      .query(async ({ input, ctx }) => {
+        const getDb = await import("./db").then(m => m.getDb);
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+
+        const { episodePurchases, episodes, novels } = await import("../drizzle/schema").then(s => ({
+          episodePurchases: s.episodePurchases,
+          episodes: s.episodes,
+          novels: s.novels
+        }));
+        const { eq } = await import("drizzle-orm").then(m => ({ eq: m.eq }));
+
+        // Get all purchases for this user
+        const purchases = await db
+          .select()
+          .from(episodePurchases)
+          .where(eq(episodePurchases.userId, ctx.user.id));
+
+        if (purchases.length === 0) {
+          return [];
+        }
+
+        // Get episode details for purchases
+        const episodeIds = purchases.map(p => p.episodeId);
+        const episodeData = await db
+          .select()
+          .from(episodes)
+          .where(input.novelId ? eq(episodes.novelId, input.novelId) : undefined);
+
+        // Get novel details
+        const novelIds = new Set(episodeData.map((ep: any) => ep.novelId));
+        const novelData = await db
+          .select()
+          .from(novels);
+
+        // Build result
+        return episodeData
+          .filter((ep: any) => episodeIds.includes(ep.id))
+          .map((ep: any) => ({
+            purchaseId: purchases.find(p => p.episodeId === ep.id)?.id,
+            purchasedAt: purchases.find(p => p.episodeId === ep.id)?.purchasedAt,
+            pricePaid: purchases.find(p => p.episodeId === ep.id)?.pricePaid,
+            episode: {
+              id: ep.id,
+              novelId: ep.novelId,
+              episodeNumber: ep.episodeNumber,
+              title: ep.title,
+              description: ep.description,
+              wordCount: ep.wordCount,
+              isPublished: ep.isPublished,
+              price: ep.price,
+              isFree: ep.isFree,
+            },
+            novel: novelData.find((n: any) => n.id === ep.novelId),
+          }));
+      }),
   }),
 
 });
