@@ -135,8 +135,8 @@ export default function ReaderPage() {
   };
 
   const handleBackToNovel = () => {
-    if (novel) {
-      setLocation(`/novels/${novel.slug}`);
+    if (novel?.id) {
+      setLocation(`/novels/${novel.id}`);
     } else {
       setLocation("/novels");
     }
