@@ -512,6 +512,7 @@ const translations: Record<Language, Record<string, string>> = {
     "reader.confirmBuy": "ยืนยันซื้อ",
     "reader.errorLoadingEpisode": "เกิดข้อผิดพลาดในการโหลดบท",
     "reader.noAccess": "คุณไม่มีสิทธิ์อ่านบทนี้",
+    "reader.words": "คำ",
   },
   en: {
     // Navbar
@@ -995,6 +996,7 @@ const translations: Record<Language, Record<string, string>> = {
     "reader.confirmBuy": "Confirm Purchase",
     "reader.errorLoadingEpisode": "Error loading episode",
     "reader.noAccess": "You don't have access to read this episode",
+    "reader.words": "words",
   },
 };
 
