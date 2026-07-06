@@ -558,12 +558,24 @@ export default function AdminEpisodeImportPage() {
 
   return (
     <AdminLayout>
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-3xl font-bold text-slate-900">Import Episodes</h1>
-          <p className="text-slate-600 mt-2">
-            Bulk import episodes from CSV or XLSX file
-          </p>
+      <div className="space-y-4 md:space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-0">
+          <div className="flex-1 min-w-0">
+            <h1 className="text-2xl sm:text-3xl font-bold text-slate-900">Import Episodes</h1>
+            <p className="text-sm sm:text-base text-slate-600 mt-1 sm:mt-2">
+              Upload CSV / XLSX episodes into a selected novel
+            </p>
+          </div>
+          <Button
+            onClick={generateXLSXTemplate}
+            variant="outline"
+            size="sm"
+            className="gap-2 shrink-0"
+          >
+            <Download className="w-4 h-4" />
+            <span className="hidden sm:inline">Download XLSX Template</span>
+            <span className="sm:hidden">Template</span>
+          </Button>
         </div>
 
         {/* Novel Selection */}
@@ -634,7 +646,7 @@ export default function AdminEpisodeImportPage() {
         {validationErrors.length > 0 && (
           <Card className="p-4 bg-red-50 border-red-200">
             <div className="flex gap-3">
-              <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+              <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
               <div className="flex-1">
                 <h4 className="font-semibold text-red-900 mb-2">
                   Validation Errors

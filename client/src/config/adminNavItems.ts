@@ -20,6 +20,7 @@ import {
   History,
   Trophy,
   BarChart3,
+  FileSpreadsheet,
 } from "lucide-react";
 
 export interface NavItem {
@@ -40,7 +41,7 @@ export interface NavSection {
  */
 export const adminNavSections: NavSection[] = [
   {
-    title: "Overview",
+    title: "Main",
     items: [
       {
         label: "Dashboard",
@@ -55,8 +56,13 @@ export const adminNavSections: NavSection[] = [
     ],
   },
   {
-    title: "Payments & Wallet",
+    title: "Sales",
     items: [
+      {
+        label: "Orders",
+        href: "/admin/orders",
+        icon: ShoppingCart,
+      },
       {
         label: "Payments",
         href: "/admin/payments",
@@ -75,27 +81,7 @@ export const adminNavSections: NavSection[] = [
     ],
   },
   {
-    title: "Votes & Campaigns",
-    items: [
-      {
-        label: "Votes Manager",
-        href: "/admin/sports-votes",
-        icon: Trophy,
-      },
-      {
-        label: "Coupons",
-        href: "/admin/coupons",
-        icon: Ticket,
-      },
-      {
-        label: "Banners",
-        href: "/admin/banners",
-        icon: Image,
-      },
-    ],
-  },
-  {
-    title: "Content Management",
+    title: "Content",
     items: [
       {
         label: "Novels",
@@ -106,6 +92,11 @@ export const adminNavSections: NavSection[] = [
         label: "Episodes",
         href: "/admin/episodes",
         icon: Layers,
+      },
+      {
+        label: "Import Episodes",
+        href: "/admin/import-episodes",
+        icon: FileSpreadsheet,
       },
       {
         label: "Categories",
@@ -120,23 +111,33 @@ export const adminNavSections: NavSection[] = [
     ],
   },
   {
-    title: "Orders & Access",
+    title: "Marketing",
     items: [
       {
-        label: "Orders",
-        href: "/admin/orders",
-        icon: ShoppingCart,
+        label: "Coupons",
+        href: "/admin/coupons",
+        icon: Ticket,
       },
+      {
+        label: "Banners",
+        href: "/admin/banners",
+        icon: Image,
+      },
+      {
+        label: "Sports Votes",
+        href: "/admin/sports-votes",
+        icon: Trophy,
+      },
+    ],
+  },
+  {
+    title: "System",
+    items: [
       {
         label: "Entitlements",
         href: "/admin/entitlements",
         icon: Gift,
       },
-    ],
-  },
-  {
-    title: "Settings",
-    items: [
       {
         label: "Settings",
         href: "/admin/settings",

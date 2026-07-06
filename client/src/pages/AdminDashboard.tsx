@@ -8,7 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
-import { CheckCircle, XCircle, Clock, BookOpen, ShoppingCart, TrendingUp, AlertCircle, Wallet, ScanLine, ArrowLeftRight, Trophy } from "lucide-react";
+import { CheckCircle, XCircle, Clock, BookOpen, ShoppingCart, TrendingUp, AlertCircle, Wallet, ScanLine, ArrowLeftRight, Trophy, FileSpreadsheet } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
 import { StatCard, SectionHeader, StatusBadge, EmptyState } from "@/components/AdminComponents";
@@ -224,6 +224,14 @@ export default function AdminDashboard() {
                   >
                     <TrendingUp className="w-3 h-3 md:w-4 md:h-4 mr-2" />
                     Manage Episodes
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start h-9 text-xs md:text-sm"
+                    onClick={() => navigate("/admin/import-episodes")}
+                  >
+                    <FileSpreadsheet className="w-3 h-3 md:w-4 md:h-4 mr-2" />
+                    Import Episodes
                   </Button>
                   <Button
                     variant="outline"
