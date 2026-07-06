@@ -230,11 +230,7 @@ export default function AdminDashboard() {
                     className="w-full justify-start h-9 text-xs md:text-sm"
                     onClick={() => navigate("/admin/import-episodes")}
                   >
-<<<<<<< Updated upstream
-                    <FileSpreadsheet className="w-3 h-3 md:w-4 md:h-4 mr-2" />
-=======
                     <TrendingUp className="w-3 h-3 md:w-4 md:h-4 mr-2" />
->>>>>>> Stashed changes
                     Import Episodes
                   </Button>
                   <Button
