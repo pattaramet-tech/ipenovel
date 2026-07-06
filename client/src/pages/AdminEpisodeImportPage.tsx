@@ -7,7 +7,8 @@ import { Label } from "@/components/ui/label";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { useState } from "react";
-import { Upload, Loader2, AlertCircle } from "lucide-react";
+import { Upload, Loader2, AlertCircle, Download } from "lucide-react";
+import * as XLSX from "xlsx";
 
 interface ParsedEpisode {
   episodeNumber: string;
@@ -16,6 +17,9 @@ interface ParsedEpisode {
   isFree?: boolean;
   isPublished?: boolean;
   content?: string;
+  contentFormat?: "plain_text" | "markdown" | "html";
+  description?: string;
+  fileUrl?: string;
   sortOrder?: number;
 }
 
@@ -25,13 +29,358 @@ interface ValidationError {
   message: string;
 }
 
+// Header name aliases (English and Thai)
+const HEADER_ALIASES: Record<string, string> = {
+  // episodeNumber
+  episodenumber: "episodeNumber",
+  episode_number: "episodeNumber",
+  episodeno: "episodeNumber",
+  "ตอนที่": "episodeNumber",
+
+  // episodeTitle
+  episodetitle: "episodeTitle",
+  title: "episodeTitle",
+  episode_title: "episodeTitle",
+  "ชื่อตอน": "episodeTitle",
+
+  // price
+  price: "price",
+  "ราคา": "price",
+
+  // isFree
+  isfree: "isFree",
+  "ฟรี": "isFree",
+
+  // isPublished
+  ispublished: "isPublished",
+  "เผยแพร่": "isPublished",
+
+  // content
+  content: "content",
+  "เนื้อหา": "content",
+
+  // sortOrder
+  sortorder: "sortOrder",
+  "ลำดับ": "sortOrder",
+
+  // contentFormat
+  contentformat: "contentFormat",
+  "รูปแบบเนื้อหา": "contentFormat",
+
+  // description
+  description: "description",
+  "คำอธิบาย": "description",
+
+  // fileUrl
+  fileurl: "fileUrl",
+  "ลิงก์ไฟล์": "fileUrl",
+};
+
+// Parse boolean values from various formats
+const parseBoolean = (value: string | boolean | undefined, defaultValue: boolean): boolean => {
+  if (typeof value === "boolean") return value;
+  if (!value) return defaultValue;
+
+  const str = String(value).toLowerCase().trim();
+  return [
+    "true",
+    "yes",
+    "y",
+    "1",
+    "ฟรี",
+    "เผยแพร่",
+    "published",
+    "enable",
+    "enabled",
+  ].includes(str);
+};
+
+// Normalize header name to match our field names
+const normalizeHeader = (header: string): string => {
+  const cleaned = header.toLowerCase().trim();
+  return HEADER_ALIASES[cleaned] || cleaned;
+};
+
+// Parse CSV with quoted field support
+const parseCSVLine = (line: string): string[] => {
+  const result: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    const nextChar = line[i + 1];
+
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === "," && !inQuotes) {
+      result.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+
+  result.push(current.trim());
+  return result;
+};
+
+// Parse CSV file
+const parseCSVData = (csv: string): Array<Record<string, string>> => {
+  const lines = csv.split("\n").filter((line) => line.trim());
+  if (lines.length < 2) {
+    toast.error("CSV must have header and at least one row");
+    return [];
+  }
+
+  const headerLine = parseCSVLine(lines[0]);
+  const normalizedHeaders = headerLine.map(normalizeHeader);
+
+  const result: Array<Record<string, string>> = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = parseCSVLine(lines[i]);
+    const row: Record<string, string> = {};
+
+    for (let j = 0; j < normalizedHeaders.length; j++) {
+      if (normalizedHeaders[j] && cols[j]) {
+        row[normalizedHeaders[j]] = cols[j];
+      }
+    }
+
+    if (Object.keys(row).length > 0) {
+      result.push(row);
+    }
+  }
+
+  return result;
+};
+
+// Parse XLSX file
+const parseXLSXData = (arrayBuffer: ArrayBuffer): Array<Record<string, string>> => {
+  try {
+    const workbook = XLSX.read(arrayBuffer, { type: "array" });
+    const firstSheet = workbook.SheetNames[0];
+    if (!firstSheet) {
+      toast.error("XLSX file has no sheets");
+      return [];
+    }
+
+    const worksheet = workbook.Sheets[firstSheet];
+    const jsonData = XLSX.utils.sheet_to_json(worksheet, {
+      header: 1,
+      blankrows: false,
+    }) as (string | number | boolean)[][];
+
+    if (jsonData.length < 2) {
+      toast.error("XLSX must have header and at least one row");
+      return [];
+    }
+
+    const headerRow = jsonData[0].map((h) =>
+      normalizeHeader(String(h || ""))
+    );
+
+    const result: Array<Record<string, string>> = [];
+    for (let i = 1; i < jsonData.length; i++) {
+      const row: Record<string, string> = {};
+      const rowData = jsonData[i];
+
+      for (let j = 0; j < headerRow.length; j++) {
+        if (headerRow[j] && rowData[j] != null && rowData[j] !== "") {
+          row[headerRow[j]] = String(rowData[j]);
+        }
+      }
+
+      if (Object.keys(row).length > 0) {
+        result.push(row);
+      }
+    }
+
+    return result;
+  } catch (error) {
+    console.error("XLSX parse error:", error);
+    toast.error("Failed to parse XLSX file");
+    return [];
+  }
+};
+
+// Convert raw data to ParsedEpisode with validation
+const convertToParsedEpisodes = (
+  rawData: Array<Record<string, string>>
+): { episodes: ParsedEpisode[]; errors: ValidationError[] } => {
+  const episodes: ParsedEpisode[] = [];
+  const errors: ValidationError[] = [];
+  const seenNumbers = new Set<string>();
+
+  for (let i = 0; i < rawData.length; i++) {
+    const row = i + 2; // +1 for header, +1 for 1-based indexing
+    const data = rawData[i];
+
+    const episodeNumber = data.episodeNumber || "";
+    const episodeTitle = data.episodeTitle || "";
+    const priceStr = data.price || "0";
+    const isFree = parseBoolean(data.isFree, false);
+    const isPublished = parseBoolean(data.isPublished, true);
+    const content = data.content || "";
+    // Validate contentFormat is one of allowed values
+    const validFormats = ["plain_text", "markdown", "html"];
+    const contentFormat = (
+      validFormats.includes((data.contentFormat || "").toLowerCase())
+        ? data.contentFormat
+        : "plain_text"
+    ) as "plain_text" | "markdown" | "html";
+    const description = data.description || "";
+    const fileUrl = data.fileUrl || "";
+    const sortOrderStr = data.sortOrder || "";
+
+    // Validate required fields
+    if (!episodeNumber) {
+      errors.push({
+        row,
+        field: "episodeNumber",
+        message: "Episode number is required",
+      });
+      continue;
+    }
+
+    if (!episodeTitle) {
+      errors.push({
+        row,
+        field: "episodeTitle",
+        message: "Episode title is required",
+      });
+      continue;
+    }
+
+    // Validate price
+    const price = isNaN(parseFloat(priceStr)) ? "0" : priceStr;
+    if (!isFree && (!price || parseFloat(price) <= 0)) {
+      errors.push({
+        row,
+        field: "price",
+        message: "Paid episodes must have a price > 0",
+      });
+      continue;
+    }
+
+    // Check for duplicates in file
+    if (seenNumbers.has(episodeNumber)) {
+      errors.push({
+        row,
+        field: "episodeNumber",
+        message: `Duplicate episode number "${episodeNumber}" in file`,
+      });
+      continue;
+    }
+    seenNumbers.add(episodeNumber);
+
+    // Parse sortOrder
+    let sortOrder: number | undefined;
+    if (sortOrderStr) {
+      const parsed = parseInt(sortOrderStr, 10);
+      if (!isNaN(parsed)) {
+        sortOrder = parsed;
+      }
+    } else {
+      // Auto-fill sortOrder from episodeNumber if it's numeric
+      const numericEp = parseInt(episodeNumber, 10);
+      if (!isNaN(numericEp) && numericEp > 0) {
+        sortOrder = numericEp;
+      }
+    }
+
+    episodes.push({
+      episodeNumber,
+      episodeTitle,
+      price,
+      isFree,
+      isPublished,
+      content,
+      contentFormat,
+      description,
+      fileUrl,
+      sortOrder,
+    });
+  }
+
+  return { episodes, errors };
+};
+
+// Generate XLSX template
+const generateXLSXTemplate = () => {
+  const templateData = [
+    {
+      episodeNumber: "001",
+      episodeTitle: "ตอนที่ 1 เริ่มต้น",
+      price: "0",
+      isFree: "true",
+      isPublished: "true",
+      content: "เนื้อหาตอนที่ 1...",
+      contentFormat: "plain_text",
+      description: "ตอนเปิดฟรี",
+      fileUrl: "",
+    },
+    {
+      episodeNumber: "002",
+      episodeTitle: "ตอนที่ 2 เงื่อนไข",
+      price: "5",
+      isFree: "false",
+      isPublished: "true",
+      content: "เนื้อหาตอนที่ 2...",
+      contentFormat: "plain_text",
+      description: "ตอนขาย",
+      fileUrl: "",
+    },
+    {
+      episodeNumber: "003",
+      episodeTitle: "ตอนที่ 3 ความจริง",
+      price: "5",
+      isFree: "false",
+      isPublished: "false",
+      content: "เนื้อหาตอนที่ 3...",
+      contentFormat: "plain_text",
+      description: "ดราฟต์",
+      fileUrl: "",
+    },
+  ];
+
+  const worksheet = XLSX.utils.json_to_sheet(templateData);
+  worksheet["!cols"] = [
+    { wch: 12 },
+    { wch: 25 },
+    { wch: 10 },
+    { wch: 10 },
+    { wch: 12 },
+    { wch: 30 },
+    { wch: 15 },
+    { wch: 20 },
+    { wch: 25 },
+  ];
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Episodes");
+  XLSX.writeFile(workbook, "episode_template.xlsx");
+  toast.success("Template downloaded!");
+};
+
 export default function AdminEpisodeImportPage() {
   const [novelId, setNovelId] = useState<number | undefined>();
-  const [csvText, setCsvText] = useState("");
+  const [fileText, setFileText] = useState("");
   const [parsedEpisodes, setParsedEpisodes] = useState<ParsedEpisode[]>([]);
-  const [validationErrors, setValidationErrors] = useState<ValidationError[]>([]);
-  const [importMode, setImportMode] = useState<"create_only" | "update_existing" | "skip_duplicates">("skip_duplicates");
+  const [validationErrors, setValidationErrors] = useState<ValidationError[]>(
+    []
+  );
+  const [importMode, setImportMode] = useState<
+    "create_only" | "update_existing" | "skip_duplicates"
+  >("skip_duplicates");
+  const [allowBlankOverwrite, setAllowBlankOverwrite] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [fileType, setFileType] = useState<"csv" | "xlsx">("csv");
 
   const { data: novels } = trpc.novels.list.useQuery();
   const { data: episodes } = trpc.admin.getAllEpisodes.useQuery();
@@ -43,124 +392,73 @@ export default function AdminEpisodeImportPage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const csv = event.target?.result as string;
-      setCsvText(csv);
-      parseCSV(csv);
-    };
-    reader.readAsText(file);
+    const isCsv = file.name.endsWith(".csv");
+    const isXlsx =
+      file.name.endsWith(".xlsx") ||
+      file.name.endsWith(".xls") ||
+      file.type.includes("spreadsheet");
+
+    if (isCsv) {
+      setFileType("csv");
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const csv = event.target?.result as string;
+        setFileText(csv);
+        parseFile(csv, "csv");
+      };
+      reader.readAsText(file);
+    } else if (isXlsx) {
+      setFileType("xlsx");
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const buffer = event.target?.result as ArrayBuffer;
+        parseFile(buffer, "xlsx");
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      toast.error("Please upload a CSV or XLSX file");
+    }
   };
 
-  // Simple but robust CSV parser that handles quoted fields
-  const parseCSVLine = (line: string): string[] => {
-    const result: string[] = [];
-    let current = "";
-    let inQuotes = false;
+  const parseFile = (data: string | ArrayBuffer, type: "csv" | "xlsx") => {
+    let rawData: Array<Record<string, string>> = [];
 
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
-      const nextChar = line[i + 1];
-
-      if (char === '"') {
-        if (inQuotes && nextChar === '"') {
-          current += '"';
-          i++; // Skip next quote
-        } else {
-          inQuotes = !inQuotes;
-        }
-      } else if (char === "," && !inQuotes) {
-        result.push(current.trim());
-        current = "";
-      } else {
-        current += char;
-      }
+    if (type === "csv") {
+      rawData = parseCSVData(data as string);
+    } else if (type === "xlsx") {
+      rawData = parseXLSXData(data as ArrayBuffer);
     }
 
-    result.push(current.trim());
-    return result;
-  };
-
-  const parseCSV = (csv: string) => {
-    const lines = csv.split("\n").filter((line) => line.trim());
-    if (lines.length < 2) {
-      toast.error("CSV must have header and at least one row");
+    if (rawData.length === 0) {
+      setValidationErrors([]);
+      setParsedEpisodes([]);
       return;
     }
 
-    const headers = parseCSVLine(lines[0]).map((h) => h.toLowerCase());
-    const episodes: ParsedEpisode[] = [];
-    const errors: ValidationError[] = [];
+    const { episodes: parsed, errors } = convertToParsedEpisodes(rawData);
 
-    // Expected columns
-    const episodeNumberIdx = headers.indexOf("episodenumber");
-    const titleIdx = headers.indexOf("episodetitle") !== -1 ? headers.indexOf("episodetitle") : headers.indexOf("title");
-    const priceIdx = headers.indexOf("price");
-    const isFreeIdx = headers.indexOf("isfree");
-    const isPublishedIdx = headers.indexOf("ispublished");
-    const contentIdx = headers.indexOf("content");
-    const sortOrderIdx = headers.indexOf("sortorder");
-
-    for (let i = 1; i < lines.length; i++) {
-      const row = i + 1;
-      const cols = parseCSVLine(lines[i]);
-
-      const episodeNumber = episodeNumberIdx >= 0 && cols[episodeNumberIdx] ? cols[episodeNumberIdx] : "";
-      const title = titleIdx >= 0 && cols[titleIdx] ? cols[titleIdx] : "";
-      const priceStr = priceIdx >= 0 && cols[priceIdx] ? cols[priceIdx] : "0";
-      const price = isNaN(parseFloat(priceStr)) ? "0" : priceStr;
-      const isFree = isFreeIdx >= 0 && cols[isFreeIdx] ? cols[isFreeIdx].toLowerCase() === "true" : false;
-      const isPublished = isPublishedIdx >= 0 && cols[isPublishedIdx] ? cols[isPublishedIdx].toLowerCase() !== "false" : true;
-      const content = contentIdx >= 0 && cols[contentIdx] ? cols[contentIdx] : "";
-      const sortOrderIdx_ = sortOrderIdx >= 0 && cols[sortOrderIdx] ? parseInt(cols[sortOrderIdx], 10) : undefined;
-      const sortOrder = !isNaN(sortOrderIdx_ || NaN) ? sortOrderIdx_ : undefined;
-
-      // Validation
-      if (!episodeNumber) {
-        errors.push({
-          row,
-          field: "episodeNumber",
-          message: "Episode number is required",
-        });
-        continue;
+    // Validate against existing episodes in selected novel
+    if (novelId) {
+      const existingEpisodes = (episodes || []).filter(
+        (e: any) => e.novelId === novelId
+      );
+      for (const ep of parsed) {
+        const existing = existingEpisodes.find(
+          (e: any) => e.episodeNumber === ep.episodeNumber
+        );
+        if (existing && importMode === "skip_duplicates") {
+          // Mark as informational, not error
+        }
       }
-
-      if (!title) {
-        errors.push({
-          row,
-          field: "title",
-          message: "Episode title is required",
-        });
-        continue;
-      }
-
-      if (!isFree && (!price || parseFloat(price) <= 0)) {
-        errors.push({
-          row,
-          field: "price",
-          message: "Paid episodes must have a price > 0",
-        });
-        continue;
-      }
-
-      episodes.push({
-        episodeNumber,
-        episodeTitle: title,
-        price,
-        isFree,
-        isPublished,
-        content,
-        sortOrder,
-      });
     }
 
-    setParsedEpisodes(episodes);
+    setParsedEpisodes(parsed);
     setValidationErrors(errors);
 
     if (errors.length > 0) {
       toast.error(`Found ${errors.length} validation error(s)`);
-    } else if (episodes.length > 0) {
-      toast.success(`Parsed ${episodes.length} episodes`);
+    } else if (parsed.length > 0) {
+      toast.success(`Parsed ${parsed.length} episodes`);
     }
   };
 
@@ -180,7 +478,9 @@ export default function AdminEpisodeImportPage() {
     let skippedCount = 0;
     let errorCount = 0;
 
-    const existingEpisodes = (episodes || []).filter((e: any) => e.novelId === novelId);
+    const existingEpisodes = (episodes || []).filter((e: any) =>
+      e.novelId === novelId
+    );
 
     for (const ep of parsedEpisodes) {
       try {
@@ -188,25 +488,39 @@ export default function AdminEpisodeImportPage() {
           (e: any) => e.episodeNumber === ep.episodeNumber
         );
 
-        // Skip logic based on import mode
         if (existing) {
-          if (importMode === "skip_duplicates") {
-            skippedCount++;
-            continue;
-          } else if (importMode === "create_only") {
+          if (
+            importMode === "skip_duplicates" ||
+            importMode === "create_only"
+          ) {
             skippedCount++;
             continue;
           } else if (importMode === "update_existing") {
-            // Update existing
-            await updateMutation.mutateAsync({
+            // Build update data, respecting allowBlankOverwrite
+            const updateData: any = {
               episodeId: existing.id,
               title: ep.episodeTitle,
               price: ep.price,
               isFree: ep.isFree,
               isPublished: ep.isPublished,
-              content: ep.content,
               sortOrder: ep.sortOrder,
-            });
+            };
+
+            // Only update content if provided or allowBlankOverwrite is true
+            if (ep.content || allowBlankOverwrite) {
+              updateData.content = ep.content;
+              updateData.contentFormat = ep.contentFormat;
+            }
+
+            // Only update description/fileUrl if provided or allowBlankOverwrite is true
+            if (ep.description || allowBlankOverwrite) {
+              updateData.description = ep.description;
+            }
+            if (ep.fileUrl || allowBlankOverwrite) {
+              updateData.fileUrl = ep.fileUrl;
+            }
+
+            await updateMutation.mutateAsync(updateData);
             successCount++;
             continue;
           }
@@ -220,6 +534,9 @@ export default function AdminEpisodeImportPage() {
           price: ep.price || "0",
           isFree: ep.isFree,
           content: ep.content,
+          contentFormat: ep.contentFormat,
+          description: ep.description,
+          fileUrl: ep.fileUrl,
           isPublished: ep.isPublished,
           sortOrder: ep.sortOrder,
         });
@@ -232,11 +549,9 @@ export default function AdminEpisodeImportPage() {
 
     setImporting(false);
     toast.success(
-      `Import complete: ${successCount} created, ${skippedCount} skipped, ${errorCount} errors`
+      `Import complete: ${successCount} created/updated, ${skippedCount} skipped, ${errorCount} errors`
     );
 
-    // Reset form
-    setCsvText("");
     setParsedEpisodes([]);
     setValidationErrors([]);
   };
@@ -246,7 +561,9 @@ export default function AdminEpisodeImportPage() {
       <div className="space-y-6">
         <div>
           <h1 className="text-3xl font-bold text-slate-900">Import Episodes</h1>
-          <p className="text-slate-600 mt-2">Bulk import episodes from CSV file</p>
+          <p className="text-slate-600 mt-2">
+            Bulk import episodes from CSV or XLSX file
+          </p>
         </div>
 
         {/* Novel Selection */}
@@ -254,7 +571,9 @@ export default function AdminEpisodeImportPage() {
           <Label>Select Novel</Label>
           <select
             value={novelId || ""}
-            onChange={(e) => setNovelId(e.target.value ? parseInt(e.target.value) : undefined)}
+            onChange={(e) =>
+              setNovelId(e.target.value ? parseInt(e.target.value) : undefined)
+            }
             className="w-full px-3 py-2 border rounded-md mt-2"
           >
             <option value="">-- Select a novel --</option>
@@ -266,38 +585,47 @@ export default function AdminEpisodeImportPage() {
           </select>
         </Card>
 
-        {/* CSV Upload */}
+        {/* File Upload & Template */}
         <Card className="p-6">
-          <h3 className="font-semibold mb-4">Step 1: Upload CSV File</h3>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-semibold">Step 1: Upload File</h3>
+            <Button
+              onClick={generateXLSXTemplate}
+              variant="outline"
+              size="sm"
+              className="gap-2"
+            >
+              <Download className="w-4 h-4" />
+              Download XLSX Template
+            </Button>
+          </div>
+
           <div className="border-2 border-dashed rounded-lg p-6 text-center">
             <input
               type="file"
-              accept=".csv"
+              accept=".csv,.xlsx,.xls"
               onChange={handleFileUpload}
               className="hidden"
-              id="csv-upload"
+              id="file-upload"
             />
-            <label htmlFor="csv-upload" className="cursor-pointer">
+            <label htmlFor="file-upload" className="cursor-pointer">
               <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
               <p className="text-sm text-slate-600">
-                Click to upload or drag & drop CSV file
+                Click to upload CSV or XLSX file
               </p>
             </label>
           </div>
 
           <div className="mt-4 text-xs text-slate-500">
-            <p className="font-semibold mb-2">Required columns:</p>
+            <p className="font-semibold mb-2">Supported formats:</p>
             <ul className="list-disc list-inside space-y-1">
-              <li>episodeNumber (e.g., "001", "1 - 5")</li>
-              <li>episodeTitle (e.g., "The Beginning")</li>
+              <li>CSV (.csv) - standard comma-separated values</li>
+              <li>XLSX (.xlsx) - Excel spreadsheet</li>
             </ul>
-            <p className="font-semibold mt-3 mb-2">Optional columns:</p>
+            <p className="font-semibold mt-3 mb-2">Required columns:</p>
             <ul className="list-disc list-inside space-y-1">
-              <li>price (decimal, default: 0)</li>
-              <li>isFree (true/false, default: false)</li>
-              <li>isPublished (true/false, default: true)</li>
-              <li>content (episode text)</li>
-              <li>sortOrder (number)</li>
+              <li>episodeNumber / episode_number / ตอนที่</li>
+              <li>episodeTitle / title / ชื่อตอน</li>
             </ul>
           </div>
         </Card>
@@ -308,8 +636,10 @@ export default function AdminEpisodeImportPage() {
             <div className="flex gap-3">
               <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
               <div className="flex-1">
-                <h4 className="font-semibold text-red-900 mb-2">Validation Errors</h4>
-                <div className="space-y-1 text-sm text-red-800">
+                <h4 className="font-semibold text-red-900 mb-2">
+                  Validation Errors
+                </h4>
+                <div className="space-y-1 text-sm text-red-800 max-h-40 overflow-y-auto">
                   {validationErrors.map((err, idx) => (
                     <p key={idx}>
                       Row {err.row}: {err.field} - {err.message}
@@ -326,20 +656,24 @@ export default function AdminEpisodeImportPage() {
           <Card className="p-4">
             <h3 className="font-semibold mb-4">Step 2: Preview Episodes</h3>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="w-full text-xs">
                 <thead>
-                  <tr className="border-b">
+                  <tr className="border-b bg-slate-50">
+                    <th className="text-left py-2 px-2">#</th>
                     <th className="text-left py-2 px-2">Episode #</th>
                     <th className="text-left py-2 px-2">Title</th>
                     <th className="text-left py-2 px-2">Price</th>
                     <th className="text-left py-2 px-2">Free</th>
+                    <th className="text-left py-2 px-2">Published</th>
                     <th className="text-left py-2 px-2">Content</th>
+                    <th className="text-left py-2 px-2">Sort</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {parsedEpisodes.slice(0, 10).map((ep, idx) => (
+                  {parsedEpisodes.slice(0, 15).map((ep, idx) => (
                     <tr key={idx} className="border-b hover:bg-slate-50">
-                      <td className="py-2 px-2">{ep.episodeNumber}</td>
+                      <td className="py-2 px-2 text-muted-foreground">{idx + 1}</td>
+                      <td className="py-2 px-2 font-medium">{ep.episodeNumber}</td>
                       <td className="py-2 px-2">{ep.episodeTitle}</td>
                       <td className="py-2 px-2">฿{ep.price || "0"}</td>
                       <td className="py-2 px-2">
@@ -352,6 +686,17 @@ export default function AdminEpisodeImportPage() {
                         )}
                       </td>
                       <td className="py-2 px-2">
+                        {ep.isPublished ? (
+                          <Badge variant="outline" className="text-xs">
+                            Yes
+                          </Badge>
+                        ) : (
+                          <Badge variant="destructive" className="text-xs">
+                            Draft
+                          </Badge>
+                        )}
+                      </td>
+                      <td className="py-2 px-2">
                         {ep.content ? (
                           <Badge variant="outline" className="text-xs">
                             ✓ {ep.content.length} chars
@@ -360,20 +705,24 @@ export default function AdminEpisodeImportPage() {
                           <span className="text-muted-foreground">—</span>
                         )}
                       </td>
+                      <td className="py-2 px-2 text-muted-foreground">
+                        {ep.sortOrder || "—"}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-              {parsedEpisodes.length > 10 && (
+              {parsedEpisodes.length > 15 && (
                 <p className="text-xs text-muted-foreground mt-2">
-                  ... and {parsedEpisodes.length - 10} more episodes
+                  ... and {parsedEpisodes.length - 15} more episodes
                 </p>
               )}
             </div>
 
-            {/* Import Mode Selection */}
+            {/* Import Options */}
             <div className="mt-6 pt-6 border-t space-y-3">
               <h4 className="font-semibold text-sm">Step 3: Import Options</h4>
+
               <div className="space-y-2">
                 <label className="flex items-center gap-2">
                   <input
@@ -403,6 +752,26 @@ export default function AdminEpisodeImportPage() {
                   <span className="text-sm">Update existing episodes</span>
                 </label>
               </div>
+
+              {importMode === "update_existing" && (
+                <div className="p-3 bg-blue-50 rounded border border-blue-200">
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={allowBlankOverwrite}
+                      onChange={(e) =>
+                        setAllowBlankOverwrite(e.target.checked)
+                      }
+                    />
+                    <span className="text-sm">
+                      Allow blank values to overwrite existing content
+                    </span>
+                  </label>
+                  <p className="text-xs text-slate-600 mt-1">
+                    If unchecked, blank cells will not update existing data
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Import Button */}
