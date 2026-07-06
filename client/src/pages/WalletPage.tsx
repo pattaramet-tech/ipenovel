@@ -10,6 +10,38 @@ import { Upload, CheckCircle, AlertCircle, X, Loader2 } from "lucide-react";
 
 const QR_PAYMENT_IMAGE = "https://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/IMG_8158_19d96370.JPG";
 
+/**
+ * Map technical storage errors to user-friendly Thai messages
+ */
+function getUserFriendlyUploadError(error: any, t: any): string {
+  const msg = String(error?.message || "").toLowerCase();
+
+  // Detect JSON parsing errors (HTML response)
+  if (
+    msg.includes("unexpected token") ||
+    msg.includes("<!doctype") ||
+    msg.includes("not valid json") ||
+    msg.includes("did not match the expected pattern") ||
+    msg.includes("invalid url") ||
+    msg.includes("non-json response")
+  ) {
+    return "อัปโหลดสลิปไม่สำเร็จ ระบบอัปโหลดขัดข้อง กรุณาลองใหม่อีกครั้ง หรือติดต่อแอดมิน";
+  }
+
+  // Configuration errors
+  if (msg.includes("credentials not configured") || msg.includes("configuration")) {
+    return "ระบบอัปโหลดไฟล์ยังไม่พร้อมใช้งาน กรุณาติดต่อแอดมิน";
+  }
+
+  // Network errors
+  if (msg.includes("network") || msg.includes("timeout") || msg.includes("abort")) {
+    return "เชื่อมต่อระบบอัปโหลดไม่สำเร็จ กรุณาลองใหม่อีกครั้ง";
+  }
+
+  // Default to translation key
+  return error?.message || t("payment.uploadError") || "อัปโหลดสลิปไม่สำเร็จ กรุณาลองใหม่อีกครั้ง";
+}
+
 export default function WalletPage() {
   const auth = useAuth();
   const { t } = useLanguage();
@@ -95,7 +127,7 @@ export default function WalletPage() {
       } catch (uploadError: any) {
         // Upload failed before creating record
         console.error("[WalletPage] Slip upload error:", uploadError);
-        toast.error(uploadError.message || t("payment.uploadError") || "Failed to upload slip");
+        toast.error(getUserFriendlyUploadError(uploadError, t));
         return;
       }
 
