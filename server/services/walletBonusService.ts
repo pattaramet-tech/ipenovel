@@ -46,6 +46,11 @@ const DEFAULT_BONUS_CONFIG: BonusConfig = {
       bonusAmount: 20,
       label: "เติมครบ 500 รับโบนัส 20",
     },
+    {
+      minAmount: 1000,
+      bonusAmount: 60,
+      label: "เติมครบ 1000 รับโบนัส 60",
+    },
   ],
 };
 
