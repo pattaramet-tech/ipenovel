@@ -33,38 +33,56 @@ export default function ReaderPage() {
   const [showPurchaseConfirm, setShowPurchaseConfirm] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
+  const lastToastTimeRef = useRef<number>(0);
+
+  const episode = episodeData?.episode;
+  const novel = episodeData?.novel;
+  const walletBalance = episodeData?.walletBalance || "0";
+  const canRead = episodeData?.canRead || false;
 
   // Copy protection and watermark effect
   useEffect(() => {
     const handleCopyProtection = (e: ClipboardEvent | DragEvent | MouseEvent | KeyboardEvent) => {
       e.preventDefault();
+      // Throttle toast to avoid spam (max once per 1 second)
+      const now = Date.now();
+      if (now - lastToastTimeRef.current >= 1000) {
+        toast.error(t("reader.copyNotAllowed") || "ไม่อนุญาตให้คัดลอกเนื้อหานิยาย");
+        lastToastTimeRef.current = now;
+      }
     };
 
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault();
     };
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Block copy shortcuts: Ctrl+C, Ctrl+X, Ctrl+A, Ctrl+S, Ctrl+P, Cmd variants
+    const handleDocumentKeyDown = (e: KeyboardEvent) => {
+      // Block copy shortcuts at document level: Ctrl/Cmd + C, X, A, S, P
       if ((e.ctrlKey || e.metaKey) && ['c', 'x', 'a', 's', 'p'].includes(e.key.toLowerCase())) {
-        e.preventDefault();
+        const target = e.target as HTMLElement;
+        // Only block if target is inside protected content areas
+        if (contentRef.current?.contains(target) || previewRef.current?.contains(target)) {
+          e.preventDefault();
+          // Throttle toast
+          const now = Date.now();
+          if (now - lastToastTimeRef.current >= 1000) {
+            toast.error(t("reader.copyNotAllowed") || "ไม่อนุญาตให้คัดลอกเนื้อหานิยาย");
+            lastToastTimeRef.current = now;
+          }
+        }
       }
     };
 
     const attachProtection = (element: HTMLDivElement | null) => {
       if (!element) return;
 
-      // Prevent text selection via CSS will be handled in stylesheet
-      element.classList.add(styles.protected);
-
-      // Event listeners for copy prevention
+      // Event listeners for copy prevention on content areas
       element.addEventListener('copy', handleCopyProtection);
       element.addEventListener('cut', handleCopyProtection);
       element.addEventListener('paste', handleCopyProtection);
       element.addEventListener('dragstart', handleCopyProtection as any);
       element.addEventListener('selectstart', handleCopyProtection as any);
       element.addEventListener('contextmenu', handleContextMenu);
-      element.addEventListener('keydown', handleKeyDown);
 
       return () => {
         element.removeEventListener('copy', handleCopyProtection);
@@ -73,23 +91,21 @@ export default function ReaderPage() {
         element.removeEventListener('dragstart', handleCopyProtection as any);
         element.removeEventListener('selectstart', handleCopyProtection as any);
         element.removeEventListener('contextmenu', handleContextMenu);
-        element.removeEventListener('keydown', handleKeyDown);
       };
     };
 
     const cleanupContent = attachProtection(contentRef.current);
     const cleanupPreview = attachProtection(previewRef.current);
 
+    // Attach document-level keyboard listener
+    document.addEventListener('keydown', handleDocumentKeyDown);
+
     return () => {
       cleanupContent?.();
       cleanupPreview?.();
+      document.removeEventListener('keydown', handleDocumentKeyDown);
     };
-  }, []);
-
-  const episode = episodeData?.episode;
-  const novel = episodeData?.novel;
-  const walletBalance = episodeData?.walletBalance || "0";
-  const canRead = episodeData?.canRead || false;
+  }, [episode?.id, episode?.canRead, episode?.content, episode?.preview, episodeId, t]);
 
   if (!user) {
     return (
@@ -204,7 +220,7 @@ export default function ReaderPage() {
         {episode.canRead && episode.content ? (
           <div
             ref={contentRef}
-            className={styles.episodeContent}
+            className={`${styles.episodeContent} ${styles.protected}`}
             style={{ fontSize: `${fontSize}px` }}
           >
             {episode.content.split("\n").map((para: string, idx: number) => (
@@ -245,7 +261,7 @@ export default function ReaderPage() {
           <div className={styles.lockedSection}>
             <div
               ref={previewRef}
-              className={styles.previewContent}
+              className={`${styles.previewContent} ${styles.protected}`}
               style={{ fontSize: `${fontSize}px` }}
             >
               {episode.preview.split("\n").map((para: string, idx: number) => (

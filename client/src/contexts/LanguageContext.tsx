@@ -518,6 +518,7 @@ const translations: Record<Language, Record<string, string>> = {
     "reader.noContentNoFile": "ตอนนี้ยังไม่มีเนื้อหาสำหรับอ่านในเว็บ กรุณาติดต่อแอดมิน",
     "reader.noContentAdminHint": "กรุณาเพิ่ม content ในหน้า Admin Episodes",
     "reader.openOriginalFile": "เปิดไฟล์นิยาย",
+    "reader.copyNotAllowed": "ไม่อนุญาตให้คัดลอกเนื้อหานิยาย",
   },
   en: {
     // Navbar
@@ -1007,6 +1008,7 @@ const translations: Record<Language, Record<string, string>> = {
     "reader.noContentNoFile": "This episode doesn't have web content available. Please contact admin",
     "reader.noContentAdminHint": "Please add content in the Admin Episodes page",
     "reader.openOriginalFile": "Open Original File",
+    "reader.copyNotAllowed": "Copying novel content is not allowed",
   },
 };
 
