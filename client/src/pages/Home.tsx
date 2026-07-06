@@ -366,16 +366,16 @@ export default function Home() {
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
               <div>
                 <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold text-slate-900">
-                  {t("home.finishedNovels")}
+                  Finished Novels
                 </h2>
-                <p className="text-sm text-slate-600 mt-1">{t("home.finishedDesc")}</p>
+                <p className="text-sm text-slate-600 mt-1">Complete stories — read from start to finish</p>
               </div>
               <Link href="/novels?storyStatus=finished" className="flex-shrink-0">
                 <Button
                   variant="outline"
                   className="w-full sm:w-auto rounded-full border-purple-200 text-purple-700 hover:bg-purple-50"
                 >
-                  {t("home.viewAllFinished")}
+                  View All Finished
                   <ArrowRight className="w-4 h-4 ml-2" />
                 </Button>
               </Link>
@@ -406,7 +406,7 @@ export default function Home() {
                         )}
                         {/* Finished badge overlay */}
                         <div className="absolute top-3 left-3 bg-purple-600 text-white px-3 py-1 rounded-full text-xs font-semibold">
-                          {t("home.finishedBadge")}
+                          Finished
                         </div>
                       </div>
                       <div className="p-4 sm:p-5">

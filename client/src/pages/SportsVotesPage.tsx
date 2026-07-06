@@ -35,22 +35,6 @@ const rewardStatusConfig: Record<string, { text: string; color: string; badgeVar
   void: { text: "sports.voided", color: "bg-red-50", badgeVariant: "destructive" },
 };
 
-const sportStatusMap: Record<string, string> = {
-  open: "sports.open",
-  closed: "sports.closed",
-  pending: "sports.pending",
-  won: "sports.won",
-  lost: "sports.lost",
-  settled: "sports.settled",
-  cancelled: "sports.cancelled",
-  draft: "sports.draft",
-};
-
-function getSportStatusLabel(t: any, status?: string): string {
-  if (!status) return "-";
-  return t(sportStatusMap[status] || status);
-}
-
 function rewardText(match: any): string {
   const value = Number(match.rewardDiscountValue || 0);
   if (match.rewardDiscountType === "percentage") return `${value}%`;
@@ -318,7 +302,7 @@ export default function SportsVotesPage() {
                         <CardTitle className="text-lg line-clamp-1">{match.title}</CardTitle>
                         <p className="text-xs text-slate-500">{match.leagueName || "Football"}</p>
                       </div>
-                      <Badge variant={match.status === "open" ? "default" : "secondary"}>{getSportStatusLabel(t, match.status)}</Badge>
+                      <Badge variant={match.status === "open" ? "default" : "secondary"}>{match.status}</Badge>
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-4">
@@ -358,7 +342,7 @@ export default function SportsVotesPage() {
                           {t("sports.yourPrediction")}: <b>{t(predictionLabelMap[myVote.prediction])}</b>
                         </p>
                         <p>
-                          {t("sports.status")}: <b>{getSportStatusLabel(t, myVote.status)}</b>
+                          {t("sports.status")}: <b>{myVote.status}</b>
                         </p>
                         {myVote.rewardCouponCode && (
                           <p className="mt-1">
