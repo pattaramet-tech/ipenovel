@@ -1703,7 +1703,58 @@ export const appRouter = router({
             ctx.user.id
           );
         }),
+      getBonusConfig: adminProcedure
+        .query(async () => {
+          const { getWalletBonusConfig } = await import("./services/walletBonusService");
+          return await getWalletBonusConfig();
+        }),
+      updateBonusConfig: adminProcedure
+        .input(z.object({
+          enabled: z.boolean(),
+          tiers: z.array(z.object({
+            minAmount: z.number().int().positive("Min amount must be greater than 0"),
+            bonusAmount: z.number().int().min(0, "Bonus amount cannot be negative"),
+            label: z.string().optional(),
+          })),
+        }))
+        .mutation(async ({ input }) => {
+          const { saveWalletBonusConfig, validateBonusConfig } = await import("./services/walletBonusService");
+
+          // Validate: no duplicate minAmount
+          const minAmounts = input.tiers.map(t => t.minAmount);
+          const uniqueMinAmounts = new Set(minAmounts);
+          if (uniqueMinAmounts.size !== minAmounts.length) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Duplicate min amount values" });
+          }
+
+          // Auto-generate labels if empty
+          const configWithLabels = {
+            enabled: input.enabled,
+            tiers: input.tiers.map(tier => ({
+              minAmount: tier.minAmount,
+              bonusAmount: tier.bonusAmount,
+              label: tier.label || `เติมครบ ${tier.minAmount} รับโบนัส ${tier.bonusAmount}`,
+            })),
+          };
+
+          // Validate config
+          const error = validateBonusConfig(configWithLabels);
+          if (error) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: error });
+          }
+
+          await saveWalletBonusConfig(configWithLabels);
+          return { success: true, config: configWithLabels };
+        }),
     }),
+    getBonusPreview: protectedProcedure
+      .input(z.object({
+        amount: z.union([z.string(), z.number()]),
+      }))
+      .query(async ({ input }) => {
+        const { calculateWalletTopupBonus } = await import("./services/walletBonusService");
+        return await calculateWalletTopupBonus(input.amount);
+      }),
   }),
 
   // ============ SPORTS MATCH PREDICTION VOTING ============

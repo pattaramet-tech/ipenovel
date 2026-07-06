@@ -393,7 +393,7 @@ export default function CartPage() {
                   </div>
 
                   <Input
-                    placeholder="Points to redeem"
+                    placeholder={t("cart.pointsToRedeem")}
                     type="number"
                     min="0"
                     max={Math.min(pointBalance, maxRedeemable)}
