@@ -434,7 +434,7 @@ export default function NovelDetailPage() {
                         </div>
                         {!isFree && !isPurchased && (
                           <p className="text-xs text-muted-foreground">
-                            {isSelected ? "เลือกไว้ในตะกร้า" : isLoading ? "กำลังอัปเดต..." : "กดเพื่อเลือกซื้อ"}
+                            เลือกวิธีการอ่าน
                           </p>
                         )}
                       </div>
@@ -448,7 +448,7 @@ export default function NovelDetailPage() {
                               className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition active:bg-blue-800"
                             >
                               <BookOpen className="w-3.5 h-3.5 mr-1.5" />
-                              อ่าน
+                              อ่านเดี๋ยวนี้
                             </button>
                             {episode.fileUrl && (
                               <a
@@ -484,28 +484,43 @@ export default function NovelDetailPage() {
                             )}
                           </>
                         ) : (
-                          <>
-                            <span className="font-semibold text-sm text-foreground whitespace-nowrap">
+                          // Unpurchased paid chapter
+                          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                            <span className="font-semibold text-sm text-foreground">
                               ฿{episode.price ?? "ไม่ระบุ"}
                             </span>
-                            <input
-                              type="checkbox"
-                              checked={isSelected}
-                              onChange={(e) => {
-                                e.stopPropagation();
-                                try {
-                                  handleEpisodeToggle(episode.id, e.target.checked);
-                                } catch (err) {
-                                  console.error("Error toggling episode:", err);
-                                  toast.error("Failed to update cart");
-                                }
-                              }}
-                              onClick={(e) => e.stopPropagation()}
-                              disabled={isLoading}
-                              className="w-5 h-5 cursor-pointer accent-blue-600"
-                              aria-label={`Select episode ${episode.episodeNumber}`}
-                            />
-                          </>
+                            <div className="flex items-center gap-2">
+                              {/* Primary: Direct unlock button */}
+                              <button
+                                onClick={() => setLocation(`/read/${episode.id}`)}
+                                className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition active:bg-blue-800"
+                                title="Open reader with wallet purchase option"
+                              >
+                                ซื้อ
+                              </button>
+                              {/* Secondary: Add to cart button */}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  try {
+                                    handleEpisodeToggle(episode.id, !isSelected);
+                                  } catch (err) {
+                                    console.error("Error toggling episode:", err);
+                                    toast.error("Failed to update cart");
+                                  }
+                                }}
+                                disabled={isLoading}
+                                className={`inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md transition ${
+                                  isSelected
+                                    ? "bg-blue-100 text-blue-700 hover:bg-blue-200"
+                                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                                } ${isLoading ? "opacity-60 cursor-wait" : "cursor-pointer"}`}
+                                title={isSelected ? "Remove from cart" : "Add to cart"}
+                              >
+                                {isSelected ? "อยู่ในตะกร้า" : "เพิ่มลงตะกร้า"}
+                              </button>
+                            </div>
+                          </div>
                         )}
                       </div>
                     </div>
@@ -575,7 +590,7 @@ export default function NovelDetailPage() {
                         </div>
                         {!isFree && !isPurchased && (
                           <p className="text-xs text-muted-foreground">
-                            {isSelected ? "เลือกไว้ในตะกร้า" : isLoading ? "กำลังอัปเดต..." : "กดเพื่อเลือกซื้อ"}
+                            {isSelected ? "อยู่ในตะกร้าแล้ว" : isLoading ? "กำลังอัปเดต..." : "ต้องการซื้อ?"}
                           </p>
                         )}
                       </div>
@@ -588,7 +603,7 @@ export default function NovelDetailPage() {
                               className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition active:bg-blue-800"
                             >
                               <BookOpen className="w-3.5 h-3.5 mr-1.5" />
-                              อ่าน
+                              อ่านเดี๋ยวนี้
                             </button>
                             {episode.fileUrl && (
                               <a
@@ -624,28 +639,32 @@ export default function NovelDetailPage() {
                             )}
                           </>
                         ) : (
-                          <>
-                            <span className="font-semibold text-sm text-foreground whitespace-nowrap">
+                          // Unpurchased paid file
+                          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                            <span className="font-semibold text-sm text-foreground">
                               ฿{episode.price ?? "ไม่ระบุ"}
                             </span>
-                            <input
-                              type="checkbox"
-                              checked={isSelected}
-                              onChange={(e) => {
+                            <button
+                              onClick={(e) => {
                                 e.stopPropagation();
                                 try {
-                                  handleEpisodeToggle(episode.id, e.target.checked);
+                                  handleEpisodeToggle(episode.id, !isSelected);
                                 } catch (err) {
                                   console.error("Error toggling episode:", err);
                                   toast.error("Failed to update cart");
                                 }
                               }}
-                              onClick={(e) => e.stopPropagation()}
                               disabled={isLoading}
-                              className="w-5 h-5 cursor-pointer accent-blue-600"
-                              aria-label={`Select episode ${episode.episodeNumber}`}
-                            />
-                          </>
+                              className={`inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md transition ${
+                                isSelected
+                                  ? "bg-blue-100 text-blue-700 hover:bg-blue-200"
+                                  : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                              } ${isLoading ? "opacity-60 cursor-wait" : "cursor-pointer"}`}
+                              title={isSelected ? "Remove from cart" : "Add to cart"}
+                            >
+                              {isSelected ? "อยู่ในตะกร้า" : "เพิ่มลงตะกร้า"}
+                            </button>
+                          </div>
                         )}
                       </div>
                     </div>
