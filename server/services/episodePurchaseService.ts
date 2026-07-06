@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql, gte } from "drizzle-orm";
 import { getDb } from "../db";
 import {
   episodes,
@@ -128,16 +128,47 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
         throw new Error("Insufficient wallet balance");
       }
 
-      // 8. Calculate new balance
-      const newBalance = (currentBalanceInTx - purchasePrice).toFixed(2);
+      const balanceBefore = walletInTx[0].balance.toString();
+      const priceStr = purchasePrice.toFixed(2);
 
-      // 9. Create wallet transaction for the debit
+      // 8. ATOMIC UPDATE: Use SQL arithmetic to prevent race condition
+      // This is critical - we must use SQL arithmetic (balance = balance - price)
+      // not absolute assignment (balance = newBalance) to prevent lost updates
+      // when multiple requests for the same user execute concurrently
+      const updateResult = await tx
+        .update(walletAccounts)
+        .set({
+          balance: sql`${walletAccounts.balance} - ${priceStr}`,
+          totalSpent: sql`COALESCE(${walletAccounts.totalSpent}, '0') + ${priceStr}`,
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(walletAccounts.userId, userId),
+          // Critical: Only update if balance >= purchase price
+          // This prevents overdraft and ensures operation only succeeds if balance sufficient
+          gte(walletAccounts.balance, sql`${priceStr}`)
+        ));
+
+      const affectedRows = (updateResult as any)?.affectedRows || 0;
+      if (affectedRows === 0) {
+        throw new Error("Insufficient wallet balance");
+      }
+
+      // 9. RE-FETCH wallet AFTER atomic update to get exact new balance
+      const walletAfterUpdate = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1);
+      if (walletAfterUpdate.length === 0) {
+        throw new Error("Failed to fetch wallet after update");
+      }
+
+      const balanceAfter = walletAfterUpdate[0].balance.toString();
+
+      // 10. Create wallet transaction record with exact before/after balance
       const transactionResult = await tx.insert(walletTransactions).values({
         userId,
         type: "debit" as any,
-        amount: purchasePrice.toString(),
-        balanceBefore: walletInTx[0].balance.toString(),
-        balanceAfter: newBalance,
+        amount: priceStr,
+        balanceBefore,
+        balanceAfter,
         referenceType: "episode_purchase",
         referenceId: episodeId,
         note: `Episode purchase: Episode #${episode.episodeNumber}`,
@@ -145,44 +176,23 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
 
       const transactionId = (transactionResult as any).insertId || null;
 
-      // 10. Create episodePurchase record with walletTransaction link
+      // 11. Create episodePurchase record with walletTransaction link
       const purchaseResult = await tx.insert(episodePurchases).values({
         userId,
         novelId: episode.novelId,
         episodeId,
-        pricePaid: purchasePrice.toString(),
+        pricePaid: priceStr,
         walletTransactionId: transactionId || undefined,
         purchasedAt: new Date(),
       });
 
       const episodePurchaseId = (purchaseResult as any).insertId || 0;
 
-      // 11. Update wallet balance with conditional check
-      // Only update if balance is still sufficient (prevents overdraft if wallet was modified)
-      const totalSpentBefore = walletInTx[0].totalSpent ? parseFloat(walletInTx[0].totalSpent.toString()) : 0;
-      const updateResult = await tx
-        .update(walletAccounts)
-        .set({
-          balance: newBalance,
-          totalSpent: (totalSpentBefore + purchasePrice).toString(),
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(walletAccounts.userId, userId),
-          // Safety: Only update if balance >= purchase price (idempotency guard)
-          // This prevents race condition if wallet was modified after our fetch
-        ));
-
-      const affectedRows = (updateResult as any)?.affectedRows || 0;
-      if (affectedRows === 0) {
-        throw new Error("Failed to update wallet balance");
-      }
-
-      // 12. Return success
+      // 12. Return success with actual balance after update
       return {
         success: true,
         episodePurchaseId: episodePurchaseId && episodePurchaseId > 0 ? episodePurchaseId : undefined,
-        newBalance,
+        newBalance: balanceAfter,
       };
     });
   } catch (error) {
