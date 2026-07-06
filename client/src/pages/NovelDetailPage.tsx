@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { useState, useMemo } from "react";
-import { BookOpen, Search } from "lucide-react";
+import { BookOpen, Search, Download } from "lucide-react";
 
 export default function NovelDetailPage() {
   const { identifier } = useParams<{ identifier: string }>();
@@ -19,6 +19,7 @@ export default function NovelDetailPage() {
   const [selectedEpisodes, setSelectedEpisodes] = useState<number[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [sortBy, setSortBy] = useState<"newest" | "oldest" | "titleAZ" | "titleZA">("newest");
+  const [saleType, setSaleType] = useState<"all" | "file" | "chapter">("all");
 
   // Parse identifier as number (id) - guard against NaN
   const novelId = identifier ? parseInt(identifier, 10) : 0;
@@ -74,7 +75,7 @@ export default function NovelDetailPage() {
   // IMPORTANT: useMemo MUST be called before any early returns to avoid React Hook Order Violation
   // Filter and sort episodes
   const filteredAndSortedEpisodes = useMemo(() => {
-    if (!episodes || !Array.isArray(episodes)) return { freeEpisodes: [], paidEpisodes: [] };
+    if (!episodes || !Array.isArray(episodes)) return { freeEpisodes: [], paidEpisodes: [], fileEpisodes: [], readerEpisodes: [] };
 
     // Search filter (case-insensitive)
     const searchLower = searchTerm.toLowerCase();
@@ -119,7 +120,11 @@ export default function NovelDetailPage() {
     const freeEpisodes = sorted.filter((ep: any) => ep && ep.isFree === true);
     const paidEpisodes = sorted.filter((ep: any) => ep && ep.isFree !== true);
 
-    return { freeEpisodes, paidEpisodes };
+    // Split by sale type: file (has fileUrl) vs reader (for chapter reading)
+    const fileEpisodes = sorted.filter((ep: any) => ep && ep.fileUrl);
+    const readerEpisodes = sorted.filter((ep: any) => ep); // All can be read
+
+    return { freeEpisodes, paidEpisodes, fileEpisodes, readerEpisodes };
   }, [episodes, searchTerm, sortBy]);
 
   // Handle immediate add/remove on checkbox change
@@ -204,271 +209,306 @@ export default function NovelDetailPage() {
     );
   }
 
-  const { freeEpisodes, paidEpisodes } = filteredAndSortedEpisodes;
+  const { freeEpisodes, paidEpisodes, fileEpisodes, readerEpisodes } = filteredAndSortedEpisodes;
+
+  // Filter by sale type
+  const displayedEpisodes = saleType === "file" ? fileEpisodes : saleType === "chapter" ? readerEpisodes : readerEpisodes;
 
   return (
-    <div className="container py-8">
-      <Button variant="ghost" onClick={() => setLocation("/novels")} className="mb-6">
-        ← {t("common.back")}
-      </Button>
+    <div className="min-h-screen bg-background">
+      <div className="container max-w-4xl px-4 py-6 md:py-8">
+        {/* Back Button */}
+        <Button variant="ghost" onClick={() => setLocation("/novels")} className="mb-6 -ml-2 hover:bg-slate-100">
+          ← {t("common.back")}
+        </Button>
 
-      <div className="grid md:grid-cols-3 gap-8 mb-12">
-        {/* Novel Cover and Info */}
-        <div className="md:col-span-1">
-          {novel?.novel?.coverImageUrl && (
-            <img
-              src={novel.novel.coverImageUrl}
-              alt={novel.novel?.title || "Novel"}
-              className="w-full h-auto rounded-lg shadow-lg mb-6"
-              onError={(e) => {
-                (e.target as HTMLImageElement).style.display = "none";
-              }}
-            />
-          )}
-          <div className="space-y-4">
-            <div>
-              <h3 className="font-semibold text-sm text-muted-foreground">{t("novel.author")}</h3>
-              <p className="text-lg">{novel?.novel?.author || t("novel.unknownAuthor")}</p>
-            </div>
-            {novel?.categories && Array.isArray(novel.categories) && novel.categories.length > 0 && (
-              <div>
-                <h3 className="font-semibold text-sm text-muted-foreground">{t("novel.categories")}</h3>
-                <div className="flex flex-wrap gap-2 mt-2">
-                  {novel.categories.map((cat: any) => {
-                    if (!cat) return null;
-                    return (
-                      <Badge key={cat} variant="secondary">
-                        {cat}
-                      </Badge>
-                    );
-                  })}
-                </div>
-              </div>
+        {/* Novel Header Section */}
+        <div className="grid md:grid-cols-3 gap-6 md:gap-8 mb-10">
+          {/* Novel Cover and Info */}
+          <div className="md:col-span-1">
+            {novel?.novel?.coverImageUrl && (
+              <img
+                src={novel.novel.coverImageUrl}
+                alt={novel.novel?.title || "Novel"}
+                className="w-full h-auto rounded-lg shadow-md mb-6"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).style.display = "none";
+                }}
+              />
             )}
+            <div className="space-y-4">
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1">{t("novel.author")}</p>
+                <p className="text-base font-medium">{novel?.novel?.author || t("novel.unknownAuthor")}</p>
+              </div>
+              {novel?.categories && Array.isArray(novel.categories) && novel.categories.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">{t("novel.categories")}</p>
+                  <div className="flex flex-wrap gap-2">
+                    {novel.categories.map((cat: any) => {
+                      if (!cat) return null;
+                      return (
+                        <Badge key={cat} variant="secondary" className="text-xs">
+                          {cat}
+                        </Badge>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
 
-        {/* Novel Details */}
-        <div className="md:col-span-2">
-          <h1 className="text-4xl font-bold mb-4">{novel?.novel?.title || "Untitled"}</h1>
-          {/* Story status badge */}
-          {novel?.novel?.storyStatus && (
-            <div className="mb-3">
-              <span
-                className={`inline-block text-sm px-3 py-1 rounded-full font-medium ${
+          {/* Novel Details */}
+          <div className="md:col-span-2">
+            <h1 className="text-3xl md:text-4xl font-bold mb-3">{novel?.novel?.title || "Untitled"}</h1>
+
+            {/* Story status badge */}
+            {novel?.novel?.storyStatus && (
+              <div className="mb-4">
+                <Badge className={`text-xs font-medium ${
                   novel.novel.storyStatus === "finished"
                     ? "bg-purple-100 text-purple-700"
                     : "bg-blue-100 text-blue-700"
+                }`}>
+                  {novel.novel.storyStatus === "finished" ? "จบแล้ว" : "กำลังดำเนินเรื่อง"}
+                </Badge>
+              </div>
+            )}
+
+            <p className="text-base text-muted-foreground mb-6 leading-relaxed">{novel?.novel?.description || t("novel.noDescription")}</p>
+
+            {/* Episode Stats */}
+            <div className="grid grid-cols-3 gap-3 p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border">
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground mb-1">{t("status.totalEpisodes")}</p>
+                <p className="text-2xl font-bold">{episodes?.length || 0}</p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground mb-1">{t("status.freeEpisodes")}</p>
+                <p className="text-2xl font-bold text-green-600">{freeEpisodes.length}</p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground mb-1">{t("status.paidEpisodes")}</p>
+                <p className="text-2xl font-bold text-blue-600">{paidEpisodes.length}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Episodes Section */}
+        <div className="space-y-6">
+          {/* Section Header */}
+          <div>
+            <h2 className="text-2xl font-bold mb-4 px-1">{t("status.episodes")}</h2>
+
+            {/* Sale Type Tabs */}
+            <div className="flex gap-2 mb-6 border-b">
+              <button
+                onClick={() => setSaleType("all")}
+                className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+                  saleType === "all"
+                    ? "border-blue-600 text-blue-600"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
                 }`}
               >
-                {novel.novel.storyStatus === "finished" ? "Finished" : "Ongoing"}
-              </span>
+                ทั้งหมด
+              </button>
+              <button
+                onClick={() => setSaleType("chapter")}
+                className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+                  saleType === "chapter"
+                    ? "border-blue-600 text-blue-600"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                ขายรายบท
+              </button>
+              {fileEpisodes.length > 0 && (
+                <button
+                  onClick={() => setSaleType("file")}
+                  className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+                    saleType === "file"
+                      ? "border-blue-600 text-blue-600"
+                      : "border-transparent text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  ขายไฟล์
+                </button>
+              )}
             </div>
-          )}
-          <p className="text-lg text-muted-foreground mb-6">{novel?.novel?.description || t("novel.noDescription")}</p>
 
-          {/* Episode Stats */}
-          <div className="grid grid-cols-3 gap-4 mb-8 p-4 bg-muted rounded-lg">
-            <div>
-              <p className="text-sm text-muted-foreground">{t("status.totalEpisodes")}</p>
-              <p className="text-2xl font-bold">{episodes?.length || 0}</p>
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground">{t("status.freeEpisodes")}</p>
-              <p className="text-2xl font-bold text-green-600">{freeEpisodes.length}</p>
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground">{t("status.paidEpisodes")}</p>
-              <p className="text-2xl font-bold text-blue-600">{paidEpisodes.length}</p>
+            {/* Search and Sort Controls */}
+            <div className="flex flex-col sm:flex-row gap-3">
+              <div className="flex-1 relative">
+                <Search className="absolute left-3 top-3 w-4 h-4 text-muted-foreground pointer-events-none" />
+                <Input
+                  placeholder={t("novel.searchPlaceholder")}
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-10 h-10"
+                />
+              </div>
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as any)}
+                className="px-4 py-2 border border-input rounded-md bg-background text-foreground text-sm font-medium h-10 cursor-pointer"
+              >
+                <option value="newest">{t("novel.newestFirst")}</option>
+                <option value="oldest">{t("novel.oldestFirst")}</option>
+                <option value="titleAZ">{t("novel.titleAZ")}</option>
+                <option value="titleZA">{t("novel.titleZA")}</option>
+              </select>
             </div>
           </div>
-        </div>
-      </div>
 
-      {/* Episodes Section */}
-      <div className="space-y-6">
-        <div>
-          <h2 className="text-2xl font-bold mb-4">{t("status.episodes")}</h2>
-
-          {/* Search and Sort Controls */}
-          <div className="flex flex-col sm:flex-row gap-3 mb-6">
-            <div className="flex-1 relative">
-              <Search className="absolute left-3 top-3 w-4 h-4 text-muted-foreground" />
-              <Input
-                placeholder={t("novel.searchPlaceholder")}
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10"
-              />
-            </div>
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as any)}
-              className="px-3 py-2 border border-input rounded-md bg-background text-foreground text-sm"
-            >
-              <option value="newest">{t("novel.newestFirst")}</option>
-              <option value="oldest">{t("novel.oldestFirst")}</option>
-              <option value="titleAZ">{t("novel.titleAZ")}</option>
-              <option value="titleZA">{t("novel.titleZA")}</option>
-            </select>
-          </div>
-        </div>
-
-        {/* Free Episodes */}
-        {freeEpisodes.length > 0 && (
-          <div>
-            <h3 className="text-lg font-semibold mb-3 text-green-600">{t("status.freeEpisodes")} ({freeEpisodes.length})</h3>
-            <div className="space-y-2">
-              {freeEpisodes.map((episode: any) => {
-                if (!episode || !episode.id) return null;
-                return (
-                  <Card key={episode.id} className="p-3 flex items-center justify-between">
-                    <div className="flex-1 min-w-0">
-                      <p className="font-semibold text-sm">
-                        Episode {episode.episodeNumber || "?"} - {episode.title || "Untitled"}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2 ml-3 flex-shrink-0">
-                      <Badge variant="secondary" className="text-xs bg-green-100 text-green-700">
-                        {t("status.free")}
-                      </Badge>
-                      <button
-                        onClick={() => setLocation(`/read/${episode.id}`)}
-                        className="inline-flex items-center justify-center px-2 py-1 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition whitespace-nowrap"
-                      >
-                        <BookOpen className="w-3 h-3 mr-1" />
-                        {t("reader.readNow")}
-                      </button>
-                      {episode.fileUrl && (
-                        <a
-                          href={episode.fileUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center justify-center px-2 py-1 text-xs font-medium rounded-md bg-gray-500 text-white hover:bg-gray-600 transition whitespace-nowrap"
-                          title="Download file"
-                        >
-                          ⬇
-                        </a>
-                      )}
-                    </div>
-                  </Card>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Paid Episodes */}
-        {paidEpisodes.length > 0 && (
-          <div>
-            <h3 className="text-lg font-semibold mb-3 text-blue-600">{t("status.paidEpisodes")} ({paidEpisodes.length})</h3>
-            <div className="space-y-2">
-              {paidEpisodes.map((episode: any) => {
+          {/* Episodes List */}
+          <div className="space-y-3">
+            {displayedEpisodes.length > 0 ? (
+              displayedEpisodes.map((episode: any) => {
                 if (!episode || !episode.id) return null;
                 const inCart = cartItems.some((item: any) => item.episodeId === episode.id);
                 const isPurchased = episode.isPurchased || false;
+                const isFree = episode.isFree === true;
                 const isLoading = addToCartMutation.isPending || removeFromCartMutation.isPending;
                 const isSelected = inCart || selectedEpisodes.includes(episode.id);
 
                 return (
                   <Card
                     key={episode.id}
-                    role={!isPurchased ? "button" : undefined}
-                    tabIndex={!isPurchased ? 0 : undefined}
-                    aria-pressed={!isPurchased ? isSelected : undefined}
-                    aria-label={!isPurchased ? `${isSelected ? "Remove" : "Select"} Episode ${episode.episodeNumber} - ${episode.title}` : undefined}
+                    role={!isPurchased && !isFree ? "button" : undefined}
+                    tabIndex={!isPurchased && !isFree ? 0 : undefined}
+                    aria-pressed={!isPurchased && !isFree ? isSelected : undefined}
+                    aria-label={!isPurchased && !isFree ? `${isSelected ? "Remove" : "Select"} Episode ${episode.episodeNumber} - ${episode.title}` : undefined}
                     onClick={() => {
-                      if (isPurchased || isLoading) return;
+                      if (isFree || isPurchased || isLoading) return;
                       handleEpisodeToggle(episode.id, !isSelected);
                     }}
                     onKeyDown={(e) => {
-                      if (isPurchased || isLoading) return;
+                      if (isFree || isPurchased || isLoading) return;
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
                         handleEpisodeToggle(episode.id, !isSelected);
                       }
                     }}
-                    className={`p-3 flex items-center justify-between transition-all cursor-pointer ${
-                      isPurchased
-                        ? "cursor-default"
-                        : isSelected
-                          ? "border-blue-500 bg-blue-50 ring-1 ring-blue-300"
-                          : "hover:bg-slate-50"
-                    } ${isLoading ? "opacity-60 cursor-wait" : ""}`}
+                    className={`p-4 transition-all ${
+                      !isPurchased && !isFree
+                        ? "cursor-pointer"
+                        : "cursor-default"
+                    } ${
+                      isSelected && !isFree && !isPurchased
+                        ? "border-2 border-blue-500 bg-blue-50 dark:bg-blue-950"
+                        : "border border-border hover:border-slate-400"
+                    } ${isLoading ? "opacity-60" : ""}`}
                   >
-                    <div className="flex-1 min-w-0">
-                      <p className="font-semibold text-sm">
-                        Episode {episode.episodeNumber || "?"} - {episode.title || "Untitled"}
-                      </p>
-                      {!isPurchased && (
-                        <p className="text-xs text-slate-500 mt-1">
-                          {isSelected ? "เลือกไว้ในตะกร้าแล้ว" : isLoading ? "กำลังอัปเดต..." : "กดการ์ดเพื่อเลือกซื้อ"}
-                        </p>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-3 ml-3 flex-shrink-0">
-                      {isPurchased ? (
-                        <>
-                          <button
-                            onClick={() => setLocation(`/read/${episode.id}`)}
-                            className="inline-flex items-center justify-center px-2 py-1 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition whitespace-nowrap"
-                          >
-                            <BookOpen className="w-3 h-3 mr-1" />
-                            {t("reader.readNow")}
-                          </button>
-                          {episode.fileUrl && (
-                            <a
-                              href={episode.fileUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center justify-center px-2 py-1 text-xs font-medium rounded-md bg-gray-500 text-white hover:bg-gray-600 transition whitespace-nowrap"
-                              title="Download file"
-                            >
-                              ⬇
-                            </a>
+                    {/* Episode Content */}
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                      {/* Left: Title and Info */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-start gap-3 mb-1">
+                          <p className="font-semibold text-sm leading-tight">
+                            ตอนที่ {episode.episodeNumber || "?"}: {episode.title || "ไม่มีชื่อ"}
+                          </p>
+                          {isFree && (
+                            <Badge className="shrink-0 text-xs bg-green-100 text-green-700 font-medium">
+                              ฟรี
+                            </Badge>
                           )}
-                        </>
-                      ) : (
-                        <>
-                          <p className="font-semibold text-sm whitespace-nowrap">฿{episode.price ?? "N/A"}</p>
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={(e) => {
-                              e.stopPropagation();
-                              try {
-                                handleEpisodeToggle(episode.id, e.target.checked);
-                              } catch (err) {
-                                console.error("Error toggling episode:", err);
-                                toast.error("Failed to update cart");
-                              }
-                            }}
-                            onClick={(e) => e.stopPropagation()}
-                            disabled={isLoading}
-                            className="w-4 h-4 cursor-pointer"
-                          />
-                        </>
-                      )}
+                          {isPurchased && (
+                            <Badge className="shrink-0 text-xs bg-blue-100 text-blue-700 font-medium">
+                              ปลดล็อกแล้ว
+                            </Badge>
+                          )}
+                        </div>
+                        {!isFree && !isPurchased && (
+                          <p className="text-xs text-muted-foreground">
+                            {isSelected ? "เลือกไว้ในตะกร้า" : isLoading ? "กำลังอัปเดต..." : "กดเพื่อเลือกซื้อ"}
+                          </p>
+                        )}
+                      </div>
+
+                      {/* Right: Actions */}
+                      <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+                        {isFree ? (
+                          <>
+                            <button
+                              onClick={() => setLocation(`/read/${episode.id}`)}
+                              className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition active:bg-blue-800"
+                            >
+                              <BookOpen className="w-3.5 h-3.5 mr-1.5" />
+                              อ่าน
+                            </button>
+                            {episode.fileUrl && (
+                              <a
+                                href={episode.fileUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-slate-500 text-white hover:bg-slate-600 transition"
+                                title="ดาวน์โหลดไฟล์"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                              </a>
+                            )}
+                          </>
+                        ) : isPurchased ? (
+                          <>
+                            <button
+                              onClick={() => setLocation(`/read/${episode.id}`)}
+                              className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
+                            >
+                              <BookOpen className="w-3.5 h-3.5 mr-1.5" />
+                              อ่าน
+                            </button>
+                            {episode.fileUrl && (
+                              <a
+                                href={episode.fileUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-slate-500 text-white hover:bg-slate-600 transition"
+                                title="ดาวน์โหลดไฟล์"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                              </a>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            <span className="font-semibold text-sm text-foreground whitespace-nowrap">
+                              ฿{episode.price ?? "ไม่ระบุ"}
+                            </span>
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                try {
+                                  handleEpisodeToggle(episode.id, e.target.checked);
+                                } catch (err) {
+                                  console.error("Error toggling episode:", err);
+                                  toast.error("Failed to update cart");
+                                }
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                              disabled={isLoading}
+                              className="w-5 h-5 cursor-pointer accent-blue-600"
+                              aria-label={`Select episode ${episode.episodeNumber}`}
+                            />
+                          </>
+                        )}
+                      </div>
                     </div>
                   </Card>
                 );
-              })}
-            </div>
+              })
+            ) : (
+              <Card className="p-8 text-center">
+                <p className="text-muted-foreground">
+                  {saleType === "file" ? "ยังไม่มีแพ็กขายไฟล์" : saleType === "chapter" ? "ยังไม่มีรายการขายแบบรายบท" : "ไม่มีตอนที่ตรงกับการค้นหา"}
+                </p>
+              </Card>
+            )}
           </div>
-        )}
-
-        {/* No Results */}
-        {episodes && episodes.length > 0 && freeEpisodes.length === 0 && paidEpisodes.length === 0 && (
-          <Card className="p-8 text-center text-muted-foreground">
-            No episodes match your search.
-          </Card>
-        )}
-
-        {(!episodes || episodes.length === 0) && (
-          <Card className="p-8 text-center text-muted-foreground">
-            No episodes available yet.
-          </Card>
-        )}
+        </div>
       </div>
     </div>
   );
