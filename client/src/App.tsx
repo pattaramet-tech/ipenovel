@@ -12,6 +12,7 @@ import AdminBannersPage from "@/pages/AdminBannersPage";
 import AdminCouponsPage from "@/pages/AdminCouponsPage";
 import AdminNovelsPage from "@/pages/AdminNovelsPage";
 import AdminEpisodesPage from "@/pages/AdminEpisodesPage";
+import AdminEpisodeImportPage from "@/pages/AdminEpisodeImportPage";
 import AdminCategoriesPage from "@/pages/AdminCategoriesPage";
 import AdminOrdersPage from "@/pages/AdminOrdersPage";
 import AdminOrderDetailPage from "@/pages/AdminOrderDetailPage";
@@ -61,6 +62,7 @@ function Router() {
         <Route path={"/admin/novels"} component={AdminNovelsPage} />
         <Route path={"/admin/episodes/:novelId"} component={AdminEpisodesPage} />
         <Route path={"/admin/episodes"} component={AdminEpisodesPage} />
+        <Route path={"/admin/import-episodes"} component={AdminEpisodeImportPage} />
         <Route path={"/admin/categories"} component={AdminCategoriesPage} />
         <Route path={"/admin/banners"} component={AdminBannersPage} />
         <Route path={"/admin/coupons"} component={AdminCouponsPage} />
