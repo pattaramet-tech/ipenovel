@@ -1,10 +1,18 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useParams, useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import styles from "./ReaderPage.module.css";
+
+// Utility to generate watermark text
+const generateWatermarkText = (user: any, episodeId: number): string => {
+  const date = new Date().toLocaleString("th-TH");
+  const email = user?.email || "user@ipe.local";
+  const userId = user?.id || "unknown";
+  return `Ipe นิยายแปล • ${email} • UID: ${userId} • EP: ${episodeId} • ${date}`;
+};
 
 export default function ReaderPage() {
   const { episodeId: episodeIdStr } = useParams<{ episodeId: string }>();
@@ -23,6 +31,60 @@ export default function ReaderPage() {
   const [fontSize, setFontSize] = useState(16);
   const [theme, setTheme] = useState<"light" | "dark" | "sepia">("light");
   const [showPurchaseConfirm, setShowPurchaseConfirm] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
+
+  // Copy protection and watermark effect
+  useEffect(() => {
+    const handleCopyProtection = (e: ClipboardEvent | DragEvent | MouseEvent | KeyboardEvent) => {
+      e.preventDefault();
+    };
+
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Block copy shortcuts: Ctrl+C, Ctrl+X, Ctrl+A, Ctrl+S, Ctrl+P, Cmd variants
+      if ((e.ctrlKey || e.metaKey) && ['c', 'x', 'a', 's', 'p'].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+      }
+    };
+
+    const attachProtection = (element: HTMLDivElement | null) => {
+      if (!element) return;
+
+      // Prevent text selection via CSS will be handled in stylesheet
+      element.classList.add(styles.protected);
+
+      // Event listeners for copy prevention
+      element.addEventListener('copy', handleCopyProtection);
+      element.addEventListener('cut', handleCopyProtection);
+      element.addEventListener('paste', handleCopyProtection);
+      element.addEventListener('dragstart', handleCopyProtection as any);
+      element.addEventListener('selectstart', handleCopyProtection as any);
+      element.addEventListener('contextmenu', handleContextMenu);
+      element.addEventListener('keydown', handleKeyDown);
+
+      return () => {
+        element.removeEventListener('copy', handleCopyProtection);
+        element.removeEventListener('cut', handleCopyProtection);
+        element.removeEventListener('paste', handleCopyProtection);
+        element.removeEventListener('dragstart', handleCopyProtection as any);
+        element.removeEventListener('selectstart', handleCopyProtection as any);
+        element.removeEventListener('contextmenu', handleContextMenu);
+        element.removeEventListener('keydown', handleKeyDown);
+      };
+    };
+
+    const cleanupContent = attachProtection(contentRef.current);
+    const cleanupPreview = attachProtection(previewRef.current);
+
+    return () => {
+      cleanupContent?.();
+      cleanupPreview?.();
+    };
+  }, []);
 
   const episode = episodeData?.episode;
   const novel = episodeData?.novel;
@@ -141,12 +203,18 @@ export default function ReaderPage() {
       <div className={styles.content}>
         {episode.canRead && episode.content ? (
           <div
+            ref={contentRef}
             className={styles.episodeContent}
             style={{ fontSize: `${fontSize}px` }}
           >
             {episode.content.split("\n").map((para: string, idx: number) => (
               <p key={idx}>{para}</p>
             ))}
+            <div className={styles.watermark}>
+              <div className={styles.watermarkText}>
+                {generateWatermarkText(user, episodeId)}
+              </div>
+            </div>
           </div>
         ) : episode.canRead && !episode.content ? (
           // User has access but content is empty
@@ -176,6 +244,7 @@ export default function ReaderPage() {
         ) : episode.isLocked && episode.preview ? (
           <div className={styles.lockedSection}>
             <div
+              ref={previewRef}
               className={styles.previewContent}
               style={{ fontSize: `${fontSize}px` }}
             >
@@ -183,6 +252,11 @@ export default function ReaderPage() {
                 <p key={idx}>{para}</p>
               ))}
               <div className={styles.previewFade}></div>
+              <div className={styles.watermark}>
+                <div className={styles.watermarkText}>
+                  {generateWatermarkText(user, episodeId)}
+                </div>
+              </div>
             </div>
 
             <div className={styles.purchasePrompt}>

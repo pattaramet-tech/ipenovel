@@ -161,6 +161,7 @@
 }
 
 .episodeContent {
+  position: relative;
   line-height: 1.8;
   text-align: justify;
 }
@@ -524,4 +525,51 @@
 .confirmButton:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* Copy Protection Styles */
+.protected {
+  /* Client-side protection against text selection and copying */
+  /* Note: This is not a true security measure. Determined users can still */
+  /* copy content via browser dev tools, source inspection, or network analysis. */
+  /* Use this in combination with server-side logging and legal agreements. */
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  -webkit-user-drag: none;
+  -khtml-user-select: none;
+}
+
+/* Watermark Overlay */
+.watermark {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.watermarkText {
+  font-size: 0.75rem;
+  color: rgba(0, 0, 0, 0.08);
+  text-align: center;
+  max-width: 90%;
+  line-height: 1.4;
+  word-break: break-word;
+  transform: rotate(-45deg);
+  white-space: normal;
+}
+
+.dark .watermarkText {
+  color: rgba(255, 255, 255, 0.06);
+}
+
+.sepia .watermarkText {
+  color: rgba(61, 61, 61, 0.05);
 }
