@@ -227,12 +227,12 @@ export default function NovelDetailPage() {
           )}
           <div className="space-y-4">
             <div>
-              <h3 className="font-semibold text-sm text-muted-foreground">{t("novel.author")}</h3>
-              <p className="text-lg">{novel?.novel?.author || t("novel.unknownAuthor")}</p>
+              <h3 className="font-semibold text-sm text-muted-foreground">Author</h3>
+              <p className="text-lg">{novel?.novel?.author || "Unknown"}</p>
             </div>
             {novel?.categories && Array.isArray(novel.categories) && novel.categories.length > 0 && (
               <div>
-                <h3 className="font-semibold text-sm text-muted-foreground">{t("novel.categories")}</h3>
+                <h3 className="font-semibold text-sm text-muted-foreground">Categories</h3>
                 <div className="flex flex-wrap gap-2 mt-2">
                   {novel.categories.map((cat: any) => {
                     if (!cat) return null;
@@ -265,7 +265,7 @@ export default function NovelDetailPage() {
               </span>
             </div>
           )}
-          <p className="text-lg text-muted-foreground mb-6">{novel?.novel?.description || t("novel.noDescription")}</p>
+          <p className="text-lg text-muted-foreground mb-6">{novel?.novel?.description || "No description available"}</p>
 
           {/* Episode Stats */}
           <div className="grid grid-cols-3 gap-4 mb-8 p-4 bg-muted rounded-lg">
@@ -295,7 +295,7 @@ export default function NovelDetailPage() {
             <div className="flex-1 relative">
               <Search className="absolute left-3 top-3 w-4 h-4 text-muted-foreground" />
               <Input
-                placeholder={t("novel.searchPlaceholder")}
+                placeholder="Search by title or episode number..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="pl-10"
@@ -306,10 +306,10 @@ export default function NovelDetailPage() {
               onChange={(e) => setSortBy(e.target.value as any)}
               className="px-3 py-2 border border-input rounded-md bg-background text-foreground text-sm"
             >
-              <option value="newest">{t("novel.newestFirst")}</option>
-              <option value="oldest">{t("novel.oldestFirst")}</option>
-              <option value="titleAZ">{t("novel.titleAZ")}</option>
-              <option value="titleZA">{t("novel.titleZA")}</option>
+              <option value="newest">Newest First</option>
+              <option value="oldest">Oldest First</option>
+              <option value="titleAZ">Title A-Z</option>
+              <option value="titleZA">Title Z-A</option>
             </select>
           </div>
         </div>
@@ -340,12 +340,12 @@ export default function NovelDetailPage() {
                           className="inline-flex items-center justify-center px-2 py-1 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition whitespace-nowrap"
                         >
                           <BookOpen className="w-3 h-3 mr-1" />
-                          {t("novel.read")}
+                          Read
                         </a>
                       ) : (
                         <Button size="sm" disabled className="text-xs px-2 py-1">
                           <BookOpen className="w-3 h-3 mr-1" />
-                          {t("novel.read")}
+                          Read
                         </Button>
                       )}
                     </div>

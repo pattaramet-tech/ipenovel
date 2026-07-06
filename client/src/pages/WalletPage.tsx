@@ -3,7 +3,7 @@ import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { Upload, CheckCircle, AlertCircle, X, Loader2 } from "lucide-react";
@@ -24,20 +24,6 @@ export default function WalletPage() {
   const { data: summary, isLoading, error, refetch: refetchSummary } = trpc.wallet.getSummary.useQuery();
   const createTopupMutation = trpc.wallet.createTopupRequest.useMutation();
   const uploadSlipFileMutation = trpc.payment.uploadSlipFile.useMutation();
-
-  // Bonus preview state and hooks
-  const [bonusPreview, setBonusPreview] = useState<any>(null);
-  const getBonusPreviewQuery = trpc.wallet.getBonusPreview.useQuery(
-    { amount: topupAmount },
-    { enabled: !!topupAmount && parseFloat(topupAmount) > 0 }
-  );
-
-  // Update bonus preview when query data changes
-  useEffect(() => {
-    if (getBonusPreviewQuery.data) {
-      setBonusPreview(getBonusPreviewQuery.data);
-    }
-  }, [getBonusPreviewQuery.data]);
 
   const handleFileSelect = (file: File | null) => {
     if (!file) {
@@ -319,39 +305,29 @@ export default function WalletPage() {
               {/* Live Bonus Preview */}
               {topupAmount && parseFloat(topupAmount) > 0 && (
                 <div className="mt-3 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                  {getBonusPreviewQuery.isLoading ? (
-                    <div className="flex items-center gap-2 text-sm text-slate-600">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>{t("wallet.loadingBonusInfo")}</span>
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-700">Requested Amount:</span>
+                      <span className="font-semibold">฿{parseFloat(topupAmount).toFixed(2)}</span>
                     </div>
-                  ) : bonusPreview ? (
-                    <div className="space-y-2">
-                      <div className="flex justify-between text-sm">
-                        <span className="text-slate-700">{t("wallet.requestedAmountLabel")}:</span>
-                        <span className="font-semibold">฿{bonusPreview.requestedAmount?.toFixed(2) || topupAmount}</span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="text-slate-700">{t("wallet.bonusLabel")}:</span>
-                        <span className="font-semibold text-green-600">
-                          {bonusPreview.bonusAmount > 0 ? `+฿${bonusPreview.bonusAmount.toFixed(2)}` : t("wallet.noBonus")}
-                        </span>
-                      </div>
-                      <div className="border-t border-blue-200 pt-2 mt-2 flex justify-between">
-                        <span className="font-semibold text-slate-900">{t("wallet.totalToBeCredited")}:</span>
-                        <span className="font-bold text-lg text-green-700">
-                          ฿{bonusPreview.creditedAmount?.toFixed(2)}
-                        </span>
-                      </div>
-                      {bonusPreview.nextTier && (
-                        <div className="mt-3 p-3 bg-white border border-blue-100 rounded text-xs text-slate-700">
-                          <p className="font-semibold text-slate-900 mb-1">{t("wallet.nextTierLabel")}:</p>
-                          <p>
-                            {t("wallet.topupMoreForBonus").replace("{amount}", bonusPreview.nextTier.amountNeeded?.toFixed(2) || "0").replace("{bonus}", bonusPreview.nextTier.bonusAmount || "0")}
-                          </p>
-                        </div>
-                      )}
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-700">Bonus:</span>
+                      <span className="font-semibold text-green-600">
+                        {parseFloat(topupAmount) >= 500 ? "+฿20.00" : parseFloat(topupAmount) >= 250 ? "+฿10.00" : "ไม่มีโบนัส"}
+                      </span>
                     </div>
-                  ) : null}
+                    <div className="border-t border-blue-200 pt-2 mt-2 flex justify-between">
+                      <span className="font-semibold text-slate-900">Total to be Credited:</span>
+                      <span className="font-bold text-lg text-green-700">
+                        ฿{(
+                          parseFloat(topupAmount) + (
+                            parseFloat(topupAmount) >= 500 ? 20 :
+                            parseFloat(topupAmount) >= 250 ? 10 : 0
+                          )
+                        ).toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

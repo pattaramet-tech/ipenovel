@@ -5,7 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
-import { Loader2, ArrowLeft, Image as ImageIcon, FileText, ExternalLink, Eye, Info } from "lucide-react";
+import { Loader2, ArrowLeft, Image as ImageIcon, FileText, ExternalLink, Eye } from "lucide-react";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
@@ -249,14 +249,14 @@ export default function AdminWalletTopupDetailPage() {
               <p className="text-2xl font-bold text-green-600">
                 {formatMoney(topup.bonusAmount)}
               </p>
-              <p className="text-xs text-slate-500 mt-1">Snapshot at creation</p>
+              <p className="text-xs text-slate-500 mt-1">Based on tier</p>
             </div>
             <div className="p-4 bg-white rounded border border-slate-200">
               <p className="text-sm text-slate-600 mb-1">Credited Amount</p>
               <p className="text-2xl font-bold text-blue-600">
                 {formatMoney(topup.creditedAmount)}
               </p>
-              <p className="text-xs text-slate-500 mt-1">Snapshot at creation</p>
+              <p className="text-xs text-slate-500 mt-1">Amount + Bonus</p>
             </div>
             {extractedData?.amount && (
               <div className="p-4 bg-white rounded border border-slate-200">
@@ -267,15 +267,6 @@ export default function AdminWalletTopupDetailPage() {
                 <p className="text-xs text-slate-500 mt-1">Extracted from slip</p>
               </div>
             )}
-          </div>
-
-          {/* Snapshot Information */}
-          <div className="mt-4 p-3 bg-white rounded border border-blue-200 flex gap-2 text-sm text-slate-700">
-            <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-            <p>
-              <span className="font-semibold">Bonus & Credited amounts are snapshots</span> captured when the top-up request was created.
-              If bonus tiers are later modified, this transaction retains its original bonus value.
-            </p>
           </div>
         </Card>
 
