@@ -128,7 +128,6 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
         throw new Error("Insufficient wallet balance");
       }
 
-      const balanceBefore = walletInTx[0].balance.toString();
       const priceStr = purchasePrice.toFixed(2);
 
       // 8. ATOMIC UPDATE: Use SQL arithmetic to prevent race condition
@@ -161,13 +160,21 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
       }
 
       const balanceAfter = walletAfterUpdate[0].balance.toString();
+      const balanceAfterNum = parseFloat(balanceAfter);
 
-      // 10. Create wallet transaction record with exact before/after balance
+      // IMPORTANT: Calculate balanceBefore from the actual balanceAfter to ensure audit log accuracy
+      // In concurrent scenarios, the pre-update balance we read initially may have changed
+      // by the time this transaction logs it. By calculating from the definitive balanceAfter
+      // (which is the actual state after our atomic update), we ensure:
+      // balanceBefore - amount = balanceAfter (always mathematically correct)
+      const balanceBeforeForLog = (balanceAfterNum + purchasePrice).toFixed(2);
+
+      // 10. Create wallet transaction record with mathematically consistent before/after balance
       const transactionResult = await tx.insert(walletTransactions).values({
         userId,
         type: "debit" as any,
         amount: priceStr,
-        balanceBefore,
+        balanceBefore: balanceBeforeForLog,
         balanceAfter,
         referenceType: "episode_purchase",
         referenceId: episodeId,
