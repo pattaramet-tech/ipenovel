@@ -88,13 +88,18 @@ export default function NovelDetailPage() {
       // instead of loosely substring-matching human text.
       const errorMsg = (error as any)?.message || "";
 
-      if (errorMsg === "INSUFFICIENT_WALLET_BALANCE" || errorMsg === "INSUFFICIENT_WALLET_BALANCE_ATOMIC") {
+      if (errorMsg === "INSUFFICIENT_WALLET_BALANCE") {
         toast.error("ยอดเงินในกระเป๋าไม่พอ กรุณาเติมเงิน", {
           action: {
             label: "เติมเงิน",
             onClick: () => setLocation("/wallet"),
           },
         });
+      } else if (errorMsg === "INSUFFICIENT_WALLET_BALANCE_ATOMIC") {
+        // Distinct from a real insufficient-balance rejection: this means the
+        // atomic debit step itself failed/couldn't be confirmed, not that the
+        // user's balance was too low - don't tell them to top up.
+        toast.error("ตัดเงินจากกระเป๋าไม่สำเร็จ กรุณาลองใหม่อีกครั้ง หากยังพบปัญหาให้ติดต่อแอดมิน");
       } else if (errorMsg === "INVALID_EPISODE_PRICE") {
         toast.error("ราคาบทนี้ไม่ถูกต้อง กรุณาติดต่อแอดมิน");
       } else if (errorMsg === "INVALID_WALLET_BALANCE") {

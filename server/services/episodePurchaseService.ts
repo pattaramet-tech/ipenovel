@@ -37,6 +37,42 @@ class PurchaseError extends Error {
 }
 
 /**
+ * Robustly extract affectedRows from a Drizzle mysql2 update/insert result.
+ *
+ * For queries without `.returning()`, drizzle-orm's mysql2 execute() returns
+ * the raw mysql2 driver shape untouched: `[ResultSetHeader, FieldPacket[]]`
+ * (an array, index 0 holds affectedRows) - NOT a flat object. Reading
+ * `result.affectedRows` directly on that array is always undefined, which
+ * previously fell back to `|| 0` and was misreported as an overdraft/
+ * insufficient-balance failure even when the UPDATE actually succeeded.
+ *
+ * Returns null (not 0) when the shape is unrecognized, so callers can fall
+ * back to verifying the actual balance instead of assuming failure.
+ */
+function extractAffectedRows(result: any): number | null {
+  const candidates = [
+    result,
+    Array.isArray(result) ? result[0] : undefined,
+    Array.isArray(result?.rows) ? result.rows[0] : result?.rows,
+    result?.result,
+    result?.raw,
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const affected =
+      candidate.affectedRows ?? candidate.affected_rows ?? candidate.rowsAffected ?? candidate.rowCount;
+    if (typeof affected === "number") return affected;
+    if (typeof affected === "bigint") return Number(affected);
+    if (typeof affected === "string" && affected.trim() !== "" && !Number.isNaN(Number(affected))) {
+      return Number(affected);
+    }
+  }
+
+  return null;
+}
+
+/**
  * Check if user already purchased an episode
  */
 async function checkExistingPurchase(userId: number, episodeId: number): Promise<boolean> {
@@ -232,13 +268,28 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
           gte(walletAccounts.balance, sql`CAST(${priceStr} AS DECIMAL(12,2))`)
         ));
 
-      const affectedRows = (updateResult as any)?.affectedRows || 0;
-      console.warn("[EpisodePurchase] Atomic debit result", { userId, episodeId, affectedRows });
+      const affectedRows = extractAffectedRows(updateResult);
+      console.warn("[EpisodePurchase] Atomic debit result", {
+        userId,
+        episodeId,
+        affectedRows,
+        updateResultShape: Array.isArray(updateResult) ? "array" : typeof updateResult,
+        priceStr,
+        currentBalanceInTx,
+      });
+
       if (affectedRows === 0) {
         throw new PurchaseError("INSUFFICIENT_WALLET_BALANCE_ATOMIC", {
           walletBalance: currentBalanceInTx.toFixed(2),
           requiredAmount: priceStr,
         });
+      }
+
+      if (affectedRows === null) {
+        console.warn(
+          "[EpisodePurchase] Could not determine affectedRows from updateResult; verifying wallet balance after update",
+          { userId, episodeId }
+        );
       }
 
       // 9. RE-FETCH wallet AFTER atomic update to get exact new balance
@@ -249,6 +300,23 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
 
       const balanceAfter = walletAfterUpdate[0].balance.toString();
       const balanceAfterNum = parseFloat(balanceAfter);
+
+      // If we couldn't read affectedRows from the driver result shape, fall
+      // back to verifying the debit actually happened by comparing the
+      // post-update balance (in cents) against the expected post-debit
+      // balance. Only treat it as a real failure if the balance is still
+      // at/above its pre-update value (i.e. the UPDATE's WHERE clause did
+      // not match and no debit occurred).
+      if (affectedRows === null) {
+        const balanceAfterCents = Math.round(balanceAfterNum * 100);
+        const expectedBalanceAfterCents = balanceCentsInTx - priceCentsInTx;
+        if (balanceAfterCents > expectedBalanceAfterCents) {
+          throw new PurchaseError("INSUFFICIENT_WALLET_BALANCE_ATOMIC", {
+            walletBalance: currentBalanceInTx.toFixed(2),
+            requiredAmount: priceStr,
+          });
+        }
+      }
 
       // IMPORTANT: Calculate balanceBefore from the actual balanceAfter to ensure audit log accuracy
       // In concurrent scenarios, the pre-update balance we read initially may have changed
