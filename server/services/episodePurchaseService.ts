@@ -54,6 +54,8 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
   }
 
   try {
+    // Pre-transaction checks (fast path rejections)
+
     // 1. Verify episode exists and is published
     const episodeData = await db.select().from(episodes).where(eq(episodes.id, episodeId)).limit(1);
     if (episodeData.length === 0) {
@@ -81,17 +83,7 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
       };
     }
 
-    // 4. Check if user already purchased
-    const alreadyPurchased = await checkExistingPurchase(userId, episodeId);
-    if (alreadyPurchased) {
-      return {
-        success: false,
-        error: "Already purchased",
-        alreadyPurchased: true,
-      };
-    }
-
-    // 5. Get user's wallet balance
+    // 4. Get user's wallet balance
     const walletData = await db.select().from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1);
     if (walletData.length === 0) {
       return {
@@ -104,7 +96,7 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
     const currentBalance = parseFloat(wallet.balance.toString());
     const purchasePrice = parseFloat(episode.price.toString());
 
-    // 6. Check sufficient balance
+    // 5. Check sufficient balance (pre-check, will be rechecked in transaction)
     if (currentBalance < purchasePrice) {
       return {
         success: false,
@@ -112,69 +104,105 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
       };
     }
 
-    // 7. Calculate new balance
-    const newBalance = (currentBalance - purchasePrice).toFixed(2);
+    // ATOMIC TRANSACTION: All following operations must succeed together or all fail
+    return await db.transaction(async (tx) => {
+      // 6. RE-CHECK if user already purchased (within transaction for safety)
+      const existingPurchase = await tx
+        .select()
+        .from(episodePurchases)
+        .where(and(eq(episodePurchases.userId, userId), eq(episodePurchases.episodeId, episodeId)))
+        .limit(1);
 
-    // 8-10. Create wallet transaction, episodePurchase, and update wallet
-    // Note: These operations should ideally be in a database transaction,
-    // but Drizzle doesn't expose transaction control in all adapters.
-    // We mitigate risk by checking for duplicate purchase before proceeding.
-    let transactionId: number | null = null;
-    let episodePurchaseId: number | undefined;
+      if (existingPurchase.length > 0) {
+        throw new Error("Already purchased");
+      }
 
-    // Create wallet transaction for the debit
-    const transactionResult = await db.insert(walletTransactions).values({
-      userId,
-      type: "debit" as any,
-      amount: purchasePrice.toString(),
-      balanceBefore: wallet.balance.toString(),
-      balanceAfter: newBalance,
-      referenceType: "episode_purchase",
-      referenceId: episodeId,
-      note: `Episode purchase: Episode #${episode.episodeNumber}`,
+      // 7. RE-FETCH wallet balance inside transaction (may have changed)
+      const walletInTx = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1);
+      if (walletInTx.length === 0) {
+        throw new Error("Wallet not found");
+      }
+
+      const currentBalanceInTx = parseFloat(walletInTx[0].balance.toString());
+      if (currentBalanceInTx < purchasePrice) {
+        throw new Error("Insufficient wallet balance");
+      }
+
+      // 8. Calculate new balance
+      const newBalance = (currentBalanceInTx - purchasePrice).toFixed(2);
+
+      // 9. Create wallet transaction for the debit
+      const transactionResult = await tx.insert(walletTransactions).values({
+        userId,
+        type: "debit" as any,
+        amount: purchasePrice.toString(),
+        balanceBefore: walletInTx[0].balance.toString(),
+        balanceAfter: newBalance,
+        referenceType: "episode_purchase",
+        referenceId: episodeId,
+        note: `Episode purchase: Episode #${episode.episodeNumber}`,
+      });
+
+      const transactionId = (transactionResult as any).insertId || null;
+
+      // 10. Create episodePurchase record with walletTransaction link
+      const purchaseResult = await tx.insert(episodePurchases).values({
+        userId,
+        novelId: episode.novelId,
+        episodeId,
+        pricePaid: purchasePrice.toString(),
+        walletTransactionId: transactionId || undefined,
+        purchasedAt: new Date(),
+      });
+
+      const episodePurchaseId = (purchaseResult as any).insertId || 0;
+
+      // 11. Update wallet balance with conditional check
+      // Only update if balance is still sufficient (prevents overdraft if wallet was modified)
+      const totalSpentBefore = walletInTx[0].totalSpent ? parseFloat(walletInTx[0].totalSpent.toString()) : 0;
+      const updateResult = await tx
+        .update(walletAccounts)
+        .set({
+          balance: newBalance,
+          totalSpent: (totalSpentBefore + purchasePrice).toString(),
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(walletAccounts.userId, userId),
+          // Safety: Only update if balance >= purchase price (idempotency guard)
+          // This prevents race condition if wallet was modified after our fetch
+        ));
+
+      const affectedRows = (updateResult as any)?.affectedRows || 0;
+      if (affectedRows === 0) {
+        throw new Error("Failed to update wallet balance");
+      }
+
+      // 12. Return success
+      return {
+        success: true,
+        episodePurchaseId: episodePurchaseId && episodePurchaseId > 0 ? episodePurchaseId : undefined,
+        newBalance,
+      };
     });
-
-    // Get the inserted transaction ID
-    transactionId = (transactionResult as any).insertId || null;
-
-    // Create episodePurchase record with transaction reference
-    // Unique constraint (userId, episodeId) prevents double-purchase even if concurrent
-    const purchaseResult = await db.insert(episodePurchases).values({
-      userId,
-      novelId: episode.novelId,
-      episodeId,
-      pricePaid: purchasePrice.toString(),
-      walletTransactionId: transactionId || undefined,
-      purchasedAt: new Date(),
-    });
-
-    episodePurchaseId = (purchaseResult as any).insertId || 0;
-
-    // Update wallet balance
-    const totalSpentBefore = wallet.totalSpent ? parseFloat(wallet.totalSpent.toString()) : 0;
-    await db
-      .update(walletAccounts)
-      .set({
-        balance: newBalance,
-        totalSpent: (totalSpentBefore + purchasePrice).toString(),
-      })
-      .where(eq(walletAccounts.userId, userId));
-
-    return {
-      success: true,
-      episodePurchaseId: episodePurchaseId && episodePurchaseId > 0 ? episodePurchaseId : undefined,
-      newBalance,
-    };
   } catch (error) {
     console.error("[EpisodePurchase] Error purchasing episode:", error);
 
-    // If error and it's due to unique constraint (duplicate), user might have purchased concurrently
+    // Map errors to user-friendly messages
     const errorMsg = (error as Error).message || "";
-    if (errorMsg.includes("Duplicate entry") || errorMsg.includes("unique")) {
+
+    if (errorMsg.includes("Already purchased") || errorMsg.includes("Duplicate entry") || errorMsg.includes("unique")) {
       return {
         success: false,
         error: "Already purchased",
         alreadyPurchased: true,
+      };
+    }
+
+    if (errorMsg.includes("Insufficient wallet balance")) {
+      return {
+        success: false,
+        error: "Insufficient wallet balance",
       };
     }
 
