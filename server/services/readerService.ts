@@ -112,8 +112,12 @@ export async function getReaderEpisode(userId: number | undefined, episodeId: nu
     alreadyPurchased = purchase.length > 0;
   }
 
+  // Sanitize episode object to not leak content in API response
+  // The content and preview are returned as top-level fields only when appropriate
+  const { content: _content, ...safeEpisode } = ep;
+
   const result: ReaderEpisodeData = {
-    episode: ep,
+    episode: safeEpisode,
     novel,
     canRead,
     isLocked: !canRead && !ep.isFree,
@@ -127,7 +131,7 @@ export async function getReaderEpisode(userId: number | undefined, episodeId: nu
     result.content = ep.content;
     result.accessReason = ep.isFree ? "free" : "purchased";
   } else if (ep.content) {
-    // Return preview for locked episodes
+    // Return preview for locked episodes (first 500 chars)
     const preview = ep.content.substring(0, 500);
     result.preview = preview;
   }

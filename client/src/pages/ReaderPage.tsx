@@ -39,6 +39,9 @@ export default function ReaderPage() {
   const novel = episodeData?.novel;
   const walletBalance = episodeData?.walletBalance || "0";
   const canRead = episodeData?.canRead || false;
+  const isLocked = episodeData?.isLocked || false;
+  const content = episodeData?.content || "";
+  const preview = episodeData?.preview || "";
 
   // Copy protection and watermark effect
   useEffect(() => {
@@ -105,7 +108,7 @@ export default function ReaderPage() {
       cleanupPreview?.();
       document.removeEventListener('keydown', handleDocumentKeyDown);
     };
-  }, [episode?.id, episode?.canRead, episode?.content, episode?.preview, episodeId, t]);
+  }, [episode?.id, canRead, content, preview, episodeId, t]);
 
   if (!user) {
     return (
@@ -217,13 +220,13 @@ export default function ReaderPage() {
 
       {/* Content Area */}
       <div className={styles.content}>
-        {episode.canRead && episode.content ? (
+        {canRead && content ? (
           <div
             ref={contentRef}
             className={`${styles.episodeContent} ${styles.protected}`}
             style={{ fontSize: `${fontSize}px` }}
           >
-            {episode.content.split("\n").map((para: string, idx: number) => (
+            {content.split("\n").map((para: string, idx: number) => (
               <p key={idx}>{para}</p>
             ))}
             <div className={styles.watermark}>
@@ -232,11 +235,11 @@ export default function ReaderPage() {
               </div>
             </div>
           </div>
-        ) : episode.canRead && !episode.content ? (
+        ) : canRead && !content ? (
           // User has access but content is empty
           <div className={styles.noContentSection}>
             <h3>{t("reader.noContentTitle")}</h3>
-            {episode.fileUrl ? (
+            {episode?.fileUrl ? (
               <>
                 <p>{t("reader.noContentWithFile")}</p>
                 <a
@@ -257,14 +260,14 @@ export default function ReaderPage() {
               </>
             )}
           </div>
-        ) : episode.isLocked && episode.preview ? (
+        ) : isLocked && preview ? (
           <div className={styles.lockedSection}>
             <div
               ref={previewRef}
               className={`${styles.previewContent} ${styles.protected}`}
               style={{ fontSize: `${fontSize}px` }}
             >
-              {episode.preview.split("\n").map((para: string, idx: number) => (
+              {preview.split("\n").map((para: string, idx: number) => (
                 <p key={idx}>{para}</p>
               ))}
               <div className={styles.previewFade}></div>
@@ -319,7 +322,7 @@ export default function ReaderPage() {
               )}
             </div>
           </div>
-        ) : !episode.canRead ? (
+        ) : !canRead ? (
           <div className={styles.errorContent}>
             <p>{t("reader.noAccess")}</p>
           </div>
