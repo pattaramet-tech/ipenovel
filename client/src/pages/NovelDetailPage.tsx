@@ -123,8 +123,9 @@ export default function NovelDetailPage() {
     // Split by sale type: file (has fileUrl) vs reader (for chapter reading)
     // fileEpisodes: episodes with fileUrl (file/cart sale)
     const fileEpisodes = sorted.filter((ep: any) => ep && ep.fileUrl);
-    // readerEpisodes: episodes with content/contentFormat (reader-based reading)
-    const readerEpisodes = sorted.filter((ep: any) => ep && (ep.content || ep.contentFormat));
+    // readerEpisodes: episodes without fileUrl AND with content (reader-based reading)
+    // IMPORTANT: Do not include episodes with fileUrl even if they have contentFormat
+    const readerEpisodes = sorted.filter((ep: any) => ep && !ep.fileUrl && ep.content);
 
     return { freeEpisodes, paidEpisodes, fileEpisodes, readerEpisodes };
   }, [episodes, searchTerm, sortBy]);
