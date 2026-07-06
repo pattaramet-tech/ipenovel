@@ -1,4 +1,10 @@
 -- Add content and metadata fields to episodes table
+-- Note: If this migration fails with "ERROR 1060: Duplicate column name",
+-- the columns already exist. Check with:
+-- SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+-- WHERE TABLE_NAME = 'episodes' AND COLUMN_NAME IN ('content', 'contentFormat');
+-- Then run 004_ensure_reader_columns_idempotent.sql instead.
+
 ALTER TABLE episodes
 ADD COLUMN content LONGTEXT NULL AFTER description,
 ADD COLUMN contentFormat VARCHAR(50) DEFAULT 'plain_text' AFTER content,

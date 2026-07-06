@@ -115,31 +115,42 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
     // 7. Calculate new balance
     const newBalance = (currentBalance - purchasePrice).toFixed(2);
 
-    // 8. Create wallet transaction for the debit
-    const transactionInsert = await db.insert(walletTransactions).values({
+    // 8-10. Create wallet transaction, episodePurchase, and update wallet
+    // Note: These operations should ideally be in a database transaction,
+    // but Drizzle doesn't expose transaction control in all adapters.
+    // We mitigate risk by checking for duplicate purchase before proceeding.
+    let transactionId: number | null = null;
+    let episodePurchaseId: number | undefined;
+
+    // Create wallet transaction for the debit
+    const transactionResult = await db.insert(walletTransactions).values({
       userId,
-      type: "debit",
-      amount: (-purchasePrice).toString(),
-      balanceBefore: wallet.balance,
+      type: "debit" as any,
+      amount: purchasePrice.toString(),
+      balanceBefore: wallet.balance.toString(),
       balanceAfter: newBalance,
       referenceType: "episode_purchase",
       referenceId: episodeId,
       note: `Episode purchase: Episode #${episode.episodeNumber}`,
     });
 
-    // 9. Create episodePurchase record
-    const purchaseInsert = await db.insert(episodePurchases).values({
+    // Get the inserted transaction ID
+    transactionId = (transactionResult as any).insertId || null;
+
+    // Create episodePurchase record with transaction reference
+    // Unique constraint (userId, episodeId) prevents double-purchase even if concurrent
+    const purchaseResult = await db.insert(episodePurchases).values({
       userId,
       novelId: episode.novelId,
       episodeId,
       pricePaid: purchasePrice.toString(),
-      walletTransactionId: null,
+      walletTransactionId: transactionId || undefined,
       purchasedAt: new Date(),
     });
 
-    const episodePurchaseId = 0; // Will be auto-generated
+    episodePurchaseId = (purchaseResult as any).insertId || 0;
 
-    // 10. Update wallet balance
+    // Update wallet balance
     const totalSpentBefore = wallet.totalSpent ? parseFloat(wallet.totalSpent.toString()) : 0;
     await db
       .update(walletAccounts)
@@ -151,7 +162,7 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
 
     return {
       success: true,
-      episodePurchaseId: episodePurchaseId > 0 ? episodePurchaseId : undefined,
+      episodePurchaseId: episodePurchaseId && episodePurchaseId > 0 ? episodePurchaseId : undefined,
       newBalance,
     };
   } catch (error) {

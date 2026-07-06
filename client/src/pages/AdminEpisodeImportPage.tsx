@@ -52,6 +52,35 @@ export default function AdminEpisodeImportPage() {
     reader.readAsText(file);
   };
 
+  // Simple but robust CSV parser that handles quoted fields
+  const parseCSVLine = (line: string): string[] => {
+    const result: string[] = [];
+    let current = "";
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      const nextChar = line[i + 1];
+
+      if (char === '"') {
+        if (inQuotes && nextChar === '"') {
+          current += '"';
+          i++; // Skip next quote
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === "," && !inQuotes) {
+        result.push(current.trim());
+        current = "";
+      } else {
+        current += char;
+      }
+    }
+
+    result.push(current.trim());
+    return result;
+  };
+
   const parseCSV = (csv: string) => {
     const lines = csv.split("\n").filter((line) => line.trim());
     if (lines.length < 2) {
@@ -59,7 +88,7 @@ export default function AdminEpisodeImportPage() {
       return;
     }
 
-    const headers = lines[0].split(",").map((h) => h.trim().toLowerCase());
+    const headers = parseCSVLine(lines[0]).map((h) => h.toLowerCase());
     const episodes: ParsedEpisode[] = [];
     const errors: ValidationError[] = [];
 
@@ -74,15 +103,17 @@ export default function AdminEpisodeImportPage() {
 
     for (let i = 1; i < lines.length; i++) {
       const row = i + 1;
-      const cols = lines[i].split(",").map((c) => c.trim());
+      const cols = parseCSVLine(lines[i]);
 
-      const episodeNumber = episodeNumberIdx >= 0 ? cols[episodeNumberIdx] : "";
-      const title = titleIdx >= 0 ? cols[titleIdx] : "";
-      const price = priceIdx >= 0 ? cols[priceIdx] : "0";
-      const isFree = isFreeIdx >= 0 ? cols[isFreeIdx]?.toLowerCase() === "true" : false;
-      const isPublished = isPublishedIdx >= 0 ? cols[isPublishedIdx]?.toLowerCase() !== "false" : true;
-      const content = contentIdx >= 0 ? cols[contentIdx] : "";
-      const sortOrder = sortOrderIdx >= 0 ? parseInt(cols[sortOrderIdx]) || undefined : undefined;
+      const episodeNumber = episodeNumberIdx >= 0 && cols[episodeNumberIdx] ? cols[episodeNumberIdx] : "";
+      const title = titleIdx >= 0 && cols[titleIdx] ? cols[titleIdx] : "";
+      const priceStr = priceIdx >= 0 && cols[priceIdx] ? cols[priceIdx] : "0";
+      const price = isNaN(parseFloat(priceStr)) ? "0" : priceStr;
+      const isFree = isFreeIdx >= 0 && cols[isFreeIdx] ? cols[isFreeIdx].toLowerCase() === "true" : false;
+      const isPublished = isPublishedIdx >= 0 && cols[isPublishedIdx] ? cols[isPublishedIdx].toLowerCase() !== "false" : true;
+      const content = contentIdx >= 0 && cols[contentIdx] ? cols[contentIdx] : "";
+      const sortOrderIdx_ = sortOrderIdx >= 0 && cols[sortOrderIdx] ? parseInt(cols[sortOrderIdx], 10) : undefined;
+      const sortOrder = !isNaN(sortOrderIdx_ || NaN) ? sortOrderIdx_ : undefined;
 
       // Validation
       if (!episodeNumber) {

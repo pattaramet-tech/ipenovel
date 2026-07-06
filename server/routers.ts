@@ -1872,7 +1872,7 @@ export const appRouter = router({
           episodes: s.episodes,
           novels: s.novels
         }));
-        const { eq } = await import("drizzle-orm").then(m => ({ eq: m.eq }));
+        const { eq, inArray, and } = await import("drizzle-orm").then(m => ({ eq: m.eq, inArray: m.inArray, and: m.and }));
 
         // Get all purchases for this user
         const purchases = await db
@@ -1884,39 +1884,41 @@ export const appRouter = router({
           return [];
         }
 
-        // Get episode details for purchases
+        // Get episode details for purchases - filter by episodeIds to prevent data leak
         const episodeIds = purchases.map(p => p.episodeId);
         const episodeData = await db
           .select()
           .from(episodes)
-          .where(input.novelId ? eq(episodes.novelId, input.novelId) : undefined);
+          .where(and(
+            inArray(episodes.id, episodeIds),
+            input.novelId ? eq(episodes.novelId, input.novelId) : undefined
+          ));
 
         // Get novel details
         const novelIds = new Set(episodeData.map((ep: any) => ep.novelId));
         const novelData = await db
           .select()
-          .from(novels);
+          .from(novels)
+          .where(inArray(novels.id, Array.from(novelIds)));
 
         // Build result
-        return episodeData
-          .filter((ep: any) => episodeIds.includes(ep.id))
-          .map((ep: any) => ({
-            purchaseId: purchases.find(p => p.episodeId === ep.id)?.id,
-            purchasedAt: purchases.find(p => p.episodeId === ep.id)?.purchasedAt,
-            pricePaid: purchases.find(p => p.episodeId === ep.id)?.pricePaid,
-            episode: {
-              id: ep.id,
-              novelId: ep.novelId,
-              episodeNumber: ep.episodeNumber,
-              title: ep.title,
-              description: ep.description,
-              wordCount: ep.wordCount,
-              isPublished: ep.isPublished,
-              price: ep.price,
-              isFree: ep.isFree,
-            },
-            novel: novelData.find((n: any) => n.id === ep.novelId),
-          }));
+        return episodeData.map((ep: any) => ({
+          purchaseId: purchases.find(p => p.episodeId === ep.id)?.id,
+          purchasedAt: purchases.find(p => p.episodeId === ep.id)?.purchasedAt,
+          pricePaid: purchases.find(p => p.episodeId === ep.id)?.pricePaid,
+          episode: {
+            id: ep.id,
+            novelId: ep.novelId,
+            episodeNumber: ep.episodeNumber,
+            title: ep.title,
+            description: ep.description,
+            wordCount: ep.wordCount,
+            isPublished: ep.isPublished,
+            price: ep.price,
+            isFree: ep.isFree,
+          },
+          novel: novelData.find((n: any) => n.id === ep.novelId),
+        }));
       }),
   }),
 

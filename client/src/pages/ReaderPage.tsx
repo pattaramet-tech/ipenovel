@@ -220,7 +220,10 @@ export default function ReaderPage() {
               </button>
 
               {parseFloat(walletBalance) < parseFloat(episode.price) && (
-                <button className={styles.topupButton}>
+                <button
+                  className={styles.topupButton}
+                  onClick={() => setLocation("/wallet")}
+                >
                   {t("reader.topupWallet")}
                 </button>
               )}

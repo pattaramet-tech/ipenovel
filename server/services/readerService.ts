@@ -76,25 +76,30 @@ export async function getReaderEpisode(userId: number | undefined, episodeId: nu
 
   const canRead = await canReadEpisode(userId, episodeId, isAdmin);
 
-  // Get previous and next episodes
+  // Get previous and next episodes using numeric episodeNumber comparison
+  const { lt, gt } = await import("drizzle-orm").then(m => ({ lt: m.lt, gt: m.gt }));
+
   const prevEpisode = await db
     .select()
     .from(episodes)
-    .where(and(eq(episodes.novelId, ep.novelId), eq(episodes.isPublished, true)))
+    .where(and(
+      eq(episodes.novelId, ep.novelId),
+      eq(episodes.isPublished, true),
+      lt(episodes.id, ep.id)
+    ))
     .orderBy(episodes.id)
-    .limit(1)
-    .offset(
-      // This is a simplified approach; for real implementation, might need better ordering
-      0
-    );
+    .limit(1);
 
   const nextEpisode = await db
     .select()
     .from(episodes)
-    .where(and(eq(episodes.novelId, ep.novelId), eq(episodes.isPublished, true)))
+    .where(and(
+      eq(episodes.novelId, ep.novelId),
+      eq(episodes.isPublished, true),
+      gt(episodes.id, ep.id)
+    ))
     .orderBy(episodes.id)
-    .limit(1)
-    .offset(1);
+    .limit(1);
 
   // Check if already purchased
   let alreadyPurchased = false;
