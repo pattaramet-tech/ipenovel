@@ -22,7 +22,6 @@ import {
   generateManualReviewNote,
   generateShadowModeNote,
 } from "./_core/ocr-order-notes";
-import * as readerService from "./services/readerService";
 
 // ============ HELPER PROCEDURES ============
 
@@ -165,14 +164,12 @@ export const appRouter = router({
       const episodes = await db.getEpisodesByNovelId(input.novelId);
 
       // Enrich episodes with purchase status
-      // Check both wallet direct purchase (episodePurchases) and legacy order purchase (purchases)
       const enriched = await Promise.all(
         episodes.map(async (ep: any) => {
-          const canRead = await readerService.canReadEpisode(ctx.user.id, ep.id, ctx.user.role === "admin");
+          const isPurchased = await orderService.isEpisodeAlreadyPurchased(ctx.user.id, ep.id);
           return {
             ...ep,
-            canRead,
-            isPurchased: canRead && !ep.isFree, // isPurchased is true if user can read and it's not free
+            isPurchased,
             isFree: ep.isFree,
           };
         })
@@ -218,9 +215,9 @@ export const appRouter = router({
         const episode = await db.getEpisodeById(input.episodeId);
         if (!episode) throw new TRPCError({ code: "NOT_FOUND" });
 
-        // Check if already purchased (both wallet direct purchase and order-based purchase)
-        const canRead = await readerService.canReadEpisode(ctx.user.id, input.episodeId, ctx.user.role === "admin");
-        if (canRead) {
+        // Check if already purchased
+        const isPurchased = await orderService.isEpisodeAlreadyPurchased(ctx.user.id, input.episodeId);
+        if (isPurchased) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "This episode has already been purchased" });
         }
 
@@ -548,9 +545,9 @@ export const appRouter = router({
     episode: protectedProcedure
       .input(z.object({ episodeId: z.number() }))
       .query(async ({ input, ctx }) => {
-        // Check access (both wallet direct purchase and order-based purchase)
-        const canRead = await readerService.canReadEpisode(ctx.user.id, input.episodeId, ctx.user.role === "admin");
-        if (!canRead) {
+        // Check access
+        const hasAccess = await orderService.hasAccessToEpisode(ctx.user.id, input.episodeId);
+        if (!hasAccess) {
           throw new TRPCError({ code: "FORBIDDEN" });
         }
 
@@ -563,9 +560,9 @@ export const appRouter = router({
     downloadUrl: protectedProcedure
       .input(z.object({ episodeId: z.number() }))
       .query(async ({ input, ctx }) => {
-        // Check access (both wallet direct purchase and order-based purchase)
-        const canRead = await readerService.canReadEpisode(ctx.user.id, input.episodeId, ctx.user.role === "admin");
-        if (!canRead) {
+        // Check access
+        const hasAccess = await orderService.hasAccessToEpisode(ctx.user.id, input.episodeId);
+        if (!hasAccess) {
           throw new TRPCError({ code: "FORBIDDEN" });
         }
 

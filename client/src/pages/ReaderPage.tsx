@@ -5,7 +5,6 @@ import { useLanguage } from "@/contexts/LanguageContext";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import styles from "./ReaderPage.module.css";
-import { formatEpisodeLabel } from "@/utils/episodeUtils";
 
 // Utility to generate watermark text
 const generateWatermarkText = (user: any, episodeId: number): string => {
@@ -15,21 +14,12 @@ const generateWatermarkText = (user: any, episodeId: number): string => {
   return `Ipe นิยายแปล • ${email} • UID: ${userId} • EP: ${episodeId} • ${date}`;
 };
 
-const parseMoney = (value: unknown): number => {
-  const parsed = Number.parseFloat(String(value ?? "0"));
-  return Number.isFinite(parsed) ? parsed : 0;
-};
-
-const toCents = (value: unknown): number => Math.round(parseMoney(value) * 100);
-const formatMoney = (value: unknown): string => parseMoney(value).toFixed(2);
-
 export default function ReaderPage() {
   const { episodeId: episodeIdStr } = useParams<{ episodeId: string }>();
   const episodeId = episodeIdStr ? parseInt(episodeIdStr, 10) : 0;
   const { user } = useAuth();
   const { t } = useLanguage();
   const [, setLocation] = useLocation();
-  const utils = trpc.useUtils();
 
   const { data: episodeData, isLoading: dataLoading, error: dataError } = trpc.reader.getEpisode.useQuery(
     { episodeId },
@@ -47,16 +37,11 @@ export default function ReaderPage() {
 
   const episode = episodeData?.episode;
   const novel = episodeData?.novel;
-  const previousEpisode = episodeData?.previousEpisode || null;
-  const nextEpisode = episodeData?.nextEpisode || null;
   const walletBalance = episodeData?.walletBalance || "0";
   const canRead = episodeData?.canRead || false;
   const isLocked = episodeData?.isLocked || false;
   const content = episodeData?.content || "";
   const preview = episodeData?.preview || "";
-  const walletBalanceCents = toCents(walletBalance);
-  const episodePriceCents = toCents(episode?.price);
-  const hasEnoughWalletBalance = walletBalanceCents >= episodePriceCents;
 
   // Copy protection and watermark effect
   useEffect(() => {
@@ -125,10 +110,6 @@ export default function ReaderPage() {
     };
   }, [episode?.id, canRead, content, preview, episodeId, t]);
 
-  useEffect(() => {
-    setShowPurchaseConfirm(false);
-  }, [episodeId]);
-
   if (!user) {
     return (
       <div className={styles.container}>
@@ -142,45 +123,14 @@ export default function ReaderPage() {
     );
   }
 
-  const showPurchaseError = (err: unknown) => {
-    const errorMsg = (err as { message?: string })?.message || "Purchase failed";
-
-    if (errorMsg === "INSUFFICIENT_WALLET_BALANCE") {
-      toast.error("ยอดเงินในกระเป๋าไม่พอ กรุณาเติมเงิน", {
-        action: {
-          label: "เติมเงิน",
-          onClick: () => setLocation("/wallet"),
-        },
-      });
-    } else if (errorMsg === "INSUFFICIENT_WALLET_BALANCE_ATOMIC") {
-      toast.error("ตัดเงินจากกระเป๋าไม่สำเร็จ กรุณาลองใหม่อีกครั้ง หากยังพบปัญหาให้ติดต่อแอดมิน");
-    } else if (errorMsg === "INVALID_EPISODE_PRICE") {
-      toast.error("ราคาบทนี้ไม่ถูกต้อง กรุณาติดต่อแอดมิน");
-    } else if (errorMsg === "INVALID_WALLET_BALANCE") {
-      toast.error("ข้อมูลกระเป๋าเงินผิดปกติ กรุณาติดต่อแอดมิน");
-    } else {
-      toast.error(errorMsg);
-    }
-  };
-
   const handlePurchase = async () => {
-    if (!episode || purchaseMutation.isPending) return;
-
     try {
       await purchaseMutation.mutateAsync({ episodeId });
-      toast.success(t("reader.purchaseSuccess") || "ซื้อบทสำเร็จ");
+      toast.success(t("reader.purchaseSuccess"));
       setShowPurchaseConfirm(false);
-
-      await Promise.all([
-        utils.reader.getEpisode.invalidate({ episodeId }),
-        novel?.id ? utils.reader.myPurchases.invalidate({ novelId: novel.id }) : Promise.resolve(),
-        novel?.id ? utils.novels.episodes.invalidate({ novelId: novel.id }) : Promise.resolve(),
-        utils.wallet.getBalance.invalidate(),
-        utils.wallet.getSummary.invalidate(),
-        utils.myNovels.list.invalidate(),
-      ]);
     } catch (err) {
-      showPurchaseError(err);
+      const errorMsg = (err as unknown as { message?: string })?.message || "Purchase failed";
+      toast.error(errorMsg);
     }
   };
 
@@ -190,11 +140,6 @@ export default function ReaderPage() {
     } else {
       setLocation("/novels");
     }
-  };
-
-  const goToEpisode = (targetEpisodeId?: number) => {
-    if (!targetEpisodeId) return;
-    setLocation(`/read/${targetEpisodeId}`);
   };
 
   if (dataLoading) {
@@ -230,7 +175,7 @@ export default function ReaderPage() {
           <div className={styles.titleSection}>
             <h1 className={styles.novelTitle}>{novel.title}</h1>
             <h2 className={styles.episodeTitle}>
-              {formatEpisodeLabel(episode.episodeNumber, episode.title)}
+              {t("novel.episode")} {episode.episodeNumber}: {episode.title}
             </h2>
           </div>
         </div>
@@ -315,30 +260,23 @@ export default function ReaderPage() {
               </>
             )}
           </div>
-        ) : isLocked ? (
+        ) : isLocked && preview ? (
           <div className={styles.lockedSection}>
-            {preview ? (
-              <div
-                ref={previewRef}
-                className={`${styles.previewContent} ${styles.protected}`}
-                style={{ fontSize: `${fontSize}px` }}
-              >
-                {preview.split("\n").map((para: string, idx: number) => (
-                  <p key={idx}>{para}</p>
-                ))}
-                <div className={styles.previewFade}></div>
-                <div className={styles.watermark}>
-                  <div className={styles.watermarkText}>
-                    {generateWatermarkText(user, episodeId)}
-                  </div>
+            <div
+              ref={previewRef}
+              className={`${styles.previewContent} ${styles.protected}`}
+              style={{ fontSize: `${fontSize}px` }}
+            >
+              {preview.split("\n").map((para: string, idx: number) => (
+                <p key={idx}>{para}</p>
+              ))}
+              <div className={styles.previewFade}></div>
+              <div className={styles.watermark}>
+                <div className={styles.watermarkText}>
+                  {generateWatermarkText(user, episodeId)}
                 </div>
               </div>
-            ) : (
-              <div className={styles.noContentSection}>
-                <h3>{t("reader.lockedTitle")}</h3>
-                <p>{t("reader.lockedDescription")}</p>
-              </div>
-            )}
+            </div>
 
             <div className={styles.purchasePrompt}>
               <h3>{t("reader.lockedTitle")}</h3>
@@ -347,11 +285,11 @@ export default function ReaderPage() {
               <div className={styles.priceInfo}>
                 <div className={styles.priceRow}>
                   <span>{t("reader.price")}:</span>
-                  <strong>฿{formatMoney(episode.price)}</strong>
+                  <strong>฿{parseFloat(episode.price).toFixed(2)}</strong>
                 </div>
                 <div className={styles.priceRow}>
                   <span>{t("reader.walletBalance")}:</span>
-                  <strong>฿{formatMoney(walletBalance)}</strong>
+                  <strong>฿{parseFloat(walletBalance).toFixed(2)}</strong>
                 </div>
               </div>
 
@@ -365,14 +303,16 @@ export default function ReaderPage() {
               <button
                 className={styles.purchaseButton}
                 onClick={() => setShowPurchaseConfirm(true)}
-                disabled={!hasEnoughWalletBalance || purchaseMutation.isPending}
+                disabled={
+                  parseFloat(walletBalance) < parseFloat(episode.price)
+                }
               >
-                {hasEnoughWalletBalance
+                {parseFloat(walletBalance) >= parseFloat(episode.price)
                   ? t("reader.buyEpisode")
                   : t("reader.insufficientBalance")}
               </button>
 
-              {!hasEnoughWalletBalance && (
+              {parseFloat(walletBalance) < parseFloat(episode.price) && (
                 <button
                   className={styles.topupButton}
                   onClick={() => setLocation("/wallet")}
@@ -391,25 +331,22 @@ export default function ReaderPage() {
 
       {/* Navigation */}
       <div className={styles.navigation}>
-        {previousEpisode ? (
+        {episode.previousEpisode && (
           <button
             className={styles.navButton}
-            onClick={() => goToEpisode(previousEpisode.id)}
+            onClick={() => setLocation(`/read/${episode.previousEpisode.id}`)}
           >
             ← {t("reader.previousEpisode")}
           </button>
-        ) : (
-          <div />
         )}
-        {nextEpisode ? (
+        <div></div>
+        {episode.nextEpisode && (
           <button
             className={styles.navButton}
-            onClick={() => goToEpisode(nextEpisode.id)}
+            onClick={() => setLocation(`/read/${episode.nextEpisode.id}`)}
           >
             {t("reader.nextEpisode")} →
           </button>
-        ) : (
-          <div />
         )}
       </div>
 
@@ -425,17 +362,17 @@ export default function ReaderPage() {
               <div className={styles.confirmDetails}>
                 <div>
                   <span>{t("reader.price")}:</span>
-                  <span>฿{formatMoney(episode.price)}</span>
+                  <span>฿{parseFloat(episode.price).toFixed(2)}</span>
                 </div>
                 <div>
                   <span>{t("reader.walletBalance")}:</span>
-                  <span>฿{formatMoney(walletBalance)}</span>
+                  <span>฿{parseFloat(walletBalance).toFixed(2)}</span>
                 </div>
                 <div>
                   <span>{t("reader.balanceAfterPurchase")}:</span>
                   <span>
                     ฿
-                    {((walletBalanceCents - episodePriceCents) / 100).toFixed(2)}
+                    {(parseFloat(walletBalance) - parseFloat(episode.price)).toFixed(2)}
                   </span>
                 </div>
               </div>
@@ -454,7 +391,7 @@ export default function ReaderPage() {
               <button
                 className={styles.confirmButton}
                 onClick={handlePurchase}
-                disabled={purchaseMutation.isPending || !hasEnoughWalletBalance}
+                disabled={purchaseMutation.isPending}
               >
                 {purchaseMutation.isPending ? t("common.loading") : t("reader.confirmBuy")}
               </button>

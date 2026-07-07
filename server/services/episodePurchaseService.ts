@@ -36,27 +36,6 @@ class PurchaseError extends Error {
   }
 }
 
-function coerceAffectedRowsValue(value: unknown): number | null {
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? value : null;
-  }
-
-  if (typeof value === "bigint") {
-    const numberValue = Number(value);
-    return Number.isSafeInteger(numberValue) ? numberValue : null;
-  }
-
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (trimmed !== "" && /^\d+$/.test(trimmed)) {
-      const numberValue = Number(trimmed);
-      return Number.isSafeInteger(numberValue) ? numberValue : null;
-    }
-  }
-
-  return null;
-}
-
 /**
  * Robustly extract affectedRows from a Drizzle mysql2 update/insert result.
  *
@@ -67,16 +46,10 @@ function coerceAffectedRowsValue(value: unknown): number | null {
  * previously fell back to `|| 0` and was misreported as an overdraft/
  * insufficient-balance failure even when the UPDATE actually succeeded.
  *
- * Some adapters/wrappers may also expose the row count as a flat field
- * (`affectedRows`, `rowsAffected`, `rowCount`) or even as a primitive
- * number/bigint/numeric string. Return null (not 0) only when the shape is
- * unrecognized, so callers can fall back to verifying the actual balance
- * instead of assuming failure.
+ * Returns null (not 0) when the shape is unrecognized, so callers can fall
+ * back to verifying the actual balance instead of assuming failure.
  */
 function extractAffectedRows(result: any): number | null {
-  const directValue = coerceAffectedRowsValue(result);
-  if (directValue !== null) return directValue;
-
   const candidates = [
     result,
     Array.isArray(result) ? result[0] : undefined,
@@ -86,36 +59,17 @@ function extractAffectedRows(result: any): number | null {
   ];
 
   for (const candidate of candidates) {
-    const candidateDirectValue = coerceAffectedRowsValue(candidate);
-    if (candidateDirectValue !== null) return candidateDirectValue;
-
-    if (candidate === null || candidate === undefined) continue;
-    if (typeof candidate !== "object" && typeof candidate !== "function") continue;
-
+    if (!candidate) continue;
     const affected =
       candidate.affectedRows ?? candidate.affected_rows ?? candidate.rowsAffected ?? candidate.rowCount;
-    const affectedRows = coerceAffectedRowsValue(affected);
-    if (affectedRows !== null) return affectedRows;
+    if (typeof affected === "number") return affected;
+    if (typeof affected === "bigint") return Number(affected);
+    if (typeof affected === "string" && affected.trim() !== "" && !Number.isNaN(Number(affected))) {
+      return Number(affected);
+    }
   }
 
   return null;
-}
-
-function describeResultShape(result: any) {
-  if (Array.isArray(result)) {
-    const first = result[0];
-    return {
-      type: "array",
-      length: result.length,
-      firstType: Array.isArray(first) ? "array" : typeof first,
-      firstKeys: first && typeof first === "object" ? Object.keys(first).slice(0, 12) : undefined,
-    };
-  }
-
-  return {
-    type: typeof result,
-    keys: result && typeof result === "object" ? Object.keys(result).slice(0, 12) : undefined,
-  };
 }
 
 /**
@@ -319,7 +273,9 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
         userId,
         episodeId,
         affectedRows,
-        updateResultShape: describeResultShape(updateResult),
+        updateResultShape: Array.isArray(updateResult) ? "array" : typeof updateResult,
+        priceStr,
+        currentBalanceInTx,
       });
 
       if (affectedRows === 0) {
@@ -332,7 +288,7 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
       if (affectedRows === null) {
         console.warn(
           "[EpisodePurchase] Could not determine affectedRows from updateResult; verifying wallet balance after update",
-          { userId, episodeId, updateResultShape: describeResultShape(updateResult) }
+          { userId, episodeId }
         );
       }
 

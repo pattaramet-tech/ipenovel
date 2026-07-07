@@ -8,7 +8,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useLocation } from "wouter";
 import { Loader2, BookOpen, ChevronRight } from "lucide-react";
 import { useState, useMemo } from "react";
-import { formatEpisodeLabel } from "@/utils/episodeUtils";
 
 export default function MyLibraryPage() {
   const { user } = useAuth();
@@ -181,7 +180,7 @@ function EpisodeCard({ item, onRead }: EpisodeCardProps) {
       <div className="flex items-start justify-between">
         <div className="flex-1">
           <h4 className="font-semibold">
-            {formatEpisodeLabel(item.episode.episodeNumber, item.episode.title)}
+            {t("novel.episode")} {item.episode.episodeNumber}: {item.episode.title}
           </h4>
           <div className="flex items-center gap-2 mt-2 flex-wrap">
             {item.episode.wordCount > 0 && (

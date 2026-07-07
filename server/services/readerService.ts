@@ -1,6 +1,6 @@
-import { eq, and, asc } from "drizzle-orm";
+import { eq, and, gt } from "drizzle-orm";
 import { getDb } from "../db";
-import { episodes, episodePurchases, purchases, walletAccounts, novels } from "../../drizzle/schema";
+import { episodes, episodePurchases, purchases, users, walletAccounts, novels } from "../../drizzle/schema";
 
 export interface ReaderEpisodeData {
   episode: any;
@@ -13,52 +13,6 @@ export interface ReaderEpisodeData {
   previousEpisode?: any;
   nextEpisode?: any;
   accessReason?: string;
-}
-
-function parseEpisodeOrderNumber(episodeNumber: unknown): number | null {
-  const match = String(episodeNumber ?? "").match(/\d+(?:\.\d+)?/);
-  if (!match) return null;
-
-  const value = Number(match[0]);
-  return Number.isFinite(value) ? value : null;
-}
-
-function getNavigationOrderValue(episode: any): number {
-  if (episode?.sortOrder !== null && episode?.sortOrder !== undefined) {
-    const sortOrder = Number(episode.sortOrder);
-    if (Number.isFinite(sortOrder)) return sortOrder;
-  }
-
-  const episodeNumber = parseEpisodeOrderNumber(episode?.episodeNumber);
-  if (episodeNumber !== null) return episodeNumber;
-
-  const id = Number(episode?.id);
-  return Number.isFinite(id) ? id : Number.MAX_SAFE_INTEGER;
-}
-
-function compareNavigationEpisodes(a: any, b: any): number {
-  const orderA = getNavigationOrderValue(a);
-  const orderB = getNavigationOrderValue(b);
-
-  if (orderA !== orderB) return orderA - orderB;
-
-  const idA = Number(a?.id) || 0;
-  const idB = Number(b?.id) || 0;
-  return idA - idB;
-}
-
-function toSafeNavigationEpisode(episode: any) {
-  if (!episode) return null;
-
-  return {
-    id: episode.id,
-    novelId: episode.novelId,
-    episodeNumber: episode.episodeNumber,
-    title: episode.title,
-    isFree: episode.isFree,
-    isPublished: episode.isPublished,
-    sortOrder: episode.sortOrder,
-  };
 }
 
 /**
@@ -122,28 +76,30 @@ export async function getReaderEpisode(userId: number | undefined, episodeId: nu
 
   const canRead = await canReadEpisode(userId, episodeId, isAdmin);
 
-  // Build previous/next metadata from the published episode list. Select only
-  // safe navigation fields so adjacent locked chapters never leak `content`.
-  const navigationEpisodes = await db
-    .select({
-      id: episodes.id,
-      novelId: episodes.novelId,
-      episodeNumber: episodes.episodeNumber,
-      title: episodes.title,
-      isFree: episodes.isFree,
-      isPublished: episodes.isPublished,
-      sortOrder: episodes.sortOrder,
-    })
-    .from(episodes)
-    .where(and(eq(episodes.novelId, ep.novelId), eq(episodes.isPublished, true)))
-    .orderBy(asc(episodes.id));
+  // Get previous and next episodes using numeric episodeNumber comparison
+  const { lt, gt } = await import("drizzle-orm").then(m => ({ lt: m.lt, gt: m.gt }));
 
-  const sortedNavigationEpisodes = [...navigationEpisodes].sort(compareNavigationEpisodes);
-  const currentIndex = sortedNavigationEpisodes.findIndex((navEpisode) => navEpisode.id === ep.id);
-  const previousEpisode = currentIndex > 0 ? sortedNavigationEpisodes[currentIndex - 1] : null;
-  const nextEpisode = currentIndex >= 0 && currentIndex < sortedNavigationEpisodes.length - 1
-    ? sortedNavigationEpisodes[currentIndex + 1]
-    : null;
+  const prevEpisode = await db
+    .select()
+    .from(episodes)
+    .where(and(
+      eq(episodes.novelId, ep.novelId),
+      eq(episodes.isPublished, true),
+      lt(episodes.id, ep.id)
+    ))
+    .orderBy(episodes.id)
+    .limit(1);
+
+  const nextEpisode = await db
+    .select()
+    .from(episodes)
+    .where(and(
+      eq(episodes.novelId, ep.novelId),
+      eq(episodes.isPublished, true),
+      gt(episodes.id, ep.id)
+    ))
+    .orderBy(episodes.id)
+    .limit(1);
 
   // Check if already purchased (minimal select for existence check)
   let alreadyPurchased = false;
@@ -166,8 +122,8 @@ export async function getReaderEpisode(userId: number | undefined, episodeId: nu
     canRead,
     isLocked: !canRead && !ep.isFree,
     alreadyPurchased,
-    previousEpisode: toSafeNavigationEpisode(previousEpisode),
-    nextEpisode: toSafeNavigationEpisode(nextEpisode),
+    previousEpisode: prevEpisode[0] || null,
+    nextEpisode: nextEpisode[0] || null,
   };
 
   // Return full content only if user can read

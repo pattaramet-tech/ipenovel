@@ -1,7 +1,7 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { useLocation } from "wouter";
-import { BookOpen, ShoppingCart, LogOut, Menu, X, Settings, Heart, Trophy, User as UserIcon } from "lucide-react";
+import { BookOpen, ShoppingCart, LogOut, Menu, X, Settings, Heart, Trophy } from "lucide-react";
 import { useState } from "react";
 import { getLoginUrl } from "@/const";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
@@ -101,13 +101,6 @@ export default function Navbar() {
                   {user?.name?.split(" ")[0]}
                 </span>
                 <button
-                  onClick={() => navigate("/profile")}
-                  className="flex items-center gap-2 px-4 py-2 rounded-full text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium transition text-sm"
-                >
-                  <UserIcon className="w-4 h-4" />
-                  {t("nav.profile") || "โปรไฟล์"}
-                </button>
-                <button
                   onClick={handleLogout}
                   className="flex items-center gap-2 px-4 py-2 rounded-full text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium transition text-sm"
                 >
@@ -198,16 +191,6 @@ export default function Navbar() {
                   <div className="px-4 py-3 text-sm text-slate-600">
                     {t("nav.signedInAs")} <span className="font-semibold">{user?.name}</span>
                   </div>
-                  <button
-                    onClick={() => {
-                      navigate("/profile");
-                      setMobileMenuOpen(false);
-                    }}
-                    className="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium transition text-sm"
-                  >
-                    <UserIcon className="w-4 h-4" />
-                    {t("nav.profile") || "โปรไฟล์"}
-                  </button>
                   <button
                     onClick={handleLogout}
                     className="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium transition text-sm"
