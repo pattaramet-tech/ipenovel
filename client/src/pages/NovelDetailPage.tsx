@@ -180,11 +180,18 @@ export default function NovelDetailPage() {
     const paidEpisodes = sorted.filter((ep: any) => ep && ep.isFree !== true);
 
     // Split by sale type: file (has fileUrl) vs reader (for chapter reading)
-    // fileEpisodes: episodes with fileUrl (file/cart sale)
-    const fileEpisodes = sorted.filter((ep: any) => ep && ep.fileUrl);
-    // readerEpisodes: episodes without fileUrl AND with content (reader-based reading)
-    // IMPORTANT: Do not include episodes with fileUrl even if they have contentFormat
-    const readerEpisodes = sorted.filter((ep: any) => ep && !ep.fileUrl && ep.content);
+    // NOTE: novels.episodes never returns `content`, and only returns `fileUrl`
+    // when the requester can already access it (free/purchased/admin) - so
+    // unpurchased paid episodes have `content: undefined` and `fileUrl: null`
+    // regardless of their real sale type. Classification must use the
+    // hasFile/hasContent/saleType metadata the backend computes instead of
+    // checking for the presence of the (possibly stripped) fields themselves.
+    const fileEpisodes = sorted.filter(
+      (ep: any) => ep && (ep.saleType === "file" || ep.hasFile === true)
+    );
+    const readerEpisodes = sorted.filter(
+      (ep: any) => ep && (ep.saleType === "chapter" || (ep.hasContent === true && ep.hasFile !== true))
+    );
 
     return { freeEpisodes, paidEpisodes, fileEpisodes, readerEpisodes };
   }, [episodes, searchTerm, sortBy]);

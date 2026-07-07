@@ -175,10 +175,18 @@ export const appRouter = router({
           const hasPurchased = await readerService.hasPurchasedEpisode(ctx.user.id, ep.id);
           const canRead = isFree || hasPurchased || isAdmin;
 
-          // Never leak full episode content in the list endpoint. Only expose
-          // fileUrl when the requester actually has access - unpurchased paid
-          // files must not leak their real download URL.
+          // Never leak full episode content in the list endpoint - that's what
+          // reader.episode is for. Only expose fileUrl when the requester
+          // actually has access - unpurchased paid files must not leak their
+          // real download URL. Since content/fileUrl are stripped regardless of
+          // purchase status, the frontend can no longer use their presence to
+          // classify sale type (chapter vs file) - it must use the hasContent/
+          // hasFile/saleType metadata below instead.
           const { content, fileUrl, ...safeEpisode } = ep;
+
+          const hasContent = Boolean(content && String(content).trim().length > 0);
+          const hasFile = Boolean(fileUrl && String(fileUrl).trim().length > 0);
+          const saleType = hasFile ? "file" : hasContent ? "chapter" : "unknown";
 
           return {
             ...safeEpisode,
@@ -186,7 +194,9 @@ export const appRouter = router({
             hasPurchased,
             isPurchased: hasPurchased,
             canRead,
-            hasFile: Boolean(fileUrl),
+            hasContent,
+            hasFile,
+            saleType,
             fileUrl: canRead ? fileUrl ?? null : null,
             adminCanPreview: isAdmin && !isFree && !hasPurchased,
           };
