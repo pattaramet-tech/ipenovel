@@ -229,6 +229,247 @@ export default function NovelDetailPage() {
     }
   };
 
+  // Chapter (rayabot / "ขายรายบท") episode card - direct wallet purchase only.
+  // Must never use cart/checkbox flow: unpurchased paid chapters are bought
+  // via handleBuyNow() -> reader.purchaseEpisode, not cart.add.
+  const renderChapterEpisodeCard = (episode: any) => {
+    if (!episode || !episode.id) return null;
+    // isPurchased must reflect a real purchase record only - never admin
+    // access or canRead - so the "unlocked" badge/read button only appears
+    // for episodes the user actually paid for.
+    const isPurchased = episode.isPurchased === true || episode.hasPurchased === true;
+    const isFree = episode.isFree === true;
+
+    return (
+      <Card
+        key={episode.id}
+        className={`p-4 transition-all border border-border ${purchasingEpisodeId === episode.id ? "opacity-60" : ""}`}
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-start gap-3 mb-1">
+              <p className="font-semibold text-sm leading-tight">
+                {formatEpisodeLabel(episode.episodeNumber, episode.title || "ไม่มีชื่อ")}
+              </p>
+              {isFree && (
+                <Badge className="shrink-0 text-xs bg-green-100 text-green-700 font-medium">
+                  ฟรี
+                </Badge>
+              )}
+              {isPurchased && (
+                <Badge className="shrink-0 text-xs bg-blue-100 text-blue-700 font-medium">
+                  ปลดล็อกแล้ว
+                </Badge>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            {isFree ? (
+              <>
+                <button
+                  onClick={() => setLocation(`/read/${episode.id}`)}
+                  className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition active:bg-blue-800"
+                >
+                  <BookOpen className="w-3.5 h-3.5 mr-1.5" />
+                  อ่านเดี๋ยวนี้
+                </button>
+                {episode.fileUrl && (
+                  <a
+                    href={episode.fileUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-slate-500 text-white hover:bg-slate-600 transition"
+                    title="ดาวน์โหลดไฟล์"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                  </a>
+                )}
+              </>
+            ) : isPurchased ? (
+              <>
+                <button
+                  onClick={() => setLocation(`/read/${episode.id}`)}
+                  className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
+                >
+                  <BookOpen className="w-3.5 h-3.5 mr-1.5" />
+                  อ่าน
+                </button>
+                {episode.fileUrl && (
+                  <a
+                    href={episode.fileUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-slate-500 text-white hover:bg-slate-600 transition"
+                    title="ดาวน์โหลดไฟล์"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                  </a>
+                )}
+              </>
+            ) : (
+              // Unpurchased paid chapter - direct wallet purchase only, never cart
+              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+                <span className="font-semibold text-sm text-foreground">
+                  ฿{episode.price ?? "ไม่ระบุ"}
+                </span>
+                <button
+                  onClick={() => handleBuyNow(episode.id)}
+                  disabled={purchasingEpisodeId === episode.id}
+                  className="inline-flex items-center justify-center px-4 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition disabled:opacity-60 disabled:cursor-wait"
+                  title="ซื้อบทนี้ด้วยเงินในกระเป๋า"
+                >
+                  {purchasingEpisodeId === episode.id ? "กำลังซื้อ..." : "ซื้อทันที"}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </Card>
+    );
+  };
+
+  // File (khai file / "ขายไฟล์") episode card - cart/checkbox flow, unchanged.
+  const renderFileEpisodeCard = (episode: any) => {
+    if (!episode || !episode.id) return null;
+    const inCart = cartItems.some((item: any) => item.episodeId === episode.id);
+    // isPurchased must reflect a real purchase record only - never admin
+    // access or canRead - so the "unlocked" badge/download link only appears
+    // for episodes the user actually paid for.
+    const isPurchased = episode.isPurchased === true || episode.hasPurchased === true;
+    const isFree = episode.isFree === true;
+    const isLoading = addToCartMutation.isPending || removeFromCartMutation.isPending;
+    const isSelected = inCart || selectedEpisodes.includes(episode.id);
+
+    return (
+      <Card
+        key={episode.id}
+        role={!isPurchased && !isFree ? "button" : undefined}
+        tabIndex={!isPurchased && !isFree ? 0 : undefined}
+        aria-pressed={!isPurchased && !isFree ? isSelected : undefined}
+        aria-label={!isPurchased && !isFree ? `${isSelected ? "Remove" : "Select"} Episode ${episode.episodeNumber} - ${episode.title}` : undefined}
+        onClick={() => {
+          if (isFree || isPurchased || isLoading) return;
+          handleEpisodeToggle(episode.id, !isSelected);
+        }}
+        onKeyDown={(e) => {
+          if (isFree || isPurchased || isLoading) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            handleEpisodeToggle(episode.id, !isSelected);
+          }
+        }}
+        className={`p-4 transition-all ${
+          !isPurchased && !isFree
+            ? "cursor-pointer"
+            : "cursor-default"
+        } ${
+          isSelected && !isFree && !isPurchased
+            ? "border-2 border-blue-500 bg-blue-50 dark:bg-blue-950"
+            : "border border-border hover:border-slate-400"
+        } ${isLoading ? "opacity-60" : ""}`}
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-start gap-3 mb-1">
+              <p className="font-semibold text-sm leading-tight">
+                {formatEpisodeLabel(episode.episodeNumber, episode.title || "ไม่มีชื่อ")}
+              </p>
+              {isFree && (
+                <Badge className="shrink-0 text-xs bg-green-100 text-green-700 font-medium">
+                  ฟรี
+                </Badge>
+              )}
+              {isPurchased && (
+                <Badge className="shrink-0 text-xs bg-blue-100 text-blue-700 font-medium">
+                  ปลดล็อกแล้ว
+                </Badge>
+              )}
+            </div>
+            {!isFree && !isPurchased && (
+              <p className="text-xs text-muted-foreground">
+                {isSelected ? "อยู่ในตะกร้าแล้ว" : isLoading ? "กำลังอัปเดต..." : "ต้องการซื้อ?"}
+              </p>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            {isFree ? (
+              <>
+                <button
+                  onClick={() => setLocation(`/read/${episode.id}`)}
+                  className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition active:bg-blue-800"
+                >
+                  <BookOpen className="w-3.5 h-3.5 mr-1.5" />
+                  อ่านเดี๋ยวนี้
+                </button>
+                {episode.fileUrl && (
+                  <a
+                    href={episode.fileUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-slate-500 text-white hover:bg-slate-600 transition"
+                    title="ดาวน์โหลดไฟล์"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                  </a>
+                )}
+              </>
+            ) : isPurchased ? (
+              <>
+                <button
+                  onClick={() => setLocation(`/read/${episode.id}`)}
+                  className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
+                >
+                  <BookOpen className="w-3.5 h-3.5 mr-1.5" />
+                  อ่าน
+                </button>
+                {episode.fileUrl && (
+                  <a
+                    href={episode.fileUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-slate-500 text-white hover:bg-slate-600 transition"
+                    title="ดาวน์โหลดไฟล์"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                  </a>
+                )}
+              </>
+            ) : (
+              // Unpurchased paid file - cart flow
+              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                <span className="font-semibold text-sm text-foreground">
+                  ฿{episode.price ?? "ไม่ระบุ"}
+                </span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    try {
+                      handleEpisodeToggle(episode.id, !isSelected);
+                    } catch (err) {
+                      console.error("Error toggling episode:", err);
+                      toast.error("Failed to update cart");
+                    }
+                  }}
+                  disabled={isLoading}
+                  className={`inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md transition ${
+                    isSelected
+                      ? "bg-blue-100 text-blue-700 hover:bg-blue-200"
+                      : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                  } ${isLoading ? "opacity-60 cursor-wait" : "cursor-pointer"}`}
+                  title={isSelected ? "Remove from cart" : "Add to cart"}
+                >
+                  {isSelected ? "อยู่ในตะกร้า" : "เพิ่มลงตะกร้า"}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </Card>
+    );
+  };
+
   // Early returns AFTER all hooks have been called
   if (!validNovelId) {
     return (
@@ -279,9 +520,6 @@ export default function NovelDetailPage() {
   }
 
   const { freeEpisodes, paidEpisodes, fileEpisodes, readerEpisodes } = filteredAndSortedEpisodes;
-
-  // Filter by sale type
-  const displayedEpisodes = saleType === "file" ? fileEpisodes : saleType === "chapter" ? readerEpisodes : [];
 
   return (
     <div className="min-h-screen bg-background">
@@ -439,407 +677,48 @@ export default function NovelDetailPage() {
               </Card>
             ) : saleType === "all" ? (
               <>
-                {/* Reader Episodes Section */}
+                {/* Reader Episodes Section - direct wallet purchase */}
                 {readerEpisodes.length > 0 && (
                   <div>
                     <h3 className="text-lg font-semibold mb-3 text-blue-600">ขายรายบท ({readerEpisodes.length})</h3>
                     <div className="space-y-3">
-                      {readerEpisodes.map((episode: any) => {
-                if (!episode || !episode.id) return null;
-                const inCart = cartItems.some((item: any) => item.episodeId === episode.id);
-                // isPurchased must reflect a real purchase record only - never
-                // admin access or canRead - so the "unlocked" badge/download link
-                // only appears for episodes the user actually paid for.
-                const isPurchased = episode.isPurchased === true || episode.hasPurchased === true;
-                const isFree = episode.isFree === true;
-                const isLoading = addToCartMutation.isPending || removeFromCartMutation.isPending;
-                const isSelected = inCart || selectedEpisodes.includes(episode.id);
-
-                return (
-                  <Card
-                    key={episode.id}
-                    className={`p-4 transition-all border border-border ${purchasingEpisodeId === episode.id ? "opacity-60" : ""}`}
-                  >
-                    {/* Episode Content */}
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                      {/* Left: Title and Info */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-start gap-3 mb-1">
-                          <p className="font-semibold text-sm leading-tight">
-                            {formatEpisodeLabel(episode.episodeNumber, episode.title || "ไม่มีชื่อ")}
-                          </p>
-                          {isFree && (
-                            <Badge className="shrink-0 text-xs bg-green-100 text-green-700 font-medium">
-                              ฟรี
-                            </Badge>
-                          )}
-                          {isPurchased && (
-                            <Badge className="shrink-0 text-xs bg-blue-100 text-blue-700 font-medium">
-                              ปลดล็อกแล้ว
-                            </Badge>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Right: Actions */}
-                      <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-                        {isFree ? (
-                          <>
-                            <button
-                              onClick={() => setLocation(`/read/${episode.id}`)}
-                              className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition active:bg-blue-800"
-                            >
-                              <BookOpen className="w-3.5 h-3.5 mr-1.5" />
-                              อ่านเดี๋ยวนี้
-                            </button>
-                            {episode.fileUrl && (
-                              <a
-                                href={episode.fileUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-slate-500 text-white hover:bg-slate-600 transition"
-                                title="ดาวน์โหลดไฟล์"
-                              >
-                                <Download className="w-3.5 h-3.5" />
-                              </a>
-                            )}
-                          </>
-                        ) : isPurchased ? (
-                          <>
-                            <button
-                              onClick={() => setLocation(`/read/${episode.id}`)}
-                              className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
-                            >
-                              <BookOpen className="w-3.5 h-3.5 mr-1.5" />
-                              อ่าน
-                            </button>
-                            {episode.fileUrl && (
-                              <a
-                                href={episode.fileUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-slate-500 text-white hover:bg-slate-600 transition"
-                                title="ดาวน์โหลดไฟล์"
-                              >
-                                <Download className="w-3.5 h-3.5" />
-                              </a>
-                            )}
-                          </>
-                        ) : (
-                          // Unpurchased paid chapter - direct wallet purchase
-                          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
-                            <span className="font-semibold text-sm text-foreground">
-                              ฿{episode.price ?? "ไม่ระบุ"}
-                            </span>
-                            <button
-                              onClick={() => handleBuyNow(episode.id)}
-                              disabled={purchasingEpisodeId === episode.id}
-                              className="inline-flex items-center justify-center px-4 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition disabled:opacity-60 disabled:cursor-wait"
-                              title="ซื้อบทนี้ด้วยเงินในกระเป๋า"
-                            >
-                              {purchasingEpisodeId === episode.id ? "กำลังซื้อ..." : "ซื้อทันที"}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </Card>
-                );
-                      })}
+                      {readerEpisodes.map(renderChapterEpisodeCard)}
                     </div>
                   </div>
                 )}
-                {/* File Episodes Section */}
+                {/* File Episodes Section - cart/checkbox flow */}
                 {fileEpisodes.length > 0 && (
                   <div>
                     <h3 className="text-lg font-semibold mb-3 text-amber-600">ขายไฟล์ ({fileEpisodes.length})</h3>
                     <div className="space-y-3">
-                      {fileEpisodes.map((episode: any) => {
-                if (!episode || !episode.id) return null;
-                const inCart = cartItems.some((item: any) => item.episodeId === episode.id);
-                // isPurchased must reflect a real purchase record only - never
-                // admin access or canRead - so the "unlocked" badge/download link
-                // only appears for episodes the user actually paid for.
-                const isPurchased = episode.isPurchased === true || episode.hasPurchased === true;
-                const isFree = episode.isFree === true;
-                const isLoading = addToCartMutation.isPending || removeFromCartMutation.isPending;
-                const isSelected = inCart || selectedEpisodes.includes(episode.id);
-
-                return (
-                  <Card
-                    key={episode.id}
-                    role={!isPurchased && !isFree ? "button" : undefined}
-                    tabIndex={!isPurchased && !isFree ? 0 : undefined}
-                    aria-pressed={!isPurchased && !isFree ? isSelected : undefined}
-                    aria-label={!isPurchased && !isFree ? `${isSelected ? "Remove" : "Select"} Episode ${episode.episodeNumber} - ${episode.title}` : undefined}
-                    onClick={() => {
-                      if (isFree || isPurchased || isLoading) return;
-                      handleEpisodeToggle(episode.id, !isSelected);
-                    }}
-                    onKeyDown={(e) => {
-                      if (isFree || isPurchased || isLoading) return;
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        handleEpisodeToggle(episode.id, !isSelected);
-                      }
-                    }}
-                    className={`p-4 transition-all ${
-                      !isPurchased && !isFree
-                        ? "cursor-pointer"
-                        : "cursor-default"
-                    } ${
-                      isSelected && !isFree && !isPurchased
-                        ? "border-2 border-blue-500 bg-blue-50 dark:bg-blue-950"
-                        : "border border-border hover:border-slate-400"
-                    } ${isLoading ? "opacity-60" : ""}`}
-                  >
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-start gap-3 mb-1">
-                          <p className="font-semibold text-sm leading-tight">
-                            {formatEpisodeLabel(episode.episodeNumber, episode.title || "ไม่มีชื่อ")}
-                          </p>
-                          {isFree && (
-                            <Badge className="shrink-0 text-xs bg-green-100 text-green-700 font-medium">
-                              ฟรี
-                            </Badge>
-                          )}
-                          {isPurchased && (
-                            <Badge className="shrink-0 text-xs bg-blue-100 text-blue-700 font-medium">
-                              ปลดล็อกแล้ว
-                            </Badge>
-                          )}
-                        </div>
-                        {!isFree && !isPurchased && (
-                          <p className="text-xs text-muted-foreground">
-                            {isSelected ? "อยู่ในตะกร้าแล้ว" : isLoading ? "กำลังอัปเดต..." : "ต้องการซื้อ?"}
-                          </p>
-                        )}
-                      </div>
-
-                      <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-                        {isFree ? (
-                          <>
-                            <button
-                              onClick={() => setLocation(`/read/${episode.id}`)}
-                              className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition active:bg-blue-800"
-                            >
-                              <BookOpen className="w-3.5 h-3.5 mr-1.5" />
-                              อ่านเดี๋ยวนี้
-                            </button>
-                            {episode.fileUrl && (
-                              <a
-                                href={episode.fileUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-slate-500 text-white hover:bg-slate-600 transition"
-                                title="ดาวน์โหลดไฟล์"
-                              >
-                                <Download className="w-3.5 h-3.5" />
-                              </a>
-                            )}
-                          </>
-                        ) : isPurchased ? (
-                          <>
-                            <button
-                              onClick={() => setLocation(`/read/${episode.id}`)}
-                              className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
-                            >
-                              <BookOpen className="w-3.5 h-3.5 mr-1.5" />
-                              อ่าน
-                            </button>
-                            {episode.fileUrl && (
-                              <a
-                                href={episode.fileUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-slate-500 text-white hover:bg-slate-600 transition"
-                                title="ดาวน์โหลดไฟล์"
-                              >
-                                <Download className="w-3.5 h-3.5" />
-                              </a>
-                            )}
-                          </>
-                        ) : (
-                          // Unpurchased paid file
-                          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2">
-                            <span className="font-semibold text-sm text-foreground">
-                              ฿{episode.price ?? "ไม่ระบุ"}
-                            </span>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                try {
-                                  handleEpisodeToggle(episode.id, !isSelected);
-                                } catch (err) {
-                                  console.error("Error toggling episode:", err);
-                                  toast.error("Failed to update cart");
-                                }
-                              }}
-                              disabled={isLoading}
-                              className={`inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md transition ${
-                                isSelected
-                                  ? "bg-blue-100 text-blue-700 hover:bg-blue-200"
-                                  : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                              } ${isLoading ? "opacity-60 cursor-wait" : "cursor-pointer"}`}
-                              title={isSelected ? "Remove from cart" : "Add to cart"}
-                            >
-                              {isSelected ? "อยู่ในตะกร้า" : "เพิ่มลงตะกร้า"}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </Card>
-                );
-                      })}
+                      {fileEpisodes.map(renderFileEpisodeCard)}
                     </div>
                   </div>
                 )}
               </>
-            ) : displayedEpisodes.length > 0 ? (
-              displayedEpisodes.map((episode: any) => {
-                if (!episode || !episode.id) return null;
-                const inCart = cartItems.some((item: any) => item.episodeId === episode.id);
-                // isPurchased must reflect a real purchase record only - never
-                // admin access or canRead - so the "unlocked" badge/download link
-                // only appears for episodes the user actually paid for.
-                const isPurchased = episode.isPurchased === true || episode.hasPurchased === true;
-                const isFree = episode.isFree === true;
-                const isLoading = addToCartMutation.isPending || removeFromCartMutation.isPending;
-                const isSelected = inCart || selectedEpisodes.includes(episode.id);
-
-                return (
-                  <Card
-                    key={episode.id}
-                    role={!isPurchased && !isFree ? "button" : undefined}
-                    tabIndex={!isPurchased && !isFree ? 0 : undefined}
-                    aria-pressed={!isPurchased && !isFree ? isSelected : undefined}
-                    aria-label={!isPurchased && !isFree ? `${isSelected ? "Remove" : "Select"} Episode ${episode.episodeNumber} - ${episode.title}` : undefined}
-                    onClick={() => {
-                      if (isFree || isPurchased || isLoading) return;
-                      handleEpisodeToggle(episode.id, !isSelected);
-                    }}
-                    onKeyDown={(e) => {
-                      if (isFree || isPurchased || isLoading) return;
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        handleEpisodeToggle(episode.id, !isSelected);
-                      }
-                    }}
-                    className={`p-4 transition-all ${
-                      !isPurchased && !isFree
-                        ? "cursor-pointer"
-                        : "cursor-default"
-                    } ${
-                      isSelected && !isFree && !isPurchased
-                        ? "border-2 border-blue-500 bg-blue-50 dark:bg-blue-950"
-                        : "border border-border hover:border-slate-400"
-                    } ${isLoading ? "opacity-60" : ""}`}
-                  >
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-start gap-3 mb-1">
-                          <p className="font-semibold text-sm leading-tight">
-                            {formatEpisodeLabel(episode.episodeNumber, episode.title || "ไม่มีชื่อ")}
-                          </p>
-                          {isFree && (
-                            <Badge className="shrink-0 text-xs bg-green-100 text-green-700 font-medium">
-                              ฟรี
-                            </Badge>
-                          )}
-                          {isPurchased && (
-                            <Badge className="shrink-0 text-xs bg-blue-100 text-blue-700 font-medium">
-                              ปลดล็อกแล้ว
-                            </Badge>
-                          )}
-                        </div>
-                        {!isFree && !isPurchased && (
-                          <p className="text-xs text-muted-foreground">
-                            {isSelected ? "เลือกไว้ในตะกร้า" : isLoading ? "กำลังอัปเดต..." : "กดเพื่อเลือกซื้อ"}
-                          </p>
-                        )}
-                      </div>
-
-                      <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-                        {isFree ? (
-                          <>
-                            <button
-                              onClick={() => setLocation(`/read/${episode.id}`)}
-                              className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition active:bg-blue-800"
-                            >
-                              <BookOpen className="w-3.5 h-3.5 mr-1.5" />
-                              อ่าน
-                            </button>
-                            {episode.fileUrl && (
-                              <a
-                                href={episode.fileUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-slate-500 text-white hover:bg-slate-600 transition"
-                                title="ดาวน์โหลดไฟล์"
-                              >
-                                <Download className="w-3.5 h-3.5" />
-                              </a>
-                            )}
-                          </>
-                        ) : isPurchased ? (
-                          <>
-                            <button
-                              onClick={() => setLocation(`/read/${episode.id}`)}
-                              className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
-                            >
-                              <BookOpen className="w-3.5 h-3.5 mr-1.5" />
-                              อ่าน
-                            </button>
-                            {episode.fileUrl && (
-                              <a
-                                href={episode.fileUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-slate-500 text-white hover:bg-slate-600 transition"
-                                title="ดาวน์โหลดไฟล์"
-                              >
-                                <Download className="w-3.5 h-3.5" />
-                              </a>
-                            )}
-                          </>
-                        ) : (
-                          <>
-                            <span className="font-semibold text-sm text-foreground whitespace-nowrap">
-                              ฿{episode.price ?? "ไม่ระบุ"}
-                            </span>
-                            <input
-                              type="checkbox"
-                              checked={isSelected}
-                              onChange={(e) => {
-                                e.stopPropagation();
-                                try {
-                                  handleEpisodeToggle(episode.id, e.target.checked);
-                                } catch (err) {
-                                  console.error("Error toggling episode:", err);
-                                  toast.error("Failed to update cart");
-                                }
-                              }}
-                              onClick={(e) => e.stopPropagation()}
-                              disabled={isLoading}
-                              className="w-5 h-5 cursor-pointer accent-blue-600"
-                              aria-label={`Select episode ${episode.episodeNumber}`}
-                            />
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </Card>
-                );
-              })
-            ) : (
-              <Card className="p-8 text-center">
-                <p className="text-muted-foreground">
-                  {saleType === "file" ? "ยังไม่มีแพ็กขายไฟล์" : saleType === "chapter" ? "ยังไม่มีรายการขายแบบรายบท" : "ไม่มีตอนที่ตรงกับการค้นหา"}
-                </p>
-              </Card>
-            )}
+            ) : saleType === "chapter" ? (
+              // Chapter tab: readerEpisodes only, direct wallet purchase - never cart/checkbox.
+              readerEpisodes.length > 0 ? (
+                <div className="space-y-3">
+                  {readerEpisodes.map(renderChapterEpisodeCard)}
+                </div>
+              ) : (
+                <Card className="p-8 text-center">
+                  <p className="text-muted-foreground">ยังไม่มีรายการขายแบบรายบท</p>
+                </Card>
+              )
+            ) : saleType === "file" ? (
+              // File tab: fileEpisodes only, cart/checkbox flow unchanged.
+              fileEpisodes.length > 0 ? (
+                <div className="space-y-3">
+                  {fileEpisodes.map(renderFileEpisodeCard)}
+                </div>
+              ) : (
+                <Card className="p-8 text-center">
+                  <p className="text-muted-foreground">ยังไม่มีแพ็กขายไฟล์</p>
+                </Card>
+              )
+            ) : null}
           </div>
         </div>
       </div>
