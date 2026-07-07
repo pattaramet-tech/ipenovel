@@ -43,6 +43,13 @@ export function compareEpisodes(a: any, b: any): number {
 }
 
 /**
+ * Descending version of compareEpisodes (highest episode number first).
+ */
+export function compareEpisodesDesc(a: any, b: any): number {
+  return compareEpisodes(b, a);
+}
+
+/**
  * Format episode display label
  * Shows: #12 title
  * If title is empty, shows: #12
@@ -51,4 +58,69 @@ export function formatEpisodeLabel(episodeNumber: unknown, title?: string | null
   const num = episodeNumber ?? "?";
   const titleStr = title?.trim();
   return titleStr ? `#${num} ${titleStr}` : `#${num}`;
+}
+
+export type EpisodeGroup = {
+  key: string;
+  label: string;
+  start: number;
+  end: number;
+  episodes: any[];
+};
+
+/**
+ * Group episodes into table-of-contents buckets of 100 (บทที่ 1-100, 101-200, ...).
+ * Grouping is based on the episode's own numeric episodeNumber (not sortOrder),
+ * since the range should reflect the chapter number a reader recognizes, not an
+ * admin-assigned manual ordering override. Episodes whose episodeNumber can't be
+ * parsed into a number fall into a trailing "unknown" bucket.
+ *
+ * For range-style episodeNumbers like "436 - 508", the first number (436) decides
+ * the bucket - the episode still displays its full original label via
+ * formatEpisodeLabel elsewhere, this only affects which group it's filed under.
+ */
+export function groupEpisodesByHundreds(episodes: any[]): EpisodeGroup[] {
+  const groups = new Map<string, EpisodeGroup>();
+
+  for (const episode of episodes) {
+    const num = parseEpisodeNumber(episode?.episodeNumber);
+
+    if (num === null) {
+      const key = "unknown";
+      if (!groups.has(key)) {
+        groups.set(key, {
+          key,
+          label: "ไม่ทราบเลขตอน",
+          start: Number.MAX_SAFE_INTEGER,
+          end: Number.MAX_SAFE_INTEGER,
+          episodes: [],
+        });
+      }
+      groups.get(key)!.episodes.push(episode);
+      continue;
+    }
+
+    const start = Math.floor((Math.max(1, Math.floor(num)) - 1) / 100) * 100 + 1;
+    const end = start + 99;
+    const key = `${start}-${end}`;
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        label: `บทที่ ${start} - ${end}`,
+        start,
+        end,
+        episodes: [],
+      });
+    }
+
+    groups.get(key)!.episodes.push(episode);
+  }
+
+  return Array.from(groups.values())
+    .sort((a, b) => a.start - b.start)
+    .map((group) => ({
+      ...group,
+      episodes: [...group.episodes].sort(compareEpisodes),
+    }));
 }

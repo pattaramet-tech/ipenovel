@@ -9,8 +9,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { useState, useMemo } from "react";
-import { BookOpen, Search, Download } from "lucide-react";
-import { formatEpisodeLabel, compareEpisodes } from "@/utils/episodeUtils";
+import { BookOpen, Search, Download, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  formatEpisodeLabel,
+  compareEpisodes,
+  compareEpisodesDesc,
+  groupEpisodesByHundreds,
+  type EpisodeGroup,
+} from "@/utils/episodeUtils";
 
 export default function NovelDetailPage() {
   const { identifier } = useParams<{ identifier: string }>();
@@ -19,9 +25,15 @@ export default function NovelDetailPage() {
   const { t } = useLanguage();
   const [selectedEpisodes, setSelectedEpisodes] = useState<number[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
-  const [sortBy, setSortBy] = useState<"newest" | "oldest" | "titleAZ" | "titleZA">("newest");
+  // Default sort is always numeric episode order (ascending) - never title
+  // A-Z/Z-A, which previously made #10 sort before #1/#2.
+  const [sortBy, setSortBy] = useState<"episodeAsc" | "episodeDesc" | "newest" | "oldest">("episodeAsc");
   const [saleType, setSaleType] = useState<"all" | "file" | "chapter">("all");
   const [purchasingEpisodeId, setPurchasingEpisodeId] = useState<number | null>(null);
+  // Table-of-contents accordion state, keyed by "<chapter|file>:<group.key>" so
+  // the chapter and file sections track expansion independently. Absent keys
+  // fall back to isGroupExpanded()'s default (first group open, rest closed).
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
 
   // Parse identifier as number (id) - guard against NaN
   const novelId = identifier ? parseInt(identifier, 10) : 0;
@@ -144,11 +156,15 @@ export default function NovelDetailPage() {
       return titleMatch || numberMatch;
     });
 
-    // Sort with defensive checks
+    // Sort with defensive checks. Default (and "episodeAsc") is always numeric
+    // episode order - never localeCompare(title), which previously sorted
+    // "#10" before "#1"/"#2" and mixed in Thai chapter titles unpredictably.
     const sorted = [...filtered].sort((a: any, b: any) => {
       if (!a || !b) return 0;
 
       switch (sortBy) {
+        case "episodeDesc":
+          return compareEpisodesDesc(a, b);
         case "newest":
           try {
             const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
@@ -165,12 +181,8 @@ export default function NovelDetailPage() {
           } catch {
             return 0;
           }
-        case "titleAZ":
-          return (a.title || "").localeCompare(b.title || "");
-        case "titleZA":
-          return (b.title || "").localeCompare(a.title || "");
+        case "episodeAsc":
         default:
-          // Default: sort by episode number (handles sortOrder, episodeNumber, and id)
           return compareEpisodes(a, b);
       }
     });
@@ -195,6 +207,35 @@ export default function NovelDetailPage() {
 
     return { freeEpisodes, paidEpisodes, fileEpisodes, readerEpisodes };
   }, [episodes, searchTerm, sortBy]);
+
+  // Table-of-contents groups (บทที่ 1-100, 101-200, ...) for each sale type.
+  // Grouping always orders episodes numerically within a group regardless of
+  // the active sortBy, since a table of contents should read top-to-bottom by
+  // chapter number - groupEpisodesByHundreds sorts each bucket internally.
+  const readerEpisodeGroups = useMemo(
+    () => groupEpisodesByHundreds(filteredAndSortedEpisodes.readerEpisodes),
+    [filteredAndSortedEpisodes.readerEpisodes]
+  );
+  const fileEpisodeGroups = useMemo(
+    () => groupEpisodesByHundreds(filteredAndSortedEpisodes.fileEpisodes),
+    [filteredAndSortedEpisodes.fileEpisodes]
+  );
+
+  // A group is expanded if the user explicitly toggled it, or by default:
+  // while searching every group already only contains matching episodes so
+  // expand all of them; otherwise only the first (lowest-numbered) group.
+  const isGroupExpanded = (compositeKey: string, index: number) => {
+    if (searchTerm.trim().length > 0) return true;
+    if (expandedGroups[compositeKey] !== undefined) return expandedGroups[compositeKey];
+    return index === 0;
+  };
+
+  const toggleGroupExpanded = (compositeKey: string, defaultOpen: boolean) => {
+    setExpandedGroups((prev) => {
+      const current = prev[compositeKey] !== undefined ? prev[compositeKey] : defaultOpen;
+      return { ...prev, [compositeKey]: !current };
+    });
+  };
 
   // Handle immediate add/remove on checkbox change
   const handleEpisodeToggle = async (episodeId: number, isAdding: boolean) => {
@@ -470,6 +511,49 @@ export default function NovelDetailPage() {
     );
   };
 
+  // Table-of-contents accordion: renders each hundred-range group as a
+  // collapsible section, with episodes inside always in numeric order.
+  // `prefix` namespaces expandedGroups keys so chapter/file sections (and the
+  // same section viewed via the "all" tab vs its dedicated tab) don't collide.
+  const renderEpisodeGroupAccordion = (
+    groups: EpisodeGroup[],
+    prefix: string,
+    renderCard: (episode: any) => any
+  ) => (
+    <div className="space-y-3">
+      {groups.map((group, index) => {
+        const compositeKey = `${prefix}:${group.key}`;
+        const expanded = isGroupExpanded(compositeKey, index);
+
+        return (
+          <div key={compositeKey} className="border border-border rounded-lg overflow-hidden">
+            <button
+              onClick={() => toggleGroupExpanded(compositeKey, index === 0)}
+              className="w-full flex items-center justify-between px-4 py-3 bg-slate-50 dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 transition text-left"
+            >
+              <span className="font-semibold text-sm text-foreground">
+                {group.label}{" "}
+                <span className="text-xs font-normal text-muted-foreground">
+                  ({group.episodes.length})
+                </span>
+              </span>
+              {expanded ? (
+                <ChevronUp className="w-4 h-4 text-muted-foreground shrink-0" />
+              ) : (
+                <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />
+              )}
+            </button>
+            {expanded && (
+              <div className="p-3 space-y-3 bg-background border-t border-border">
+                {group.episodes.map(renderCard)}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+
   // Early returns AFTER all hooks have been called
   if (!validNovelId) {
     return (
@@ -661,15 +745,15 @@ export default function NovelDetailPage() {
                 onChange={(e) => setSortBy(e.target.value as any)}
                 className="px-4 py-2 border border-input rounded-md bg-background text-foreground text-sm font-medium h-10 cursor-pointer"
               >
-                <option value="newest">{t("novel.newestFirst")}</option>
-                <option value="oldest">{t("novel.oldestFirst")}</option>
-                <option value="titleAZ">{t("novel.titleAZ")}</option>
-                <option value="titleZA">{t("novel.titleZA")}</option>
+                <option value="episodeAsc">เลขตอนน้อยไปมาก</option>
+                <option value="episodeDesc">เลขตอนมากไปน้อย</option>
+                <option value="newest">ล่าสุดก่อน</option>
+                <option value="oldest">เก่าสุดก่อน</option>
               </select>
             </div>
           </div>
 
-          {/* Episodes List */}
+          {/* Episodes List - grouped as a table of contents (บทที่ 1-100, 101-200, ...) */}
           <div className="space-y-6">
             {saleType === "all" && readerEpisodes.length === 0 && fileEpisodes.length === 0 ? (
               <Card className="p-8 text-center">
@@ -681,27 +765,21 @@ export default function NovelDetailPage() {
                 {readerEpisodes.length > 0 && (
                   <div>
                     <h3 className="text-lg font-semibold mb-3 text-blue-600">ขายรายบท ({readerEpisodes.length})</h3>
-                    <div className="space-y-3">
-                      {readerEpisodes.map(renderChapterEpisodeCard)}
-                    </div>
+                    {renderEpisodeGroupAccordion(readerEpisodeGroups, "chapter", renderChapterEpisodeCard)}
                   </div>
                 )}
                 {/* File Episodes Section - cart/checkbox flow */}
                 {fileEpisodes.length > 0 && (
                   <div>
                     <h3 className="text-lg font-semibold mb-3 text-amber-600">ขายไฟล์ ({fileEpisodes.length})</h3>
-                    <div className="space-y-3">
-                      {fileEpisodes.map(renderFileEpisodeCard)}
-                    </div>
+                    {renderEpisodeGroupAccordion(fileEpisodeGroups, "file", renderFileEpisodeCard)}
                   </div>
                 )}
               </>
             ) : saleType === "chapter" ? (
               // Chapter tab: readerEpisodes only, direct wallet purchase - never cart/checkbox.
               readerEpisodes.length > 0 ? (
-                <div className="space-y-3">
-                  {readerEpisodes.map(renderChapterEpisodeCard)}
-                </div>
+                renderEpisodeGroupAccordion(readerEpisodeGroups, "chapter", renderChapterEpisodeCard)
               ) : (
                 <Card className="p-8 text-center">
                   <p className="text-muted-foreground">ยังไม่มีรายการขายแบบรายบท</p>
@@ -710,9 +788,7 @@ export default function NovelDetailPage() {
             ) : saleType === "file" ? (
               // File tab: fileEpisodes only, cart/checkbox flow unchanged.
               fileEpisodes.length > 0 ? (
-                <div className="space-y-3">
-                  {fileEpisodes.map(renderFileEpisodeCard)}
-                </div>
+                renderEpisodeGroupAccordion(fileEpisodeGroups, "file", renderFileEpisodeCard)
               ) : (
                 <Card className="p-8 text-center">
                   <p className="text-muted-foreground">ยังไม่มีแพ็กขายไฟล์</p>
