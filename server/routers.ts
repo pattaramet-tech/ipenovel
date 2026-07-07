@@ -1833,7 +1833,11 @@ export const appRouter = router({
       }))
       .query(async ({ input, ctx }) => {
         const { getReaderEpisode, getUserWalletBalance } = await import("./services/readerService");
-        const episodeData = await getReaderEpisode(ctx.user.id, input.episodeId, ctx.user.role === "admin");
+        // Public reader must behave like a real customer session. Do not pass
+        // admin override here, otherwise an admin account can read every paid
+        // chapter by navigating previous/next without ever purchasing it.
+        const allowAdminPreview = false;
+        const episodeData = await getReaderEpisode(ctx.user.id, input.episodeId, allowAdminPreview);
 
         if (!episodeData) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Episode not found" });

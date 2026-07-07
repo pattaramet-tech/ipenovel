@@ -171,16 +171,11 @@ export async function getReaderEpisode(userId: number | undefined, episodeId: nu
     ? sortedNavigationEpisodes[currentIndex + 1]
     : null;
 
-  // Check if already purchased (minimal select for existence check)
-  let alreadyPurchased = false;
-  if (userId && !ep.isFree) {
-    const purchase = await db
-      .select({ id: episodePurchases.id })
-      .from(episodePurchases)
-      .where(and(eq(episodePurchases.userId, userId), eq(episodePurchases.episodeId, episodeId)))
-      .limit(1);
-    alreadyPurchased = purchase.length > 0;
-  }
+  // Check if already purchased. Must check both purchase sources (wallet
+  // direct episodePurchases + legacy order-based purchases) via the shared
+  // helper, otherwise a legacy purchase would incorrectly show as unpurchased
+  // here even though canReadEpisode() already grants access for it.
+  const alreadyPurchased = userId && !ep.isFree ? await hasPurchasedEpisode(userId, episodeId) : false;
 
   // Sanitize episode object to not leak content in API response
   // The content and preview are returned as top-level fields only when appropriate
