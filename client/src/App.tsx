@@ -8,6 +8,7 @@ import OrdersPage from "./pages/OrdersPage";
 import OrderDetailPage from "./pages/OrderDetailPage";
 import MyNovelsPage from "@/pages/MyNovelsPage";
 import MyLibraryPage from "@/pages/MyLibraryPage";
+import ProfilePage from "@/pages/ProfilePage";
 import AdminDashboard from "@/pages/AdminDashboard";
 import AdminBannersPage from "@/pages/AdminBannersPage";
 import AdminCouponsPage from "@/pages/AdminCouponsPage";
@@ -54,6 +55,7 @@ function Router() {
         <Route path={"/orders/:id"} component={OrderDetailPage} />
         <Route path={"/my-novels"} component={MyNovelsPage} />
         <Route path={"/my-library"} component={MyLibraryPage} />
+        <Route path={"/profile"} component={ProfilePage} />
         <Route path={"/points"} component={PointsPage} />
         <Route path={"/wallet"} component={WalletPage} />
         <Route path={"/payment/:orderId"} component={PaymentPage} />
