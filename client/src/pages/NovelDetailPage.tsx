@@ -100,6 +100,10 @@ export default function NovelDetailPage() {
         // atomic debit step itself failed/couldn't be confirmed, not that the
         // user's balance was too low - don't tell them to top up.
         toast.error("ตัดเงินจากกระเป๋าไม่สำเร็จ กรุณาลองใหม่อีกครั้ง หากยังพบปัญหาให้ติดต่อแอดมิน");
+      } else if (errorMsg === "Already purchased" || errorMsg.includes("ซื้อไปแล้ว") || errorMsg.includes("already")) {
+        // Duplicate purchase - refetch episode state and show soft message
+        toast.info("คุณซื้อบทนี้แล้ว");
+        utils.novels.episodes.invalidate();
       } else if (errorMsg === "INVALID_EPISODE_PRICE") {
         toast.error("ราคาบทนี้ไม่ถูกต้อง กรุณาติดต่อแอดมิน");
       } else if (errorMsg === "INVALID_WALLET_BALANCE") {
