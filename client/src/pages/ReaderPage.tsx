@@ -5,6 +5,7 @@ import { useLanguage } from "@/contexts/LanguageContext";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import styles from "./ReaderPage.module.css";
+import { formatEpisodeLabel } from "@/utils/episodeUtils";
 
 // Utility to generate watermark text
 const generateWatermarkText = (user: any, episodeId: number): string => {
@@ -229,7 +230,7 @@ export default function ReaderPage() {
           <div className={styles.titleSection}>
             <h1 className={styles.novelTitle}>{novel.title}</h1>
             <h2 className={styles.episodeTitle}>
-              {t("novel.episode")} {episode.episodeNumber}: {episode.title}
+              {formatEpisodeLabel(episode.episodeNumber, episode.title)}
             </h2>
           </div>
         </div>

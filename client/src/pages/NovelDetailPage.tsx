@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { useState, useMemo } from "react";
 import { BookOpen, Search, Download } from "lucide-react";
+import { formatEpisodeLabel, compareEpisodes } from "@/utils/episodeUtils";
 
 export default function NovelDetailPage() {
   const { identifier } = useParams<{ identifier: string }>();
@@ -169,7 +170,8 @@ export default function NovelDetailPage() {
         case "titleZA":
           return (b.title || "").localeCompare(a.title || "");
         default:
-          return 0;
+          // Default: sort by episode number (handles sortOrder, episodeNumber, and id)
+          return compareEpisodes(a, b);
       }
     });
 
@@ -454,7 +456,7 @@ export default function NovelDetailPage() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-start gap-3 mb-1">
                           <p className="font-semibold text-sm leading-tight">
-                            ตอนที่ {episode.episodeNumber || "?"}: {episode.title || "ไม่มีชื่อ"}
+                            {formatEpisodeLabel(episode.episodeNumber, episode.title || "ไม่มีชื่อ")}
                           </p>
                           {isFree && (
                             <Badge className="shrink-0 text-xs bg-green-100 text-green-700 font-medium">
@@ -582,7 +584,7 @@ export default function NovelDetailPage() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-start gap-3 mb-1">
                           <p className="font-semibold text-sm leading-tight">
-                            ตอนที่ {episode.episodeNumber || "?"}: {episode.title || "ไม่มีชื่อ"}
+                            {formatEpisodeLabel(episode.episodeNumber, episode.title || "ไม่มีชื่อ")}
                           </p>
                           {isFree && (
                             <Badge className="shrink-0 text-xs bg-green-100 text-green-700 font-medium">
@@ -723,7 +725,7 @@ export default function NovelDetailPage() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-start gap-3 mb-1">
                           <p className="font-semibold text-sm leading-tight">
-                            ตอนที่ {episode.episodeNumber || "?"}: {episode.title || "ไม่มีชื่อ"}
+                            {formatEpisodeLabel(episode.episodeNumber, episode.title || "ไม่มีชื่อ")}
                           </p>
                           {isFree && (
                             <Badge className="shrink-0 text-xs bg-green-100 text-green-700 font-medium">

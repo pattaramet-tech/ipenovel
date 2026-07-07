@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useLocation } from "wouter";
 import { Loader2, BookOpen, ChevronDown, ChevronUp, Wallet, Clock, Mail, User } from "lucide-react";
 import { useState, useMemo } from "react";
+import { formatEpisodeLabel, compareEpisodes } from "@/utils/episodeUtils";
 
 export default function ProfilePage() {
   const { user } = useAuth();
@@ -288,12 +289,12 @@ export default function ProfilePage() {
                     {isExpanded && (
                       <div className="border-t border-slate-200 bg-slate-50 divide-y divide-slate-200">
                         {episodes
-                          .sort((a: any, b: any) => a.episode.episodeNumber - b.episode.episodeNumber)
+                          .sort((a: any, b: any) => compareEpisodes(a.episode, b.episode))
                           .map((item: any) => (
                             <div key={item.episode.id} className="p-4 flex items-center justify-between gap-4 hover:bg-slate-100 transition">
                               <div className="flex-1 min-w-0">
                                 <p className="font-medium text-slate-900">
-                                  ตอนที่ {item.episode.episodeNumber}: {item.episode.title}
+                                  {formatEpisodeLabel(item.episode.episodeNumber, item.episode.title)}
                                 </p>
                                 <p className="text-xs text-muted-foreground mt-1">
                                   ซื้อเมื่อ {new Date(item.purchasedAt).toLocaleDateString("th-TH")}
