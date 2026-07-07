@@ -163,17 +163,32 @@ export const appRouter = router({
 
     episodes: protectedProcedure.input(z.object({ novelId: z.number() })).query(async ({ input, ctx }) => {
       const episodes = await db.getEpisodesByNovelId(input.novelId);
+      const isAdmin = ctx.user.role === "admin";
 
-      // Enrich episodes with purchase status
-      // Check both wallet direct purchase (episodePurchases) and legacy order purchase (purchases)
+      // Enrich episodes with purchase status. IMPORTANT: isPurchased/hasPurchased
+      // must be computed from actual purchase records only (episodePurchases +
+      // legacy purchases) - never from admin role or canReadEpisode(), otherwise
+      // admin logins make every episode/file appear "purchased" in the UI.
       const enriched = await Promise.all(
         episodes.map(async (ep: any) => {
-          const canRead = await readerService.canReadEpisode(ctx.user.id, ep.id, ctx.user.role === "admin");
+          const isFree = ep.isFree === true;
+          const hasPurchased = await readerService.hasPurchasedEpisode(ctx.user.id, ep.id);
+          const canRead = isFree || hasPurchased || isAdmin;
+
+          // Never leak full episode content in the list endpoint. Only expose
+          // fileUrl when the requester actually has access - unpurchased paid
+          // files must not leak their real download URL.
+          const { content, fileUrl, ...safeEpisode } = ep;
+
           return {
-            ...ep,
+            ...safeEpisode,
+            isFree,
+            hasPurchased,
+            isPurchased: hasPurchased,
             canRead,
-            isPurchased: canRead && !ep.isFree, // isPurchased is true if user can read and it's not free
-            isFree: ep.isFree,
+            hasFile: Boolean(fileUrl),
+            fileUrl: canRead ? fileUrl ?? null : null,
+            adminCanPreview: isAdmin && !isFree && !hasPurchased,
           };
         })
       );
@@ -218,15 +233,18 @@ export const appRouter = router({
         const episode = await db.getEpisodeById(input.episodeId);
         if (!episode) throw new TRPCError({ code: "NOT_FOUND" });
 
-        // Check if already purchased (both wallet direct purchase and order-based purchase)
-        const canRead = await readerService.canReadEpisode(ctx.user.id, input.episodeId, ctx.user.role === "admin");
-        if (canRead) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "This episode has already been purchased" });
-        }
-
         // Free episodes cannot be added to cart
         if (episode.isFree) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "Free episodes cannot be added to cart" });
+        }
+
+        // Check if already purchased (both wallet direct purchase and legacy
+        // order-based purchase). Deliberately does NOT use canReadEpisode()/admin
+        // role here - an admin browsing the store must still be able to add an
+        // unpurchased paid episode to the cart for testing/verification.
+        const hasPurchased = await readerService.hasPurchasedEpisode(ctx.user.id, input.episodeId);
+        if (hasPurchased) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "This episode has already been purchased" });
         }
 
         const cart = await db.getOrCreateCart(ctx.user.id);

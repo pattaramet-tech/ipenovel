@@ -62,27 +62,26 @@ function toSafeNavigationEpisode(episode: any) {
 }
 
 /**
- * Check if user can read an episode
- * Returns true if:
- * - Episode is free
- * - User purchased episode via wallet (episodePurchases)
- * - User purchased via order (purchases table)
- * - User is admin
+ * Check if user has actually purchased an episode (real purchase only).
+ *
+ * This is deliberately narrow: it does NOT consider admin role and does NOT
+ * consider free episodes. It answers exactly one question - "does a real
+ * purchase record exist for this user+episode" - by checking both purchase
+ * sources:
+ * - episodePurchases (wallet direct chapter purchase)
+ * - purchases (legacy order-based purchase)
+ *
+ * Callers that need "can this user read/access the episode" (which also
+ * covers free episodes and admin override) should use canReadEpisode()
+ * instead. Conflating the two previously caused admin logins to make every
+ * episode/file appear "purchased" in the Novel Detail UI, since canReadEpisode
+ * returns true unconditionally for admins.
  */
-export async function canReadEpisode(userId: number | undefined, episodeId: number, isAdmin: boolean = false): Promise<boolean> {
-  if (isAdmin) return true;
+export async function hasPurchasedEpisode(userId: number | undefined, episodeId: number): Promise<boolean> {
   if (!userId) return false;
 
   const db = await getDb();
   if (!db) return false;
-
-  const episode = await db.select().from(episodes).where(eq(episodes.id, episodeId)).limit(1);
-  if (episode.length === 0) return false;
-
-  const ep = episode[0];
-
-  // Free episodes are readable by everyone
-  if (ep.isFree) return true;
 
   // Check wallet-based purchase (minimal select for existence check)
   const walletPurchase = await db
@@ -95,14 +94,41 @@ export async function canReadEpisode(userId: number | undefined, episodeId: numb
 
   // Check order-based purchase (legacy system)
   const orderPurchase = await db
-    .select()
+    .select({ id: purchases.id })
     .from(purchases)
     .where(and(eq(purchases.userId, userId), eq(purchases.episodeId, episodeId)))
     .limit(1);
 
-  if (orderPurchase.length > 0) return true;
+  return orderPurchase.length > 0;
+}
 
-  return false;
+/**
+ * Check if user can read an episode
+ * Returns true if:
+ * - Episode is free
+ * - User purchased episode via wallet (episodePurchases)
+ * - User purchased via order (purchases table)
+ * - User is admin
+ *
+ * NOTE: this answers "can read/access", not "did the user pay for it".
+ * Do not use this to compute an `isPurchased`/"unlocked" badge - use
+ * hasPurchasedEpisode() for that, otherwise admin logins and free episodes
+ * will incorrectly show as purchased.
+ */
+export async function canReadEpisode(userId: number | undefined, episodeId: number, isAdmin: boolean = false): Promise<boolean> {
+  if (isAdmin) return true;
+  if (!userId) return false;
+
+  const db = await getDb();
+  if (!db) return false;
+
+  const episode = await db.select({ id: episodes.id, isFree: episodes.isFree }).from(episodes).where(eq(episodes.id, episodeId)).limit(1);
+  if (episode.length === 0) return false;
+
+  // Free episodes are readable by everyone
+  if (episode[0].isFree) return true;
+
+  return hasPurchasedEpisode(userId, episodeId);
 }
 
 /**

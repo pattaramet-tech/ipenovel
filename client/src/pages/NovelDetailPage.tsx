@@ -440,7 +440,10 @@ export default function NovelDetailPage() {
                       {readerEpisodes.map((episode: any) => {
                 if (!episode || !episode.id) return null;
                 const inCart = cartItems.some((item: any) => item.episodeId === episode.id);
-                const isPurchased = episode.isPurchased || false;
+                // isPurchased must reflect a real purchase record only - never
+                // admin access or canRead - so the "unlocked" badge/download link
+                // only appears for episodes the user actually paid for.
+                const isPurchased = episode.isPurchased === true || episode.hasPurchased === true;
                 const isFree = episode.isFree === true;
                 const isLoading = addToCartMutation.isPending || removeFromCartMutation.isPending;
                 const isSelected = inCart || selectedEpisodes.includes(episode.id);
@@ -547,7 +550,10 @@ export default function NovelDetailPage() {
                       {fileEpisodes.map((episode: any) => {
                 if (!episode || !episode.id) return null;
                 const inCart = cartItems.some((item: any) => item.episodeId === episode.id);
-                const isPurchased = episode.isPurchased || false;
+                // isPurchased must reflect a real purchase record only - never
+                // admin access or canRead - so the "unlocked" badge/download link
+                // only appears for episodes the user actually paid for.
+                const isPurchased = episode.isPurchased === true || episode.hasPurchased === true;
                 const isFree = episode.isFree === true;
                 const isLoading = addToCartMutation.isPending || removeFromCartMutation.isPending;
                 const isSelected = inCart || selectedEpisodes.includes(episode.id);
@@ -688,7 +694,10 @@ export default function NovelDetailPage() {
               displayedEpisodes.map((episode: any) => {
                 if (!episode || !episode.id) return null;
                 const inCart = cartItems.some((item: any) => item.episodeId === episode.id);
-                const isPurchased = episode.isPurchased || false;
+                // isPurchased must reflect a real purchase record only - never
+                // admin access or canRead - so the "unlocked" badge/download link
+                // only appears for episodes the user actually paid for.
+                const isPurchased = episode.isPurchased === true || episode.hasPurchased === true;
                 const isFree = episode.isFree === true;
                 const isLoading = addToCartMutation.isPending || removeFromCartMutation.isPending;
                 const isSelected = inCart || selectedEpisodes.includes(episode.id);
