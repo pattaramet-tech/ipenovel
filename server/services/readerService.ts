@@ -24,8 +24,10 @@ function parseEpisodeOrderNumber(episodeNumber: unknown): number | null {
 }
 
 function getNavigationOrderValue(episode: any): number {
-  const sortOrder = Number(episode?.sortOrder);
-  if (Number.isFinite(sortOrder)) return sortOrder;
+  if (episode?.sortOrder !== null && episode?.sortOrder !== undefined) {
+    const sortOrder = Number(episode.sortOrder);
+    if (Number.isFinite(sortOrder)) return sortOrder;
+  }
 
   const episodeNumber = parseEpisodeOrderNumber(episode?.episodeNumber);
   if (episodeNumber !== null) return episodeNumber;
