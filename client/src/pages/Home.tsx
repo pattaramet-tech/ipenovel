@@ -9,6 +9,12 @@ import { useLanguage } from "@/contexts/LanguageContext";
 import { toast } from "sonner";
 import React from "react";
 import { getLoginUrl } from "@/const";
+import NovelCard from "@/components/NovelCard";
+
+// Mobile-first responsive grid used for every novel/episode card section on
+// this page - 2 columns on phones (matches a typical novel-reading site
+// layout), scaling up to 5 on wide desktop screens.
+const CARD_GRID_CLASSES = "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4";
 
 export default function Home() {
   const { user, isAuthenticated } = useAuth();
@@ -118,79 +124,38 @@ export default function Home() {
     );
   };
 
-  // Episode Card Component for latest episodes
+  // Episode Card - latest uploaded episodes, links to the parent novel page.
   const EpisodeCard = ({ episode }: any) => {
     if (!episode || !episode.novelId) return null;
     return (
-    <Link href={`/novels/${episode.novelId}`}>
-      <Card className="overflow-hidden hover:shadow-xl transition-all duration-300 cursor-pointer h-full hover:scale-105 transform rounded-xl border-0">
-        <div className="relative bg-gradient-to-br from-slate-200 to-slate-300 h-48 sm:h-56 overflow-hidden">
-          {episode.novelCoverImageUrl ? (
-            <img
-              src={episode.novelCoverImageUrl}
-              alt={episode.novelTitle}
-              className="w-full h-full object-cover"
-            />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-100 to-purple-100">
-              <BookOpen className="w-12 h-12 text-slate-400" />
-            </div>
-          )}
-          {episode.isFree && (
-            <div className="absolute top-3 right-3 bg-green-500 text-white px-3 py-1 rounded-full text-xs font-semibold">
-              {t("home.free")}
-            </div>
-          )}
-        </div>
-        <div className="p-4 sm:p-5">
-          <p className="text-xs sm:text-sm text-slate-500 mb-1">{episode.novelTitle}</p>
-          <h3 className="font-bold text-sm sm:text-base line-clamp-2 text-slate-900 mb-2">
-            {t("home.episode")} {episode.episodeNumber}
-          </h3>
-          <p className="text-xs sm:text-sm text-slate-600 line-clamp-1">
-            {episode.episodeTitle}
-          </p>
-        </div>
-      </Card>
-    </Link>
-  );
+      <NovelCard
+        id={episode.novelId}
+        title={`${t("home.episode")} ${episode.episodeNumber}`}
+        coverImageUrl={episode.novelCoverImageUrl}
+        overline={episode.novelTitle}
+        subtitle={episode.episodeTitle}
+        badges={episode.isFree ? [{ label: t("home.free"), className: "bg-green-500 text-white" }] : []}
+      />
+    );
   };
 
-  // Novel Card Component for reusability
-  const NovelCard = ({ novel, showFreeTag = false }: any) => {
+  // Novel Card - featured/new/free novel sections.
+  const NovelCardSection = ({ novel, showFreeTag = false, eager = false }: any) => {
     if (!novel || !novel.id) return null;
+    const badges = [];
+    if (showFreeTag && novel.freeEpisodeCount > 0) {
+      badges.push({ label: t("home.free"), className: "bg-green-500 text-white" });
+    }
     return (
-    <Link href={`/novels/${novel.id}`}>
-      <Card className="overflow-hidden hover:shadow-xl transition-all duration-300 cursor-pointer h-full hover:scale-105 transform rounded-xl border-0">
-        <div className="relative bg-gradient-to-br from-slate-200 to-slate-300 h-48 sm:h-56 overflow-hidden">
-          {novel.coverImageUrl ? (
-            <img
-              src={novel.coverImageUrl}
-              alt={novel.title}
-              className="w-full h-full object-cover"
-            />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-100 to-purple-100">
-              <BookOpen className="w-12 h-12 text-slate-400" />
-            </div>
-          )}
-          {showFreeTag && novel.freeEpisodeCount > 0 && (
-            <div className="absolute top-3 right-3 bg-green-500 text-white px-3 py-1 rounded-full text-xs font-semibold">
-              {t("home.free")}
-            </div>
-          )}
-        </div>
-        <div className="p-4 sm:p-5">
-          <h3 className="font-bold text-sm sm:text-base line-clamp-2 text-slate-900 mb-2">
-            {novel.title}
-          </h3>
-          <p className="text-xs sm:text-sm text-slate-600 line-clamp-2">
-            {novel.description}
-          </p>
-        </div>
-      </Card>
-    </Link>
-  );
+      <NovelCard
+        id={novel.id}
+        title={novel.title}
+        coverImageUrl={novel.coverImageUrl}
+        subtitle={novel.description}
+        badges={badges}
+        eager={eager}
+      />
+    );
   };
 
   return (
@@ -240,7 +205,7 @@ export default function Home() {
       </section>
 
       {/* Main Content - Mobile First */}
-      <div className="max-w-6xl mx-auto px-4 py-12 sm:py-16 md:py-20">
+      <div className="max-w-6xl mx-auto px-4 pt-12 sm:pt-16 md:pt-20 pb-[calc(3rem+env(safe-area-inset-bottom))] sm:pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-[calc(5rem+env(safe-area-inset-bottom))]">
         {/* Banners Section */}
         {!isLoading && <BannerCarousel banners={banners} />}
         {/* Featured Novels Section - Popular */}
@@ -264,15 +229,15 @@ export default function Home() {
           </div>
 
           {isLoading ? (
-            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+            <div className={CARD_GRID_CLASSES}>
               {[...Array(4)].map((_, i) => (
                 <Skeleton key={i} className="h-64 sm:h-72 rounded-xl" />
               ))}
             </div>
           ) : popularNovels.length > 0 ? (
-            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-              {popularNovels.map((novel: any) => (
-                <NovelCard key={novel.id} novel={novel} />
+            <div className={CARD_GRID_CLASSES}>
+              {popularNovels.map((novel: any, idx: number) => (
+                <NovelCardSection key={novel.id} novel={novel} eager={idx < 4} />
               ))}
             </div>
           ) : (
@@ -303,15 +268,15 @@ export default function Home() {
           </div>
 
           {isLoading ? (
-            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+            <div className={CARD_GRID_CLASSES}>
               {[...Array(4)].map((_, i) => (
                 <Skeleton key={i} className="h-64 sm:h-72 rounded-xl" />
               ))}
             </div>
           ) : newNovels.length > 0 ? (
-            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+            <div className={CARD_GRID_CLASSES}>
               {newNovels.map((novel: any) => (
-                <NovelCard key={novel.id} novel={novel} />
+                <NovelCardSection key={novel.id} novel={novel} />
               ))}
             </div>
           ) : (
@@ -342,15 +307,15 @@ export default function Home() {
           </div>
 
           {isLoading ? (
-            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+            <div className={CARD_GRID_CLASSES}>
               {[...Array(4)].map((_, i) => (
                 <Skeleton key={i} className="h-64 sm:h-72 rounded-xl" />
               ))}
             </div>
           ) : freeNovels.length > 0 ? (
-            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+            <div className={CARD_GRID_CLASSES}>
               {freeNovels.map((novel: any) => (
-                <NovelCard key={novel.id} novel={novel} showFreeTag={true} />
+                <NovelCardSection key={novel.id} novel={novel} showFreeTag={true} />
               ))}
             </div>
           ) : (
@@ -382,43 +347,22 @@ export default function Home() {
             </div>
 
             {isLoading ? (
-              <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+              <div className={CARD_GRID_CLASSES}>
                 {[...Array(4)].map((_, i) => (
                   <Skeleton key={i} className="h-64 sm:h-72 rounded-xl" />
                 ))}
               </div>
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+              <div className={CARD_GRID_CLASSES}>
                 {finishedNovels.map((novel: any) => (
-                  <Link key={novel.id} href={`/novels/${novel.id}`}>
-                    <Card className="overflow-hidden hover:shadow-xl transition-all duration-300 cursor-pointer h-full hover:scale-105 transform rounded-xl border-0">
-                      <div className="relative bg-gradient-to-br from-slate-200 to-slate-300 h-48 sm:h-56 overflow-hidden">
-                        {novel.coverImageUrl ? (
-                          <img
-                            src={novel.coverImageUrl}
-                            alt={novel.title}
-                            className="w-full h-full object-cover"
-                          />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-purple-100 to-blue-100">
-                            <BookOpen className="w-12 h-12 text-slate-400" />
-                          </div>
-                        )}
-                        {/* Finished badge overlay */}
-                        <div className="absolute top-3 left-3 bg-purple-600 text-white px-3 py-1 rounded-full text-xs font-semibold">
-                          {t("home.finishedBadge")}
-                        </div>
-                      </div>
-                      <div className="p-4 sm:p-5">
-                        <h3 className="font-bold text-sm sm:text-base line-clamp-2 text-slate-900 mb-2">
-                          {novel.title}
-                        </h3>
-                        <p className="text-xs sm:text-sm text-slate-600 line-clamp-2">
-                          {novel.description}
-                        </p>
-                      </div>
-                    </Card>
-                  </Link>
+                  <NovelCard
+                    key={novel.id}
+                    id={novel.id}
+                    title={novel.title}
+                    coverImageUrl={novel.coverImageUrl}
+                    subtitle={novel.description}
+                    badges={[{ label: t("home.finishedBadge"), className: "bg-purple-600 text-white" }]}
+                  />
                 ))}
               </div>
             )}
@@ -437,13 +381,13 @@ export default function Home() {
           </div>
 
           {isLoading ? (
-            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+            <div className={CARD_GRID_CLASSES}>
               {[...Array(4)].map((_, i) => (
                 <Skeleton key={i} className="h-64 sm:h-72 rounded-xl" />
               ))}
             </div>
           ) : latestEpisodes.length > 0 ? (
-            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+            <div className={CARD_GRID_CLASSES}>
               {latestEpisodes.map((episode: any) => (
                 <EpisodeCard key={episode.id} episode={episode} />
               ))}

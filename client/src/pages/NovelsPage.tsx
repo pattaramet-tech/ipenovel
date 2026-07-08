@@ -1,16 +1,20 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
-import { Search, Heart } from "lucide-react";
+import { Search } from "lucide-react";
 import { useState, useEffect, useCallback, useMemo } from "react";
+import NovelCard, { type NovelCardBadge } from "@/components/NovelCard";
 
 const DEBOUNCE_DELAY = 500; // ms
 const PAGE_SIZE = 20;
+
+// Mobile-first responsive grid - 2 columns on phones (matches a typical
+// novel-reading site layout), scaling up to 5 on wide desktop screens.
+const CARD_GRID_CLASSES = "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4";
 
 type StoryStatusFilter = "all" | "ongoing" | "finished";
 type ContentFilter = "all" | "free";
@@ -112,12 +116,12 @@ export default function NovelsPage() {
   return (
     <div className="min-h-screen bg-slate-50">
       {/* Header */}
-      <div className="bg-white border-b border-slate-200 py-6">
+      <div className="bg-white border-b border-slate-200 py-4 sm:py-6">
         <div className="container mx-auto px-4">
-          <h1 className="text-3xl font-bold text-slate-900 mb-4">{getPageTitle()}</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 mb-3 sm:mb-4">{getPageTitle()}</h1>
 
           {/* Search */}
-          <div className="relative max-w-md mb-4">
+          <div className="relative w-full sm:max-w-md mb-3">
             <Search className="absolute left-3 top-3 w-5 h-5 text-slate-400" />
             <Input
               placeholder="Search novels..."
@@ -128,9 +132,9 @@ export default function NovelsPage() {
           </div>
 
           {/* Filter/Sort Controls */}
-          <div className="flex flex-wrap gap-3">
+          <div className="flex flex-wrap gap-2 sm:gap-3">
             {/* Sort */}
-            <div className="flex gap-2">
+            <div className="flex gap-1.5 sm:gap-2">
               <Button
                 variant={sortParam === "new" ? "default" : "outline"}
                 size="sm"
@@ -148,7 +152,7 @@ export default function NovelsPage() {
             </div>
 
             {/* Content filter */}
-            <div className="flex gap-2">
+            <div className="flex gap-1.5 sm:gap-2">
               <Button
                 variant={filterParam === "all" ? "default" : "outline"}
                 size="sm"
@@ -166,7 +170,7 @@ export default function NovelsPage() {
             </div>
 
             {/* Story status filter */}
-            <div className="flex gap-2">
+            <div className="flex gap-1.5 sm:gap-2">
               <Button
                 variant={storyStatusParam === "all" ? "default" : "outline"}
                 size="sm"
@@ -200,12 +204,12 @@ export default function NovelsPage() {
       </div>
 
       {/* Content */}
-      <div className="container mx-auto px-4 py-8">
+      <div className="container mx-auto px-4 pt-6 sm:pt-8 pb-[calc(3rem+env(safe-area-inset-bottom))]">
         {isLoading && currentPage === 1 ? (
-          <div className="grid md:grid-cols-4 gap-6">
-            {[...Array(8)].map((_, i) => (
-              <div key={i} className="space-y-4">
-                <Skeleton className="h-48 w-full rounded-lg" />
+          <div className={CARD_GRID_CLASSES}>
+            {[...Array(10)].map((_, i) => (
+              <div key={i} className="space-y-2">
+                <Skeleton className="aspect-3/4 w-full rounded-2xl" />
                 <Skeleton className="h-4 w-3/4" />
                 <Skeleton className="h-4 w-1/2" />
               </div>
@@ -217,54 +221,30 @@ export default function NovelsPage() {
           </div>
         ) : (
           <>
-            <div className="grid md:grid-cols-4 gap-6">
-              {novels?.map((novel: any) => (
-                <Card
-                  key={novel.id}
-                  className="overflow-hidden hover:shadow-lg transition cursor-pointer group"
-                  onClick={() => navigate(`/novels/${novel.id}`)}
-                >
-                  {novel.coverImageUrl ? (
-                    <img
-                      src={novel.coverImageUrl || ""}
-                      alt={novel.title}
-                      loading="lazy"
-                      decoding="async"
-                      className="w-full h-48 object-cover group-hover:scale-105 transition"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).style.display = "none";
-                      }}
-                    />
-                  ) : (
-                    <div className="w-full h-48 bg-slate-200 flex items-center justify-center">
-                      <span className="text-slate-400">No Cover</span>
-                    </div>
-                  )}
-                  <CardContent className="pt-4">
-                    <h3 className="font-semibold text-slate-900 line-clamp-2 mb-2">{novel.title}</h3>
-                    <div className="flex items-center justify-between">
-                      {/* Story status badge — purple for Finished, blue for Ongoing */}
-                      <span
-                        className={`text-xs px-2 py-1 rounded capitalize font-medium ${
-                          novel.storyStatus === "finished"
-                            ? "bg-purple-100 text-purple-700"
-                            : "bg-blue-100 text-blue-700"
-                        }`}
-                      >
-                        {novel.storyStatus === "finished" ? "Finished" : "Ongoing"}
-                      </span>
-                      {novel.freeEpisodeCount > 0 && (
-                        <span className="text-xs px-2 py-1 bg-green-100 text-green-700 rounded font-semibold">
-                          Free
-                        </span>
-                      )}
-                      <button className="p-1 hover:bg-slate-100 rounded transition">
-                        <Heart className="w-4 h-4 text-slate-400 hover:text-red-500" />
-                      </button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+            <div className={CARD_GRID_CLASSES}>
+              {novels?.map((novel: any, idx: number) => {
+                const badges: NovelCardBadge[] = [
+                  {
+                    label: novel.storyStatus === "finished" ? "Finished" : "Ongoing",
+                    className: novel.storyStatus === "finished" ? "bg-purple-600 text-white" : "bg-blue-600 text-white",
+                  },
+                ];
+                if (novel.freeEpisodeCount > 0) {
+                  badges.push({ label: "Free", className: "bg-green-500 text-white" });
+                }
+
+                return (
+                  <NovelCard
+                    key={novel.id}
+                    id={novel.id}
+                    title={novel.title}
+                    coverImageUrl={novel.coverImageUrl}
+                    badges={badges}
+                    showWishlist
+                    eager={idx < 4}
+                  />
+                );
+              })}
             </div>
 
             {/* Pagination */}
