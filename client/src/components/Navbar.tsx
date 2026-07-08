@@ -11,14 +11,24 @@ import { trpc } from "@/lib/trpc";
 export default function Navbar() {
   const { user, logout, isAuthenticated } = useAuth();
   const { t } = useLanguage();
-  const [, navigate] = useLocation();
+  const [location, navigate] = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  
+
   // Get cart count
   const { data: cartData } = trpc.cart.get.useQuery(undefined, {
     enabled: isAuthenticated,
   });
   const cartCount = cartData?.items?.length || 0;
+
+  // The Reader page has its own sticky header (back button, title, font/theme/TOC
+  // controls). Rendering the global navbar on top of it produced two independent
+  // `position: sticky; top: 0` bars that stacked/overlapped once both were pinned,
+  // squeezing the episode title against the language/cart/menu icons. Reader owns
+  // its own full-width header instead - the language switcher is still reachable
+  // there via the reader options menu.
+  if (location.startsWith("/read/")) {
+    return null;
+  }
 
   const handleLogout = async () => {
     await logout();

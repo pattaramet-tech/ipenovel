@@ -4,9 +4,11 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
+import { MoreVertical } from "lucide-react";
 import styles from "./ReaderPage.module.css";
 import { formatEpisodeLabel } from "@/utils/episodeUtils";
 import { parsePackageToc, findTocEntryByChapterNumber, type PackageTocEntry } from "@/utils/packageTocUtils";
+import LanguageSwitcher from "@/components/LanguageSwitcher";
 
 // How long to wait after the user stops scrolling before saving progress.
 const SCROLL_SAVE_DEBOUNCE_MS = 1500;
@@ -93,6 +95,7 @@ export default function ReaderPage() {
   const lastSavedProgressRef = useRef<{ percent: number; chapterNumber: string | null } | null>(null);
 
   const [showToc, setShowToc] = useState(false);
+  const [showReaderMenu, setShowReaderMenu] = useState(false);
   const [livePercent, setLivePercent] = useState(0);
   const [savedIndicatorVisible, setSavedIndicatorVisible] = useState(false);
   const [showResumeBanner, setShowResumeBanner] = useState(false);
@@ -214,6 +217,7 @@ export default function ReaderPage() {
     resumeBannerShownRef.current = false;
     setShowResumeBanner(false);
     setShowToc(false);
+    setShowReaderMenu(false);
     lastSavedProgressRef.current = null;
     pendingProgressRef.current = null;
   }, [episodeId]);
@@ -424,20 +428,50 @@ export default function ReaderPage() {
     <div className={`${styles.container} ${styles[theme]}`}>
       {/* Header */}
       <div className={styles.header}>
-        <div className={styles.headerContent}>
+        {/* Top row: back button (left) + reader options menu (right). Kept
+            free of the title so a long novel title never gets squeezed
+            between them. */}
+        <div className={styles.topRow}>
           <button onClick={handleBackToNovel} className={styles.backButton}>
             ← {t("reader.backToNovel")}
           </button>
-          <div className={styles.titleSection}>
-            <h1 className={styles.novelTitle}>{novel.title}</h1>
-            <h2 className={styles.episodeTitle}>
-              {formatEpisodeLabel(episode.episodeNumber, episode.title)}
-            </h2>
+
+          <div className={styles.menuWrapper}>
+            <button
+              className={styles.menuButton}
+              onClick={() => setShowReaderMenu((prev) => !prev)}
+              aria-label="ตัวเลือกการอ่าน"
+              aria-expanded={showReaderMenu}
+            >
+              <MoreVertical size={18} />
+            </button>
+
+            {showReaderMenu && (
+              <>
+                <div className={styles.menuBackdrop} onClick={() => setShowReaderMenu(false)} />
+                <div className={styles.menuPanel}>
+                  <p className={styles.menuPanelLabel}>ภาษา</p>
+                  <LanguageSwitcher />
+                </div>
+              </>
+            )}
           </div>
         </div>
 
-        {/* Reader Controls */}
-        <div className={styles.controls}>
+        {/* Title block: novel title truncates to 1 line, subtitle (episode
+            label) sits on its own line underneath - neither ever overlaps
+            the top-row icons. */}
+        <div className={styles.titleBlock}>
+          <h1 className={styles.novelTitle} title={novel.title}>{novel.title}</h1>
+          <p className={styles.episodeTitle}>
+            {formatEpisodeLabel(episode.episodeNumber, episode.title)}
+          </p>
+        </div>
+
+        {/* Toolbar: font size, theme, table of contents - a horizontally
+            scrollable row so it never wraps/overlaps content on narrow
+            screens. */}
+        <div className={styles.toolbar}>
           <div className={styles.fontSizeControl}>
             <button onClick={() => setFontSize(Math.max(12, fontSize - 2))}>
               A−
