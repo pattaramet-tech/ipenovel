@@ -7,6 +7,7 @@ import {
   walletTransactions,
   novels,
 } from "../../drizzle/schema";
+import { resolveSaleMode } from "./readerService";
 
 export interface PurchaseResult {
   success: boolean;
@@ -174,6 +175,18 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
       return {
         success: false,
         error: "Free episodes do not require purchase",
+      };
+    }
+
+    // 2a. Wallet direct-debit purchase is for single chapters only. Package
+    // (multi-chapter) episodes must go through cart/checkout instead, so the
+    // resulting entitlement is recorded consistently via the `purchases`
+    // table alongside every other cart-based purchase.
+    const saleMode = resolveSaleMode(episode);
+    if (saleMode === "package") {
+      return {
+        success: false,
+        error: "PACKAGE_MUST_USE_CART",
       };
     }
 

@@ -45,6 +45,9 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
     fileUrl: "",
     content: "",
     contentFormat: "plain_text" as "plain_text" | "markdown" | "html",
+    // "chapter" = single episode, sold via direct wallet purchase ("ซื้อทันที").
+    // "package" = multi-chapter bundle, sold via cart/checkout, web-read only.
+    saleMode: "chapter" as "chapter" | "package",
     isPublished: true,
     publishedAt: new Date(),
     sortOrder: 0,
@@ -98,6 +101,7 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
       fileUrl: "",
       content: "",
       contentFormat: "plain_text",
+      saleMode: "chapter",
       isPublished: true,
       publishedAt: new Date(),
       sortOrder: 0,
@@ -126,6 +130,7 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
         fileUrl: formData.fileUrl || undefined,
         content: formData.content || undefined,
         contentFormat: formData.contentFormat || undefined,
+        saleMode: formData.saleMode,
         isPublished: formData.isPublished,
         publishedAt: formData.publishedAt || undefined,
         sortOrder: formData.sortOrder || undefined,
@@ -147,6 +152,7 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
       fileUrl: episode.fileUrl || "",
       content: episode.content || "",
       contentFormat: episode.contentFormat || "plain_text",
+      saleMode: episode.saleMode === "package" ? "package" : "chapter",
       isPublished: episode.isPublished !== false,
       publishedAt: episode.publishedAt ? new Date(episode.publishedAt) : new Date(),
       sortOrder: episode.sortOrder || 0,
@@ -308,6 +314,22 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
                   <div>
                     <h3 className="font-semibold text-sm mb-3">Pricing & Access</h3>
                     <div className="space-y-3">
+                      <div>
+                        <Label>ประเภทการขาย (Sale Mode)</Label>
+                        <select
+                          value={formData.saleMode}
+                          onChange={(e) => setFormData({ ...formData, saleMode: e.target.value as "chapter" | "package" })}
+                          className="w-full px-3 py-2 border rounded-md"
+                        >
+                          <option value="chapter">รายบท (single chapter - direct wallet purchase)</option>
+                          <option value="package">แพ็กอ่านบนเว็บ (multi-chapter package - cart/checkout, web-read only)</option>
+                        </select>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {formData.saleMode === "package"
+                            ? "ใช้ content เป็นเนื้อหาหลายบทรวมกัน ขายผ่านตะกร้า ไม่มีดาวน์โหลด"
+                            : "ใช้ content เป็นเนื้อหาตอนเดียว ขายผ่านปุ่มซื้อทันที"}
+                        </p>
+                      </div>
                       <div className="flex items-center gap-2">
                         <input
                           type="checkbox"
@@ -329,14 +351,16 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
                           />
                         </div>
                       )}
-                      <div>
-                        <Label>File URL (Legacy Download)</Label>
-                        <Input
-                          value={formData.fileUrl}
-                          onChange={(e) => setFormData({ ...formData, fileUrl: e.target.value })}
-                          placeholder="https://..."
-                        />
-                      </div>
+                      {formData.saleMode === "package" && (
+                        <div>
+                          <Label>File URL (Legacy, optional - not used by the web reader)</Label>
+                          <Input
+                            value={formData.fileUrl}
+                            onChange={(e) => setFormData({ ...formData, fileUrl: e.target.value })}
+                            placeholder="https://... (leave empty for new packages)"
+                          />
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -479,6 +503,9 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
                         <h3 className="font-semibold text-lg">{episode.title}</h3>
                         <Badge variant={episode.isFree ? "default" : "secondary"}>
                           {episode.isFree ? "Free" : `฿${episode.price}`}
+                        </Badge>
+                        <Badge variant="outline" className="text-xs">
+                          {episode.saleMode === "package" ? "แพ็กอ่านบนเว็บ" : "รายบท"}
                         </Badge>
                         {episode.content && (
                           <Badge variant="outline" className="text-xs">

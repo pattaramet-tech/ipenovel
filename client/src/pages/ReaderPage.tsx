@@ -54,6 +54,8 @@ export default function ReaderPage() {
   const isLocked = episodeData?.isLocked || false;
   const content = episodeData?.content || "";
   const preview = episodeData?.preview || "";
+  const saleMode = episodeData?.saleMode || "chapter";
+  const isPackage = saleMode === "package";
   const walletBalanceCents = toCents(walletBalance);
   const episodePriceCents = toCents(episode?.price);
   const hasEnoughWalletBalance = walletBalanceCents >= episodePriceCents;
@@ -291,21 +293,14 @@ export default function ReaderPage() {
             </div>
           </div>
         ) : canRead && !content ? (
-          // User has access but content is empty
+          // User has access but content is empty. Legacy packages that were
+          // never migrated from a Docs/PDF file to on-web content land here -
+          // we no longer open fileUrl as an external download, everything is
+          // read on the web only now.
           <div className={styles.noContentSection}>
             <h3>{t("reader.noContentTitle")}</h3>
-            {episode?.fileUrl ? (
-              <>
-                <p>{t("reader.noContentWithFile")}</p>
-                <a
-                  href={episode.fileUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className={styles.openFileButton}
-                >
-                  {t("reader.openOriginalFile")}
-                </a>
-              </>
+            {isPackage ? (
+              <p>แพ็กนี้ยังไม่มีเนื้อหาสำหรับอ่านบนเว็บ กรุณาติดต่อแอดมิน</p>
             ) : (
               <>
                 <p>{t("reader.noContentNoFile")}</p>
@@ -340,47 +335,64 @@ export default function ReaderPage() {
               </div>
             )}
 
-            <div className={styles.purchasePrompt}>
-              <h3>{t("reader.lockedTitle")}</h3>
-              <p>{t("reader.lockedDescription")}</p>
+            {isPackage ? (
+              // Packages are cart/checkout-only - never buyable with a direct
+              // wallet purchase from inside the reader. Send the user back to
+              // the novel page to add it to cart instead.
+              <div className={styles.purchasePrompt}>
+                <h3>แพ็กนี้ยังไม่ได้ปลดล็อก</h3>
+                <p>กรุณาซื้อแพ็กผ่านหน้ารายละเอียดนิยายก่อนอ่าน</p>
 
-              <div className={styles.priceInfo}>
-                <div className={styles.priceRow}>
-                  <span>{t("reader.price")}:</span>
-                  <strong>฿{formatMoney(episode.price)}</strong>
-                </div>
-                <div className={styles.priceRow}>
-                  <span>{t("reader.walletBalance")}:</span>
-                  <strong>฿{formatMoney(walletBalance)}</strong>
-                </div>
-              </div>
-
-              <div className={styles.warnings}>
-                <p>
-                  <strong>{t("reader.purchaseWithWalletOnly")}</strong>
-                </p>
-                <p>{t("reader.couponNotAllowed")}</p>
-              </div>
-
-              <button
-                className={styles.purchaseButton}
-                onClick={() => setShowPurchaseConfirm(true)}
-                disabled={!hasEnoughWalletBalance || purchaseMutation.isPending}
-              >
-                {hasEnoughWalletBalance
-                  ? t("reader.buyEpisode")
-                  : t("reader.insufficientBalance")}
-              </button>
-
-              {!hasEnoughWalletBalance && (
                 <button
-                  className={styles.topupButton}
-                  onClick={() => setLocation("/wallet")}
+                  className={styles.purchaseButton}
+                  onClick={handleBackToNovel}
                 >
-                  {t("reader.topupWallet")}
+                  กลับไปซื้อแพ็ก
                 </button>
-              )}
-            </div>
+              </div>
+            ) : (
+              <div className={styles.purchasePrompt}>
+                <h3>{t("reader.lockedTitle")}</h3>
+                <p>{t("reader.lockedDescription")}</p>
+
+                <div className={styles.priceInfo}>
+                  <div className={styles.priceRow}>
+                    <span>{t("reader.price")}:</span>
+                    <strong>฿{formatMoney(episode.price)}</strong>
+                  </div>
+                  <div className={styles.priceRow}>
+                    <span>{t("reader.walletBalance")}:</span>
+                    <strong>฿{formatMoney(walletBalance)}</strong>
+                  </div>
+                </div>
+
+                <div className={styles.warnings}>
+                  <p>
+                    <strong>{t("reader.purchaseWithWalletOnly")}</strong>
+                  </p>
+                  <p>{t("reader.couponNotAllowed")}</p>
+                </div>
+
+                <button
+                  className={styles.purchaseButton}
+                  onClick={() => setShowPurchaseConfirm(true)}
+                  disabled={!hasEnoughWalletBalance || purchaseMutation.isPending}
+                >
+                  {hasEnoughWalletBalance
+                    ? t("reader.buyEpisode")
+                    : t("reader.insufficientBalance")}
+                </button>
+
+                {!hasEnoughWalletBalance && (
+                  <button
+                    className={styles.topupButton}
+                    onClick={() => setLocation("/wallet")}
+                  >
+                    {t("reader.topupWallet")}
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         ) : !canRead ? (
           <div className={styles.errorContent}>
@@ -389,29 +401,35 @@ export default function ReaderPage() {
         ) : null}
       </div>
 
-      {/* Navigation */}
-      <div className={styles.navigation}>
-        {previousEpisode ? (
-          <button
-            className={styles.navButton}
-            onClick={() => goToEpisode(previousEpisode.id)}
-          >
-            ← {t("reader.previousEpisode")}
-          </button>
-        ) : (
-          <div />
-        )}
-        {nextEpisode ? (
-          <button
-            className={styles.navButton}
-            onClick={() => goToEpisode(nextEpisode.id)}
-          >
-            {t("reader.nextEpisode")} →
-          </button>
-        ) : (
-          <div />
-        )}
-      </div>
+      {/* Navigation - hidden for packages: a package bundles many chapters,
+          so "previous/next episode" doesn't map onto anything meaningful.
+          The backend also always returns previousEpisode/nextEpisode as null
+          for packages, but skip rendering the bar entirely to avoid a blank
+          strip. Chapter navigation is unaffected. */}
+      {!isPackage && (
+        <div className={styles.navigation}>
+          {previousEpisode ? (
+            <button
+              className={styles.navButton}
+              onClick={() => goToEpisode(previousEpisode.id)}
+            >
+              ← {t("reader.previousEpisode")}
+            </button>
+          ) : (
+            <div />
+          )}
+          {nextEpisode ? (
+            <button
+              className={styles.navButton}
+              onClick={() => goToEpisode(nextEpisode.id)}
+            >
+              {t("reader.nextEpisode")} →
+            </button>
+          ) : (
+            <div />
+          )}
+        </div>
+      )}
 
       {/* Purchase Confirmation Dialog */}
       {showPurchaseConfirm && (

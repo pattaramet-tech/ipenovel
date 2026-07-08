@@ -361,24 +361,19 @@ export default function AdminOrderDetailPage() {
             <div className="space-y-4">
               {order.items.map((item: any) => {
                 const episodeTitle = item.episode?.title || item.episodeTitle || item.title || `Episode ${item.episodeNumber}`;
-                const fileUrl = item.episode?.fileUrl || null;
+                const legacyFileUrl = item.episode?.fileUrl || null;
                 return (
                   <div key={item.id} className="border-b pb-4 last:border-b-0">
                     <div className="flex justify-between items-start">
                       <div className="flex-1">
                         <p className="font-medium">{episodeTitle}</p>
-                        {fileUrl ? (
-                          <a
-                            href={fileUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-sm text-blue-600 hover:text-blue-800 hover:underline break-all mt-1 block"
-                            title="Click to open file"
-                          >
-                            {fileUrl}
-                          </a>
-                        ) : (
-                          <p className="text-sm text-muted-foreground mt-1">—</p>
+                        {/* Admin-only internal reference for pre-migration orders - the
+                            web-only reader never links to this; customers always read at
+                            /read/:episodeId and this is never shown outside this admin page. */}
+                        {legacyFileUrl && (
+                          <p className="text-xs text-slate-400 break-all mt-1" title="Legacy file URL - internal reference only, not shown to customers">
+                            Legacy file (internal): {legacyFileUrl}
+                          </p>
                         )}
                       </div>
                       <span className="font-semibold ml-4 whitespace-nowrap">฿{item.price ? parseFloat(item.price.toString()).toFixed(2) : "0.00"}</span>

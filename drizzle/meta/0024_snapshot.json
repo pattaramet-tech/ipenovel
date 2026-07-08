@@ -1,8 +1,8 @@
 {
   "version": "5",
   "dialect": "mysql",
-  "id": "a2d67374-f534-4393-b210-b373a8ee1587",
-  "prevId": "b49919b9-e65a-4fe8-a8cf-2565ee8493f0",
+  "id": "ce324962-7371-415a-83a0-bdbbd8f9b205",
+  "prevId": "a2d67374-f534-4393-b210-b373a8ee1587",
   "tables": {
     "banners": {
       "name": "banners",
@@ -697,7 +697,7 @@
         },
         "content": {
           "name": "content",
-          "type": "text",
+          "type": "mediumtext",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false

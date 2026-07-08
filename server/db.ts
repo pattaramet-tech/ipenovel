@@ -282,6 +282,7 @@ export async function createEpisode(data: {
   fileUrl?: string;
   content?: string;
   contentFormat?: string;
+  saleMode?: "chapter" | "package";
   description?: string;
   isPublished?: boolean;
   publishedAt?: Date;
@@ -305,6 +306,7 @@ export async function createEpisode(data: {
     fileUrl: data.fileUrl || "",
     content: data.content || null,
     contentFormat: data.contentFormat || "plain_text",
+    saleMode: data.saleMode || "chapter",
     description: data.description || null,
     isPublished: data.isPublished !== false,
     publishedAt: data.publishedAt || null,
