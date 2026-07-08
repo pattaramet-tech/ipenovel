@@ -23,6 +23,7 @@ import {
   generateShadowModeNote,
 } from "./_core/ocr-order-notes";
 import * as readerService from "./services/readerService";
+import * as packageZipImportService from "./services/packageZipImportService";
 
 // ============ HELPER PROCEDURES ============
 
@@ -1120,6 +1121,71 @@ export const appRouter = router({
         .mutation(async ({ input }) => {
           await db.deleteEpisode(input.episodeId);
           return { success: true };
+        }),
+
+      // Import a package (multi-chapter, web-read-only) episode set from a
+      // ZIP containing manifest.xlsx/manifest.csv + .txt content files. This
+      // is the large-content counterpart to the xlsx importer above - the
+      // xlsx importer's `content` cell is impractical for a 50-100 chapter
+      // package, so content is read from separate .txt files instead.
+      //
+      // dryRun: true parses + validates the zip (including reading every
+      // referenced .txt file) without writing to the database, so the admin
+      // UI can show a preview/error list before committing.
+      importPackageZip: adminProcedure
+        .input(
+          z.object({
+            novelId: z.number(),
+            zipBase64: z.string(),
+            mode: z.enum(["create_only", "upsert"]).default("create_only"),
+            dryRun: z.boolean().default(true),
+          })
+        )
+        .mutation(async ({ input }) => {
+          const base64Data = input.zipBase64.includes(",") ? input.zipBase64.split(",")[1] : input.zipBase64;
+          const zipBuffer = Buffer.from(base64Data, "base64");
+
+          let parsed;
+          try {
+            parsed = packageZipImportService.parsePackageZip(zipBuffer);
+          } catch (error) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: (error as Error).message });
+          }
+
+          if (input.dryRun) {
+            return {
+              manifestFileName: parsed.manifestFileName,
+              totalRows: parsed.rows.length + parsed.errors.length,
+              validRows: parsed.rows.length,
+              errorCount: parsed.errors.length,
+              errors: parsed.errors,
+              // Lightweight preview - never send full `content` back over the wire.
+              rows: parsed.rows.map((row) => ({
+                row: row.row,
+                episodeNumber: row.episodeNumber,
+                episodeTitle: row.episodeTitle,
+                price: row.price,
+                isFree: row.isFree,
+                isPublished: row.isPublished,
+                contentFile: row.contentFile,
+                contentLength: row.contentLength,
+                sortOrder: row.sortOrder,
+              })),
+              imported: false,
+            };
+          }
+
+          const summary = await packageZipImportService.importPackageRows(input.novelId, parsed.rows, input.mode);
+
+          return {
+            manifestFileName: parsed.manifestFileName,
+            totalRows: parsed.rows.length + parsed.errors.length,
+            validRows: parsed.rows.length,
+            successCount: summary.successCount,
+            errorCount: parsed.errors.length + summary.errors.length,
+            errors: [...parsed.errors, ...summary.errors],
+            imported: true,
+          };
         }),
     }),
 

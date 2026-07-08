@@ -3,6 +3,7 @@ import {
   mysqlEnum,
   mysqlTable,
   text,
+  mediumtext,
   timestamp,
   varchar,
   decimal,
@@ -122,7 +123,10 @@ export const episodes = mysqlTable(
     fileSize: int("fileSize"), // File size in bytes
     fileMimeType: varchar("fileMimeType", { length: 100 }), // e.g., "application/pdf"
     // Reader content fields
-    content: text("content"), // Episode text content for web reader
+    // MEDIUMTEXT (up to ~16MB) instead of TEXT (~64KB) - a "package" episode
+    // bundles many chapters (e.g. 50-100) worth of plaintext, which regularly
+    // exceeds TEXT's capacity. See migrations/008_widen_episode_content_to_mediumtext.sql.
+    content: mediumtext("content"), // Episode text content for web reader
     contentFormat: varchar("contentFormat", { length: 50 }).default("plain_text"), // plain_text, markdown, html
     // Explicit sale mode: "chapter" = single episode sold individually via
     // reader.purchaseEpisode (wallet direct debit); "package" = multi-chapter
