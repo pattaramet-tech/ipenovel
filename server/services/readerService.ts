@@ -21,6 +21,44 @@ export type EpisodeSaleMode = "chapter" | "package";
 const RANGE_EPISODE_NUMBER_PATTERN = /^\s*\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?\s*$/;
 
 /**
+ * Normalize an episode number string into a canonical range identity for
+ * matching purposes (e.g. import upsert lookups). Strips common prefixes
+ * ("#", "บทที่"), collapses leading zeros and surrounding whitespace, so
+ * "51-100", "51 - 100", "051 - 100", "#051 - 100", "บทที่ 51 - 100" all
+ * normalize to the same value. Single numbers ("001") normalize to "1".
+ *
+ * This is the single source of truth for "is this the same package" during
+ * ZIP import sync - matching on the raw string previously caused re-imports
+ * with a differently formatted range to create a duplicate episode instead
+ * of updating the existing one, breaking legacy purchase entitlements.
+ */
+export function normalizeEpisodeRange(episodeNumber: unknown): string {
+  const raw = String(episodeNumber ?? "").trim();
+  if (!raw) return "";
+
+  // Strip leading labels like "#", "บทที่", "ตอนที่", "chapter", "ep" etc,
+  // keeping only the numeric range portion.
+  const stripped = raw
+    .replace(/^#+/, "")
+    .replace(/^(บทที่|ตอนที่|chapter|episode|ep)\s*/i, "")
+    .trim();
+
+  const numbers = stripped.match(/\d+(?:\.\d+)?/g);
+  if (!numbers || numbers.length === 0) return stripped.toLowerCase();
+
+  const normalizeNum = (n: string) => {
+    const num = Number(n);
+    return Number.isFinite(num) ? String(num) : n;
+  };
+
+  if (numbers.length === 1) return normalizeNum(numbers[0]);
+
+  // Range-style: use first and last numeric token found (handles "51-100"
+  // and "51 - 100" identically), ignoring any extra numeric noise between.
+  return `${normalizeNum(numbers[0])} - ${normalizeNum(numbers[numbers.length - 1])}`;
+}
+
+/**
  * Resolve an episode's sale mode, with a legacy fallback for rows written
  * before the `saleMode` column existed (or wherever a partial select omits
  * it). "chapter" = single episode sold individually via reader.purchaseEpisode
@@ -222,12 +260,21 @@ export async function getReaderEpisode(userId: number | undefined, episodeId: nu
   // here even though canReadEpisode() already grants access for it.
   const alreadyPurchased = userId && !ep.isFree ? await hasPurchasedEpisode(userId, episodeId) : false;
 
-  // Sanitize episode object to not leak content in API response
-  // The content and preview are returned as top-level fields only when appropriate
-  const { content: _content, ...safeEpisode } = ep;
+  // Sanitize episode object to not leak content/fileUrl in the API response.
+  // fileUrl must never reach a user who hasn't purchased/can't read the
+  // episode - previously it was left in unconditionally (only `content` was
+  // stripped), leaking legacy Docs/PDF links to any authenticated user.
+  const { content: _content, fileUrl: _fileUrl, ...safeEpisode } = ep;
+  const hasContent = Boolean(ep.content && String(ep.content).trim().length > 0);
+  const hasLegacyFile = Boolean(ep.fileUrl && String(ep.fileUrl).trim().length > 0);
 
   const result: ReaderEpisodeData = {
-    episode: safeEpisode,
+    episode: {
+      ...safeEpisode,
+      hasContent,
+      hasLegacyFile,
+      fileUrl: canRead ? ep.fileUrl ?? null : null,
+    },
     novel,
     canRead,
     isLocked: !canRead && !ep.isFree,

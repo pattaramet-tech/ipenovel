@@ -543,16 +543,32 @@ export default function ReaderPage() {
             </div>
           </div>
         ) : canRead && !content ? (
-          // User has access but content is empty. Legacy packages that were
-          // never migrated from a Docs/PDF file to on-web content land here -
-          // we no longer open fileUrl as an external download, everything is
-          // read on the web only now.
+          // User has access but no web content. If a legacy Docs/PDF file
+          // still exists for this package (bought before it was migrated to
+          // web content), send them there instead of a dead end - never
+          // pretend there's nothing to read when a legacy file is available.
           <div className={styles.noContentSection}>
-            <h3>{t("reader.noContentTitle")}</h3>
-            {isPackage ? (
-              <p>แพ็กนี้ยังไม่มีเนื้อหาสำหรับอ่านบนเว็บ กรุณาติดต่อแอดมิน</p>
+            {isPackage && episode?.fileUrl ? (
+              <>
+                <h3>แพ็กนี้เป็นไฟล์เดิมที่ยังไม่ได้ย้ายเข้า Reader</h3>
+                <p>กรุณาเปิดอ่านจากไฟล์เดิมด้านล่างนี้ไปก่อน</p>
+                <a
+                  href={episode.fileUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={styles.purchaseButton}
+                >
+                  เปิดไฟล์เดิม
+                </a>
+              </>
+            ) : isPackage ? (
+              <>
+                <h3>{t("reader.noContentTitle")}</h3>
+                <p>แพ็กนี้ยังไม่มีเนื้อหาสำหรับอ่านบนเว็บ กรุณาติดต่อแอดมิน</p>
+              </>
             ) : (
               <>
+                <h3>{t("reader.noContentTitle")}</h3>
                 <p>{t("reader.noContentNoFile")}</p>
                 {user?.role === "admin" && (
                   <p className={styles.adminHint}>{t("reader.noContentAdminHint")}</p>

@@ -1149,7 +1149,12 @@ export const appRouter = router({
           z.object({
             novelId: z.number(),
             zipBase64: z.string(),
-            mode: z.enum(["create_only", "upsert"]).default("create_only"),
+            // Upsert is the recommended default: it syncs plaintext content
+            // into an existing package (matched via normalized episodeNumber)
+            // without touching its episodeId or legacy fileUrl, preserving
+            // past purchases. create_only remains available for admins who
+            // are certain no matching package exists yet.
+            mode: z.enum(["create_only", "upsert"]).default("upsert"),
             dryRun: z.boolean().default(true),
           })
         )
@@ -1195,6 +1200,10 @@ export const appRouter = router({
             validRows: parsed.rows.length,
             successCount: summary.successCount,
             errorCount: parsed.errors.length + summary.errors.length,
+            createdCount: summary.createdCount,
+            updatedCount: summary.updatedCount,
+            preservedFileUrlCount: summary.preservedFileUrlCount,
+            results: summary.results,
             errors: [...parsed.errors, ...summary.errors],
             imported: true,
           };

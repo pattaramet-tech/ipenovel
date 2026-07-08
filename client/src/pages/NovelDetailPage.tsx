@@ -28,7 +28,11 @@ export default function NovelDetailPage() {
   // Default sort is always numeric episode order (ascending) - never title
   // A-Z/Z-A, which previously made #10 sort before #1/#2.
   const [sortBy, setSortBy] = useState<"episodeAsc" | "episodeDesc" | "newest" | "oldest">("episodeAsc");
-  const [saleType, setSaleType] = useState<"all" | "package" | "chapter">("all");
+  // Per-chapter direct-purchase ("ขายรายบท") is no longer a primary storefront
+  // surface - cart/checkout via packages is the main sale flow now. Existing
+  // saleMode="chapter" data/purchases are untouched; free or already-owned
+  // chapters still surface under "ทั้งหมด" (see visibleReaderEpisodes below).
+  const [saleType, setSaleType] = useState<"all" | "package">("all");
   const [purchasingEpisodeId, setPurchasingEpisodeId] = useState<number | null>(null);
   // Table-of-contents accordion state, keyed by "<chapter|file>:<group.key>" so
   // the chapter and file sections track expansion independently. Absent keys
@@ -212,9 +216,20 @@ export default function NovelDetailPage() {
   // Grouping always orders episodes numerically within a group regardless of
   // the active sortBy, since a table of contents should read top-to-bottom by
   // chapter number - groupEpisodesByHundreds sorts each bucket internally.
-  const readerEpisodeGroups = useMemo(
-    () => groupEpisodesByHundreds(filteredAndSortedEpisodes.readerEpisodes),
+  // New per-chapter purchases are cut from the main storefront, but a chapter
+  // that's free or already owned must stay visible/readable here - otherwise
+  // free-to-read novels using single chapters would show nothing, and past
+  // per-chapter buyers would lose visibility of what they already paid for.
+  const visibleReaderEpisodes = useMemo(
+    () =>
+      filteredAndSortedEpisodes.readerEpisodes.filter(
+        (ep: any) => ep.isFree === true || ep.isPurchased === true || ep.hasPurchased === true
+      ),
     [filteredAndSortedEpisodes.readerEpisodes]
+  );
+  const readerEpisodeGroups = useMemo(
+    () => groupEpisodesByHundreds(visibleReaderEpisodes),
+    [visibleReaderEpisodes]
   );
   const packageEpisodeGroups = useMemo(
     () => groupEpisodesByHundreds(filteredAndSortedEpisodes.packageEpisodes),
@@ -355,9 +370,11 @@ export default function NovelDetailPage() {
     );
   };
 
-  // Package ("ขายแพ็ก") episode card - cart/checkout flow, web-read only.
-  // No download link and no fileUrl reference - packages are never opened as
-  // an external Docs/PDF file anymore, only read at /read/:episodeId.
+  // Package ("ขายแพ็ก") episode card - cart/checkout flow. Hybrid entitlement:
+  // a package may have web content, a legacy Docs/PDF fileUrl, or both -
+  // whichever exist and the user has purchased get their own button, so a
+  // customer who bought a legacy file before it was migrated never loses
+  // access, and one who bought after a plaintext sync gets both options.
   const renderPackageEpisodeCard = (episode: any) => {
     if (!episode || !episode.id) return null;
     const inCart = cartItems.some((item: any) => item.episodeId === episode.id);
@@ -433,22 +450,39 @@ export default function NovelDetailPage() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-            {isFree ? (
-              <button
-                onClick={() => setLocation(`/read/${episode.id}`)}
-                className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition active:bg-blue-800"
-              >
-                <BookOpen className="w-3.5 h-3.5 mr-1.5" />
-                อ่านเดี๋ยวนี้
-              </button>
-            ) : isPurchased ? (
-              <button
-                onClick={() => setLocation(`/read/${episode.id}`)}
-                className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
-              >
-                <BookOpen className="w-3.5 h-3.5 mr-1.5" />
-                {episode.progressPercent > 0 ? "อ่านต่อ" : "อ่านแพ็กนี้"}
-              </button>
+            {isFree || isPurchased ? (
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {/* Read-in-web is the primary button whenever there's content
+                    to read. If there's no content but a legacy file exists,
+                    suppress this button entirely - a web read button leading
+                    to an empty Reader page would be confusing. */}
+                {(episode.hasContent || !episode.hasLegacyFile) && (
+                  <button
+                    onClick={() => setLocation(`/read/${episode.id}`)}
+                    className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
+                  >
+                    <BookOpen className="w-3.5 h-3.5 mr-1.5" />
+                    {isFree ? "อ่านเดี๋ยวนี้" : episode.progressPercent > 0 ? "อ่านต่อ" : "อ่านแพ็กนี้"}
+                  </button>
+                )}
+                {/* Legacy Docs/PDF file - shown as secondary when web content
+                    also exists, or as the only/primary option when it's the
+                    sole way to read this package (not yet migrated). */}
+                {episode.hasLegacyFile && episode.fileUrl && (
+                  <a
+                    href={episode.fileUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md transition ${
+                      episode.hasContent
+                        ? "bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-300"
+                        : "bg-blue-600 text-white hover:bg-blue-700"
+                    }`}
+                  >
+                    เปิดไฟล์เดิม
+                  </a>
+                )}
+              </div>
             ) : (
               // Unpurchased package - cart/checkout flow, never direct wallet purchase
               <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2">
@@ -575,7 +609,7 @@ export default function NovelDetailPage() {
     );
   }
 
-  const { freeEpisodes, paidEpisodes, packageEpisodes, readerEpisodes } = filteredAndSortedEpisodes;
+  const { freeEpisodes, paidEpisodes, packageEpisodes } = filteredAndSortedEpisodes;
 
   return (
     <div className="min-h-screen bg-background">
@@ -675,17 +709,7 @@ export default function NovelDetailPage() {
                     : "border-transparent text-muted-foreground hover:text-foreground"
                 }`}
               >
-                ทั้งหมด <span className="ml-1 text-xs font-normal text-muted-foreground">({readerEpisodes.length + packageEpisodes.length})</span>
-              </button>
-              <button
-                onClick={() => setSaleType("chapter")}
-                className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
-                  saleType === "chapter"
-                    ? "border-blue-600 text-blue-600"
-                    : "border-transparent text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                ขายรายบท <span className="ml-1 text-xs font-normal text-muted-foreground">({readerEpisodes.length})</span>
+                ทั้งหมด <span className="ml-1 text-xs font-normal text-muted-foreground">({visibleReaderEpisodes.length + packageEpisodes.length})</span>
               </button>
               {packageEpisodes.length > 0 && (
                 <button
@@ -727,20 +751,22 @@ export default function NovelDetailPage() {
 
           {/* Episodes List - grouped as a table of contents (บทที่ 1-100, 101-200, ...) */}
           <div className="space-y-6">
-            {saleType === "all" && readerEpisodes.length === 0 && packageEpisodes.length === 0 ? (
+            {saleType === "all" && visibleReaderEpisodes.length === 0 && packageEpisodes.length === 0 ? (
               <Card className="p-8 text-center">
                 <p className="text-muted-foreground">ไม่มีตอนที่ตรงกับการค้นหา</p>
               </Card>
             ) : saleType === "all" ? (
               <>
-                {/* Reader Episodes Section - direct wallet purchase */}
-                {readerEpisodes.length > 0 && (
+                {/* Free/already-owned single chapters - per-chapter sale is no
+                    longer the primary storefront, but existing free/owned
+                    content must stay visible and readable here. */}
+                {visibleReaderEpisodes.length > 0 && (
                   <div>
-                    <h3 className="text-lg font-semibold mb-3 text-blue-600">ขายรายบท ({readerEpisodes.length})</h3>
+                    <h3 className="text-lg font-semibold mb-3 text-blue-600">ตอนฟรี / ที่ซื้อแล้ว ({visibleReaderEpisodes.length})</h3>
                     {renderEpisodeGroupAccordion(readerEpisodeGroups, "chapter", renderChapterEpisodeCard)}
                   </div>
                 )}
-                {/* Package Episodes Section - cart/checkout flow, web-read only */}
+                {/* Package Episodes Section - cart/checkout flow (main sale surface) */}
                 {packageEpisodes.length > 0 && (
                   <div>
                     <h3 className="text-lg font-semibold mb-3 text-amber-600">ขายแพ็ก ({packageEpisodes.length})</h3>
@@ -748,15 +774,6 @@ export default function NovelDetailPage() {
                   </div>
                 )}
               </>
-            ) : saleType === "chapter" ? (
-              // Chapter tab: readerEpisodes only, direct wallet purchase - never cart/checkbox.
-              readerEpisodes.length > 0 ? (
-                renderEpisodeGroupAccordion(readerEpisodeGroups, "chapter", renderChapterEpisodeCard)
-              ) : (
-                <Card className="p-8 text-center">
-                  <p className="text-muted-foreground">ยังไม่มีรายการขายแบบรายบท</p>
-                </Card>
-              )
             ) : saleType === "package" ? (
               // Package tab: packageEpisodes only, cart/checkout flow, web-read only.
               packageEpisodes.length > 0 ? (

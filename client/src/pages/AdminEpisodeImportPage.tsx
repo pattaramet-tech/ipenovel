@@ -436,7 +436,7 @@ function readFileAsBase64(file: File): Promise<string> {
 // confirms the real import (Step 3).
 function PackageZipImportSection({ novelId }: { novelId: number | undefined }) {
   const [zipFile, setZipFile] = useState<File | null>(null);
-  const [mode, setMode] = useState<"create_only" | "upsert">("create_only");
+  const [mode, setMode] = useState<"create_only" | "upsert">("upsert");
   const [preview, setPreview] = useState<any>(null);
   const [result, setResult] = useState<any>(null);
   const [isValidating, setIsValidating] = useState(false);
@@ -546,18 +546,21 @@ function PackageZipImportSection({ novelId }: { novelId: number | undefined }) {
             <label className="flex items-center gap-2">
               <input
                 type="radio"
-                checked={mode === "create_only"}
-                onChange={() => setMode("create_only")}
+                checked={mode === "upsert"}
+                onChange={() => setMode("upsert")}
               />
-              <span className="text-sm">Create only (แนะนำ) - ถ้า episodeNumber ซ้ำ จะขึ้น error</span>
+              <span className="text-sm">
+                แนะนำ: Sync/Upsert - ถ้าแพ็กเลขเดิมมีอยู่แล้ว ระบบจะเติมเนื้อหาเข้าแพ็กเดิม
+                เพื่อรักษาสิทธิ์ลูกค้าที่ซื้อไว้ (คงไฟล์เดิมและ episodeId เดิม)
+              </span>
             </label>
             <label className="flex items-center gap-2">
               <input
                 type="radio"
-                checked={mode === "upsert"}
-                onChange={() => setMode("upsert")}
+                checked={mode === "create_only"}
+                onChange={() => setMode("create_only")}
               />
-              <span className="text-sm">Upsert - ถ้า episodeNumber ซ้ำ จะ update ข้อมูลเดิม</span>
+              <span className="text-sm">Create only - ใช้เมื่อมั่นใจว่าไม่มีแพ็กเลขนี้อยู่แล้ว (ถ้าซ้ำ จะขึ้น error)</span>
             </label>
           </div>
         </div>
@@ -663,6 +666,19 @@ function PackageZipImportSection({ novelId }: { novelId: number | undefined }) {
           <p className="text-sm">
             ทั้งหมด {result.totalRows} แถว · สำเร็จ {result.successCount} · error {result.errorCount}
           </p>
+          <p className="text-sm mt-1">
+            สร้างใหม่ {result.createdCount ?? 0} · อัปเดตแพ็กเดิม {result.updatedCount ?? 0} ·
+            คงไฟล์เดิมไว้ {result.preservedFileUrlCount ?? 0}
+          </p>
+          {result.results?.length > 0 && (
+            <div className="mt-3 p-3 bg-white border rounded max-h-48 overflow-y-auto">
+              {result.results.map((r: any, idx: number) => (
+                <p key={idx} className="text-sm text-slate-700">
+                  {r.message}
+                </p>
+              ))}
+            </div>
+          )}
           {result.errors.length > 0 && (
             <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded max-h-40 overflow-y-auto">
               {result.errors.map((err: any, idx: number) => (

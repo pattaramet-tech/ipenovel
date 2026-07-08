@@ -1,6 +1,7 @@
 import AdmZip from "adm-zip";
 import * as XLSX from "xlsx";
 import * as db from "../db";
+import { normalizeEpisodeRange } from "./readerService";
 
 // ============ LIMITS (configurable via env, sane defaults) ============
 // Note: the express JSON body limit (server/_core/index.ts) is 50mb, and the
@@ -232,7 +233,8 @@ export function parsePackageZip(zipBuffer: Buffer): PackageImportParseResult {
       errors.push({ row: rowNum, field: "episodeTitle", message: "ต้องระบุ episodeTitle" });
       continue;
     }
-    if (seenNumbers.has(episodeNumber)) {
+    const normalizedEpisodeNumber = normalizeEpisodeRange(episodeNumber);
+    if (seenNumbers.has(normalizedEpisodeNumber)) {
       errors.push({ row: rowNum, field: "episodeNumber", message: `episodeNumber "${episodeNumber}" ซ้ำในไฟล์เดียวกัน` });
       continue;
     }
@@ -314,7 +316,7 @@ export function parsePackageZip(zipBuffer: Buffer): PackageImportParseResult {
       }
     }
 
-    seenNumbers.add(episodeNumber);
+    seenNumbers.add(normalizedEpisodeNumber);
     rows.push({
       row: rowNum,
       episodeNumber,
@@ -425,21 +427,57 @@ function parseCsvManifest(buffer: Buffer): Array<Record<string, string>> {
   return result;
 }
 
+export interface PackageImportRowResult {
+  row: number;
+  episodeNumber: string;
+  action: "created" | "updated";
+  episodeId: number;
+  preservedFileUrl: boolean;
+  message: string;
+}
+
 export interface PackageImportSummary {
   manifestFileName: string;
   totalRows: number;
   successCount: number;
   errorCount: number;
+  createdCount: number;
+  updatedCount: number;
+  preservedFileUrlCount: number;
   errors: PackageImportRowError[];
+  results: PackageImportRowResult[];
+}
+
+/**
+ * Find every existing episode in a novel whose normalized episodeNumber
+ * matches the given (already-normalized) range. Matching considers all
+ * existing episodes, not just saleMode="package" ones, since legacy
+ * file-only packages predate the saleMode column and must still be found
+ * by a plaintext-content import so they get synced instead of duplicated.
+ */
+function findMatchingExistingEpisodes(existingEpisodes: any[], normalizedTarget: string): any[] {
+  return existingEpisodes.filter((e: any) => normalizeEpisodeRange(e.episodeNumber) === normalizedTarget);
 }
 
 /**
  * Import already-parsed, validated rows into a novel's episodes.
- * mode "create_only": a duplicate episodeNumber is an error (safe default).
- * mode "upsert": a duplicate episodeNumber updates the existing row.
  *
- * Always writes saleMode "package" and fileUrl null/undefined (never sets a
- * fileUrl) - packages are web-read only, never file downloads.
+ * mode "create_only": a normalized-duplicate episodeNumber is an error.
+ * mode "upsert" (recommended default): a normalized-duplicate episodeNumber
+ * updates the existing row in place, preserving its episodeId and any
+ * legacy fileUrl - this is what keeps a customer's past Docs/PDF purchase
+ * valid after the admin later syncs plaintext content into the same package.
+ *
+ * Matching is done via normalizeEpisodeRange() rather than raw string
+ * equality, so "51-100", "51 - 100", "051 - 100" etc. are all recognized as
+ * the same package. If more than one existing episode normalizes to the
+ * same range, the row is NOT auto-updated - it's reported as an error for
+ * manual admin review, since guessing which one to update risks silently
+ * updating the wrong episode.
+ *
+ * fileUrl is never written by this function - the update payload simply
+ * omits the fileUrl key entirely, so Drizzle's partial `.set()` leaves any
+ * existing legacy file link untouched. Never pass `fileUrl: null` here.
  */
 export async function importPackageRows(
   novelId: number,
@@ -448,22 +486,43 @@ export async function importPackageRows(
 ): Promise<PackageImportSummary> {
   const existingEpisodes = await db.getEpisodesByNovelId(novelId);
   const errors: PackageImportRowError[] = [];
+  const results: PackageImportRowResult[] = [];
   let successCount = 0;
+  let createdCount = 0;
+  let updatedCount = 0;
+  let preservedFileUrlCount = 0;
 
   for (const row of rows) {
-    const existing = existingEpisodes.find((e: any) => String(e.episodeNumber) === row.episodeNumber);
+    const normalizedTarget = normalizeEpisodeRange(row.episodeNumber);
+    const matches = findMatchingExistingEpisodes(existingEpisodes, normalizedTarget);
 
     try {
+      if (matches.length > 1) {
+        errors.push({
+          row: row.row,
+          field: "episodeNumber",
+          message: `episodeNumber "${row.episodeNumber}" ตรงกับตอนที่มีอยู่แล้วมากกว่า 1 รายการ (episodeId: ${matches.map((m: any) => m.id).join(", ")}) กรุณาตรวจสอบและแก้ไขด้วยตนเอง`,
+        });
+        continue;
+      }
+
+      const existing = matches[0];
+
       if (existing) {
         if (mode === "create_only") {
           errors.push({
             row: row.row,
             field: "episodeNumber",
-            message: `episodeNumber "${row.episodeNumber}" มีอยู่แล้วในนิยายนี้ (โหมด create only)`,
+            message: `episodeNumber "${row.episodeNumber}" มีอยู่แล้วในนิยายนี้ (episodeId ${existing.id}, โหมด create only)`,
           });
           continue;
         }
 
+        const hadFileUrl = Boolean(existing.fileUrl && String(existing.fileUrl).trim().length > 0);
+
+        // Never include `fileUrl` in this payload - omitting the key (not
+        // setting it to null) is what preserves any existing legacy file
+        // link during a plaintext sync.
         await db.updateEpisode(existing.id, {
           title: row.episodeTitle,
           price: row.price,
@@ -474,13 +533,24 @@ export async function importPackageRows(
           contentFormat: row.contentFormat,
           description: row.description,
           sortOrder: row.sortOrder,
-          fileUrl: null,
         });
         successCount++;
+        updatedCount++;
+        if (hadFileUrl) preservedFileUrlCount++;
+        results.push({
+          row: row.row,
+          episodeNumber: row.episodeNumber,
+          action: "updated",
+          episodeId: existing.id,
+          preservedFileUrl: hadFileUrl,
+          message: hadFileUrl
+            ? `${row.episodeNumber}: updated existing episodeId ${existing.id}, preserved legacy fileUrl`
+            : `${row.episodeNumber}: updated existing episodeId ${existing.id}, added plaintext content`,
+        });
         continue;
       }
 
-      await db.createEpisode({
+      const created = await db.createEpisode({
         novelId,
         episodeNumber: row.episodeNumber,
         title: row.episodeTitle,
@@ -494,6 +564,15 @@ export async function importPackageRows(
         sortOrder: row.sortOrder,
       });
       successCount++;
+      createdCount++;
+      results.push({
+        row: row.row,
+        episodeNumber: row.episodeNumber,
+        action: "created",
+        episodeId: created.id,
+        preservedFileUrl: false,
+        message: `${row.episodeNumber}: created new episodeId ${created.id}`,
+      });
     } catch (error) {
       errors.push({
         row: row.row,
@@ -508,6 +587,10 @@ export async function importPackageRows(
     totalRows: rows.length,
     successCount,
     errorCount: errors.length,
+    createdCount,
+    updatedCount,
+    preservedFileUrlCount,
     errors,
+    results,
   };
 }
