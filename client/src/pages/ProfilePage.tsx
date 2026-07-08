@@ -301,15 +301,25 @@ export default function ProfilePage() {
                                 </p>
                               </div>
                               <div className="flex gap-2 shrink-0">
-                                {/* Web-only reader: purchased episodes/packages are always
-                                    read at /read/:episodeId - never downloaded as a file. */}
-                                <Button
-                                  size="sm"
-                                  onClick={() => navigate(`/read/${item.episode.id}`)}
-                                  className="px-4 py-2 text-xs"
-                                >
-                                  อ่านตอนนี้
-                                </Button>
+                                {item.episode.content || item.episode.contentFormat ? (
+                                  <Button
+                                    size="sm"
+                                    onClick={() => navigate(`/read/${item.episode.id}`)}
+                                    className="px-4 py-2 text-xs"
+                                  >
+                                    อ่านตอนนี้
+                                  </Button>
+                                ) : null}
+                                {item.episode.fileUrl && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => window.open(item.episode.fileUrl, "_blank")}
+                                    className="px-4 py-2 text-xs"
+                                  >
+                                    ดาวน์โหลด
+                                  </Button>
+                                )}
                               </div>
                             </div>
                           ))}

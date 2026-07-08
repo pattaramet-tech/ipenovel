@@ -21,9 +21,6 @@ interface ParsedEpisode {
   description?: string;
   fileUrl?: string;
   sortOrder?: number;
-  // "chapter" = single episode, direct wallet purchase. "package" =
-  // multi-chapter bundle, cart/checkout, web-read only (no download).
-  saleMode: "chapter" | "package";
 }
 
 interface ValidationError {
@@ -77,45 +74,6 @@ const HEADER_ALIASES: Record<string, string> = {
   // fileUrl
   fileurl: "fileUrl",
   "ลิงก์ไฟล์": "fileUrl",
-
-  // saleMode
-  salemode: "saleMode",
-  sale_mode: "saleMode",
-  "ประเภทการขาย": "saleMode",
-  "ประเภท": "saleMode",
-};
-
-// Range-style episodeNumber like "1 - 50" or "436 - 508" - matches the
-// backend's legacy saleMode fallback (resolveSaleMode in readerService.ts)
-// so imports without an explicit saleMode column classify consistently with
-// how the reader/store already treat existing rows.
-const RANGE_EPISODE_NUMBER_PATTERN = /^\s*\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?\s*$/;
-
-const SALE_MODE_VALUE_ALIASES: Record<string, "chapter" | "package"> = {
-  chapter: "chapter",
-  "รายบท": "chapter",
-  package: "package",
-  "แพ็ก": "package",
-  "แพ็กอ่านบนเว็บ": "package",
-};
-
-// Resolve a row's saleMode: explicit column value first (accepts English or
-// Thai labels), otherwise fall back to legacy detection - a fileUrl or a
-// range-style episodeNumber implies "package", everything else is "chapter".
-// This mirrors resolveSaleMode() on the backend so imported data and
-// backend-computed fallbacks never disagree.
-const resolveImportSaleMode = (
-  rawValue: string | undefined,
-  episodeNumber: string,
-  fileUrl: string
-): "chapter" | "package" => {
-  const normalized = (rawValue || "").toLowerCase().trim();
-  const aliased = SALE_MODE_VALUE_ALIASES[normalized];
-  if (aliased) return aliased;
-
-  if (fileUrl && fileUrl.trim().length > 0) return "package";
-  if (RANGE_EPISODE_NUMBER_PATTERN.test(episodeNumber)) return "package";
-  return "chapter";
 };
 
 // Parse boolean values from various formats
@@ -279,7 +237,6 @@ const convertToParsedEpisodes = (
     const description = data.description || "";
     const fileUrl = data.fileUrl || "";
     const sortOrderStr = data.sortOrder || "";
-    const saleMode = resolveImportSaleMode(data.saleMode, episodeNumber, fileUrl);
 
     // Validate required fields
     if (!episodeNumber) {
@@ -348,7 +305,6 @@ const convertToParsedEpisodes = (
       description,
       fileUrl,
       sortOrder,
-      saleMode,
     });
   }
 
@@ -361,7 +317,6 @@ const generateXLSXTemplate = () => {
     {
       episodeNumber: "001",
       episodeTitle: "ตอนที่ 1 เริ่มต้น",
-      saleMode: "chapter",
       price: "0",
       isFree: "true",
       isPublished: "true",
@@ -373,7 +328,6 @@ const generateXLSXTemplate = () => {
     {
       episodeNumber: "002",
       episodeTitle: "ตอนที่ 2 เงื่อนไข",
-      saleMode: "chapter",
       price: "5",
       isFree: "false",
       isPublished: "true",
@@ -383,15 +337,14 @@ const generateXLSXTemplate = () => {
       fileUrl: "",
     },
     {
-      episodeNumber: "1 - 50",
-      episodeTitle: "แพ็กบทที่ 1 - 50",
-      saleMode: "package",
-      price: "99",
+      episodeNumber: "003",
+      episodeTitle: "ตอนที่ 3 ความจริง",
+      price: "5",
       isFree: "false",
-      isPublished: "true",
-      content: "เนื้อหารวมบทที่ 1 ถึง 50...",
+      isPublished: "false",
+      content: "เนื้อหาตอนที่ 3...",
       contentFormat: "plain_text",
-      description: "แพ็กอ่านบนเว็บ",
+      description: "ดราฟต์",
       fileUrl: "",
     },
   ];
@@ -400,7 +353,6 @@ const generateXLSXTemplate = () => {
   worksheet["!cols"] = [
     { wch: 12 },
     { wch: 25 },
-    { wch: 12 },
     { wch: 10 },
     { wch: 10 },
     { wch: 12 },
@@ -416,270 +368,7 @@ const generateXLSXTemplate = () => {
   toast.success("Template downloaded!");
 };
 
-// Read a File as a base64 data URL string (browser-side), for sending
-// binary uploads (zip) through a tRPC mutation as a plain string - mirrors
-// the fileBase64 pattern already used elsewhere in this project (e.g.
-// payment slip uploads).
-function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
-
-// Import a large "package" (multi-chapter, web-read-only) episode set from a
-// ZIP: manifest.xlsx/manifest.csv for metadata + separate .txt files for
-// content, so a 50-100 chapter package never has to fit in a single xlsx
-// cell. Validates via a dryRun call first (Step 2 preview) before the admin
-// confirms the real import (Step 3).
-function PackageZipImportSection({ novelId }: { novelId: number | undefined }) {
-  const [zipFile, setZipFile] = useState<File | null>(null);
-  const [mode, setMode] = useState<"create_only" | "upsert">("create_only");
-  const [preview, setPreview] = useState<any>(null);
-  const [result, setResult] = useState<any>(null);
-  const [isValidating, setIsValidating] = useState(false);
-  const [isImporting, setIsImporting] = useState(false);
-
-  const importMutation = trpc.admin.episodes.importPackageZip.useMutation();
-
-  const handleZipUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".zip")) {
-      toast.error("กรุณาอัปโหลดไฟล์ .zip เท่านั้น");
-      return;
-    }
-    setZipFile(file);
-    setPreview(null);
-    setResult(null);
-  };
-
-  const handleValidate = async () => {
-    if (!novelId) {
-      toast.error("กรุณาเลือกนิยายก่อน");
-      return;
-    }
-    if (!zipFile) {
-      toast.error("กรุณาอัปโหลดไฟล์ zip ก่อน");
-      return;
-    }
-
-    setIsValidating(true);
-    setResult(null);
-    try {
-      const zipBase64 = await readFileAsBase64(zipFile);
-      const response = await importMutation.mutateAsync({ novelId, zipBase64, mode, dryRun: true });
-      setPreview(response);
-      if (response.errorCount > 0) {
-        toast.error(`พบ ${response.errorCount} แถวที่มีปัญหา`);
-      } else {
-        toast.success(`ตรวจสอบผ่าน ${response.validRows} แพ็ก พร้อม import`);
-      }
-    } catch (error: any) {
-      toast.error(error?.message || "ตรวจสอบไฟล์ล้มเหลว");
-    } finally {
-      setIsValidating(false);
-    }
-  };
-
-  const handleConfirmImport = async () => {
-    if (!novelId || !zipFile) return;
-
-    setIsImporting(true);
-    try {
-      const zipBase64 = await readFileAsBase64(zipFile);
-      const response = await importMutation.mutateAsync({ novelId, zipBase64, mode, dryRun: false });
-      setResult(response);
-      setPreview(null);
-      toast.success(`Import complete: ${response.successCount} สำเร็จ, ${response.errorCount} error`);
-    } catch (error: any) {
-      toast.error(error?.message || "Import ล้มเหลว");
-    } finally {
-      setIsImporting(false);
-    }
-  };
-
-  return (
-    <>
-      <Card className="p-6">
-        <h3 className="font-semibold mb-2">Step 1: Upload Package ZIP</h3>
-        <p className="text-sm text-slate-600 mb-4">
-          อัปโหลด zip ที่มี manifest.xlsx/manifest.csv และไฟล์ .txt แยกตามแพ็ก สำหรับนำเข้าแพ็กอ่านบนเว็บ
-        </p>
-
-        <div className="border-2 border-dashed rounded-lg p-6 text-center">
-          <input
-            type="file"
-            accept=".zip"
-            onChange={handleZipUpload}
-            className="hidden"
-            id="zip-upload"
-          />
-          <label htmlFor="zip-upload" className="cursor-pointer">
-            <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
-            <p className="text-sm text-slate-600">
-              {zipFile ? zipFile.name : "คลิกเพื่ออัปโหลดไฟล์ .zip"}
-            </p>
-          </label>
-        </div>
-
-        <div className="mt-4 text-xs text-slate-500 space-y-2">
-          <p className="font-semibold">โครงสร้าง zip ที่รองรับ:</p>
-          <pre className="bg-slate-50 p-2 rounded border overflow-x-auto whitespace-pre">{`import_package.zip
-├── manifest.xlsx (หรือ manifest.csv)
-└── contents/
-    ├── 001-050.txt
-    └── 051-100.txt`}</pre>
-          <p className="font-semibold">Manifest columns:</p>
-          <p>
-            episodeNumber, episodeTitle, price, isFree, isPublished, saleMode,
-            contentFile, contentFormat, sortOrder, description
-          </p>
-          <p>saleMode ควรเป็น package เสมอ - import นี้รองรับเฉพาะแพ็กอ่านบนเว็บ ไม่รองรับรายบท</p>
-        </div>
-
-        <div className="mt-4">
-          <Label className="mb-2 block">Import Mode</Label>
-          <div className="space-y-2">
-            <label className="flex items-center gap-2">
-              <input
-                type="radio"
-                checked={mode === "create_only"}
-                onChange={() => setMode("create_only")}
-              />
-              <span className="text-sm">Create only (แนะนำ) - ถ้า episodeNumber ซ้ำ จะขึ้น error</span>
-            </label>
-            <label className="flex items-center gap-2">
-              <input
-                type="radio"
-                checked={mode === "upsert"}
-                onChange={() => setMode("upsert")}
-              />
-              <span className="text-sm">Upsert - ถ้า episodeNumber ซ้ำ จะ update ข้อมูลเดิม</span>
-            </label>
-          </div>
-        </div>
-
-        <Button
-          onClick={handleValidate}
-          disabled={!novelId || !zipFile || isValidating}
-          className="w-full mt-6"
-        >
-          {isValidating ? (
-            <>
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              กำลังตรวจสอบ...
-            </>
-          ) : (
-            "ตรวจสอบไฟล์ (Preview)"
-          )}
-        </Button>
-      </Card>
-
-      {preview && (
-        <Card className="p-4">
-          <h3 className="font-semibold mb-4">Step 2: Preview</h3>
-          <div className="grid grid-cols-3 gap-4 mb-4 text-center">
-            <div>
-              <p className="text-2xl font-bold">{preview.totalRows}</p>
-              <p className="text-xs text-muted-foreground">ทั้งหมด</p>
-            </div>
-            <div>
-              <p className="text-2xl font-bold text-green-600">{preview.validRows}</p>
-              <p className="text-xs text-muted-foreground">พร้อม import</p>
-            </div>
-            <div>
-              <p className="text-2xl font-bold text-red-600">{preview.errorCount}</p>
-              <p className="text-xs text-muted-foreground">Error</p>
-            </div>
-          </div>
-
-          {preview.errors.length > 0 && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded max-h-40 overflow-y-auto">
-              {preview.errors.map((err: any, idx: number) => (
-                <p key={idx} className="text-sm text-red-800">
-                  Row {err.row}: {err.field} - {err.message}
-                </p>
-              ))}
-            </div>
-          )}
-
-          {preview.rows.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b bg-slate-50">
-                    <th className="text-left py-2 px-2">#</th>
-                    <th className="text-left py-2 px-2">Episode #</th>
-                    <th className="text-left py-2 px-2">Title</th>
-                    <th className="text-left py-2 px-2">Content File</th>
-                    <th className="text-left py-2 px-2">Content Length</th>
-                    <th className="text-left py-2 px-2">Price</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {preview.rows.slice(0, 15).map((row: any, idx: number) => (
-                    <tr key={idx} className="border-b hover:bg-slate-50">
-                      <td className="py-2 px-2 text-muted-foreground">{idx + 1}</td>
-                      <td className="py-2 px-2 font-medium">{row.episodeNumber}</td>
-                      <td className="py-2 px-2">{row.episodeTitle}</td>
-                      <td className="py-2 px-2 text-muted-foreground">{row.contentFile}</td>
-                      <td className="py-2 px-2">{row.contentLength.toLocaleString()} chars</td>
-                      <td className="py-2 px-2">฿{row.price}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {preview.rows.length > 15 && (
-                <p className="text-xs text-muted-foreground mt-2">
-                  ... และอีก {preview.rows.length - 15} แพ็ก
-                </p>
-              )}
-            </div>
-          )}
-
-          <Button
-            onClick={handleConfirmImport}
-            disabled={preview.validRows === 0 || isImporting}
-            className="w-full mt-6"
-          >
-            {isImporting ? (
-              <>
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                กำลัง Import...
-              </>
-            ) : (
-              `Import ${preview.validRows} แพ็ก`
-            )}
-          </Button>
-        </Card>
-      )}
-
-      {result && (
-        <Card className="p-4 bg-green-50 border-green-200">
-          <h3 className="font-semibold mb-2">Import เสร็จสิ้น</h3>
-          <p className="text-sm">
-            ทั้งหมด {result.totalRows} แถว · สำเร็จ {result.successCount} · error {result.errorCount}
-          </p>
-          {result.errors.length > 0 && (
-            <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded max-h-40 overflow-y-auto">
-              {result.errors.map((err: any, idx: number) => (
-                <p key={idx} className="text-sm text-red-800">
-                  Row {err.row}: {err.field} - {err.message}
-                </p>
-              ))}
-            </div>
-          )}
-        </Card>
-      )}
-    </>
-  );
-}
-
 export default function AdminEpisodeImportPage() {
-  const [importSource, setImportSource] = useState<"spreadsheet" | "zip">("spreadsheet");
   const [novelId, setNovelId] = useState<number | undefined>();
   const [fileText, setFileText] = useState("");
   const [parsedEpisodes, setParsedEpisodes] = useState<ParsedEpisode[]>([]);
@@ -815,7 +504,6 @@ export default function AdminEpisodeImportPage() {
               isFree: ep.isFree,
               isPublished: ep.isPublished,
               sortOrder: ep.sortOrder,
-              saleMode: ep.saleMode,
             };
 
             // Only update content if provided or allowBlankOverwrite is true
@@ -851,7 +539,6 @@ export default function AdminEpisodeImportPage() {
           fileUrl: ep.fileUrl,
           isPublished: ep.isPublished,
           sortOrder: ep.sortOrder,
-          saleMode: ep.saleMode,
         });
         successCount++;
       } catch (error) {
@@ -910,39 +597,6 @@ export default function AdminEpisodeImportPage() {
           </select>
         </Card>
 
-        {/* Import Source Tabs */}
-        <div className="flex gap-2 border-b">
-          <button
-            onClick={() => setImportSource("spreadsheet")}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              importSource === "spreadsheet"
-                ? "border-blue-600 text-blue-600"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            XLSX / CSV Import
-          </button>
-          <button
-            onClick={() => setImportSource("zip")}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              importSource === "zip"
-                ? "border-blue-600 text-blue-600"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            Import Package ZIP
-          </button>
-        </div>
-        <p className="text-xs text-slate-500 -mt-4">
-          {importSource === "spreadsheet"
-            ? "เหมาะสำหรับรายบท หรือแพ็กที่เนื้อหาสั้น"
-            : "เหมาะสำหรับแพ็กอ่านบนเว็บขนาดใหญ่ (หลายสิบ-ร้อยบท) ที่ยัดเนื้อหาลงช่อง xlsx ไม่ไหว"}
-        </p>
-
-        {importSource === "zip" ? (
-          <PackageZipImportSection novelId={novelId} />
-        ) : (
-          <>
         {/* File Upload & Template */}
         <Card className="p-6">
           <div className="flex items-center justify-between mb-4">
@@ -985,14 +639,6 @@ export default function AdminEpisodeImportPage() {
               <li>episodeNumber / episode_number / ตอนที่</li>
               <li>episodeTitle / title / ชื่อตอน</li>
             </ul>
-            <p className="font-semibold mt-3 mb-2">Optional: saleMode / sale_mode / ประเภทการขาย</p>
-            <ul className="list-disc list-inside space-y-1">
-              <li>Accepts: chapter, package, รายบท, แพ็ก, แพ็กอ่านบนเว็บ</li>
-              <li>
-                If omitted: a fileUrl or a range episode number (e.g. "1 - 50")
-                is imported as package, otherwise chapter.
-              </li>
-            </ul>
           </div>
         </Card>
 
@@ -1028,7 +674,6 @@ export default function AdminEpisodeImportPage() {
                     <th className="text-left py-2 px-2">#</th>
                     <th className="text-left py-2 px-2">Episode #</th>
                     <th className="text-left py-2 px-2">Title</th>
-                    <th className="text-left py-2 px-2">Sale Mode</th>
                     <th className="text-left py-2 px-2">Price</th>
                     <th className="text-left py-2 px-2">Free</th>
                     <th className="text-left py-2 px-2">Published</th>
@@ -1042,11 +687,6 @@ export default function AdminEpisodeImportPage() {
                       <td className="py-2 px-2 text-muted-foreground">{idx + 1}</td>
                       <td className="py-2 px-2 font-medium">{ep.episodeNumber}</td>
                       <td className="py-2 px-2">{ep.episodeTitle}</td>
-                      <td className="py-2 px-2">
-                        <Badge variant={ep.saleMode === "package" ? "outline" : "secondary"} className="text-xs">
-                          {ep.saleMode === "package" ? "แพ็ก" : "รายบท"}
-                        </Badge>
-                      </td>
                       <td className="py-2 px-2">฿{ep.price || "0"}</td>
                       <td className="py-2 px-2">
                         {ep.isFree ? (
@@ -1162,8 +802,6 @@ export default function AdminEpisodeImportPage() {
               )}
             </Button>
           </Card>
-        )}
-          </>
         )}
       </div>
     </AdminLayout>

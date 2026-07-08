@@ -23,7 +23,6 @@ import {
   generateShadowModeNote,
 } from "./_core/ocr-order-notes";
 import * as readerService from "./services/readerService";
-import * as packageZipImportService from "./services/packageZipImportService";
 
 // ============ HELPER PROCEDURES ============
 
@@ -177,21 +176,17 @@ export const appRouter = router({
           const canRead = isFree || hasPurchased || isAdmin;
 
           // Never leak full episode content in the list endpoint - that's what
-          // reader.getEpisode is for. Only expose fileUrl when the requester
-          // actually has access - unpurchased paid legacy files must not leak
-          // their real download URL. Since content/fileUrl are stripped
-          // regardless of purchase status, the frontend can no longer use
-          // their presence to classify sale type - it must use the explicit
-          // saleMode/saleType metadata below instead.
+          // reader.episode is for. Only expose fileUrl when the requester
+          // actually has access - unpurchased paid files must not leak their
+          // real download URL. Since content/fileUrl are stripped regardless of
+          // purchase status, the frontend can no longer use their presence to
+          // classify sale type (chapter vs file) - it must use the hasContent/
+          // hasFile/saleType metadata below instead.
           const { content, fileUrl, ...safeEpisode } = ep;
 
           const hasContent = Boolean(content && String(content).trim().length > 0);
-          const hasLegacyFile = Boolean(fileUrl && String(fileUrl).trim().length > 0);
-          // saleMode is the source of truth (with legacy fallback for rows
-          // missing it); saleType mirrors it 1:1 and is kept as a separate
-          // field name for the frontend's sale-type tab classification.
-          const saleMode = readerService.resolveSaleMode(ep);
-          const saleType = saleMode;
+          const hasFile = Boolean(fileUrl && String(fileUrl).trim().length > 0);
+          const saleType = hasFile ? "file" : hasContent ? "chapter" : "unknown";
 
           return {
             ...safeEpisode,
@@ -200,8 +195,7 @@ export const appRouter = router({
             isPurchased: hasPurchased,
             canRead,
             hasContent,
-            hasLegacyFile,
-            saleMode,
+            hasFile,
             saleType,
             fileUrl: canRead ? fileUrl ?? null : null,
             adminCanPreview: isAdmin && !isFree && !hasPurchased,
@@ -252,14 +246,6 @@ export const appRouter = router({
         // Free episodes cannot be added to cart
         if (episode.isFree) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "Free episodes cannot be added to cart" });
-        }
-
-        // Cart/checkout is for package sales only. Single chapters must be
-        // bought via the direct wallet-purchase flow (reader.purchaseEpisode),
-        // never added to cart.
-        const saleMode = readerService.resolveSaleMode(episode);
-        if (saleMode === "chapter") {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "รายบทต้องซื้อผ่านปุ่มซื้อทันที" });
         }
 
         // Check if already purchased (both wallet direct purchase and legacy
@@ -1078,9 +1064,6 @@ export const appRouter = router({
             fileUrl: z.string().optional(),
             content: z.string().optional(),
             contentFormat: z.enum(["plain_text", "markdown", "html"]).default("plain_text").optional(),
-            // "chapter" = single episode, direct wallet purchase. "package" =
-            // multi-chapter bundle, cart/checkout, web-read only (no download).
-            saleMode: z.enum(["chapter", "package"]).default("chapter").optional(),
             description: z.string().optional(),
             isPublished: z.boolean().default(true).optional(),
             publishedAt: z.date().optional(),
@@ -1103,7 +1086,6 @@ export const appRouter = router({
             fileUrl: z.string().optional(),
             content: z.string().optional(),
             contentFormat: z.enum(["plain_text", "markdown", "html"]).optional(),
-            saleMode: z.enum(["chapter", "package"]).optional(),
             description: z.string().optional(),
             isPublished: z.boolean().optional(),
             publishedAt: z.date().optional(),
@@ -1121,71 +1103,6 @@ export const appRouter = router({
         .mutation(async ({ input }) => {
           await db.deleteEpisode(input.episodeId);
           return { success: true };
-        }),
-
-      // Import a package (multi-chapter, web-read-only) episode set from a
-      // ZIP containing manifest.xlsx/manifest.csv + .txt content files. This
-      // is the large-content counterpart to the xlsx importer above - the
-      // xlsx importer's `content` cell is impractical for a 50-100 chapter
-      // package, so content is read from separate .txt files instead.
-      //
-      // dryRun: true parses + validates the zip (including reading every
-      // referenced .txt file) without writing to the database, so the admin
-      // UI can show a preview/error list before committing.
-      importPackageZip: adminProcedure
-        .input(
-          z.object({
-            novelId: z.number(),
-            zipBase64: z.string(),
-            mode: z.enum(["create_only", "upsert"]).default("create_only"),
-            dryRun: z.boolean().default(true),
-          })
-        )
-        .mutation(async ({ input }) => {
-          const base64Data = input.zipBase64.includes(",") ? input.zipBase64.split(",")[1] : input.zipBase64;
-          const zipBuffer = Buffer.from(base64Data, "base64");
-
-          let parsed;
-          try {
-            parsed = packageZipImportService.parsePackageZip(zipBuffer);
-          } catch (error) {
-            throw new TRPCError({ code: "BAD_REQUEST", message: (error as Error).message });
-          }
-
-          if (input.dryRun) {
-            return {
-              manifestFileName: parsed.manifestFileName,
-              totalRows: parsed.rows.length + parsed.errors.length,
-              validRows: parsed.rows.length,
-              errorCount: parsed.errors.length,
-              errors: parsed.errors,
-              // Lightweight preview - never send full `content` back over the wire.
-              rows: parsed.rows.map((row) => ({
-                row: row.row,
-                episodeNumber: row.episodeNumber,
-                episodeTitle: row.episodeTitle,
-                price: row.price,
-                isFree: row.isFree,
-                isPublished: row.isPublished,
-                contentFile: row.contentFile,
-                contentLength: row.contentLength,
-                sortOrder: row.sortOrder,
-              })),
-              imported: false,
-            };
-          }
-
-          const summary = await packageZipImportService.importPackageRows(input.novelId, parsed.rows, input.mode);
-
-          return {
-            manifestFileName: parsed.manifestFileName,
-            totalRows: parsed.rows.length + parsed.errors.length,
-            validRows: parsed.rows.length,
-            successCount: summary.successCount,
-            errorCount: parsed.errors.length + summary.errors.length,
-            errors: [...parsed.errors, ...summary.errors],
-            imported: true,
-          };
         }),
     }),
 
@@ -1954,7 +1871,6 @@ export const appRouter = router({
             "INSUFFICIENT_WALLET_BALANCE_ATOMIC",
             "INVALID_EPISODE_PRICE",
             "INVALID_WALLET_BALANCE",
-            "PACKAGE_MUST_USE_CART",
           ]);
 
           if (result.error && passthroughCodes.has(result.error)) {

@@ -16,7 +16,7 @@ function formatSafeDate(value: unknown) {
 
 export default function MyNovelsPage() {
   const { isAuthenticated } = useAuth();
-  const [, setLocation] = useLocation();
+  const [, navigate] = useLocation();
   const { t } = useLanguage();
 
   const { data: myNovels, isLoading, error } = trpc.myNovels.list.useQuery(undefined, {
@@ -116,15 +116,22 @@ export default function MyNovelsPage() {
                             </div>
 
                             <div className="flex gap-2">
-                              {/* Web-only reader: purchased episodes/packages are always
-                                  read at /read/:episodeId - never downloaded as a file. */}
-                              <Button
-                                size="sm"
-                                onClick={() => episode?.id && setLocation(`/read/${episode.id}`)}
-                              >
-                                <BookOpen className="w-4 h-4 mr-2" />
-                                {t("myNovels.read")}
-                              </Button>
+                              {episode?.fileUrl ? (
+                                <a
+                                  href={episode.fileUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
+                                >
+                                  <BookOpen className="w-4 h-4 mr-2" />
+                                  {t("myNovels.read")}
+                                </a>
+                              ) : (
+                                <Button size="sm" disabled>
+                                  <BookOpen className="w-4 h-4 mr-2" />
+                                  {t("myNovels.readFileNotAvailable")}
+                                </Button>
+                              )}
                             </div>
                           </div>
                         ))

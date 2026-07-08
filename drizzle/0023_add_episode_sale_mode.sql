@@ -1,1 +1,0 @@
-ALTER TABLE `episodes` ADD `saleMode` enum('chapter','package') DEFAULT 'chapter' NOT NULL;

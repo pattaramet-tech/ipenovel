@@ -1,1 +1,0 @@
-ALTER TABLE `episodes` MODIFY COLUMN `content` mediumtext;

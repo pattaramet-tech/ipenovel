@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { useState, useMemo } from "react";
-import { BookOpen, Search, ChevronDown, ChevronUp } from "lucide-react";
+import { BookOpen, Search, Download, ChevronDown, ChevronUp } from "lucide-react";
 import {
   formatEpisodeLabel,
   compareEpisodes,
@@ -28,7 +28,7 @@ export default function NovelDetailPage() {
   // Default sort is always numeric episode order (ascending) - never title
   // A-Z/Z-A, which previously made #10 sort before #1/#2.
   const [sortBy, setSortBy] = useState<"episodeAsc" | "episodeDesc" | "newest" | "oldest">("episodeAsc");
-  const [saleType, setSaleType] = useState<"all" | "package" | "chapter">("all");
+  const [saleType, setSaleType] = useState<"all" | "file" | "chapter">("all");
   const [purchasingEpisodeId, setPurchasingEpisodeId] = useState<number | null>(null);
   // Table-of-contents accordion state, keyed by "<chapter|file>:<group.key>" so
   // the chapter and file sections track expansion independently. Absent keys
@@ -113,11 +113,6 @@ export default function NovelDetailPage() {
         // atomic debit step itself failed/couldn't be confirmed, not that the
         // user's balance was too low - don't tell them to top up.
         toast.error("ตัดเงินจากกระเป๋าไม่สำเร็จ กรุณาลองใหม่อีกครั้ง หากยังพบปัญหาให้ติดต่อแอดมิน");
-      } else if (errorMsg === "PACKAGE_MUST_USE_CART") {
-        // Direct wallet purchase (reader.purchaseEpisode) is chapter-only;
-        // this episode is actually a package, which must go through cart/checkout.
-        toast.error("แพ็กนี้ต้องซื้อผ่านตะกร้า");
-        utils.novels.episodes.invalidate();
       } else if (errorMsg === "Already purchased" || errorMsg.includes("ซื้อไปแล้ว") || errorMsg.includes("already")) {
         // Duplicate purchase - refetch episode state and show soft message
         toast.info("คุณซื้อบทนี้แล้ว");
@@ -150,7 +145,7 @@ export default function NovelDetailPage() {
   // IMPORTANT: useMemo MUST be called before any early returns to avoid React Hook Order Violation
   // Filter and sort episodes
   const filteredAndSortedEpisodes = useMemo(() => {
-    if (!episodes || !Array.isArray(episodes)) return { freeEpisodes: [], paidEpisodes: [], packageEpisodes: [], readerEpisodes: [] };
+    if (!episodes || !Array.isArray(episodes)) return { freeEpisodes: [], paidEpisodes: [], fileEpisodes: [], readerEpisodes: [] };
 
     // Search filter (case-insensitive)
     const searchLower = searchTerm.toLowerCase();
@@ -196,16 +191,21 @@ export default function NovelDetailPage() {
     const freeEpisodes = sorted.filter((ep: any) => ep && ep.isFree === true);
     const paidEpisodes = sorted.filter((ep: any) => ep && ep.isFree !== true);
 
-    // Split by sale mode: package (multi-chapter bundle, sold via cart/
-    // checkout, web-read only - no download) vs chapter (single episode,
-    // direct wallet purchase). The backend now computes an explicit saleMode
-    // for every episode (with legacy fileUrl/range-number fallback baked in),
-    // so classification here is a direct field check - no more guessing from
-    // hasContent/fileUrl presence.
-    const packageEpisodes = sorted.filter((ep: any) => ep && ep.saleMode === "package");
-    const readerEpisodes = sorted.filter((ep: any) => ep && ep.saleMode === "chapter");
+    // Split by sale type: file (has fileUrl) vs reader (for chapter reading)
+    // NOTE: novels.episodes never returns `content`, and only returns `fileUrl`
+    // when the requester can already access it (free/purchased/admin) - so
+    // unpurchased paid episodes have `content: undefined` and `fileUrl: null`
+    // regardless of their real sale type. Classification must use the
+    // hasFile/hasContent/saleType metadata the backend computes instead of
+    // checking for the presence of the (possibly stripped) fields themselves.
+    const fileEpisodes = sorted.filter(
+      (ep: any) => ep && (ep.saleType === "file" || ep.hasFile === true)
+    );
+    const readerEpisodes = sorted.filter(
+      (ep: any) => ep && (ep.saleType === "chapter" || (ep.hasContent === true && ep.hasFile !== true))
+    );
 
-    return { freeEpisodes, paidEpisodes, packageEpisodes, readerEpisodes };
+    return { freeEpisodes, paidEpisodes, fileEpisodes, readerEpisodes };
   }, [episodes, searchTerm, sortBy]);
 
   // Table-of-contents groups (บทที่ 1-100, 101-200, ...) for each sale type.
@@ -216,9 +216,9 @@ export default function NovelDetailPage() {
     () => groupEpisodesByHundreds(filteredAndSortedEpisodes.readerEpisodes),
     [filteredAndSortedEpisodes.readerEpisodes]
   );
-  const packageEpisodeGroups = useMemo(
-    () => groupEpisodesByHundreds(filteredAndSortedEpisodes.packageEpisodes),
-    [filteredAndSortedEpisodes.packageEpisodes]
+  const fileEpisodeGroups = useMemo(
+    () => groupEpisodesByHundreds(filteredAndSortedEpisodes.fileEpisodes),
+    [filteredAndSortedEpisodes.fileEpisodes]
   );
 
   // A group is expanded if the user explicitly toggled it, or by default:
@@ -307,21 +307,47 @@ export default function NovelDetailPage() {
 
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             {isFree ? (
-              <button
-                onClick={() => setLocation(`/read/${episode.id}`)}
-                className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition active:bg-blue-800"
-              >
-                <BookOpen className="w-3.5 h-3.5 mr-1.5" />
-                อ่านเดี๋ยวนี้
-              </button>
+              <>
+                <button
+                  onClick={() => setLocation(`/read/${episode.id}`)}
+                  className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition active:bg-blue-800"
+                >
+                  <BookOpen className="w-3.5 h-3.5 mr-1.5" />
+                  อ่านเดี๋ยวนี้
+                </button>
+                {episode.fileUrl && (
+                  <a
+                    href={episode.fileUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-slate-500 text-white hover:bg-slate-600 transition"
+                    title="ดาวน์โหลดไฟล์"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                  </a>
+                )}
+              </>
             ) : isPurchased ? (
-              <button
-                onClick={() => setLocation(`/read/${episode.id}`)}
-                className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
-              >
-                <BookOpen className="w-3.5 h-3.5 mr-1.5" />
-                อ่าน
-              </button>
+              <>
+                <button
+                  onClick={() => setLocation(`/read/${episode.id}`)}
+                  className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
+                >
+                  <BookOpen className="w-3.5 h-3.5 mr-1.5" />
+                  อ่าน
+                </button>
+                {episode.fileUrl && (
+                  <a
+                    href={episode.fileUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-slate-500 text-white hover:bg-slate-600 transition"
+                    title="ดาวน์โหลดไฟล์"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                  </a>
+                )}
+              </>
             ) : (
               // Unpurchased paid chapter - direct wallet purchase only, never cart
               <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
@@ -344,14 +370,12 @@ export default function NovelDetailPage() {
     );
   };
 
-  // Package ("ขายแพ็ก") episode card - cart/checkout flow, web-read only.
-  // No download link and no fileUrl reference - packages are never opened as
-  // an external Docs/PDF file anymore, only read at /read/:episodeId.
-  const renderPackageEpisodeCard = (episode: any) => {
+  // File (khai file / "ขายไฟล์") episode card - cart/checkbox flow, unchanged.
+  const renderFileEpisodeCard = (episode: any) => {
     if (!episode || !episode.id) return null;
     const inCart = cartItems.some((item: any) => item.episodeId === episode.id);
     // isPurchased must reflect a real purchase record only - never admin
-    // access or canRead - so the "unlocked" badge/read button only appears
+    // access or canRead - so the "unlocked" badge/download link only appears
     // for episodes the user actually paid for.
     const isPurchased = episode.isPurchased === true || episode.hasPurchased === true;
     const isFree = episode.isFree === true;
@@ -412,23 +436,49 @@ export default function NovelDetailPage() {
 
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             {isFree ? (
-              <button
-                onClick={() => setLocation(`/read/${episode.id}`)}
-                className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition active:bg-blue-800"
-              >
-                <BookOpen className="w-3.5 h-3.5 mr-1.5" />
-                อ่านเดี๋ยวนี้
-              </button>
+              <>
+                <button
+                  onClick={() => setLocation(`/read/${episode.id}`)}
+                  className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition active:bg-blue-800"
+                >
+                  <BookOpen className="w-3.5 h-3.5 mr-1.5" />
+                  อ่านเดี๋ยวนี้
+                </button>
+                {episode.fileUrl && (
+                  <a
+                    href={episode.fileUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-slate-500 text-white hover:bg-slate-600 transition"
+                    title="ดาวน์โหลดไฟล์"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                  </a>
+                )}
+              </>
             ) : isPurchased ? (
-              <button
-                onClick={() => setLocation(`/read/${episode.id}`)}
-                className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
-              >
-                <BookOpen className="w-3.5 h-3.5 mr-1.5" />
-                อ่านแพ็กนี้
-              </button>
+              <>
+                <button
+                  onClick={() => setLocation(`/read/${episode.id}`)}
+                  className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
+                >
+                  <BookOpen className="w-3.5 h-3.5 mr-1.5" />
+                  อ่าน
+                </button>
+                {episode.fileUrl && (
+                  <a
+                    href={episode.fileUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-slate-500 text-white hover:bg-slate-600 transition"
+                    title="ดาวน์โหลดไฟล์"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                  </a>
+                )}
+              </>
             ) : (
-              // Unpurchased package - cart/checkout flow, never direct wallet purchase
+              // Unpurchased paid file - cart flow
               <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2">
                 <span className="font-semibold text-sm text-foreground">
                   ฿{episode.price ?? "ไม่ระบุ"}
@@ -553,7 +603,7 @@ export default function NovelDetailPage() {
     );
   }
 
-  const { freeEpisodes, paidEpisodes, packageEpisodes, readerEpisodes } = filteredAndSortedEpisodes;
+  const { freeEpisodes, paidEpisodes, fileEpisodes, readerEpisodes } = filteredAndSortedEpisodes;
 
   return (
     <div className="min-h-screen bg-background">
@@ -653,7 +703,7 @@ export default function NovelDetailPage() {
                     : "border-transparent text-muted-foreground hover:text-foreground"
                 }`}
               >
-                ทั้งหมด <span className="ml-1 text-xs font-normal text-muted-foreground">({readerEpisodes.length + packageEpisodes.length})</span>
+                ทั้งหมด <span className="ml-1 text-xs font-normal text-muted-foreground">({readerEpisodes.length + fileEpisodes.length})</span>
               </button>
               <button
                 onClick={() => setSaleType("chapter")}
@@ -665,16 +715,16 @@ export default function NovelDetailPage() {
               >
                 ขายรายบท <span className="ml-1 text-xs font-normal text-muted-foreground">({readerEpisodes.length})</span>
               </button>
-              {packageEpisodes.length > 0 && (
+              {fileEpisodes.length > 0 && (
                 <button
-                  onClick={() => setSaleType("package")}
+                  onClick={() => setSaleType("file")}
                   className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
-                    saleType === "package"
+                    saleType === "file"
                       ? "border-blue-600 text-blue-600"
                       : "border-transparent text-muted-foreground hover:text-foreground"
                   }`}
                 >
-                  ขายแพ็ก <span className="ml-1 text-xs font-normal text-muted-foreground">({packageEpisodes.length})</span>
+                  ขายไฟล์ <span className="ml-1 text-xs font-normal text-muted-foreground">({fileEpisodes.length})</span>
                 </button>
               )}
             </div>
@@ -705,7 +755,7 @@ export default function NovelDetailPage() {
 
           {/* Episodes List - grouped as a table of contents (บทที่ 1-100, 101-200, ...) */}
           <div className="space-y-6">
-            {saleType === "all" && readerEpisodes.length === 0 && packageEpisodes.length === 0 ? (
+            {saleType === "all" && readerEpisodes.length === 0 && fileEpisodes.length === 0 ? (
               <Card className="p-8 text-center">
                 <p className="text-muted-foreground">ไม่มีตอนที่ตรงกับการค้นหา</p>
               </Card>
@@ -718,11 +768,11 @@ export default function NovelDetailPage() {
                     {renderEpisodeGroupAccordion(readerEpisodeGroups, "chapter", renderChapterEpisodeCard)}
                   </div>
                 )}
-                {/* Package Episodes Section - cart/checkout flow, web-read only */}
-                {packageEpisodes.length > 0 && (
+                {/* File Episodes Section - cart/checkbox flow */}
+                {fileEpisodes.length > 0 && (
                   <div>
-                    <h3 className="text-lg font-semibold mb-3 text-amber-600">ขายแพ็ก ({packageEpisodes.length})</h3>
-                    {renderEpisodeGroupAccordion(packageEpisodeGroups, "package", renderPackageEpisodeCard)}
+                    <h3 className="text-lg font-semibold mb-3 text-amber-600">ขายไฟล์ ({fileEpisodes.length})</h3>
+                    {renderEpisodeGroupAccordion(fileEpisodeGroups, "file", renderFileEpisodeCard)}
                   </div>
                 )}
               </>
@@ -735,13 +785,13 @@ export default function NovelDetailPage() {
                   <p className="text-muted-foreground">ยังไม่มีรายการขายแบบรายบท</p>
                 </Card>
               )
-            ) : saleType === "package" ? (
-              // Package tab: packageEpisodes only, cart/checkout flow, web-read only.
-              packageEpisodes.length > 0 ? (
-                renderEpisodeGroupAccordion(packageEpisodeGroups, "package", renderPackageEpisodeCard)
+            ) : saleType === "file" ? (
+              // File tab: fileEpisodes only, cart/checkbox flow unchanged.
+              fileEpisodes.length > 0 ? (
+                renderEpisodeGroupAccordion(fileEpisodeGroups, "file", renderFileEpisodeCard)
               ) : (
                 <Card className="p-8 text-center">
-                  <p className="text-muted-foreground">ยังไม่มีแพ็กให้ซื้อ</p>
+                  <p className="text-muted-foreground">ยังไม่มีแพ็กขายไฟล์</p>
                 </Card>
               )
             ) : null}
