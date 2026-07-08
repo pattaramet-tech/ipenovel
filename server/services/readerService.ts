@@ -87,6 +87,25 @@ export function resolveSaleMode(episode: { saleMode?: string | null; fileUrl?: s
   return "chapter";
 }
 
+export interface EpisodeContentFlags {
+  hasContent: boolean;
+  hasLegacyFile: boolean;
+}
+
+/**
+ * Single source of truth for "does this episode have web content / a legacy
+ * file" - used to compute hasContent/hasLegacyFile metadata consistently
+ * everywhere it's exposed (novels.episodes list, reader.getEpisode, admin
+ * health/entitlement tooling), so the flags never drift out of sync with
+ * each other across endpoints.
+ */
+export function computeContentFlags(episode: { content?: unknown; fileUrl?: unknown }): EpisodeContentFlags {
+  return {
+    hasContent: Boolean(episode?.content && String(episode.content).trim().length > 0),
+    hasLegacyFile: Boolean(episode?.fileUrl && String(episode.fileUrl).trim().length > 0),
+  };
+}
+
 function parseEpisodeOrderNumber(episodeNumber: unknown): number | null {
   const match = String(episodeNumber ?? "").match(/\d+(?:\.\d+)?/);
   if (!match) return null;
@@ -265,8 +284,7 @@ export async function getReaderEpisode(userId: number | undefined, episodeId: nu
   // episode - previously it was left in unconditionally (only `content` was
   // stripped), leaking legacy Docs/PDF links to any authenticated user.
   const { content: _content, fileUrl: _fileUrl, ...safeEpisode } = ep;
-  const hasContent = Boolean(ep.content && String(ep.content).trim().length > 0);
-  const hasLegacyFile = Boolean(ep.fileUrl && String(ep.fileUrl).trim().length > 0);
+  const { hasContent, hasLegacyFile } = computeContentFlags(ep);
 
   const result: ReaderEpisodeData = {
     episode: {

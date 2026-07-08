@@ -21,6 +21,8 @@ import {
   Trophy,
   BarChart3,
   FileSpreadsheet,
+  Activity,
+  UserSearch,
 } from "lucide-react";
 
 export interface NavItem {
@@ -137,6 +139,16 @@ export const adminNavSections: NavSection[] = [
         label: "Entitlements",
         href: "/admin/entitlements",
         icon: Gift,
+      },
+      {
+        label: "Hybrid Content Health",
+        href: "/admin/hybrid-health",
+        icon: Activity,
+      },
+      {
+        label: "Entitlement Lookup",
+        href: "/admin/entitlement-lookup",
+        icon: UserSearch,
       },
       {
         label: "Settings",

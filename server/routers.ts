@@ -189,8 +189,7 @@ export const appRouter = router({
           // saleMode/saleType metadata below instead.
           const { content, fileUrl, ...safeEpisode } = ep;
 
-          const hasContent = Boolean(content && String(content).trim().length > 0);
-          const hasLegacyFile = Boolean(fileUrl && String(fileUrl).trim().length > 0);
+          const { hasContent, hasLegacyFile } = readerService.computeContentFlags(ep);
           // saleMode is the source of truth (with legacy fallback for rows
           // missing it); saleType mirrors it 1:1 and is kept as a separate
           // field name for the frontend's sale-type tab classification.
@@ -1170,24 +1169,28 @@ export const appRouter = router({
           }
 
           if (input.dryRun) {
+            // Full diff preview: shows exactly what the real import would do
+            // (update_existing / create_new / blocked with a reason) for
+            // every row, built from the same classification logic the real
+            // write path uses - so this can never show something different
+            // from what actually happens. Read-only: never writes to the DB.
+            const preview = await packageZipImportService.buildImportPreview(input.novelId, parsed, input.mode);
+
             return {
-              manifestFileName: parsed.manifestFileName,
-              totalRows: parsed.rows.length + parsed.errors.length,
-              validRows: parsed.rows.length,
-              errorCount: parsed.errors.length,
-              errors: parsed.errors,
-              // Lightweight preview - never send full `content` back over the wire.
-              rows: parsed.rows.map((row) => ({
-                row: row.row,
-                episodeNumber: row.episodeNumber,
-                episodeTitle: row.episodeTitle,
-                price: row.price,
-                isFree: row.isFree,
-                isPublished: row.isPublished,
-                contentFile: row.contentFile,
-                contentLength: row.contentLength,
-                sortOrder: row.sortOrder,
-              })),
+              manifestFileName: preview.manifestFileName,
+              mode: preview.mode,
+              totalRows: preview.summary.totalRows,
+              validRows: preview.summary.createCount + preview.summary.updateCount,
+              errorCount: preview.summary.errorCount,
+              createCount: preview.summary.createCount,
+              updateCount: preview.summary.updateCount,
+              preservedFileUrlCount: preview.summary.preservedFileUrlCount,
+              duplicateRangeCount: preview.summary.duplicateRangeCount,
+              ambiguousMatchCount: preview.summary.ambiguousMatchCount,
+              missingContentFileCount: preview.summary.missingContentFileCount,
+              // Unified diff table - each row carries its own action/message,
+              // never full `content` over the wire.
+              rows: preview.rows,
               imported: false,
             };
           }
@@ -1300,6 +1303,44 @@ export const appRouter = router({
             missingCount: missing.length,
             missingItems: missing,
           };
+        }),
+    }),
+
+    // ============ HYBRID CONTENT HEALTH DASHBOARD (Phase 1, read-only) ============
+    // Surfaces episodes at risk from the hybrid fileUrl/content model: rows
+    // with neither content nor fileUrl (unreadable even if purchased),
+    // packages whose episodeNumber can't be normalized, and duplicate
+    // normalized ranges within a novel. No mutations - purely diagnostic.
+    hybridHealth: router({
+      overview: adminProcedure.query(async () => {
+        const { getAllNovelHealthOverview } = await import("./services/hybridHealthService");
+        return getAllNovelHealthOverview();
+      }),
+
+      detail: adminProcedure
+        .input(z.object({ novelId: z.number() }))
+        .query(async ({ input }) => {
+          const { getNovelHealthDetail } = await import("./services/hybridHealthService");
+          return getNovelHealthDetail(input.novelId);
+        }),
+    }),
+
+    // ============ ADMIN USER ENTITLEMENT LOOKUP (Phase 1, read-only) ============
+    // Search a customer's purchases/entitlements for support/debugging. Never
+    // mutates anything - use admin.entitlements.repair above for actually
+    // granting a missing entitlement.
+    entitlementLookup: router({
+      search: adminProcedure
+        .input(
+          z.object({
+            email: z.string().optional(),
+            userId: z.number().optional(),
+            orderId: z.number().optional(),
+          })
+        )
+        .query(async ({ input }) => {
+          const { lookupUserEntitlements } = await import("./services/entitlementLookupService");
+          return lookupUserEntitlements(input);
         }),
     }),
 

@@ -583,15 +583,23 @@ function PackageZipImportSection({ novelId }: { novelId: number | undefined }) {
 
       {preview && (
         <Card className="p-4">
-          <h3 className="font-semibold mb-4">Step 2: Preview</h3>
-          <div className="grid grid-cols-3 gap-4 mb-4 text-center">
+          <h3 className="font-semibold mb-1">Step 2: Preview Diff</h3>
+          <p className="text-xs text-muted-foreground mb-4">
+            แสดงสิ่งที่จะเกิดขึ้นจริงถ้ากด Import (โหมด: {preview.mode === "upsert" ? "Sync/Upsert" : "Create only"}) - ยังไม่มีการเขียนข้อมูลใด ๆ ในขั้นตอนนี้
+          </p>
+
+          <div className="grid grid-cols-4 gap-3 mb-3 text-center">
             <div>
               <p className="text-2xl font-bold">{preview.totalRows}</p>
               <p className="text-xs text-muted-foreground">ทั้งหมด</p>
             </div>
             <div>
-              <p className="text-2xl font-bold text-green-600">{preview.validRows}</p>
-              <p className="text-xs text-muted-foreground">พร้อม import</p>
+              <p className="text-2xl font-bold text-blue-600">{preview.updateCount}</p>
+              <p className="text-xs text-muted-foreground">อัปเดตแพ็กเดิม</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-green-600">{preview.createCount}</p>
+              <p className="text-xs text-muted-foreground">สร้างใหม่</p>
             </div>
             <div>
               <p className="text-2xl font-bold text-red-600">{preview.errorCount}</p>
@@ -599,47 +607,78 @@ function PackageZipImportSection({ novelId }: { novelId: number | undefined }) {
             </div>
           </div>
 
-          {preview.errors.length > 0 && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded max-h-40 overflow-y-auto">
-              {preview.errors.map((err: any, idx: number) => (
-                <p key={idx} className="text-sm text-red-800">
-                  Row {err.row}: {err.field} - {err.message}
-                </p>
-              ))}
+          <div className="grid grid-cols-4 gap-3 mb-4 text-center text-xs">
+            <div className="p-2 rounded bg-slate-50">
+              <p className="font-semibold">{preview.preservedFileUrlCount}</p>
+              <p className="text-muted-foreground">คงไฟล์เดิมไว้</p>
             </div>
-          )}
+            <div className="p-2 rounded bg-slate-50">
+              <p className="font-semibold">{preview.duplicateRangeCount}</p>
+              <p className="text-muted-foreground">เลขตอนซ้ำในไฟล์</p>
+            </div>
+            <div className="p-2 rounded bg-slate-50">
+              <p className="font-semibold">{preview.ambiguousMatchCount}</p>
+              <p className="text-muted-foreground">Match ได้หลายรายการ</p>
+            </div>
+            <div className="p-2 rounded bg-slate-50">
+              <p className="font-semibold">{preview.missingContentFileCount}</p>
+              <p className="text-muted-foreground">ไม่พบไฟล์เนื้อหา</p>
+            </div>
+          </div>
 
           {preview.rows.length > 0 && (
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b bg-slate-50">
-                    <th className="text-left py-2 px-2">#</th>
+                    <th className="text-left py-2 px-2">Row</th>
                     <th className="text-left py-2 px-2">Episode #</th>
+                    <th className="text-left py-2 px-2">Normalized</th>
                     <th className="text-left py-2 px-2">Title</th>
-                    <th className="text-left py-2 px-2">Content File</th>
-                    <th className="text-left py-2 px-2">Content Length</th>
-                    <th className="text-left py-2 px-2">Price</th>
+                    <th className="text-left py-2 px-2">Matched ID</th>
+                    <th className="text-left py-2 px-2">fileUrl เดิม?</th>
+                    <th className="text-left py-2 px-2">content ใหม่?</th>
+                    <th className="text-left py-2 px-2">Action</th>
+                    <th className="text-left py-2 px-2">คงไฟล์เดิม?</th>
+                    <th className="text-left py-2 px-2">Message</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {preview.rows.slice(0, 15).map((row: any, idx: number) => (
-                    <tr key={idx} className="border-b hover:bg-slate-50">
-                      <td className="py-2 px-2 text-muted-foreground">{idx + 1}</td>
-                      <td className="py-2 px-2 font-medium">{row.episodeNumber}</td>
-                      <td className="py-2 px-2">{row.episodeTitle}</td>
-                      <td className="py-2 px-2 text-muted-foreground">{row.contentFile}</td>
-                      <td className="py-2 px-2">{row.contentLength.toLocaleString()} chars</td>
-                      <td className="py-2 px-2">฿{row.price}</td>
-                    </tr>
-                  ))}
+                  {preview.rows.map((row: any) => {
+                    const isError = String(row.action).startsWith("error_");
+                    const isUpdate = row.action === "update_existing";
+                    return (
+                      <tr
+                        key={row.row}
+                        className={`border-b hover:bg-slate-50 ${isError ? "bg-red-50/60" : isUpdate ? "bg-blue-50/60" : ""}`}
+                      >
+                        <td className="py-2 px-2 text-muted-foreground">{row.row}</td>
+                        <td className="py-2 px-2 font-medium">{row.rawEpisodeNumber || "-"}</td>
+                        <td className="py-2 px-2 text-muted-foreground">{row.normalizedRange || "-"}</td>
+                        <td className="py-2 px-2">{row.episodeTitle || "-"}</td>
+                        <td className="py-2 px-2">{row.matchedEpisodeId ?? "-"}</td>
+                        <td className="py-2 px-2">{row.currentFileUrlExists ? "มี" : "-"}</td>
+                        <td className="py-2 px-2">{row.incomingContentExists ? "มี" : "-"}</td>
+                        <td className="py-2 px-2">
+                          <span
+                            className={`inline-block px-2 py-0.5 rounded font-medium ${
+                              isError
+                                ? "bg-red-100 text-red-800"
+                                : isUpdate
+                                  ? "bg-blue-100 text-blue-800"
+                                  : "bg-green-100 text-green-800"
+                            }`}
+                          >
+                            {row.action}
+                          </span>
+                        </td>
+                        <td className="py-2 px-2">{row.preserveFileUrl ? "ใช่" : "-"}</td>
+                        <td className="py-2 px-2 text-muted-foreground max-w-xs">{row.message}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
-              {preview.rows.length > 15 && (
-                <p className="text-xs text-muted-foreground mt-2">
-                  ... และอีก {preview.rows.length - 15} แพ็ก
-                </p>
-              )}
             </div>
           )}
 
@@ -654,7 +693,7 @@ function PackageZipImportSection({ novelId }: { novelId: number | undefined }) {
                 กำลัง Import...
               </>
             ) : (
-              `Import ${preview.validRows} แพ็ก`
+              `Import (${preview.updateCount} update, ${preview.createCount} create)`
             )}
           </Button>
         </Card>

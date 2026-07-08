@@ -24,6 +24,8 @@ import AdminWalletTopupDetailPage from "@/pages/AdminWalletTopupDetailPage";
 import AdminTopupLogsPage from "@/pages/AdminTopupLogsPage";
 import AdminTopupLogDetailPage from "@/pages/AdminTopupLogDetailPage";
 import AdminEntitlementsPage from "@/pages/AdminEntitlementsPage";
+import AdminHybridHealthPage from "@/pages/AdminHybridHealthPage";
+import AdminEntitlementLookupPage from "@/pages/AdminEntitlementLookupPage";
 import AdminSettingsPage from "@/pages/AdminSettingsPage";
 import AdminBulkUploadPage from "@/pages/AdminBulkUploadPage";
 import AdminNovelManagePage from "@/pages/AdminNovelManagePage";
@@ -78,6 +80,8 @@ function Router() {
         <Route path={"/admin/topup-logs"} component={AdminTopupLogsPage} />
         <Route path={"/admin/topup-logs/:logId"} component={AdminTopupLogDetailPage} />
         <Route path={"/admin/entitlements"} component={AdminEntitlementsPage} />
+        <Route path={"/admin/hybrid-health"} component={AdminHybridHealthPage} />
+        <Route path={"/admin/entitlement-lookup"} component={AdminEntitlementLookupPage} />
         <Route path="/admin/settings" component={AdminSettingsPage} />
         <Route path="/admin/bulk-upload" component={AdminBulkUploadPage} />
         <Route path="/admin/analytics" component={AdminAnalyticsPage} />

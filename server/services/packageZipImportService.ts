@@ -125,6 +125,17 @@ export interface PackageImportRowError {
   row: number;
   field: string;
   message: string;
+  /** Machine-readable error code, set only for a few well-known cases the
+   *  preview/summary needs to bucket precisely (e.g. missing content file,
+   *  duplicate range within the same zip). Undefined for generic validation
+   *  errors - those are still human-readable via `message`. */
+  code?: "MISSING_CONTENT_FILE" | "DUPLICATE_IN_BATCH";
+  /** Raw (pre-validation) episodeNumber/episodeTitle values, when available
+   *  at the point the error was raised - lets the preview table show what
+   *  the admin actually typed even for rows that never became a full
+   *  PackageImportRow. */
+  episodeNumberRaw?: string;
+  episodeTitleRaw?: string;
 }
 
 export interface PackageImportParseResult {
@@ -226,16 +237,23 @@ export function parsePackageZip(zipBuffer: Buffer): PackageImportParseResult {
     const description = (data.description || "").trim();
 
     if (!episodeNumber) {
-      errors.push({ row: rowNum, field: "episodeNumber", message: "ต้องระบุ episodeNumber" });
+      errors.push({ row: rowNum, field: "episodeNumber", message: "ต้องระบุ episodeNumber", episodeNumberRaw: episodeNumber, episodeTitleRaw: episodeTitle });
       continue;
     }
     if (!episodeTitle) {
-      errors.push({ row: rowNum, field: "episodeTitle", message: "ต้องระบุ episodeTitle" });
+      errors.push({ row: rowNum, field: "episodeTitle", message: "ต้องระบุ episodeTitle", episodeNumberRaw: episodeNumber, episodeTitleRaw: episodeTitle });
       continue;
     }
     const normalizedEpisodeNumber = normalizeEpisodeRange(episodeNumber);
     if (seenNumbers.has(normalizedEpisodeNumber)) {
-      errors.push({ row: rowNum, field: "episodeNumber", message: `episodeNumber "${episodeNumber}" ซ้ำในไฟล์เดียวกัน` });
+      errors.push({
+        row: rowNum,
+        field: "episodeNumber",
+        message: `episodeNumber "${episodeNumber}" ซ้ำในไฟล์เดียวกัน (normalized: "${normalizedEpisodeNumber}")`,
+        code: "DUPLICATE_IN_BATCH",
+        episodeNumberRaw: episodeNumber,
+        episodeTitleRaw: episodeTitle,
+      });
       continue;
     }
 
@@ -249,29 +267,51 @@ export function parsePackageZip(zipBuffer: Buffer): PackageImportParseResult {
         row: rowNum,
         field: "saleMode",
         message: `Import นี้รองรับเฉพาะ saleMode = package เท่านั้น (พบค่า "${data.saleMode}")`,
+        episodeNumberRaw: episodeNumber,
+        episodeTitleRaw: episodeTitle,
       });
       continue;
     }
 
     const price = isNaN(parseFloat(priceStr)) ? "0" : priceStr;
     if (!isFree && (!price || parseFloat(price) <= 0)) {
-      errors.push({ row: rowNum, field: "price", message: "แพ็กที่ไม่ฟรีต้องมีราคามากกว่า 0" });
+      errors.push({ row: rowNum, field: "price", message: "แพ็กที่ไม่ฟรีต้องมีราคามากกว่า 0", episodeNumberRaw: episodeNumber, episodeTitleRaw: episodeTitle });
       continue;
     }
 
     if (!contentFileRaw) {
-      errors.push({ row: rowNum, field: "contentFile", message: "ต้องระบุ contentFile" });
+      errors.push({
+        row: rowNum,
+        field: "contentFile",
+        message: "ต้องระบุ contentFile",
+        code: "MISSING_CONTENT_FILE",
+        episodeNumberRaw: episodeNumber,
+        episodeTitleRaw: episodeTitle,
+      });
       continue;
     }
     if (extname(contentFileRaw) !== ".txt") {
-      errors.push({ row: rowNum, field: "contentFile", message: `contentFile ต้องเป็นไฟล์ .txt เท่านั้น (พบ "${contentFileRaw}")` });
+      errors.push({
+        row: rowNum,
+        field: "contentFile",
+        message: `contentFile ต้องเป็นไฟล์ .txt เท่านั้น (พบ "${contentFileRaw}")`,
+        episodeNumberRaw: episodeNumber,
+        episodeTitleRaw: episodeTitle,
+      });
       continue;
     }
 
     const sanitizedContentFile = sanitizeZipEntryPath(contentFileRaw);
     const contentEntry = sanitizedContentFile ? fileEntries.get(sanitizedContentFile) : undefined;
     if (!sanitizedContentFile || !contentEntry) {
-      errors.push({ row: rowNum, field: "contentFile", message: `ไม่พบไฟล์ "${contentFileRaw}" ใน zip` });
+      errors.push({
+        row: rowNum,
+        field: "contentFile",
+        message: `ไม่พบไฟล์ "${contentFileRaw}" ใน zip`,
+        code: "MISSING_CONTENT_FILE",
+        episodeNumberRaw: episodeNumber,
+        episodeTitleRaw: episodeTitle,
+      });
       continue;
     }
 
@@ -281,6 +321,8 @@ export function parsePackageZip(zipBuffer: Buffer): PackageImportParseResult {
         row: rowNum,
         field: "contentFile",
         message: `ไฟล์ "${contentFileRaw}" ใหญ่เกินไป (${(rawContentBuffer.length / 1024 / 1024).toFixed(1)}MB) จำกัดไว้ที่ ${(MAX_TXT_SIZE_BYTES / 1024 / 1024).toFixed(0)}MB`,
+        episodeNumberRaw: episodeNumber,
+        episodeTitleRaw: episodeTitle,
       });
       continue;
     }
@@ -293,7 +335,14 @@ export function parsePackageZip(zipBuffer: Buffer): PackageImportParseResult {
     }
 
     if (!content.trim()) {
-      errors.push({ row: rowNum, field: "contentFile", message: `ไฟล์ "${contentFileRaw}" ไม่มีเนื้อหา` });
+      errors.push({
+        row: rowNum,
+        field: "contentFile",
+        message: `ไฟล์ "${contentFileRaw}" ไม่มีเนื้อหา`,
+        code: "MISSING_CONTENT_FILE",
+        episodeNumberRaw: episodeNumber,
+        episodeTitleRaw: episodeTitle,
+      });
       continue;
     }
 
@@ -459,6 +508,74 @@ function findMatchingExistingEpisodes(existingEpisodes: any[], normalizedTarget:
   return existingEpisodes.filter((e: any) => normalizeEpisodeRange(e.episodeNumber) === normalizedTarget);
 }
 
+function isValidNormalizedRange(normalized: string): boolean {
+  return normalized.length > 0 && /\d/.test(normalized);
+}
+
+interface RowClassification {
+  action: "update_existing" | "create_new" | "error_ambiguous_match" | "error_invalid_range";
+  matchedEpisode: any | null;
+  ambiguousMatches: any[];
+  normalizedRange: string;
+  message: string;
+}
+
+/**
+ * Classify a single parsed row against a novel's existing episodes - the one
+ * function both the dry-run preview (buildImportPreview) and the real write
+ * path (importPackageRows) call, so the preview can never show something
+ * different from what actually happens on import.
+ *
+ * Matching is done via normalizeEpisodeRange() rather than raw string
+ * equality, so "51-100", "51 - 100", "051 - 100" etc. are all recognized as
+ * the same package. If more than one existing episode normalizes to the same
+ * range, the row is classified as an ambiguous match rather than guessed -
+ * callers must block the write and report it for manual admin review.
+ */
+function classifyImportRow(existingEpisodes: any[], row: PackageImportRow): RowClassification {
+  const normalizedRange = normalizeEpisodeRange(row.episodeNumber);
+
+  if (!isValidNormalizedRange(normalizedRange)) {
+    return {
+      action: "error_invalid_range",
+      matchedEpisode: null,
+      ambiguousMatches: [],
+      normalizedRange,
+      message: `episodeNumber "${row.episodeNumber}" ไม่สามารถแปลงเป็นเลขตอน/ช่วงที่ถูกต้องได้`,
+    };
+  }
+
+  const matches = findMatchingExistingEpisodes(existingEpisodes, normalizedRange);
+
+  if (matches.length > 1) {
+    return {
+      action: "error_ambiguous_match",
+      matchedEpisode: null,
+      ambiguousMatches: matches,
+      normalizedRange,
+      message: `episodeNumber "${row.episodeNumber}" ตรงกับตอนที่มีอยู่แล้วมากกว่า 1 รายการ (episodeId: ${matches.map((m: any) => m.id).join(", ")}) กรุณาตรวจสอบและแก้ไขด้วยตนเอง`,
+    };
+  }
+
+  if (matches.length === 1) {
+    return {
+      action: "update_existing",
+      matchedEpisode: matches[0],
+      ambiguousMatches: [],
+      normalizedRange,
+      message: `${row.episodeNumber}: จะอัปเดต episodeId ${matches[0].id}`,
+    };
+  }
+
+  return {
+    action: "create_new",
+    matchedEpisode: null,
+    ambiguousMatches: [],
+    normalizedRange,
+    message: `${row.episodeNumber}: จะสร้างตอนใหม่`,
+  };
+}
+
 /**
  * Import already-parsed, validated rows into a novel's episodes.
  *
@@ -467,13 +584,6 @@ function findMatchingExistingEpisodes(existingEpisodes: any[], normalizedTarget:
  * updates the existing row in place, preserving its episodeId and any
  * legacy fileUrl - this is what keeps a customer's past Docs/PDF purchase
  * valid after the admin later syncs plaintext content into the same package.
- *
- * Matching is done via normalizeEpisodeRange() rather than raw string
- * equality, so "51-100", "51 - 100", "051 - 100" etc. are all recognized as
- * the same package. If more than one existing episode normalizes to the
- * same range, the row is NOT auto-updated - it's reported as an error for
- * manual admin review, since guessing which one to update risks silently
- * updating the wrong episode.
  *
  * fileUrl is never written by this function - the update payload simply
  * omits the fileUrl key entirely, so Drizzle's partial `.set()` leaves any
@@ -493,22 +603,17 @@ export async function importPackageRows(
   let preservedFileUrlCount = 0;
 
   for (const row of rows) {
-    const normalizedTarget = normalizeEpisodeRange(row.episodeNumber);
-    const matches = findMatchingExistingEpisodes(existingEpisodes, normalizedTarget);
+    const classification = classifyImportRow(existingEpisodes, row);
 
     try {
-      if (matches.length > 1) {
-        errors.push({
-          row: row.row,
-          field: "episodeNumber",
-          message: `episodeNumber "${row.episodeNumber}" ตรงกับตอนที่มีอยู่แล้วมากกว่า 1 รายการ (episodeId: ${matches.map((m: any) => m.id).join(", ")}) กรุณาตรวจสอบและแก้ไขด้วยตนเอง`,
-        });
+      if (classification.action === "error_ambiguous_match" || classification.action === "error_invalid_range") {
+        errors.push({ row: row.row, field: "episodeNumber", message: classification.message });
         continue;
       }
 
-      const existing = matches[0];
+      if (classification.action === "update_existing") {
+        const existing = classification.matchedEpisode;
 
-      if (existing) {
         if (mode === "create_only") {
           errors.push({
             row: row.row,
@@ -550,6 +655,7 @@ export async function importPackageRows(
         continue;
       }
 
+      // action === "create_new"
       const created = await db.createEpisode({
         novelId,
         episodeNumber: row.episodeNumber,
@@ -592,5 +698,137 @@ export async function importPackageRows(
     preservedFileUrlCount,
     errors,
     results,
+  };
+}
+
+export type ImportRowAction =
+  | "update_existing"
+  | "create_new"
+  | "error_ambiguous_match"
+  | "error_invalid_range"
+  | "error_existing_conflict"
+  | "error_missing_content_file"
+  | "error_duplicate_range"
+  | "error_invalid_row";
+
+export interface PackageImportPreviewRow {
+  row: number;
+  rawEpisodeNumber: string;
+  normalizedRange: string | null;
+  episodeTitle: string;
+  matchedEpisodeId: number | null;
+  currentFileUrlExists: boolean;
+  incomingContentExists: boolean;
+  action: ImportRowAction;
+  preserveFileUrl: boolean;
+  message: string;
+}
+
+export interface PackageImportPreviewSummary {
+  totalRows: number;
+  createCount: number;
+  updateCount: number;
+  errorCount: number;
+  preservedFileUrlCount: number;
+  duplicateRangeCount: number;
+  ambiguousMatchCount: number;
+  missingContentFileCount: number;
+}
+
+export interface PackageImportPreview {
+  manifestFileName: string;
+  mode: "create_only" | "upsert";
+  rows: PackageImportPreviewRow[];
+  summary: PackageImportPreviewSummary;
+}
+
+/**
+ * Read-only dry-run diff: shows exactly what importPackageRows() would do,
+ * without writing to the database. Built on the same classifyImportRow()
+ * used by the real import, so this can never drift from actual behavior.
+ *
+ * Merges in parse-time errors (missing content file, duplicate range within
+ * the same zip, etc.) alongside classify-time errors (ambiguous match,
+ * invalid range) so the admin sees one unified table covering every row in
+ * the manifest, sorted back into original row order.
+ */
+export async function buildImportPreview(
+  novelId: number,
+  parsed: PackageImportParseResult,
+  mode: "create_only" | "upsert"
+): Promise<PackageImportPreview> {
+  const existingEpisodes = await db.getEpisodesByNovelId(novelId);
+  const previewRows: PackageImportPreviewRow[] = [];
+
+  for (const row of parsed.rows) {
+    const classification = classifyImportRow(existingEpisodes, row);
+    const currentFileUrlExists = Boolean(
+      classification.matchedEpisode?.fileUrl && String(classification.matchedEpisode.fileUrl).trim().length > 0
+    );
+    const incomingContentExists = Boolean(row.content && row.content.trim().length > 0);
+
+    let action: ImportRowAction = classification.action;
+    let message = classification.message;
+    let preserveFileUrl = false;
+
+    if (classification.action === "update_existing" && mode === "create_only") {
+      action = "error_existing_conflict";
+      message = `episodeNumber "${row.episodeNumber}" มีอยู่แล้ว (episodeId ${classification.matchedEpisode.id}) - โหมด create only จะไม่ import แถวนี้ แนะนำสลับเป็น Sync/Upsert`;
+    } else if (classification.action === "update_existing") {
+      preserveFileUrl = currentFileUrlExists;
+    }
+
+    previewRows.push({
+      row: row.row,
+      rawEpisodeNumber: row.episodeNumber,
+      normalizedRange: classification.normalizedRange || null,
+      episodeTitle: row.episodeTitle,
+      matchedEpisodeId: classification.matchedEpisode?.id ?? null,
+      currentFileUrlExists,
+      incomingContentExists,
+      action,
+      preserveFileUrl,
+      message,
+    });
+  }
+
+  for (const err of parsed.errors) {
+    let action: ImportRowAction = "error_invalid_row";
+    if (err.code === "MISSING_CONTENT_FILE") action = "error_missing_content_file";
+    else if (err.code === "DUPLICATE_IN_BATCH") action = "error_duplicate_range";
+
+    const rawEpisodeNumber = err.episodeNumberRaw ?? "";
+    previewRows.push({
+      row: err.row,
+      rawEpisodeNumber,
+      normalizedRange: rawEpisodeNumber ? normalizeEpisodeRange(rawEpisodeNumber) || null : null,
+      episodeTitle: err.episodeTitleRaw ?? "",
+      matchedEpisodeId: null,
+      currentFileUrlExists: false,
+      incomingContentExists: false,
+      action,
+      preserveFileUrl: false,
+      message: err.message,
+    });
+  }
+
+  previewRows.sort((a, b) => a.row - b.row);
+
+  const summary: PackageImportPreviewSummary = {
+    totalRows: previewRows.length,
+    createCount: previewRows.filter((r) => r.action === "create_new").length,
+    updateCount: previewRows.filter((r) => r.action === "update_existing").length,
+    errorCount: previewRows.filter((r) => r.action.startsWith("error_")).length,
+    preservedFileUrlCount: previewRows.filter((r) => r.preserveFileUrl).length,
+    duplicateRangeCount: previewRows.filter((r) => r.action === "error_duplicate_range").length,
+    ambiguousMatchCount: previewRows.filter((r) => r.action === "error_ambiguous_match").length,
+    missingContentFileCount: previewRows.filter((r) => r.action === "error_missing_content_file").length,
+  };
+
+  return {
+    manifestFileName: parsed.manifestFileName,
+    mode,
+    rows: previewRows,
+    summary,
   };
 }
