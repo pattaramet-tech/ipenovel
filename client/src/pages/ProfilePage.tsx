@@ -299,6 +299,11 @@ export default function ProfilePage() {
                                 <p className="text-xs text-muted-foreground mt-1">
                                   ซื้อเมื่อ {new Date(item.purchasedAt).toLocaleDateString("th-TH")}
                                 </p>
+                                {item.progressPercent > 0 && (
+                                  <p className="text-xs text-blue-600 mt-1">
+                                    อ่านล่าสุด{item.currentChapterTitle ? ` ${item.currentChapterTitle}` : item.currentChapterNumber ? ` บทที่ ${item.currentChapterNumber}` : ""} • {item.progressPercent}%
+                                  </p>
+                                )}
                               </div>
                               <div className="flex gap-2 shrink-0">
                                 {/* Web-only reader: purchased episodes/packages are always
@@ -308,7 +313,7 @@ export default function ProfilePage() {
                                   onClick={() => navigate(`/read/${item.episode.id}`)}
                                   className="px-4 py-2 text-xs"
                                 >
-                                  อ่านตอนนี้
+                                  {item.progressPercent > 0 ? "อ่านต่อ" : "อ่านตอนนี้"}
                                 </Button>
                               </div>
                             </div>

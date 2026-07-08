@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useParams, useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { useLanguage } from "@/contexts/LanguageContext";
@@ -6,6 +6,17 @@ import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import styles from "./ReaderPage.module.css";
 import { formatEpisodeLabel } from "@/utils/episodeUtils";
+import { parsePackageToc, findTocEntryByChapterNumber, type PackageTocEntry } from "@/utils/packageTocUtils";
+
+// How long to wait after the user stops scrolling before saving progress.
+const SCROLL_SAVE_DEBOUNCE_MS = 1500;
+// Safety-net autosave interval, in case the debounced save above never fires
+// (e.g. a long idle period with no further scroll events).
+const PERIODIC_SAVE_INTERVAL_MS = 15000;
+// Skip re-saving if progress hasn't moved by at least this many percentage
+// points and the current chapter hasn't changed - avoids spamming the API
+// with near-duplicate saves.
+const MIN_PERCENT_DELTA_TO_SAVE = 1;
 
 // Utility to generate watermark text
 const generateWatermarkText = (user: any, episodeId: number): string => {
@@ -59,6 +70,194 @@ export default function ReaderPage() {
   const walletBalanceCents = toCents(walletBalance);
   const episodePriceCents = toCents(episode?.price);
   const hasEnoughWalletBalance = walletBalanceCents >= episodePriceCents;
+
+  // ============ Reading progress (resume + package table of contents) ============
+  // Only ever queried/saved for episodes the user can actually read - locked
+  // episodes have no progress to resume and must not accept a saved position.
+  const { data: progressData } = trpc.reader.getProgress.useQuery(
+    { episodeId },
+    { enabled: !!episodeId && !!user && canRead }
+  );
+  const saveProgressMutation = trpc.reader.saveProgress.useMutation();
+
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const scrollDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const periodicSaveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pendingProgressRef = useRef<{
+    percent: number;
+    scrollTop: number;
+    chapterNumber: string | null;
+    chapterTitle: string | null;
+    anchorId: string | null;
+  } | null>(null);
+  const lastSavedProgressRef = useRef<{ percent: number; chapterNumber: string | null } | null>(null);
+
+  const [showToc, setShowToc] = useState(false);
+  const [livePercent, setLivePercent] = useState(0);
+  const [savedIndicatorVisible, setSavedIndicatorVisible] = useState(false);
+  const [showResumeBanner, setShowResumeBanner] = useState(false);
+  const resumeBannerShownRef = useRef(false);
+
+  // Package content bundles many chapters into one blob - parse recognizable
+  // chapter headings ("บทที่ 12", "ตอนที่ 12", "Chapter 12", "#12") into a
+  // jump-to-chapter table of contents. Empty for plain chapters (no headings
+  // match), which is fine - the TOC button/drawer just doesn't render then.
+  const toc = useMemo(() => (isPackage ? parsePackageToc(content) : []), [isPackage, content]);
+  const tocByLineIndex = useMemo(() => new Map(toc.map((entry) => [entry.lineIndex, entry])), [toc]);
+
+  const flushProgressSave = useCallback(() => {
+    if (!canRead || !episodeId) return;
+    const pending = pendingProgressRef.current;
+    if (!pending) return;
+
+    const last = lastSavedProgressRef.current;
+    const percentDelta = last ? Math.abs(last.percent - pending.percent) : 100;
+    const chapterChanged = !last || last.chapterNumber !== pending.chapterNumber;
+    if (last && percentDelta < MIN_PERCENT_DELTA_TO_SAVE && !chapterChanged) {
+      return;
+    }
+
+    lastSavedProgressRef.current = { percent: pending.percent, chapterNumber: pending.chapterNumber };
+
+    saveProgressMutation.mutate(
+      {
+        episodeId,
+        progressPercent: pending.percent,
+        scrollPosition: pending.scrollTop,
+        currentChapterNumber: pending.chapterNumber ?? undefined,
+        currentChapterTitle: pending.chapterTitle ?? undefined,
+        anchorKey: pending.anchorId ?? undefined,
+      },
+      {
+        onSuccess: () => {
+          setSavedIndicatorVisible(true);
+          setTimeout(() => setSavedIndicatorVisible(false), 2000);
+        },
+      }
+    );
+  }, [canRead, episodeId, saveProgressMutation]);
+
+  const handleContentScroll = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container || !canRead || !content) return;
+
+    const scrollableHeight = container.scrollHeight - container.clientHeight;
+    const percent = scrollableHeight > 0
+      ? Math.min(100, Math.max(0, (container.scrollTop / scrollableHeight) * 100))
+      : 100;
+    setLivePercent(percent);
+    // Once the reader starts scrolling manually, the stale "resume" banner
+    // no longer applies - hide it rather than leave it sitting there.
+    setShowResumeBanner(false);
+
+    let chapterNumber: string | null = null;
+    let chapterTitle: string | null = null;
+    let anchorId: string | null = null;
+
+    if (toc.length > 0) {
+      const headingEls = Array.from(
+        container.querySelectorAll<HTMLElement>('[data-toc-anchor="true"]')
+      );
+      let currentEl: HTMLElement | null = null;
+      for (const el of headingEls) {
+        if (el.offsetTop <= container.scrollTop + 100) {
+          currentEl = el;
+        } else {
+          break;
+        }
+      }
+      if (currentEl) {
+        chapterNumber = currentEl.dataset.chapterNumber || null;
+        chapterTitle = currentEl.dataset.chapterTitle || null;
+        anchorId = currentEl.id || null;
+      }
+    }
+
+    pendingProgressRef.current = {
+      percent,
+      scrollTop: container.scrollTop,
+      chapterNumber,
+      chapterTitle,
+      anchorId,
+    };
+
+    if (scrollDebounceRef.current) clearTimeout(scrollDebounceRef.current);
+    scrollDebounceRef.current = setTimeout(flushProgressSave, SCROLL_SAVE_DEBOUNCE_MS);
+  }, [canRead, content, toc, flushProgressSave]);
+
+  // Periodic safety-net autosave + beforeunload best-effort save.
+  useEffect(() => {
+    if (!canRead) return;
+
+    periodicSaveIntervalRef.current = setInterval(flushProgressSave, PERIODIC_SAVE_INTERVAL_MS);
+    const handleBeforeUnload = () => flushProgressSave();
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
+    return () => {
+      if (periodicSaveIntervalRef.current) clearInterval(periodicSaveIntervalRef.current);
+      if (scrollDebounceRef.current) clearTimeout(scrollDebounceRef.current);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [canRead, flushProgressSave]);
+
+  // Show the "resume reading" banner once per episode load, if there's a
+  // meaningful saved position. The reader must explicitly click "อ่านต่อ" -
+  // never auto-jump on load.
+  useEffect(() => {
+    if (progressData && progressData.progressPercent > 0 && !resumeBannerShownRef.current) {
+      setShowResumeBanner(true);
+      resumeBannerShownRef.current = true;
+    }
+  }, [progressData]);
+
+  useEffect(() => {
+    resumeBannerShownRef.current = false;
+    setShowResumeBanner(false);
+    setShowToc(false);
+    lastSavedProgressRef.current = null;
+    pendingProgressRef.current = null;
+  }, [episodeId]);
+
+  const scrollToAnchor = (anchorId: string | null | undefined): boolean => {
+    if (!anchorId) return false;
+    const el = document.getElementById(anchorId);
+    if (!el) return false;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    return true;
+  };
+
+  const handleResumeReading = () => {
+    setShowResumeBanner(false);
+    if (!progressData) return;
+
+    requestAnimationFrame(() => {
+      if (scrollToAnchor(progressData.anchorKey)) return;
+
+      const entry = findTocEntryByChapterNumber(toc, progressData.currentChapterNumber);
+      if (entry && scrollToAnchor(entry.anchorId)) return;
+
+      if (scrollContainerRef.current && progressData.scrollPosition) {
+        scrollContainerRef.current.scrollTop = progressData.scrollPosition;
+      }
+    });
+  };
+
+  const handleTocEntryClick = (entry: PackageTocEntry) => {
+    setShowToc(false);
+    scrollToAnchor(entry.anchorId);
+
+    // Save immediately rather than waiting for the scroll-stop debounce -
+    // jumping via the TOC is itself a deliberate navigation action.
+    pendingProgressRef.current = {
+      percent: livePercent,
+      scrollTop: scrollContainerRef.current?.scrollTop ?? 0,
+      chapterNumber: entry.chapterNumber,
+      chapterTitle: entry.title,
+      anchorId: entry.anchorId,
+    };
+    if (scrollDebounceRef.current) clearTimeout(scrollDebounceRef.current);
+    scrollDebounceRef.current = setTimeout(flushProgressSave, SCROLL_SAVE_DEBOUNCE_MS);
+  };
 
   // Copy protection and watermark effect
   useEffect(() => {
@@ -272,20 +471,71 @@ export default function ReaderPage() {
               ◈
             </button>
           </div>
+
+          {toc.length > 0 && (
+            <button className={styles.tocButton} onClick={() => setShowToc(true)}>
+              สารบัญ
+            </button>
+          )}
         </div>
       </div>
 
+      {/* Progress bar - reflects live scroll position while reading */}
+      {canRead && content && (
+        <div className={styles.progressBarTrack}>
+          <div className={styles.progressBarFill} style={{ width: `${livePercent}%` }} />
+        </div>
+      )}
+
       {/* Content Area */}
-      <div className={styles.content}>
+      <div className={styles.content} ref={scrollContainerRef} onScroll={handleContentScroll}>
+        {showResumeBanner && progressData && canRead && content && (
+          <div className={styles.resumeBanner}>
+            <p>
+              อ่านล่าสุดถึง{" "}
+              {progressData.currentChapterTitle
+                || (progressData.currentChapterNumber ? `บทที่ ${progressData.currentChapterNumber}` : "ตำแหน่งเดิม")}
+              {" "}• {progressData.progressPercent}%
+            </p>
+            <div className={styles.resumeBannerActions}>
+              <button onClick={handleResumeReading} className={styles.resumeButton}>
+                อ่านต่อ
+              </button>
+              <button
+                onClick={() => setShowResumeBanner(false)}
+                className={styles.dismissButton}
+                aria-label="ปิด"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+        )}
+
         {canRead && content ? (
           <div
             ref={contentRef}
             className={`${styles.episodeContent} ${styles.protected}`}
             style={{ fontSize: `${fontSize}px` }}
           >
-            {content.split("\n").map((para: string, idx: number) => (
-              <p key={idx}>{para}</p>
-            ))}
+            {content.split("\n").map((para: string, idx: number) => {
+              const tocEntry = tocByLineIndex.get(idx);
+              if (tocEntry) {
+                return (
+                  <p
+                    key={idx}
+                    id={tocEntry.anchorId}
+                    data-toc-anchor="true"
+                    data-chapter-number={tocEntry.chapterNumber}
+                    data-chapter-title={tocEntry.title}
+                    className={styles.tocHeadingParagraph}
+                  >
+                    {para}
+                  </p>
+                );
+              }
+              return <p key={idx}>{para}</p>;
+            })}
             <div className={styles.watermark}>
               <div className={styles.watermarkText}>
                 {generateWatermarkText(user, episodeId)}
@@ -399,7 +649,37 @@ export default function ReaderPage() {
             <p>{t("reader.noAccess")}</p>
           </div>
         ) : null}
+
+        {savedIndicatorVisible && (
+          <div className={styles.savedIndicator}>บันทึกตำแหน่งอ่านแล้ว</div>
+        )}
       </div>
+
+      {/* Table of Contents Drawer - package episodes only, when headings were
+          found in the content ("บทที่ N" / "ตอนที่ N" / "Chapter N" / "#N"). */}
+      {showToc && toc.length > 0 && (
+        <div className={styles.tocOverlay} onClick={() => setShowToc(false)}>
+          <div className={styles.tocDrawer} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.tocDrawerHeader}>
+              <h3>สารบัญ</h3>
+              <button onClick={() => setShowToc(false)} aria-label="ปิดสารบัญ">
+                ×
+              </button>
+            </div>
+            <div className={styles.tocList}>
+              {toc.map((entry) => (
+                <button
+                  key={entry.anchorId}
+                  onClick={() => handleTocEntryClick(entry)}
+                  className={styles.tocItem}
+                >
+                  {entry.title}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Navigation - hidden for packages: a package bundles many chapters,
           so "previous/next episode" doesn't map onto anything meaningful.

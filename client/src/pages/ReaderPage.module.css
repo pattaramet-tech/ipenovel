@@ -541,6 +541,235 @@
   -khtml-user-select: none;
 }
 
+/* Table of Contents button (header) */
+.tocButton {
+  background: rgba(0, 0, 0, 0.05);
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: inherit;
+  transition: background-color 0.2s;
+}
+
+.tocButton:hover {
+  background-color: rgba(0, 0, 0, 0.1);
+}
+
+.dark .tocButton {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.dark .tocButton:hover {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Reading progress bar */
+.progressBarTrack {
+  height: 3px;
+  background: rgba(0, 0, 0, 0.08);
+  position: sticky;
+  top: 0;
+  z-index: 99;
+}
+
+.dark .progressBarTrack {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.progressBarFill {
+  height: 100%;
+  background-color: #0066cc;
+  transition: width 0.2s ease-out;
+}
+
+.dark .progressBarFill {
+  background-color: #4da6ff;
+}
+
+/* Resume reading banner */
+.resumeBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: rgba(0, 102, 204, 0.08);
+  border: 1px solid #0066cc;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.dark .resumeBanner {
+  background: rgba(77, 166, 255, 0.08);
+  border-color: #4da6ff;
+}
+
+.resumeBanner p {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.resumeBannerActions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.resumeButton {
+  background-color: #0066cc;
+  color: white;
+  border: none;
+  padding: 0.4rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: background-color 0.2s;
+}
+
+.resumeButton:hover {
+  background-color: #0052a3;
+}
+
+.dismissButton {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0.25rem 0.5rem;
+  color: inherit;
+  opacity: 0.6;
+}
+
+.dismissButton:hover {
+  opacity: 1;
+}
+
+/* Package chapter heading paragraphs (TOC anchors) */
+.tocHeadingParagraph {
+  font-weight: 700;
+  scroll-margin-top: 90px;
+}
+
+/* "Saved" indicator */
+.savedIndicator {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  background: rgba(0, 0, 0, 0.75);
+  color: white;
+  padding: 0.5rem 1rem;
+  border-radius: 20px;
+  font-size: 0.8rem;
+  z-index: 200;
+  pointer-events: none;
+  animation: fadeInOut 2s ease-in-out;
+}
+
+@keyframes fadeInOut {
+  0% { opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* Table of Contents drawer */
+.tocOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: flex-end;
+  z-index: 1000;
+}
+
+.tocDrawer {
+  background: white;
+  width: 100%;
+  max-width: 400px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.2);
+}
+
+.dark .tocDrawer {
+  background: #2a2a2a;
+  color: #e0e0e0;
+}
+
+.sepia .tocDrawer {
+  background: #f5f1de;
+  color: #3d3d3d;
+}
+
+.tocDrawerHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.dark .tocDrawerHeader {
+  border-bottom-color: #444;
+}
+
+.tocDrawerHeader h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.tocDrawerHeader button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.5rem;
+  line-height: 1;
+  color: inherit;
+  opacity: 0.6;
+}
+
+.tocDrawerHeader button:hover {
+  opacity: 1;
+}
+
+.tocList {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.5rem 0;
+}
+
+.tocItem {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0.75rem 1.5rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: inherit;
+  transition: background-color 0.2s;
+}
+
+.tocItem:hover {
+  background-color: rgba(0, 102, 204, 0.08);
+}
+
+.dark .tocItem:hover {
+  background-color: rgba(77, 166, 255, 0.08);
+}
+
 /* Watermark Overlay */
 .watermark {
   position: absolute;

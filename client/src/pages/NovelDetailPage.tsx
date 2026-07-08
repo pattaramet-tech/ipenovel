@@ -303,6 +303,17 @@ export default function NovelDetailPage() {
                 </Badge>
               )}
             </div>
+            {isPurchased && episode.progressPercent > 0 && (
+              <p className="text-xs text-blue-600">
+                อ่านล่าสุด
+                {episode.currentChapterTitle
+                  ? ` ${episode.currentChapterTitle}`
+                  : episode.currentChapterNumber
+                    ? ` บทที่ ${episode.currentChapterNumber}`
+                    : ""}
+                {" "}• {episode.progressPercent}%
+              </p>
+            )}
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
@@ -320,7 +331,7 @@ export default function NovelDetailPage() {
                 className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
               >
                 <BookOpen className="w-3.5 h-3.5 mr-1.5" />
-                อ่าน
+                {episode.progressPercent > 0 ? "อ่านต่อ" : "อ่าน"}
               </button>
             ) : (
               // Unpurchased paid chapter - direct wallet purchase only, never cart
@@ -408,6 +419,17 @@ export default function NovelDetailPage() {
                 {isSelected ? "อยู่ในตะกร้าแล้ว" : isLoading ? "กำลังอัปเดต..." : "ต้องการซื้อ?"}
               </p>
             )}
+            {isPurchased && episode.progressPercent > 0 && (
+              <p className="text-xs text-blue-600">
+                อ่านล่าสุด
+                {episode.currentChapterTitle
+                  ? ` ${episode.currentChapterTitle}`
+                  : episode.currentChapterNumber
+                    ? ` บทที่ ${episode.currentChapterNumber}`
+                    : ""}
+                {" "}• {episode.progressPercent}%
+              </p>
+            )}
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
@@ -425,7 +447,7 @@ export default function NovelDetailPage() {
                 className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
               >
                 <BookOpen className="w-3.5 h-3.5 mr-1.5" />
-                อ่านแพ็กนี้
+                {episode.progressPercent > 0 ? "อ่านต่อ" : "อ่านแพ็กนี้"}
               </button>
             ) : (
               // Unpurchased package - cart/checkout flow, never direct wallet purchase

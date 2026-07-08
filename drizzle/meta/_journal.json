@@ -176,6 +176,13 @@
       "when": 1783511891807,
       "tag": "0024_widen_episode_content_mediumtext",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "5",
+      "when": 1783518394132,
+      "tag": "0025_add_reading_progress_toc_columns",
+      "breakpoints": true
     }
   ]
 }

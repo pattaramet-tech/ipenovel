@@ -375,6 +375,15 @@ export const readingProgress = mysqlTable(
     episodeId: int("episodeId").notNull(),
     progressPercent: int("progressPercent").default(0).notNull(),
     scrollPosition: int("scrollPosition").default(0).notNull(),
+    // Which in-package chapter the reader last scrolled past, for packages
+    // with an internal table of contents (see packageTocUtils.ts on the
+    // client). Null for plain chapter episodes with no internal TOC.
+    currentChapterNumber: varchar("currentChapterNumber", { length: 100 }),
+    currentChapterTitle: varchar("currentChapterTitle", { length: 500 }),
+    // Stable anchor id (e.g. "toc-3") the reader can scroll straight back to,
+    // more precise than progressPercent/scrollPosition alone since content
+    // reflow (font size change) shifts absolute scroll offsets.
+    anchorKey: varchar("anchorKey", { length: 100 }),
     lastReadAt: timestamp("lastReadAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },

@@ -113,6 +113,17 @@ export default function MyNovelsPage() {
                                 {t("myNovels.purchasedOn")}{" "}
                                 {formatSafeDate(episode?.purchasedAt)}
                               </p>
+                              {episode?.progressPercent > 0 && (
+                                <p className="text-xs text-blue-600 mt-1">
+                                  อ่านล่าสุด
+                                  {episode?.currentChapterTitle
+                                    ? ` ${episode.currentChapterTitle}`
+                                    : episode?.currentChapterNumber
+                                      ? ` บทที่ ${episode.currentChapterNumber}`
+                                      : ""}
+                                  {" "}• {episode.progressPercent}%
+                                </p>
+                              )}
                             </div>
 
                             <div className="flex gap-2">
@@ -123,7 +134,7 @@ export default function MyNovelsPage() {
                                 onClick={() => episode?.id && setLocation(`/read/${episode.id}`)}
                               >
                                 <BookOpen className="w-4 h-4 mr-2" />
-                                {t("myNovels.read")}
+                                {episode?.progressPercent > 0 ? "อ่านต่อ" : t("myNovels.read")}
                               </Button>
                             </div>
                           </div>

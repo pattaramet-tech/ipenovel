@@ -165,6 +165,9 @@ export const appRouter = router({
     episodes: protectedProcedure.input(z.object({ novelId: z.number() })).query(async ({ input, ctx }) => {
       const episodes = await db.getEpisodesByNovelId(input.novelId);
       const isAdmin = ctx.user.role === "admin";
+      // One batch query for all episodes' reading progress, instead of one
+      // query per episode inside the loop below.
+      const progressMap = await db.getReadingProgressBatch(ctx.user.id, episodes.map((ep: any) => ep.id));
 
       // Enrich episodes with purchase status. IMPORTANT: isPurchased/hasPurchased
       // must be computed from actual purchase records only (episodePurchases +
@@ -175,6 +178,7 @@ export const appRouter = router({
           const isFree = ep.isFree === true;
           const hasPurchased = await readerService.hasPurchasedEpisode(ctx.user.id, ep.id);
           const canRead = isFree || hasPurchased || isAdmin;
+          const progress = progressMap.get(ep.id);
 
           // Never leak full episode content in the list endpoint - that's what
           // reader.getEpisode is for. Only expose fileUrl when the requester
@@ -205,6 +209,9 @@ export const appRouter = router({
             saleType,
             fileUrl: canRead ? fileUrl ?? null : null,
             adminCanPreview: isAdmin && !isFree && !hasPurchased,
+            progressPercent: progress?.progressPercent ?? null,
+            currentChapterNumber: progress?.currentChapterNumber ?? null,
+            currentChapterTitle: progress?.currentChapterTitle ?? null,
           };
         })
       );
@@ -563,6 +570,7 @@ export const appRouter = router({
   myNovels: router({
     list: protectedProcedure.query(async ({ ctx }) => {
       const purchases = await db.getPurchasesByUserId(ctx.user.id);
+      const progressMap = await db.getReadingProgressBatch(ctx.user.id, purchases.map((p) => p.episodeId));
 
       // Group by novel
       const novelMap = new Map();
@@ -570,6 +578,7 @@ export const appRouter = router({
       for (const purchase of purchases) {
         const novel = await db.getNovelById(purchase.novelId);
         const episode = await db.getEpisodeById(purchase.episodeId);
+        const progress = progressMap.get(purchase.episodeId);
 
         if (!novelMap.has(purchase.novelId)) {
           novelMap.set(purchase.novelId, {
@@ -581,6 +590,9 @@ export const appRouter = router({
         novelMap.get(purchase.novelId).episodes.push({
           ...episode,
           purchasedAt: purchase.grantedAt,
+          progressPercent: progress?.progressPercent ?? null,
+          currentChapterNumber: progress?.currentChapterNumber ?? null,
+          currentChapterTitle: progress?.currentChapterTitle ?? null,
         });
       }
 
@@ -1935,6 +1947,68 @@ export const appRouter = router({
         };
       }),
 
+    // Reading progress: resume position for long packages (and chapters).
+    // Both endpoints gate on canReadEpisode(..., false) - explicitly no
+    // admin override, matching reader.getEpisode - so progress can only be
+    // read/saved for episodes the user actually has access to (free or
+    // purchased). An episode the user hasn't bought yet must never expose or
+    // accept a saved reading position.
+    getProgress: protectedProcedure
+      .input(z.object({ episodeId: z.number() }))
+      .query(async ({ input, ctx }) => {
+        const canRead = await readerService.canReadEpisode(ctx.user.id, input.episodeId, false);
+        if (!canRead) return null;
+
+        const progress = await db.getReadingProgress(ctx.user.id, input.episodeId);
+        if (!progress) return null;
+
+        return {
+          progressPercent: progress.progressPercent,
+          scrollPosition: progress.scrollPosition,
+          currentChapterNumber: progress.currentChapterNumber,
+          currentChapterTitle: progress.currentChapterTitle,
+          anchorKey: progress.anchorKey,
+          lastReadAt: progress.lastReadAt,
+        };
+      }),
+
+    saveProgress: protectedProcedure
+      .input(
+        z.object({
+          episodeId: z.number(),
+          progressPercent: z.number().min(0).max(100),
+          scrollPosition: z.number().min(0).optional(),
+          currentChapterNumber: z.string().max(100).optional(),
+          currentChapterTitle: z.string().max(500).optional(),
+          anchorKey: z.string().max(100).optional(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        const canRead = await readerService.canReadEpisode(ctx.user.id, input.episodeId, false);
+        if (!canRead) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No access to this episode" });
+        }
+
+        // Derive novelId server-side from the episode record rather than
+        // trusting a client-supplied value - the episode is the source of
+        // truth for which novel it belongs to.
+        const episode = await db.getEpisodeById(input.episodeId);
+        if (!episode) throw new TRPCError({ code: "NOT_FOUND" });
+
+        await db.upsertReadingProgress({
+          userId: ctx.user.id,
+          novelId: episode.novelId,
+          episodeId: input.episodeId,
+          progressPercent: input.progressPercent,
+          scrollPosition: input.scrollPosition,
+          currentChapterNumber: input.currentChapterNumber,
+          currentChapterTitle: input.currentChapterTitle,
+          anchorKey: input.anchorKey,
+        });
+
+        return { success: true };
+      }),
+
     purchaseEpisode: protectedProcedure
       .input(z.object({
         episodeId: z.number(),
@@ -1999,10 +2073,11 @@ export const appRouter = router({
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
 
-        const { episodePurchases, episodes, novels } = await import("../drizzle/schema").then(s => ({
+        const { episodePurchases, episodes, novels, readingProgress } = await import("../drizzle/schema").then(s => ({
           episodePurchases: s.episodePurchases,
           episodes: s.episodes,
-          novels: s.novels
+          novels: s.novels,
+          readingProgress: s.readingProgress,
         }));
         const { eq, inArray, and } = await import("drizzle-orm").then(m => ({ eq: m.eq, inArray: m.inArray, and: m.and }));
 
@@ -2033,24 +2108,36 @@ export const appRouter = router({
           .from(novels)
           .where(inArray(novels.id, Array.from(novelIds)));
 
+        // Get reading progress for these episodes, for a "continue reading" hint
+        const progressData = await db
+          .select()
+          .from(readingProgress)
+          .where(and(eq(readingProgress.userId, ctx.user.id), inArray(readingProgress.episodeId, episodeIds)));
+
         // Build result
-        return episodeData.map((ep: any) => ({
-          purchaseId: purchases.find(p => p.episodeId === ep.id)?.id,
-          purchasedAt: purchases.find(p => p.episodeId === ep.id)?.purchasedAt,
-          pricePaid: purchases.find(p => p.episodeId === ep.id)?.pricePaid,
-          episode: {
-            id: ep.id,
-            novelId: ep.novelId,
-            episodeNumber: ep.episodeNumber,
-            title: ep.title,
-            description: ep.description,
-            wordCount: ep.wordCount,
-            isPublished: ep.isPublished,
-            price: ep.price,
-            isFree: ep.isFree,
-          },
-          novel: novelData.find((n: any) => n.id === ep.novelId),
-        }));
+        return episodeData.map((ep: any) => {
+          const progress = progressData.find((p: any) => p.episodeId === ep.id);
+          return {
+            purchaseId: purchases.find(p => p.episodeId === ep.id)?.id,
+            purchasedAt: purchases.find(p => p.episodeId === ep.id)?.purchasedAt,
+            pricePaid: purchases.find(p => p.episodeId === ep.id)?.pricePaid,
+            episode: {
+              id: ep.id,
+              novelId: ep.novelId,
+              episodeNumber: ep.episodeNumber,
+              title: ep.title,
+              description: ep.description,
+              wordCount: ep.wordCount,
+              isPublished: ep.isPublished,
+              price: ep.price,
+              isFree: ep.isFree,
+            },
+            novel: novelData.find((n: any) => n.id === ep.novelId),
+            progressPercent: progress?.progressPercent ?? null,
+            currentChapterNumber: progress?.currentChapterNumber ?? null,
+            currentChapterTitle: progress?.currentChapterTitle ?? null,
+          };
+        });
       }),
   }),
 

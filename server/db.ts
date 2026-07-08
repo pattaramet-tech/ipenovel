@@ -348,6 +348,84 @@ export async function deleteEpisode(episodeId: number) {
   await db.delete(episodes).where(eq(episodes.id, episodeId));
 }
 
+// ============ READING PROGRESS ============
+
+export async function getReadingProgress(userId: number, episodeId: number) {
+  const db = await getDb();
+  if (!db) return null;
+
+  const result = await db
+    .select()
+    .from(readingProgress)
+    .where(and(eq(readingProgress.userId, userId), eq(readingProgress.episodeId, episodeId)))
+    .limit(1);
+
+  return result.length > 0 ? result[0] : null;
+}
+
+/**
+ * Fetch reading progress for many episodes at once, keyed by episodeId, for
+ * list views (bookshelf/library pages) that show a "continue reading" hint
+ * per purchased episode without one query per row.
+ */
+export async function getReadingProgressBatch(userId: number, episodeIds: number[]) {
+  const db = await getDb();
+  if (!db || episodeIds.length === 0) return new Map<number, typeof readingProgress.$inferSelect>();
+
+  const rows = await db
+    .select()
+    .from(readingProgress)
+    .where(and(eq(readingProgress.userId, userId), inArray(readingProgress.episodeId, episodeIds)));
+
+  return new Map(rows.map((row) => [row.episodeId, row]));
+}
+
+/**
+ * Insert or update a user's reading progress for an episode. Caller is
+ * responsible for verifying the user actually has read access to the
+ * episode first (see readerService.canReadEpisode) - this function itself
+ * does not check entitlement.
+ */
+export async function upsertReadingProgress(data: {
+  userId: number;
+  novelId: number;
+  episodeId: number;
+  progressPercent: number;
+  scrollPosition?: number;
+  currentChapterNumber?: string | null;
+  currentChapterTitle?: string | null;
+  anchorKey?: string | null;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const clampedPercent = Math.max(0, Math.min(100, Math.round(data.progressPercent)));
+
+  await db
+    .insert(readingProgress)
+    .values({
+      userId: data.userId,
+      novelId: data.novelId,
+      episodeId: data.episodeId,
+      progressPercent: clampedPercent,
+      scrollPosition: Math.max(0, Math.round(data.scrollPosition ?? 0)),
+      currentChapterNumber: data.currentChapterNumber ?? null,
+      currentChapterTitle: data.currentChapterTitle ?? null,
+      anchorKey: data.anchorKey ?? null,
+      lastReadAt: new Date(),
+    })
+    .onDuplicateKeyUpdate({
+      set: {
+        progressPercent: clampedPercent,
+        scrollPosition: Math.max(0, Math.round(data.scrollPosition ?? 0)),
+        currentChapterNumber: data.currentChapterNumber ?? null,
+        currentChapterTitle: data.currentChapterTitle ?? null,
+        anchorKey: data.anchorKey ?? null,
+        lastReadAt: new Date(),
+      },
+    });
+}
+
 // ============ CATEGORY CRUD ============
 
 export async function createCategory(data: {
