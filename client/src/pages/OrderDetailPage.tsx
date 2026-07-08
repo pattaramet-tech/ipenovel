@@ -146,7 +146,6 @@ export default function OrderDetailPage() {
                   order.items.map((item: any) => {
                     const isApproved = orderData.paymentStatus === "approved" || orderData.status === "approved";
                     const hasAccess = item.purchase || isApproved;
-                    const fileUrl = item.episode?.fileUrl;
 
                     return (
                       <div
@@ -165,16 +164,16 @@ export default function OrderDetailPage() {
                           <p className="font-semibold text-slate-900">
                             ฿{parseFloat(item.finalPrice.toString()).toFixed(2)}
                           </p>
-                          {hasAccess && fileUrl ? (
+                          {/* Web-only reader: purchased episodes/packages are always
+                              read at /read/:episodeId - never downloaded as a file. */}
+                          {hasAccess && item.episode?.id ? (
                             <Button
                               size="sm"
-                              asChild
+                              onClick={() => navigate(`/read/${item.episode.id}`)}
                               className="bg-blue-600 hover:bg-blue-700 text-white"
                             >
-                              <a href={fileUrl} target="_blank" rel="noopener noreferrer">
-                                <BookOpen className="w-4 h-4 mr-1" />
-                                Read
-                              </a>
+                              <BookOpen className="w-4 h-4 mr-1" />
+                              Read
                             </Button>
                           ) : null}
                         </div>
