@@ -21,6 +21,9 @@ interface ParsedEpisode {
   description?: string;
   fileUrl?: string;
   sortOrder?: number;
+  // "chapter" = single episode, direct wallet purchase. "package" =
+  // multi-chapter bundle, cart/checkout, web-read only (no download).
+  saleMode: "chapter" | "package";
 }
 
 interface ValidationError {
@@ -74,6 +77,45 @@ const HEADER_ALIASES: Record<string, string> = {
   // fileUrl
   fileurl: "fileUrl",
   "ลิงก์ไฟล์": "fileUrl",
+
+  // saleMode
+  salemode: "saleMode",
+  sale_mode: "saleMode",
+  "ประเภทการขาย": "saleMode",
+  "ประเภท": "saleMode",
+};
+
+// Range-style episodeNumber like "1 - 50" or "436 - 508" - matches the
+// backend's legacy saleMode fallback (resolveSaleMode in readerService.ts)
+// so imports without an explicit saleMode column classify consistently with
+// how the reader/store already treat existing rows.
+const RANGE_EPISODE_NUMBER_PATTERN = /^\s*\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?\s*$/;
+
+const SALE_MODE_VALUE_ALIASES: Record<string, "chapter" | "package"> = {
+  chapter: "chapter",
+  "รายบท": "chapter",
+  package: "package",
+  "แพ็ก": "package",
+  "แพ็กอ่านบนเว็บ": "package",
+};
+
+// Resolve a row's saleMode: explicit column value first (accepts English or
+// Thai labels), otherwise fall back to legacy detection - a fileUrl or a
+// range-style episodeNumber implies "package", everything else is "chapter".
+// This mirrors resolveSaleMode() on the backend so imported data and
+// backend-computed fallbacks never disagree.
+const resolveImportSaleMode = (
+  rawValue: string | undefined,
+  episodeNumber: string,
+  fileUrl: string
+): "chapter" | "package" => {
+  const normalized = (rawValue || "").toLowerCase().trim();
+  const aliased = SALE_MODE_VALUE_ALIASES[normalized];
+  if (aliased) return aliased;
+
+  if (fileUrl && fileUrl.trim().length > 0) return "package";
+  if (RANGE_EPISODE_NUMBER_PATTERN.test(episodeNumber)) return "package";
+  return "chapter";
 };
 
 // Parse boolean values from various formats
@@ -237,6 +279,7 @@ const convertToParsedEpisodes = (
     const description = data.description || "";
     const fileUrl = data.fileUrl || "";
     const sortOrderStr = data.sortOrder || "";
+    const saleMode = resolveImportSaleMode(data.saleMode, episodeNumber, fileUrl);
 
     // Validate required fields
     if (!episodeNumber) {
@@ -305,6 +348,7 @@ const convertToParsedEpisodes = (
       description,
       fileUrl,
       sortOrder,
+      saleMode,
     });
   }
 
@@ -317,6 +361,7 @@ const generateXLSXTemplate = () => {
     {
       episodeNumber: "001",
       episodeTitle: "ตอนที่ 1 เริ่มต้น",
+      saleMode: "chapter",
       price: "0",
       isFree: "true",
       isPublished: "true",
@@ -328,6 +373,7 @@ const generateXLSXTemplate = () => {
     {
       episodeNumber: "002",
       episodeTitle: "ตอนที่ 2 เงื่อนไข",
+      saleMode: "chapter",
       price: "5",
       isFree: "false",
       isPublished: "true",
@@ -337,14 +383,15 @@ const generateXLSXTemplate = () => {
       fileUrl: "",
     },
     {
-      episodeNumber: "003",
-      episodeTitle: "ตอนที่ 3 ความจริง",
-      price: "5",
+      episodeNumber: "1 - 50",
+      episodeTitle: "แพ็กบทที่ 1 - 50",
+      saleMode: "package",
+      price: "99",
       isFree: "false",
-      isPublished: "false",
-      content: "เนื้อหาตอนที่ 3...",
+      isPublished: "true",
+      content: "เนื้อหารวมบทที่ 1 ถึง 50...",
       contentFormat: "plain_text",
-      description: "ดราฟต์",
+      description: "แพ็กอ่านบนเว็บ",
       fileUrl: "",
     },
   ];
@@ -353,6 +400,7 @@ const generateXLSXTemplate = () => {
   worksheet["!cols"] = [
     { wch: 12 },
     { wch: 25 },
+    { wch: 12 },
     { wch: 10 },
     { wch: 10 },
     { wch: 12 },
@@ -504,6 +552,7 @@ export default function AdminEpisodeImportPage() {
               isFree: ep.isFree,
               isPublished: ep.isPublished,
               sortOrder: ep.sortOrder,
+              saleMode: ep.saleMode,
             };
 
             // Only update content if provided or allowBlankOverwrite is true
@@ -539,6 +588,7 @@ export default function AdminEpisodeImportPage() {
           fileUrl: ep.fileUrl,
           isPublished: ep.isPublished,
           sortOrder: ep.sortOrder,
+          saleMode: ep.saleMode,
         });
         successCount++;
       } catch (error) {
@@ -639,6 +689,14 @@ export default function AdminEpisodeImportPage() {
               <li>episodeNumber / episode_number / ตอนที่</li>
               <li>episodeTitle / title / ชื่อตอน</li>
             </ul>
+            <p className="font-semibold mt-3 mb-2">Optional: saleMode / sale_mode / ประเภทการขาย</p>
+            <ul className="list-disc list-inside space-y-1">
+              <li>Accepts: chapter, package, รายบท, แพ็ก, แพ็กอ่านบนเว็บ</li>
+              <li>
+                If omitted: a fileUrl or a range episode number (e.g. "1 - 50")
+                is imported as package, otherwise chapter.
+              </li>
+            </ul>
           </div>
         </Card>
 
@@ -674,6 +732,7 @@ export default function AdminEpisodeImportPage() {
                     <th className="text-left py-2 px-2">#</th>
                     <th className="text-left py-2 px-2">Episode #</th>
                     <th className="text-left py-2 px-2">Title</th>
+                    <th className="text-left py-2 px-2">Sale Mode</th>
                     <th className="text-left py-2 px-2">Price</th>
                     <th className="text-left py-2 px-2">Free</th>
                     <th className="text-left py-2 px-2">Published</th>
@@ -687,6 +746,11 @@ export default function AdminEpisodeImportPage() {
                       <td className="py-2 px-2 text-muted-foreground">{idx + 1}</td>
                       <td className="py-2 px-2 font-medium">{ep.episodeNumber}</td>
                       <td className="py-2 px-2">{ep.episodeTitle}</td>
+                      <td className="py-2 px-2">
+                        <Badge variant={ep.saleMode === "package" ? "outline" : "secondary"} className="text-xs">
+                          {ep.saleMode === "package" ? "แพ็ก" : "รายบท"}
+                        </Badge>
+                      </td>
                       <td className="py-2 px-2">฿{ep.price || "0"}</td>
                       <td className="py-2 px-2">
                         {ep.isFree ? (

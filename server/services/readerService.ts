@@ -8,11 +8,45 @@ export interface ReaderEpisodeData {
   canRead: boolean;
   isLocked: boolean;
   alreadyPurchased: boolean;
+  saleMode: EpisodeSaleMode;
   content?: string;
   preview?: string;
   previousEpisode?: any;
   nextEpisode?: any;
   accessReason?: string;
+}
+
+export type EpisodeSaleMode = "chapter" | "package";
+
+const RANGE_EPISODE_NUMBER_PATTERN = /^\s*\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?\s*$/;
+
+/**
+ * Resolve an episode's sale mode, with a legacy fallback for rows written
+ * before the `saleMode` column existed (or wherever a partial select omits
+ * it). "chapter" = single episode sold individually via reader.purchaseEpisode
+ * (wallet direct debit, read at /read/:episodeId). "package" = multi-chapter
+ * bundle sold via cart/checkout, web-read-only (no file download).
+ *
+ * Priority:
+ * 1. Explicit `saleMode` column value, if it's "chapter" or "package".
+ * 2. Legacy fileUrl present -> "package" (old file-sale episodes).
+ * 3. Legacy range-style episodeNumber (e.g. "436 - 508") -> "package".
+ * 4. Otherwise -> "chapter".
+ */
+export function resolveSaleMode(episode: { saleMode?: string | null; fileUrl?: string | null; episodeNumber?: unknown }): EpisodeSaleMode {
+  if (episode?.saleMode === "chapter" || episode?.saleMode === "package") {
+    return episode.saleMode;
+  }
+
+  if (episode?.fileUrl && String(episode.fileUrl).trim().length > 0) {
+    return "package";
+  }
+
+  if (RANGE_EPISODE_NUMBER_PATTERN.test(String(episode?.episodeNumber ?? ""))) {
+    return "package";
+  }
+
+  return "chapter";
 }
 
 function parseEpisodeOrderNumber(episodeNumber: unknown): number | null {
@@ -147,29 +181,40 @@ export async function getReaderEpisode(userId: number | undefined, episodeId: nu
   const novel = novelData[0] || null;
 
   const canRead = await canReadEpisode(userId, episodeId, isAdmin);
+  const saleMode = resolveSaleMode(ep);
 
-  // Build previous/next metadata from the published episode list. Select only
-  // safe navigation fields so adjacent locked chapters never leak `content`.
-  const navigationEpisodes = await db
-    .select({
-      id: episodes.id,
-      novelId: episodes.novelId,
-      episodeNumber: episodes.episodeNumber,
-      title: episodes.title,
-      isFree: episodes.isFree,
-      isPublished: episodes.isPublished,
-      sortOrder: episodes.sortOrder,
-    })
-    .from(episodes)
-    .where(and(eq(episodes.novelId, ep.novelId), eq(episodes.isPublished, true)))
-    .orderBy(asc(episodes.id));
+  // Package episodes bundle many chapters into one row, so a "previous/next
+  // episode" concept doesn't map cleanly onto the novel's episode list -
+  // suppress navigation for packages rather than show a confusing adjacent
+  // chapter/package jump. Chapter navigation is unaffected.
+  let previousEpisode: any = null;
+  let nextEpisode: any = null;
 
-  const sortedNavigationEpisodes = [...navigationEpisodes].sort(compareNavigationEpisodes);
-  const currentIndex = sortedNavigationEpisodes.findIndex((navEpisode) => navEpisode.id === ep.id);
-  const previousEpisode = currentIndex > 0 ? sortedNavigationEpisodes[currentIndex - 1] : null;
-  const nextEpisode = currentIndex >= 0 && currentIndex < sortedNavigationEpisodes.length - 1
-    ? sortedNavigationEpisodes[currentIndex + 1]
-    : null;
+  if (saleMode !== "package") {
+    // Build previous/next metadata from the published episode list. Select
+    // only safe navigation fields so adjacent locked chapters never leak
+    // `content`.
+    const navigationEpisodes = await db
+      .select({
+        id: episodes.id,
+        novelId: episodes.novelId,
+        episodeNumber: episodes.episodeNumber,
+        title: episodes.title,
+        isFree: episodes.isFree,
+        isPublished: episodes.isPublished,
+        sortOrder: episodes.sortOrder,
+      })
+      .from(episodes)
+      .where(and(eq(episodes.novelId, ep.novelId), eq(episodes.isPublished, true)))
+      .orderBy(asc(episodes.id));
+
+    const sortedNavigationEpisodes = [...navigationEpisodes].sort(compareNavigationEpisodes);
+    const currentIndex = sortedNavigationEpisodes.findIndex((navEpisode) => navEpisode.id === ep.id);
+    previousEpisode = currentIndex > 0 ? sortedNavigationEpisodes[currentIndex - 1] : null;
+    nextEpisode = currentIndex >= 0 && currentIndex < sortedNavigationEpisodes.length - 1
+      ? sortedNavigationEpisodes[currentIndex + 1]
+      : null;
+  }
 
   // Check if already purchased. Must check both purchase sources (wallet
   // direct episodePurchases + legacy order-based purchases) via the shared
@@ -187,6 +232,7 @@ export async function getReaderEpisode(userId: number | undefined, episodeId: nu
     canRead,
     isLocked: !canRead && !ep.isFree,
     alreadyPurchased,
+    saleMode,
     previousEpisode: toSafeNavigationEpisode(previousEpisode),
     nextEpisode: toSafeNavigationEpisode(nextEpisode),
   };

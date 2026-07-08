@@ -1,8 +1,8 @@
 {
   "version": "5",
   "dialect": "mysql",
-  "id": "b49919b9-e65a-4fe8-a8cf-2565ee8493f0",
-  "prevId": "bff7b50b-3181-4ba7-9f7c-eb20ec556cec",
+  "id": "a2d67374-f534-4393-b210-b373a8ee1587",
+  "prevId": "b49919b9-e65a-4fe8-a8cf-2565ee8493f0",
   "tables": {
     "banners": {
       "name": "banners",
@@ -709,6 +709,14 @@
           "notNull": false,
           "autoincrement": false,
           "default": "'plain_text'"
+        },
+        "saleMode": {
+          "name": "saleMode",
+          "type": "enum('chapter','package')",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'chapter'"
         },
         "isPublished": {
           "name": "isPublished",

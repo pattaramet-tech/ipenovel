@@ -124,6 +124,16 @@ export const episodes = mysqlTable(
     // Reader content fields
     content: text("content"), // Episode text content for web reader
     contentFormat: varchar("contentFormat", { length: 50 }).default("plain_text"), // plain_text, markdown, html
+    // Explicit sale mode: "chapter" = single episode sold individually via
+    // reader.purchaseEpisode (wallet direct debit); "package" = multi-chapter
+    // bundle sold via cart/checkout, read on the web only (no file download).
+    // Defaults to "chapter" so existing single-episode rows are unaffected;
+    // legacy fileUrl-based rows are backfilled to "package" by migration 007
+    // (see migrations/007_backfill_episode_sale_mode.sql). Application code
+    // should still fall back to resolveSaleMode()'s legacy detection (fileUrl
+    // present, or a "N - M" range episodeNumber) for any row where this value
+    // is somehow missing.
+    saleMode: mysqlEnum("saleMode", ["chapter", "package"]).default("chapter").notNull(),
     isPublished: boolean("isPublished").default(true).notNull(), // Controls reader visibility
     publishedAt: timestamp("publishedAt"), // When episode was published
     wordCount: int("wordCount"), // For metadata/analytics

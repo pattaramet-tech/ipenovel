@@ -176,17 +176,21 @@ export const appRouter = router({
           const canRead = isFree || hasPurchased || isAdmin;
 
           // Never leak full episode content in the list endpoint - that's what
-          // reader.episode is for. Only expose fileUrl when the requester
-          // actually has access - unpurchased paid files must not leak their
-          // real download URL. Since content/fileUrl are stripped regardless of
-          // purchase status, the frontend can no longer use their presence to
-          // classify sale type (chapter vs file) - it must use the hasContent/
-          // hasFile/saleType metadata below instead.
+          // reader.getEpisode is for. Only expose fileUrl when the requester
+          // actually has access - unpurchased paid legacy files must not leak
+          // their real download URL. Since content/fileUrl are stripped
+          // regardless of purchase status, the frontend can no longer use
+          // their presence to classify sale type - it must use the explicit
+          // saleMode/saleType metadata below instead.
           const { content, fileUrl, ...safeEpisode } = ep;
 
           const hasContent = Boolean(content && String(content).trim().length > 0);
-          const hasFile = Boolean(fileUrl && String(fileUrl).trim().length > 0);
-          const saleType = hasFile ? "file" : hasContent ? "chapter" : "unknown";
+          const hasLegacyFile = Boolean(fileUrl && String(fileUrl).trim().length > 0);
+          // saleMode is the source of truth (with legacy fallback for rows
+          // missing it); saleType mirrors it 1:1 and is kept as a separate
+          // field name for the frontend's sale-type tab classification.
+          const saleMode = readerService.resolveSaleMode(ep);
+          const saleType = saleMode;
 
           return {
             ...safeEpisode,
@@ -195,7 +199,8 @@ export const appRouter = router({
             isPurchased: hasPurchased,
             canRead,
             hasContent,
-            hasFile,
+            hasLegacyFile,
+            saleMode,
             saleType,
             fileUrl: canRead ? fileUrl ?? null : null,
             adminCanPreview: isAdmin && !isFree && !hasPurchased,
@@ -246,6 +251,14 @@ export const appRouter = router({
         // Free episodes cannot be added to cart
         if (episode.isFree) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "Free episodes cannot be added to cart" });
+        }
+
+        // Cart/checkout is for package sales only. Single chapters must be
+        // bought via the direct wallet-purchase flow (reader.purchaseEpisode),
+        // never added to cart.
+        const saleMode = readerService.resolveSaleMode(episode);
+        if (saleMode === "chapter") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "รายบทต้องซื้อผ่านปุ่มซื้อทันที" });
         }
 
         // Check if already purchased (both wallet direct purchase and legacy
@@ -1064,6 +1077,9 @@ export const appRouter = router({
             fileUrl: z.string().optional(),
             content: z.string().optional(),
             contentFormat: z.enum(["plain_text", "markdown", "html"]).default("plain_text").optional(),
+            // "chapter" = single episode, direct wallet purchase. "package" =
+            // multi-chapter bundle, cart/checkout, web-read only (no download).
+            saleMode: z.enum(["chapter", "package"]).default("chapter").optional(),
             description: z.string().optional(),
             isPublished: z.boolean().default(true).optional(),
             publishedAt: z.date().optional(),
@@ -1086,6 +1102,7 @@ export const appRouter = router({
             fileUrl: z.string().optional(),
             content: z.string().optional(),
             contentFormat: z.enum(["plain_text", "markdown", "html"]).optional(),
+            saleMode: z.enum(["chapter", "package"]).optional(),
             description: z.string().optional(),
             isPublished: z.boolean().optional(),
             publishedAt: z.date().optional(),
@@ -1871,6 +1888,7 @@ export const appRouter = router({
             "INSUFFICIENT_WALLET_BALANCE_ATOMIC",
             "INVALID_EPISODE_PRICE",
             "INVALID_WALLET_BALANCE",
+            "PACKAGE_MUST_USE_CART",
           ]);
 
           if (result.error && passthroughCodes.has(result.error)) {
