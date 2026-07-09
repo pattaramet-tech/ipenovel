@@ -49,9 +49,6 @@ const translations: Record<Language, Record<string, string>> = {
     "home.episode": "ตอน",
     "home.noEpisodes": "ยังไม่มีตอนที่อัปโหลด",
     "home.learnMore": "เรียนรู้เพิ่มเติม",
-    "home.ctaTitle": "พร้อมเริ่มอ่านหรือ",
-    "home.ctaDescription": "สำรวจคนหาที่สุดของนวนิยายแปลไทยที่สมบูรณ์และหาความสนใจใหม่ที่คุณชอบคหรณ์",
-    "home.browseAll": "เริ่มอ่านทั้งหมด",
 
     // Novels page
     "novels.title": "นวนิยาย",
@@ -557,9 +554,6 @@ const translations: Record<Language, Record<string, string>> = {
     "home.episode": "Episode",
     "home.noEpisodes": "No episodes uploaded yet",
     "home.learnMore": "Learn More",
-    "home.ctaTitle": "Ready to Start Reading?",
-    "home.ctaDescription": "Browse our collection of translated novels and find your next favorite read.",
-    "home.browseAll": "Browse All Novels",
 
     // Novels page
     "novels.title": "Novels",
