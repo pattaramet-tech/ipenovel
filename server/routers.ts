@@ -1943,6 +1943,11 @@ export const appRouter = router({
         const { calculateWalletTopupBonus } = await import("./services/walletBonusService");
         return await calculateWalletTopupBonus(input.amount);
       }),
+    getBonusTiers: protectedProcedure
+      .query(async () => {
+        const { getWalletBonusConfig } = await import("./services/walletBonusService");
+        return await getWalletBonusConfig();
+      }),
   }),
 
   // ============ SPORTS MATCH PREDICTION VOTING ============

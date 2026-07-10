@@ -63,6 +63,7 @@ export default function WalletPage() {
     { amount: topupAmount },
     { enabled: !!topupAmount && parseFloat(topupAmount) > 0 }
   );
+  const { data: bonusTiers } = trpc.wallet.getBonusTiers.useQuery();
 
   // Update bonus preview when query data changes
   useEffect(() => {
@@ -496,14 +497,19 @@ export default function WalletPage() {
         )}
 
         {/* Bonus Rule Hint */}
-        <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-4 text-sm">
-          <p className="font-semibold text-blue-900 mb-1">กติกาโบนัส:</p>
-          <ul className="text-blue-800 text-xs space-y-1">
-            <li>• ยอดเติมน้อยกว่า ฿250: ไม่มีโบนัส</li>
-            <li>• ยอดเติม ฿250 - ฿499: รับโบนัสเพิ่ม ฿10</li>
-            <li>• ยอดเติม ฿500 ขึ้นไป: รับโบนัสเพิ่ม ฿20</li>
-          </ul>
-        </div>
+        {bonusTiers?.enabled && bonusTiers.tiers.length > 0 && (
+          <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-4 text-sm">
+            <p className="font-semibold text-blue-900 mb-1">กติกาโบนัส:</p>
+            <ul className="text-blue-800 text-xs space-y-1">
+              <li>• ยอดเติมต่ำกว่า ฿{bonusTiers.tiers[0].minAmount}: ไม่มีโบนัส</li>
+              {bonusTiers.tiers.map((tier, index) => (
+                <li key={tier.minAmount}>
+                  • ยอดเติมตั้งแต่ ฿{tier.minAmount} ขึ้นไป: รับโบนัส Tier {index + 1} (+฿{tier.bonusAmount})
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/* Top-up Requests List */}
         <div className="mt-6 space-y-3">

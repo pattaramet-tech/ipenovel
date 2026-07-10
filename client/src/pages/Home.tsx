@@ -8,7 +8,6 @@ import { Link } from "wouter";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { toast } from "sonner";
 import React from "react";
-import { getLoginUrl } from "@/const";
 import NovelCard from "@/components/NovelCard";
 
 // Mobile-first responsive grid used for every novel/episode card section on
@@ -369,8 +368,11 @@ export default function Home() {
           </section>
         )}
 
-        {/* Latest Uploaded Episodes Section */}
-        <section className="mb-16 sm:mb-20">
+        {/* Latest Uploaded Episodes Section - last section on the page, so
+            it carries no bottom margin of its own; the page container's own
+            bottom padding (see the wrapping div above) provides the
+            trailing space instead. */}
+        <section>
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
             <div>
               <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold text-slate-900">
@@ -397,31 +399,6 @@ export default function Home() {
               <p>{t("home.noEpisodes")}</p>
             </Card>
           )}
-        </section>
-
-        {/* CTA Section */}
-        <section className="bg-gradient-to-br from-blue-50 to-purple-50 rounded-2xl p-8 sm:p-12 text-center border border-blue-100">
-          <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold text-slate-900 mb-4">
-            {t("home.ctaTitle")}
-          </h2>
-          <p className="text-base sm:text-lg text-slate-600 mb-8 max-w-2xl mx-auto">
-            {t("home.ctaDescription")}
-          </p>
-          <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center items-center">
-            <Link href="/novels">
-              <Button size="lg" className="w-full sm:w-auto rounded-full">
-                <BookOpen className="w-5 h-5 mr-2" />
-                {t("home.browseAll")}
-              </Button>
-            </Link>
-            {!isAuthenticated && (
-              <a href={getLoginUrl()}>
-                <Button size="lg" variant="outline" className="w-full sm:w-auto rounded-full">
-                  {t("nav.login")}
-                </Button>
-              </a>
-            )}
-          </div>
         </section>
       </div>
     </div>
