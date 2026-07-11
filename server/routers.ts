@@ -1002,9 +1002,21 @@ export const appRouter = router({
           return { url, key };
         }),
 
-      list: adminProcedure.query(async () => {
-        return db.getAllNovelsForAdmin();
-      }),
+      list: adminProcedure
+        .input(
+          z.object({
+            q: z.string().trim().max(200).optional(),
+            limit: z.number().int().positive().max(50).optional(),
+          }).optional()
+        )
+        .query(async ({ input }) => {
+          // No input at all - preserve the original unlimited full-list
+          // behavior for existing callers (e.g. AdminNovelsPage).
+          if (!input?.q && !input?.limit) {
+            return db.getAllNovelsForAdmin();
+          }
+          return db.searchNovelsForAdmin(input.q, input.limit ?? 30);
+        }),
 
       create: adminProcedure
         .input(
