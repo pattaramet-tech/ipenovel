@@ -82,6 +82,61 @@ export default function ReaderPage() {
   const episodePriceCents = toCents(episode?.price);
   const hasEnoughWalletBalance = walletBalanceCents >= episodePriceCents;
 
+  // Edge watermark (top/bottom strips + corner badge) - shown for any
+  // readable content (full access or a locked-episode preview), never for
+  // the various "no content"/error states where there's nothing to protect.
+  const shouldShowWatermark = !!user && !!episodeId && (
+    (canRead && !!content) || (isLocked && !!preview)
+  );
+
+  // Measure the header and bottom nav bar so the fixed watermark strips can
+  // sit just outside them instead of guessing a fixed pixel offset - both
+  // vary in height (title wrapping, translations, safe-area insets). Uses
+  // callback refs (state, not useRef) so observation (re)starts whenever the
+  // element actually mounts - a plain ref + an empty-deps effect would miss
+  // it, since the header/nav are behind the dataLoading skeleton on first
+  // mount and don't exist yet when that effect would otherwise run once.
+  const [headerEl, setHeaderEl] = useState<HTMLDivElement | null>(null);
+  const [navigationEl, setNavigationEl] = useState<HTMLDivElement | null>(null);
+  const [headerHeight, setHeaderHeight] = useState(0);
+  const [navigationHeight, setNavigationHeight] = useState(0);
+
+  useEffect(() => {
+    if (!headerEl) return;
+    // getBoundingClientRect (not entries[0].contentRect, which excludes
+    // padding/border) so this matches the header's actual rendered height -
+    // its padding is most of its height.
+    const observer = new ResizeObserver(() => {
+      setHeaderHeight(headerEl.getBoundingClientRect().height);
+    });
+    observer.observe(headerEl);
+    return () => observer.disconnect();
+  }, [headerEl]);
+
+  useEffect(() => {
+    if (!navigationEl) {
+      setNavigationHeight(0);
+      return;
+    }
+    const observer = new ResizeObserver(() => {
+      setNavigationHeight(navigationEl.getBoundingClientRect().height);
+    });
+    observer.observe(navigationEl);
+    return () => observer.disconnect();
+  }, [navigationEl]);
+
+  // Header/nav padding already bakes in the safe-area insets (see their own
+  // CSS), so once measured, the strip just needs to clear that height + a
+  // small gap. Before the first measurement (or when the nav bar isn't
+  // rendered for packages), fall back to the safe-area inset alone.
+  const watermarkTopOffset = headerHeight > 0
+    ? `${headerHeight + 4}px`
+    : "calc(env(safe-area-inset-top) + 4px)";
+  const watermarkBottomOffset = navigationHeight > 0
+    ? `${navigationHeight + 4}px`
+    : "calc(env(safe-area-inset-bottom) + 4px)";
+  const watermarkBadgeBottomOffset = `calc(${watermarkBottomOffset} + 24px)`;
+
   // ============ Reading progress (resume + package table of contents) ============
   // Only ever queried/saved for episodes the user can actually read - locked
   // episodes have no progress to resume and must not accept a saved position.
@@ -437,7 +492,7 @@ export default function ReaderPage() {
   return (
     <div className={`${styles.container} ${styles[theme]}`}>
       {/* Header */}
-      <div className={styles.header}>
+      <div className={styles.header} ref={setHeaderEl}>
         {/* Top row: back button (left) + reader options menu (right). Kept
             free of the title so a long novel title never gets squeezed
             between them. */}
@@ -556,11 +611,6 @@ export default function ReaderPage() {
               }
               return <p key={idx}>{para}</p>;
             })}
-            <div className={styles.watermark}>
-              <div className={styles.watermarkText}>
-                {generateWatermarkText(user, episodeId)}
-              </div>
-            </div>
           </div>
         ) : canRead && !content ? (
           // User has access but no web content. If a legacy Docs/PDF file
@@ -608,11 +658,6 @@ export default function ReaderPage() {
                   <p key={idx}>{para}</p>
                 ))}
                 <div className={styles.previewFade}></div>
-                <div className={styles.watermark}>
-                  <div className={styles.watermarkText}>
-                    {generateWatermarkText(user, episodeId)}
-                  </div>
-                </div>
               </div>
             ) : (
               <div className={styles.noContentSection}>
@@ -691,6 +736,28 @@ export default function ReaderPage() {
         )}
       </div>
 
+      {/* Edge watermark - fixed top/bottom strips + a small corner badge,
+          always visible while reading without covering the middle of the
+          page. Sits above plain content but below the header/menus/TOC/
+          modals (see z-index comment in the CSS module), and is fully
+          inert (pointer-events/user-select: none) so it never blocks
+          scrolling or clicks on the header/toolbar/nav underneath it. */}
+      {shouldShowWatermark && (
+        <div className={styles.edgeWatermark} aria-hidden="true">
+          <div className={styles.edgeWatermarkTop} style={{ top: watermarkTopOffset }}>
+            <span>{generateWatermarkText(user, episodeId)}</span>
+          </div>
+
+          <div className={styles.edgeWatermarkBottom} style={{ bottom: watermarkBottomOffset }}>
+            <span>{generateWatermarkText(user, episodeId)}</span>
+          </div>
+
+          <div className={styles.edgeWatermarkBadge} style={{ bottom: watermarkBadgeBottomOffset }}>
+            Ipe • UID:{user?.id || "unknown"} • EP:{episodeId}
+          </div>
+        </div>
+      )}
+
       {/* Reading Settings Panel - font size/family, line height, paragraph
           spacing and theme. Preferences persist to localStorage and only
           ever affect the episodeContent/previewContent containers above. */}
@@ -734,7 +801,7 @@ export default function ReaderPage() {
           for packages, but skip rendering the bar entirely to avoid a blank
           strip. Chapter navigation is unaffected. */}
       {!isPackage && (
-        <div className={styles.navigation}>
+        <div className={styles.navigation} ref={setNavigationEl}>
           {previousEpisode ? (
             <button
               className={styles.navButton}

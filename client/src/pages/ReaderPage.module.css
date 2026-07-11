@@ -859,37 +859,97 @@
   background-color: rgba(77, 166, 255, 0.08);
 }
 
-/* Watermark Overlay */
-.watermark {
-  position: absolute;
-  top: 0;
+/* Edge watermark - fixed top/bottom strips + a small corner badge, styled
+   like a mobile game HUD so it stays on screen while reading without
+   covering the middle of the page. z-index 20 keeps it above plain content
+   but below the header (50), reader menus (59-60), and TOC/settings/modal
+   overlays (1000+) - see ReaderPage.tsx for how top/bottom offsets are
+   measured to clear the header and bottom nav bar. */
+.edgeWatermark {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  user-select: none;
+  z-index: 20;
+}
+
+.edgeWatermarkTop,
+.edgeWatermarkBottom {
+  position: fixed;
   left: 0;
   right: 0;
-  bottom: 0;
   display: flex;
-  align-items: center;
   justify-content: center;
-  pointer-events: none;
-  z-index: 10;
-}
-
-.watermarkText {
-  font-size: 0.75rem;
-  color: rgba(0, 0, 0, 0.08);
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(0, 0, 0, 0.16);
   text-align: center;
-  max-width: 90%;
-  line-height: 1.4;
-  word-break: break-word;
-  transform: rotate(-45deg);
-  white-space: normal;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.dark .watermarkText {
-  color: rgba(255, 255, 255, 0.06);
+.edgeWatermarkTop {
+  top: calc(env(safe-area-inset-top) + 4px);
 }
 
-.sepia .watermarkText {
-  color: rgba(61, 61, 61, 0.05);
+.edgeWatermarkBottom {
+  bottom: calc(env(safe-area-inset-bottom) + 4px);
+}
+
+.edgeWatermarkBadge {
+  position: fixed;
+  right: 10px;
+  bottom: calc(env(safe-area-inset-bottom) + 28px);
+  max-width: 180px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.18);
+  background: rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(2px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dark .edgeWatermarkTop,
+.dark .edgeWatermarkBottom {
+  color: rgba(255, 255, 255, 0.18);
+}
+
+.dark .edgeWatermarkBadge {
+  color: rgba(255, 255, 255, 0.20);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.sepia .edgeWatermarkTop,
+.sepia .edgeWatermarkBottom {
+  color: rgba(61, 61, 61, 0.18);
+}
+
+.sepia .edgeWatermarkBadge {
+  color: rgba(61, 61, 61, 0.20);
+  background: rgba(245, 241, 222, 0.25);
+}
+
+@media (max-width: 640px) {
+  .edgeWatermarkTop,
+  .edgeWatermarkBottom {
+    font-size: 9px;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .edgeWatermarkBadge {
+    font-size: 9px;
+    max-width: 140px;
+    right: 8px;
+    bottom: calc(env(safe-area-inset-bottom) + 24px);
+  }
 }
 
 /* Mobile tightening - narrower horizontal padding for reading comfort on
