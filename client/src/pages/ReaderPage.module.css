@@ -186,80 +186,35 @@
   flex: 0 0 auto;
 }
 
-.fontSizeControl {
+/* Reading settings trigger ("Aa") - opens the ReaderSettings panel with
+   font size/family, line height, paragraph spacing and theme controls. */
+.readerSettingsButton {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.35rem;
   min-height: 36px;
   background: rgba(0, 0, 0, 0.05);
-  padding: 0.5rem;
-  border-radius: 8px;
-}
-
-.dark .fontSizeControl {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.fontSizeControl button {
-  background: none;
   border: none;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
   cursor: pointer;
-  padding: 0.25rem 0.5rem;
+  color: inherit;
+  font-size: 0.9rem;
   font-weight: 600;
-  border-radius: 3px;
+  white-space: nowrap;
   transition: background-color 0.2s;
-  white-space: nowrap;
 }
 
-.fontSizeControl span {
-  white-space: nowrap;
-}
-
-.fontSizeControl button:hover {
+.readerSettingsButton:hover {
   background-color: rgba(0, 0, 0, 0.1);
 }
 
-.dark .fontSizeControl button:hover {
-  background-color: rgba(255, 255, 255, 0.2);
-}
-
-.themeControl {
-  display: flex;
-  gap: 0.5rem;
-  min-height: 36px;
-  align-items: center;
-  background: rgba(0, 0, 0, 0.05);
-  padding: 0.5rem;
-  border-radius: 8px;
-}
-
-.dark .themeControl {
+.dark .readerSettingsButton {
   background: rgba(255, 255, 255, 0.1);
 }
 
-.themeControl button {
-  background: none;
-  border: 1px solid transparent;
-  cursor: pointer;
-  width: 32px;
-  height: 32px;
-  border-radius: 4px;
-  font-size: 1rem;
-  transition: all 0.2s;
-}
-
-.themeControl button:hover {
-  background-color: rgba(0, 0, 0, 0.1);
-}
-
-.themeControl button.active {
-  background-color: #0066cc;
-  color: white;
-}
-
-.dark .themeControl button.active {
-  background-color: #4da6ff;
-  color: #000;
+.dark .readerSettingsButton:hover {
+  background-color: rgba(255, 255, 255, 0.2);
 }
 
 .content {
@@ -278,7 +233,7 @@
 }
 
 .episodeContent p {
-  margin: 1.5rem 0;
+  margin: var(--reader-paragraph-spacing, 1.5rem) 0;
   text-indent: 2em;
 }
 
@@ -301,7 +256,7 @@
 }
 
 .previewContent p {
-  margin: 1.5rem 0;
+  margin: var(--reader-paragraph-spacing, 1.5rem) 0;
   text-indent: 2em;
 }
 

@@ -516,6 +516,13 @@ const translations: Record<Language, Record<string, string>> = {
     "reader.noContentAdminHint": "กรุณาเพิ่ม content ในหน้า Admin Episodes",
     "reader.openOriginalFile": "เปิดไฟล์นิยาย",
     "reader.copyNotAllowed": "ไม่อนุญาตให้คัดลอกเนื้อหานิยาย",
+    "reader.readingSettings": "ตั้งค่าการอ่าน",
+    "reader.fontFamily": "รูปแบบตัวอักษร",
+    "reader.lineHeight": "ระยะห่างบรรทัด",
+    "reader.paragraphSpacing": "ระยะห่างย่อหน้า",
+    "reader.resetDefaults": "คืนค่าเริ่มต้น",
+    "reader.fontDefault": "ค่าเริ่มต้น",
+    "reader.fontSystem": "ฟอนต์ระบบ",
   },
   en: {
     // Navbar
@@ -1003,6 +1010,13 @@ const translations: Record<Language, Record<string, string>> = {
     "reader.noContentAdminHint": "Please add content in the Admin Episodes page",
     "reader.openOriginalFile": "Open Original File",
     "reader.copyNotAllowed": "Copying novel content is not allowed",
+    "reader.readingSettings": "Reading Settings",
+    "reader.fontFamily": "Font Family",
+    "reader.lineHeight": "Line Height",
+    "reader.paragraphSpacing": "Paragraph Spacing",
+    "reader.resetDefaults": "Reset to Defaults",
+    "reader.fontDefault": "Default",
+    "reader.fontSystem": "System Font",
   },
 };
 

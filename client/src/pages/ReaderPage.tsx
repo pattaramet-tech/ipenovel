@@ -4,11 +4,13 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
-import { MoreVertical } from "lucide-react";
+import { MoreVertical, Type } from "lucide-react";
 import styles from "./ReaderPage.module.css";
 import { formatEpisodeLabel } from "@/utils/episodeUtils";
 import { parsePackageToc, findTocEntryByChapterNumber, type PackageTocEntry } from "@/utils/packageTocUtils";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
+import ReaderSettings from "@/components/ReaderSettings";
+import { useReaderPreferences, getFontFamilyStack } from "@/hooks/useReaderPreferences";
 
 // How long to wait after the user stops scrolling before saving progress.
 const SCROLL_SAVE_DEBOUNCE_MS = 1500;
@@ -51,8 +53,15 @@ export default function ReaderPage() {
 
   const purchaseMutation = trpc.reader.purchaseEpisode.useMutation();
 
-  const [fontSize, setFontSize] = useState(16);
-  const [theme, setTheme] = useState<"light" | "dark" | "sepia">("light");
+  const { preferences: readerPreferences, updatePreference: updateReaderPreference, resetPreferences: resetReaderPreferences } = useReaderPreferences();
+  const { fontSize, fontFamily, lineHeight, paragraphSpacing, theme } = readerPreferences;
+  const readerContentStyle: React.CSSProperties = {
+    fontSize: `${fontSize}px`,
+    lineHeight,
+    fontFamily: getFontFamilyStack(fontFamily),
+    ["--reader-paragraph-spacing" as string]: `${paragraphSpacing}px`,
+  };
+  const [showReaderSettings, setShowReaderSettings] = useState(false);
   const [showPurchaseConfirm, setShowPurchaseConfirm] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
@@ -218,6 +227,7 @@ export default function ReaderPage() {
     setShowResumeBanner(false);
     setShowToc(false);
     setShowReaderMenu(false);
+    setShowReaderSettings(false);
     lastSavedProgressRef.current = null;
     pendingProgressRef.current = null;
   }, [episodeId]);
@@ -472,39 +482,15 @@ export default function ReaderPage() {
             scrollable row so it never wraps/overlaps content on narrow
             screens. */}
         <div className={styles.toolbar}>
-          <div className={styles.fontSizeControl}>
-            <button onClick={() => setFontSize(Math.max(12, fontSize - 2))}>
-              A−
-            </button>
-            <span>{fontSize}px</span>
-            <button onClick={() => setFontSize(Math.min(24, fontSize + 2))}>
-              A+
-            </button>
-          </div>
-
-          <div className={styles.themeControl}>
-            <button
-              className={theme === "light" ? styles.active : ""}
-              onClick={() => setTheme("light")}
-              title={t("reader.light")}
-            >
-              ☀
-            </button>
-            <button
-              className={theme === "dark" ? styles.active : ""}
-              onClick={() => setTheme("dark")}
-              title={t("reader.dark")}
-            >
-              ◐
-            </button>
-            <button
-              className={theme === "sepia" ? styles.active : ""}
-              onClick={() => setTheme("sepia")}
-              title={t("reader.sepia")}
-            >
-              ◈
-            </button>
-          </div>
+          <button
+            className={styles.readerSettingsButton}
+            onClick={() => setShowReaderSettings(true)}
+            aria-label={t("reader.readingSettings")}
+            title={t("reader.readingSettings")}
+          >
+            <Type size={16} />
+            <span>Aa</span>
+          </button>
 
           {toc.length > 0 && (
             <button className={styles.tocButton} onClick={() => setShowToc(true)}>
@@ -550,7 +536,7 @@ export default function ReaderPage() {
           <div
             ref={contentRef}
             className={`${styles.episodeContent} ${styles.protected}`}
-            style={{ fontSize: `${fontSize}px` }}
+            style={readerContentStyle}
           >
             {content.split("\n").map((para: string, idx: number) => {
               const tocEntry = tocByLineIndex.get(idx);
@@ -616,7 +602,7 @@ export default function ReaderPage() {
               <div
                 ref={previewRef}
                 className={`${styles.previewContent} ${styles.protected}`}
-                style={{ fontSize: `${fontSize}px` }}
+                style={readerContentStyle}
               >
                 {preview.split("\n").map((para: string, idx: number) => (
                   <p key={idx}>{para}</p>
@@ -704,6 +690,17 @@ export default function ReaderPage() {
           <div className={styles.savedIndicator}>บันทึกตำแหน่งอ่านแล้ว</div>
         )}
       </div>
+
+      {/* Reading Settings Panel - font size/family, line height, paragraph
+          spacing and theme. Preferences persist to localStorage and only
+          ever affect the episodeContent/previewContent containers above. */}
+      <ReaderSettings
+        isOpen={showReaderSettings}
+        onClose={() => setShowReaderSettings(false)}
+        preferences={readerPreferences}
+        onChange={updateReaderPreference}
+        onReset={resetReaderPreferences}
+      />
 
       {/* Table of Contents Drawer - package episodes only, when headings were
           found in the content ("บทที่ N" / "ตอนที่ N" / "Chapter N" / "#N"). */}
