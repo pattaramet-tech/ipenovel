@@ -35,6 +35,7 @@ import {
   couponUsages as couponUsagesTable,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
+import { pickRandom } from "./utils/random";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -1857,12 +1858,16 @@ export interface NovelWithCounts extends Novel {
 }
 
 /**
- * Get popular novels sorted by purchaseCount DESC, wishlistCount DESC, createdAt DESC
- * Uses aggregate subqueries to avoid N+1 queries
+ * Get popular novels for the homepage: pulls the top `candidateLimit` novels
+ * ranked by purchaseCount DESC, wishlistCount DESC, createdAt DESC, then
+ * returns a random sample of `limit` from that pool - so the section still
+ * only ever surfaces genuinely popular novels, but doesn't show the exact
+ * same 4 on every load. Uses aggregate subqueries to avoid N+1 queries.
  */
-export async function getPopularNovels(limit: number = 4): Promise<NovelWithCounts[]> {
+export async function getPopularNovels(limit: number = 4, candidateLimit: number = 30): Promise<NovelWithCounts[]> {
   const db = await getDb();
   if (!db) return [];
+  const poolSize = Math.max(candidateLimit, limit);
 
   // Subquery for purchase counts per novel
   const purchaseCountsSubquery = db
@@ -1900,15 +1905,17 @@ export async function getPopularNovels(limit: number = 4): Promise<NovelWithCoun
       desc(sql<number>`COALESCE(${wishlistCountsSubquery.count}, 0)`),
       desc(novels.createdAt)
     )
-    .limit(limit);
+    .limit(poolSize);
 
-  // Normalize counts to numbers
-  return result.map((row: any) => ({
+  // Normalize counts to numbers, then randomly sample `limit` from the
+  // popular-novels pool (not the whole table) so ordering stays meaningful.
+  const normalized = result.map((row: any) => ({
     ...row,
     purchaseCount: Number(row.purchaseCount) || 0,
     wishlistCount: Number(row.wishlistCount) || 0,
     freeEpisodeCount: 0,
   }));
+  return pickRandom(normalized, limit);
 }
 
 /**
@@ -2026,12 +2033,16 @@ export async function getFreeNovels(limit: number = 4): Promise<NovelWithCounts[
 }
 
 /**
- * Get finished/completed novels sorted by createdAt DESC
- * Only returns published novels with storyStatus = 'finished'
+ * Get finished/completed novels for the homepage: pulls the most recent
+ * `candidateLimit` published novels with storyStatus = 'finished', then
+ * returns a random sample of `limit` from that pool - so the section only
+ * ever shows genuinely finished novels, but doesn't repeat the same 4 on
+ * every load.
  */
-export async function getFinishedNovels(limit: number = 4): Promise<NovelWithCounts[]> {
+export async function getFinishedNovels(limit: number = 4, candidateLimit: number = 50): Promise<NovelWithCounts[]> {
   const db = await getDb();
   if (!db) return [];
+  const poolSize = Math.max(candidateLimit, limit);
 
   // Subquery for purchase counts
   const purchaseCountsSubquery = db
@@ -2068,14 +2079,15 @@ export async function getFinishedNovels(limit: number = 4): Promise<NovelWithCou
     .leftJoin(purchaseCountsSubquery, eq(novels.id, purchaseCountsSubquery.novelId))
     .leftJoin(wishlistCountsSubquery, eq(novels.id, wishlistCountsSubquery.novelId))
     .orderBy(desc(novels.createdAt))
-    .limit(limit);
+    .limit(poolSize);
 
-  return result.map((row: any) => ({
+  const normalized = result.map((row: any) => ({
     ...row,
     purchaseCount: Number(row.purchaseCount) || 0,
     wishlistCount: Number(row.wishlistCount) || 0,
     freeEpisodeCount: 0,
   }));
+  return pickRandom(normalized, limit);
 }
 
 /**
