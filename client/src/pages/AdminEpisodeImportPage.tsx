@@ -6,8 +6,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
-import { useState } from "react";
-import { Upload, Loader2, AlertCircle, Download } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Upload, Loader2, AlertCircle, Download, Search, X } from "lucide-react";
 import * as XLSX from "xlsx";
 
 interface ParsedEpisode {
@@ -30,6 +30,14 @@ interface ValidationError {
   row: number;
   field: string;
   message: string;
+}
+
+interface NovelSearchResult {
+  id: number;
+  title: string;
+  slug?: string | null;
+  publicationStatus?: string | null;
+  episodeCount?: number;
 }
 
 // Header name aliases (English and Thai)
@@ -736,6 +744,10 @@ function PackageZipImportSection({ novelId }: { novelId: number | undefined }) {
 export default function AdminEpisodeImportPage() {
   const [importSource, setImportSource] = useState<"spreadsheet" | "zip">("spreadsheet");
   const [novelId, setNovelId] = useState<number | undefined>();
+  const [selectedNovel, setSelectedNovel] = useState<NovelSearchResult | null>(null);
+  const [showNovelSearch, setShowNovelSearch] = useState(true);
+  const [novelSearchInput, setNovelSearchInput] = useState("");
+  const [debouncedNovelSearch, setDebouncedNovelSearch] = useState("");
   const [fileText, setFileText] = useState("");
   const [parsedEpisodes, setParsedEpisodes] = useState<ParsedEpisode[]>([]);
   const [validationErrors, setValidationErrors] = useState<ValidationError[]>(
@@ -748,11 +760,32 @@ export default function AdminEpisodeImportPage() {
   const [importing, setImporting] = useState(false);
   const [fileType, setFileType] = useState<"csv" | "xlsx">("csv");
 
-  const { data: novels } = trpc.novels.list.useQuery();
   const { data: episodes } = trpc.admin.getAllEpisodes.useQuery();
 
   const createMutation = trpc.admin.episodes.create.useMutation();
   const updateMutation = trpc.admin.episodes.update.useMutation();
+
+  // Debounce the novel search box ~300ms so we don't hit the API on every keystroke.
+  useEffect(() => {
+    const handle = setTimeout(() => setDebouncedNovelSearch(novelSearchInput.trim()), 300);
+    return () => clearTimeout(handle);
+  }, [novelSearchInput]);
+
+  const { data: novelResults, isFetching: novelSearchLoading } = trpc.admin.novels.list.useQuery(
+    { q: debouncedNovelSearch || undefined, limit: 30 },
+    { enabled: showNovelSearch }
+  );
+
+  const handleSelectNovel = (novel: NovelSearchResult) => {
+    setNovelId(novel.id);
+    setSelectedNovel(novel);
+    setShowNovelSearch(false);
+    setNovelSearchInput("");
+  };
+
+  const handleChangeNovel = () => {
+    setShowNovelSearch(true);
+  };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -948,21 +981,97 @@ export default function AdminEpisodeImportPage() {
 
         {/* Novel Selection */}
         <Card className="p-4">
-          <Label>Select Novel</Label>
-          <select
-            value={novelId || ""}
-            onChange={(e) =>
-              setNovelId(e.target.value ? parseInt(e.target.value) : undefined)
-            }
-            className="w-full px-3 py-2 border rounded-md mt-2"
-          >
-            <option value="">-- Select a novel --</option>
-            {novels?.map((novel: any) => (
-              <option key={novel.id} value={novel.id}>
-                {novel.title}
-              </option>
-            ))}
-          </select>
+          <Label>เลือกนิยาย (Select Novel)</Label>
+
+          {selectedNovel && !showNovelSearch ? (
+            <div className="mt-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 border rounded-md bg-blue-50 border-blue-200">
+              <div className="min-w-0">
+                <p className="text-xs text-blue-700 font-medium">นิยายที่เลือก:</p>
+                <p className="font-semibold text-slate-900 truncate">
+                  [{selectedNovel.id}] {selectedNovel.title}
+                </p>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600 mt-1">
+                  {selectedNovel.slug && <span>Slug: {selectedNovel.slug}</span>}
+                  <span>Episodes: {selectedNovel.episodeCount ?? 0}</span>
+                  {selectedNovel.publicationStatus && (
+                    <Badge
+                      variant={selectedNovel.publicationStatus === "published" ? "default" : "outline"}
+                      className="text-[10px]"
+                    >
+                      {selectedNovel.publicationStatus}
+                    </Badge>
+                  )}
+                </div>
+              </div>
+              <Button variant="outline" size="sm" onClick={handleChangeNovel} className="shrink-0">
+                เปลี่ยนนิยาย
+              </Button>
+            </div>
+          ) : (
+            <div className="mt-2 space-y-2">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+                <Input
+                  value={novelSearchInput}
+                  onChange={(e) => setNovelSearchInput(e.target.value)}
+                  placeholder="ค้นหานิยายด้วยชื่อหรือ ID..."
+                  className="pl-9 pr-9"
+                  autoFocus={!!selectedNovel}
+                />
+                {novelSearchInput && (
+                  <button
+                    type="button"
+                    onClick={() => setNovelSearchInput("")}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                    aria-label="ล้างการค้นหา"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+
+              <div className="border rounded-md max-h-72 overflow-y-auto divide-y">
+                {novelSearchLoading ? (
+                  <div className="flex items-center justify-center gap-2 p-4 text-sm text-slate-500">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    กำลังค้นหา...
+                  </div>
+                ) : (novelResults?.length ?? 0) === 0 ? (
+                  <p className="p-4 text-sm text-slate-500 text-center">
+                    {debouncedNovelSearch ? "ไม่พบนิยายที่ค้นหา" : "ไม่มีนิยาย"}
+                  </p>
+                ) : (
+                  <>
+                    {!debouncedNovelSearch && (
+                      <p className="px-3 py-1.5 text-xs font-medium text-slate-500 bg-slate-50">
+                        นิยายล่าสุด
+                      </p>
+                    )}
+                    {(novelResults as NovelSearchResult[]).map((novel) => (
+                      <button
+                        type="button"
+                        key={novel.id}
+                        onClick={() => handleSelectNovel(novel)}
+                        className="w-full text-left px-3 py-2 hover:bg-slate-50 transition-colors"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-medium text-slate-900 truncate">{novel.title}</span>
+                          <span className="text-xs text-slate-400 shrink-0">#{novel.id}</span>
+                        </div>
+                        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-slate-500 mt-0.5">
+                          {novel.slug && <span>Slug: {novel.slug}</span>}
+                          <span>Episodes: {novel.episodeCount ?? 0}</span>
+                          {novel.publicationStatus && (
+                            <span className="capitalize">{novel.publicationStatus}</span>
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </Card>
 
         {/* Import Source Tabs */}

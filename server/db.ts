@@ -1,4 +1,4 @@
-import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql, gt, ne } from "drizzle-orm";
+import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql, gt, ne, like } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { getTableColumns } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
@@ -151,6 +151,65 @@ export async function getAllNovelsForAdmin(limit?: number, offset?: number) {
   if (limit) query = query.limit(limit);
   if (offset) query = query.offset(offset);
   return query;
+}
+
+/**
+ * Search novels for the admin novel-picker (e.g. Import Episodes page).
+ * Matches title/slug/author by partial text, and novel id by exact number
+ * when the query is numeric - id matches are ranked first, then
+ * exact/prefix title matches, then everything else by newest first.
+ * Also includes archived novels (admin-only), unlike the public list.
+ */
+export async function searchNovelsForAdmin(query?: string, limit: number = 30) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const trimmed = (query ?? "").trim();
+  const numericId = /^\d+$/.test(trimmed) ? parseInt(trimmed, 10) : null;
+
+  let dbQuery: any = db.select().from(novels);
+
+  if (trimmed) {
+    const likePattern = `%${trimmed}%`;
+    const conditions = [
+      like(novels.title, likePattern),
+      like(novels.slug, likePattern),
+      like(novels.author, likePattern),
+    ];
+    if (numericId !== null) {
+      conditions.push(eq(novels.id, numericId));
+    }
+    dbQuery = dbQuery.where(or(...conditions));
+    dbQuery = dbQuery.orderBy(
+      sql`CASE
+        WHEN ${novels.id} = ${numericId ?? -1} THEN 0
+        WHEN ${novels.title} = ${trimmed} THEN 1
+        WHEN ${novels.title} LIKE ${trimmed + "%"} THEN 2
+        WHEN ${novels.slug} LIKE ${trimmed + "%"} THEN 3
+        ELSE 4
+      END`,
+      desc(novels.createdAt)
+    );
+  } else {
+    dbQuery = dbQuery.orderBy(desc(novels.createdAt));
+  }
+
+  const results = await dbQuery.limit(limit);
+  if (results.length === 0) return [];
+
+  const novelIds = results.map((n: any) => n.id);
+  const episodeCounts = await db
+    .select({ novelId: episodes.novelId, episodeCount: count() })
+    .from(episodes)
+    .where(inArray(episodes.novelId, novelIds))
+    .groupBy(episodes.novelId);
+
+  const countByNovelId = new Map(episodeCounts.map((row: any) => [row.novelId, row.episodeCount]));
+
+  return results.map((n: any) => ({
+    ...n,
+    episodeCount: countByNovelId.get(n.id) ?? 0,
+  }));
 }
 
 export async function getNovelById(novelId: number, publicOnly: boolean = true) {
