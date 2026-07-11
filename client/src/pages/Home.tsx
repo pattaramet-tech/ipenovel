@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
-import { BookOpen, Sparkles, ArrowRight } from "lucide-react";
+import { Sparkles, ArrowRight } from "lucide-react";
 import { Link } from "wouter";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { toast } from "sonner";
@@ -16,7 +16,7 @@ import NovelCard from "@/components/NovelCard";
 const CARD_GRID_CLASSES = "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4";
 
 export default function Home() {
-  const { user, isAuthenticated } = useAuth();
+  const { user } = useAuth();
   const { t } = useLanguage();
   const { data: sections, isLoading, error } = trpc.home.getSections.useQuery();
   
@@ -159,52 +159,8 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-white">
-      {/* Hero Section - Mobile First */}
-      <section className="bg-gradient-to-b from-blue-600 via-blue-500 to-blue-600 text-white py-12 sm:py-16 md:py-20 px-4 relative overflow-hidden">
-        {/* Decorative elements */}
-        <div className="absolute top-0 right-0 w-40 h-40 bg-white/5 rounded-full -mr-20 -mt-20" />
-        <div className="absolute bottom-0 left-0 w-32 h-32 bg-white/5 rounded-full -ml-16 -mb-16" />
-
-        <div className="max-w-5xl mx-auto text-center relative z-10">
-          <div className="inline-flex items-center gap-2 bg-white/20 px-4 py-2 rounded-full mb-6 text-sm font-semibold backdrop-blur-sm">
-            <Sparkles className="w-4 h-4" />
-            {t("home.welcomeTag")}
-          </div>
-
-          <h1 className="text-4xl sm:text-5xl md:text-6xl font-bold mb-4 sm:mb-6 leading-tight">
-            {t("home.title")}
-          </h1>
-
-          <p className="text-base sm:text-lg md:text-xl text-blue-100 mb-8 sm:mb-10 max-w-2xl mx-auto leading-relaxed">
-            {t("home.subtitle")}
-          </p>
-
-          {/* CTA Buttons - Mobile Friendly */}
-          <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center items-center">
-            <Link href="/novels">
-              <Button size="lg" className="w-full sm:w-auto rounded-full bg-white text-blue-600 hover:bg-blue-50 font-semibold">
-                <BookOpen className="w-5 h-5 mr-2" />
-                {t("home.browse")}
-              </Button>
-            </Link>
-            {isAuthenticated && (
-              <Link href="/my-novels">
-                <Button 
-                  size="lg" 
-                  variant="outline" 
-                  className="w-full sm:w-auto rounded-full text-white border-white/30 bg-white/10 hover:bg-white/20 font-semibold"
-                >
-                  <Sparkles className="w-5 h-5 mr-2" />
-                  {t("home.myNovels")}
-                </Button>
-              </Link>
-            )}
-          </div>
-        </div>
-      </section>
-
       {/* Main Content - Mobile First */}
-      <div className="max-w-6xl mx-auto px-4 pt-12 sm:pt-16 md:pt-20 pb-[calc(3rem+env(safe-area-inset-bottom))] sm:pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-[calc(5rem+env(safe-area-inset-bottom))]">
+      <div className="max-w-6xl mx-auto px-4 pt-6 sm:pt-8 md:pt-10 pb-[calc(3rem+env(safe-area-inset-bottom))] sm:pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-[calc(5rem+env(safe-area-inset-bottom))]">
         {/* Banners Section */}
         {!isLoading && <BannerCarousel banners={banners} />}
         {/* Featured Novels Section - Popular */}
