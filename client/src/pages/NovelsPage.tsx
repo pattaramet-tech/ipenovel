@@ -7,6 +7,8 @@ import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
 import { Search } from "lucide-react";
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { toast } from "sonner";
+import { useAuth } from "@/_core/hooks/useAuth";
 import NovelCard, { type NovelCardBadge } from "@/components/NovelCard";
 
 const DEBOUNCE_DELAY = 500; // ms
@@ -22,9 +24,12 @@ type SortParam = "new" | "popular";
 
 export default function NovelsPage() {
   const [, navigate] = useLocation();
+  const { user } = useAuth();
+  const utils = trpc.useUtils();
   const [searchTerm, setSearchTerm] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
+  const [pendingWishlistNovelId, setPendingWishlistNovelId] = useState<number | null>(null);
 
   // Parse URL query parameters once and memoize to avoid re-parsing on every render
   const { sortParam, filterParam, storyStatusParam } = useMemo(() => {
@@ -65,6 +70,69 @@ export default function NovelsPage() {
     refetchOnWindowFocus: false,
     gcTime: 10 * 60 * 1000, // Keep cached data for 10 minutes
   });
+
+  // Wishlist state for the heart button on each card - only fetched for
+  // logged-in users, never called for anonymous visitors.
+  const { data: wishlists } = trpc.wishlists.list.useQuery(undefined, {
+    enabled: !!user,
+  });
+  const wishlistMap = useMemo(
+    () => new Map((wishlists ?? []).map((w: any) => [w.novelId, w.id])),
+    [wishlists]
+  );
+
+  const addWishlistMutation = trpc.wishlists.add.useMutation();
+  const removeWishlistMutation = trpc.wishlists.remove.useMutation();
+
+  const handleWishlistToggle = useCallback(
+    (novelId: number) => {
+      if (!user) {
+        toast.error("กรุณาเข้าสู่ระบบเพื่อบันทึกอยากอ่าน");
+        return;
+      }
+
+      const existingWishlistId = wishlistMap.get(novelId);
+      setPendingWishlistNovelId(novelId);
+
+      if (existingWishlistId) {
+        removeWishlistMutation.mutate(
+          { wishlistId: existingWishlistId },
+          {
+            onSuccess: () => {
+              toast.success("ลบออกจากรายการอยากอ่านแล้ว");
+              utils.wishlists.list.invalidate();
+            },
+            onError: (error: any) => {
+              toast.error(error?.message || "ลบออกจากรายการอยากอ่านไม่สำเร็จ");
+            },
+            onSettled: () => setPendingWishlistNovelId(null),
+          }
+        );
+      } else {
+        addWishlistMutation.mutate(
+          { novelId },
+          {
+            onSuccess: () => {
+              toast.success("บันทึกอยากอ่านแล้ว");
+              utils.wishlists.list.invalidate();
+            },
+            onError: (error: any) => {
+              // Already saved (e.g. stale map, double-click) - not a real
+              // failure, just resync the list instead of an error toast.
+              if (error?.data?.code === "CONFLICT") {
+                toast.info("เรื่องนี้อยู่ในรายการอยากอ่านแล้ว");
+                utils.wishlists.list.invalidate();
+                return;
+              }
+              toast.error(error?.message || "บันทึกอยากอ่านไม่สำเร็จ");
+            },
+            onSettled: () => setPendingWishlistNovelId(null),
+          }
+        );
+      }
+    },
+    [user, wishlistMap, addWishlistMutation, removeWishlistMutation, utils]
+  );
 
   // Get display title based on current sort/filter
   const getPageTitle = () => {
@@ -241,6 +309,9 @@ export default function NovelsPage() {
                     coverImageUrl={novel.coverImageUrl}
                     badges={badges}
                     showWishlist
+                    isWishlisted={wishlistMap.has(novel.id)}
+                    wishlistLoading={pendingWishlistNovelId === novel.id}
+                    onWishlistToggle={handleWishlistToggle}
                     eager={idx < 4}
                   />
                 );

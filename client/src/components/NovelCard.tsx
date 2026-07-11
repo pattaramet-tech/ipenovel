@@ -19,6 +19,14 @@ interface NovelCardProps {
   eager?: boolean;
   href?: string;
   showWishlist?: boolean;
+  /** Whether this novel is currently in the viewer's wishlist. */
+  isWishlisted?: boolean;
+  /** True while an add/remove request for this card's novel is in flight. */
+  wishlistLoading?: boolean;
+  /** Called with the numeric novel id when the heart button is clicked. If
+   *  omitted, the button still renders (when showWishlist) but is a no-op -
+   *  callers that don't wire up wishlist state don't need to pass this. */
+  onWishlistToggle?: (novelId: number) => void;
 }
 
 /**
@@ -43,6 +51,9 @@ export default function NovelCard({
   eager = false,
   href,
   showWishlist = false,
+  isWishlisted = false,
+  wishlistLoading = false,
+  onWishlistToggle,
 }: NovelCardProps) {
   const link = href ?? `/novels/${id}`;
   const loading = eager ? "eager" : "lazy";
@@ -98,14 +109,24 @@ export default function NovelCard({
 
           {showWishlist && (
             <button
-              className="absolute top-2 left-2 z-20 p-1.5 rounded-full bg-white/85 hover:bg-white transition"
+              className={`absolute top-2 left-2 z-20 p-1.5 rounded-full bg-white/85 hover:bg-white transition ${
+                wishlistLoading ? "opacity-60 cursor-wait" : ""
+              }`}
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                if (wishlistLoading) return;
+                onWishlistToggle?.(Number(id));
               }}
-              aria-label="Add to wishlist"
+              disabled={wishlistLoading}
+              aria-label={isWishlisted ? "ลบออกจากรายการอยากอ่าน" : "บันทึกอยากอ่าน"}
+              aria-pressed={isWishlisted}
             >
-              <Heart className="w-3.5 h-3.5 text-slate-500 hover:text-red-500" />
+              <Heart
+                className={`w-3.5 h-3.5 transition-colors ${
+                  isWishlisted ? "text-red-500 fill-red-500" : "text-slate-500 hover:text-red-500"
+                }`}
+              />
             </button>
           )}
         </div>
