@@ -231,10 +231,6 @@ export default function NovelDetailPage() {
     () => groupEpisodesByHundreds(visibleReaderEpisodes),
     [visibleReaderEpisodes]
   );
-  const packageEpisodeGroups = useMemo(
-    () => groupEpisodesByHundreds(filteredAndSortedEpisodes.packageEpisodes),
-    [filteredAndSortedEpisodes.packageEpisodes]
-  );
 
   // A group is expanded if the user explicitly toggled it, or by default:
   // while searching every group already only contains matching episodes so
@@ -766,18 +762,21 @@ export default function NovelDetailPage() {
                     {renderEpisodeGroupAccordion(readerEpisodeGroups, "chapter", renderChapterEpisodeCard)}
                   </div>
                 )}
-                {/* Package Episodes Section - cart/checkout flow (main sale surface) */}
+                {/* Package Episodes Section - cart/checkout flow (main sale surface).
+                    Rendered as a single flat list in episode order - packages
+                    don't align to 100-chapter boundaries, so no range grouping. */}
                 {packageEpisodes.length > 0 && (
                   <div>
                     <h3 className="text-lg font-semibold mb-3 text-amber-600">ขายแพ็ก ({packageEpisodes.length})</h3>
-                    {renderEpisodeGroupAccordion(packageEpisodeGroups, "package", renderPackageEpisodeCard)}
+                    <div className="space-y-3">{packageEpisodes.map(renderPackageEpisodeCard)}</div>
                   </div>
                 )}
               </>
             ) : saleType === "package" ? (
-              // Package tab: packageEpisodes only, cart/checkout flow, web-read only.
+              // Package tab: packageEpisodes only, cart/checkout flow, web-read only,
+              // flat list (no range grouping - see comment above).
               packageEpisodes.length > 0 ? (
-                renderEpisodeGroupAccordion(packageEpisodeGroups, "package", renderPackageEpisodeCard)
+                <div className="space-y-3">{packageEpisodes.map(renderPackageEpisodeCard)}</div>
               ) : (
                 <Card className="p-8 text-center">
                   <p className="text-muted-foreground">ยังไม่มีแพ็กให้ซื้อ</p>
