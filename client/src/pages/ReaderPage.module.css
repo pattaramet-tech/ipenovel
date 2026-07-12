@@ -229,12 +229,21 @@
 .episodeContent {
   position: relative;
   line-height: 1.8;
-  text-align: justify;
+  /* justify stretches inter-word/inter-phrase gaps unevenly for Thai text
+     (no hyphenation, spaces mark phrase boundaries rather than every word),
+     which is exactly the "uneven spacing" bug this is fixing - left-align
+     keeps natural, consistent spacing instead. */
+  text-align: left;
+  word-spacing: normal;
+  letter-spacing: normal;
 }
 
 .episodeContent p {
   margin: var(--reader-paragraph-spacing, 1.5rem) 0;
   text-indent: 2em;
+  text-align: left;
+  word-spacing: normal;
+  letter-spacing: normal;
 }
 
 .episodeContent p:first-child {
@@ -250,7 +259,9 @@
 .previewContent {
   position: relative;
   line-height: 1.8;
-  text-align: justify;
+  text-align: left;
+  word-spacing: normal;
+  letter-spacing: normal;
   max-height: 300px;
   overflow: hidden;
 }
@@ -258,6 +269,9 @@
 .previewContent p {
   margin: var(--reader-paragraph-spacing, 1.5rem) 0;
   text-indent: 2em;
+  text-align: left;
+  word-spacing: normal;
+  letter-spacing: normal;
 }
 
 .previewFade {
