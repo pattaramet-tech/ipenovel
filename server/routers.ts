@@ -968,6 +968,11 @@ export const appRouter = router({
     }),
     dashboard: dashboardRouter,
 
+    // Deprecated: fetches every episode row (all novels) including the full
+    // mediumtext `content` column - heavy, unpaginated. Kept only for
+    // AdminEpisodeImportPage.tsx and AdminNovelManagePage.tsx, which already
+    // scope it to one novelId client-side. New code should use the paginated
+    // admin.episodes.list (list view) / admin.episodes.detail (single row).
     getAllEpisodes: adminProcedure.query(async () => {
       return db.getAllEpisodes();
     }),
@@ -1081,13 +1086,36 @@ export const appRouter = router({
     }),
 
     episodes: router({
+      // Paginated, lightweight list for the admin episodes page - never
+      // returns `content` (see db.getAdminEpisodesList for why). Search/
+      // filter/sort all happen in the DB query, not client-side.
       list: adminProcedure
-        .input(z.object({ novelId: z.number().optional() }))
+        .input(
+          z.object({
+            page: z.number().int().positive().optional(),
+            pageSize: z.number().int().positive().max(100).optional(),
+            novelId: z.number().optional(),
+            search: z.string().trim().max(200).optional(),
+            sortBy: z.enum(["createdAt", "updatedAt", "episodeNumber", "title", "sortOrder"]).optional(),
+            sortOrder: z.enum(["asc", "desc"]).optional(),
+            saleMode: z.enum(["chapter", "package"]).optional(),
+            isPublished: z.boolean().optional(),
+          }).optional()
+        )
         .query(async ({ input }) => {
-          if (input.novelId) {
-            return db.getEpisodesByNovelId(input.novelId);
+          return db.getAdminEpisodesList(input ?? {});
+        }),
+
+      // Full episode row (content/fileUrl included) - only fetched when an
+      // admin actually opens one episode to edit, not for the list view.
+      detail: adminProcedure
+        .input(z.object({ episodeId: z.number() }))
+        .query(async ({ input }) => {
+          const episode = await db.getEpisodeById(input.episodeId);
+          if (!episode) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "Episode not found" });
           }
-          return db.getAllEpisodes();
+          return episode;
         }),
 
       create: adminProcedure

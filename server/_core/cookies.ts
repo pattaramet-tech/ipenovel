@@ -23,26 +23,40 @@ function isSecureRequest(req: Request) {
 
 export function getSessionCookieOptions(
   req: Request
-): Pick<CookieOptions, "domain" | "httpOnly" | "path" | "sameSite" | "secure"> {
-  // const hostname = req.hostname;
-  // const shouldSetDomain =
-  //   hostname &&
-  //   !LOCAL_HOSTS.has(hostname) &&
-  //   !isIpAddress(hostname) &&
-  //   hostname !== "127.0.0.1" &&
-  //   hostname !== "::1";
+): Pick<CookieOptions, "httpOnly" | "path" | "sameSite" | "secure"> {
+  const hostname = req.hostname || "";
+  const isLocal = LOCAL_HOSTS.has(hostname) || isIpAddress(hostname);
 
-  // const domain =
-  //   shouldSetDomain && !hostname.startsWith(".")
-  //     ? `.${hostname}`
-  //     : shouldSetDomain
-  //       ? hostname
-  //       : undefined;
+  // secure is the source of truth; sameSite is DERIVED from it below, so it
+  // is structurally impossible to emit SameSite=None with Secure=false -
+  // browsers silently reject/drop that combination, which was the likely
+  // cause of admin sessions not persisting when a proxy in front of the app
+  // didn't get detected as HTTPS (isSecureRequest only trusts req.protocol
+  // and x-forwarded-proto). Treat the request as secure if we can detect
+  // HTTPS directly, if we're explicitly running in production, or if the
+  // host isn't a known local dev host/IP.
+  const secure =
+    isSecureRequest(req) ||
+    process.env.NODE_ENV === "production" ||
+    !isLocal;
+
+  // Debug only - never log the token/session value itself, just the
+  // request context that decided secure/sameSite, to help diagnose "admin
+  // session doesn't persist" reports without exposing anything sensitive.
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[Cookie] session cookie options", {
+      host: req.hostname,
+      protocol: req.protocol,
+      xForwardedProto: req.headers["x-forwarded-proto"] || null,
+      secure,
+      sameSite: secure ? "none" : "lax",
+    });
+  }
 
   return {
     httpOnly: true,
     path: "/",
-    sameSite: "none",
-    secure: isSecureRequest(req),
+    sameSite: secure ? "none" : "lax",
+    secure,
   };
 }

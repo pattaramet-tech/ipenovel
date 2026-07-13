@@ -31,6 +31,12 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 
 async function startServer() {
   const app = express();
+  // Trust the first hop reverse proxy (e.g. Manus production) so Express
+  // reads X-Forwarded-Proto/-For correctly - without this, req.protocol
+  // always reports the proxy's plain-HTTP connection to this process, so
+  // isSecureRequest()'s req.protocol === "https" check in cookies.ts can
+  // never be true even when the client is genuinely on HTTPS.
+  app.set("trust proxy", 1);
   const server = createServer(app);
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));

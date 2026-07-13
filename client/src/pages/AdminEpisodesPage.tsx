@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
-import { useState, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import { Plus, Edit2, Trash2, Loader2, ArrowLeft, Search } from "lucide-react";
 import { useLocation } from "wouter";
@@ -25,6 +25,16 @@ interface AdminEpisodesPageProps {
 
 type SortOption = "newest" | "oldest" | "title_asc" | "title_desc";
 
+const SORT_OPTION_MAP: Record<SortOption, { sortBy: "createdAt" | "title"; sortOrder: "asc" | "desc" }> = {
+  newest: { sortBy: "createdAt", sortOrder: "desc" },
+  oldest: { sortBy: "createdAt", sortOrder: "asc" },
+  title_asc: { sortBy: "title", sortOrder: "asc" },
+  title_desc: { sortBy: "title", sortOrder: "desc" },
+};
+
+const PAGE_SIZE = 50;
+const SEARCH_DEBOUNCE_MS = 400;
+
 export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
   const [, navigate] = useLocation();
   const scopedNovelId = params?.novelId ? parseInt(params.novelId) : undefined;
@@ -32,8 +42,11 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
 
   const [novelFilter, setNovelFilter] = useState<number | undefined>(scopedNovelId);
   const [searchTerm, setSearchTerm] = useState("");
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
   const [sortOption, setSortOption] = useState<SortOption>("newest");
+  const [page, setPage] = useState(1);
   const [openDialog, setOpenDialog] = useState(false);
+  const [editingEpisodeId, setEditingEpisodeId] = useState<number | null>(null);
   const [editingEpisode, setEditingEpisode] = useState<any>(null);
   const [formData, setFormData] = useState({
     novelId: scopedNovelId || 0,
@@ -53,15 +66,74 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
     sortOrder: 0,
   });
 
-  const { data: episodes, isLoading, refetch } = trpc.admin.getAllEpisodes.useQuery();
-  const { data: novels } = trpc.novels.list.useQuery();
+  // Debounce search ~400ms and reset to page 1 whenever search/filter/sort change.
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearchTerm(searchTerm), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearchTerm, novelFilter, sortOption]);
+
+  const utils = trpc.useUtils();
+
+  const queryInput = useMemo(
+    () => ({
+      page,
+      pageSize: PAGE_SIZE,
+      novelId: novelFilter,
+      search: debouncedSearchTerm.trim() || undefined,
+      ...SORT_OPTION_MAP[sortOption],
+    }),
+    [page, novelFilter, debouncedSearchTerm, sortOption]
+  );
+
+  // Lightweight, paginated, backend-filtered list - never ships full episode
+  // content to the browser. See server/db.ts getAdminEpisodesList.
+  const { data: listData, isLoading } = trpc.admin.episodes.list.useQuery(queryInput);
+  const episodesList = listData?.episodes ?? [];
+  const total = listData?.total ?? 0;
+  const totalPages = listData?.totalPages ?? 1;
+
+  // Novel picker - capped list from the admin-scoped, paginated novel search
+  // (never the full unlimited table) for both the filter dropdown and the
+  // create/edit dialog's novel select.
+  const { data: novelOptions } = trpc.admin.novels.list.useQuery({ limit: 50 });
+
+  // Full episode row (content/fileUrl) is only fetched once an admin opens
+  // the Edit dialog for a specific episode - not part of the list payload.
+  const { data: episodeDetail, isLoading: detailLoading } = trpc.admin.episodes.detail.useQuery(
+    { episodeId: editingEpisodeId! },
+    { enabled: !!editingEpisodeId }
+  );
+
+  useEffect(() => {
+    if (!episodeDetail) return;
+    setEditingEpisode(episodeDetail);
+    setFormData({
+      novelId: episodeDetail.novelId,
+      episodeNumber: String(episodeDetail.episodeNumber) || "",
+      title: episodeDetail.title || "",
+      description: episodeDetail.description || "",
+      price: episodeDetail.price || "0",
+      isFree: episodeDetail.isFree || false,
+      fileUrl: episodeDetail.fileUrl || "",
+      content: episodeDetail.content || "",
+      contentFormat: (episodeDetail.contentFormat as "plain_text" | "markdown" | "html") || "plain_text",
+      saleMode: episodeDetail.saleMode === "package" ? "package" : "chapter",
+      isPublished: episodeDetail.isPublished !== false,
+      publishedAt: episodeDetail.publishedAt ? new Date(episodeDetail.publishedAt) : new Date(),
+      sortOrder: episodeDetail.sortOrder || 0,
+    });
+  }, [episodeDetail]);
 
   const createMutation = trpc.admin.episodes.create.useMutation({
     onSuccess: () => {
       toast.success("Episode created successfully!");
       setOpenDialog(false);
       resetForm();
-      refetch();
+      utils.admin.episodes.list.invalidate();
     },
     onError: (error) => {
       toast.error(error.message || "Failed to create episode");
@@ -73,7 +145,8 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
       toast.success("Episode updated successfully!");
       setOpenDialog(false);
       setEditingEpisode(null);
-      refetch();
+      setEditingEpisodeId(null);
+      utils.admin.episodes.list.invalidate();
     },
     onError: (error) => {
       toast.error(error.message || "Failed to update episode");
@@ -83,7 +156,7 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
   const deleteMutation = trpc.admin.episodes.delete.useMutation({
     onSuccess: () => {
       toast.success("Episode deleted successfully!");
-      refetch();
+      utils.admin.episodes.list.invalidate();
     },
     onError: (error) => {
       toast.error(error.message || "Failed to delete episode");
@@ -141,68 +214,20 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
   };
 
   const handleEdit = (episode: any) => {
-    setEditingEpisode(episode);
-    setFormData({
-      novelId: episode.novelId,
-      episodeNumber: String(episode.episodeNumber) || "",
-      title: episode.title || "",
-      description: episode.description || "",
-      price: episode.price || "0",
-      isFree: episode.isFree || false,
-      fileUrl: episode.fileUrl || "",
-      content: episode.content || "",
-      contentFormat: episode.contentFormat || "plain_text",
-      saleMode: episode.saleMode === "package" ? "package" : "chapter",
-      isPublished: episode.isPublished !== false,
-      publishedAt: episode.publishedAt ? new Date(episode.publishedAt) : new Date(),
-      sortOrder: episode.sortOrder || 0,
-    });
+    setEditingEpisode(null);
+    setEditingEpisodeId(episode.id);
     setOpenDialog(true);
   };
 
   const handleCloseDialog = () => {
     setOpenDialog(false);
     setEditingEpisode(null);
+    setEditingEpisodeId(null);
     resetForm();
   };
 
-  // Filter by novel
-  const novelFilteredEpisodes = episodes?.filter((ep: any) =>
-    !novelFilter || ep.novelId === novelFilter
-  ) || [];
-
-  // Search and sort
-  const processedEpisodes = useMemo(() => {
-    let result = [...novelFilteredEpisodes];
-
-    // Apply search filter
-    if (searchTerm.trim()) {
-      const lowerSearch = searchTerm.toLowerCase();
-      result = result.filter((ep: any) => {
-        const titleMatch = ep.title.toLowerCase().includes(lowerSearch);
-        const numberMatch = String(ep.episodeNumber).toLowerCase().includes(lowerSearch);
-        return titleMatch || numberMatch;
-      });
-    }
-
-    // Apply sorting
-    result.sort((a: any, b: any) => {
-      switch (sortOption) {
-        case "newest":
-          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-        case "oldest":
-          return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
-        case "title_asc":
-          return a.title.localeCompare(b.title);
-        case "title_desc":
-          return b.title.localeCompare(a.title);
-        default:
-          return 0;
-      }
-    });
-
-    return result;
-  }, [novelFilteredEpisodes, searchTerm, sortOption]);
+  const rangeStart = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const rangeEnd = Math.min(page * PAGE_SIZE, total);
 
   return (
     <AdminLayout>
@@ -237,18 +262,19 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
                 className="px-3 py-2 border rounded-md"
               >
                 <option value="">All Novels</option>
-                {novels?.map((novel: any) => (
+                {novelOptions?.map((novel: any) => (
                   <option key={novel.id} value={novel.id}>
                     {novel.title}
                   </option>
                 ))}
               </select>
             )}
-            <Dialog open={openDialog} onOpenChange={setOpenDialog}>
+            <Dialog open={openDialog} onOpenChange={(open) => (open ? setOpenDialog(true) : handleCloseDialog())}>
               <DialogTrigger asChild>
                 <Button
                   onClick={() => {
                     setEditingEpisode(null);
+                    setEditingEpisodeId(null);
                     resetForm();
                   }}
                 >
@@ -258,8 +284,13 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
               </DialogTrigger>
               <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
                 <DialogHeader>
-                  <DialogTitle>{editingEpisode ? "Edit Episode" : "Create New Episode"}</DialogTitle>
+                  <DialogTitle>{editingEpisodeId ? "Edit Episode" : "Create New Episode"}</DialogTitle>
                 </DialogHeader>
+                {editingEpisodeId && detailLoading ? (
+                  <div className="flex items-center justify-center py-16">
+                    <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+                  </div>
+                ) : (
                 <div className="space-y-6 py-4">
                   {/* Basic Info Section */}
                   <div>
@@ -274,7 +305,7 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
                             className="w-full px-3 py-2 border rounded-md"
                           >
                             <option value={0}>Select a novel</option>
-                            {novels?.map((novel: any) => (
+                            {novelOptions?.map((novel: any) => (
                               <option key={novel.id} value={novel.id}>
                                 {novel.title}
                               </option>
@@ -432,6 +463,7 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
                     )}
                   </Button>
                 </div>
+                )}
               </DialogContent>
             </Dialog>
           </div>
@@ -478,7 +510,7 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
           <div className="flex items-center justify-center h-64">
             <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
           </div>
-        ) : processedEpisodes.length === 0 ? (
+        ) : episodesList.length === 0 ? (
           <Card className="p-8 text-center">
             <p className="text-muted-foreground">
               {searchTerm.trim()
@@ -491,65 +523,83 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
         ) : (
           <div className="grid gap-4">
             <div className="text-sm text-muted-foreground">
-              Showing {processedEpisodes.length} episode{processedEpisodes.length !== 1 ? "s" : ""}
+              Showing {rangeStart}-{rangeEnd} of {total} episode{total !== 1 ? "s" : ""}
             </div>
-            {processedEpisodes.map((episode: any) => {
-              const novel = novels?.find((n: any) => n.id === episode.novelId);
-              return (
-                <Card key={episode.id} className="p-4">
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <h3 className="font-semibold text-lg">{episode.title}</h3>
-                        <Badge variant={episode.isFree ? "default" : "secondary"}>
-                          {episode.isFree ? "Free" : `฿${episode.price}`}
-                        </Badge>
+            {episodesList.map((episode: any) => (
+              <Card key={episode.id} className="p-4">
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="font-semibold text-lg">{episode.title}</h3>
+                      <Badge variant={episode.isFree ? "default" : "secondary"}>
+                        {episode.isFree ? "Free" : `฿${episode.price}`}
+                      </Badge>
+                      <Badge variant="outline" className="text-xs">
+                        {episode.saleMode === "package" ? "แพ็กอ่านบนเว็บ" : "รายบท"}
+                      </Badge>
+                      {episode.hasContent && (
                         <Badge variant="outline" className="text-xs">
-                          {episode.saleMode === "package" ? "แพ็กอ่านบนเว็บ" : "รายบท"}
+                          Content ✓
                         </Badge>
-                        {episode.content && (
-                          <Badge variant="outline" className="text-xs">
-                            Content ✓
-                          </Badge>
-                        )}
-                        {!episode.isPublished && (
-                          <Badge variant="outline" className="text-xs bg-yellow-50">
-                            Draft
-                          </Badge>
-                        )}
-                      </div>
-                      <p className="text-sm text-muted-foreground mt-1">
-                        {!isScoped && `${novel?.title} • `}Episode {episode.episodeNumber}
-                        {episode.wordCount && ` • ${episode.wordCount} words`}
-                      </p>
-                      {episode.description && (
-                        <p className="text-sm mt-1 text-slate-600">{episode.description}</p>
+                      )}
+                      {!episode.isPublished && (
+                        <Badge variant="outline" className="text-xs bg-yellow-50">
+                          Draft
+                        </Badge>
                       )}
                     </div>
-                    <div className="flex gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleEdit(episode)}
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="destructive"
-                        onClick={() => {
-                          if (confirm("Are you sure you want to delete this episode?")) {
-                            deleteMutation.mutate({ episodeId: episode.id });
-                          }
-                        }}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
-                    </div>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      {!isScoped && `${episode.novelTitle} • `}Episode {episode.episodeNumber}
+                      {episode.wordCount && ` • ${episode.wordCount} words`}
+                    </p>
+                    {episode.description && (
+                      <p className="text-sm mt-1 text-slate-600">{episode.description}</p>
+                    )}
                   </div>
-                </Card>
-              );
-            })}
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleEdit(episode)}
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => {
+                        if (confirm("Are you sure you want to delete this episode?")) {
+                          deleteMutation.mutate({ episodeId: episode.id });
+                        }
+                      }}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </div>
+                </div>
+              </Card>
+            ))}
+
+            {/* Pagination */}
+            <div className="flex justify-center items-center gap-4 mt-2">
+              <Button
+                variant="outline"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                ก่อนหน้า
+              </Button>
+              <span className="text-sm text-slate-600">
+                Page {page} of {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                disabled={page >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              >
+                ถัดไป
+              </Button>
+            </div>
           </div>
         )}
       </div>

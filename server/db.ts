@@ -333,6 +333,97 @@ export async function getAllEpisodes() {
   return db.select().from(episodes).orderBy(desc(episodes.createdAt));
 }
 
+export interface AdminEpisodesListParams {
+  page?: number;
+  pageSize?: number;
+  novelId?: number;
+  search?: string;
+  sortBy?: "createdAt" | "updatedAt" | "episodeNumber" | "title" | "sortOrder";
+  sortOrder?: "asc" | "desc";
+  saleMode?: "chapter" | "package";
+  isPublished?: boolean;
+}
+
+/**
+ * Lightweight, paginated episode list for the admin episodes page.
+ * Deliberately never selects `content` (mediumtext, up to ~16MB per row for
+ * package episodes) - that's what made the old unpaginated getAllEpisodes()
+ * query/response so large that the page felt like it (or the session) had
+ * hung. Use getEpisodeById() for the full row (content/fileUrl) when a
+ * single episode is opened for editing.
+ */
+export async function getAdminEpisodesList(params: AdminEpisodesListParams = {}) {
+  const pageSize = Math.min(100, Math.max(1, params.pageSize ?? 50));
+  const page = Math.max(1, params.page ?? 1);
+
+  const db = await getDb();
+  if (!db) {
+    return { episodes: [], total: 0, page, pageSize, totalPages: 0 };
+  }
+
+  const offset = (page - 1) * pageSize;
+
+  const conditions = [];
+  if (params.novelId) conditions.push(eq(episodes.novelId, params.novelId));
+  if (params.saleMode) conditions.push(eq(episodes.saleMode, params.saleMode));
+  if (params.isPublished !== undefined) conditions.push(eq(episodes.isPublished, params.isPublished));
+  if (params.search?.trim()) {
+    const pattern = `%${params.search.trim()}%`;
+    conditions.push(or(like(episodes.title, pattern), like(episodes.episodeNumber, pattern)));
+  }
+  const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+  const sortColumns = {
+    createdAt: episodes.createdAt,
+    updatedAt: episodes.updatedAt,
+    episodeNumber: episodes.episodeNumber,
+    title: episodes.title,
+    sortOrder: episodes.sortOrder,
+  } as const;
+  const sortColumn = sortColumns[params.sortBy ?? "createdAt"] ?? episodes.createdAt;
+  const orderFn = params.sortOrder === "asc" ? asc : desc;
+
+  let listQuery: any = db
+    .select({
+      id: episodes.id,
+      novelId: episodes.novelId,
+      novelTitle: novels.title,
+      episodeNumber: episodes.episodeNumber,
+      title: episodes.title,
+      description: episodes.description,
+      price: episodes.price,
+      isFree: episodes.isFree,
+      saleMode: episodes.saleMode,
+      isPublished: episodes.isPublished,
+      publishedAt: episodes.publishedAt,
+      sortOrder: episodes.sortOrder,
+      wordCount: episodes.wordCount,
+      createdAt: episodes.createdAt,
+      updatedAt: episodes.updatedAt,
+      hasContent: sql<boolean>`(${episodes.content} IS NOT NULL AND ${episodes.content} != '')`,
+      contentLength: sql<number>`COALESCE(LENGTH(${episodes.content}), 0)`,
+      hasLegacyFile: sql<boolean>`(${episodes.fileUrl} IS NOT NULL AND ${episodes.fileUrl} != '')`,
+    })
+    .from(episodes)
+    .leftJoin(novels, eq(episodes.novelId, novels.id));
+  if (whereClause) listQuery = listQuery.where(whereClause);
+  listQuery = listQuery.orderBy(orderFn(sortColumn)).limit(pageSize).offset(offset);
+
+  let countQuery: any = db.select({ total: count() }).from(episodes);
+  if (whereClause) countQuery = countQuery.where(whereClause);
+
+  const [rows, countRows] = await Promise.all([listQuery, countQuery]);
+  const total = Number(countRows[0]?.total) || 0;
+
+  return {
+    episodes: rows,
+    total,
+    page,
+    pageSize,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
+  };
+}
+
 export async function createEpisode(data: {
   novelId: number;
   episodeNumber: string;

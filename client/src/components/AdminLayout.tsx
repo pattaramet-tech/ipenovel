@@ -7,6 +7,7 @@ import {
   LogOut,
   ChevronRight,
   Home,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -20,12 +21,45 @@ interface AdminLayoutProps {
 const allNavItems = adminNavSections.flatMap((section) => section.items);
 
 export default function AdminLayout({ children }: AdminLayoutProps) {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
   const [location, navigate] = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // Auth check
-  if (!user || user.role !== "admin") {
+  // While auth.me is still resolving (e.g. a hard refresh on /admin/*, before
+  // the session cookie has round-tripped), `user` is still null - render a
+  // loading state instead of "Access Denied", which would otherwise flash
+  // for every legitimately logged-in admin on every fresh page load.
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-slate-50">
+        <div className="flex flex-col items-center gap-3 text-slate-600">
+          <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+          <p>กำลังตรวจสอบสิทธิ์ผู้ดูแล...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Not logged in at all - offer a way to log in, distinct from "logged in
+  // but not an admin" below.
+  if (!user) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-slate-50">
+        <Card className="p-8 text-center max-w-md">
+          <h1 className="text-2xl font-bold mb-4 text-slate-900">Login Required</h1>
+          <p className="text-slate-600 mb-6">
+            กรุณาเข้าสู่ระบบเพื่อเข้าใช้งานส่วนผู้ดูแลระบบ
+          </p>
+          <Button asChild>
+            <a href="/admin/login">เข้าสู่ระบบ</a>
+          </Button>
+        </Card>
+      </div>
+    );
+  }
+
+  // Logged in, but not an admin - this is the real "Access Denied" case.
+  if (user.role !== "admin") {
     return (
       <div className="flex items-center justify-center min-h-screen bg-slate-50">
         <Card className="p-8 text-center max-w-md">
