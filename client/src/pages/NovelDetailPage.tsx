@@ -461,19 +461,19 @@ export default function NovelDetailPage() {
                     {isFree ? "อ่านเดี๋ยวนี้" : episode.progressPercent > 0 ? "อ่านต่อ" : "อ่านแพ็กนี้"}
                   </button>
                 )}
-                {/* Legacy Docs/PDF file - shown as secondary when web content
-                    also exists, or as the only/primary option when it's the
-                    sole way to read this package (not yet migrated). */}
-                {episode.hasLegacyFile && episode.fileUrl && (
+                {/* Legacy Docs/PDF file - only shown when this package has no
+                    web-reader content yet (not migrated). Once plain-text
+                    content exists, reading via the web Reader is the primary
+                    (and only) path - the old file link is hidden entirely,
+                    even if fileUrl is still present, to avoid confusing
+                    readers with a redundant/outdated way to read the same
+                    package. */}
+                {!episode.hasContent && episode.hasLegacyFile && episode.fileUrl && (
                   <a
                     href={episode.fileUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className={`inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md transition ${
-                      episode.hasContent
-                        ? "bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-300"
-                        : "bg-blue-600 text-white hover:bg-blue-700"
-                    }`}
+                    className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md transition bg-blue-600 text-white hover:bg-blue-700"
                   >
                     เปิดไฟล์เดิม
                   </a>
