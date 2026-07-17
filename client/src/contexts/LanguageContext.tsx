@@ -384,6 +384,11 @@ const translations: Record<Language, Record<string, string>> = {
     "myNovels.purchasedOn": "ซื้อเมื่อ",
     "myNovels.read": "อ่าน",
     "myNovels.readFileNotAvailable": "อ่าน (ไม่มีไฟล์)",
+    "myNovels.itemCount": "ซื้อแล้ว {count} รายการ",
+    "myNovels.latestLabel": "ล่าสุด",
+    "myNovels.readLatest": "อ่านล่าสุด",
+    "myNovels.viewItems": "ดูรายการอ่าน",
+    "myNovels.hideItems": "ซ่อนรายการ",
 
     // Sports Votes
     "sports.title": "ทายผลฟุตบอล",
@@ -624,6 +629,11 @@ const translations: Record<Language, Record<string, string>> = {
     "myNovels.purchasedOn": "Purchased on",
     "myNovels.read": "Read",
     "myNovels.readFileNotAvailable": "Read (File Not Available)",
+    "myNovels.itemCount": "{count} item(s) purchased",
+    "myNovels.latestLabel": "Latest",
+    "myNovels.readLatest": "Read Latest",
+    "myNovels.viewItems": "View Items",
+    "myNovels.hideItems": "Hide Items",
 
     // Points
     "points.title": "My Points",
