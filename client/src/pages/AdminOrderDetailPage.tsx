@@ -360,13 +360,25 @@ export default function AdminOrderDetailPage() {
             <h2 className="text-lg font-semibold mb-4">Items</h2>
             <div className="space-y-4">
               {order.items.map((item: any) => {
+                // novel/episode come pre-joined from db.getOrderItems(), but fall back
+                // through any legacy snapshot fields (and finally a "not found" label)
+                // in case either row was deleted after this order was placed.
+                const novelTitle =
+                  item.novel?.title ||
+                  item.novelTitle ||
+                  item.novelTitleSnapshot ||
+                  item.episode?.novel?.title ||
+                  "ไม่พบชื่อเรื่อง";
                 const episodeTitle = item.episode?.title || item.episodeTitle || item.title || `Episode ${item.episodeNumber}`;
+                const episodeNumber = item.episode?.episodeNumber || item.episodeNumber || "—";
                 const legacyFileUrl = item.episode?.fileUrl || null;
                 return (
                   <div key={item.id} className="border-b pb-4 last:border-b-0">
                     <div className="flex justify-between items-start">
-                      <div className="flex-1">
-                        <p className="font-medium">{episodeTitle}</p>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-semibold text-slate-900 break-words">{novelTitle}</p>
+                        <p className="text-sm text-slate-600 break-words">{episodeTitle}</p>
+                        <p className="text-xs text-slate-500">Episode {episodeNumber}</p>
                         {/* Admin-only internal reference for pre-migration orders - the
                             web-only reader never links to this; customers always read at
                             /read/:episodeId and this is never shown outside this admin page. */}
