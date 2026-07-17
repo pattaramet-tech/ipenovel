@@ -4,11 +4,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
-import { useLocation } from "wouter";
-import { Search } from "lucide-react";
+import { useSearchParams } from "wouter";
+import { Search, Loader2 } from "lucide-react";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { keepPreviousData } from "@tanstack/react-query";
 import NovelCard, { type NovelCardBadge } from "@/components/NovelCard";
 
 const DEBOUNCE_DELAY = 500; // ms
@@ -23,7 +24,15 @@ type ContentFilter = "all" | "free";
 type SortParam = "new" | "popular";
 
 export default function NovelsPage() {
-  const [, navigate] = useLocation();
+  // wouter's useLocation() only ever returns the pathname, never the query
+  // string - reading window.location.search once via useMemo([]) (the old
+  // approach) meant sort/filter/storyStatus were captured on first mount and
+  // never updated again, so the UI silently drifted out of sync with the URL
+  // on every subsequent navigate() call. useSearchParams() is wouter's own
+  // hook for this: it's reactive to pushState/replaceState/popstate, and
+  // setSearchParams navigates for us - single source of truth for both
+  // reading and writing the query string.
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
   const utils = trpc.useUtils();
   const [searchTerm, setSearchTerm] = useState("");
@@ -31,15 +40,9 @@ export default function NovelsPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [pendingWishlistNovelId, setPendingWishlistNovelId] = useState<number | null>(null);
 
-  // Parse URL query parameters once and memoize to avoid re-parsing on every render
-  const { sortParam, filterParam, storyStatusParam } = useMemo(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    return {
-      sortParam: (urlParams.get("sort") as SortParam | null) || "new",
-      filterParam: (urlParams.get("filter") as ContentFilter | null) || "all",
-      storyStatusParam: (urlParams.get("storyStatus") as StoryStatusFilter | null) || "all",
-    };
-  }, []);
+  const sortParam = (searchParams.get("sort") as SortParam | null) || "new";
+  const filterParam = (searchParams.get("filter") as ContentFilter | null) || "all";
+  const storyStatusParam = (searchParams.get("storyStatus") as StoryStatusFilter | null) || "all";
 
   // Debounce search input
   useEffect(() => {
@@ -64,21 +67,31 @@ export default function NovelsPage() {
     [sortParam, filterParam, storyStatusParam, debouncedSearch, currentPage]
   );
 
-  // Fetch novels using the lightweight browse endpoint
-  const { data: novels, isLoading } = trpc.novels.browse.useQuery(queryInput, {
+  // Fetch novels using the lightweight browse endpoint. placeholderData:
+  // keepPreviousData keeps the previous page's results on screen (instead of
+  // clearing to an empty/skeleton state) while a new filter/sort/page is
+  // fetching - isLoading then only ever means "no data at all yet" (true
+  // first load), while isFetching covers every fetch including background
+  // refetches, so the two can drive separate UI (full skeleton vs a small
+  // inline indicator).
+  const { data: novels, isLoading, isFetching } = trpc.novels.browse.useQuery(queryInput, {
     staleTime: 5 * 60 * 1000, // 5 minutes
     refetchOnWindowFocus: false,
     gcTime: 10 * 60 * 1000, // Keep cached data for 10 minutes
+    placeholderData: keepPreviousData,
   });
 
   // Wishlist state for the heart button on each card - only fetched for
-  // logged-in users, never called for anonymous visitors.
-  const { data: wishlists } = trpc.wishlists.list.useQuery(undefined, {
+  // logged-in users, never called for anonymous visitors. Uses the
+  // lightweight wishlists.ids (just {id, novelId} pairs) instead of
+  // wishlists.list, which enriches every row with a full novel row - this
+  // page only ever needs the id/novelId pair to drive the heart icon.
+  const { data: wishlistIds } = trpc.wishlists.ids.useQuery(undefined, {
     enabled: !!user,
   });
   const wishlistMap = useMemo(
-    () => new Map((wishlists ?? []).map((w: any) => [w.novelId, w.id])),
-    [wishlists]
+    () => new Map((wishlistIds ?? []).map((w: any) => [w.novelId, w.id])),
+    [wishlistIds]
   );
 
   const addWishlistMutation = trpc.wishlists.add.useMutation();
@@ -100,7 +113,7 @@ export default function NovelsPage() {
           {
             onSuccess: () => {
               toast.success("ลบออกจากรายการอยากอ่านแล้ว");
-              utils.wishlists.list.invalidate();
+              utils.wishlists.ids.invalidate();
             },
             onError: (error: any) => {
               toast.error(error?.message || "ลบออกจากรายการอยากอ่านไม่สำเร็จ");
@@ -114,14 +127,14 @@ export default function NovelsPage() {
           {
             onSuccess: () => {
               toast.success("บันทึกอยากอ่านแล้ว");
-              utils.wishlists.list.invalidate();
+              utils.wishlists.ids.invalidate();
             },
             onError: (error: any) => {
               // Already saved (e.g. stale map, double-click) - not a real
               // failure, just resync the list instead of an error toast.
               if (error?.data?.code === "CONFLICT") {
                 toast.info("เรื่องนี้อยู่ในรายการอยากอ่านแล้ว");
-                utils.wishlists.list.invalidate();
+                utils.wishlists.ids.invalidate();
                 return;
               }
               toast.error(error?.message || "บันทึกอยากอ่านไม่สำเร็จ");
@@ -144,36 +157,42 @@ export default function NovelsPage() {
 
   const handleSortChange = useCallback(
     (newSort: SortParam) => {
-      const params = new URLSearchParams(window.location.search);
-      params.set("sort", newSort);
-      navigate(`/novels?${params.toString()}`);
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("sort", newSort);
+        return next;
+      });
       setCurrentPage(1);
     },
-    [navigate]
+    [setSearchParams]
   );
 
   const handleFilterChange = useCallback(
     (newFilter: ContentFilter) => {
-      const params = new URLSearchParams(window.location.search);
-      params.set("filter", newFilter);
-      navigate(`/novels?${params.toString()}`);
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("filter", newFilter);
+        return next;
+      });
       setCurrentPage(1);
     },
-    [navigate]
+    [setSearchParams]
   );
 
   const handleStoryStatusChange = useCallback(
     (newStatus: StoryStatusFilter) => {
-      const params = new URLSearchParams(window.location.search);
-      if (newStatus === "all") {
-        params.delete("storyStatus");
-      } else {
-        params.set("storyStatus", newStatus);
-      }
-      navigate(`/novels?${params.toString()}`);
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (newStatus === "all") {
+          next.delete("storyStatus");
+        } else {
+          next.set("storyStatus", newStatus);
+        }
+        return next;
+      });
       setCurrentPage(1);
     },
-    [navigate]
+    [setSearchParams]
   );
 
   // Memoize hasNextPage to prevent unnecessary recalculations
@@ -273,7 +292,8 @@ export default function NovelsPage() {
 
       {/* Content */}
       <div className="container mx-auto px-4 pt-6 sm:pt-8 pb-[calc(3rem+env(safe-area-inset-bottom))]">
-        {isLoading && currentPage === 1 ? (
+        {isLoading ? (
+          // True first load only - no cached/placeholder data to show yet.
           <div className={CARD_GRID_CLASSES}>
             {[...Array(10)].map((_, i) => (
               <div key={i} className="space-y-2">
@@ -289,6 +309,15 @@ export default function NovelsPage() {
           </div>
         ) : (
           <>
+            {/* Small inline indicator while switching filter/sort/page -
+                keepPreviousData means the grid below stays populated with
+                the previous results instead of flashing empty/skeleton. */}
+            {isFetching && (
+              <div className="flex items-center gap-2 text-sm text-slate-500 mb-3">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                กำลังโหลด...
+              </div>
+            )}
             <div className={CARD_GRID_CLASSES}>
               {novels?.map((novel: any, idx: number) => {
                 const badges: NovelCardBadge[] = [
@@ -332,10 +361,10 @@ export default function NovelsPage() {
 
               <Button
                 variant="outline"
-                disabled={!hasNextPage || isLoading}
+                disabled={!hasNextPage || isFetching}
                 onClick={() => setCurrentPage((p) => p + 1)}
               >
-                {isLoading ? "Loading..." : "Next"}
+                Next
               </Button>
             </div>
           </>

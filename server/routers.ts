@@ -690,6 +690,14 @@ export const appRouter = router({
       return enriched;
     }),
 
+    // Lightweight companion to `list` - just the id/novelId pairs needed to
+    // drive a wishlist heart icon (e.g. on the /novels browse grid), without
+    // `list`'s N+1 getNovelById() enrichment per row.
+    ids: protectedProcedure.query(async ({ ctx }) => {
+      const wishlists = await db.getWishlistsByUserId(ctx.user.id);
+      return wishlists.map((w: any) => ({ id: w.id, novelId: w.novelId }));
+    }),
+
     add: protectedProcedure
       .input(z.object({ novelId: z.number() }))
       .mutation(async ({ input, ctx }) => {

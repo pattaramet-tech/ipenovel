@@ -2369,37 +2369,22 @@ export async function getBrowseCatalog(params: {
 
   const { sort = "new", filter = "all", storyStatus, search, limit = 20, offset = 0 } = params;
 
-  // Lightweight subquery for free episode counts only
-  const freeEpisodeCountsSubquery = db
-    .select({
-      novelId: episodes.novelId,
-      count: sql<number>`COUNT(${episodes.id})`.as("freeEpisodeCount"),
-    })
-    .from(episodes)
-    .where(eq(episodes.isFree, true))
-    .groupBy(episodes.novelId)
-    .as("freeEpisodeCounts");
+  // Lightweight correlated EXISTS check instead of a GROUP BY over the whole
+  // episodes table - the UI only ever needs a boolean "has a free episode"
+  // (for the Free badge / the filter=free condition below), never an actual
+  // count, so this can use the existing episodes_novelId_idx/isFree_idx
+  // indexes as a per-row semi-join instead of aggregating every episode row
+  // on every single browse request. Field name/shape (freeEpisodeCount,
+  // truthy when > 0) is kept as-is for frontend backward compatibility - it
+  // now just always resolves to 0 or 1 instead of a real count.
+  const hasFreeEpisodeSql = () => sql<number>`EXISTS (
+    SELECT 1 FROM ${episodes}
+    WHERE ${episodes.novelId} = ${novels.id} AND ${episodes.isFree} = true
+  )`;
 
-  let query: any = db
-    .select({
-      id: novels.id,
-      title: novels.title,
-      slug: novels.slug,
-      coverImageUrl: novels.coverImageUrl,
-      storyStatus: novels.storyStatus,
-      createdAt: novels.createdAt,
-      freeEpisodeCount: sql<number>`COALESCE(${freeEpisodeCountsSubquery.count}, 0)`,
-    })
-    .from(novels)
-    .leftJoin(freeEpisodeCountsSubquery, eq(novels.id, freeEpisodeCountsSubquery.novelId));
-
-  // Combine filter and search into a single .where() call to avoid overwriting
   const browseConditions: any[] = [
     eq(novels.publicationStatus, "published"), // Always filter for published novels
   ];
-  if (filter === "free") {
-    browseConditions.push(sql<boolean>`${freeEpisodeCountsSubquery.count} > 0`);
-  }
   if (storyStatus === "ongoing" || storyStatus === "finished") {
     browseConditions.push(eq(novels.storyStatus, storyStatus));
   }
@@ -2407,29 +2392,75 @@ export async function getBrowseCatalog(params: {
     const searchPattern = `%${search.trim()}%`;
     browseConditions.push(sql`${novels.title} LIKE ${searchPattern}`);
   }
-  if (browseConditions.length === 1) {
-    query = query.where(browseConditions[0]);
-  } else if (browseConditions.length > 1) {
-    query = query.where(and(...browseConditions));
+  if (filter === "free") {
+    browseConditions.push(hasFreeEpisodeSql());
   }
+  const whereClause = browseConditions.length > 1 ? and(...browseConditions) : browseConditions[0];
 
-  // Apply sort
+  let result: any[];
+
   if (sort === "popular") {
-    // For lightweight browse, sort by free episode count as a popularity proxy
-    // This avoids expensive purchase/wishlist count queries
-    query = query.orderBy(
-      desc(sql<number>`COALESCE(${freeEpisodeCountsSubquery.count}, 0)`),
-      desc(novels.createdAt)
-    );
+    // Real popularity signal (purchases, then wishlists) instead of free
+    // episode count as a proxy - same ranking pattern as the homepage's
+    // getPopularNovels(). Only joined for this branch, never for the far
+    // more common "new" sort.
+    const purchaseCountsSubquery = db
+      .select({
+        novelId: purchases.novelId,
+        count: sql<number>`COUNT(DISTINCT ${purchases.userId})`.as("purchaseCount"),
+      })
+      .from(purchases)
+      .groupBy(purchases.novelId)
+      .as("purchaseCounts");
+    const wishlistCountsSubquery = db
+      .select({
+        novelId: wishlists.novelId,
+        count: sql<number>`COUNT(DISTINCT ${wishlists.userId})`.as("wishlistCount"),
+      })
+      .from(wishlists)
+      .groupBy(wishlists.novelId)
+      .as("wishlistCounts");
+
+    result = await db
+      .select({
+        id: novels.id,
+        title: novels.title,
+        slug: novels.slug,
+        coverImageUrl: novels.coverImageUrl,
+        storyStatus: novels.storyStatus,
+        createdAt: novels.createdAt,
+        freeEpisodeCount: hasFreeEpisodeSql(),
+      })
+      .from(novels)
+      .leftJoin(purchaseCountsSubquery, eq(novels.id, purchaseCountsSubquery.novelId))
+      .leftJoin(wishlistCountsSubquery, eq(novels.id, wishlistCountsSubquery.novelId))
+      .where(whereClause)
+      .orderBy(
+        desc(sql`COALESCE(${purchaseCountsSubquery.count}, 0)`),
+        desc(sql`COALESCE(${wishlistCountsSubquery.count}, 0)`),
+        desc(novels.createdAt)
+      )
+      .limit(limit)
+      .offset(offset);
   } else {
-    // Default to "new"
-    query = query.orderBy(desc(novels.createdAt));
+    // Default "new" - the common case. No episode-table join/group at all,
+    // just the novels table plus one lightweight per-row EXISTS check.
+    result = await db
+      .select({
+        id: novels.id,
+        title: novels.title,
+        slug: novels.slug,
+        coverImageUrl: novels.coverImageUrl,
+        storyStatus: novels.storyStatus,
+        createdAt: novels.createdAt,
+        freeEpisodeCount: hasFreeEpisodeSql(),
+      })
+      .from(novels)
+      .where(whereClause)
+      .orderBy(desc(novels.createdAt))
+      .limit(limit)
+      .offset(offset);
   }
-
-  // Apply pagination
-  query = query.limit(limit).offset(offset);
-
-  const result: any[] = await query;
 
   return result.map((row: any) => ({
     ...row,
