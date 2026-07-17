@@ -1007,6 +1007,31 @@ export const appRouter = router({
           return { url, key };
         }),
 
+      // Lightweight novel detail for the admin manage page - deliberately
+      // never fetches episodes (unlike the public novels.detail, which
+      // pulls every episode column including mediumtext content via
+      // getEpisodesByNovelId). Episode counts come from a single grouped
+      // aggregate query; the actual episode list is a separate paginated
+      // admin.episodes.list({ novelId }) call from the client.
+      detail: adminProcedure
+        .input(z.object({ novelId: z.number() }))
+        .query(async ({ input }) => {
+          // publicOnly=false - admins can view archived novels too.
+          const novel = await db.getNovelById(input.novelId, false);
+          if (!novel) throw new TRPCError({ code: "NOT_FOUND" });
+
+          const [categoriesRaw, stats] = await Promise.all([
+            db.getCategoriesByNovelId(input.novelId),
+            db.getNovelEpisodeStats(input.novelId),
+          ]);
+
+          return {
+            novel,
+            categories: categoriesRaw.map((c: any) => c.category),
+            stats,
+          };
+        }),
+
       list: adminProcedure
         .input(
           z.object({

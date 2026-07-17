@@ -270,6 +270,38 @@ export async function getCategoriesByNovelId(novelId: number) {
     .where(eq(novelCategories.novelId, novelId));
 }
 
+/**
+ * Episode counts for one novel, via a single grouped aggregate query -
+ * never fetches the episode rows themselves (let alone `content`). Used by
+ * the admin novel-manage page, which otherwise has no reason to load any
+ * episode data up front.
+ */
+export async function getNovelEpisodeStats(novelId: number) {
+  const empty = { episodeCount: 0, packageCount: 0, chapterCount: 0, publishedCount: 0, draftCount: 0 };
+  const db = await getDb();
+  if (!db) return empty;
+
+  const rows = await db
+    .select({
+      saleMode: episodes.saleMode,
+      isPublished: episodes.isPublished,
+      count: count(),
+    })
+    .from(episodes)
+    .where(eq(episodes.novelId, novelId))
+    .groupBy(episodes.saleMode, episodes.isPublished);
+
+  return rows.reduce((stats: typeof empty, row: any) => {
+    const n = Number(row.count) || 0;
+    stats.episodeCount += n;
+    if (row.saleMode === "package") stats.packageCount += n;
+    else stats.chapterCount += n;
+    if (row.isPublished) stats.publishedCount += n;
+    else stats.draftCount += n;
+    return stats;
+  }, { ...empty });
+}
+
 // ============ NOVEL CRUD ============
 
 export async function createNovel(data: {

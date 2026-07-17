@@ -1,12 +1,12 @@
 import AdminLayout from "@/components/AdminLayout";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
-import { ArrowLeft, Plus, Edit2, Trash2, Loader2 } from "lucide-react";
-import { useState } from "react";
+import { ArrowLeft, Plus, Edit2, Trash2, Loader2, Search, ListVideo } from "lucide-react";
+import { useState, useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import SafeImage from "@/components/SafeImage";
 import {
@@ -24,6 +24,9 @@ interface AdminNovelManagePageProps {
   };
 }
 
+const PAGE_SIZE = 50;
+const SEARCH_DEBOUNCE_MS = 400;
+
 export default function AdminNovelManagePage({ params }: AdminNovelManagePageProps) {
   const [, navigate] = useLocation();
   const novelId = parseInt(params?.novelId || "0");
@@ -38,16 +41,75 @@ export default function AdminNovelManagePage({ params }: AdminNovelManagePagePro
     fileUrl: "",
   });
 
-  // Queries
-  const { data: novel, isLoading: novelLoading } = trpc.novels.detail.useQuery(
+  const [page, setPage] = useState(1);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearchTerm(searchTerm), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearchTerm]);
+
+  const utils = trpc.useUtils();
+
+  // Lightweight novel detail - never fetches episodes (see admin.novels.detail).
+  const { data: novel, isLoading: novelLoading } = trpc.admin.novels.detail.useQuery(
     { novelId },
     { enabled: novelId > 0 }
   );
 
-  const { data: episodes, refetch: refetchEpisodes } = trpc.admin.getAllEpisodes.useQuery(
-    undefined,
+  const episodesQueryInput = useMemo(
+    () => ({
+      novelId,
+      page,
+      pageSize: PAGE_SIZE,
+      search: debouncedSearchTerm.trim() || undefined,
+      // Preserve the original getEpisodesByNovelId() ordering (chapter order
+      // within this one novel), unlike the cross-novel /admin/episodes page
+      // which defaults to newest-first.
+      sortBy: "episodeNumber" as const,
+      sortOrder: "asc" as const,
+    }),
+    [novelId, page, debouncedSearchTerm]
+  );
+
+  // Paginated, backend-filtered, lightweight episode list scoped to this
+  // novel only - never ships full episode content. See server/db.ts
+  // getAdminEpisodesList.
+  const { data: episodesData, isLoading: episodesLoading } = trpc.admin.episodes.list.useQuery(
+    episodesQueryInput,
     { enabled: novelId > 0 }
   );
+  const novelEpisodes = episodesData?.episodes ?? [];
+  const total = episodesData?.total ?? 0;
+  const totalPages = episodesData?.totalPages ?? 1;
+
+  // Full episode row (content/fileUrl) is only fetched once an admin opens
+  // the Edit dialog for a specific episode.
+  const { data: episodeDetail, isLoading: detailLoading } = trpc.admin.episodes.detail.useQuery(
+    { episodeId: editingEpisodeId! },
+    { enabled: !!editingEpisodeId }
+  );
+
+  useEffect(() => {
+    if (!episodeDetail) return;
+    setEpisodeFormData({
+      episodeNumber: String(episodeDetail.episodeNumber) || "",
+      title: episodeDetail.title || "",
+      price: episodeDetail.price || "0",
+      isFree: episodeDetail.isFree || false,
+      fileUrl: episodeDetail.fileUrl || "",
+    });
+  }, [episodeDetail]);
+
+  const invalidateEpisodeQueries = () => {
+    utils.admin.episodes.list.invalidate();
+    utils.admin.novels.detail.invalidate({ novelId });
+  };
 
   // Mutations
   const createEpisodeMutation = trpc.admin.episodes.create.useMutation({
@@ -55,7 +117,7 @@ export default function AdminNovelManagePage({ params }: AdminNovelManagePagePro
       toast.success("Episode created successfully!");
       setOpenEpisodeDialog(false);
       setEpisodeFormData({ episodeNumber: "", title: "", price: "0", isFree: false, fileUrl: "" });
-      refetchEpisodes();
+      invalidateEpisodeQueries();
     },
     onError: (error) => {
       toast.error(error.message || "Failed to create episode");
@@ -68,7 +130,7 @@ export default function AdminNovelManagePage({ params }: AdminNovelManagePagePro
       setOpenEpisodeDialog(false);
       setEditingEpisodeId(null);
       setEpisodeFormData({ episodeNumber: "", title: "", price: "0", isFree: false, fileUrl: "" });
-      refetchEpisodes();
+      invalidateEpisodeQueries();
     },
     onError: (error) => {
       toast.error(error.message || "Failed to update episode");
@@ -78,7 +140,7 @@ export default function AdminNovelManagePage({ params }: AdminNovelManagePagePro
   const deleteEpisodeMutation = trpc.admin.episodes.delete.useMutation({
     onSuccess: () => {
       toast.success("Episode deleted successfully!");
-      refetchEpisodes();
+      invalidateEpisodeQueries();
     },
     onError: (error) => {
       toast.error(error.message || "Failed to delete episode");
@@ -115,8 +177,6 @@ export default function AdminNovelManagePage({ params }: AdminNovelManagePagePro
     );
   }
 
-  const novelEpisodes = episodes?.filter((ep: any) => ep.novelId === novelId) || [];
-
   const handleEpisodeSubmit = () => {
     if (!episodeFormData.title) {
       toast.error("Title is required");
@@ -142,13 +202,6 @@ export default function AdminNovelManagePage({ params }: AdminNovelManagePagePro
 
   const handleEditEpisode = (episode: any) => {
     setEditingEpisodeId(episode.id);
-    setEpisodeFormData({
-      episodeNumber: String(episode.episodeNumber) || "",
-      title: episode.title,
-      price: episode.price || "0",
-      isFree: episode.isFree || false,
-      fileUrl: episode.fileUrl || "",
-    });
     setOpenEpisodeDialog(true);
   };
 
@@ -157,6 +210,9 @@ export default function AdminNovelManagePage({ params }: AdminNovelManagePagePro
     setEditingEpisodeId(null);
     setEpisodeFormData({ episodeNumber: "", title: "", price: "0", isFree: false, fileUrl: "" });
   };
+
+  const rangeStart = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const rangeEnd = Math.min(page * PAGE_SIZE, total);
 
   return (
     <AdminLayout>
@@ -207,113 +263,150 @@ export default function AdminNovelManagePage({ params }: AdminNovelManagePagePro
 
         {/* Episodes Section */}
         <div>
-          <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center justify-between mb-6 gap-3 flex-wrap">
             <h2 className="text-2xl font-bold text-slate-900">Episodes</h2>
-            <Dialog open={openEpisodeDialog} onOpenChange={setOpenEpisodeDialog}>
-              <DialogTrigger asChild>
-                <Button
-                  onClick={() => {
-                    setEditingEpisodeId(null);
-                    setEpisodeFormData({
-                      episodeNumber: "",
-                      title: "",
-                      price: "0",
-                      isFree: false,
-                      fileUrl: "",
-                    });
-                  }}
-                >
-                  <Plus className="w-4 h-4 mr-2" />
-                  Add Episode
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="max-w-md">
-                <DialogHeader>
-                  <DialogTitle>{editingEpisodeId ? "Edit Episode" : "Add New Episode"}</DialogTitle>
-                </DialogHeader>
-                <div className="space-y-4">
-                  <div>
-                    <Label>Episode Number</Label>
-                    <Input
-                      type="text"
-                      value={episodeFormData.episodeNumber}
-                      onChange={(e) =>
-                        setEpisodeFormData({ ...episodeFormData, episodeNumber: e.target.value })
-                      }
-                      placeholder="e.g., 001 - 030 or 1"
-                    />
-                  </div>
-                  <div>
-                    <Label>Title</Label>
-                    <Input
-                      value={episodeFormData.title}
-                      onChange={(e) =>
-                        setEpisodeFormData({ ...episodeFormData, title: e.target.value })
-                      }
-                      placeholder="Episode title"
-                    />
-                  </div>
-                  <div>
-                    <Label>Price (฿)</Label>
-                    <Input
-                      type="number"
-                      step="0.01"
-                      value={episodeFormData.price}
-                      onChange={(e) =>
-                        setEpisodeFormData({ ...episodeFormData, price: e.target.value })
-                      }
-                      placeholder="0.00"
-                    />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={episodeFormData.isFree}
-                      onChange={(e) =>
-                        setEpisodeFormData({ ...episodeFormData, isFree: e.target.checked })
-                      }
-                      id="isFree"
-                    />
-                    <Label htmlFor="isFree">Free Episode</Label>
-                  </div>
-                  <div>
-                    <Label>File URL</Label>
-                    <Input
-                      value={episodeFormData.fileUrl}
-                      onChange={(e) =>
-                        setEpisodeFormData({ ...episodeFormData, fileUrl: e.target.value })
-                      }
-                      placeholder="https://..."
-                    />
-                  </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                onClick={() => navigate(`/admin/episodes/${novelId}`)}
+                className="gap-2"
+              >
+                <ListVideo className="w-4 h-4" />
+                จัดการตอนทั้งหมด
+              </Button>
+              <Dialog open={openEpisodeDialog} onOpenChange={(open) => (open ? setOpenEpisodeDialog(true) : handleCloseEpisodeDialog())}>
+                <DialogTrigger asChild>
                   <Button
-                    onClick={handleEpisodeSubmit}
-                    disabled={
-                      createEpisodeMutation.isPending || updateEpisodeMutation.isPending
-                    }
-                    className="w-full"
+                    onClick={() => {
+                      setEditingEpisodeId(null);
+                      setEpisodeFormData({
+                        episodeNumber: "",
+                        title: "",
+                        price: "0",
+                        isFree: false,
+                        fileUrl: "",
+                      });
+                    }}
                   >
-                    {createEpisodeMutation.isPending || updateEpisodeMutation.isPending ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        Saving...
-                      </>
-                    ) : (
-                      "Save"
-                    )}
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Episode
                   </Button>
-                </div>
-              </DialogContent>
-            </Dialog>
+                </DialogTrigger>
+                <DialogContent className="max-w-md">
+                  <DialogHeader>
+                    <DialogTitle>{editingEpisodeId ? "Edit Episode" : "Add New Episode"}</DialogTitle>
+                  </DialogHeader>
+                  {editingEpisodeId && detailLoading ? (
+                    <div className="flex items-center justify-center py-16">
+                      <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+                    </div>
+                  ) : (
+                  <div className="space-y-4">
+                    <div>
+                      <Label>Episode Number</Label>
+                      <Input
+                        type="text"
+                        value={episodeFormData.episodeNumber}
+                        onChange={(e) =>
+                          setEpisodeFormData({ ...episodeFormData, episodeNumber: e.target.value })
+                        }
+                        placeholder="e.g., 001 - 030 or 1"
+                      />
+                    </div>
+                    <div>
+                      <Label>Title</Label>
+                      <Input
+                        value={episodeFormData.title}
+                        onChange={(e) =>
+                          setEpisodeFormData({ ...episodeFormData, title: e.target.value })
+                        }
+                        placeholder="Episode title"
+                      />
+                    </div>
+                    <div>
+                      <Label>Price (฿)</Label>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        value={episodeFormData.price}
+                        onChange={(e) =>
+                          setEpisodeFormData({ ...episodeFormData, price: e.target.value })
+                        }
+                        placeholder="0.00"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={episodeFormData.isFree}
+                        onChange={(e) =>
+                          setEpisodeFormData({ ...episodeFormData, isFree: e.target.checked })
+                        }
+                        id="isFree"
+                      />
+                      <Label htmlFor="isFree">Free Episode</Label>
+                    </div>
+                    <div>
+                      <Label>File URL</Label>
+                      <Input
+                        value={episodeFormData.fileUrl}
+                        onChange={(e) =>
+                          setEpisodeFormData({ ...episodeFormData, fileUrl: e.target.value })
+                        }
+                        placeholder="https://..."
+                      />
+                    </div>
+                    <Button
+                      onClick={handleEpisodeSubmit}
+                      disabled={
+                        createEpisodeMutation.isPending || updateEpisodeMutation.isPending
+                      }
+                      className="w-full"
+                    >
+                      {createEpisodeMutation.isPending || updateEpisodeMutation.isPending ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Saving...
+                        </>
+                      ) : (
+                        "Save"
+                      )}
+                    </Button>
+                  </div>
+                  )}
+                </DialogContent>
+              </Dialog>
+            </div>
+          </div>
+
+          {/* Search */}
+          <div className="relative mb-4 max-w-sm">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              type="text"
+              placeholder="Search by title or episode number..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-10"
+            />
           </div>
 
           {/* Episodes List */}
-          {novelEpisodes.length === 0 ? (
+          {episodesLoading ? (
+            <div className="flex items-center justify-center h-64">
+              <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+            </div>
+          ) : novelEpisodes.length === 0 ? (
             <Card className="p-8 text-center">
-              <p className="text-muted-foreground">No episodes yet. Add one to get started.</p>
+              <p className="text-muted-foreground">
+                {searchTerm.trim() ? "No episodes match your search" : "No episodes yet. Add one to get started."}
+              </p>
             </Card>
           ) : (
             <div className="grid gap-4">
+              <div className="text-sm text-muted-foreground">
+                Showing {rangeStart}-{rangeEnd} of {total} episode{total !== 1 ? "s" : ""}
+              </div>
               {novelEpisodes.map((episode: any) => (
                 <Card key={episode.id} className="p-4">
                   <div className="flex items-start justify-between">
@@ -327,10 +420,8 @@ export default function AdminNovelManagePage({ params }: AdminNovelManagePagePro
                       <p className="text-sm text-muted-foreground">
                         Episode {episode.episodeNumber}
                       </p>
-                      {episode.fileUrl && (
-                        <p className="text-xs text-slate-500 mt-1 truncate">
-                          File: {episode.fileUrl}
-                        </p>
+                      {episode.hasLegacyFile && (
+                        <p className="text-xs text-slate-500 mt-1">Legacy file attached</p>
                       )}
                     </div>
                     <div className="flex gap-2">
@@ -356,6 +447,27 @@ export default function AdminNovelManagePage({ params }: AdminNovelManagePagePro
                   </div>
                 </Card>
               ))}
+
+              {/* Pagination */}
+              <div className="flex justify-center items-center gap-4 mt-2">
+                <Button
+                  variant="outline"
+                  disabled={page <= 1}
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                >
+                  Previous
+                </Button>
+                <span className="text-sm text-slate-600">
+                  Page {page} of {totalPages}
+                </span>
+                <Button
+                  variant="outline"
+                  disabled={page >= totalPages}
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                >
+                  Next
+                </Button>
+              </div>
             </div>
           )}
         </div>
