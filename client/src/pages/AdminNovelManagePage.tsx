@@ -27,6 +27,21 @@ interface AdminNovelManagePageProps {
 const PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 400;
 
+/**
+ * True when a tRPC query failed because the procedure itself doesn't exist
+ * on the server ("No procedure found on path ..."), as opposed to a normal
+ * NOT_FOUND/permission/network error. This specifically happens when the
+ * deployed backend build predates a client that expects a newer procedure
+ * (e.g. admin.novels.detail / admin.episodes.list) - redeploying the backend
+ * from the latest commit fixes it. Never fall back to a heavier legacy
+ * endpoint here; that would silently reintroduce the slow-page problem this
+ * page was optimized to fix.
+ */
+function isMissingProcedureError(error: unknown): boolean {
+  const message = (error as any)?.message;
+  return typeof message === "string" && message.includes("No procedure found");
+}
+
 export default function AdminNovelManagePage({ params }: AdminNovelManagePageProps) {
   const [, navigate] = useLocation();
   const novelId = parseInt(params?.novelId || "0");
@@ -57,9 +72,16 @@ export default function AdminNovelManagePage({ params }: AdminNovelManagePagePro
   const utils = trpc.useUtils();
 
   // Lightweight novel detail - never fetches episodes (see admin.novels.detail).
-  const { data: novel, isLoading: novelLoading } = trpc.admin.novels.detail.useQuery(
+  // retry: false specifically for a missing-procedure error - that class of
+  // failure won't succeed on retry (the deployed server just doesn't have
+  // the route), so retrying only delays the diagnostic message by several
+  // seconds for no benefit. Other errors still get the default retry.
+  const { data: novel, isLoading: novelLoading, error: novelError } = trpc.admin.novels.detail.useQuery(
     { novelId },
-    { enabled: novelId > 0 }
+    {
+      enabled: novelId > 0,
+      retry: (failureCount, error) => (isMissingProcedureError(error) ? false : failureCount < 3),
+    }
   );
 
   const episodesQueryInput = useMemo(
@@ -80,9 +102,12 @@ export default function AdminNovelManagePage({ params }: AdminNovelManagePagePro
   // Paginated, backend-filtered, lightweight episode list scoped to this
   // novel only - never ships full episode content. See server/db.ts
   // getAdminEpisodesList.
-  const { data: episodesData, isLoading: episodesLoading } = trpc.admin.episodes.list.useQuery(
+  const { data: episodesData, isLoading: episodesLoading, error: episodesError } = trpc.admin.episodes.list.useQuery(
     episodesQueryInput,
-    { enabled: novelId > 0 }
+    {
+      enabled: novelId > 0,
+      retry: (failureCount, error) => (isMissingProcedureError(error) ? false : failureCount < 3),
+    }
   );
   const novelEpisodes = episodesData?.episodes ?? [];
   const total = episodesData?.total ?? 0;
@@ -163,6 +188,25 @@ export default function AdminNovelManagePage({ params }: AdminNovelManagePagePro
         <div className="flex items-center justify-center h-64">
           <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
         </div>
+      </AdminLayout>
+    );
+  }
+
+  // Distinguish "the deployed backend build is missing this procedure" from
+  // a genuine "novel not found" - the former needs a redeploy, not a click
+  // back to the novel list.
+  if (novelError && isMissingProcedureError(novelError)) {
+    return (
+      <AdminLayout>
+        <Card className="p-8 text-center max-w-lg mx-auto">
+          <h2 className="text-lg font-semibold text-red-600 mb-2">Backend ยังไม่อัปเดต</h2>
+          <p className="text-slate-600 mb-2">
+            ไม่พบ API <code className="text-xs bg-slate-100 px-1.5 py-0.5 rounded">admin.novels.detail</code> บน server ที่ deploy อยู่
+          </p>
+          <p className="text-slate-600">
+            กรุณา Sync from GitHub และ Deploy backend เวอร์ชันล่าสุดจาก branch main แล้วรีเฟรชหน้านี้อีกครั้ง
+          </p>
+        </Card>
       </AdminLayout>
     );
   }
@@ -396,6 +440,16 @@ export default function AdminNovelManagePage({ params }: AdminNovelManagePagePro
             <div className="flex items-center justify-center h-64">
               <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
             </div>
+          ) : episodesError && isMissingProcedureError(episodesError) ? (
+            <Card className="p-8 text-center">
+              <h2 className="text-lg font-semibold text-red-600 mb-2">Backend ยังไม่อัปเดต</h2>
+              <p className="text-slate-600 mb-2">
+                ไม่พบ API <code className="text-xs bg-slate-100 px-1.5 py-0.5 rounded">admin.episodes.list</code> บน server ที่ deploy อยู่
+              </p>
+              <p className="text-slate-600">
+                กรุณา Sync from GitHub และ Deploy backend เวอร์ชันล่าสุดจาก branch main แล้วรีเฟรชหน้านี้อีกครั้ง
+              </p>
+            </Card>
           ) : novelEpisodes.length === 0 ? (
             <Card className="p-8 text-center">
               <p className="text-muted-foreground">

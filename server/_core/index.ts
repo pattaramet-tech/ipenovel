@@ -10,6 +10,30 @@ import { serveStatic, setupVite } from "./vite";
 import { storagePut } from "../storage";
 import { checkUploadServiceHealth } from "../helpers/uploadHealthCheck";
 
+// Procedures that have caused "No procedure found on path ..." client errors
+// in production when an older server build was still deployed after the
+// client shipped code expecting them. Checked once at boot so a stale
+// deploy shows up immediately in server logs instead of only surfacing as a
+// confusing client-side runtime error later.
+const REQUIRED_TRPC_PROCEDURES = [
+  "admin.novels.detail",
+  "admin.episodes.list",
+  "admin.episodes.detail",
+];
+
+function verifyRequiredProcedures() {
+  const registered = Object.keys((appRouter as any)._def?.procedures ?? {});
+  const missing = REQUIRED_TRPC_PROCEDURES.filter((path) => !registered.includes(path));
+  if (missing.length > 0) {
+    console.error(
+      `[Router Check] MISSING tRPC procedure(s): ${missing.join(", ")}. ` +
+      `This server build is likely stale - Sync from GitHub and redeploy from the latest commit on main.`
+    );
+  } else {
+    console.log(`[Router Check] OK - ${REQUIRED_TRPC_PROCEDURES.length} required admin procedures present (${registered.length} total).`);
+  }
+}
+
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
     const server = net.createServer();
@@ -56,6 +80,7 @@ async function startServer() {
       createContext,
     })
   );
+  verifyRequiredProcedures();
   // development mode uses Vite, production mode uses static files
   if (process.env.NODE_ENV === "development") {
     await setupVite(app, server);
