@@ -15,12 +15,7 @@ import { fileRouter } from "./routers/fileRouter";
 import { ocrMetricsRouter } from "./routers/ocrMetricsRouter";
 import { storagePut } from "./storage";
 import { r2Put, R2StorageError } from "./services/r2Storage";
-import {
-  optimizeImageToWebp,
-  ImageOptimizeError,
-  NOVEL_COVER_PRESET,
-  BANNER_IMAGE_PRESET,
-} from "./services/imageOptimizer";
+import { optimizeImageToWebp, ImageOptimizeError } from "./services/imageOptimizer";
 import { parseSlipImage } from "./ocr-slip-verification-v2";
 import { processSlipVerificationStaging } from "./ocr-slip-integration-staging";
 import { getOCRConfig } from "./_core/ocr-config";
@@ -48,6 +43,11 @@ const adminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
 
 const BANNER_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
 const MAX_BANNER_IMAGE_SIZE = 5 * 1024 * 1024;
+
+// Portrait book-cover footprint - downscale only, never upscale.
+const NOVEL_COVER_MAX_DIMENSIONS = { maxWidth: 1000, maxHeight: 1500 };
+// Landscape hero-banner footprint.
+const BANNER_IMAGE_MAX_DIMENSIONS = { maxWidth: 1920, maxHeight: 800 };
 
 /** Random key suffix so two uploads in the same millisecond never collide. */
 function randomKeySuffix(): string {
@@ -1065,7 +1065,7 @@ export const appRouter = router({
           const { url, key } = await optimizeAndUploadToR2(
             fileBuffer,
             `novel-covers/${ctx.user.id}`,
-            NOVEL_COVER_PRESET
+            NOVEL_COVER_MAX_DIMENSIONS
           );
 
           return { url, key };
@@ -1649,7 +1649,7 @@ export const appRouter = router({
 
           // Optimized to WebP and uploaded to Cloudflare R2 - see the
           // matching comment on admin.novels.uploadCover above.
-          const { url, key } = await optimizeAndUploadToR2(fileBuffer, "banners", BANNER_IMAGE_PRESET);
+          const { url, key } = await optimizeAndUploadToR2(fileBuffer, "banners", BANNER_IMAGE_MAX_DIMENSIONS);
 
           return { url, key };
         }),
