@@ -10,7 +10,9 @@
     "check": "tsc --noEmit",
     "format": "prettier --write .",
     "test": "vitest run",
-    "db:push": "drizzle-kit generate && drizzle-kit migrate"
+    "db:push": "drizzle-kit generate && drizzle-kit migrate",
+    "migrate:media:dry": "tsx scripts/migrate-media-to-r2.ts --dry-run --limit=20 --type=all",
+    "migrate:media": "tsx scripts/migrate-media-to-r2.ts --limit=20 --type=all"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",
