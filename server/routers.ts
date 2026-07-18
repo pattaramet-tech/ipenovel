@@ -1284,6 +1284,84 @@ export const appRouter = router({
             imported: true,
           };
         }),
+
+      // Multi-novel counterpart to importPackageZip above: one ZIP can
+      // contain packages for many novels at once, matched per-row via
+      // novelId or novel title (see packageZipImportService's "MULTI-NOVEL
+      // PACKAGE ZIP IMPORT" section) instead of one novelId supplied for the
+      // whole ZIP. importPackageZip/parsePackageZip/importPackageRows above
+      // are untouched - this is a fully separate code path.
+      importMultiNovelPackageZip: adminProcedure
+        .input(
+          z.object({
+            zipBase64: z.string(),
+            mode: z.enum(["create_only", "upsert"]).default("upsert"),
+            dryRun: z.boolean().default(true),
+            // Manual novel-match override for not_found/ambiguous title
+            // groups in the preview UI, keyed by the exact raw title text
+            // the row used for matching (novelMatchTitle || novelTitle).
+            novelIdOverrideMap: z.record(z.string(), z.number()).optional(),
+          })
+        )
+        .mutation(async ({ input }) => {
+          const base64Data = input.zipBase64.includes(",") ? input.zipBase64.split(",")[1] : input.zipBase64;
+          const zipBuffer = Buffer.from(base64Data, "base64");
+
+          let parsed;
+          try {
+            parsed = packageZipImportService.parseMultiNovelPackageZip(zipBuffer);
+          } catch (error) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: (error as Error).message });
+          }
+
+          if (input.dryRun) {
+            const preview = await packageZipImportService.buildMultiNovelImportPreview(
+              parsed,
+              input.mode,
+              input.novelIdOverrideMap
+            );
+
+            return {
+              manifestFileName: preview.manifestFileName,
+              mode: preview.mode,
+              totalRows: preview.summary.totalRows,
+              novelCount: preview.summary.novelCount,
+              validRows: preview.summary.createCount + preview.summary.updateCount,
+              errorCount: preview.summary.errorCount,
+              createCount: preview.summary.createCount,
+              updateCount: preview.summary.updateCount,
+              preservedFileUrlCount: preview.summary.preservedFileUrlCount,
+              duplicateRangeCount: preview.summary.duplicateRangeCount,
+              ambiguousMatchCount: preview.summary.ambiguousMatchCount,
+              novelAmbiguousCount: preview.summary.novelAmbiguousCount,
+              novelNotFoundCount: preview.summary.novelNotFoundCount,
+              missingContentFileCount: preview.summary.missingContentFileCount,
+              rows: preview.rows,
+              imported: false,
+            };
+          }
+
+          const summary = await packageZipImportService.importMultiNovelPackageRows(
+            parsed.rows,
+            input.mode,
+            input.novelIdOverrideMap
+          );
+
+          return {
+            manifestFileName: parsed.manifestFileName,
+            totalRows: parsed.rows.length + parsed.errors.length,
+            validRows: parsed.rows.length,
+            novelCount: summary.novelCount,
+            successCount: summary.successCount,
+            errorCount: parsed.errors.length + summary.errorCount,
+            createdCount: summary.createdCount,
+            updatedCount: summary.updatedCount,
+            preservedFileUrlCount: summary.preservedFileUrlCount,
+            results: summary.results,
+            errors: [...parsed.errors, ...summary.errors],
+            imported: true,
+          };
+        }),
     }),
 
     categories: router({

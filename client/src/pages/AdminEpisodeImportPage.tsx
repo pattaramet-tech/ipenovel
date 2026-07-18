@@ -741,8 +741,466 @@ function PackageZipImportSection({ novelId }: { novelId: number | undefined }) {
   );
 }
 
+// One row of the multi-novel preview table (mirrors the backend's
+// MultiNovelImportPreviewRow shape from packageZipImportService.ts).
+interface MultiNovelPreviewRow {
+  row: number;
+  novelIdRaw?: number;
+  novelTitle?: string;
+  novelMatchTitle?: string;
+  matchedNovelId: number | null;
+  matchedNovelTitle: string | null;
+  novelMatchStatus: "matched" | "ambiguous" | "not_found" | "invalid";
+  rawEpisodeNumber: string;
+  normalizedRange: string | null;
+  episodeTitle: string;
+  price: string;
+  isFree: boolean;
+  action: string;
+  message: string;
+}
+
+// Small debounced novel-search dropdown used to manually resolve one
+// not_found/ambiguous title group in the multi-novel preview, without
+// editing the ZIP. Mirrors the top-level "เลือกนิยาย" search box's UX.
+function NovelOverridePicker({
+  initialQuery,
+  onSelect,
+}: {
+  initialQuery: string;
+  onSelect: (novel: { id: number; title: string }) => void;
+}) {
+  const [query, setQuery] = useState(initialQuery);
+  const [debounced, setDebounced] = useState(initialQuery);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const handle = setTimeout(() => setDebounced(query.trim()), 300);
+    return () => clearTimeout(handle);
+  }, [query]);
+
+  const { data: results, isFetching } = trpc.admin.novels.list.useQuery(
+    { q: debounced || undefined, limit: 20 },
+    { enabled: open }
+  );
+
+  return (
+    <div className="relative">
+      <Input
+        value={query}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        placeholder="ค้นหานิยายเพื่อจับคู่เอง..."
+        className="h-8 text-xs"
+      />
+      {open && (
+        <div className="absolute z-10 mt-1 w-full max-w-xs border rounded-md bg-white shadow-lg max-h-56 overflow-y-auto">
+          {isFetching ? (
+            <div className="p-2 text-xs text-slate-500 flex items-center gap-1">
+              <Loader2 className="w-3 h-3 animate-spin" /> กำลังค้นหา...
+            </div>
+          ) : (results?.length ?? 0) === 0 ? (
+            <p className="p-2 text-xs text-slate-500">ไม่พบนิยาย</p>
+          ) : (
+            (results as NovelSearchResult[]).map((novel) => (
+              <button
+                type="button"
+                key={novel.id}
+                className="w-full text-left px-2 py-1.5 text-xs hover:bg-slate-50"
+                onClick={() => {
+                  onSelect({ id: novel.id, title: novel.title });
+                  setOpen(false);
+                  setQuery(novel.title);
+                }}
+              >
+                <span className="font-medium">{novel.title}</span>{" "}
+                <span className="text-slate-400">#{novel.id}</span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Import a single ZIP containing packages for MANY novels at once - each row
+// declares its own novelId or novel title, matched server-side against the
+// admin novel list (exact match only, no fuzzy auto-import). Does not
+// require selecting a novel up front, unlike PackageZipImportSection above.
+function MultiNovelPackageZipImportSection() {
+  const [zipFile, setZipFile] = useState<File | null>(null);
+  const [mode, setMode] = useState<"create_only" | "upsert">("upsert");
+  const [preview, setPreview] = useState<any>(null);
+  const [result, setResult] = useState<any>(null);
+  const [isValidating, setIsValidating] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [overrideMap, setOverrideMap] = useState<Record<string, number>>({});
+
+  const importMutation = trpc.admin.episodes.importMultiNovelPackageZip.useMutation();
+
+  const handleZipUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".zip")) {
+      toast.error("กรุณาอัปโหลดไฟล์ .zip เท่านั้น");
+      return;
+    }
+    setZipFile(file);
+    setPreview(null);
+    setResult(null);
+    setOverrideMap({});
+  };
+
+  const runPreview = async (currentOverrideMap: Record<string, number>) => {
+    if (!zipFile) {
+      toast.error("กรุณาอัปโหลดไฟล์ zip ก่อน");
+      return;
+    }
+
+    setIsValidating(true);
+    setResult(null);
+    try {
+      const zipBase64 = await readFileAsBase64(zipFile);
+      const response = await importMutation.mutateAsync({
+        zipBase64,
+        mode,
+        dryRun: true,
+        novelIdOverrideMap: Object.keys(currentOverrideMap).length > 0 ? currentOverrideMap : undefined,
+      });
+      setPreview(response);
+      if (response.errorCount > 0) {
+        toast.error(`พบ ${response.errorCount} แถวที่มีปัญหา จาก ${response.novelCount} นิยาย`);
+      } else {
+        toast.success(`ตรวจสอบผ่าน ${response.validRows} แพ็ก จาก ${response.novelCount} นิยาย พร้อม import`);
+      }
+    } catch (error: any) {
+      toast.error(error?.message || "ตรวจสอบไฟล์ล้มเหลว");
+    } finally {
+      setIsValidating(false);
+    }
+  };
+
+  const handleValidate = () => runPreview(overrideMap);
+
+  const handleSelectOverride = (title: string, novel: { id: number; title: string }) => {
+    const next = { ...overrideMap, [title]: novel.id };
+    setOverrideMap(next);
+    runPreview(next);
+  };
+
+  const handleConfirmImport = async () => {
+    if (!zipFile) return;
+
+    setIsImporting(true);
+    try {
+      const zipBase64 = await readFileAsBase64(zipFile);
+      const response = await importMutation.mutateAsync({
+        zipBase64,
+        mode,
+        dryRun: false,
+        novelIdOverrideMap: Object.keys(overrideMap).length > 0 ? overrideMap : undefined,
+      });
+      setResult(response);
+      setPreview(null);
+      toast.success(
+        `Import complete: ${response.successCount} สำเร็จ จาก ${response.novelCount} นิยาย, ${response.errorCount} error`
+      );
+    } catch (error: any) {
+      toast.error(error?.message || "Import ล้มเหลว");
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  const previewRows: MultiNovelPreviewRow[] = preview?.rows ?? [];
+  // Distinct title text for rows that still need a manual mapping - grouped
+  // so the admin resolves one dropdown per title, not one per row.
+  const unresolvedTitles = Array.from(
+    new Set(
+      previewRows
+        .filter((r) => r.novelMatchStatus === "ambiguous" || r.novelMatchStatus === "not_found")
+        .map((r) => r.novelMatchTitle || r.novelTitle || "")
+        .filter((t) => t.trim().length > 0)
+    )
+  );
+  const hasBlockingErrors = previewRows.some((r) => String(r.action).startsWith("error_"));
+
+  return (
+    <>
+      <Card className="p-6">
+        <h3 className="font-semibold mb-2">Step 1: Upload Multi-Novel Package ZIP</h3>
+        <p className="text-sm text-slate-600 mb-4">
+          อัปโหลด zip เดียวที่รวมแพ็กของหลายนิยาย ระบบจะจับคู่นิยายให้อัตโนมัติจาก novelId หรือชื่อเรื่องในแต่ละแถว
+          ไม่ต้องเลือกนิยายก่อน
+        </p>
+
+        <div className="border-2 border-dashed rounded-lg p-6 text-center">
+          <input
+            type="file"
+            accept=".zip"
+            onChange={handleZipUpload}
+            className="hidden"
+            id="multi-zip-upload"
+          />
+          <label htmlFor="multi-zip-upload" className="cursor-pointer">
+            <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
+            <p className="text-sm text-slate-600">
+              {zipFile ? zipFile.name : "คลิกเพื่ออัปโหลดไฟล์ .zip"}
+            </p>
+          </label>
+        </div>
+
+        <div className="mt-4 text-xs text-slate-500 space-y-2">
+          <p className="font-semibold">โครงสร้าง zip ที่รองรับ:</p>
+          <pre className="bg-slate-50 p-2 rounded border overflow-x-auto whitespace-pre">{`multi_import_package.zip
+├── manifest.xlsx (หรือ manifest.csv)
+└── contents/
+    ├── onepiece-female/001-080.txt
+    └── naruto-normal/001-050.txt`}</pre>
+          <p className="font-semibold">Manifest columns:</p>
+          <p>
+            novelId / novelTitle / novelMatchTitle, episodeNumber, episodeTitle, price, isFree,
+            isPublished, saleMode, contentFile, contentFormat, sortOrder, description
+          </p>
+          <p>
+            แต่ละแถวต้องระบุ novelId หรือ novelTitle/novelMatchTitle อย่างน้อยหนึ่งอย่าง - ระบบจับคู่แบบ exact match
+            เท่านั้น ไม่มีการเดา (fuzzy match) ให้ import อัตโนมัติ
+          </p>
+        </div>
+
+        <div className="mt-4">
+          <Label className="mb-2 block">Import Mode</Label>
+          <div className="space-y-2">
+            <label className="flex items-center gap-2">
+              <input type="radio" checked={mode === "upsert"} onChange={() => setMode("upsert")} />
+              <span className="text-sm">
+                แนะนำ: Sync/Upsert - ถ้าแพ็กเลขเดิมมีอยู่แล้วในนิยายนั้น ระบบจะเติมเนื้อหาเข้าแพ็กเดิม (คงไฟล์เดิมและ
+                episodeId เดิม)
+              </span>
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="radio" checked={mode === "create_only"} onChange={() => setMode("create_only")} />
+              <span className="text-sm">Create only - ใช้เมื่อมั่นใจว่าไม่มีแพ็กเลขนี้อยู่แล้วในนิยายนั้น</span>
+            </label>
+          </div>
+        </div>
+
+        <Button onClick={handleValidate} disabled={!zipFile || isValidating} className="w-full mt-6">
+          {isValidating ? (
+            <>
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              กำลังตรวจสอบ...
+            </>
+          ) : (
+            "ตรวจสอบไฟล์ (Preview)"
+          )}
+        </Button>
+      </Card>
+
+      {preview && (
+        <Card className="p-4">
+          <h3 className="font-semibold mb-1">Step 2: Preview Diff</h3>
+          <p className="text-xs text-muted-foreground mb-4">
+            แสดงสิ่งที่จะเกิดขึ้นจริงถ้ากด Import (โหมด: {preview.mode === "upsert" ? "Sync/Upsert" : "Create only"}) -
+            ยังไม่มีการเขียนข้อมูลใด ๆ ในขั้นตอนนี้
+          </p>
+
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 mb-3 text-center">
+            <div>
+              <p className="text-2xl font-bold">{preview.totalRows}</p>
+              <p className="text-xs text-muted-foreground">ทั้งหมด</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold">{preview.novelCount}</p>
+              <p className="text-xs text-muted-foreground">นิยาย</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-blue-600">{preview.updateCount}</p>
+              <p className="text-xs text-muted-foreground">อัปเดตแพ็กเดิม</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-green-600">{preview.createCount}</p>
+              <p className="text-xs text-muted-foreground">สร้างใหม่</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-red-600">{preview.errorCount}</p>
+              <p className="text-xs text-muted-foreground">Error</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold">{preview.preservedFileUrlCount}</p>
+              <p className="text-xs text-muted-foreground">คงไฟล์เดิมไว้</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4 text-center text-xs">
+            <div className="p-2 rounded bg-slate-50">
+              <p className="font-semibold">{preview.duplicateRangeCount}</p>
+              <p className="text-muted-foreground">เลขตอนซ้ำในนิยายเดียวกัน</p>
+            </div>
+            <div className="p-2 rounded bg-slate-50">
+              <p className="font-semibold">{preview.ambiguousMatchCount}</p>
+              <p className="text-muted-foreground">แพ็กตรงกันหลายรายการ</p>
+            </div>
+            <div className="p-2 rounded bg-slate-50">
+              <p className="font-semibold">{preview.novelAmbiguousCount}</p>
+              <p className="text-muted-foreground">ชื่อนิยาย match หลายเรื่อง</p>
+            </div>
+            <div className="p-2 rounded bg-slate-50">
+              <p className="font-semibold">{preview.novelNotFoundCount}</p>
+              <p className="text-muted-foreground">ไม่พบนิยาย</p>
+            </div>
+          </div>
+
+          {unresolvedTitles.length > 0 && (
+            <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded">
+              <div className="flex gap-2 mb-2">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <p className="text-sm font-semibold text-amber-900">
+                  พบชื่อนิยายที่จับคู่ไม่ได้ {unresolvedTitles.length} รายการ - เลือกนิยายด้วยตนเอง หรือแก้ไข
+                  manifest แล้วอัปโหลดใหม่
+                </p>
+              </div>
+              <div className="space-y-3">
+                {unresolvedTitles.map((title) => (
+                  <div key={title} className="flex flex-col sm:flex-row sm:items-center gap-2">
+                    <span className="text-xs font-medium text-slate-700 min-w-0 sm:w-64 truncate" title={title}>
+                      {title}
+                      {overrideMap[title] && (
+                        <span className="ml-2 text-emerald-700">-&gt; #{overrideMap[title]}</span>
+                      )}
+                    </span>
+                    <NovelOverridePicker
+                      initialQuery={title}
+                      onSelect={(novel) => handleSelectOverride(title, novel)}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {preview.rows.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b bg-slate-50">
+                    <th className="text-left py-2 px-2">Row</th>
+                    <th className="text-left py-2 px-2">novelTitle / novelMatchTitle</th>
+                    <th className="text-left py-2 px-2">Matched Novel</th>
+                    <th className="text-left py-2 px-2">Episode #</th>
+                    <th className="text-left py-2 px-2">Episode Title</th>
+                    <th className="text-left py-2 px-2">Price</th>
+                    <th className="text-left py-2 px-2">Free</th>
+                    <th className="text-left py-2 px-2">Action</th>
+                    <th className="text-left py-2 px-2">Message</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(preview.rows as MultiNovelPreviewRow[]).map((row) => {
+                    const isError = String(row.action).startsWith("error_");
+                    const isUpdate = row.action === "update_existing";
+                    return (
+                      <tr
+                        key={row.row}
+                        className={`border-b hover:bg-slate-50 ${isError ? "bg-red-50/60" : isUpdate ? "bg-blue-50/60" : ""}`}
+                      >
+                        <td className="py-2 px-2 text-muted-foreground">{row.row}</td>
+                        <td className="py-2 px-2">{row.novelMatchTitle || row.novelTitle || "-"}</td>
+                        <td className="py-2 px-2">
+                          {row.matchedNovelTitle ? (
+                            <>
+                              {row.matchedNovelTitle} <span className="text-slate-400">#{row.matchedNovelId}</span>
+                            </>
+                          ) : (
+                            "-"
+                          )}
+                        </td>
+                        <td className="py-2 px-2 font-medium">{row.rawEpisodeNumber || "-"}</td>
+                        <td className="py-2 px-2">{row.episodeTitle || "-"}</td>
+                        <td className="py-2 px-2">฿{row.price || "0"}</td>
+                        <td className="py-2 px-2">{row.isFree ? "Free" : "-"}</td>
+                        <td className="py-2 px-2">
+                          <span
+                            className={`inline-block px-2 py-0.5 rounded font-medium ${
+                              isError
+                                ? "bg-red-100 text-red-800"
+                                : isUpdate
+                                  ? "bg-blue-100 text-blue-800"
+                                  : "bg-green-100 text-green-800"
+                            }`}
+                          >
+                            {row.action}
+                          </span>
+                        </td>
+                        <td className="py-2 px-2 text-muted-foreground max-w-xs">{row.message}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <Button
+            onClick={handleConfirmImport}
+            disabled={preview.validRows === 0 || isImporting || hasBlockingErrors}
+            className="w-full mt-6"
+          >
+            {isImporting ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                กำลัง Import...
+              </>
+            ) : hasBlockingErrors ? (
+              "แก้ปัญหาที่พบก่อน จึงจะ Import ได้"
+            ) : (
+              `Import (${preview.updateCount} update, ${preview.createCount} create, ${preview.novelCount} นิยาย)`
+            )}
+          </Button>
+        </Card>
+      )}
+
+      {result && (
+        <Card className="p-4 bg-green-50 border-green-200">
+          <h3 className="font-semibold mb-2">Import เสร็จสิ้น</h3>
+          <p className="text-sm">
+            ทั้งหมด {result.totalRows} แถว จาก {result.novelCount} นิยาย · สำเร็จ {result.successCount} · error{" "}
+            {result.errorCount}
+          </p>
+          <p className="text-sm mt-1">
+            สร้างใหม่ {result.createdCount ?? 0} · อัปเดตแพ็กเดิม {result.updatedCount ?? 0} · คงไฟล์เดิมไว้{" "}
+            {result.preservedFileUrlCount ?? 0}
+          </p>
+          {result.results?.length > 0 && (
+            <div className="mt-3 p-3 bg-white border rounded max-h-48 overflow-y-auto">
+              {result.results.map((r: any, idx: number) => (
+                <p key={idx} className="text-sm text-slate-700">
+                  [novelId {r.novelId}] {r.message}
+                </p>
+              ))}
+            </div>
+          )}
+          {result.errors.length > 0 && (
+            <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded max-h-40 overflow-y-auto">
+              {result.errors.map((err: any, idx: number) => (
+                <p key={idx} className="text-sm text-red-800">
+                  Row {err.row}: {err.field} - {err.message}
+                </p>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
+    </>
+  );
+}
+
 export default function AdminEpisodeImportPage() {
-  const [importSource, setImportSource] = useState<"spreadsheet" | "zip">("spreadsheet");
+  const [importSource, setImportSource] = useState<"spreadsheet" | "zip" | "multi-zip">("spreadsheet");
   const [novelId, setNovelId] = useState<number | undefined>();
   const [selectedNovel, setSelectedNovel] = useState<NovelSearchResult | null>(null);
   const [showNovelSearch, setShowNovelSearch] = useState(true);
@@ -979,7 +1437,9 @@ export default function AdminEpisodeImportPage() {
           </Button>
         </div>
 
-        {/* Novel Selection */}
+        {/* Novel Selection - not needed for Multi-Novel ZIP, which matches
+            a novel per row instead of one novel for the whole import. */}
+        {importSource !== "multi-zip" && (
         <Card className="p-4">
           <Label>เลือกนิยาย (Select Novel)</Label>
 
@@ -1073,6 +1533,7 @@ export default function AdminEpisodeImportPage() {
             </div>
           )}
         </Card>
+        )}
 
         {/* Import Source Tabs */}
         <div className="flex gap-2 border-b">
@@ -1096,14 +1557,28 @@ export default function AdminEpisodeImportPage() {
           >
             Import Package ZIP
           </button>
+          <button
+            onClick={() => setImportSource("multi-zip")}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+              importSource === "multi-zip"
+                ? "border-blue-600 text-blue-600"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Import Multi-Novel ZIP
+          </button>
         </div>
         <p className="text-xs text-slate-500 -mt-4">
           {importSource === "spreadsheet"
             ? "เหมาะสำหรับรายบท หรือแพ็กที่เนื้อหาสั้น"
-            : "เหมาะสำหรับแพ็กอ่านบนเว็บขนาดใหญ่ (หลายสิบ-ร้อยบท) ที่ยัดเนื้อหาลงช่อง xlsx ไม่ไหว"}
+            : importSource === "zip"
+              ? "เหมาะสำหรับแพ็กอ่านบนเว็บขนาดใหญ่ (หลายสิบ-ร้อยบท) ที่ยัดเนื้อหาลงช่อง xlsx ไม่ไหว"
+              : "เหมาะสำหรับ import แพ็กของหลายนิยายพร้อมกันใน zip เดียว โดยระบบจับคู่นิยายจากชื่อเรื่องในแต่ละแถว"}
         </p>
 
-        {importSource === "zip" ? (
+        {importSource === "multi-zip" ? (
+          <MultiNovelPackageZipImportSection />
+        ) : importSource === "zip" ? (
           <PackageZipImportSection novelId={novelId} />
         ) : (
           <>
