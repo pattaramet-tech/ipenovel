@@ -28,6 +28,13 @@ export interface OptimizedImage {
   height: number;
 }
 
+// Shared presets - the single source of truth for both the live upload
+// endpoints (admin.novels.uploadCover / admin.banners.uploadImage in
+// routers.ts) and scripts/migrate-media-to-r2.ts, so a migrated image is
+// always optimized identically to a freshly-uploaded one.
+export const NOVEL_COVER_PRESET: OptimizeImageOptions = { maxWidth: 1000, maxHeight: 1500 };
+export const BANNER_IMAGE_PRESET: OptimizeImageOptions = { maxWidth: 1920, maxHeight: 800 };
+
 /**
  * Decode, resize, and re-encode an uploaded image buffer as WebP. Throws
  * ImageOptimizeError (never a raw sharp error) if the buffer isn't a
