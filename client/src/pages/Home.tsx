@@ -72,6 +72,12 @@ export default function Home() {
             <img
               src={currentBanner.imageUrl}
               alt={currentBanner.title}
+              // Eager, not lazy: this is the first content block on the page
+              // (above the fold), so lazy-loading it would delay LCP instead
+              // of helping. decoding="async" still keeps the decode off the
+              // main thread without deferring the fetch itself.
+              loading="eager"
+              decoding="async"
               className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
             />
           ) : (
