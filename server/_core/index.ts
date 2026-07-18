@@ -9,6 +9,7 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { storagePut } from "../storage";
 import { checkUploadServiceHealth } from "../helpers/uploadHealthCheck";
+import { canonicalDomainRedirect } from "./canonicalDomainRedirect";
 
 // Procedures that have caused "No procedure found on path ..." client errors
 // in production when an older server build was still deployed after the
@@ -62,6 +63,11 @@ async function startServer() {
   // never be true even when the client is genuinely on HTTPS.
   app.set("trust proxy", 1);
   const server = createServer(app);
+  // Canonical domain redirect (old Manus subdomain -> ipenovel.com) - must
+  // run before body parsers/routes so a redirected request does no
+  // unnecessary work, and after `trust proxy` so it agrees with the rest of
+  // the app about the real client-facing host/protocol.
+  app.use(canonicalDomainRedirect);
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
