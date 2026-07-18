@@ -31,6 +31,11 @@ import {
 } from "./_core/ocr-order-notes";
 import * as readerService from "./services/readerService";
 import * as packageZipImportService from "./services/packageZipImportService";
+import {
+  runMediaMigrationBatch,
+  MediaMigrationConfigError,
+  MediaMigrationLockError,
+} from "./services/mediaMigrationService";
 
 // ============ HELPER PROCEDURES ============
 
@@ -1412,6 +1417,77 @@ export const appRouter = router({
             errors: [...parsed.errors, ...summary.errors],
             imported: true,
           };
+        }),
+    }),
+
+    // ============ ADMIN MEDIA MIGRATION RUNNER ============
+    // Lets an admin move existing novels.coverImageUrl/banners.imageUrl
+    // files onto Cloudflare R2 straight from the admin UI - Manus production
+    // has no terminal, so scripts/migrate-media-to-r2.ts (which the CLI
+    // Application Secrets can't reach interactively) can't be run there
+    // directly. Both this router and the CLI script call the exact same
+    // server/services/mediaMigrationService.ts, so behavior can never drift
+    // between the two.
+    mediaMigration: router({
+      // Always dryRun=true - never uploads, never writes to the DB. Used by
+      // the admin UI's "Dry Run" button, and safe to call with type="all".
+      preview: adminProcedure
+        .input(
+          z.object({
+            type: z.enum(["novels", "banners", "all"]),
+            limit: z.number().int().positive().max(20),
+            startId: z.number().int().min(0).optional(),
+          })
+        )
+        .mutation(async ({ input }) => {
+          try {
+            return await runMediaMigrationBatch({ ...input, dryRun: true });
+          } catch (error) {
+            if (error instanceof MediaMigrationLockError) {
+              throw new TRPCError({ code: "CONFLICT", message: error.message });
+            }
+            throw error;
+          }
+        }),
+
+      // Live run - actually downloads, optimizes, uploads to R2, and
+      // updates the DB row on success. Deliberately more restrictive than
+      // preview: type is novels|banners only (no "all", to keep one HTTP
+      // request bounded), limit caps at 10, and a typed confirmText guards
+      // against an accidental click - this is the only mutating procedure in
+      // this router.
+      run: adminProcedure
+        .input(
+          z.object({
+            type: z.enum(["novels", "banners"]),
+            limit: z.number().int().positive().max(10),
+            startId: z.number().int().min(0).optional(),
+            confirmText: z.string(),
+          })
+        )
+        .mutation(async ({ input }) => {
+          if (input.confirmText !== "MIGRATE_TO_R2") {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: 'confirmText ต้องพิมพ์ "MIGRATE_TO_R2" ให้ตรงทุกตัวอักษรเพื่อยืนยันการรัน migration จริง',
+            });
+          }
+
+          const { confirmText, ...batchOptions } = input;
+          try {
+            return await runMediaMigrationBatch({ ...batchOptions, dryRun: false, force: false });
+          } catch (error) {
+            if (error instanceof MediaMigrationConfigError) {
+              throw new TRPCError({
+                code: "SERVICE_UNAVAILABLE",
+                message: "R2 is not configured. Check Manus Application Secrets.",
+              });
+            }
+            if (error instanceof MediaMigrationLockError) {
+              throw new TRPCError({ code: "CONFLICT", message: error.message });
+            }
+            throw error;
+          }
         }),
     }),
 

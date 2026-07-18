@@ -23,6 +23,7 @@ import {
   FileSpreadsheet,
   Activity,
   UserSearch,
+  ImagePlus,
 } from "lucide-react";
 
 export interface NavItem {
@@ -149,6 +150,11 @@ export const adminNavSections: NavSection[] = [
         label: "Entitlement Lookup",
         href: "/admin/entitlement-lookup",
         icon: UserSearch,
+      },
+      {
+        label: "Media Migration",
+        href: "/admin/media-migration",
+        icon: ImagePlus,
       },
       {
         label: "Settings",
