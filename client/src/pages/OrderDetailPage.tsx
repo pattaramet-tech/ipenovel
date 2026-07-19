@@ -7,8 +7,10 @@ import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
 import { ArrowLeft, FileText, BookOpen } from "lucide-react";
 import { getLoginUrl } from "@/const";
+import { useDocumentHead } from "@/hooks/useDocumentHead";
 
 export default function OrderDetailPage() {
+  useDocumentHead({ robots: "noindex,nofollow" });
   const { isAuthenticated } = useAuth();
   const [location, navigate] = useLocation();
   

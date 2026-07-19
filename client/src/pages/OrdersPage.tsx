@@ -8,8 +8,10 @@ import { FileText } from "lucide-react";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { getLoginUrl } from "@/const";
+import { useDocumentHead } from "@/hooks/useDocumentHead";
 
 export default function OrdersPage() {
+  useDocumentHead({ robots: "noindex,nofollow" });
   const { isAuthenticated } = useAuth();
   const [, navigate] = useLocation();
   const { t } = useLanguage();

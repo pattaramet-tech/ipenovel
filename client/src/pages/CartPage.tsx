@@ -21,8 +21,10 @@ import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { useEffect, useState } from "react";
 import { QR_PAYMENT_IMAGE, PAYMENT_DETAILS } from "@/constants/payment";
+import { useDocumentHead } from "@/hooks/useDocumentHead";
 
 export default function CartPage() {
+  useDocumentHead({ robots: "noindex,nofollow" });
   const { isAuthenticated, user } = useAuth();
   const [, navigate] = useLocation();
   const { t } = useLanguage();

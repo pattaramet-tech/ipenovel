@@ -6,8 +6,10 @@ import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
 import { AlertCircle, LogIn } from "lucide-react";
 import { toast } from "sonner";
+import { useDocumentHead } from "@/hooks/useDocumentHead";
 
 export default function AdminLoginPage() {
+  useDocumentHead({ robots: "noindex,nofollow" });
   const [, navigate] = useLocation();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

@@ -10,6 +10,7 @@ import { serveStatic, setupVite } from "./vite";
 import { storagePut } from "../storage";
 import { checkUploadServiceHealth } from "../helpers/uploadHealthCheck";
 import { canonicalDomainRedirect } from "./canonicalDomainRedirect";
+import { handleSitemapXml } from "./sitemap";
 
 // Procedures that have caused "No procedure found on path ..." client errors
 // in production when an older server build was still deployed after the
@@ -73,7 +74,12 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   // OAuth callback under /api/oauth/callback
   registerOAuthRoutes(app);
-  
+
+  // Dynamic sitemap (published novels only) - must be registered before the
+  // Vite/static-file fallback below, otherwise /sitemap.xml would 404 and
+  // fall through to the SPA's index.html instead of returning XML.
+  app.get("/sitemap.xml", handleSitemapXml);
+
   // REMOVED: /api/upload endpoint
   // Use tRPC payment.uploadSlipFile instead for consistent validation and error handling
   // This endpoint was removed to prevent unauthenticated file uploads and enforce proper validation

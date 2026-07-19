@@ -1,0 +1,15 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /admin/
+Disallow: /cart
+Disallow: /orders
+Disallow: /my-novels
+Disallow: /my-library
+Disallow: /profile
+Disallow: /points
+Disallow: /wallet
+Disallow: /payment
+Disallow: /read/
+
+Sitemap: https://ipenovel.com/sitemap.xml

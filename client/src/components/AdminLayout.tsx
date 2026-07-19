@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { adminNavSections } from "@/config/adminNavItems";
+import { useDocumentHead } from "@/hooks/useDocumentHead";
 
 interface AdminLayoutProps {
   children: React.ReactNode;
@@ -21,6 +22,10 @@ interface AdminLayoutProps {
 const allNavItems = adminNavSections.flatMap((section) => section.items);
 
 export default function AdminLayout({ children }: AdminLayoutProps) {
+  // Every admin page renders through this one layout, so setting
+  // noindex,nofollow here covers the entire /admin/* section in one place
+  // instead of touching each of the 20+ individual admin page components.
+  useDocumentHead({ robots: "noindex,nofollow" });
   const { user, loading } = useAuth();
   const [location, navigate] = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);

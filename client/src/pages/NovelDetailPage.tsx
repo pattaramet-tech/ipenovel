@@ -17,6 +17,8 @@ import {
   groupEpisodesByHundreds,
   type EpisodeGroup,
 } from "@/utils/episodeUtils";
+import { useDocumentHead } from "@/hooks/useDocumentHead";
+import { buildCanonicalUrl, buildNovelMetaDescription, SITE_NAME } from "@/lib/seo";
 
 export default function NovelDetailPage() {
   const { identifier } = useParams<{ identifier: string }>();
@@ -231,6 +233,42 @@ export default function NovelDetailPage() {
     () => groupEpisodesByHundreds(visibleReaderEpisodes),
     [visibleReaderEpisodes]
   );
+
+  // SEO: only set page-specific tags once the novel has actually loaded -
+  // while loading/on error, useDocumentHead simply isn't called with a
+  // title/description/canonical/jsonLd, leaving index.html's static
+  // defaults in place rather than showing a misleading "null | IpeNovel"
+  // or a JSON-LD block with empty fields.
+  const novelRow = novel?.novel;
+  const novelCanonical = validNovelId ? buildCanonicalUrl(`/novels/${validNovelId}`) : undefined;
+  const novelJsonLd = useMemo(() => {
+    if (!novelRow?.title || !novelCanonical) return null;
+    const data: Record<string, unknown> = {
+      "@context": "https://schema.org",
+      "@type": "Book",
+      name: novelRow.title,
+      url: novelCanonical,
+      inLanguage: "th-TH",
+    };
+    const description = buildNovelMetaDescription(novelRow.description, novelRow.title);
+    if (description) data.description = description;
+    if (novelRow.coverImageUrl) data.image = novelRow.coverImageUrl;
+    // Only include author when we actually have real data for it - never
+    // fabricate a Person/Organization entry with a guessed name.
+    if (novelRow.author?.trim()) {
+      data.author = { "@type": "Person", name: novelRow.author.trim() };
+    }
+    return data;
+  }, [novelRow?.title, novelRow?.description, novelRow?.coverImageUrl, novelRow?.author, novelCanonical]);
+
+  useDocumentHead({
+    title: novelRow?.title ? `${novelRow.title} | ${SITE_NAME}` : undefined,
+    description: novelRow?.title ? buildNovelMetaDescription(novelRow.description, novelRow.title) : undefined,
+    canonical: novelCanonical,
+    ogType: "website",
+    ogImage: novelRow?.coverImageUrl || undefined,
+    jsonLd: novelJsonLd,
+  });
 
   // A group is expanded if the user explicitly toggled it, or by default:
   // while searching every group already only contains matching episodes so
@@ -623,6 +661,18 @@ export default function NovelDetailPage() {
               <img
                 src={novel.novel.coverImageUrl}
                 alt={novel.novel?.title || "Novel"}
+                // Above the fold and this page's LCP candidate - eager +
+                // high priority, not lazy. width/height are a hint only
+                // (the R2 optimizer's max cover footprint, 2:3) so the
+                // browser can reserve roughly the right space before the
+                // image loads and avoid a layout shift; the existing
+                // w-full h-auto classes still size it responsively and
+                // never crop/distort a cover with a different real ratio.
+                width={1000}
+                height={1500}
+                loading="eager"
+                decoding="async"
+                fetchPriority="high"
                 className="w-full h-auto rounded-lg shadow-md mb-6"
                 onError={(e) => {
                   (e.target as HTMLImageElement).style.display = "none";

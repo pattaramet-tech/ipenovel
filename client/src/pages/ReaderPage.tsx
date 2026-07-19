@@ -11,6 +11,8 @@ import { parsePackageToc, findTocEntryByChapterNumber, type PackageTocEntry } fr
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import ReaderSettings from "@/components/ReaderSettings";
 import { useReaderPreferences, getFontFamilyStack } from "@/hooks/useReaderPreferences";
+import { useDocumentHead } from "@/hooks/useDocumentHead";
+import { buildCanonicalUrl, SITE_NAME } from "@/lib/seo";
 
 // How long to wait after the user stops scrolling before saving progress.
 const SCROLL_SAVE_DEBOUNCE_MS = 1500;
@@ -88,6 +90,23 @@ export default function ReaderPage() {
   const shouldShowWatermark = !!user && !!episodeId && (
     (canRead && !!content) || (isLocked && !!preview)
   );
+
+  // SEO: reader.getEpisode is a protectedProcedure (enabled: !!user above),
+  // so an unauthenticated crawler can never see a real chapter here anyway -
+  // there's no content for it to index, just a login-gated shell. noindex
+  // (not indexed) + follow (still crawl links out of this page, e.g. nav)
+  // is the deliberate choice, not a guess - see docs/PERFORMANCE_SEO_AUDIT.md.
+  // The description never includes chapter prose, only titles.
+  useDocumentHead({
+    title:
+      episode?.title && novel?.title ? `${episode.title} - ${novel.title} | ${SITE_NAME}` : undefined,
+    description:
+      episode?.title && novel?.title
+        ? `อ่านนิยาย ${novel.title} ตอน ${episode.title} บน ${SITE_NAME}`
+        : undefined,
+    canonical: episodeId ? buildCanonicalUrl(`/read/${episodeId}`) : undefined,
+    robots: "noindex,follow",
+  });
 
   // Measure the header and bottom nav bar so the fixed watermark strips can
   // sit just outside them instead of guessing a fixed pixel offset - both

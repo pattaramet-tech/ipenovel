@@ -9,8 +9,10 @@ import { useLocation } from "wouter";
 import { Loader2, BookOpen, ChevronRight } from "lucide-react";
 import { useState, useMemo } from "react";
 import { formatEpisodeLabel } from "@/utils/episodeUtils";
+import { useDocumentHead } from "@/hooks/useDocumentHead";
 
 export default function MyLibraryPage() {
+  useDocumentHead({ robots: "noindex,nofollow" });
   const { user } = useAuth();
   const { t } = useLanguage();
   const [, navigate] = useLocation();

@@ -141,6 +141,24 @@ export async function getAllNovels(limit?: number, offset?: number) {
 }
 
 /**
+ * id + updatedAt only, published novels only, for the /sitemap.xml route
+ * (see server/_core/sitemap.ts) - never episodes, never draft/archived
+ * novels. Capped well above any realistic current catalog size as a safety
+ * net against an unbounded response if the catalog grows unexpectedly;
+ * revisit (paginated/split sitemap) if the catalog ever approaches it.
+ */
+export async function getPublishedNovelsForSitemap(limitCap: number = 5000) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({ id: novels.id, updatedAt: novels.updatedAt })
+    .from(novels)
+    .where(eq(novels.publicationStatus, "published"))
+    .orderBy(desc(novels.updatedAt))
+    .limit(limitCap);
+}
+
+/**
  * Get all novels for admin (including archived)
  * Used by admin pages to manage all novels
  */
@@ -245,6 +263,47 @@ export async function getEpisodesByNovelId(novelId: number) {
   const db = await getDb();
   if (!db) return [];
   return db.select().from(episodes).where(eq(episodes.novelId, novelId)).orderBy(asc(episodes.episodeNumber));
+}
+
+/**
+ * Lightweight, id/episodeNumber/title-only batch lookup for episodes -
+ * never selects `content`/`fileUrl`/etc. Used where a caller needs to
+ * resolve many episode ids to display labels (e.g. myNovels.list) without
+ * either an N+1 loop of getEpisodeById() calls or shipping every episode's
+ * full content over the wire for a page that never displays it.
+ */
+export async function getEpisodesByIdsLite(episodeIds: number[]) {
+  const db = await getDb();
+  if (!db || episodeIds.length === 0) return [];
+  return db
+    .select({
+      id: episodes.id,
+      novelId: episodes.novelId,
+      episodeNumber: episodes.episodeNumber,
+      title: episodes.title,
+    })
+    .from(episodes)
+    .where(inArray(episodes.id, episodeIds));
+}
+
+/**
+ * Lightweight, card-display-only batch lookup for novels (id/title/cover/
+ * status) - never the full `SELECT *` row. Same N+1-avoidance rationale as
+ * getEpisodesByIdsLite above.
+ */
+export async function getNovelsByIdsLite(novelIds: number[]) {
+  const db = await getDb();
+  if (!db || novelIds.length === 0) return [];
+  return db
+    .select({
+      id: novels.id,
+      title: novels.title,
+      coverImageUrl: novels.coverImageUrl,
+      publicationStatus: novels.publicationStatus,
+      storyStatus: novels.storyStatus,
+    })
+    .from(novels)
+    .where(inArray(novels.id, novelIds));
 }
 
 export async function getEpisodeById(episodeId: number, tx?: any) {

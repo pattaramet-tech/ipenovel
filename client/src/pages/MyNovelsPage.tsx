@@ -10,6 +10,7 @@ import { useLanguage } from "@/contexts/LanguageContext";
 import { useMemo, useState } from "react";
 import SafeImage from "@/components/SafeImage";
 import { formatEpisodeLabel } from "@/utils/episodeUtils";
+import { useDocumentHead } from "@/hooks/useDocumentHead";
 
 function formatSafeDate(value: unknown) {
   if (!value) return "-";
@@ -24,6 +25,7 @@ function sortByPurchasedAtDesc(a: any, b: any) {
 }
 
 export default function MyNovelsPage() {
+  useDocumentHead({ robots: "noindex,nofollow" });
   const { isAuthenticated } = useAuth();
   const [, setLocation] = useLocation();
   const { t } = useLanguage();

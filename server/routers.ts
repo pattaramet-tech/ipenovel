@@ -205,12 +205,18 @@ export const appRouter = router({
       const novel = await db.getNovelById(input.novelId, !isAdmin); // publicOnly=true for non-admins
       if (!novel) throw new TRPCError({ code: "NOT_FOUND" });
 
-      const episodes = await db.getEpisodesByNovelId(input.novelId);
+      // Episode list intentionally NOT fetched here (used to call
+      // getEpisodesByNovelId, a full `SELECT *` including every episode's
+      // mediumtext `content`) - the frontend (NovelDetailPage.tsx) exclusively
+      // uses the separate novels.episodes query for actual episode data
+      // (which also needs per-episode purchase/entitlement enrichment this
+      // procedure doesn't do), so that field was fetched and shipped over
+      // the wire on every single novel-detail page view without ever being
+      // read. See docs/PERFORMANCE_SEO_AUDIT.md.
       const categories = await db.getCategoriesByNovelId(input.novelId);
 
       return {
         novel,
-        episodes,
         categories: categories.map((c: any) => c.category),
       };
     }),
@@ -624,12 +630,29 @@ export const appRouter = router({
       const purchases = await db.getPurchasesByUserId(ctx.user.id);
       const progressMap = await db.getReadingProgressBatch(ctx.user.id, purchases.map((p) => p.episodeId));
 
+      // Batch-fetch every referenced novel/episode in 2 queries total,
+      // instead of the previous 1 getNovelById() + 1 getEpisodeById() call
+      // PER purchase (a classic N+1: a user with 50 purchased episodes did
+      // 100 sequential, awaited-in-a-loop DB round trips), and with lean
+      // columns instead of getEpisodeById's `SELECT *` (which included every
+      // purchased episode's full mediumtext `content`, never used here -
+      // this page only ever displays id/episodeNumber/title). See
+      // docs/PERFORMANCE_SEO_AUDIT.md.
+      const novelIds = Array.from(new Set(purchases.map((p) => p.novelId)));
+      const episodeIds = Array.from(new Set(purchases.map((p) => p.episodeId)));
+      const [novelsLite, episodesLite] = await Promise.all([
+        db.getNovelsByIdsLite(novelIds),
+        db.getEpisodesByIdsLite(episodeIds),
+      ]);
+      const novelById = new Map(novelsLite.map((n: any) => [n.id, n]));
+      const episodeById = new Map(episodesLite.map((e: any) => [e.id, e]));
+
       // Group by novel
       const novelMap = new Map();
 
       for (const purchase of purchases) {
-        const novel = await db.getNovelById(purchase.novelId);
-        const episode = await db.getEpisodeById(purchase.episodeId);
+        const novel = novelById.get(purchase.novelId);
+        const episode = episodeById.get(purchase.episodeId);
         const progress = progressMap.get(purchase.episodeId);
 
         if (!novelMap.has(purchase.novelId)) {

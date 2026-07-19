@@ -47,6 +47,10 @@ export default function SafeImage({
     <img
       src={src}
       alt={alt}
+      // Every current usage is a small thumbnail (library/admin list rows),
+      // never a page's hero/LCP image, so lazy + async decode is safe here.
+      loading="lazy"
+      decoding="async"
       className={className}
       onError={() => setHasError(true)}
     />

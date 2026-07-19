@@ -7,6 +7,7 @@ import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { Upload, CheckCircle, AlertCircle, X, Loader2 } from "lucide-react";
+import { useDocumentHead } from "@/hooks/useDocumentHead";
 
 const QR_PAYMENT_IMAGE = "https://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/IMG_8158_19d96370.JPG";
 
@@ -43,6 +44,7 @@ function getUserFriendlyUploadError(error: any, t: any): string {
 }
 
 export default function WalletPage() {
+  useDocumentHead({ robots: "noindex,nofollow" });
   const auth = useAuth();
   const { t } = useLanguage();
   const [showTopupForm, setShowTopupForm] = useState(false);

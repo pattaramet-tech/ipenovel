@@ -11,6 +11,15 @@ import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { keepPreviousData } from "@tanstack/react-query";
 import NovelCard, { type NovelCardBadge } from "@/components/NovelCard";
+import { useDocumentHead } from "@/hooks/useDocumentHead";
+import { buildCanonicalUrl } from "@/lib/seo";
+
+const NOVELS_LIST_TITLE = "รายการนิยาย | IpeNovel";
+// Canonical intentionally omits sort/filter/page query params - they're
+// view variants of the same listing, not distinct pages, so every variant
+// should point crawlers at the one canonical /novels URL rather than
+// fragmenting index weight across ?sort=popular, ?filter=free, etc.
+const NOVELS_LIST_CANONICAL = buildCanonicalUrl("/novels");
 
 const DEBOUNCE_DELAY = 500; // ms
 const PAGE_SIZE = 20;
@@ -146,6 +155,12 @@ export default function NovelsPage() {
     },
     [user, wishlistMap, addWishlistMutation, removeWishlistMutation, utils]
   );
+
+  useDocumentHead({
+    title: NOVELS_LIST_TITLE,
+    canonical: NOVELS_LIST_CANONICAL,
+    ogType: "website",
+  });
 
   // Get display title based on current sort/filter
   const getPageTitle = () => {

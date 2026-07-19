@@ -9,8 +9,10 @@ import { useLocation } from "wouter";
 import { Loader2, BookOpen, ChevronDown, ChevronUp, Wallet, Clock, Mail, User } from "lucide-react";
 import { useState, useMemo } from "react";
 import { formatEpisodeLabel, compareEpisodes } from "@/utils/episodeUtils";
+import { useDocumentHead } from "@/hooks/useDocumentHead";
 
 export default function ProfilePage() {
+  useDocumentHead({ robots: "noindex,nofollow" });
   const { user } = useAuth();
   const { t } = useLanguage();
   const [, navigate] = useLocation();

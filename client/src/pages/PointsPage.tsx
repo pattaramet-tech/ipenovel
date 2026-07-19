@@ -6,8 +6,10 @@ import { useLocation } from "wouter";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Zap, TrendingUp, TrendingDown } from "lucide-react";
+import { useDocumentHead } from "@/hooks/useDocumentHead";
 
 export default function PointsPage() {
+  useDocumentHead({ robots: "noindex,nofollow" });
   const { user } = useAuth();
   const { t } = useLanguage();
   const [, navigate] = useLocation();
