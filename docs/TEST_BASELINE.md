@@ -244,3 +244,62 @@ reported as a new failure with exit code 1.
 ---
 No secrets appear in this document or in any file added/changed for
 this release-gate retest.
+
+## Update — Test Suite Stabilization pass (base commit `55bcc42`)
+
+A/B verification against a real test database (in Manus's environment,
+not this sandbox) found the release gate itself was non-deterministic:
+87 new failures on one run, 88 on another, **with a different set of
+failing test names each time** - i.e. genuine test flakiness, not a
+release-gate bug. See `docs/TEST_INFRASTRUCTURE.md` for the full
+root-cause analysis (no isolation between test files sharing one
+database, `Date.now()`-only fixture uniqueness, and zero database safety
+guard anywhere in the suite) and the infrastructure built to address it.
+
+**This update does not change the failure list above or in
+`docs/test-baseline-snapshot.json`.** Per this task's explicit rule
+("ห้ามอัปเดต baseline ขณะที่ suite ยัง flaky"), the baseline is left exactly
+as recorded until full-suite determinism is proven against a real
+database - which did not happen in this pass (no `DATABASE_URL`/
+`TEST_DATABASE_URL` was available in this sandbox at any point). What
+changed:
+
+- `docs/test-baseline-snapshot.json` gained a `meta` block (test/file
+  count floor, for the release gate's new "tests silently disappeared"
+  guard) - **the `failures` array inside it is byte-for-byte identical**
+  to before (verified: 200 entries, 0 added, 0 removed, diffed by
+  `(file, name)` key).
+- Three of the files behind this baseline's 200 failures
+  (`server/status-sync.test.ts`, `server/novels-browse-pagination.test.ts`,
+  `server/daily-checkin.test.ts`) were rewritten with proper isolation
+  (unique-UUID fixtures, guards, cleanup, isolated seed data instead of
+  ambient-table queries). In this sandbox, this took
+  `status-sync.test.ts`'s 10 baseline failures from "fails with `Database
+  not available`" to "no-ops cleanly" (960→965 passed net effect measured
+  across this pass's edits) - a legitimate improvement, but **not
+  verified against a real database**, so the baseline was not shrunk to
+  reflect it. `pnpm test:gate` correctly reports these 10 under "Fixed
+  since baseline snapshot" (informational) without treating it as a new
+  failure or silently updating the snapshot.
+- `pnpm test:gate` itself gained three new checks with no prior
+  equivalent: collection-error detection, a test/file-count floor, and an
+  explicit "previously-failing test is now suspiciously skipped" check
+  (directly blocking the "convert a failure to `.skip` to dodge the gate"
+  pattern this task forbids). All three were verified with real
+  negative-test injections (an intentionally-throwing file, and manual
+  review of the skip-detection logic), not just code review alone for the
+  first two.
+
+See `docs/TEST_INFRASTRUCTURE.md` for the full write-up, the dependency
+map of which test files touch which database tables, the list of files
+**not** yet migrated to the new safe pattern (test debt, prioritized), and
+an explicit list of what this pass could and could not verify without
+database access.
+
+**GO/NO-GO for this pass: NO-GO for deploy**, pending a real-database run
+of `pnpm test:ci` and `pnpm test:repeat 3` in an environment with
+`TEST_DATABASE_URL` configured (e.g. Manus) - see the deliverable report
+for full reasoning. This pass's own validation is limited to what's
+provable without a database: `pnpm check` clean, the guard/config logic
+unit-tested and passing for real, and the full suite's failure count
+*not increasing* (190 failures now vs. 200 in the prior baseline, 0 new).

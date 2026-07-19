@@ -11,6 +11,26 @@ import {
 } from "./_core/dailyCheckinConfig";
 import * as orderService from "./services/orderService";
 import { normalizeMoneyAmount } from "./helpers/moneyNormalizer";
+import { randomUUID } from "node:crypto";
+
+/**
+ * Creates a real user row and returns the ID the database actually
+ * assigned - replaces this file's previous approach of hardcoding literal
+ * IDs (900001+) and hoping nothing else in a shared test database ever
+ * used the same range. `dailyCheckins.userId`/`coupons` have no enforced
+ * foreign key to `users` in this schema, so the hardcoded IDs never caused
+ * an insert to fail outright, but they were still an assumption this
+ * factory removes entirely - see docs/TEST_INFRASTRUCTURE.md PART E
+ * ("สร้าง factory ที่คืน ID จริงจาก insert แทนการสมมติว่า ID = 1").
+ */
+async function createRealTestUserId(): Promise<number> {
+  const tag = randomUUID().replace(/-/g, "").slice(0, 16);
+  const openId = `checkin-fixture-${tag}`;
+  await db.upsertUser({ openId, name: `Checkin Fixture ${tag}`, email: `${tag}@example.test`, loginMethod: "test" });
+  const user = await db.getUserByOpenId(openId);
+  if (!user) throw new Error("createRealTestUserId: upsertUser did not create a row");
+  return (user as any).id;
+}
 
 /**
  * Phase 5 - daily check-in coupon rewards.
@@ -109,15 +129,25 @@ describe("dailyCheckin.claim - unauthenticated rejection (no DB required - rejec
 });
 
 describe("claimDailyCheckin (DB required)", () => {
-  const TEST_USER_A = 900001;
-  const TEST_USER_B = 900002;
+  let TEST_USER_A: number;
+  let TEST_USER_B: number;
+  const createdUserIds: number[] = [];
+
+  beforeAll(async () => {
+    const database = await getDb();
+    if (!database) return;
+    TEST_USER_A = await createRealTestUserId();
+    TEST_USER_B = await createRealTestUserId();
+    createdUserIds.push(TEST_USER_A, TEST_USER_B);
+  }, 30000);
 
   afterAll(async () => {
     const database = await getDb();
-    if (!database) return;
-    // Best-effort cleanup - these user IDs are reserved for this test file only.
-    await database.execute(`DELETE FROM dailyCheckins WHERE userId IN (${TEST_USER_A}, ${TEST_USER_B})`);
+    if (!database || createdUserIds.length === 0) return;
+    const idList = createdUserIds.join(",");
+    await database.execute(`DELETE FROM dailyCheckins WHERE userId IN (${idList})`);
     await database.execute(`DELETE FROM coupons WHERE code LIKE 'CHKIN%U${TEST_USER_A}%' OR code LIKE 'CHKIN%U${TEST_USER_B}%'`);
+    await database.execute(`DELETE FROM users WHERE id IN (${idList})`);
   });
 
   it("first claim of the day succeeds and issues exactly one coupon", async () => {
@@ -155,7 +185,7 @@ describe("claimDailyCheckin (DB required)", () => {
     const database = await getDb();
     if (!database) return;
 
-    const uniqueUser = 900003;
+    const uniqueUser = await createRealTestUserId();
     try {
       const [r1, r2] = await Promise.all([db.claimDailyCheckin(uniqueUser), db.claimDailyCheckin(uniqueUser)]);
       const claimedCount = [r1, r2].filter((r) => r.claimed).length;
@@ -165,6 +195,7 @@ describe("claimDailyCheckin (DB required)", () => {
     } finally {
       await database.execute(`DELETE FROM dailyCheckins WHERE userId = ${uniqueUser}`);
       await database.execute(`DELETE FROM coupons WHERE code LIKE 'CHKIN%U${uniqueUser}%'`);
+      await database.execute(`DELETE FROM users WHERE id = ${uniqueUser}`);
     }
   });
 
@@ -181,7 +212,7 @@ describe("claimDailyCheckin (DB required)", () => {
     const database = await getDb();
     if (!database) return;
 
-    const yesterdayUser = 900004;
+    const yesterdayUser = await createRealTestUserId();
     try {
       // Simulate "already checked in yesterday" by inserting directly with
       // yesterday's business date, bypassing claimDailyCheckin (which always
@@ -204,6 +235,7 @@ describe("claimDailyCheckin (DB required)", () => {
     } finally {
       await database.execute(`DELETE FROM dailyCheckins WHERE userId = ${yesterdayUser}`);
       await database.execute(`DELETE FROM coupons WHERE code LIKE 'CHKIN%${yesterdayUser}%'`);
+      await database.execute(`DELETE FROM users WHERE id = ${yesterdayUser}`);
     }
   });
 
@@ -211,7 +243,7 @@ describe("claimDailyCheckin (DB required)", () => {
     const database = await getDb();
     if (!database) return;
 
-    const killSwitchUser = 900005;
+    const killSwitchUser = await createRealTestUserId();
     try {
       const saveResult = await saveDailyCheckinCampaignConfig({ isActive: false });
       expect(saveResult.success).toBe(true);
@@ -227,19 +259,60 @@ describe("claimDailyCheckin (DB required)", () => {
     } finally {
       await saveDailyCheckinCampaignConfig({ isActive: true });
       await database.execute(`DELETE FROM dailyCheckins WHERE userId = ${killSwitchUser}`);
+      await database.execute(`DELETE FROM users WHERE id = ${killSwitchUser}`);
     }
   });
 });
 
 describe("Daily check-in coupon validation/redemption (DB required)", () => {
-  const COUPON_USER = 900010;
-  const OTHER_USER = 900011;
+  // One real user per scenario that needs its own isolated coupon (each
+  // claimDailyCheckin issues at most one coupon per user per day, so
+  // scenarios that each need a fresh coupon each need a distinct user) -
+  // replaces the previous COUPON_USER/COUPON_USER+1..+6 offset-arithmetic
+  // scheme, which assumed a block of consecutive integer IDs was safely
+  // unused rather than asking the database for real ones.
+  let COUPON_USER: number;
+  let OTHER_USER: number;
+  let MIN_PURCHASE_USER: number;
+  let DISCOUNT_5PCT_USER: number;
+  let DISCOUNT_CAP_USER: number;
+  let ROUNDING_USER: number;
+  let USED_COUPON_USER: number;
+  let NON_NEGATIVE_USER: number;
+  const createdUserIds: number[] = [];
+
+  beforeAll(async () => {
+    const database = await getDb();
+    if (!database) return;
+    [
+      COUPON_USER,
+      OTHER_USER,
+      MIN_PURCHASE_USER,
+      DISCOUNT_5PCT_USER,
+      DISCOUNT_CAP_USER,
+      ROUNDING_USER,
+      USED_COUPON_USER,
+      NON_NEGATIVE_USER,
+    ] = await Promise.all(Array.from({ length: 8 }, () => createRealTestUserId()));
+    createdUserIds.push(
+      COUPON_USER,
+      OTHER_USER,
+      MIN_PURCHASE_USER,
+      DISCOUNT_5PCT_USER,
+      DISCOUNT_CAP_USER,
+      ROUNDING_USER,
+      USED_COUPON_USER,
+      NON_NEGATIVE_USER
+    );
+  }, 30000);
 
   afterAll(async () => {
     const database = await getDb();
-    if (!database) return;
-    await database.execute(`DELETE FROM dailyCheckins WHERE userId IN (${COUPON_USER}, ${OTHER_USER})`);
+    if (!database || createdUserIds.length === 0) return;
+    const idList = createdUserIds.join(",");
+    await database.execute(`DELETE FROM dailyCheckins WHERE userId IN (${idList})`);
     await database.execute(`DELETE FROM coupons WHERE code LIKE 'CHKIN%U${COUPON_USER}%'`);
+    await database.execute(`DELETE FROM users WHERE id IN (${idList})`);
   });
 
   it("the issued coupon is bound to the claiming user - another user cannot redeem it", async () => {
@@ -262,14 +335,14 @@ describe("Daily check-in coupon validation/redemption (DB required)", () => {
     const database = await getDb();
     if (!database) return;
 
-    const result = await db.claimDailyCheckin(COUPON_USER + 1);
+    const result = await db.claimDailyCheckin(MIN_PURCHASE_USER);
     const code = result.reward!.couponCode;
 
-    await expect(orderService.validateAndApplyCoupon(code, "49.99", undefined, COUPON_USER + 1)).rejects.toThrow(
+    await expect(orderService.validateAndApplyCoupon(code, "49.99", undefined, MIN_PURCHASE_USER)).rejects.toThrow(
       /minimum purchase/i
     );
     await expect(
-      orderService.validateAndApplyCoupon(code, "50.00", undefined, COUPON_USER + 1)
+      orderService.validateAndApplyCoupon(code, "50.00", undefined, MIN_PURCHASE_USER)
     ).resolves.toBeTruthy();
   });
 
@@ -277,10 +350,10 @@ describe("Daily check-in coupon validation/redemption (DB required)", () => {
     const database = await getDb();
     if (!database) return;
 
-    const result = await db.claimDailyCheckin(COUPON_USER + 2);
+    const result = await db.claimDailyCheckin(DISCOUNT_5PCT_USER);
     const code = result.reward!.couponCode;
 
-    const { discountAmount } = await orderService.validateAndApplyCoupon(code, "100.00", undefined, COUPON_USER + 2);
+    const { discountAmount } = await orderService.validateAndApplyCoupon(code, "100.00", undefined, DISCOUNT_5PCT_USER);
     expect(discountAmount).toBe("5.00"); // 5% of 100
   });
 
@@ -288,11 +361,11 @@ describe("Daily check-in coupon validation/redemption (DB required)", () => {
     const database = await getDb();
     if (!database) return;
 
-    const result = await db.claimDailyCheckin(COUPON_USER + 3);
+    const result = await db.claimDailyCheckin(DISCOUNT_CAP_USER);
     const code = result.reward!.couponCode;
 
     // 5% of 1000 would be 50, but the cap is 10.
-    const { discountAmount } = await orderService.validateAndApplyCoupon(code, "1000.00", undefined, COUPON_USER + 3);
+    const { discountAmount } = await orderService.validateAndApplyCoupon(code, "1000.00", undefined, DISCOUNT_CAP_USER);
     expect(discountAmount).toBe("10.00");
   });
 
@@ -300,11 +373,11 @@ describe("Daily check-in coupon validation/redemption (DB required)", () => {
     const database = await getDb();
     if (!database) return;
 
-    const result = await db.claimDailyCheckin(COUPON_USER + 4);
+    const result = await db.claimDailyCheckin(ROUNDING_USER);
     const code = result.reward!.couponCode;
 
     // 5% of 63.33 = 3.1665 -> rounds to 3.17 (formatMoney/normalizeMoneyAmount's rounding)
-    const { discountAmount } = await orderService.validateAndApplyCoupon(code, "63.33", undefined, COUPON_USER + 4);
+    const { discountAmount } = await orderService.validateAndApplyCoupon(code, "63.33", undefined, ROUNDING_USER);
     expect(discountAmount).toBe(normalizeMoneyAmount(3.1665, "expected").toFixed(2));
   });
 
@@ -325,13 +398,13 @@ describe("Daily check-in coupon validation/redemption (DB required)", () => {
     const database = await getDb();
     if (!database) return;
 
-    const result = await db.claimDailyCheckin(COUPON_USER + 5);
+    const result = await db.claimDailyCheckin(USED_COUPON_USER);
     const couponId = result.reward!.couponId;
 
-    await db.markDailyCheckinCouponUsed(couponId, COUPON_USER + 5);
+    await db.markDailyCheckinCouponUsed(couponId, USED_COUPON_USER);
 
     await expect(
-      orderService.validateAndApplyCoupon(result.reward!.couponCode, "100.00", undefined, COUPON_USER + 5)
+      orderService.validateAndApplyCoupon(result.reward!.couponCode, "100.00", undefined, USED_COUPON_USER)
     ).rejects.toThrow(/already been used/i);
   });
 
@@ -339,12 +412,12 @@ describe("Daily check-in coupon validation/redemption (DB required)", () => {
     const database = await getDb();
     if (!database) return;
 
-    const result = await db.claimDailyCheckin(COUPON_USER + 6);
+    const result = await db.claimDailyCheckin(NON_NEGATIVE_USER);
     const code = result.reward!.couponCode;
 
     // Even at exactly the minimum purchase amount, discount (5%, capped at
     // ฿10) must never exceed the subtotal itself.
-    const { discountAmount } = await orderService.validateAndApplyCoupon(code, "50.00", undefined, COUPON_USER + 6);
+    const { discountAmount } = await orderService.validateAndApplyCoupon(code, "50.00", undefined, NON_NEGATIVE_USER);
     expect(Number(discountAmount)).toBeLessThanOrEqual(50);
     expect(Number(discountAmount)).toBeGreaterThan(0);
   });
