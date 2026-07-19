@@ -5,12 +5,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Gift, CheckCircle2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { getLoginUrl } from "@/const";
+import { useLanguage } from "@/contexts/LanguageContext";
 
-function formatThaiDate(value: string | Date | null | undefined): string {
+function formatExpiryDate(value: string | Date | null | undefined, locale: string): string {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleDateString("th-TH", { year: "numeric", month: "long", day: "numeric" });
+  return date.toLocaleDateString(locale, { year: "numeric", month: "long", day: "numeric" });
 }
 
 /**
@@ -19,6 +20,20 @@ function formatThaiDate(value: string | Date | null | undefined): string {
  * for the reward summary - this component never computes a discount or a
  * "today" date itself. See docs/DAILY_CHECKIN_COUPON.md.
  *
+ * Mounted on ProfilePage only (see docs/DAILY_CHECKIN_DEPLOYMENT_FIX.md
+ * PART C) - ProfilePage already gates its whole authenticated body behind
+ * `if (!user) return <login card>;`, so this component's own query is never
+ * fired for a signed-out visitor as a side effect of that placement. This
+ * component still handles `authenticated: false` defensively in case it is
+ * ever reused elsewhere.
+ *
+ * Error states never render `error.message` (or any other server-provided
+ * detail) - always a fixed, translated, generic string. The server has
+ * already been fixed to never leak SQL/DB details in the first place (see
+ * server/routers.ts's dailyCheckin.getStatus/claim), but this is a second,
+ * independent layer: even if a future server change ever regressed that,
+ * this component would still never echo it to the page.
+ *
  * The claim button disables itself immediately on click (isPending) purely
  * as a UX nicety against double-clicks - the actual "never issue two
  * coupons" guarantee is entirely server-side (a DB transaction + unique
@@ -26,12 +41,13 @@ function formatThaiDate(value: string | Date | null | undefined): string {
  * prevented.
  */
 export default function DailyCheckinCard() {
+  const { t, language } = useLanguage();
+  const locale = language === "th" ? "th-TH" : "en-US";
   const utils = trpc.useUtils();
   const {
     data: status,
     isLoading,
     isError,
-    error,
     refetch,
   } = trpc.dailyCheckin.getStatus.useQuery(undefined, {
     staleTime: 60 * 1000,
@@ -42,21 +58,24 @@ export default function DailyCheckinCard() {
     onSuccess: (result) => {
       utils.dailyCheckin.getStatus.invalidate();
       if (result.claimed) {
-        toast.success("เช็กอินสำเร็จ! ได้รับคูปองส่วนลดแล้ว");
+        toast.success(t("checkin.alreadyCheckedIn"));
       } else if (result.alreadyClaimed) {
-        toast.info("คุณเช็กอินวันนี้ไปแล้ว");
-      } else {
-        toast.error("ระบบเช็กอินปิดใช้งานชั่วคราว");
+        toast.info(t("checkin.alreadyCheckedIn"));
       }
+      // A disabled-campaign result (claimed: false, alreadyClaimed: false)
+      // intentionally shows no toast - there is nothing actionable to tell
+      // the user, and the card itself just stops offering the button (see
+      // the campaignActive branch below).
     },
-    onError: (err: any) => {
-      toast.error(err?.message || "เช็กอินไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
+    onError: () => {
+      // Never surface err.message - same rule as the query error state below.
+      toast.error(t("checkin.error"));
     },
   });
 
   if (isLoading) {
     return (
-      <div className="mb-12 sm:mb-16 md:mb-20">
+      <div className="mb-8">
         <Skeleton className="h-24 sm:h-20 w-full rounded-2xl" />
       </div>
     );
@@ -64,12 +83,10 @@ export default function DailyCheckinCard() {
 
   if (isError) {
     return (
-      <Card className="mb-12 sm:mb-16 md:mb-20 p-5 sm:p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
-        <p className="text-sm text-slate-600">
-          โหลดข้อมูลเช็กอินไม่สำเร็จ{error?.message ? `: ${error.message}` : ""}
-        </p>
+      <Card className="mb-8 p-5 sm:p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <p className="text-sm text-slate-600">{t("checkin.error")}</p>
         <Button variant="outline" onClick={() => refetch()}>
-          ลองใหม่อีกครั้ง
+          {t("checkin.retry")}
         </Button>
       </Card>
     );
@@ -77,16 +94,16 @@ export default function DailyCheckinCard() {
 
   if (!status || status.authenticated === false) {
     return (
-      <Card className="mb-12 sm:mb-16 md:mb-20 p-5 sm:p-6 flex flex-col sm:flex-row items-center justify-between gap-4 bg-gradient-to-br from-blue-50 to-purple-50 border-blue-100">
+      <Card className="mb-8 p-5 sm:p-6 flex flex-col sm:flex-row items-center justify-between gap-4 bg-gradient-to-br from-blue-50 to-purple-50 border-blue-100">
         <div className="flex items-center gap-3 text-center sm:text-left">
           <Gift className="w-8 h-8 text-blue-600 flex-shrink-0" aria-hidden="true" />
           <div>
-            <p className="font-semibold text-slate-900">เช็กอินรายวัน รับคูปองส่วนลดฟรี!</p>
-            <p className="text-sm text-slate-600">เข้าสู่ระบบเพื่อรับคูปองส่วนลดทุกวัน</p>
+            <p className="font-semibold text-slate-900">{t("checkin.title")}</p>
+            <p className="text-sm text-slate-600">{t("checkin.loginPrompt")}</p>
           </div>
         </div>
         <Button asChild className="rounded-full w-full sm:w-auto">
-          <a href={getLoginUrl()}>เข้าสู่ระบบ</a>
+          <a href={getLoginUrl()}>{t("nav.login")}</a>
         </Button>
       </Card>
     );
@@ -101,20 +118,22 @@ export default function DailyCheckinCard() {
   if (status.checkedInToday && status.reward) {
     const discountLabel =
       status.reward.discountType === "percentage"
-        ? `ส่วนลด ${Number(status.reward.discountValue)}%${
-            status.reward.maxDiscountAmount ? ` (สูงสุด ฿${Number(status.reward.maxDiscountAmount).toFixed(0)})` : ""
+        ? `${Number(status.reward.discountValue)}%${
+            status.reward.maxDiscountAmount ? ` (${language === "th" ? "สูงสุด" : "max"} ฿${Number(status.reward.maxDiscountAmount).toFixed(0)})` : ""
           }`
-        : `ส่วนลด ฿${Number(status.reward.discountValue).toFixed(0)}`;
+        : `฿${Number(status.reward.discountValue).toFixed(0)}`;
 
     return (
-      <Card className="mb-12 sm:mb-16 md:mb-20 p-5 sm:p-6 flex flex-col sm:flex-row items-center justify-between gap-4 bg-gradient-to-br from-green-50 to-emerald-50 border-green-100">
+      <Card className="mb-8 p-5 sm:p-6 flex flex-col sm:flex-row items-center justify-between gap-4 bg-gradient-to-br from-green-50 to-emerald-50 border-green-100">
         <div className="flex items-center gap-3 text-center sm:text-left">
           <CheckCircle2 className="w-8 h-8 text-green-600 flex-shrink-0" aria-hidden="true" />
           <div>
-            <p className="font-semibold text-slate-900">เช็กอินวันนี้แล้ว ได้รับคูปอง {discountLabel}</p>
+            <p className="font-semibold text-slate-900">
+              {t("checkin.alreadyCheckedIn")} · {discountLabel}
+            </p>
             <p className="text-sm text-slate-600">
-              รหัสคูปอง <span className="font-mono font-semibold">{status.reward.couponCode}</span>
-              {status.reward.expiresAt && ` · หมดอายุ ${formatThaiDate(status.reward.expiresAt)}`}
+              {t("checkin.couponCode")} <span className="font-mono font-semibold">{status.reward.couponCode}</span>
+              {status.reward.expiresAt && ` · ${t("checkin.expires")} ${formatExpiryDate(status.reward.expiresAt, locale)}`}
             </p>
           </div>
         </div>
@@ -123,12 +142,12 @@ export default function DailyCheckinCard() {
   }
 
   return (
-    <Card className="mb-12 sm:mb-16 md:mb-20 p-5 sm:p-6 flex flex-col sm:flex-row items-center justify-between gap-4 bg-gradient-to-br from-blue-50 to-purple-50 border-blue-100">
+    <Card className="mb-8 p-5 sm:p-6 flex flex-col sm:flex-row items-center justify-between gap-4 bg-gradient-to-br from-blue-50 to-purple-50 border-blue-100">
       <div className="flex items-center gap-3 text-center sm:text-left">
         <Gift className="w-8 h-8 text-blue-600 flex-shrink-0" aria-hidden="true" />
         <div>
-          <p className="font-semibold text-slate-900">เช็กอินวันนี้ รับคูปองส่วนลดฟรี!</p>
-          <p className="text-sm text-slate-600">เช็กอินได้วันละ 1 ครั้ง</p>
+          <p className="font-semibold text-slate-900">{t("checkin.title")}</p>
+          <p className="text-sm text-slate-600">{t("checkin.description")}</p>
         </div>
       </div>
       <Button
@@ -139,10 +158,10 @@ export default function DailyCheckinCard() {
         {claimMutation.isPending ? (
           <>
             <Loader2 className="w-4 h-4 mr-2 animate-spin" aria-hidden="true" />
-            กำลังเช็กอิน...
+            {t("checkin.claiming")}
           </>
         ) : (
-          "เช็กอินรับคูปอง"
+          t("checkin.claimButton")
         )}
       </Button>
     </Card>
