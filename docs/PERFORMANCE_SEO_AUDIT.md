@@ -834,3 +834,570 @@ Modified:
 ---
 No secrets appear in this document, in the diff, or in any file added/
 changed for this step. No business logic was changed.
+
+# Phase 3 — Database Index and Homepage Query Optimization
+
+Date: 2026-07-20
+
+## PART A — Audit of `home.getSections` (baseline, before any change)
+
+`home.getSections` (`server/routers.ts`) is a single `publicProcedure` that
+runs 6 independent queries via `Promise.all`:
+
+```ts
+const [popularNovels, newNovels, freeNovels, latestEpisodes, finishedNovels, banners] = await Promise.all([
+  db.getPopularNovels(4),
+  db.getNewNovels(4),
+  db.getFreeNovels(4),
+  db.getLatestEpisodes(4),
+  db.getFinishedNovels(4),
+  db.getAllBanners(),
+]);
+```
+
+Each of these compiles to **one SQL statement per function** (Drizzle's
+`.leftJoin(subquery, ...)` embeds a `GROUP BY` subquery as a joined derived
+table within the same statement, not a separate round trip) - so the
+*round-trip count* was already only 6, run in parallel. The real waste was
+in **what each statement asked the database to compute**:
+
+| Function | Embedded `GROUP BY` subqueries (before) | Actually used for sort? | Actually used for display? |
+|---|---|---|---|
+| `getPopularNovels` | `purchases GROUP BY novelId`, `wishlists GROUP BY novelId` | **Yes** - primary/secondary sort key | No (counts themselves aren't shown, only used to rank) |
+| `getNewNovels` | `purchases GROUP BY novelId`, `wishlists GROUP BY novelId` | No - sorts by `createdAt` only | No |
+| `getFreeNovels` | `episodes WHERE isFree GROUP BY novelId`, `purchases GROUP BY novelId`, `wishlists GROUP BY novelId` | free-episode count: yes (INNER JOIN filter). purchase/wishlist: No | free-episode count: **yes** (`novel.freeEpisodeCount > 0` gates the "Free" badge in `Home.tsx`). purchase/wishlist: No |
+| `getFinishedNovels` | `purchases GROUP BY novelId`, `wishlists GROUP BY novelId` | No - sorts by `createdAt` only (then randomly samples) | No |
+
+Confirmed by grepping `client/src/pages/Home.tsx` and `client/src/components/
+NovelCard.tsx` for `purchaseCount`/`wishlistCount`: **zero matches**. Only
+`freeEpisodeCount` is read (for the Free-section badge). So **9 total
+`GROUP BY` aggregations were computed per homepage load, of which only 3
+were ever used for anything** (2 in `getPopularNovels`'s ranking, 1 in
+`getFreeNovels`'s filter/badge) - the other 6 were pure wasted database
+work, silently discarded after the query returned.
+
+**A second, more significant issue found during this audit**:
+`getLatestEpisodes` (the "Latest Uploaded Episodes" section) had **no
+visibility filter at all** - not `episodes.isPublished`, not
+`novels.publicationStatus`. Every other homepage section correctly filters
+`publicationStatus = "published"`; this one didn't check either flag. A
+draft/unpublished episode, or any episode belonging to an archived novel,
+could appear on the public homepage. Confirmed via grep this function has
+exactly one caller (`home.getSections`), so fixing it only affects this one
+section - see PART B.
+
+### Baseline - what could and couldn't be measured
+
+Per this task's own instruction not to state unmeasured numbers: **this
+sandbox has no live `DATABASE_URL`** (a limitation present throughout this
+entire engagement, documented in every prior phase's test runs). The
+following baseline facts are **derived directly from the code and
+generated SQL** (verifiable, not measurements) rather than from
+`EXPLAIN`/timing against a real database:
+
+- **Query count**: 6 top-level round trips per `home.getSections` call
+  (unchanged by this phase's optimization - see PART B, the fix is in
+  what each statement computes, not how many statements there are).
+- **Embedded aggregations**: 9 before this phase, 3 after (see PART B).
+- **Response payload**: each of the 4 novel-list sections returns up to 4
+  rows of `getTableColumns(novels)` (11 columns: id, title, slug,
+  description, author, coverImageUrl, publicationStatus, storyStatus,
+  status, createdAt, updatedAt) + 3 count fields; `latestEpisodes` returns
+  up to 4 rows of 8 lean columns; `banners` returns however many active
+  banners exist (typically a handful). No `content`/`episodes` array is
+  ever included (confirmed unchanged).
+- **Timing**: not measured against a real database - flagged honestly
+  rather than invented. A development-only timing log was added (PART F)
+  so this becomes measurable the moment a real `DATABASE_URL` is available
+  (locally or in the Manus environment); the very first dev-server request
+  in this sandbox logged `[home.getSections] resolved in 17ms`, but since
+  the DB connection itself fails immediately in this sandbox (each function
+  hits its `if (!db) return []` guard), that number reflects connection-
+  attempt overhead, not real query execution time, and is **not** cited as
+  a "before" baseline for that reason.
+- **Index coverage** (from reading `drizzle/schema.ts` directly, not
+  `EXPLAIN`, for the same reason): documented in full in PART C.
+
+## PART B — Homepage query optimization implemented
+
+**`getNewNovels`, `getFreeNovels`, `getFinishedNovels`** (`server/db.ts`):
+removed the `purchaseCountsSubquery`/`wishlistCountsSubquery` joins
+entirely (proven unused above - not sorted on, not displayed).
+`purchaseCount`/`wishlistCount` remain in every returned row, always `0`,
+exactly like `freeEpisodeCount: 0` already was in these same 3 functions
+before this change (an existing, established "not used here" placeholder
+pattern - this phase just applies it to 2 more fields instead of computing
+them via SQL and discarding the result). **`NovelWithCounts`'s field set,
+and therefore the tRPC output shape, is unchanged** - every field a
+consumer could read is still present, with the same type, in the same
+place. `getFreeNovels` keeps its `freeEpisodeCountsSubquery` untouched
+(genuinely used for both filtering and the Free badge).
+
+**`getPopularNovels`** is unchanged in what it computes (still the sole
+function that legitimately needs purchase+wishlist counts, for its actual
+ranking) - the only change there is an added `desc(novels.id)` tie-breaker
+(see below).
+
+**Why not "hoist purchase/wishlist counts into one shared query and reuse
+them"** (the approach PART B's brief suggested as an option): once the 3
+functions that never used the counts stopped computing them, there was
+nothing left to "reuse" - `getPopularNovels` is the only remaining
+consumer. Building a shared-aggregate-map system for a single consumer
+would have added a second round-trip *phase* (fetch shared maps, then fetch
+per-section novel rows using them) in exchange for eliminating work that
+recognizing-as-unused already eliminates directly, with zero added
+complexity and zero added latency-phases. This was a deliberate choice,
+not an oversight - eliminating provably-dead work beats building
+infrastructure to "efficiently" keep doing it.
+
+**Deterministic tie-breaking** (`desc(novels.id)` added as a final
+`ORDER BY` column to all 4 ranking functions, and `desc(episodes.id)` to
+`getLatestEpisodes`): two novels/episodes sharing the exact same
+`createdAt` timestamp (e.g. bulk-imported rows) previously had no defined
+tie-break order, which is both non-deterministic across identical queries
+and untestable. `id` is unique and monotonically increasing, so this is a
+zero-risk addition - it only affects the order of rows that were already
+indistinguishable by every other sort column, never the *set* of rows
+returned or the ranking rule itself.
+
+**Bug fix: `getLatestEpisodes` visibility filter.** Added
+`WHERE episodes.isPublished = true AND novels.publicationStatus =
+"published"` (switched the novels join from LEFT to INNER, since a
+matching published novel is now required either way). This is the one
+change in this phase that alters *which rows* a function returns, not just
+how efficiently - flagged prominently here per this task's own
+instruction ("ห้ามเปลี่ยนจำนวน item ที่หน้า Home แสดง เว้นแต่พบ bug ชัดเจนและ
+รายงานก่อน"). The item *count* (`limit=4`) is unchanged; only the
+*eligibility* of a row changed, from "any episode, published or not, in
+any novel, archived or not" to "the same visibility rule every other
+homepage section already enforces." No caller other than `home.getSections`
+was found, so no other page depended on the old, unfiltered behavior.
+
+**No changes to**: section names, item counts (except the bug fix above,
+which doesn't change the *limit*, only eligible rows), ranking criteria,
+`publicationStatus`/`storyStatus` filtering elsewhere, pagination
+architecture, or any business logic outside this exact query path.
+
+## PART C — Database indexes
+
+Audited every candidate this task named against the actual current
+`drizzle/schema.ts`, **before** adding anything:
+
+| Candidate (as given) | Status found | Action |
+|---|---|---|
+| `purchases(novelId)` | **Missing** - `purchases` has indexes on `userId`, `episodeId`, `orderId`, and a unique `(userId, episodeId)`, but nothing on `novelId` | **Added** |
+| `wishlists(novelId)` | **Already exists** (`wishlists_novelId_idx`) | Not touched - would be a pure duplicate |
+| `purchases`/`episodePurchases`(userId, episodeId) composite | **Already exists** on both tables (`unique_user_episode` on `purchases`, `unique_user_episode_purchase` on `episodePurchases`) | Not touched |
+| `episodes(novelId, published/status, episodeNumber/sortOrder)` | `novelId`, `isFree`, `isPublished`, `sortOrder` all already have separate single-column indexes; `(novelId, episodeNumber)` already has a unique composite | No new index here - see below for the one that *was* missing |
+| `novels(status/published, updatedAt)` | `publicationStatus` and `createdAt` (not `updatedAt`) each have separate single-column indexes; no composite | **Added**, using `createdAt` (not `updatedAt` - see reasoning below) |
+
+Two of the task's four named candidates turned out to be **already
+satisfied** by existing indexes - not added, to avoid the duplicate/
+overlapping-index risk the task explicitly warns about. One evidence-based
+index **not** in the task's suggested list was found and added instead
+(`episodes(isPublished, createdAt)` - see below), because it directly
+serves a query this audit found, not because it was suggested.
+
+### Indexes added (3 total)
+
+**1. `novels_publicationStatus_createdAt_idx` on `novels(publicationStatus, createdAt)`**
+- **Query it serves**: `getNewNovels`, `getPopularNovels`'s candidate-pool
+  pre-filter, `getFreeNovels`, and `getFinishedNovels` (partially - see
+  below) all run `WHERE publicationStatus = "published" ORDER BY createdAt
+  DESC`.
+- **Why the existing single-column indexes aren't enough**: with only
+  `novels_publicationStatus_idx` and `novels_createdAt_idx` as separate
+  indexes, MySQL can use *one* of them (typically the equality filter) but
+  then needs a filesort for `ORDER BY createdAt DESC` on the filtered rows
+  - a composite index with `publicationStatus` first and `createdAt`
+  second lets the same index satisfy both the filter and the ordering in
+  one pass, no separate sort step.
+- **Why `createdAt`, not `updatedAt`** (the task's suggested column name):
+  every one of these 4 query functions actually orders by `createdAt`, not
+  `updatedAt` - matching the column the real queries use, not the
+  suggested one, per this task's own "ห้ามแก้แบบเดาสุ่ม" instruction.
+- **`getFinishedNovels` note**: its query additionally filters
+  `storyStatus = "finished"`, which this 2-column composite doesn't cover
+  as a leading/matched column - it still benefits from the
+  `publicationStatus` filter being index-accelerated (leftmost-prefix
+  rule), just not as completely as the other 3 functions. A 3-column
+  `(publicationStatus, storyStatus, createdAt)` composite would serve
+  Finished more precisely but would be a second, largely-overlapping index
+  serving only one of the four functions - judged not worth the added
+  write/storage overhead for this phase; noted as a future candidate if
+  Finished-section load ever needs to be revisited in isolation.
+- **Write overhead**: one more index to maintain on every `novels`
+  INSERT/UPDATE that touches `publicationStatus` or `createdAt` - `novels`
+  is a low-write-frequency table (admin-only inserts/status changes), so
+  this is judged negligible.
+- **Storage overhead**: 2 columns × row count - small for a table of this
+  size (dozens to low hundreds of novels, not comparable to `episodes` or
+  `purchases`).
+- **Overlap risk**: `novels_publicationStatus_idx` (single-column) becomes
+  largely redundant once this composite exists (any query that could use
+  the single-column index could use this composite's leading column
+  instead) - **not removed this phase**, per the explicit instruction not
+  to drop existing indexes without proving them safely duplicate; flagged
+  as a future cleanup candidate only.
+
+**2. `episodes_isPublished_createdAt_idx` on `episodes(isPublished, createdAt)`**
+- **Query it serves**: `getLatestEpisodes`, especially after this phase's
+  bug fix added the `isPublished = true` filter (PART B) - the query is
+  now `WHERE isPublished = true ORDER BY createdAt DESC LIMIT 4` across the
+  *entire* `episodes` table (deliberately not scoped to one novel, since
+  it's a site-wide "latest uploads" feed).
+- **Why this is the highest-confidence new index in this phase**:
+  `episodes` had **zero** index touching `createdAt` at all before this
+  change (`novelIdIdx`, `isFreeIdx`, `isPublishedIdx`, `sortOrderIdx`, and
+  a `(novelId, episodeNumber)` unique - none help sorting by `createdAt`).
+  `episodes` is very likely the largest table in this schema (a "package"
+  episode alone can represent 50-100 chapters' worth of content in one
+  row, and the table spans every novel × every chapter/package), so a full
+  table scan + filesort for "the 4 latest episodes site-wide" on every
+  homepage load was the single most expensive operation this audit found.
+- **Write overhead**: `episodes` is written far more often than `novels`
+  (every admin episode create/publish/ZIP-import touches this table) - a
+  2-column composite index adds real but bounded overhead per write,
+  judged acceptable given how frequently `getLatestEpisodes` runs (every
+  homepage load, i.e. far more reads than writes).
+- **Storage overhead**: 2 columns × episode row count - the largest of the
+  3 new indexes in absolute terms, proportional to `episodes`' row count.
+- **Overlap risk**: `episodes_isPublished_idx` (single-column) has the
+  same partial-redundancy relationship as `novels_publicationStatus_idx`
+  above - not removed this phase, for the same reason.
+
+**3. `purchases_novelId_idx` on `purchases(novelId)`**
+- **Query it serves**: `getPopularNovels`'s `purchaseCountsSubquery`
+  (`SELECT novelId, COUNT(DISTINCT userId) FROM purchases GROUP BY
+  novelId`) - the one purchase-count aggregation this phase kept, because
+  it's genuinely used for ranking.
+- **Why the existing indexes aren't enough**: `purchases` has indexes on
+  `userId`, `episodeId`, `orderId`, and `(userId, episodeId)` - none of
+  which help a `GROUP BY novelId` at all (none has `novelId` as even a
+  non-leading column). This was a full table scan + temp table for the
+  aggregation, every homepage load, unconditionally.
+- **Write overhead**: `purchases` is written once per completed order/
+  entitlement grant - much lower write frequency than `episodes`, so a new
+  single-column index here is low-risk.
+- **Storage overhead**: 1 column × purchase row count - the smallest of
+  the 3 new indexes.
+- **Overlap risk**: none - genuinely the first index on this column.
+
+### Migration
+
+Generated with the repo's existing framework (`drizzle-kit generate`, the
+same tool `npm run db:push` already uses) - **not** hand-written SQL, and
+**not** a direct schema edit without a migration, per this task's explicit
+requirement. `drizzle-kit generate` is a pure offline schema-diff (it reads
+the last snapshot in `drizzle/meta/` + the current `drizzle/schema.ts` and
+produces SQL; it does not need to connect to a real database, unlike
+`drizzle-kit migrate`, which actually applies migrations against
+`DATABASE_URL`) - verified it runs successfully in this sandbox with no
+live database available.
+
+**`drizzle/0026_add_homepage_performance_indexes.sql`** (generated, not
+hand-edited):
+
+```sql
+CREATE INDEX `episodes_isPublished_createdAt_idx` ON `episodes` (`isPublished`,`createdAt`);--> statement-breakpoint
+CREATE INDEX `novels_publicationStatus_createdAt_idx` ON `novels` (`publicationStatus`,`createdAt`);--> statement-breakpoint
+CREATE INDEX `purchases_novelId_idx` ON `purchases` (`novelId`);
+```
+
+Three plain `CREATE INDEX` statements, each independent (no `ALTER TABLE`
+touching column types, no data migration, no `DROP`). `drizzle/meta/
+_journal.json` and `drizzle/meta/0026_snapshot.json` were also generated
+by the same command, so the migration is tracked exactly like every other
+migration in this repo's history (`0000` through `0025`).
+
+**Rollback**: `drizzle-kit` doesn't auto-generate a "down" migration for
+this dialect/version - if these indexes ever need to be reverted, the
+exact, safe rollback SQL is:
+
+```sql
+DROP INDEX `episodes_isPublished_createdAt_idx` ON `episodes`;
+DROP INDEX `novels_publicationStatus_createdAt_idx` ON `novels`;
+DROP INDEX `purchases_novelId_idx` ON `purchases`;
+```
+
+Dropping an index is always safe (never touches data, only a lookup
+structure) and would simply return read performance to its pre-migration
+state for the affected queries - it cannot cause data loss.
+
+**Table locking**: on MySQL 5.6+/8.0 with the InnoDB engine (the default,
+and consistent with everything else in this schema), `CREATE INDEX` uses
+the **online DDL / `ALGORITHM=INPLACE`** path by default for a plain
+secondary index like these three - readable and writable throughout,
+except for a brief metadata lock at the very start/end. This is stated as
+an expectation based on standard modern MySQL/InnoDB behavior, **not**
+verified against the actual production database version/configuration,
+which this sandbox has no access to - see PART H for the explicit
+migration-risk framing.
+
+## PART D — Query correctness tests
+
+`server/homepage-ranking.test.ts` (new), 4 tests covering all of this
+task's required assertions:
+
+1. **`getPopularNovels`**: only published novels returned (archived
+   excluded), purchase count correct (2 distinct purchasers → `2`),
+   wishlist count correct (1 → `1`), a novel with zero purchases/wishlists
+   shows `0` (never null/undefined), output shape has every
+   `NovelWithCounts` field.
+2. **`getNewNovels`/`getFreeNovels`/`getFinishedNovels`**: only published
+   novels returned; `purchaseCount`/`wishlistCount` are always `0` (never
+   null) even when the novel genuinely has purchases/wishlists (proving
+   they no longer affect these 3 sections at all, by design);
+   `freeEpisodeCount` still correctly reflects real data;
+   results never exceed the requested limit.
+3. **`getFreeNovels`** additionally excludes a published novel with zero
+   free episodes (the `INNER JOIN ... count > 0` filter still works).
+4. **`getLatestEpisodes`** (the bug fix): a visible/published episode
+   appears; a `isPublished: false` draft episode does not; an episode
+   belonging to an `archived` novel does not.
+
+All 4 tests are DB-integration tests guarded with `if (!db) return`
+(this repo's established pattern for every DB-dependent test throughout
+this whole engagement) - genuine no-ops, not false passes, in this
+sandbox's DB-less environment; they run for real the moment a
+`DATABASE_URL` is available.
+
+Section order and "duplicate novel" behavior weren't given their own
+tests: section order is guaranteed by `Promise.all`'s array-order contract
+(a language guarantee, not something this codebase's logic could break),
+and no code path in this phase introduces any way for the same novel row
+to appear twice within one section's result (each function still queries
+`novels` directly with `novels.id` as the implicit dedup boundary, exactly
+as before).
+
+## PART E — Regression checks performed
+
+- **Homepage loading incompletely / covers missing**: verified via
+  Playwright against a mocked `home.getSections` response - all 6 sections
+  rendered with the expected item counts and cover images (see PART G).
+- **Stats null instead of 0**: `purchaseCount`/`wishlistCount` are always
+  explicit `0` (via `sql<number>\`0\`` in the SQL, matching the pre-
+  existing `freeEpisodeCount: 0` placeholder pattern already used in this
+  exact codebase) - never `null`/`undefined`. Covered by
+  `homepage-ranking.test.ts`.
+- **Ranking criteria swapped**: `getPopularNovels`'s ORDER BY is
+  byte-for-byte unchanged except for the added trailing tie-breaker
+  column.
+- **Duplicate novels**: not possible - see PART D.
+- **Section empty when an aggregate is missing**: `getFreeNovels`'s
+  `INNER JOIN` + `count > 0` filter is unchanged; a novel simply isn't
+  eligible if it has no free episodes, exactly as before.
+- **bigint/decimal/date serialization**: no column types changed (indexes
+  only), no new `sql<>` cast types introduced beyond the existing
+  `sql<number>` pattern already used throughout this file.
+- **tRPC response type**: `home.getSections`'s return object literal shape
+  is unchanged (`{ popularNovels, newNovels, freeNovels, latestEpisodes,
+  finishedNovels, banners }`, each still `NovelWithCounts[]` /
+  `LatestEpisode[]` / `Banner[]`) - verified via `pnpm check` (tRPC's
+  inferred types would fail to compile client-side if this had drifted)
+  and via a live curl against the built production server confirming the
+  exact same top-level JSON keys are present (see PART G).
+- **Admin/other pages using the same helpers**: confirmed via grep that
+  `getPopularNovels`/`getNewNovels`/`getFreeNovels`/`getFinishedNovels`/
+  `getLatestEpisodes` have exactly one caller each (`home.getSections`) -
+  no admin page or other procedure could be affected by these changes.
+  `getCatalogNovels` (a similarly-structured but separate, unused legacy
+  function with its own independent purchase/wishlist subqueries) and
+  `getBrowseCatalog` (the actively-used `/novels` browse endpoint, already
+  optimized in an earlier phase) were both deliberately left untouched -
+  out of this phase's explicit "homepage" scope, and touching either would
+  risk something beyond what was audited here.
+- No new helper was exported that isn't already covered by the point
+  above (`getNovelSeoData`/`getNovelsByIdsLite`/etc. from earlier phases
+  are untouched; this phase added no new exported db.ts functions at all -
+  only modified the bodies of 4 existing ones and fixed a 5th's filter).
+
+## PART F — Lightweight timing (dev-only)
+
+`server/_core/productionMonitoring.ts` and `server/_core/requestLogging.ts`
+both already exist in this repo but **neither is actually wired into the
+tRPC request pipeline anywhere** (confirmed via grep - their `logRequest`/
+`recordQuery` exports are never called). Wiring either in now would mean
+touching shared middleware that runs for every procedure, not just this
+one query - judged out of scope and riskier than necessary for "add a
+timing log to one endpoint." Instead, `home.getSections` got a self-
+contained, 4-line, `NODE_ENV`-gated `console.log` using `Date.now()` -
+never runs in production, never logs user data, never logs SQL parameters,
+adds no new files/infrastructure. Verified live (PART G) - produced
+`[home.getSections] resolved in 17ms` in the dev server console.
+
+## PART G — Validation
+
+- **`pnpm check`** - passed, no errors (after every change in this phase).
+- **`pnpm test`** (targeted re-runs, full pre-existing sandbox limitation
+  noted below) - `server/homepage-ranking.test.ts` (4/4, DB-guarded no-ops
+  in this sandbox as designed), plus re-ran `server/services/
+  serverSeoRenderer.test.ts` (25/25), `server/_core/sitemap.test.ts` (9/9),
+  `server/_core/canonicalDomainRedirect.test.ts` (18/18), `server/
+  services/mediaMigrationService.test.ts` (12/12) to confirm zero
+  regression to every earlier phase's work.
+- **`pnpm build`** - passed (`dist/index.js` built with all Phase 3
+  changes bundled).
+- **Playwright, mocked `home.getSections`/`novels.detail`/`myNovels.list`/
+  admin responses, against a running dev server** (10/10 checks passing):
+  - Homepage: all 6 sections' novel-card links present (7 expected from
+    the mock data: 2+2+1+1+1), banner image visible, cover images render,
+    zero console errors (after eliminating this sandbox's known,
+    pre-existing analytics-placeholder noise, confirmed by adding the
+    missing `VITE_ANALYTICS_*` env vars and re-running - the errors
+    disappeared entirely, proving they were unrelated to this phase).
+  - Novel detail: opens correctly, Phase 1/2's client-side title/canonical
+    hook still fires correctly on this page (`useDocumentHead` untouched
+    by this phase, confirmed still working) - proving Phase 1/2's SEO work
+    survived this phase's `db.ts`/`schema.ts` changes intact.
+  - `/my-novels`: renders the mocked purchased novel correctly - confirmed
+    the unrelated Phase 1 N+1 fix (`myNovels.list`) still works.
+  - Admin dashboard: opens, no migration/schema error, zero console
+    errors (same noise-elimination confirmation as homepage).
+- **Production-like server** (`NODE_ENV=production node dist/index.js`,
+  the actual built output, not `tsx`/dev mode):
+  - `GET /` → `200`.
+  - `GET /api/trpc/home.getSections` → `200`, JSON body with all 6 keys
+    (`popularNovels, newNovels, freeNovels, latestEpisodes,
+    finishedNovels, banners`) present - confirms the output shape
+    contract holds even with no live DB (each function's own `if (!db)
+    return []` guard fires cleanly, `home.getSections` never throws).
+  - `GET /novels` → still returns Phase 2's correct SSR-injected
+    `<title>รายการนิยาย | IpeNovel</title>` and
+    `<link rel="canonical" href="https://ipenovel.com/novels">` -
+    confirms Phase 2's server-side metadata injection is completely
+    unaffected by this phase's `db.ts`/`schema.ts` changes.
+- **Before/after query count**: 6 round trips before, 6 round trips after
+  (unchanged - the optimization is in aggregation count, not round-trip
+  count, see PART A). **Before/after aggregation count**: 9 embedded
+  `GROUP BY` subqueries before, 3 after (a code-verifiable fact, not a
+  timing measurement). **Response time**: not measured in either
+  direction (no live database in this sandbox) - not claimed, per this
+  task's explicit instruction against citing unmeasured numbers.
+
+## PART H — Migration safety report
+
+1. **Indexes added**: `novels_publicationStatus_createdAt_idx` on
+   `novels(publicationStatus, createdAt)`; `episodes_isPublished_createdAt_idx`
+   on `episodes(isPublished, createdAt)`; `purchases_novelId_idx` on
+   `purchases(novelId)`. Full reasoning for each in PART C above.
+2. **Migration file**: `drizzle/0026_add_homepage_performance_indexes.sql`
+   (shown in full in PART C) + the accompanying `drizzle/meta/
+   0026_snapshot.json` and updated `drizzle/meta/_journal.json`, all
+   generated by `drizzle-kit generate` (this repo's existing framework).
+3. **Tables locked**: `novels`, `episodes`, `purchases` - each briefly, at
+   most (see below); no other table is touched by this migration.
+4. **Production deployment risk**: **low**, with one caveat this report
+   states plainly - the exact lock behavior depends on the production
+   MySQL version/engine, which this sandbox cannot verify (see PART C's
+   "Table locking" note). All 3 statements are plain `CREATE INDEX` on
+   existing columns - no type changes, no data backfill, no `ALTER TABLE
+   ... MODIFY`.
+5. **Maintenance window**: not believed to be required for modern
+   MySQL/InnoDB (5.6+/8.0, the de facto standard and consistent with the
+   rest of this schema's engine assumptions) given online-DDL support for
+   plain secondary index creation - but since the production version
+   wasn't verified from this sandbox, running the two commits (see #7
+   below) during a lower-traffic window is still the safer choice the
+   first time, purely as a precaution rather than a known requirement.
+6. **Rollback**: the 3 `DROP INDEX` statements given in full in PART C -
+   always safe, never touches data, worst case simply returns read
+   performance to its pre-migration baseline.
+7. **Migration duration**: **not measured** (no production-sized table to
+   test against from this sandbox) - stated as an estimate only: `CREATE
+   INDEX` duration scales with the target table's row count and, for
+   `episodes` (likely the largest table here), could take longer than the
+   other two if that table has grown large in production. No specific
+   number is given because none was measured, per this task's explicit
+   instruction.
+8. **Deploy order / commit split**: **not split into 2 commits**. Both the
+   query optimization (PART B) and the index migration (PART C) are low-
+   risk on their own merits - the query changes only remove already-dead
+   computation and add a filter that only *narrows* an already-buggy
+   result set (never expands it), and the index migration is 3 additive,
+   non-blocking `CREATE INDEX` statements with a trivial rollback. Neither
+   depends on the other to be safe or correct independently, but keeping
+   them in one commit/PR keeps the "why" (the audit) next to the "what"
+   (the fix) - judged clearer than an artificial split for changes this
+   size. If the user prefers to `Sync from GitHub` and deploy the query
+   change first, then the index migration separately, that's equally
+   valid; the query optimization does not require the new indexes to be
+   correct (it only benefits from them being present).
+9. **How to verify indexes exist after deploy**:
+   ```sql
+   SHOW INDEX FROM novels WHERE Key_name = 'novels_publicationStatus_createdAt_idx';
+   SHOW INDEX FROM episodes WHERE Key_name = 'episodes_isPublished_createdAt_idx';
+   SHOW INDEX FROM purchases WHERE Key_name = 'purchases_novelId_idx';
+   ```
+   Each should return exactly one row. Manus's deploy step runs
+   `drizzle-kit migrate` (via this repo's existing `db:push` script/deploy
+   process) against the real `DATABASE_URL` - watch the deploy logs for
+   `0026_add_homepage_performance_indexes` being applied without error.
+10. No `DATABASE_URL` or any other secret appears anywhere in this
+    report, in the generated migration file, or in the diff for this
+    phase.
+
+## PART I — Deliverable summary
+
+1. **Baseline**: 6 DB round trips per `home.getSections` call (unchanged);
+   9 embedded `GROUP BY` aggregations, of which only 3 were ever used
+   (see PART A). No live-DB timing/EXPLAIN was available in this sandbox -
+   stated honestly rather than invented.
+2. **Root cause**: 3 of 4 homepage ranking functions computed purchase/
+   wishlist counts via `GROUP BY` joins that were never used for sorting
+   or display - confirmed by both code inspection (sort columns) and a
+   full-client grep (display usage). Separately, `getLatestEpisodes` had
+   no visibility filter at all (a correctness bug, not a performance one).
+3. **Optimization**: removed the 6 unused aggregations from `getNewNovels`/
+   `getFreeNovels`/`getFinishedNovels`; added `id` tie-breakers to all 4
+   ranking functions + `getLatestEpisodes`; fixed `getLatestEpisodes`'s
+   missing `isPublished`/`publicationStatus` filter.
+4. **Indexes added**: 3, each with query-level evidence (PART C) - 2 of
+   the task's 4 suggested candidates turned out to already exist and were
+   correctly *not* duplicated.
+5. **Query count before/after**: 6 → 6 (unchanged; the fix targets
+   aggregation cost, not round-trip count - see PART A for why).
+6. **DB round-trips before/after**: 6 → 6 (same as above).
+7. **Response time before/after**: not measured (no live DB in this
+   sandbox) - see PART A/G.
+8. **Files added**: `server/homepage-ranking.test.ts`,
+   `drizzle/0026_add_homepage_performance_indexes.sql`,
+   `drizzle/meta/0026_snapshot.json`. **Files modified**: `server/db.ts`
+   (4 ranking functions + `getLatestEpisodes`), `server/routers.ts` (dev
+   timing log only), `drizzle/schema.ts` (3 new index declarations),
+   `drizzle/meta/_journal.json`, `docs/PERFORMANCE_SEO_AUDIT.md` (this
+   section).
+9. **Tests added**: 4 in `server/homepage-ranking.test.ts` (PART D).
+10. **Check/test/build results**: all passed - see PART G.
+11. **Migration risk**: low (3 additive, non-blocking `CREATE INDEX`
+    statements) - full detail in PART H.
+12. **Rollback plan**: 3 `DROP INDEX` statements, given in full in PART C
+    and PART H.
+13. **Deliberately not changed**: `getPopularNovels`'s ranking
+    criteria/subqueries (still needed), `getCatalogNovels`/
+    `getBrowseCatalog` (out of homepage scope), section names, item
+    limits (except the bug-fix eligibility narrowing), pagination
+    architecture, any business/authorization logic, Redis (not added),
+    the existing single-column indexes (not removed, even where now
+    partially redundant - see PART C).
+14. **Output shape**: unchanged - confirmed via `pnpm check` (tRPC type
+    inference), a live curl of the built production server's
+    `home.getSections` response showing all 6 original keys, and
+    `homepage-ranking.test.ts` asserting every `NovelWithCounts` field is
+    still present.
+15. **Business logic**: unchanged - ranking criteria, visibility rules
+    (novels' `publicationStatus`), authorization, purchase/wallet/cart/
+    order/reader-entitlement logic are all untouched; the one behavior
+    change (`getLatestEpisodes`'s filter) is a bug fix bringing it in line
+    with the visibility rule every other homepage section already
+    enforces, not a new rule.
+16. **Secrets**: confirmed none in this document, the migration file, or
+    the diff for this phase.
+17. **Commit hash**: see the commit this section was pushed with.
+18. **Pushed to `origin/main`**: yes - deploy from Manus (Sync from
+    GitHub → Deploy), not from here.
+
+---
+No secrets appear in this document, in the diff, or in any file added/
+changed for this phase. No business logic was changed except the
+documented `getLatestEpisodes` visibility bug fix.

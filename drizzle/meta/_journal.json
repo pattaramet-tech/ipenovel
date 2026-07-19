@@ -183,6 +183,13 @@
       "when": 1783518394132,
       "tag": "0025_add_reading_progress_toc_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "5",
+      "when": 1784482600216,
+      "tag": "0026_add_homepage_performance_indexes",
+      "breakpoints": true
     }
   ]
 }

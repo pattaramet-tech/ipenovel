@@ -2114,7 +2114,8 @@ export async function getPopularNovels(limit: number = 4, candidateLimit: number
     .orderBy(
       desc(sql<number>`COALESCE(${purchaseCountsSubquery.count}, 0)`),
       desc(sql<number>`COALESCE(${wishlistCountsSubquery.count}, 0)`),
-      desc(novels.createdAt)
+      desc(novels.createdAt),
+      desc(novels.id) // tie-breaker for novels matching on every prior column
     )
     .limit(poolSize);
 
@@ -2130,50 +2131,40 @@ export async function getPopularNovels(limit: number = 4, candidateLimit: number
 }
 
 /**
- * Get new novels sorted by createdAt DESC
+ * Get new novels sorted by createdAt DESC.
+ *
+ * Phase 3 perf note: this used to LEFT JOIN a purchaseCounts and a
+ * wishlistCounts GROUP BY subquery (identical to getPopularNovels') purely
+ * to populate the NovelWithCounts.purchaseCount/wishlistCount fields - but
+ * this section sorts only by createdAt and neither field is ever read by
+ * the frontend (grepped client/src - confirmed unused). Removed both joins
+ * entirely instead of computing-then-discarding them; the fields stay
+ * present in the return shape (always 0) so NovelWithCounts/the tRPC output
+ * shape don't change. See docs/PERFORMANCE_SEO_AUDIT.md Phase 3.
  */
 export async function getNewNovels(limit: number = 4): Promise<NovelWithCounts[]> {
   const db = await getDb();
   if (!db) return [];
 
-  // Subquery for purchase counts
-  const purchaseCountsSubquery = db
-    .select({
-      novelId: purchases.novelId,
-      count: sql<number>`COUNT(DISTINCT ${purchases.userId})`.as("purchaseCount"),
-    })
-    .from(purchases)
-    .groupBy(purchases.novelId)
-    .as("purchaseCounts");
-
-  // Subquery for wishlist counts
-  const wishlistCountsSubquery = db
-    .select({
-      novelId: wishlists.novelId,
-      count: sql<number>`COUNT(DISTINCT ${wishlists.userId})`.as("wishlistCount"),
-    })
-    .from(wishlists)
-    .groupBy(wishlists.novelId)
-    .as("wishlistCounts");
-
   const result = await db
     .select({
       ...getTableColumns(novels),
-      purchaseCount: sql<number>`COALESCE(${purchaseCountsSubquery.count}, 0)`,
-      wishlistCount: sql<number>`COALESCE(${wishlistCountsSubquery.count}, 0)`,
+      purchaseCount: sql<number>`0`,
+      wishlistCount: sql<number>`0`,
       freeEpisodeCount: sql<number>`0`,
     })
     .from(novels)
     .where(eq(novels.publicationStatus, "published")) // Only published novels
-    .leftJoin(purchaseCountsSubquery, eq(novels.id, purchaseCountsSubquery.novelId))
-    .leftJoin(wishlistCountsSubquery, eq(novels.id, wishlistCountsSubquery.novelId))
-    .orderBy(desc(novels.createdAt))
+    // id DESC as a tie-breaker for novels sharing the exact same createdAt
+    // timestamp (e.g. bulk-imported rows) - same insertion-order tie-break
+    // deterministic ordering already relied on implicitly, now explicit.
+    .orderBy(desc(novels.createdAt), desc(novels.id))
     .limit(limit);
 
   return result.map((row: any) => ({
     ...row,
-    purchaseCount: Number(row.purchaseCount) || 0,
-    wishlistCount: Number(row.wishlistCount) || 0,
+    purchaseCount: 0,
+    wishlistCount: 0,
     freeEpisodeCount: 0,
   }));
 }
@@ -2182,6 +2173,13 @@ export async function getNewNovels(limit: number = 4): Promise<NovelWithCounts[]
  * Get novels with free episodes sorted by createdAt DESC
  * Only returns novels that have at least one free episode
  */
+// Phase 3 perf note: purchaseCounts/wishlistCounts subqueries were removed
+// from this function - same reasoning as getNewNovels above (sort is by
+// createdAt only, neither field is read by the frontend for this section).
+// freeEpisodeCountsSubquery is kept - it's genuinely used both to filter
+// (only novels with >=1 free episode) and in the returned freeEpisodeCount
+// field, which client/src/pages/Home.tsx actually reads to show the "Free"
+// badge (`showFreeTag && novel.freeEpisodeCount > 0`).
 export async function getFreeNovels(limit: number = 4): Promise<NovelWithCounts[]> {
   const db = await getDb();
   if (!db) return [];
@@ -2197,48 +2195,26 @@ export async function getFreeNovels(limit: number = 4): Promise<NovelWithCounts[
     .groupBy(episodes.novelId)
     .as("freeEpisodeCounts");
 
-  // Subquery for purchase counts
-  const purchaseCountsSubquery = db
-    .select({
-      novelId: purchases.novelId,
-      count: sql<number>`COUNT(DISTINCT ${purchases.userId})`.as("purchaseCount"),
-    })
-    .from(purchases)
-    .groupBy(purchases.novelId)
-    .as("purchaseCounts");
-
-  // Subquery for wishlist counts
-  const wishlistCountsSubquery = db
-    .select({
-      novelId: wishlists.novelId,
-      count: sql<number>`COUNT(DISTINCT ${wishlists.userId})`.as("wishlistCount"),
-    })
-    .from(wishlists)
-    .groupBy(wishlists.novelId)
-    .as("wishlistCounts");
-
   const result = await db
     .select({
       ...getTableColumns(novels),
-      purchaseCount: sql<number>`COALESCE(${purchaseCountsSubquery.count}, 0)`,
-      wishlistCount: sql<number>`COALESCE(${wishlistCountsSubquery.count}, 0)`,
+      purchaseCount: sql<number>`0`,
+      wishlistCount: sql<number>`0`,
       freeEpisodeCount: sql<number>`COALESCE(${freeEpisodeCountsSubquery.count}, 0)`,
     })
     .from(novels)
     .innerJoin(freeEpisodeCountsSubquery, eq(novels.id, freeEpisodeCountsSubquery.novelId))
-    .leftJoin(purchaseCountsSubquery, eq(novels.id, purchaseCountsSubquery.novelId))
-    .leftJoin(wishlistCountsSubquery, eq(novels.id, wishlistCountsSubquery.novelId))
     .where(and(
       eq(novels.publicationStatus, "published"), // Only published novels
       sql<boolean>`${freeEpisodeCountsSubquery.count} > 0`
     ))
-    .orderBy(desc(novels.createdAt))
+    .orderBy(desc(novels.createdAt), desc(novels.id))
     .limit(limit);
 
   return result.map((row: any) => ({
     ...row,
-    purchaseCount: Number(row.purchaseCount) || 0,
-    wishlistCount: Number(row.wishlistCount) || 0,
+    purchaseCount: 0,
+    wishlistCount: 0,
     freeEpisodeCount: Number(row.freeEpisodeCount) || 0,
   }));
 }
@@ -2249,37 +2225,22 @@ export async function getFreeNovels(limit: number = 4): Promise<NovelWithCounts[
  * returns a random sample of `limit` from that pool - so the section only
  * ever shows genuinely finished novels, but doesn't repeat the same 4 on
  * every load.
+ *
+ * Phase 3 perf note: purchaseCounts/wishlistCounts subqueries removed -
+ * same reasoning as getNewNovels/getFreeNovels above (candidate pool is
+ * ordered by createdAt only, then randomly sampled; neither field is read
+ * by the frontend for this section).
  */
 export async function getFinishedNovels(limit: number = 4, candidateLimit: number = 50): Promise<NovelWithCounts[]> {
   const db = await getDb();
   if (!db) return [];
   const poolSize = Math.max(candidateLimit, limit);
 
-  // Subquery for purchase counts
-  const purchaseCountsSubquery = db
-    .select({
-      novelId: purchases.novelId,
-      count: sql<number>`COUNT(DISTINCT ${purchases.userId})`.as("purchaseCount"),
-    })
-    .from(purchases)
-    .groupBy(purchases.novelId)
-    .as("purchaseCounts");
-
-  // Subquery for wishlist counts
-  const wishlistCountsSubquery = db
-    .select({
-      novelId: wishlists.novelId,
-      count: sql<number>`COUNT(DISTINCT ${wishlists.userId})`.as("wishlistCount"),
-    })
-    .from(wishlists)
-    .groupBy(wishlists.novelId)
-    .as("wishlistCounts");
-
   const result = await db
     .select({
       ...getTableColumns(novels),
-      purchaseCount: sql<number>`COALESCE(${purchaseCountsSubquery.count}, 0)`,
-      wishlistCount: sql<number>`COALESCE(${wishlistCountsSubquery.count}, 0)`,
+      purchaseCount: sql<number>`0`,
+      wishlistCount: sql<number>`0`,
       freeEpisodeCount: sql<number>`0`,
     })
     .from(novels)
@@ -2287,15 +2248,13 @@ export async function getFinishedNovels(limit: number = 4, candidateLimit: numbe
       eq(novels.publicationStatus, "published"),
       eq(novels.storyStatus, "finished")
     ))
-    .leftJoin(purchaseCountsSubquery, eq(novels.id, purchaseCountsSubquery.novelId))
-    .leftJoin(wishlistCountsSubquery, eq(novels.id, wishlistCountsSubquery.novelId))
-    .orderBy(desc(novels.createdAt))
+    .orderBy(desc(novels.createdAt), desc(novels.id))
     .limit(poolSize);
 
   const normalized = result.map((row: any) => ({
     ...row,
-    purchaseCount: Number(row.purchaseCount) || 0,
-    wishlistCount: Number(row.wishlistCount) || 0,
+    purchaseCount: 0,
+    wishlistCount: 0,
     freeEpisodeCount: 0,
   }));
   return pickRandom(normalized, limit);
@@ -2406,6 +2365,17 @@ export async function getCatalogNovels(params: {
 /**
  * Get the latest uploaded episodes with novel information
  * Used for the "Latest Uploaded Episodes" section on the Home page
+ *
+ * Phase 3 bug fix: this previously had NO visibility filter at all - an
+ * episode with isPublished=false (a draft/scheduled chapter), or belonging
+ * to an archived/unpublished novel, could appear on the public homepage.
+ * Every other homepage section already filters novels.publicationStatus =
+ * "published"; this one didn't, and also never checked episodes.isPublished.
+ * Fixed by requiring both, matching the same visibility rule used
+ * everywhere else on this page. Confirmed via grep this function has no
+ * other caller, so this only affects the Home page's own "Latest Uploaded
+ * Episodes" section - no admin/other page relies on the old, unfiltered
+ * behavior. See docs/PERFORMANCE_SEO_AUDIT.md Phase 3.
  */
 export async function getLatestEpisodes(limit: number = 4) {
   const db = await getDb();
@@ -2423,8 +2393,12 @@ export async function getLatestEpisodes(limit: number = 4) {
       createdAt: episodes.createdAt,
     })
     .from(episodes)
-    .leftJoin(novels, eq(episodes.novelId, novels.id))
-    .orderBy(desc(episodes.createdAt))
+    .innerJoin(novels, eq(episodes.novelId, novels.id))
+    .where(and(
+      eq(episodes.isPublished, true),
+      eq(novels.publicationStatus, "published")
+    ))
+    .orderBy(desc(episodes.createdAt), desc(episodes.id))
     .limit(limit);
 
   return result;

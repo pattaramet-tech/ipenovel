@@ -77,6 +77,16 @@ export const novels = mysqlTable(
     createdAtIdx: index("novels_createdAt_idx").on(table.createdAt),
     titleIdx: index("novels_title_idx").on(table.title),
     publicationStatusIdx: index("novels_publicationStatus_idx").on(table.publicationStatus),
+    // Phase 3: every homepage ranking query (getNewNovels, getPopularNovels'
+    // candidate pool, getFreeNovels, getFinishedNovels) filters
+    // publicationStatus = "published" then orders by createdAt DESC - this
+    // composite lets that run as a single ordered index range scan instead
+    // of an index lookup followed by a separate filesort. See
+    // docs/PERFORMANCE_SEO_AUDIT.md Phase 3 for the query-pattern evidence.
+    publicationStatusCreatedAtIdx: index("novels_publicationStatus_createdAt_idx").on(
+      table.publicationStatus,
+      table.createdAt
+    ),
   })
 );
 
@@ -151,6 +161,16 @@ export const episodes = mysqlTable(
     isPublishedIdx: index("episodes_isPublished_idx").on(table.isPublished),
     sortOrderIdx: index("episodes_sortOrder_idx").on(table.sortOrder),
     uniqueEpisode: uniqueIndex("unique_novel_episode").on(table.novelId, table.episodeNumber),
+    // Phase 3: getLatestEpisodes (Home page "Latest Uploaded Episodes")
+    // filters isPublished = true then orders by createdAt DESC across the
+    // WHOLE table (it intentionally isn't scoped to one novel) - there was
+    // no createdAt-related index on this table at all, meaning every
+    // homepage load did a full table scan + filesort on what's likely the
+    // largest table in the schema. See docs/PERFORMANCE_SEO_AUDIT.md Phase 3.
+    isPublishedCreatedAtIdx: index("episodes_isPublished_createdAt_idx").on(
+      table.isPublished,
+      table.createdAt
+    ),
   })
 );
 
@@ -327,6 +347,13 @@ export const purchases = mysqlTable(
     episodeIdIdx: index("purchases_episodeId_idx").on(table.episodeId),
     orderIdIdx: index("purchases_orderId_idx").on(table.orderId),
     uniqueUserEpisode: uniqueIndex("unique_user_episode").on(table.userId, table.episodeId),
+    // Phase 3: getPopularNovels' purchaseCounts subquery does
+    // `GROUP BY purchases.novelId` with no index on novelId at all -
+    // requires a full table scan + temp table today. Note wishlists(novelId)
+    // and a userId+episodeId composite were also audited as candidates but
+    // both already exist (wishlists_novelId_idx, unique_user_episode above)
+    // - not duplicated. See docs/PERFORMANCE_SEO_AUDIT.md Phase 3.
+    novelIdIdx: index("purchases_novelId_idx").on(table.novelId),
   })
 );
 

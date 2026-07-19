@@ -117,6 +117,16 @@ export const appRouter = router({
   // ============ HOME PAGE ============
   home: router({
     getSections: publicProcedure.query(async () => {
+      // Dev-only timing (no existing request-timing middleware is actually
+      // wired into the tRPC pipeline in this repo - server/_core/
+      // productionMonitoring.ts/requestLogging.ts exist but neither is
+      // called anywhere, so wiring into either would mean touching shared
+      // middleware for every procedure just for this one query. A local,
+      // gated console.log is simpler and strictly scoped to this endpoint.
+      // Never logs in production; never logs user data or SQL parameters.
+      const isDev = process.env.NODE_ENV !== "production";
+      const startedAt = isDev ? Date.now() : 0;
+
       const [popularNovels, newNovels, freeNovels, latestEpisodes, finishedNovels, banners] = await Promise.all([
         db.getPopularNovels(4),
         db.getNewNovels(4),
@@ -125,6 +135,10 @@ export const appRouter = router({
         db.getFinishedNovels(4),
         db.getAllBanners(),
       ]);
+
+      if (isDev) {
+        console.log(`[home.getSections] resolved in ${Date.now() - startedAt}ms`);
+      }
 
       return {
         popularNovels,
