@@ -558,3 +558,279 @@ No secrets appear in this document, in the diff, or in any file added/
 changed for this task. No business logic (pricing, entitlement, purchase
 flow, wallet, cart, orders, admin authorization, the R2 media pipeline, or
 the canonical-domain redirect) was changed.
+
+# Step 2 — Server-side HTML metadata injection
+
+Date: 2026-07-19 (follow-up to Step 1 above)
+
+## The problem this fixes
+
+Step 1 added `client/src/hooks/useDocumentHead.ts`, which is a `useEffect`
+hook - it only updates `document.head` **after React hydrates in the
+browser**. Confirmed in production:
+`view-source:https://ipenovel.com/novels/57` showed the *homepage's*
+`<title>`/description/canonical in the raw HTML response, because nothing
+runs before React does. Anything that reads the raw HTTP response instead
+of executing JavaScript (curl, `view-source:`, and many social-media link
+preview crawlers) never saw the novel-specific metadata at all. The Open
+Graph tags Manus's own edge layer showed were correspondingly wrong too -
+`og:url` was the right novel URL, but `og:title`/`og:description` still
+came from the homepage and `og:image` was a Manus-generated screenshot,
+not the novel's cover.
+
+## PART A — where HTML actually gets served
+
+`server/_core/vite.ts` has exactly two places that produce an HTML
+response for a client route:
+
+- **Development** (`setupVite`): a Vite dev-server catch-all
+  (`app.use("*", ...)`) that re-reads `client/index.html` from disk on
+  every request (intentional, for HMR/dev experience) and runs it through
+  `vite.transformIndexHtml`.
+- **Production** (`serveStatic`): `express.static(distPath)` serves built
+  assets, then a catch-all (`app.use("*", ...)`) previously did a plain
+  `res.sendFile(path.resolve(distPath, "index.html"))` - no template
+  processing of any kind. **This is the one the production bug report was
+  about.**
+
+Both catch-alls are the correct, and only, interception points - nothing
+about routing/framework/API/static-asset serving needed to change.
+
+## PART B/C — `server/services/serverSeoRenderer.ts` + `server/services/htmlSeoInjector.ts`
+
+Split into two focused modules:
+
+- **`serverSeoRenderer.ts`** - `resolveSeoMetadata(pathname)`: pure route →
+  metadata resolution (a big switch over path patterns), `renderSeoHtml
+  (template, pathname)`: the one entry point `vite.ts` calls, wrapping
+  everything in a try/catch that falls back to the unmodified template on
+  any failure. Reuses `client/src/lib/seo.ts`'s `buildCanonicalUrl`/
+  `buildNovelMetaDescription`/`SITE_NAME` **directly** (relative import,
+  not duplicated) - that file has zero DOM/React dependencies, so it's
+  safe to run in Node, and it guarantees the server-rendered tags and the
+  client hook's tags can never define "canonical URL" or "novel
+  description fallback" differently.
+- **`htmlSeoInjector.ts`** - `injectSeoMetadata(template, meta)`: the only
+  code that touches the HTML string. Replaces *only* the content between
+  two literal comment markers (PART C below) with a freshly-built tag set;
+  any field left `undefined` in `meta` falls back to whatever the
+  template's *own current* title/description/canonical already are
+  (extracted from the same template once per call) - so a route that only
+  needs to change `robots` (private pages) doesn't have to lose or
+  re-specify the rest.
+
+**Escaping** (PART B's explicit XSS requirement, verified with dedicated
+tests): every title/description/canonical/image value goes through a
+standard 5-character HTML-attribute/text escape (`& < > " '`) before being
+embedded in an attribute or text node - a title like
+`</title><script>alert(1)</script><title>` renders as inert escaped text,
+never executes. JSON-LD is embedded in a `<script type="application/ld+json">`
+block, which the HTML tokenizer parses as raw text hunting for a literal
+`</script` - HTML-escaping there would corrupt the JSON, so instead only
+`<` is unicode-escaped (`<`), which stops a `</script>` substring
+inside a title/description from ever prematurely closing the tag while
+still decoding back to byte-identical JSON.
+
+**Routes covered** (mirrors the client-side hook's route list exactly -
+see the table in Step 1 above):
+
+| Route | title | description | canonical | robots | OG/JSON-LD |
+|---|---|---|---|---|---|
+| `/` | fixed | fixed | `https://ipenovel.com/` | - | `website` + JSON-LD `WebSite` |
+| `/novels` (any query string) | fixed | fixed | `https://ipenovel.com/novels` | - | `website` |
+| `/novels/:id` (published) | `{title} \| IpeNovel` | sanitized synopsis | `https://ipenovel.com/novels/{id}` | - | `book`, `og:image`=cover, JSON-LD `Book` |
+| `/novels/:id` (not found / archived / draft) | generic site title | generic site description | `https://ipenovel.com/novels/{id}` | - | `website`, no image, no JSON-LD - **never the real title/description** |
+| `/read/:id` | generic "อ่านนิยาย" title | *(unset)* | `https://ipenovel.com/read/{id}` | `noindex,follow` | none - no DB query at all (see below) |
+| Admin/Cart/Orders/My Novels/My Library/Profile/Points/Wallet/Payment | *(unset - template default preserved)* | *(unset)* | *(unset)* | `noindex,nofollow` | none |
+| anything else (e.g. `/sports-votes`) | `resolveSeoMetadata` returns `null` - template is returned completely untouched | | | | |
+
+**Not-found/unpublished handling** (PART B item 3 / second prompt item
+10): the HTTP status code is deliberately left exactly as-is (200, same as
+every other SPA route) - this SPA has never sent a real HTTP 404 for a
+client route like `/novels/999999`, it renders its own "ไม่สามารถดูนิยาย
+เรื่องนี้ได้" UI client-side after the (also 200) tRPC call resolves to
+`NOT_FOUND`. Changing the *HTTP* response code for that case would be a
+behavior change beyond "inject metadata," and risks surprises for
+anything that currently assumes every SPA route 200s. Instead, only the
+`<head>` tags change: a missing/unpublished novel gets the same generic
+site-level metadata the homepage uses, never its real title/description -
+verified with a dedicated test using a novel row whose title literally
+contains `"DRAFT - ยังไม่เผยแพร่ ห้ามเห็น"` to prove it never leaks
+through.
+
+**Reader route** intentionally does **no DB query at all**. `reader.
+getEpisode` is a `protectedProcedure`, and this renderer runs with no user
+session (it's the raw pre-hydration HTML response) - there is no
+authenticated context to check entitlement against, so querying episode/
+novel titles here would mean either (a) exposing them to anyone regardless
+of purchase status, or (b) building a parallel, unauthenticated
+entitlement bypass just for metadata purposes. Neither is acceptable, so
+the reader route gets a fixed, generic, safe title and `noindex,follow` -
+identical in spirit to the Step 1 client-side hook's Reader handling.
+
+## PART D — the Manus OG screenshot override (documented limitation, not fixed)
+
+This repository's own server now sends fully correct OG tags for
+`/novels/:id` in its raw HTML response (verified - see PART I below).
+However, the production bug report describes Manus's platform layer
+*additionally* substituting `og:image` with a `files.manuscdn.com/
+webdev_screenshots/...` URL and evidently reusing stale
+`og:title`/`og:description`.
+
+Searched this entire repository for anything that could be doing that:
+`vite.config.ts` uses one Manus-specific plugin,
+`vitePluginManusRuntime()` (from the `vite-plugin-manus-runtime` npm
+package), with zero configuration options passed and zero references to
+`og:`/`manuscdn`/`webdev_screenshot` anywhere in this codebase. That
+plugin runs entirely at Vite build/dev-server time, not as an HTTP
+response layer - there is nothing in this app's own build or server code
+that could be adding or overriding OG tags at the network edge.
+
+**Conclusion, stated plainly**: the screenshot-based OG override is
+happening in Manus's own hosting/edge infrastructure, *outside this
+repository*, and cannot be inspected, configured, or disabled from
+application code. This fix guarantees our own origin server's HTML is
+correct; whether Manus's edge layer then leaves that alone, merges with
+it, or overrides it entirely is a platform-level behavior the user needs
+to check on the Manus dashboard/support side (e.g. an "auto-generate
+social preview" or "OG override" setting, if one exists) - not something
+any further code change here can address. If Manus's layer only *adds*
+tags when none exist upstream, this fix may already resolve the problem
+end-to-end; if Manus unconditionally overwrites `og:image` on every
+response regardless of what upstream sends, it won't, and that's a
+platform configuration question, not a code bug.
+
+## PART E — Cache and performance
+
+- **Lean query**: `db.getNovelSeoData(novelId)` selects exactly `id,
+  title, description, coverImageUrl, author, publicationStatus` - never
+  `episodes`, never `content`.
+- **In-memory TTL cache**: `novelSeoCache` (`Map<number, {data, expiresAt}>`)
+  inside `serverSeoRenderer.ts`, 10-minute TTL, capped at 500 entries
+  (oldest evicted first once full) - no Redis, matches the explicit
+  constraint. A DB error is never cached (would pin a false "not found"
+  for the whole TTL window) - the last-known-good cached value is served
+  instead if one exists, otherwise the caller's existing not-found
+  fallback kicks in.
+- **Template caching**: production's `serveStatic` now reads
+  `dist/public/index.html` from disk exactly once per process (cached in
+  a module-level variable) instead of on every request via `res.sendFile`.
+  Development's `setupVite` intentionally keeps its existing always-fresh
+  read (a deliberate, pre-existing HMR/dev-experience choice, not a
+  performance concern in dev).
+- **Fallback on failure**: `renderSeoHtml` itself never throws (internal
+  try/catch around metadata resolution), and `serveStatic`'s route handler
+  wraps the whole read-cache/render step in its own try/catch that falls
+  back to the original `res.sendFile` behavior - two independent layers,
+  so neither a DB outage nor a bug in the renderer can take the site down.
+
+## PART F — client-side SEO hook: kept, and why
+
+`client/src/hooks/useDocumentHead.ts` (Step 1) is **unchanged** and still
+active. It's still needed for client-side (SPA) navigation - a user
+clicking from `/novels` to `/novels/58` never triggers a new server
+request, so nothing server-rendered would ever update without it.
+`serverSeoRenderer.ts`'s route table (this doc, PART B above) was written
+to mirror the client hook's existing route classification field-for-field
+(same private-route list, same reader `noindex,follow` reasoning, same
+canonical-URL/description helpers via the shared `client/src/lib/seo.ts`)
+specifically so the two layers agree: the tags present in the initial HTML
+and the tags the client hook would set on a hydration/navigation to that
+same route are the same values, from the same source functions.
+
+## PART G — robots.txt
+
+Already correct from Step 1 - `client/public/robots.txt` ends with
+`Sitemap: https://ipenovel.com/sitemap.xml` and its Disallow rules already
+match `serverSeoRenderer.ts`'s private-route list. No change needed.
+
+## PART H — Tests
+
+`server/services/serverSeoRenderer.test.ts` - 25 tests, all passing:
+- Pure injection: replaces the marked block only, never duplicates
+  title/canonical/og:title, preserves the template's own values for
+  fields a route doesn't override, returns the template byte-for-byte
+  unmodified if the markers are missing.
+- XSS: a `</title><script>...` title, a quote-breakout description, and a
+  `</script>` breakout inside JSON-LD are all neutralized - verified by
+  asserting the dangerous substring is *absent* from the output and (for
+  JSON-LD) that the escaped payload still parses back to the exact
+  original string.
+- Route resolution (no DB): homepage, `/novels` (with query-string
+  stripping), reader (`noindex,follow`, no description), every private
+  path prefix (`noindex,nofollow`, no title override), and an
+  unclassified route returning `null`/the untouched template.
+- Novel detail (DB mocked via `vi.doMock`, deterministic - this sandbox
+  has no live `DATABASE_URL`): a published novel's real title/description/
+  canonical/og:image/JSON-LD `Book`; a nonexistent novel ID; an
+  `archived`-status novel whose title literally contains
+  `"DRAFT...ห้ามเห็น"` (asserted absent from the output); a novel with no
+  description/cover/author (never crashes, never emits an empty
+  `og:image`/`author` field); and a DB call that throws (falls back to
+  generic metadata, never propagates the error to the response).
+
+## PART I — Validation
+
+- `pnpm check` - passed, no errors.
+- `pnpm build` - passed (`dist/index.js` built successfully; the SSR
+  renderer code is bundled into the server output via esbuild's existing
+  `--bundle --packages=external`, no new build step needed).
+- 25/25 new tests passing; the full existing `server/**/*.test.ts` suite
+  re-run to confirm no regressions (same pre-existing DB-dependent
+  failures as every prior task in this sandbox, none newly failing).
+- **Live verification found a real bug the unit tests couldn't catch**:
+  built the app in production mode (`NODE_ENV=production`) and curled `/`,
+  `/novels`, `/novels?sort=popular`, `/novels/57`, `/read/123`, and
+  `/admin` against the actual `serveStatic` code path (not just calling
+  `resolveSeoMetadata` directly, which is what the unit tests do). The
+  first run showed *every* route serving the homepage's metadata,
+  including `/novels/57`. Root cause: `app.use("*", handler)` in Express
+  rebases `req.path` relative to the mount point, and a literal `"*"`
+  mount consumes the *entire* path as the prefix - so `req.path` is always
+  `"/"` inside a `"*"`-mounted handler, regardless of the real request
+  path. The fix was mechanical (use `req.originalUrl` instead, which is
+  never rebased) but the bug itself is exactly the kind of wiring mistake
+  that only shows up when the real Express request pipeline runs - a unit
+  test that hand-supplies a path string to `resolveSeoMetadata` will
+  always pass regardless of this class of bug, which is why this live
+  check (not just the 25 unit tests) was necessary before considering this
+  done. Re-verified after the fix - every route now returns the correct,
+  distinct title/description/canonical/OG tags, `Content-Type: text/html;
+  charset=utf-8`, and exactly one occurrence each of `<title>`,
+  `rel="canonical"`, and `og:title` (no duplicates) in the raw curl
+  response body.
+
+## Files changed in this step
+
+New:
+- `server/services/serverSeoRenderer.ts`
+- `server/services/htmlSeoInjector.ts`
+- `server/services/serverSeoRenderer.test.ts`
+
+Modified:
+- `client/index.html` - added `<!-- SEO_START -->`/`<!-- SEO_END -->`
+  markers around the existing title/description/canonical block
+- `server/_core/vite.ts` - both `setupVite` (dev) and `serveStatic`
+  (production) now run their HTML response through `renderSeoHtml` before
+  sending; `serveStatic` additionally now caches the template instead of
+  re-reading it per request
+- `server/db.ts` - added `getNovelSeoData(novelId)` (lean, SEO-only select)
+
+## Things deliberately not changed in this step
+
+- No framework migration, no Next.js, no full React SSR - exactly as
+  instructed.
+- No change to React Router/wouter, frontend UI, or any API/tRPC
+  procedure's behavior.
+- No change to authorization or publication-status logic - the SSR
+  renderer *reads* the same `publicationStatus` field the existing public
+  procedures already gate on, it doesn't introduce a new rule.
+- No Redis, no DB schema/index changes.
+- `client/src/hooks/useDocumentHead.ts` unchanged - still the mechanism
+  for post-hydration SPA navigation.
+- Manus's own edge-layer OG override (PART D) - outside this repository,
+  documented rather than guessed at.
+
+---
+No secrets appear in this document, in the diff, or in any file added/
+changed for this step. No business logic was changed.

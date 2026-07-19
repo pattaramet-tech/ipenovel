@@ -159,6 +159,35 @@ export async function getPublishedNovelsForSitemap(limitCap: number = 5000) {
 }
 
 /**
+ * Lean, SEO-only lookup for a single novel - id/title/description/cover/
+ * author/publicationStatus, never episodes, never content. Used by
+ * server/services/serverSeoRenderer.ts to inject <head> metadata into the
+ * initial HTML response for /novels/:id. Returns the row regardless of
+ * publicationStatus (including archived/draft) so the caller can decide
+ * what a non-published novel's metadata should look like - this function
+ * itself makes no visibility/authorization decision, same as how
+ * getNovelById(id, publicOnly) already separates fetching from the
+ * public/admin visibility rule.
+ */
+export async function getNovelSeoData(novelId: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const result = await db
+    .select({
+      id: novels.id,
+      title: novels.title,
+      description: novels.description,
+      coverImageUrl: novels.coverImageUrl,
+      author: novels.author,
+      publicationStatus: novels.publicationStatus,
+    })
+    .from(novels)
+    .where(eq(novels.id, novelId))
+    .limit(1);
+  return result.length > 0 ? result[0] : null;
+}
+
+/**
  * Get all novels for admin (including archived)
  * Used by admin pages to manage all novels
  */
