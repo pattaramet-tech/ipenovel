@@ -824,8 +824,19 @@ export const appRouter = router({
       if (!ctx.user) {
         return { authenticated: false as const };
       }
-      const status = await db.getDailyCheckinStatus(ctx.user.id);
-      return { authenticated: true as const, ...status };
+      try {
+        const status = await db.getDailyCheckinStatus(ctx.user.id);
+        return { authenticated: true as const, ...status };
+      } catch (error: any) {
+        // Never let a raw DB/SQL error (table name, column name, query
+        // shape) reach the client - log full detail server-side only. See
+        // docs/DAILY_CHECKIN_DEPLOYMENT_FIX.md PART B.
+        console.error("[dailyCheckin.getStatus] failed", { userId: ctx.user.id, message: error?.message });
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Unable to load check-in information. Please try again.",
+        });
+      }
     }),
 
     claim: protectedProcedure.mutation(async ({ ctx }) => {
