@@ -9,6 +9,7 @@ import { useLanguage } from "@/contexts/LanguageContext";
 import { toast } from "sonner";
 import React, { useMemo } from "react";
 import NovelCard from "@/components/NovelCard";
+import DailyCheckinCard from "@/components/DailyCheckinCard";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
 import { buildCanonicalUrl, SITE_NAME } from "@/lib/seo";
 
@@ -225,6 +226,10 @@ export default function Home() {
         {!isLoading && (
           <BannerCarousel banners={banners} learnMoreLabel={t("home.learnMore") || "Learn More"} />
         )}
+        {/* Daily Check-in Section - own data fetching, independent of the
+            home.getSections query above, so a failure/slow load here never
+            blocks or is blocked by the novel sections. */}
+        <DailyCheckinCard />
         {/* Featured Novels Section - Popular */}
         <section className="mb-16 sm:mb-20">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
