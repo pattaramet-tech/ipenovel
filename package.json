@@ -6,11 +6,12 @@
   "scripts": {
     "dev": "NODE_ENV=development tsx watch server/_core/index.ts",
     "build": "vite build && esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",
-    "start": "NODE_ENV=production node dist/index.js",
+    "start": "node scripts/migrate.mjs && NODE_ENV=production node dist/index.js",
     "check": "tsc --noEmit",
     "format": "prettier --write .",
     "test": "vitest run",
     "test:gate": "node scripts/release-gate-check.mjs",
+    "db:migrate": "node scripts/migrate.mjs",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
     "migrate:media:dry": "tsx scripts/migrate-media-to-r2.ts --dry-run --limit=20 --type=all",
     "migrate:media": "tsx scripts/migrate-media-to-r2.ts --limit=20 --type=all"
