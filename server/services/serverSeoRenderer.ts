@@ -127,11 +127,33 @@ export async function resolveSeoMetadata(pathname: string): Promise<SeoMetadata 
   }
 
   if (cleanPath === "/novels") {
+    // Every /novels query variant (?sort=, ?filter=, ?storyStatus=, ?page=,
+    // ?search=) is a view of the same catalog, not a distinct page - the
+    // client hook (client/src/pages/NovelsPage.tsx) already made this call
+    // and always canonicalizes to plain /novels, so the server must match it
+    // exactly or the pre-hydration <head> and the post-hydration <head>
+    // would disagree (see docs/PERFORMANCE_SEO_AUDIT.md Phase 2 on avoiding
+    // client/server drift). Title/description are likewise left static for
+    // the same reason: the client hook never varies them by query either.
+    //
+    // robots is the one axis that's safe to differentiate server-side only,
+    // since the client hook never sets a robots tag for /novels at all (a
+    // missing tag defaults to indexable) - adding noindex,follow here for
+    // thin/duplicate query variants (internal search results, and page 2+
+    // which already defers all index weight to the bare canonical) reduces
+    // crawl waste without the client ever needing to remove/contradict it.
+    const queryString = pathname.split("?")[1] ?? "";
+    const query = new URLSearchParams(queryString);
+    const hasSearch = (query.get("search") ?? "").trim().length > 0;
+    const pageNum = parseInt(query.get("page") ?? "1", 10);
+    const isDeepPage = Number.isFinite(pageNum) && pageNum > 1;
+
     return {
       title: NOVELS_LIST_TITLE,
       description: NOVELS_LIST_DESCRIPTION,
       canonical: buildCanonicalUrl("/novels"),
       ogType: "website",
+      robots: hasSearch || isDeepPage ? "noindex,follow" : undefined,
     };
   }
 

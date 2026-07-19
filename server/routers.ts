@@ -193,7 +193,7 @@ export const appRouter = router({
           sort: z.enum(["new", "popular"]).optional(),
           filter: z.enum(["all", "free"]).optional(),
           storyStatus: z.enum(["ongoing", "finished"]).optional(),
-          search: z.string().optional(),
+          search: z.string().max(100).optional(),
           page: z.number().int().positive().optional(),
           pageSize: z.number().int().min(1).max(100).optional(),
         })

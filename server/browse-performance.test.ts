@@ -7,7 +7,7 @@ import * as db from "./db";
  */
 describe("Browse Page Performance", () => {
   it("should retrieve paginated novels efficiently with sort=new", async () => {
-    const result = await db.getBrowseCatalog({
+    const { items: result } = await db.getBrowseCatalog({
       sort: "new",
       filter: "all",
       limit: 20,
@@ -24,7 +24,7 @@ describe("Browse Page Performance", () => {
       expect(novel).toHaveProperty("title");
       expect(novel).toHaveProperty("slug");
       expect(novel).toHaveProperty("coverImageUrl");
-      expect(novel).toHaveProperty("status");
+      expect(novel).toHaveProperty("storyStatus");
       expect(novel).toHaveProperty("createdAt");
       expect(novel).toHaveProperty("freeEpisodeCount");
       
@@ -35,7 +35,7 @@ describe("Browse Page Performance", () => {
   });
 
   it("should retrieve paginated novels efficiently with sort=popular", async () => {
-    const result = await db.getBrowseCatalog({
+    const { items: result } = await db.getBrowseCatalog({
       sort: "popular",
       filter: "all",
       limit: 20,
@@ -43,20 +43,13 @@ describe("Browse Page Performance", () => {
     });
 
     expect(Array.isArray(result)).toBe(true);
-    
-    // Results should be sorted by free episode count (popularity proxy)
-    if (result.length > 1) {
-      for (let i = 1; i < result.length; i++) {
-        const prev = result[i - 1];
-        const curr = result[i];
-        // Should be descending by free episode count
-        expect(prev.freeEpisodeCount).toBeGreaterThanOrEqual(curr.freeEpisodeCount);
-      }
-    }
+    // Ranking itself (purchase count, then wishlist count, then recency, then
+    // id) is covered by server/novels-browse-pagination.test.ts - this test
+    // only checks the query executes and returns the lightweight shape.
   });
 
   it("should filter novels by free episodes only", async () => {
-    const result = await db.getBrowseCatalog({
+    const { items: result } = await db.getBrowseCatalog({
       sort: "new",
       filter: "free",
       limit: 20,
@@ -73,7 +66,7 @@ describe("Browse Page Performance", () => {
 
   it("should search novels by title", async () => {
     // First, get all novels to find a search term
-    const allNovels = await db.getBrowseCatalog({
+    const { items: allNovels } = await db.getBrowseCatalog({
       sort: "new",
       filter: "all",
       limit: 100,
@@ -90,7 +83,7 @@ describe("Browse Page Performance", () => {
     const firstNovel = allNovels[0];
     const searchTerm = firstNovel.title.substring(0, 3); // Search for first 3 characters
 
-    const searchResults = await db.getBrowseCatalog({
+    const { items: searchResults } = await db.getBrowseCatalog({
       sort: "new",
       filter: "all",
       search: searchTerm,
@@ -106,7 +99,7 @@ describe("Browse Page Performance", () => {
   });
 
   it("should respect pagination limit", async () => {
-    const result = await db.getBrowseCatalog({
+    const { items: result } = await db.getBrowseCatalog({
       sort: "new",
       filter: "all",
       limit: 10,
@@ -118,14 +111,14 @@ describe("Browse Page Performance", () => {
   });
 
   it("should handle pagination offset", async () => {
-    const page1 = await db.getBrowseCatalog({
+    const { items: page1 } = await db.getBrowseCatalog({
       sort: "new",
       filter: "all",
       limit: 5,
       offset: 0,
     });
 
-    const page2 = await db.getBrowseCatalog({
+    const { items: page2 } = await db.getBrowseCatalog({
       sort: "new",
       filter: "all",
       limit: 5,
@@ -141,14 +134,14 @@ describe("Browse Page Performance", () => {
   });
 
   it("should return consistent results for the same query", async () => {
-    const result1 = await db.getBrowseCatalog({
+    const { items: result1 } = await db.getBrowseCatalog({
       sort: "new",
       filter: "all",
       limit: 20,
       offset: 0,
     });
 
-    const result2 = await db.getBrowseCatalog({
+    const { items: result2 } = await db.getBrowseCatalog({
       sort: "new",
       filter: "all",
       limit: 20,
@@ -164,7 +157,7 @@ describe("Browse Page Performance", () => {
 
   it("should handle combined search and filter", async () => {
     // First get free novels to find a valid search term
-    const freeNovels = await db.getBrowseCatalog({
+    const { items: freeNovels } = await db.getBrowseCatalog({
       sort: "new",
       filter: "free",
       limit: 100,
@@ -180,7 +173,7 @@ describe("Browse Page Performance", () => {
     // Use first free novel's title for search
     const searchTerm = freeNovels[0].title.substring(0, 2);
     
-    const result = await db.getBrowseCatalog({
+    const { items: result } = await db.getBrowseCatalog({
       sort: "new",
       filter: "free",
       search: searchTerm,

@@ -24,7 +24,7 @@ describe("Story Status Sync on Browse", () => {
 
   describe("getBrowseCatalog returns storyStatus", () => {
     it("should return storyStatus field in browse results", async () => {
-      const result = await db.getBrowseCatalog({
+      const { items: result } = await db.getBrowseCatalog({
         sort: "new",
         filter: "all",
       });
@@ -36,7 +36,7 @@ describe("Story Status Sync on Browse", () => {
     });
 
     it("should return 'ongoing' for newly created novel", async () => {
-      const result = await db.getBrowseCatalog({
+      const { items: result } = await db.getBrowseCatalog({
         sort: "new",
         filter: "all",
       });
@@ -46,7 +46,7 @@ describe("Story Status Sync on Browse", () => {
     });
 
     it("should NOT return old status field", async () => {
-      const result = await db.getBrowseCatalog({
+      const { items: result } = await db.getBrowseCatalog({
         sort: "new",
         filter: "all",
       });
@@ -63,7 +63,7 @@ describe("Story Status Sync on Browse", () => {
       });
 
       // Query browse catalog
-      const result = await db.getBrowseCatalog({
+      const { items: result } = await db.getBrowseCatalog({
         sort: "new",
         filter: "all",
       });
@@ -79,7 +79,7 @@ describe("Story Status Sync on Browse", () => {
       });
 
       // Query browse catalog
-      const result = await db.getBrowseCatalog({
+      const { items: result } = await db.getBrowseCatalog({
         sort: "new",
         filter: "all",
       });
@@ -91,7 +91,7 @@ describe("Story Status Sync on Browse", () => {
 
   describe("Browse page displays correct storyStatus", () => {
     it("should show 'Ongoing' badge for ongoing novels", async () => {
-      const result = await db.getBrowseCatalog({
+      const { items: result } = await db.getBrowseCatalog({
         sort: "new",
         filter: "all",
       });
@@ -107,7 +107,7 @@ describe("Story Status Sync on Browse", () => {
         storyStatus: "finished",
       });
 
-      const result = await db.getBrowseCatalog({
+      const { items: result } = await db.getBrowseCatalog({
         sort: "new",
         filter: "all",
       });

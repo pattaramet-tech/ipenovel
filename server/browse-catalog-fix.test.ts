@@ -31,7 +31,7 @@ describe("Browse Catalog - Archived Novel Filtering", () => {
 
   describe("Browse Catalog Filtering", () => {
     it("should NOT return archived novels in browse catalog", async () => {
-      const result = await db.getBrowseCatalog({
+      const { items: result } = await db.getBrowseCatalog({
         sort: "new",
         filter: "all",
         limit: 100,
@@ -43,7 +43,7 @@ describe("Browse Catalog - Archived Novel Filtering", () => {
     });
 
     it("should return published novels in browse catalog", async () => {
-      const result = await db.getBrowseCatalog({
+      const { items: result } = await db.getBrowseCatalog({
         sort: "new",
         filter: "all",
         limit: 100,
@@ -55,7 +55,7 @@ describe("Browse Catalog - Archived Novel Filtering", () => {
     });
 
     it("should filter archived novels even with free filter", async () => {
-      const result = await db.getBrowseCatalog({
+      const { items: result } = await db.getBrowseCatalog({
         sort: "new",
         filter: "free",
         limit: 100,
@@ -67,7 +67,7 @@ describe("Browse Catalog - Archived Novel Filtering", () => {
     });
 
     it("should filter archived novels even with search", async () => {
-      const result = await db.getBrowseCatalog({
+      const { items: result } = await db.getBrowseCatalog({
         sort: "new",
         filter: "all",
         search: "Test Browse",
@@ -83,7 +83,7 @@ describe("Browse Catalog - Archived Novel Filtering", () => {
     });
 
     it("should filter archived novels with all combinations", async () => {
-      const result = await db.getBrowseCatalog({
+      const { items: result } = await db.getBrowseCatalog({
         sort: "popular",
         filter: "all",
         search: "Test Browse",

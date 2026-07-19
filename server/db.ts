@@ -2410,14 +2410,7 @@ export async function getLatestEpisodes(limit: number = 4) {
  * Returns only essential fields needed for browse cards
  * Avoids expensive aggregate subqueries for counts
  */
-export async function getBrowseCatalog(params: {
-  sort?: "new" | "popular";
-  filter?: "all" | "free";
-  storyStatus?: "ongoing" | "finished";
-  search?: string;
-  limit?: number;
-  offset?: number;
-}): Promise<Array<{
+export interface BrowseCatalogNovel {
   id: number;
   title: string;
   slug: string;
@@ -2425,11 +2418,42 @@ export async function getBrowseCatalog(params: {
   storyStatus: string;
   createdAt: Date;
   freeEpisodeCount: number;
-}>> {
+}
+
+export interface BrowseCatalogResult {
+  items: BrowseCatalogNovel[];
+  /** True when at least one more row exists beyond this page - derived from
+   *  a limit+1 fetch-ahead, never from a separate COUNT(*) query, since the
+   *  /novels UI only needs to enable/disable "Next", not a total page count. */
+  hasNextPage: boolean;
+}
+
+// LIKE wildcard characters (%, _) and the escape character itself must be
+// escaped before being embedded in a user-controlled LIKE pattern, otherwise
+// a search term containing them (e.g. "50%") is silently reinterpreted as a
+// wildcard instead of matched literally. Parameterization already prevents
+// SQL injection here; this only fixes match-correctness.
+export function escapeLikePattern(term: string): string {
+  return term.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+export async function getBrowseCatalog(params: {
+  sort?: "new" | "popular";
+  filter?: "all" | "free";
+  storyStatus?: "ongoing" | "finished";
+  search?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<BrowseCatalogResult> {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) return { items: [], hasNextPage: false };
 
   const { sort = "new", filter = "all", storyStatus, search, limit = 20, offset = 0 } = params;
+  // Fetch one extra row beyond the page size so hasNextPage reflects reality
+  // instead of the old (buggy) `results.length === pageSize` heuristic, which
+  // was wrong whenever the total row count was an exact multiple of the page
+  // size (it would report hasNextPage=true for the last page).
+  const fetchLimit = limit + 1;
 
   // Lightweight correlated EXISTS check instead of a GROUP BY over the whole
   // episodes table - the UI only ever needs a boolean "has a free episode"
@@ -2450,9 +2474,10 @@ export async function getBrowseCatalog(params: {
   if (storyStatus === "ongoing" || storyStatus === "finished") {
     browseConditions.push(eq(novels.storyStatus, storyStatus));
   }
-  if (search && search.trim()) {
-    const searchPattern = `%${search.trim()}%`;
-    browseConditions.push(sql`${novels.title} LIKE ${searchPattern}`);
+  const trimmedSearch = search?.trim();
+  if (trimmedSearch) {
+    const searchPattern = `%${escapeLikePattern(trimmedSearch)}%`;
+    browseConditions.push(sql`${novels.title} LIKE ${searchPattern} ESCAPE '\\\\'`);
   }
   if (filter === "free") {
     browseConditions.push(hasFreeEpisodeSql());
@@ -2500,9 +2525,10 @@ export async function getBrowseCatalog(params: {
       .orderBy(
         desc(sql`COALESCE(${purchaseCountsSubquery.count}, 0)`),
         desc(sql`COALESCE(${wishlistCountsSubquery.count}, 0)`),
-        desc(novels.createdAt)
+        desc(novels.createdAt),
+        desc(novels.id)
       )
-      .limit(limit)
+      .limit(fetchLimit)
       .offset(offset);
   } else {
     // Default "new" - the common case. No episode-table join/group at all,
@@ -2519,15 +2545,18 @@ export async function getBrowseCatalog(params: {
       })
       .from(novels)
       .where(whereClause)
-      .orderBy(desc(novels.createdAt))
-      .limit(limit)
+      .orderBy(desc(novels.createdAt), desc(novels.id))
+      .limit(fetchLimit)
       .offset(offset);
   }
 
-  return result.map((row: any) => ({
+  const hasNextPage = result.length > limit;
+  const items = (hasNextPage ? result.slice(0, limit) : result).map((row: any) => ({
     ...row,
     freeEpisodeCount: Number(row.freeEpisodeCount) || 0,
   }));
+
+  return { items, hasNextPage };
 }
 
 

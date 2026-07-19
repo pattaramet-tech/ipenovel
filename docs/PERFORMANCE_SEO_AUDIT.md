@@ -1398,6 +1398,452 @@ adds no new files/infrastructure. Verified live (PART G) - produced
     GitHub → Deploy), not from here.
 
 ---
+
+## Phase 4 — Novel Listing Pagination and Payload Reduction
+
+### PART A — Audit findings (baseline, from real code)
+
+`/novels` (`client/src/pages/NovelsPage.tsx`) → `novels.browse`
+(`server/routers.ts`) → `getBrowseCatalog` (`server/db.ts`) →
+`NovelCard` (`client/src/components/NovelCard.tsx`).
+
+An earlier task in this project (the "/novels URL-sync and performance"
+work, before this audit doc existed) had already done real DB-level
+pagination and DTO trimming here, so the baseline is better than a typical
+unoptimized listing page. This audit's job was to find what was still
+wrong, not to assume the worst.
+
+1. **Fetch all vs paginated**: already paginated in the DB (`LIMIT`/
+   `OFFSET`, computed from `page`/`pageSize` in the router). Not a
+   fetch-everything-then-slice pattern.
+2. **Rows per request**: `pageSize`, default 20, capped at 100 by the
+   router's zod schema (`z.number().int().min(1).max(100).optional()`).
+3. **Fields fetched**: `id, title, slug, coverImageUrl, storyStatus,
+   createdAt, freeEpisodeCount` only - already a lean, card-specific
+   `SELECT`, not `SELECT *`.
+4. **Unused fields sent to the frontend**: none found. Every field in the
+   DTO is read by `NovelsPage.tsx`'s render loop (`id`, `title`,
+   `coverImageUrl`, `storyStatus` for the badge, `freeEpisodeCount` for
+   the Free badge) or by `NovelCard`/routing (`slug` isn't currently
+   rendered by the card - see PART E for the decision to keep it anyway).
+5. **Episode content / long description / internal columns**: none
+   present. No episode table join for content, no `description`, no admin
+   flags, no pricing, no `deletedAt`.
+6. **Count aggregations**: `sort=popular` joins two `GROUP BY` subqueries
+   (distinct purchasers, distinct wishlisters) purely for ranking - never
+   exposed to the client. No `COUNT(*)` of the total result set existed,
+   and this phase deliberately keeps it that way (see PART D).
+7. **Pagination location**: DB (`.limit()/.offset()`), not client-side
+   slicing.
+8. **Search/filter/sort location**: DB (`WHERE`/`LIKE`/`ORDER BY`), not
+   client-side `.filter()`/`.sort()`.
+9. **Approximate payload**: measured via fixture in PART I (no live
+   `DATABASE_URL` in this sandbox - static inspection + fixture data only,
+   per this task's own instructions; no invented numbers).
+10. **DB round-trips**: 1 per `novels.browse` call (the popular-sort
+    subqueries are joined into the same query, not separate round-trips).
+
+**Real gaps found (the actual reason this phase has work to do):**
+
+- **`page` and `search` were never written to the URL.** `currentPage`
+  was local `useState(1)`, and `searchTerm`/`debouncedSearch` never
+  touched `useSearchParams()` at all - only `sort`/`filter`/`storyStatus`
+  did. A refresh on page 3 silently dropped back to page 1;
+  `/novels?search=naruto` had no effect because the search box read
+  nothing from the URL; browser back/forward could not move between
+  pages. This is the central problem PART C through PART G address.
+- **`hasNextPage` was computed client-side as `novels.length ===
+  PAGE_SIZE`.** Wrong whenever the true remaining count is an exact
+  multiple of the page size - e.g. exactly 40 novels total with
+  `pageSize=20`: page 2 returns a full 20-row page, so the old check
+  reports `hasNextPage: true`, and clicking Next lands on an empty page
+  3. Fixed in PART D with a real `limit+1` fetch-ahead.
+- **No `id` tie-breaker in either `ORDER BY`.** `sort=new` ordered by
+  `createdAt` alone, `sort=popular` by purchase/wishlist counts then
+  `createdAt` alone - ties (same `createdAt` second, or same score) have
+  no guaranteed stable order across two requests, which can duplicate or
+  skip rows across a page boundary. This is exactly the failure mode
+  Phase 4's goal #7 ("no jumping/duplicate/missing items") calls out.
+- **Search `LIKE` pattern didn't escape `%`/`_`.** Parameterized already
+  (no SQL injection risk), but a user searching for a title containing a
+  literal `%` or `_` would get it silently reinterpreted as a wildcard -
+  a correctness bug, not a security one.
+- **No error state.** `NovelsPage.tsx` handled `isLoading` and an empty
+  result, but never `isError` - a failed request just rendered nothing
+  useful.
+- **Server-side SEO metadata (`serverSeoRenderer.ts`) ignored the query
+  string entirely** for `/novels`, always returning the exact same
+  canonical/robots regardless of `page`/`sort`/`search`. This already
+  *matched* the client hook's deliberate policy (see PART C) for
+  canonical, but had no robots differentiation at all.
+
+### PART B — Pagination model: offset (not cursor), and why
+
+**Offset pagination was chosen.** Reasoning, evidenced against the actual
+code rather than a default preference:
+
+- The implementation is already offset-based end to end (router computes
+  `offset = (page - 1) * pageSize`; `getBrowseCatalog` already took
+  `limit`/`offset`). Migration risk of *staying* offset is zero - no
+  schema change, no new columns.
+- The existing UI shows literal page numbers ("Page N" with Previous/
+  Next) and the task requires shareable URLs shaped `?page=2`, `?page=3`.
+  Offset pagination maps directly onto "page number in the URL"; cursor
+  pagination would need either an opaque cursor token in the URL (which
+  breaks the "type `/novels?page=2` by hand" shareability requirement) or
+  a page-index-to-cursor lookup table that doesn't exist and isn't
+  justified by anything else in this task.
+- `sort=popular`'s ranking key is a *computed* value from a joined
+  subquery (`COALESCE(purchaseCount, 0)`, `COALESCE(wishlistCount, 0)`),
+  not a stable stored column. A correct cursor for this sort would need
+  to encode and validate a 4-tuple `(purchaseCount, wishlistCount,
+  createdAt, id)` from an untrusted client-supplied cursor - meaningfully
+  more implementation and validation surface than the offset path, for a
+  sort mode that isn't a high-write-throughput feed where cursor's
+  main advantage (stability under concurrent inserts) would matter.
+- This is a novel catalog, not a real-time/infinite social feed - total
+  row counts are bounded and `pageSize` is capped at 100, so offset's
+  known weakness (deep-`OFFSET` scans) is a standard, well-understood,
+  low-risk tradeoff here, not a proven problem. `novels(publicationStatus,
+  createdAt)` (added in Phase 3) already narrows the scan before the
+  offset is applied.
+
+Cursor pagination was **not** picked "because offset is easier" - it was
+rejected because it would fight the existing page-numbered UI and
+`?page=N` URL requirement, add real cursor-validation complexity for the
+computed `popular` ranking, and buy nothing this catalog actually needs.
+
+### PART C — URL and SEO
+
+`client/src/lib/seo.ts`'s `buildCanonicalUrl()` already strips query
+strings unconditionally, and `NovelsPage.tsx` already had an explicit,
+documented policy from the earlier URL-sync task: every `/novels` query
+variant (`sort`, `filter`, `storyStatus`, and now `page`/`search`)
+canonicalizes to the bare `https://ipenovel.com/novels` - they're view
+variants of the same catalog, not distinct pages, so index weight isn't
+fragmented across dozens of query combinations. This phase kept that
+policy unchanged on both sides (client hook and
+`server/services/serverSeoRenderer.ts`) rather than relitigating an
+already-made, already-documented decision - and title/description stay
+static for the same reason: the client hook never varied them by query
+either, and making only the server dynamic would create exactly the
+client/server drift Phase 2 was built to avoid.
+
+What *did* change: the server-side `/novels` branch now parses the query
+string (previously discarded before any matching happened) to set
+`robots: "noindex,follow"` for the two genuinely thin/duplicate cases:
+
+- `?search=...` (non-empty) - internal site search results.
+- `?page=2` and beyond - deferred entirely to the canonical's index
+  weight; `?page=1` (explicit or omitted) is unaffected.
+
+Plain `/novels`, and any combination of `sort`/`filter`/`storyStatus` at
+page 1 with no search term, stay indexable with no `robots` tag (the
+crawler default) - unchanged from before. Verified live via `curl` in
+PART K and covered by `server/novels-browse-pagination.test.ts`.
+
+### PART D — Backend query changes
+
+In `getBrowseCatalog` (`server/db.ts`):
+
+- Added `desc(novels.id)` as the final tie-breaker to both `ORDER BY`
+  clauses (`sort=new`: `createdAt DESC, id DESC`; `sort=popular`:
+  `purchaseCount DESC, wishlistCount DESC, createdAt DESC, id DESC`).
+- Replaced the buggy client-side `hasNextPage` heuristic with a real
+  `limit + 1` fetch-ahead: the query now asks for `limit + 1` rows: if
+  more than `limit` come back, `hasNextPage: true` and the extra row is
+  sliced off before returning; otherwise `false`. No `COUNT(*)` query was
+  added - the UI only ever needs to enable/disable "Next", never a total
+  page count, so a full-table-scanning count query would be pure waste.
+  Return shape is now `{ items: BrowseCatalogNovel[], hasNextPage:
+  boolean }` instead of a bare array (all call sites, including
+  pre-existing test files, were updated to match - see PART H).
+- Escaped `%`/`_`/`\` in the user's search term before building the
+  `LIKE` pattern (`escapeLikePattern`, with an explicit `ESCAPE '\\'`
+  clause) so a literal `%` or `_` in a search term matches literally
+  instead of being reinterpreted as a wildcard. The query was already
+  parameterized, so this is a correctness fix, not a security fix.
+- `search` was already trimmed; the router's zod schema now also caps it
+  at 100 characters (`z.string().max(100)`).
+- WHERE/visibility filtering (`publicationStatus = "published"`,
+  optional `storyStatus`, optional free-episode `EXISTS`) is unchanged -
+  archived/draft novels still never leak, verified by the existing
+  `server/browse-catalog-fix.test.ts` (updated for the new return shape,
+  not touched in logic).
+- **No new index added.** The existing `novels(publicationStatus,
+  createdAt)` composite (added in Phase 3) already covers `sort=new`'s
+  `WHERE`+`ORDER BY`. `storyStatus` is a 2-value column filtered *after*
+  `publicationStatus` has already narrowed the row set - not worth a new
+  composite without evidence of it being a real bottleneck, consistent
+  with Phase 3's established "only add what's clearly evidenced" policy.
+  Leading-wildcard `LIKE '%term%'` search can never use a B-tree index
+  regardless of columns, so no index change helps or was attempted for
+  it. `sort=popular`'s subqueries already benefit from Phase 3's
+  `purchases(novelId)` index and the pre-existing `wishlists_novelId_idx`.
+  **Migration risk: none - no migration was needed for this phase.**
+
+### PART E — DTO / payload
+
+The DTO was already lean from the earlier URL-sync task and needed no
+field changes - see PART A finding #3/#4. It was formalized as an
+exported `BrowseCatalogNovel`/`BrowseCatalogResult` TypeScript interface
+in `server/db.ts` (previously an inline return-type annotation) so the
+shape has a single, named source of truth. `slug` is fetched but not yet
+rendered by `NovelCard`/`NovelsPage.tsx` - kept rather than dropped,
+since it's cheap (part of the primary row, no extra join) and is exactly
+the kind of field a future "pretty URL" change would need; removing then
+re-adding it would be pure churn. `novels.detail` (the full novel-detail
+DTO) is untouched and was never at risk of being pointed at this lean
+type.
+
+### PART F/G — Frontend pagination UI, URL sync, search/filter validation
+
+`NovelsPage.tsx` already had Previous/Next buttons with a "Page N" label
+(no total-page-count UI) - kept as-is (matches PART D's decision not to
+fetch a total count) rather than introducing a compact page-number range
+the design never asked for. Changes:
+
+- `page` now lives entirely in the URL (`searchParams.get("page")`,
+  parsed with `parseInt`, invalid/non-positive values fall back to 1) -
+  never local `useState`. `goToPage()` writes the new page into the URL
+  via `setSearchParams` (omitting the param entirely for page 1, to keep
+  `/novels` clean rather than `/novels?page=1`) and scrolls to top.
+- `search` is now written to the URL after the existing 500ms debounce
+  (unchanged debounce - it already existed), normalized to omit the
+  `search` param entirely when empty/whitespace-only. Browser back/
+  forward changes to `?search=` resync the visible input via a
+  dedicated effect keyed on the URL value, without re-triggering the
+  debounce (only local typing debounces).
+- Changing sort, filter, storyStatus, or search all reset `page` to 1 by
+  deleting the `page` param in the *same* `setSearchParams` update
+  (never a separate history entry, never an accumulated/duplicate query
+  param - `URLSearchParams.set()`/`.delete()` always replace in place).
+- `hasNextPage` now comes directly from the server response
+  (`data.hasNextPage`) instead of the buggy client-side heuristic.
+- Added an error state (message + a "ลองใหม่อีกครั้ง" retry button calling
+  `refetch()`) - previously missing entirely.
+- `<nav aria-label="Pagination">` wraps the Previous/Next controls;
+  `aria-current="page"` on the page label. Deliberately did **not** add
+  `aria-label` overrides to the Previous/Next buttons themselves - an
+  earlier draft of this change did, and Playwright verification (PART K)
+  caught that it silently violates WCAG 2.5.3 (Label in Name): an
+  `aria-label` with *different* text than the visible label breaks
+  voice-control and `getByRole`/testing-library-style lookups by the
+  visible text. "Previous"/"Next" are already clear as-is.
+- Query key (`queryInput`, passed straight into
+  `trpc.novels.browse.useQuery`) already included every relevant
+  parameter (`sort`, `filter`, `storyStatus`, `search`, `page`,
+  `pageSize`) from the earlier URL-sync task - unchanged, still correct
+  now that `page`/`search` are URL-derived instead of state-derived.
+  `placeholderData: keepPreviousData` (unchanged) never shows the wrong
+  page's data labeled as current - `isFetching` (not `data`) is what
+  flags an in-flight background fetch.
+- Sort (`z.enum(["new","popular"])`) and storyStatus
+  (`z.enum(["ongoing","finished"])`) were already whitelist-only via
+  zod; unrecognized values are rejected by the router (verified in PART
+  H), not silently coerced.
+
+### PART H — Tests
+
+New file `server/novels-browse-pagination.test.ts` (27 tests, all
+passing): input-validation rejections (invalid/negative/non-integer
+`page`, `pageSize` over 100, unknown `sort`/`storyStatus`, search over
+100 chars - all run unconditionally, no DB needed, since rejection
+happens before any query executes), `escapeLikePattern` pure-function
+tests (`%`, `_`, backslash, Thai text), server-side SEO robots-policy
+tests for `/novels` query variants (no DB needed - that branch never
+queries), and DB-guarded (`if (!db) return`) tests for `hasNextPage`
+correctness at both ends, page-to-page non-duplication, `id`
+tie-breaker determinism, ordering stability across repeated identical
+queries, combined search+filter+sort, and the DTO's exact field set.
+
+Three pre-existing test files (`server/browse-catalog-fix.test.ts`,
+`server/browse-performance.test.ts`, `server/story-status-sync.test.ts`)
+called `getBrowseCatalog` expecting the old bare-array return - updated
+all 24 call sites to destructure `{ items }` (mechanical, not a logic
+change). While there, fixed two pre-existing, unrelated test defects in
+`browse-performance.test.ts` that predate this phase: an assertion
+checking for a `status` property that has never existed on this DTO
+(the field is `storyStatus`), and an assertion assuming `sort=popular`
+orders by `freeEpisodeCount` when the actual (and correct) ranking has
+always been purchase/wishlist counts.
+
+Frontend URL-sync/pagination behavior (query string sync, sort/search
+resetting page, browser back/forward, empty/error states, no old/new
+page mixing) was verified via an ad-hoc Playwright script against the
+dev server with mocked tRPC responses - the project has no committed
+Playwright config/dependency, so following the pattern established in
+Phases 1-3, this was verification tooling (see PART K), not a committed
+test file.
+
+### PART I — Performance validation (fixture-based; no live `DATABASE_URL` in this sandbox)
+
+Honesty note, per this task's own instructions: no live database was
+available to measure real query timings, so nothing below is a real
+production number. What follows is either (a) a deterministic fact about
+the code (rows fetched, round-trips, query count - these don't need a
+database to reason about, they're what the code literally does), or (b)
+an explicitly-labeled fixture-based byte measurement.
+
+- **Rows fetched from the DB per request**: `pageSize + 1` (the `limit+1`
+  fetch-ahead from PART D) - one more than before this phase's
+  `hasNextPage` fix, but that extra row is sliced off before the
+  response leaves `getBrowseCatalog` and is never sent to the client.
+  This is a deliberate, worthwhile tradeoff: +1 row from the DB avoids a
+  separate `COUNT(*)` that would scan the entire matching set.
+- **DB round-trips per request**: 1 (unchanged - the popular-sort
+  subqueries are joined into the same query, not separate round-trips).
+- **Query count**: 1 (unchanged - still no separate count query).
+- **Response payload (fixture-based, 20 items)**: the DTO fields didn't
+  change (already lean from the earlier URL-sync task - see PART A/E),
+  so the wire payload is essentially unchanged by this phase. Measured
+  with a 20-item fixture matching the real field shapes: the old bare
+  array serializes to **6,305 bytes**; the new `{ items, hasNextPage }`
+  wrapper serializes to **6,334 bytes** - a **29-byte (0.46%) increase**
+  from the wrapper object and the boolean field, not a reduction. For
+  contrast (illustrative only - **not** this repo's actual prior state,
+  since the DTO was already trimmed before this phase), a hypothetical
+  unoptimized full-row response for the same 20 items (description,
+  author, storage keys, pricing, etc.) serializes to **72,645 bytes** -
+  the real "payload reduction" work for this listing page was already
+  done in the earlier URL-sync task; this phase's job was pagination
+  *correctness* and *URL-shareability*, not further DTO trimming (there
+  was nothing left to trim).
+- **Frontend render item count**: unchanged, `pageSize` (20) cards per
+  page, same as before.
+
+### PART J — Compatibility
+
+`getBrowseCatalog` has exactly one caller (`novels.browse`), which has
+exactly one caller (`NovelsPage.tsx`) - confirmed via a repo-wide grep
+before making any change, so the blast radius of this phase's backend
+change is contained to this one page. `pnpm check` passing clean across
+the whole repo is strong additional evidence nothing else silently broke
+on the type-shape change. Regression-verified live (dev server + mocked
+tRPC, Playwright, reusing/adapting the Phase 3 verification script) for
+Home (novel cards, banner, cover images, no console errors), Novel
+Detail (title/canonical still correct, page renders), `/my-novels`
+(purchased novel renders), and Admin dashboard (opens, no console
+errors) - all 10/10 checks passed, no change from Phase 3's baseline.
+`sitemap.xml` (`getPublishedNovelsForSitemap`) and the Reader
+(`reader.getEpisode`) don't call `getBrowseCatalog` at all and were not
+touched.
+
+### PART K — Validation commands
+
+- **`pnpm check`**: passed, no errors.
+- **`pnpm test`**: 872 passed, 200 failed, 224 skipped - identical
+  totals before and after this phase's changes (confirmed by running the
+  full suite twice). Every failure is pre-existing and DB-connectivity-
+  related (`Error: Database not available` from `beforeAll`/procedure
+  calls, in files unrelated to `/novels`) - this sandbox has no
+  `DATABASE_URL`, and these files were never guarded for that, unlike
+  this repo's established `if (!db) return` convention. Isolated runs of
+  every file this phase touched or added
+  (`novels-browse-pagination.test.ts`: 27/27 passed;
+  `browse-performance.test.ts`: 8/8 passed; `browse-catalog-fix.test.ts`
+  and `story-status-sync.test.ts`: fail in an unguarded `beforeAll` that
+  calls `db.createNovel` directly - pre-existing, unrelated to this
+  phase's `.items` shape fix, confirmed by inspecting their `beforeAll`
+  hooks) confirm no regression was introduced.
+- **`pnpm build`**: succeeded (`vite build` + `esbuild` for the server
+  bundle). Pre-existing warnings only (missing `VITE_ANALYTICS_*` env
+  vars when built outside a real environment, and a >500kB main chunk
+  warning) - both predate this phase.
+- **Production-mode curl verification** (`NODE_ENV=production node
+  dist/index.js`): `GET /novels` → 200, `<title>รายการนิยาย | IpeNovel
+  </title>`, canonical `https://ipenovel.com/novels`, no `robots` tag.
+  `GET /novels?page=2` → 200, same canonical, `<meta name="robots"
+  content="noindex,follow" />`. `GET /novels?sort=popular` (page 1, no
+  search) → same canonical, no `robots` tag (still indexable). tRPC
+  `novels.browse` with `page=1` → `{"items":[],"hasNextPage":false}`
+  (empty because this sandbox has no live DB - correct shape, correct
+  fallback). tRPC `novels.browse` with `page=0` → HTTP 400 (zod
+  rejection, as designed). No duplicate meta tags observed in any
+  response.
+- **Playwright verification** (dev server + mocked `novels.browse`
+  responses, since no live DB): **18/18 checks passed** - initial
+  `/novels` has no `page` param; Next navigates to `?page=2` then
+  `?page=3`; refreshing `/novels?page=3` stays on page 3 and shows "Page
+  3"; browser back moves `3 → 2 → 1` (page 1 shown as bare `/novels`);
+  directly opening `/novels?page=2` loads page 2 (shareable); changing
+  sort clears `page` and sets `sort=popular`; typing a search term adds
+  `?search=` and clears `page`; reloading a `?search=...` URL
+  repopulates the search box; empty result set shows the empty state;
+  a **persistently** failing `novels.browse` (not just once - see the
+  script's comment on why a single-failure mock doesn't actually
+  exercise the error path under react-query's default `retry: 3`) shows
+  the error state with a working retry button; Previous is disabled on
+  page 1; and page content genuinely changes after Next (not the old
+  page's items redisplayed). The separate Phase 3 regression script
+  (Home/Detail/My Novels/Admin) was re-run against the same dev server:
+  **10/10 checks passed**, unchanged from Phase 3.
+
+### PART L — Deliverable summary
+
+1. **Baseline before the fix**: see PART A - already DB-paginated and
+   already DTO-trimmed from an earlier task, but `page`/`search` were
+   never in the URL, `hasNextPage` was computed incorrectly client-side,
+   and neither `ORDER BY` had a deterministic tie-breaker.
+2. **Pagination model chosen and why**: offset (PART B) - matches the
+   existing page-numbered UI and `?page=N` URL requirement; cursor
+   pagination was rejected as added complexity (encoding/validating a
+   computed-value cursor for `sort=popular`) with no benefit this
+   catalog needs.
+3. **API before/after**: `getBrowseCatalog` returned `Array<...>`
+   before; now returns `{ items: BrowseCatalogNovel[], hasNextPage:
+   boolean }`. `novels.browse`'s input schema is otherwise unchanged
+   except `search` now capped at 100 characters.
+4. **URL query scheme**: `/novels?sort=&filter=&storyStatus=&search=&page=`
+   - `page=1` and empty `search` are both omitted from the URL rather
+   than written explicitly.
+5. **Canonical/noindex policy**: canonical always bare `/novels`
+   (unchanged, pre-existing documented decision); `robots:
+   noindex,follow` added server-side for `search` and `page>1` only.
+6. **DTO fields kept**: `id, title, slug, coverImageUrl, storyStatus,
+   createdAt, freeEpisodeCount` - unchanged from before this phase.
+7. **Fields removed**: none this phase (already lean going in).
+8. **Rows per request before/after**: `pageSize` (max 100) before →
+   `pageSize + 1` fetched from the DB, `pageSize` returned to the client
+   after (the extra row funds a correct `hasNextPage` without a
+   `COUNT(*)`).
+9. **Payload bytes before/after (fixture-based, 20 items)**: 6,305 →
+   6,334 bytes (+29 bytes / +0.46%, from the response wrapper) - see
+   PART I for why this phase intentionally didn't shrink the DTO
+   further.
+10. **DB round-trips before/after**: 1 → 1 (unchanged).
+11. **Query count before/after**: 1 → 1 (unchanged - still no `COUNT(*)`).
+12. **Indexes added**: none - PART D concluded, with reasoning, that no
+    new index is evidenced by this phase's query pattern.
+13. **Migration risk**: none - no migration was created.
+14. **Tests added**: `server/novels-browse-pagination.test.ts` (27
+    tests); 3 pre-existing test files updated for the new return shape
+    plus 2 unrelated pre-existing defects fixed (see PART H).
+15. **`pnpm check`**: passed, no errors.
+16. **`pnpm test`**: 872 passed / 200 failed (pre-existing, DB-
+    connectivity-only, unchanged count before/after) / 224 skipped.
+17. **`pnpm build`**: succeeded.
+18. **Playwright/curl verification**: 18/18 Playwright checks + 10/10
+    regression checks + full curl verification, all passed (PART K).
+19. **Deliberately not changed**: the DTO's field set (already lean);
+    the client/server canonical-consolidation policy (already correct
+    and documented); the Previous/Next-only pagination UI (no total-page
+    UI, since no `COUNT(*)` is fetched); any file outside `/novels`'s
+    call chain.
+20. **Business logic confirmation**: unchanged - visibility rules
+    (`publicationStatus = "published"`), archived/draft exclusion,
+    free-episode detection, and popularity ranking criteria are all
+    exactly as before; the only new SQL construct (`ESCAPE '\\'` on the
+    `LIKE`) is a search-correctness fix, not a rule change.
+21. **Secrets**: confirmed none in this document, the diff, or any file
+    added/changed for this phase.
+22. **Commit hash**: see the commit this section was pushed with.
+23. **Pushed to `origin/main`**: yes - deploy from Manus (Sync from
+    GitHub → Deploy), not from here.
+
+---
 No secrets appear in this document, in the diff, or in any file added/
 changed for this phase. No business logic was changed except the
-documented `getLatestEpisodes` visibility bug fix.
+documented search-escaping correctness fix (not a rule change) and the
+two pre-existing, unrelated test-assertion bugs fixed in
+`browse-performance.test.ts` while updating its return-shape usage.

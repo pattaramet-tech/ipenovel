@@ -44,24 +44,75 @@ export default function NovelsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
   const utils = trpc.useUtils();
-  const [searchTerm, setSearchTerm] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pendingWishlistNovelId, setPendingWishlistNovelId] = useState<number | null>(null);
+  // Seeded from the URL on first render only (StrictMode/rerenders must not
+  // clobber what the user is actively typing) - kept in sync with the URL by
+  // the effect below whenever `search` changes from OUTSIDE this input (e.g.
+  // browser back/forward), and pushed back to the URL after debouncing.
+  const [searchTerm, setSearchTerm] = useState(() => searchParams.get("search") || "");
+  const [debouncedSearch, setDebouncedSearch] = useState(() => searchParams.get("search") || "");
 
   const sortParam = (searchParams.get("sort") as SortParam | null) || "new";
   const filterParam = (searchParams.get("filter") as ContentFilter | null) || "all";
   const storyStatusParam = (searchParams.get("storyStatus") as StoryStatusFilter | null) || "all";
+  const searchUrlParam = searchParams.get("search") || "";
+  // Page lives entirely in the URL (never local React state) so a refresh or
+  // a shared /novels?page=3 link reproduces the same page, and browser
+  // back/forward moves between pages. Invalid/non-positive values (typed by
+  // hand, e.g. ?page=abc or ?page=-1) fall back to page 1 instead of being
+  // sent to the server.
+  const rawPageParam = searchParams.get("page");
+  const parsedPage = rawPageParam ? parseInt(rawPageParam, 10) : 1;
+  const currentPage = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
 
-  // Debounce search input
+  const [pendingWishlistNovelId, setPendingWishlistNovelId] = useState<number | null>(null);
+
+  // Browser back/forward (or any external change to ?search=) must resync
+  // the visible input and skip the debounce - only local typing should debounce.
+  useEffect(() => {
+    setSearchTerm(searchUrlParam);
+    setDebouncedSearch(searchUrlParam);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchUrlParam]);
+
+  // Debounce search input, then reflect it into the URL (and reset to page
+  // 1) in a single update - never accumulates duplicate query params since
+  // URLSearchParams.set() replaces the existing value.
   useEffect(() => {
     const timer = setTimeout(() => {
+      if (searchTerm === debouncedSearch) return;
       setDebouncedSearch(searchTerm);
-      setCurrentPage(1); // Reset to first page when search changes
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        const trimmed = searchTerm.trim();
+        if (trimmed) {
+          next.set("search", trimmed);
+        } else {
+          next.delete("search");
+        }
+        next.delete("page"); // any search change resets to page 1
+        return next;
+      });
     }, DEBOUNCE_DELAY);
 
     return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchTerm]);
+
+  const goToPage = useCallback(
+    (page: number) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (page <= 1) {
+          next.delete("page"); // page=1 is the default - keep the URL clean
+        } else {
+          next.set("page", String(page));
+        }
+        return next;
+      });
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    },
+    [setSearchParams]
+  );
 
   // Memoize query input to prevent unnecessary refetches
   const queryInput = useMemo(
@@ -69,7 +120,7 @@ export default function NovelsPage() {
       sort: sortParam,
       filter: filterParam,
       storyStatus: storyStatusParam === "all" ? undefined : storyStatusParam,
-      search: debouncedSearch || undefined,
+      search: debouncedSearch.trim() || undefined,
       page: currentPage,
       pageSize: PAGE_SIZE,
     }),
@@ -82,13 +133,17 @@ export default function NovelsPage() {
   // fetching - isLoading then only ever means "no data at all yet" (true
   // first load), while isFetching covers every fetch including background
   // refetches, so the two can drive separate UI (full skeleton vs a small
-  // inline indicator).
-  const { data: novels, isLoading, isFetching } = trpc.novels.browse.useQuery(queryInput, {
+  // inline indicator). react-query's `data` always reflects queryInput (the
+  // query key), so it's never the wrong page's data shown as current - the
+  // previous page's data is only ever shown labeled as "loading" via isFetching.
+  const { data, isLoading, isFetching, isError, error, refetch } = trpc.novels.browse.useQuery(queryInput, {
     staleTime: 5 * 60 * 1000, // 5 minutes
     refetchOnWindowFocus: false,
     gcTime: 10 * 60 * 1000, // Keep cached data for 10 minutes
     placeholderData: keepPreviousData,
   });
+  const novels = data?.items;
+  const hasNextPage = data?.hasNextPage ?? false;
 
   // Wishlist state for the heart button on each card - only fetched for
   // logged-in users, never called for anonymous visitors. Uses the
@@ -175,9 +230,9 @@ export default function NovelsPage() {
       setSearchParams((prev) => {
         const next = new URLSearchParams(prev);
         next.set("sort", newSort);
+        next.delete("page"); // changing sort resets to page 1
         return next;
       });
-      setCurrentPage(1);
     },
     [setSearchParams]
   );
@@ -187,9 +242,9 @@ export default function NovelsPage() {
       setSearchParams((prev) => {
         const next = new URLSearchParams(prev);
         next.set("filter", newFilter);
+        next.delete("page"); // changing filter resets to page 1
         return next;
       });
-      setCurrentPage(1);
     },
     [setSearchParams]
   );
@@ -203,17 +258,12 @@ export default function NovelsPage() {
         } else {
           next.set("storyStatus", newStatus);
         }
+        next.delete("page"); // changing story status resets to page 1
         return next;
       });
-      setCurrentPage(1);
     },
     [setSearchParams]
   );
-
-  // Memoize hasNextPage to prevent unnecessary recalculations
-  const hasNextPage = useMemo(() => {
-    return novels && novels.length === PAGE_SIZE;
-  }, [novels]);
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -318,6 +368,15 @@ export default function NovelsPage() {
               </div>
             ))}
           </div>
+        ) : isError ? (
+          <div className="text-center py-12">
+            <p className="text-slate-600 text-lg mb-3">
+              โหลดรายการนิยายไม่สำเร็จ{error?.message ? `: ${error.message}` : ""}
+            </p>
+            <Button variant="outline" onClick={() => refetch()}>
+              ลองใหม่อีกครั้ง
+            </Button>
+          </div>
         ) : novels && novels.length === 0 ? (
           <div className="text-center py-12">
             <p className="text-slate-600 text-lg">No novels found</p>
@@ -362,26 +421,28 @@ export default function NovelsPage() {
               })}
             </div>
 
-            {/* Pagination */}
-            <div className="flex justify-center items-center gap-4 mt-8">
-              <Button
-                variant="outline"
-                disabled={currentPage === 1}
-                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-              >
+            {/* Pagination - Previous/Next only (no total page count) since
+                the backend deliberately avoids a COUNT(*) query the UI
+                doesn't need; hasNextPage comes from the server's limit+1
+                fetch-ahead, not a client-side guess. */}
+            <nav aria-label="Pagination" className="flex justify-center items-center gap-4 mt-8">
+              {/* No aria-label override here - WCAG 2.5.3 (Label in Name)
+                  requires the accessible name to contain the visible text,
+                  and "Previous"/"Next" are already clear on their own; an
+                  aria-label with different text would silently break
+                  getByRole/voice-control lookups by "Next" too. */}
+              <Button variant="outline" disabled={currentPage === 1} onClick={() => goToPage(currentPage - 1)}>
                 Previous
               </Button>
 
-              <span className="text-sm text-slate-600">Page {currentPage}</span>
+              <span className="text-sm text-slate-600" aria-current="page">
+                Page {currentPage}
+              </span>
 
-              <Button
-                variant="outline"
-                disabled={!hasNextPage || isFetching}
-                onClick={() => setCurrentPage((p) => p + 1)}
-              >
+              <Button variant="outline" disabled={!hasNextPage || isFetching} onClick={() => goToPage(currentPage + 1)}>
                 Next
               </Button>
-            </div>
+            </nav>
           </>
         )}
       </div>
