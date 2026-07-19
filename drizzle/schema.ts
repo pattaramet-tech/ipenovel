@@ -435,6 +435,13 @@ export const coupons = mysqlTable(
     code: varchar("code", { length: 50 }).notNull().unique(),
     discountType: mysqlEnum("discountType", ["flat", "percentage"]).notNull(),
     discountValue: decimal("discountValue", { precision: 10, scale: 2 }).notNull(),
+    // Nullable - NULL preserves the exact pre-existing behavior (no cap) for
+    // every coupon created before this column existed. Only applied when set,
+    // and only meaningful for discountType="percentage" (see
+    // orderService.validateAndApplyCoupon). Added for the daily check-in
+    // reward ("5% off, capped at ฿10"), which the previous schema could not
+    // express - see docs/DAILY_CHECKIN_COUPON.md PART C.
+    maxDiscountAmount: decimal("maxDiscountAmount", { precision: 10, scale: 2 }),
     minPurchaseAmount: decimal("minPurchaseAmount", { precision: 10, scale: 2 }).default("0.00"),
     maxUsageCount: int("maxUsageCount"),
     usageCount: int("usageCount").default(0).notNull(),
@@ -799,3 +806,46 @@ export const sportsMatchRewards = mysqlTable(
 
 export type SportsMatchReward = typeof sportsMatchRewards.$inferSelect;
 export type InsertSportsMatchReward = typeof sportsMatchRewards.$inferInsert;
+
+/**
+ * Daily Check-in Rewards
+ * One row per successful check-in. Mirrors the sportsMatchRewards pattern
+ * (a coupon row + an ownership/status-tracking row created together in one
+ * transaction) - see docs/DAILY_CHECKIN_COUPON.md.
+ *
+ * checkinDate is a "YYYY-MM-DD" string (Asia/Bangkok business date, computed
+ * server-side only by server/_core/timezone.ts's getBangkokBusinessDate) -
+ * deliberately not a DATE/timestamp column, so there is no driver-level
+ * timezone reinterpretation possible on read-back.
+ *
+ * The UNIQUE(userId, checkinDate, campaignKey) constraint is the actual,
+ * DB-enforced "one check-in per user per day" guarantee - not a
+ * frontend-only disabled button.
+ */
+export const dailyCheckins = mysqlTable(
+  "dailyCheckins",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    checkinDate: varchar("checkinDate", { length: 10 }).notNull(),
+    campaignKey: varchar("campaignKey", { length: 50 }).default("default").notNull(),
+    couponId: int("couponId").notNull(),
+    status: mysqlEnum("status", ["issued", "used", "void"]).default("issued").notNull(),
+    issuedAt: timestamp("issuedAt").defaultNow().notNull(),
+    usedAt: timestamp("usedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    userIdIdx: index("dailyCheckins_userId_idx").on(table.userId),
+    uniqueUserDateCampaign: uniqueIndex("unique_daily_checkin_user_date_campaign").on(
+      table.userId,
+      table.checkinDate,
+      table.campaignKey
+    ),
+    uniqueCouponId: uniqueIndex("unique_daily_checkins_coupon").on(table.couponId),
+  })
+);
+
+export type DailyCheckin = typeof dailyCheckins.$inferSelect;
+export type InsertDailyCheckin = typeof dailyCheckins.$inferInsert;
