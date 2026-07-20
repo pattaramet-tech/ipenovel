@@ -15,6 +15,7 @@
     "test:ci": "tsx scripts/test-ci.ts",
     "test:repeat": "node scripts/test-repeat.mjs",
     "test:gate": "node scripts/release-gate-check.mjs",
+    "test:db:prepare": "tsx scripts/test-db-prepare.ts",
     "db:migrate": "node scripts/migrate.mjs",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
     "migrate:media:dry": "tsx scripts/migrate-media-to-r2.ts --dry-run --limit=20 --type=all",

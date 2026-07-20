@@ -4,9 +4,11 @@
 // See docs/TEST_INFRASTRUCTURE.md.
 import { drizzle } from "drizzle-orm/mysql2";
 import { assertSafeTestDatabaseUrl, redactDatabaseUrl } from "./testDatabaseGuard";
+import { assertLiveTestDatabaseName } from "./liveTestDatabaseCheck";
 
 let _testDb: ReturnType<typeof drizzle> | null = null;
 let _testDbUrl: string | null = null;
+let _liveVerifiedForUrl: string | null = null;
 
 /**
  * Returns a drizzle connection to the test database, or throws with a
@@ -46,6 +48,25 @@ export function requireTestDb() {
   return getTestDb();
 }
 
+/**
+ * Like getTestDb(), but also runs the live "SELECT DATABASE()" check
+ * (see liveTestDatabaseCheck.ts) before returning - required before any
+ * migration, reset, seed, or other destructive setup step, not just before
+ * ordinary per-test fixture reads/writes (those go through getTestDb()
+ * directly once this has been called once per process, e.g. from
+ * vitest.integration.globalsetup.ts). Cached per URL so repeat calls in the
+ * same process don't re-run the query every time.
+ */
+export async function ensureVerifiedTestDb() {
+  const db = getTestDb();
+  const url = process.env.TEST_DATABASE_URL!;
+  if (_liveVerifiedForUrl !== url) {
+    await assertLiveTestDatabaseName(db);
+    _liveVerifiedForUrl = url;
+  }
+  return db;
+}
+
 export async function closeTestDb(): Promise<void> {
   if (!_testDb) return;
   try {
@@ -55,5 +76,6 @@ export async function closeTestDb(): Promise<void> {
   } finally {
     _testDb = null;
     _testDbUrl = null;
+    _liveVerifiedForUrl = null;
   }
 }

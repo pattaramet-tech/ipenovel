@@ -9,20 +9,26 @@
 // See docs/TEST_INFRASTRUCTURE.md.
 
 /**
- * Database names that unambiguously mark a connection as a test database.
- * The check is case-insensitive and matches a "test" or "ci" segment
- * bounded by non-alphanumeric characters (or string start/end) - so
- * "ipenovel_test", "test_ipenovel", "ipenovel-ci" all match, but
- * "attestation" or "circuit" do not (avoids accidental substring matches on
- * unrelated words).
+ * The ONE database name this project will ever run test setup, migrations,
+ * resets, or seeds against. Tightened from an earlier "contains a test/ci
+ * segment" pattern match to this single exact literal after the daily
+ * check-in production incident - see docs/INCIDENT_DAILY_CHECKIN_ROLLBACK.md.
+ * A pattern match can be satisfied by names nobody actually provisioned
+ * ("ipenovel-ci-mirror-of-prod"); an exact match cannot. This same constant
+ * is also checked, independently and via a live "SELECT DATABASE()" query
+ * (not just this URL-string check), by server/test-helpers/liveTestDatabaseCheck.ts
+ * before any migration/reset/seed step touches the connection.
  */
-const TEST_NAME_PATTERN = /(^|[^a-z0-9])(test|ci)([^a-z0-9]|$)/i;
+export const EXPECTED_TEST_DATABASE_NAME = "ipenovel_test";
 
 /**
- * Database/host names that must NEVER be treated as a test database, even
- * if they happen to also contain "test" somewhere (defense in depth - an
- * allowlist match alone is not trusted if a blocklist term is also
- * present). Matches as a bounded segment, same rule as TEST_NAME_PATTERN.
+ * Database/host names that must NEVER be treated as a test database. Kept
+ * as an independent, cheap pre-check even though an exact match against
+ * EXPECTED_TEST_DATABASE_NAME alone already rules these out by construction
+ * - defense in depth against this constant ever being loosened back to a
+ * pattern in the future without this blocklist being removed at the same
+ * time. Matches a bounded segment (not a bare substring), so "prod" flags
+ * "ipenovel_prod" but not e.g. a hypothetical "reproduce_test".
  */
 const PRODUCTION_NAME_PATTERN = /(^|[^a-z0-9])(prod|production|live|master)([^a-z0-9]|$)/i;
 
@@ -52,14 +58,14 @@ export function parseDatabaseUrl(url: string): ParsedDatabaseUrl | null {
 }
 
 /**
- * True only if the database name (not the host) unambiguously identifies
- * this as a disposable test database, and does not also match a
- * production-sounding name.
+ * True only if the database name is an EXACT (case-sensitive) match for
+ * EXPECTED_TEST_DATABASE_NAME ("ipenovel_test"). No pattern, no prefix/
+ * suffix matching, no case-folding - any other name, however test-like it
+ * looks, is rejected.
  */
 export function isAllowedTestDatabaseName(databaseName: string): boolean {
   if (!databaseName) return false;
-  if (PRODUCTION_NAME_PATTERN.test(databaseName)) return false;
-  return TEST_NAME_PATTERN.test(databaseName);
+  return databaseName === EXPECTED_TEST_DATABASE_NAME;
 }
 
 /**
@@ -109,7 +115,9 @@ export function checkTestDatabaseUrl(url: string | undefined | null): TestDataba
   if (!isAllowedTestDatabaseName(parsed.databaseName)) {
     return {
       safe: false,
-      reason: `database name "${parsed.databaseName}" does not look like a test database (expected a "test" or "ci" segment, e.g. "ipenovel_test")`,
+      reason: `database name "${parsed.databaseName}" is not "${EXPECTED_TEST_DATABASE_NAME}" - this is the only ` +
+        `database name this project will run test setup against, checked both here (connection string) and again ` +
+        `via a live "SELECT DATABASE()" query before any migration/reset/seed step`,
       parsed,
     };
   }
@@ -126,8 +134,8 @@ export function assertSafeTestDatabaseUrl(url: string | undefined | null): Parse
   if (!check.safe) {
     throw new Error(
       `Refusing to run integration tests against this database: ${check.reason}. ` +
-        `Set TEST_DATABASE_URL to a connection string whose database name clearly identifies it as ` +
-        `disposable/test (e.g. "ipenovel_test"). Integration tests never fall back to DATABASE_URL.`
+        `Set TEST_DATABASE_URL to a connection string whose database name is exactly ` +
+        `"${EXPECTED_TEST_DATABASE_NAME}". Integration tests never fall back to DATABASE_URL.`
     );
   }
   return check.parsed!;

@@ -34,21 +34,22 @@ describe("parseDatabaseUrl", () => {
 });
 
 describe("isAllowedTestDatabaseName", () => {
-  it("accepts names with a bounded 'test' segment", () => {
+  it("accepts only the exact literal 'ipenovel_test'", () => {
     expect(isAllowedTestDatabaseName("ipenovel_test")).toBe(true);
-    expect(isAllowedTestDatabaseName("test_ipenovel")).toBe(true);
-    expect(isAllowedTestDatabaseName("ipenovel-test-db")).toBe(true);
-    expect(isAllowedTestDatabaseName("TEST")).toBe(true);
   });
 
-  it("accepts names with a bounded 'ci' segment", () => {
-    expect(isAllowedTestDatabaseName("ipenovel_ci")).toBe(true);
-    expect(isAllowedTestDatabaseName("ci_ipenovel")).toBe(true);
+  it("rejects any other test-like name, however plausible it looks", () => {
+    expect(isAllowedTestDatabaseName("test_ipenovel")).toBe(false);
+    expect(isAllowedTestDatabaseName("ipenovel-test-db")).toBe(false);
+    expect(isAllowedTestDatabaseName("TEST")).toBe(false);
+    expect(isAllowedTestDatabaseName("ipenovel_ci")).toBe(false);
+    expect(isAllowedTestDatabaseName("ci_ipenovel")).toBe(false);
+    expect(isAllowedTestDatabaseName("ipenovel_Test")).toBe(false);
+    expect(isAllowedTestDatabaseName("ipenovel_test_prod_mirror")).toBe(false);
   });
 
-  it("rejects names where 'test'/'ci' is only a substring of another word", () => {
+  it("rejects names where 'test' is only a substring of another word", () => {
     expect(isAllowedTestDatabaseName("attestation_db")).toBe(false);
-    expect(isAllowedTestDatabaseName("circuit_db")).toBe(false);
     expect(isAllowedTestDatabaseName("latest_ipenovel")).toBe(false);
   });
 

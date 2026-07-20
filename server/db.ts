@@ -42,7 +42,24 @@ import { getEffectiveDailyCheckinConfig } from "./_core/dailyCheckinConfig";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
+// Test-only dependency-injection hook - lets integration test setup point
+// every production function in this file (claimDailyCheckin,
+// validateAndApplyCoupon's callers, etc.) at a real TEST_DATABASE_URL
+// connection without getDb() ever reading or writing process.env.DATABASE_URL.
+// This exists specifically so vitest.integration.globalsetup.ts can satisfy
+// "no test/reset/seed/cleanup/migration command may touch DATABASE_URL"
+// while still exercising real production code paths against a real
+// database, rather than reimplementing business logic in test files. See
+// docs/INCIDENT_DAILY_CHECKIN_ROLLBACK.md. Never called by production code -
+// grep confirms the only callers are test setup/teardown.
+let _dbOverrideForTests: ReturnType<typeof drizzle> | null = null;
+
+export function __setDbForTests(db: ReturnType<typeof drizzle> | null): void {
+  _dbOverrideForTests = db;
+}
+
 export async function getDb() {
+  if (_dbOverrideForTests) return _dbOverrideForTests;
   if (!_db && process.env.DATABASE_URL) {
     try {
       _db = drizzle(process.env.DATABASE_URL);

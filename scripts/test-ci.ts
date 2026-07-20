@@ -15,6 +15,10 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertSafeTestDatabaseUrl, redactDatabaseUrl } from "../server/test-helpers/testDatabaseGuard";
+import { runTestDbMigration } from "./migrate-test-db";
+import { assertLiveTestDatabaseName } from "../server/test-helpers/liveTestDatabaseCheck";
+import { resetTestDatabase } from "../server/test-helpers/resetTestDatabase";
+import { drizzle } from "drizzle-orm/mysql2";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
@@ -48,19 +52,28 @@ async function main() {
   }
   console.log(`[test:ci] Test database validated: ${redactDatabaseUrl(testUrl)}`);
 
-  // 2 & 3. Provision/reset the test DB and apply migrations. Reuses
-  // scripts/migrate.mjs (the exact same safe, lock-protected runner used
-  // in production) pointed at TEST_DATABASE_URL - never a separate,
-  // unaudited migration path for tests. This step alone is also what
-  // "provisions" the database in the sense of "brings it to the expected
-  // schema"; this repo does not create/drop database instances themselves
-  // from CI (that's expected to be provisioned by the CI platform/Manus
-  // ahead of time, per docs/TEST_INFRASTRUCTURE.md) - only migrates them.
-  const migrateStatus = run("Apply migrations to the test database", process.execPath, ["scripts/migrate.mjs"], {
-    DATABASE_URL: testUrl,
-  });
+  // 2 & 3. Provision/reset the test DB and apply migrations. Uses the
+  // dedicated TEST_DATABASE_URL-only runner (scripts/migrate-test-db.ts),
+  // called in-process - never scripts/migrate.mjs (the production runner)
+  // and never process.env.DATABASE_URL. Each step independently re-verifies
+  // the live "SELECT DATABASE()" check before touching anything, per
+  // docs/INCIDENT_DAILY_CHECKIN_ROLLBACK.md.
+  let migrateStatus = 0;
+  try {
+    await runTestDbMigration();
+    const db = drizzle(testUrl!);
+    try {
+      await assertLiveTestDatabaseName(db);
+      await resetTestDatabase(db);
+    } finally {
+      await (db as any).$client?.end?.().catch(() => {});
+    }
+  } catch (error: any) {
+    console.error(`[test:ci] Test database preparation failed: ${error?.message || error}`);
+    migrateStatus = 1;
+  }
   if (migrateStatus !== 0) {
-    console.error("[test:ci] Migration step failed - aborting before running any tests.");
+    console.error("[test:ci] Migration/reset step failed - aborting before running any tests.");
     process.exitCode = migrateStatus;
     return;
   }

@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { defineConfig, configDefaults } from "vitest/config";
 import path from "path";
 
 const templateRoot = path.resolve(import.meta.dirname);
@@ -16,6 +16,14 @@ export default defineConfig({
     name: "unit",
     environment: "node",
     include: ["server/**/*.test.ts", "server/**/*.spec.ts"],
+    // *.integration.test.ts also matches the pattern above (it ends in
+    // .test.ts) - excluded explicitly so the unit project (no TEST_DATABASE_URL
+    // requirement, no live-DB safety checks) never picks up a file that
+    // belongs exclusively to the integration project
+    // (vitest.integration.config.ts). Discovered when adding the first-ever
+    // integration test file broke `pnpm test:unit` - see
+    // docs/TEST_INFRASTRUCTURE.md's "Post-incident redesign" section.
+    exclude: [...configDefaults.exclude, "server/**/*.integration.test.ts"],
     // Blocks any test run (including this default project, which many
     // pre-existing test files still connect to a database through
     // DATABASE_URL for) from ever proceeding against a production-looking

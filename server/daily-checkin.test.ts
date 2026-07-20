@@ -239,6 +239,32 @@ describe("claimDailyCheckin (DB required)", () => {
     }
   });
 
+  it("issues the coupon with an expiry exactly DEFAULT_DAILY_CHECKIN_CONFIG.validityDays (7) days out", async () => {
+    const database = await getDb();
+    if (!database) return;
+
+    const expiryUser = await createRealTestUserId();
+    try {
+      const before = Date.now();
+      const result = await db.claimDailyCheckin(expiryUser);
+      const after = Date.now();
+
+      expect(result.reward!.expiresAt).toBeTruthy();
+      const expiresAt = new Date(result.reward!.expiresAt!).getTime();
+      const expectedMs = DEFAULT_DAILY_CHECKIN_CONFIG.validityDays * 24 * 60 * 60 * 1000;
+
+      // Bounded by [before, after] + the configured validity window, with a
+      // small tolerance for query/clock latency between the two Date.now()
+      // calls above - never a wide, meaningless tolerance.
+      expect(expiresAt).toBeGreaterThanOrEqual(before + expectedMs - 5000);
+      expect(expiresAt).toBeLessThanOrEqual(after + expectedMs + 5000);
+    } finally {
+      await database.execute(`DELETE FROM dailyCheckins WHERE userId = ${expiryUser}`);
+      await database.execute(`DELETE FROM coupons WHERE code LIKE 'CHKIN%U${expiryUser}%'`);
+      await database.execute(`DELETE FROM users WHERE id = ${expiryUser}`);
+    }
+  });
+
   it("a disabled campaign (kill switch) rejects new claims without issuing a coupon", async () => {
     const database = await getDb();
     if (!database) return;
@@ -406,6 +432,28 @@ describe("Daily check-in coupon validation/redemption (DB required)", () => {
     await expect(
       orderService.validateAndApplyCoupon(result.reward!.couponCode, "100.00", undefined, USED_COUPON_USER)
     ).rejects.toThrow(/already been used/i);
+  });
+
+  it("existing (non-check-in) coupons with maxDiscountAmount = NULL keep their old, uncapped behavior", async () => {
+    const database = await getDb();
+    if (!database) return;
+
+    // Mirrors a coupon created before this feature existed: percentage
+    // discount, no maxDiscountAmount column value at all. Must NOT be
+    // affected by the new cap logic - a large subtotal should still produce
+    // the full, uncapped percentage discount.
+    await database.execute(
+      `INSERT INTO coupons (code, discountType, discountValue, maxDiscountAmount, minPurchaseAmount, maxUsageCount, usageCount, isActive) VALUES ('LEGACYUNCAPPED', 'percentage', '5.00', NULL, '0.00', NULL, 0, true)`
+    );
+
+    try {
+      const { discountAmount } = await orderService.validateAndApplyCoupon("LEGACYUNCAPPED", "1000.00");
+      // 5% of 1000 = 50, which would be capped to 10 for a check-in coupon -
+      // this coupon has no cap, so it must come back uncapped.
+      expect(discountAmount).toBe("50.00");
+    } finally {
+      await database.execute(`DELETE FROM coupons WHERE code = 'LEGACYUNCAPPED'`);
+    }
   });
 
   it("discount never makes the order total negative (capped at subtotal)", async () => {

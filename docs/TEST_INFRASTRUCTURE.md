@@ -1,6 +1,63 @@
 # Test Infrastructure — Isolation, Safety, and the Unit/Integration Split
 
-This document is the result of a test-suite-stabilization pass triggered by
+## Post-incident redesign (branch `fix/daily-checkin-safe`)
+
+The daily check-in production incident (see
+`docs/INCIDENT_DAILY_CHECKIN_ROLLBACK.md`) surfaced that the design
+described in most of this document (below) briefly relied on
+`vitest.integration.globalsetup.ts` temporarily assigning
+`process.env.DATABASE_URL = TEST_DATABASE_URL` for the duration of the
+integration run, and on a *pattern-match* ("contains a `test`/`ci`
+segment") rather than an *exact-match* test-database-name check. Both were
+tightened on this branch:
+
+- **`EXPECTED_TEST_DATABASE_NAME`** (`server/test-helpers/testDatabaseGuard.ts`)
+  is now the single literal `"ipenovel_test"` - `isAllowedTestDatabaseName()`
+  requires an exact match, not a pattern.
+- **`server/test-helpers/liveTestDatabaseCheck.ts`** adds a second,
+  independent check: a live `SELECT DATABASE()` query against the actual
+  connected server, asserted to be exactly `"ipenovel_test"`. This is not
+  redundant with the URL-string check - a connection string can claim any
+  path while the server resolves the session to a different default
+  database; this check catches that case, which a string check alone
+  cannot.
+- **`server/db.ts`'s `__setDbForTests()`** is a narrow, test-only
+  dependency-injection hook on the `getDb()` singleton. `getDb()` still
+  falls back to its original `DATABASE_URL`-based connection when no
+  override is set - zero behavior change for production. Integration test
+  setup now injects a connection built directly from `TEST_DATABASE_URL`
+  through this hook, so every pre-existing `server/db.ts` function
+  (`claimDailyCheckin`, `validateAndApplyCoupon`, ...) transparently runs
+  against the real test database **without `vitest.integration.globalsetup.ts`
+  ever reading or writing `process.env.DATABASE_URL`**.
+- **`scripts/migrate-test-db.ts`** is a dedicated migration runner that
+  reads only `TEST_DATABASE_URL`, separate from `scripts/migrate.mjs` (the
+  production runner, unchanged, still `DATABASE_URL`-only). It runs the
+  connection-string guard, then the live `SELECT DATABASE()` check, then
+  drizzle's programmatic `migrate()` - only after both checks pass.
+- **`server/test-helpers/resetTestDatabase.ts`** + **`scripts/test-db-prepare.ts`**
+  (`pnpm test:db:prepare`) - migrates, then deletes all rows from the
+  tables this repo's fixtures/tests actually use, re-verifying the live
+  `SELECT DATABASE()` check immediately before the delete step (never
+  trusts an earlier step's check as still valid without re-checking).
+- **`scripts/test-ci.ts`** now calls `runTestDbMigration()` +
+  `resetTestDatabase()` in-process instead of spawning
+  `scripts/migrate.mjs` with a `DATABASE_URL` environment override.
+- **Integration tests clean up their own data deterministically**: ordinary
+  fixture-based integration tests use `server/test-helpers/fixtures.ts`'s
+  `deleteFixtures()`, scoped to exactly the IDs each test created (never a
+  blanket delete of a shared table). The one exception -
+  `server/migration-0027-idempotency.integration.test.ts`, which
+  intentionally drops/recreates schema objects - always restores full
+  schema state in a `finally` block regardless of pass/fail, so no other
+  test file in the same run is left in a broken state.
+
+None of this changes the "not yet verified against a real database in this
+sandbox" status below - it changes *what* would be verified once one is
+available.
+
+This document is otherwise the result of an earlier test-suite-stabilization
+pass triggered by
 A/B verification showing non-deterministic release-gate results (87 vs 88
 new failures across runs, with different test names each time) once a real
 test database became available in Manus's environment. It explains what was
@@ -161,11 +218,25 @@ Two projects exist:
   blind bump to hide a hang; see PART F's "don't just raise timeouts"
   rule this is held to). No files exist under this pattern yet in this
   pass - see "what's not done."
-- **`vitest.workspace.ts`** - `defineWorkspace(["./vitest.config.ts",
-  "./vitest.integration.config.ts"])`, for discoverability/completeness;
-  the actual `test:unit`/`test:integration` scripts invoke each config
-  file directly rather than through the workspace, for simpler, more
-  predictable behavior.
+- **`vitest.workspace.ts` was removed on `fix/daily-checkin-safe`.** It
+  originally existed only for discoverability (`defineWorkspace(["./vitest.config.ts",
+  "./vitest.integration.config.ts"])`) since the actual `test:unit`/
+  `test:integration` scripts always invoked each config file directly via
+  `-c`. That turned out not to be inert: Vitest 2.1.9 auto-detects a
+  `vitest.workspace.ts` in the root and runs it in **workspace mode even
+  when `-c <file>` is passed**, silently running *both* projects together
+  regardless of which single config was requested. This had no observable
+  effect while the integration project had zero matching files (its
+  `globalSetup` never had a reason to run), but broke the moment the first
+  `server/**/*.integration.test.ts` file was added (this branch's
+  `server/migration-0027-idempotency.integration.test.ts`) - `pnpm
+  test:unit` started failing outright with
+  `vitest.integration.globalsetup.ts`'s "TEST_DATABASE_URL required" error,
+  even though `test:unit` is supposed to be completely independent of the
+  integration project. Deleting the workspace file restored `pnpm
+  test:unit`'s isolation (verified: back to running only the unit
+  project's ~89 files). `--project=unit`/`--project=integration` selection
+  is no longer available as a result - not used by anything in this repo.
 
 **Trade-off, stated plainly**: `fileParallelism: false` on the unit
 project measurably slows `pnpm test`/`pnpm test:unit` in this sandbox -
@@ -368,6 +439,10 @@ for the full GO/NO-GO reasoning.
 ```bash
 # Unit tests only - safe, no database needed, matches pnpm test's failure count
 pnpm test:unit
+
+# Prepare the disposable test database: validate -> live-verify -> migrate -> reset
+export TEST_DATABASE_URL="mysql://user:pass@host:3306/ipenovel_test"
+pnpm test:db:prepare
 
 # Integration tests - requires a real, disposable test database
 export TEST_DATABASE_URL="mysql://user:pass@host:3306/ipenovel_test"
