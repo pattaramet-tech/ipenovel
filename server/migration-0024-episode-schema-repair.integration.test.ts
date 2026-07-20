@@ -65,6 +65,42 @@ async function dropTableIfExists(conn: mysql.Connection, tableName: string): Pro
   await conn.query(`DROP TABLE IF EXISTS \`${tableName}\``);
 }
 
+async function indexExists(conn: mysql.Connection, tableName: string, indexName: string): Promise<boolean> {
+  const [rows]: any = await conn.query(
+    `SELECT COUNT(*) as cnt FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?`,
+    [tableName, indexName]
+  );
+  return Number(rows[0].cnt) > 0;
+}
+
+/**
+ * `episodes.isPublished` and `episodes.sortOrder` are each covered by a
+ * secondary index (episodes_isPublished_idx/episodes_isPublished_
+ * createdAt_idx and episodes_sortOrder_idx, from migrations 0024/0026) -
+ * TiDB (like MySQL) refuses to DROP COLUMN a column a secondary index still
+ * covers. The scenarios below that simulate a partial legacy schema by
+ * dropping those columns via dropColumnIfExists() must drop these
+ * dependent indexes first. The migration chain re-run afterward recreates
+ * all three naturally, so this never edits drizzle/schema.ts or the
+ * migrations themselves - purely test-fixture ordering.
+ */
+const EPISODES_DEPENDENT_INDEXES = ["episodes_isPublished_idx", "episodes_isPublished_createdAt_idx", "episodes_sortOrder_idx"] as const;
+
+/**
+ * Drops `indexName` on `tableName` only if it currently exists, and only if
+ * it is one of the specific, explicitly allowlisted dependent-index names
+ * this test file is permitted to touch (EPISODES_DEPENDENT_INDEXES) -
+ * never PRIMARY, never anything else, regardless of what's passed in.
+ */
+async function dropIndexIfExists(conn: mysql.Connection, tableName: string, indexName: string): Promise<void> {
+  if ((EPISODES_DEPENDENT_INDEXES as readonly string[]).indexOf(indexName) === -1) {
+    throw new Error(`dropIndexIfExists: refusing to drop "${indexName}" - it is not in the explicit test index allowlist.`);
+  }
+  if (await indexExists(conn, tableName, indexName)) {
+    await conn.query(`ALTER TABLE \`${tableName}\` DROP INDEX \`${indexName}\``);
+  }
+}
+
 /** Removes only the __drizzle_migrations rows recorded strictly after `afterWhen` - rewinds the resume high-water-mark without touching earlier, unrelated history. */
 async function rewindMigrationHistoryAfter(conn: mysql.Connection, afterWhen: number): Promise<void> {
   await conn.query(`DELETE FROM \`__drizzle_migrations\` WHERE created_at > ?`, [afterWhen]);
@@ -164,6 +200,12 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
     try {
       await runFullChain(conn); // known-good starting baseline
       await rewindMigrationHistoryAfter(conn, idx23When); // pretend only 0000-0023 ever ran
+      // isPublished/sortOrder are covered by secondary indexes (see
+      // EPISODES_DEPENDENT_INDEXES) - TiDB refuses to drop those columns
+      // while the indexes still cover them, so drop the indexes first.
+      for (const idx of EPISODES_DEPENDENT_INDEXES) {
+        await dropIndexIfExists(conn, "episodes", idx);
+      }
       for (const col of ["content", "contentFormat", "isPublished", "publishedAt", "wordCount", "sortOrder"]) {
         await dropColumnIfExists(conn, "episodes", col);
       }
@@ -179,6 +221,10 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
       }
       expect(await tableExists(conn, "episodePurchases")).toBe(true);
       expect(await tableExists(conn, "readingProgress")).toBe(true);
+      // The migration chain must recreate the dependent indexes naturally, not just the columns.
+      for (const idx of EPISODES_DEPENDENT_INDEXES) {
+        expect(await indexExists(conn, "episodes", idx)).toBe(true);
+      }
     } finally {
       await cleanupTestConnection(conn!);
     }
@@ -215,6 +261,12 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
     try {
       await runFullChain(conn);
       await rewindMigrationHistoryAfter(conn, idx23When);
+      // isPublished/sortOrder are covered by secondary indexes (see
+      // EPISODES_DEPENDENT_INDEXES) - TiDB refuses to drop those columns
+      // while the indexes still cover them, so drop the indexes first.
+      for (const idx of EPISODES_DEPENDENT_INDEXES) {
+        await dropIndexIfExists(conn, "episodes", idx);
+      }
       for (const col of ["content", "contentFormat", "isPublished", "publishedAt", "wordCount", "sortOrder"]) {
         await dropColumnIfExists(conn, "episodes", col);
       }
@@ -231,6 +283,10 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
         expect(await columnExists(conn, "episodes", col)).toBe(true);
       }
       expect(await columnType(conn, "episodes", "content")).toBe("mediumtext");
+      // The migration chain must recreate the dependent indexes naturally, not just the columns.
+      for (const idx of EPISODES_DEPENDENT_INDEXES) {
+        expect(await indexExists(conn, "episodes", idx)).toBe(true);
+      }
     } finally {
       await cleanupTestConnection(conn!);
     }
