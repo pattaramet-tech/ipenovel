@@ -849,3 +849,188 @@ export const dailyCheckins = mysqlTable(
 
 export type DailyCheckin = typeof dailyCheckins.$inferSelect;
 export type InsertDailyCheckin = typeof dailyCheckins.$inferInsert;
+
+/**
+ * Stage 1A of the configurable daily check-in reward system - see
+ * docs/DAILY_CHECKIN_DYNAMIC_REWARDS_DESIGN.md. Admin-editable campaign
+ * definitions, replacing the single hardcoded JSON-blob config
+ * (server/_core/dailyCheckinConfig.ts) with relational, per-campaign rows.
+ * Purely additive at this stage: dailyCheckins is not yet linked to this
+ * table, and claimDailyCheckin/getDailyCheckinStatus are not rewritten
+ * until a later stage (see the design doc's PART L migration plan).
+ *
+ * `status` replaces an earlier isActive-boolean design: draft is fully
+ * editable and can activate exactly once; active can only end early;
+ * ended is terminal with no reactivation.
+ */
+export const dailyCheckinCampaigns = mysqlTable(
+  "dailyCheckinCampaigns",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    campaignKey: varchar("campaignKey", { length: 50 }).notNull(),
+    name: varchar("name", { length: 150 }).notNull(),
+    description: text("description"),
+    timezone: varchar("timezone", { length: 50 }).default("Asia/Bangkok").notNull(),
+    startDate: varchar("startDate", { length: 10 }).notNull(),
+    endDate: varchar("endDate", { length: 10 }).notNull(),
+    status: mysqlEnum("status", ["draft", "active", "ended"]).default("draft").notNull(),
+    createdBy: int("createdBy"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    campaignKeyIdx: uniqueIndex("dailyCheckinCampaigns_campaignKey_unique").on(table.campaignKey),
+    statusDateIdx: index("dailyCheckinCampaigns_status_date_idx").on(
+      table.status,
+      table.startDate,
+      table.endDate
+    ),
+  })
+);
+
+export type DailyCheckinCampaign = typeof dailyCheckinCampaigns.$inferSelect;
+export type InsertDailyCheckinCampaign = typeof dailyCheckinCampaigns.$inferInsert;
+
+/**
+ * Coupon-minting parameters for coupon-kind reward rules
+ * (dailyCheckinRewardRules.couponTemplateId). A template is the parameters
+ * used to mint a fresh `coupons` row at grant time - never a real,
+ * pre-existing coupon. Mirrors today's single global
+ * DailyCheckinCampaignConfig shape, moved into a relational, per-campaign
+ * row.
+ */
+export const dailyCheckinCouponTemplates = mysqlTable(
+  "dailyCheckinCouponTemplates",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    campaignId: int("campaignId").notNull(),
+    discountType: mysqlEnum("discountType", ["flat", "percentage"]).notNull(),
+    discountValue: decimal("discountValue", { precision: 10, scale: 2 }).notNull(),
+    maxDiscountAmount: decimal("maxDiscountAmount", { precision: 10, scale: 2 }),
+    minPurchaseAmount: decimal("minPurchaseAmount", { precision: 10, scale: 2 }).default("0.00").notNull(),
+    validityDays: int("validityDays").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    campaignIdIdx: index("dailyCheckinCouponTemplates_campaignId_idx").on(table.campaignId),
+  })
+);
+
+export type DailyCheckinCouponTemplate = typeof dailyCheckinCouponTemplates.$inferSelect;
+export type InsertDailyCheckinCouponTemplate = typeof dailyCheckinCouponTemplates.$inferInsert;
+
+/**
+ * Configurable reward rules per campaign - daily or milestone, points or
+ * coupon. `dedupeKey` is SERVER-GENERATED ONLY (application code must
+ * never trust a client-provided value) - see
+ * docs/DAILY_CHECKIN_DYNAMIC_REWARDS_DESIGN.md PART A/C for the exact
+ * deterministic formats (`daily:points`, `daily:coupon`,
+ * `milestone:<day>:once:<kind>`, `milestone:<day>:repeat:<n>:<kind>`) and
+ * why a plain (campaignId, ruleType, milestoneDay, rewardKind) composite
+ * unique was rejected: `milestoneDay` is NULL for every daily rule, and
+ * MySQL/TiDB unique indexes treat each NULL as distinct, so two "daily"
+ * rules of the same rewardKind would both insert successfully.
+ */
+export const dailyCheckinRewardRules = mysqlTable(
+  "dailyCheckinRewardRules",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    campaignId: int("campaignId").notNull(),
+    ruleType: mysqlEnum("ruleType", ["daily", "milestone"]).notNull(),
+    rewardKind: mysqlEnum("rewardKind", ["points", "coupon"]).notNull(),
+    milestoneDay: int("milestoneDay"),
+    repeatEvery: int("repeatEvery"),
+    pointsAmount: decimal("pointsAmount", { precision: 10, scale: 2 }),
+    couponTemplateId: int("couponTemplateId"),
+    dedupeKey: varchar("dedupeKey", { length: 120 }).notNull(),
+    isActive: boolean("isActive").default(true).notNull(),
+    sortOrder: int("sortOrder").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    campaignDedupeIdx: uniqueIndex("dailyCheckinRewardRules_campaign_dedupe_unique").on(
+      table.campaignId,
+      table.dedupeKey
+    ),
+    campaignActiveIdx: index("dailyCheckinRewardRules_campaign_active_idx").on(
+      table.campaignId,
+      table.isActive
+    ),
+  })
+);
+
+export type DailyCheckinRewardRule = typeof dailyCheckinRewardRules.$inferSelect;
+export type InsertDailyCheckinRewardRule = typeof dailyCheckinRewardRules.$inferInsert;
+
+/**
+ * The immutable, universal reward snapshot/ledger - replaces couponId as
+ * the reward representation. Every reward-defining field is duplicated
+ * here at grant time so editing/deactivating a rule later can never alter
+ * a reward already granted (see the design doc PART A).
+ *
+ * `couponId`/`pointsTransactionId` are each guarded by their own nullable
+ * one-to-one unique index: a points grant always has `couponId = NULL` and
+ * a coupon grant always has `pointsTransactionId = NULL` - MySQL/TiDB
+ * unique indexes permit multiple NULL-containing rows, so both stay
+ * enforced only across their real, non-NULL values (one grant per real
+ * coupon, one grant per real points transaction), never across the NULLs.
+ *
+ * `status`/`usedAt`/`voidedAt` live on the grant, not on the parent
+ * `dailyCheckins` row - a single check-in can mint more than one coupon
+ * (e.g. a daily coupon and a milestone coupon on the same day), and
+ * redeeming one must never mark the other as used. `dailyCheckins.status`/
+ * `usedAt` remain legacy-only fields during the transition (see the design
+ * doc PART I/L) - new code never reads or writes them.
+ */
+export const dailyCheckinRewardGrants = mysqlTable(
+  "dailyCheckinRewardGrants",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    dailyCheckinId: int("dailyCheckinId").notNull(),
+    userId: int("userId").notNull(),
+    campaignId: int("campaignId").notNull(),
+    ruleId: int("ruleId").notNull(),
+    rewardKind: mysqlEnum("rewardKind", ["points", "coupon"]).notNull(),
+    grantReason: mysqlEnum("grantReason", ["daily", "milestone"]).notNull(),
+    milestoneDay: int("milestoneDay"),
+    milestoneInstanceNumber: int("milestoneInstanceNumber"),
+    streakCountAtGrant: int("streakCountAtGrant").notNull(),
+    pointsAmount: decimal("pointsAmount", { precision: 10, scale: 2 }),
+    pointsTransactionId: int("pointsTransactionId"),
+    couponId: int("couponId"),
+    discountType: mysqlEnum("discountType", ["flat", "percentage"]),
+    discountValue: decimal("discountValue", { precision: 10, scale: 2 }),
+    maxDiscountAmount: decimal("maxDiscountAmount", { precision: 10, scale: 2 }),
+    minPurchaseAmount: decimal("minPurchaseAmount", { precision: 10, scale: 2 }),
+    status: mysqlEnum("status", ["granted", "used", "void"]).default("granted").notNull(),
+    usedAt: timestamp("usedAt"),
+    voidedAt: timestamp("voidedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    checkinRuleIdx: uniqueIndex("dailyCheckinRewardGrants_checkin_rule_unique").on(
+      table.dailyCheckinId,
+      table.ruleId
+    ),
+    userRuleInstanceIdx: uniqueIndex("dailyCheckinRewardGrants_user_rule_instance_unique").on(
+      table.userId,
+      table.ruleId,
+      table.milestoneInstanceNumber
+    ),
+    campaignIdx: index("dailyCheckinRewardGrants_campaign_idx").on(table.campaignId),
+    userCreatedIdx: index("dailyCheckinRewardGrants_user_created_idx").on(
+      table.userId,
+      table.createdAt
+    ),
+    statusIdx: index("dailyCheckinRewardGrants_status_idx").on(table.status),
+    couponIdIdx: uniqueIndex("dailyCheckinRewardGrants_couponId_unique").on(table.couponId),
+    pointsTransactionIdIdx: uniqueIndex("dailyCheckinRewardGrants_pointsTransactionId_unique").on(
+      table.pointsTransactionId
+    ),
+  })
+);
+
+export type DailyCheckinRewardGrant = typeof dailyCheckinRewardGrants.$inferSelect;
+export type InsertDailyCheckinRewardGrant = typeof dailyCheckinRewardGrants.$inferInsert;

@@ -96,13 +96,18 @@ describe("runMigrationsWithLogging - resume/skip semantics (matches drizzle-orm'
   it("resumes only migrations newer than the single latest recorded timestamp", async () => {
     const journal = readMigrationJournal(migrationsFolder);
     const idx27When = journal.find((e) => e.tag === "0027_add_daily_checkin_and_coupon_cap")!.when;
+    // Computed from the real journal (not hardcoded to a specific later tag)
+    // so this assertion doesn't need updating every time a new migration is
+    // appended - it always means "everything strictly after 0027", whatever
+    // that currently is.
+    const expectedTags = journal.filter((e) => e.when > idx27When).map((e) => e.tag);
 
     const { conn } = fakeConnection({ existingMigrations: [{ hash: "prior", created_at: idx27When }] });
     const { attempted, logger } = recordingLogger();
 
     await runMigrationsWithLogging(conn, migrationsFolder, logger);
 
-    expect(attempted).toEqual(["0028_repair_episode_reader_schema"]);
+    expect(attempted).toEqual(expectedTags);
   });
 
   it("is a no-op when the latest recorded timestamp is already newer than every journal entry", async () => {

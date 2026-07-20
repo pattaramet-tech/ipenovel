@@ -371,11 +371,25 @@ createdAt             timestamp default now() not null
 
 UNIQUE (dailyCheckinId, ruleId)                       -- guarantee 1 (below)
 UNIQUE (userId, ruleId, milestoneInstanceNumber)      -- guarantee 2 (below)
+UNIQUE (couponId)                                     -- nullable one-to-one hardening, see below
+UNIQUE (pointsTransactionId)                          -- nullable one-to-one hardening, see below
 INDEX  (campaignId)
-INDEX  (pointsTransactionId)
-INDEX  (couponId)
 INDEX  (status)
 ```
+
+**Nullable one-to-one hardening**: `couponId` and `pointsTransactionId` are
+each guarded by their own **unique** index, not a plain one. Each minted
+coupon and each points transaction belongs to exactly one grant — a real,
+non-NULL `couponId` or `pointsTransactionId` must never be attributable to
+two different grant rows, since that would mean two reward snapshots both
+claim ownership of the same underlying coupon or ledger entry. MySQL/TiDB
+unique indexes permit multiple `NULL`-containing rows (the same property
+Correction 2 relies on for `dedupeKey` avoidance elsewhere in this
+document), which is exactly what makes a plain unique index the right tool
+here rather than a problem: every points grant has `couponId = NULL` and
+every coupon grant has `pointsTransactionId = NULL`, and those NULLs must
+never collide with each other or themselves — only the real, non-NULL
+values on each column are ever compared for uniqueness.
 
 **Correction 1 — reward-level status, not parent-row status**: the previous
 design left `used`/`void` status on the parent `dailyCheckins` row, which
@@ -417,6 +431,8 @@ once any grant exists — PART J/L).
 | `dailyCheckins` (enhanced) | `UNIQUE(userId, checkinDate, campaignId)` *(new, additive alongside the legacy key-based one — see PART L)* | one check-in per user per day per campaign — the primary race arbiter, unchanged in spirit from today |
 | `dailyCheckinRewardGrants` | `UNIQUE(dailyCheckinId, ruleId)` | one check-in event cannot grant the same rule twice (same-request/retry safety) |
 | `dailyCheckinRewardGrants` | `UNIQUE(userId, ruleId, milestoneInstanceNumber)` | a specific milestone *instance* (the one-time milestone, or one specific repeat boundary) is granted at most once ever, across the user's full history — independent of which day it happened on |
+| `dailyCheckinRewardGrants` | `UNIQUE(couponId)` *(nullable one-to-one — NULL-permissive, non-NULL-unique)* | each minted coupon belongs to exactly one grant; every points grant has `couponId = NULL` |
+| `dailyCheckinRewardGrants` | `UNIQUE(pointsTransactionId)` *(nullable one-to-one — NULL-permissive, non-NULL-unique)* | each points transaction belongs to exactly one grant; every coupon grant has `pointsTransactionId = NULL` |
 | `dailyCheckinRewardGrants` | `INDEX(status)` | redemption-state queries (e.g. admin support lookups) without a full scan |
 
 No table needs a cross-column `CHECK` constraint enforced by the database:
