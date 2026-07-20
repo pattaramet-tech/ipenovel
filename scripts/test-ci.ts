@@ -14,11 +14,13 @@
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import mysql from "mysql2";
+import { drizzle } from "drizzle-orm/mysql2";
 import { assertSafeTestDatabaseUrl, redactDatabaseUrl } from "../server/test-helpers/testDatabaseGuard";
 import { runTestDbMigration } from "./migrate-test-db";
 import { assertLiveTestDatabaseName } from "../server/test-helpers/liveTestDatabaseCheck";
 import { resetTestDatabase } from "../server/test-helpers/resetTestDatabase";
-import { drizzle } from "drizzle-orm/mysql2";
+import { buildTestDbConnectionOptions } from "../server/test-helpers/testDbConnectionOptions";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
@@ -61,12 +63,13 @@ async function main() {
   let migrateStatus = 0;
   try {
     await runTestDbMigration();
-    const db = drizzle(testUrl!);
+    const connection = mysql.createConnection(buildTestDbConnectionOptions(testUrl));
+    const db = drizzle({ client: connection });
     try {
       await assertLiveTestDatabaseName(db);
       await resetTestDatabase(db);
     } finally {
-      await (db as any).$client?.end?.().catch(() => {});
+      await connection.promise().end().catch(() => {});
     }
   } catch (error: any) {
     console.error(`[test:ci] Test database preparation failed: ${error?.message || error}`);

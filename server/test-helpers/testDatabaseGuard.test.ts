@@ -16,7 +16,12 @@ function codeOnly(source: string): string {
   // Strips comments before a source-level check, so prose that merely
   // *mentions* "process.env.DATABASE_URL" (explaining that it is
   // deliberately not used) doesn't false-positive against the check.
+  // Normalizes CRLF to LF first - a trailing \r before the split-on-"\n"
+  // line boundary otherwise defeats the `//...$` per-line regex below
+  // (`.` and `$` both exclude \r), silently leaving CRLF-terminated
+  // comment lines unstripped.
   return source
+    .replace(/\r\n/g, "\n")
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .split("\n")
     .map((line) => line.replace(/\/\/.*$/, ""))
@@ -212,9 +217,12 @@ describe("DATABASE_URL is never read or modified by test setup (static source ch
     "server/test-helpers/testDb.ts",
     "server/test-helpers/liveTestDatabaseCheck.ts",
     "server/test-helpers/resetTestDatabase.ts",
+    "server/test-helpers/testDbConnectionOptions.ts",
     "vitest.integration.globalsetup.ts",
     "scripts/migrate-test-db.ts",
     "scripts/test-db-prepare.ts",
+    "scripts/test-ci.ts",
+    "server/migration-0027-idempotency.integration.test.ts",
   ];
 
   it.each(filesThatMustNeverTouchDatabaseUrl)("%s never reads or writes process.env.DATABASE_URL", (relativePath) => {

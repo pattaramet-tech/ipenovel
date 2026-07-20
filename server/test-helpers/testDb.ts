@@ -2,11 +2,21 @@
 // database connection. Never reads DATABASE_URL, ever, under any
 // circumstance - there is no fallback branch to remove, by construction.
 // See docs/TEST_INFRASTRUCTURE.md.
+//
+// Connects via a mysql2 pool built from buildTestDbConnectionOptions()
+// (TLS required, TLSv1.2 minimum, certificate verification never disabled)
+// rather than calling drizzle(url!) directly - a real Manus integration run
+// against TiDB Cloud failed with "Connections using insecure transport are
+// prohibited" when this used a plain URL string with no TLS options. See
+// testDbConnectionOptions.ts for the full rationale.
+import mysql from "mysql2";
 import { drizzle } from "drizzle-orm/mysql2";
-import { assertSafeTestDatabaseUrl, redactDatabaseUrl } from "./testDatabaseGuard";
+import { redactDatabaseUrl } from "./testDatabaseGuard";
 import { assertLiveTestDatabaseName } from "./liveTestDatabaseCheck";
+import { buildTestDbConnectionOptions } from "./testDbConnectionOptions";
 
 let _testDb: ReturnType<typeof drizzle> | null = null;
+let _testPool: mysql.Pool | null = null;
 let _testDbUrl: string | null = null;
 let _liveVerifiedForUrl: string | null = null;
 
@@ -26,11 +36,16 @@ export function getTestDb() {
   const url = process.env.TEST_DATABASE_URL;
   if (_testDb && _testDbUrl === url) return _testDb;
 
-  const parsed = assertSafeTestDatabaseUrl(url);
+  // buildTestDbConnectionOptions() runs the URL-string safety gate
+  // (assertSafeTestDatabaseUrl) internally and throws before any connection
+  // is attempted if the URL is missing or its database name isn't exactly
+  // "ipenovel_test".
+  const options = buildTestDbConnectionOptions(url);
   console.log(`[testDb] Connecting to test database: ${redactDatabaseUrl(url)}`);
-  void parsed;
 
-  _testDb = drizzle(url!);
+  const pool = mysql.createPool(options);
+  _testPool = pool;
+  _testDb = drizzle({ client: pool });
   _testDbUrl = url!;
   return _testDb;
 }
@@ -68,13 +83,18 @@ export async function ensureVerifiedTestDb() {
 }
 
 export async function closeTestDb(): Promise<void> {
-  if (!_testDb) return;
+  if (!_testPool) return;
   try {
-    await (_testDb as any).$client?.end?.();
+    // Closes the actual pool this module created and retained (_testPool),
+    // not a reference recovered from inside drizzle's internals - reliable
+    // regardless of how drizzle-orm happens to expose the underlying
+    // client in any given version.
+    await _testPool.promise().end();
   } catch (error) {
     console.warn("[testDb] Failed to close test database connection cleanly:", (error as any)?.message);
   } finally {
     _testDb = null;
+    _testPool = null;
     _testDbUrl = null;
     _liveVerifiedForUrl = null;
   }
