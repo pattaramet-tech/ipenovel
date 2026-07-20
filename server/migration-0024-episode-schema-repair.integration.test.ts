@@ -6,6 +6,7 @@ import mysql from "mysql2/promise";
 import { buildTestDbConnectionOptions } from "./test-helpers/testDbConnectionOptions";
 import { runMigrationsWithLogging, consoleMigrationLogger, readMigrationJournal } from "./test-helpers/migrateTestDbWithLogging";
 import { EXPECTED_TEST_DATABASE_NAME } from "./test-helpers/testDatabaseGuard";
+import { restoreToFullyMigratedWithRetry } from "./test-helpers/restoreWithEmergencyRetry";
 
 /**
  * Real-database coverage for the migration 0024 repair - see
@@ -81,48 +82,44 @@ async function runFullChain(conn: mysql.Connection) {
  * Cleanup failures here used to be silently swallowed (`.catch(() => {})`),
  * which could leave the shared test database dirty and turn one real
  * failure into a cascade of confusing, unrelated-looking failures in every
- * later test in this file. This now logs any cleanup failure loudly (never
- * swallowed silently) and retries once via a fresh connection that
- * independently re-verifies a live "SELECT DATABASE()" equals exactly
- * EXPECTED_TEST_DATABASE_NAME - the same guard connect()/
- * buildTestDbConnectionOptions() already enforces - before running the
- * migration chain again, so a bad first attempt can never cascade into a
- * destructive operation against the wrong database.
+ * later test in this file. This delegates the actual retry/throw control
+ * flow to restoreToFullyMigratedWithRetry() (see test-helpers/
+ * restoreWithEmergencyRetry.ts and its dedicated unit tests) so a cleanup
+ * failure is NEVER swallowed: it either resolves for real (primary or
+ * verified emergency retry both succeeded) or throws - preserving the
+ * primary failure - so this test is correctly reported as failed instead of
+ * silently leaving the shared database dirty for later tests.
  */
 async function restoreToFullyMigrated(conn: mysql.Connection): Promise<void> {
-  try {
-    await runFullChain(conn);
-    return;
-  } catch (firstError: any) {
-    console.error(
-      "[migration-0024 integration test] restoreToFullyMigrated: primary cleanup failed, attempting a verified emergency reset:",
-      firstError?.message ?? firstError
-    );
-  }
-
-  const emergencyConn = await connect();
-  if (!emergencyConn) {
-    console.error("[migration-0024 integration test] restoreToFullyMigrated: emergency reset skipped - no TEST_DATABASE_URL.");
-    return;
-  }
-  try {
-    const [rows]: any = await emergencyConn.query("SELECT DATABASE() AS name");
-    const liveName = rows?.[0]?.name;
-    if (liveName !== EXPECTED_TEST_DATABASE_NAME) {
-      throw new Error(
-        `Refusing emergency reset: live SELECT DATABASE() returned "${liveName ?? "(none)"}", not "${EXPECTED_TEST_DATABASE_NAME}".`
-      );
+  await restoreToFullyMigratedWithRetry(
+    () => runFullChain(conn),
+    {
+      connect,
+      queryLiveDatabaseName: async (emergencyConn) => {
+        const [rows]: any = await emergencyConn.query("SELECT DATABASE() AS name");
+        return rows?.[0]?.name ?? null;
+      },
+      runCleanup: runFullChain,
+      closeConnection: (emergencyConn) => emergencyConn.end(),
+      expectedDatabaseName: EXPECTED_TEST_DATABASE_NAME,
     }
-    await runFullChain(emergencyConn);
-    console.error("[migration-0024 integration test] restoreToFullyMigrated: emergency reset succeeded - database restored to fully migrated state.");
-  } catch (secondError: any) {
-    console.error(
-      "[migration-0024 integration test] restoreToFullyMigrated: emergency reset FAILED - the test database may be left dirty; " +
-        "subsequent tests in this file re-run the full chain themselves before asserting, but this failure needs direct investigation:",
-      secondError?.message ?? secondError
-    );
+  );
+}
+
+/**
+ * Every test's own finally block must close ITS connection (`conn`) even
+ * when restoreToFullyMigrated() throws - restoreToFullyMigratedWithRetry()
+ * now throws on real cleanup failure (see above), and a plain
+ * `await restoreToFullyMigrated(conn); await conn.end();` sequence would
+ * skip the second statement entirely if the first throws, leaking the
+ * connection. This wraps both so the connection is always released,
+ * regardless of whether cleanup ultimately succeeded.
+ */
+async function cleanupTestConnection(conn: mysql.Connection): Promise<void> {
+  try {
+    await restoreToFullyMigrated(conn);
   } finally {
-    await emergencyConn.end();
+    await conn.end();
   }
 }
 
@@ -157,8 +154,7 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
       expect(await tableExists(conn, "readingProgress")).toBe(true);
       expect(await columnExists(conn, "readingProgress", "currentChapterNumber")).toBe(true);
     } finally {
-      await restoreToFullyMigrated(conn!);
-      await conn!.end();
+      await cleanupTestConnection(conn!);
     }
   }, 60000);
 
@@ -184,8 +180,7 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
       expect(await tableExists(conn, "episodePurchases")).toBe(true);
       expect(await tableExists(conn, "readingProgress")).toBe(true);
     } finally {
-      await restoreToFullyMigrated(conn!);
-      await conn!.end();
+      await cleanupTestConnection(conn!);
     }
   }, 60000);
 
@@ -210,8 +205,7 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
       await expect(runFullChain(conn)).resolves.not.toThrow();
       expect(await columnExists(conn, "episodes", "content")).toBe(true);
     } finally {
-      await restoreToFullyMigrated(conn!);
-      await conn!.end();
+      await cleanupTestConnection(conn!);
     }
   }, 60000);
 
@@ -238,8 +232,7 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
       }
       expect(await columnType(conn, "episodes", "content")).toBe("mediumtext");
     } finally {
-      await restoreToFullyMigrated(conn!);
-      await conn!.end();
+      await cleanupTestConnection(conn!);
     }
   }, 60000);
 
@@ -259,8 +252,7 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
 
       expect(await columnExists(conn, "episodes", "content")).toBe(true);
     } finally {
-      await restoreToFullyMigrated(conn!);
-      await conn!.end();
+      await cleanupTestConnection(conn!);
     }
   }, 60000);
 
@@ -284,8 +276,7 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
       expect(await tableExists(conn, "readingProgress")).toBe(true);
       expect(await columnExists(conn, "readingProgress", "currentChapterNumber")).toBe(true);
     } finally {
-      await restoreToFullyMigrated(conn!);
-      await conn!.end();
+      await cleanupTestConnection(conn!);
     }
   }, 60000);
 
@@ -307,8 +298,7 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
         expect(await columnExists(conn, "readingProgress", col)).toBe(true);
       }
     } finally {
-      await restoreToFullyMigrated(conn!);
-      await conn!.end();
+      await cleanupTestConnection(conn!);
     }
   }, 60000);
 
@@ -334,8 +324,7 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
       expect(await tableExists(conn, "episodePurchases")).toBe(true);
       expect(await tableExists(conn, "readingProgress")).toBe(true);
     } finally {
-      await restoreToFullyMigrated(conn!);
-      await conn!.end();
+      await cleanupTestConnection(conn!);
     }
   }, 60000);
 
@@ -370,8 +359,7 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
         expect(await columnExists(conn, "readingProgress", column)).toBe(true);
       }
     } finally {
-      await restoreToFullyMigrated(conn!);
-      await conn!.end();
+      await cleanupTestConnection(conn!);
     }
   }, 60000);
 

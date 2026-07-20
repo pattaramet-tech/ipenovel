@@ -122,7 +122,7 @@ export async function runMigrationsWithLogging(
  * only), but this still avoids ever echoing a raw error object that could
  * carry driver-internal config data.
  */
-function sanitizeMigrationError(error: any): string {
+export function sanitizeMigrationError(error: any): string {
   if (!error) return "unknown error";
   const parts: string[] = [];
   if (error.code) parts.push(`code=${error.code}`);
