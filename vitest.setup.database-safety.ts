@@ -1,9 +1,13 @@
 // Runs as a globalSetup for BOTH the default/"unit" project (vitest.config.ts,
 // what `pnpm test` runs) and the integration project
 // (vitest.integration.config.ts) - a floor-level safety net, not the whole
-// guard. It does exactly one thing: if DATABASE_URL happens to be set to
-// anything that looks production-like, abort the ENTIRE test run before a
-// single test file loads.
+// guard. It does exactly one thing: if DATABASE_URL happens to be set to a
+// production-looking database NAME, abort the ENTIRE test run before a
+// single test file loads. Checks the database name only, not the host -
+// see testDatabaseGuard.ts's looksLikeProductionDatabase() docstring for
+// why (managed hosting providers like TiDB Cloud bake infra descriptors
+// such as "prod" into hostnames that say nothing about which database was
+// selected).
 //
 // Why this matters even for the "unit" project: ~80 pre-existing test files
 // in server/**/*.test.ts call server/db.ts's functions directly (which read

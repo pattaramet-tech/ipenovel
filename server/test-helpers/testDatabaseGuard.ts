@@ -22,13 +22,14 @@
 export const EXPECTED_TEST_DATABASE_NAME = "ipenovel_test";
 
 /**
- * Database/host names that must NEVER be treated as a test database. Kept
- * as an independent, cheap pre-check even though an exact match against
- * EXPECTED_TEST_DATABASE_NAME alone already rules these out by construction
- * - defense in depth against this constant ever being loosened back to a
- * pattern in the future without this blocklist being removed at the same
- * time. Matches a bounded segment (not a bare substring), so "prod" flags
- * "ipenovel_prod" but not e.g. a hypothetical "reproduce_test".
+ * Database NAME patterns that must NEVER be treated as a test database.
+ * Kept as an independent, cheap pre-check even though an exact match
+ * against EXPECTED_TEST_DATABASE_NAME alone already rules these out by
+ * construction - defense in depth against this constant ever being
+ * loosened back to a pattern in the future without this blocklist being
+ * removed at the same time. Matches a bounded segment (not a bare
+ * substring), so "prod" flags "ipenovel_prod" but not e.g. a hypothetical
+ * "reproduce_test".
  */
 const PRODUCTION_NAME_PATTERN = /(^|[^a-z0-9])(prod|production|live|master)([^a-z0-9]|$)/i;
 
@@ -69,13 +70,28 @@ export function isAllowedTestDatabaseName(databaseName: string): boolean {
 }
 
 /**
- * True if the database name OR host looks production-like. This is a
- * blocklist, checked independently of (and prioritized over) the allowlist
- * - a name can fail this check even if isAllowedTestDatabaseName would
- * otherwise pass, e.g. "ipenovel_test_prod_mirror".
+ * True if the database NAME looks production-like. This is a blocklist,
+ * checked independently of (and prioritized over) the allowlist - a name
+ * can fail this check even if isAllowedTestDatabaseName would otherwise
+ * pass, e.g. "ipenovel_test_prod_mirror".
+ *
+ * Deliberately checks parsed.databaseName ONLY, never parsed.host.
+ * Managed database providers routinely bake infrastructure descriptors
+ * into their hostnames that have nothing to do with which database was
+ * selected - e.g. TiDB Cloud's gateway hosts look like
+ * "gateway01.ap-southeast-1.prod.aws.tidbcloud.com", where "prod" means
+ * "production AWS region for TiDB Cloud's own infrastructure", not "this
+ * connection targets a production application database". Checking the
+ * host here previously rejected exactly that kind of legitimate,
+ * disposable-test-database connection string. The database NAME is the
+ * only part of the connection string that actually says which database
+ * will be queried, and it is additionally re-verified (independent of this
+ * function entirely) via a live "SELECT DATABASE()" query - see
+ * liveTestDatabaseCheck.ts - so dropping the host check does not weaken
+ * the overall guarantee.
  */
 export function looksLikeProductionDatabase(parsed: ParsedDatabaseUrl): boolean {
-  return PRODUCTION_NAME_PATTERN.test(parsed.databaseName) || PRODUCTION_NAME_PATTERN.test(parsed.host);
+  return PRODUCTION_NAME_PATTERN.test(parsed.databaseName);
 }
 
 export interface TestDatabaseUrlCheck {
@@ -107,7 +123,7 @@ export function checkTestDatabaseUrl(url: string | undefined | null): TestDataba
   if (looksLikeProductionDatabase(parsed)) {
     return {
       safe: false,
-      reason: `database name or host looks production-like ("${parsed.databaseName}" @ "${parsed.host}")`,
+      reason: `database name looks production-like ("${parsed.databaseName}")`,
       parsed,
     };
   }

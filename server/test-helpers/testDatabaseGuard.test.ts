@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 import {
   checkTestDatabaseUrl,
   assertSafeTestDatabaseUrl,
@@ -7,6 +9,19 @@ import {
   parseDatabaseUrl,
   redactDatabaseUrl,
 } from "./testDatabaseGuard";
+
+const repoRoot = path.resolve(__dirname, "..", "..");
+
+function codeOnly(source: string): string {
+  // Strips comments before a source-level check, so prose that merely
+  // *mentions* "process.env.DATABASE_URL" (explaining that it is
+  // deliberately not used) doesn't false-positive against the check.
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .map((line) => line.replace(/\/\/.*$/, ""))
+    .join("\n");
+}
 
 /**
  * Pure logic, no DB connection anywhere in this file - every one of these
@@ -70,10 +85,21 @@ describe("looksLikeProductionDatabase", () => {
     expect(looksLikeProductionDatabase({ host: "h", port: "3306", databaseName: "ipenovel_live" })).toBe(true);
   });
 
-  it("flags a production-sounding host even if the database name looks like a test DB", () => {
+  it("does NOT flag a production-sounding host when the database name is safe (managed-hosting infra hostnames)", () => {
+    // TiDB Cloud's real gateway hostname shape - "prod" here describes
+    // TiDB Cloud's own AWS region/infrastructure, not the selected
+    // application database. This was a real false-positive this project
+    // hit in production use.
+    expect(
+      looksLikeProductionDatabase({
+        host: "gateway01.ap-southeast-1.prod.aws.tidbcloud.com",
+        port: "4000",
+        databaseName: "ipenovel_test",
+      })
+    ).toBe(false);
     expect(
       looksLikeProductionDatabase({ host: "prod-db.internal.example.com", port: "3306", databaseName: "ipenovel_test" })
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("does not flag an ordinary test database", () => {
@@ -89,8 +115,8 @@ describe("checkTestDatabaseUrl / assertSafeTestDatabaseUrl - the actual PART B g
     expect(checkTestDatabaseUrl("   ").safe).toBe(false);
   });
 
-  it("rejects a production-looking URL even if it would otherwise parse fine", () => {
-    const result = checkTestDatabaseUrl("mysql://app:pw@prod-mysql.railway.internal:3306/ipenovel");
+  it("rejects a production-NAMED database even if it would otherwise parse fine", () => {
+    const result = checkTestDatabaseUrl("mysql://app:pw@localhost:3306/ipenovel_prod");
     expect(result.safe).toBe(false);
     expect(result.reason).toMatch(/production/i);
   });
@@ -106,10 +132,60 @@ describe("checkTestDatabaseUrl / assertSafeTestDatabaseUrl - the actual PART B g
     expect(result.parsed?.databaseName).toBe("ipenovel_test");
   });
 
+  it("accepts the real TiDB Cloud gateway hostname with database name ipenovel_test (regression: was previously rejected solely for the host containing 'prod')", () => {
+    const result = checkTestDatabaseUrl(
+      "mysql://app:pw@gateway01.ap-southeast-1.prod.aws.tidbcloud.com:4000/ipenovel_test"
+    );
+    expect(result.safe).toBe(true);
+    expect(result.parsed?.host).toBe("gateway01.ap-southeast-1.prod.aws.tidbcloud.com");
+    expect(result.parsed?.databaseName).toBe("ipenovel_test");
+  });
+
+  it("rejects a database named ipenovel_prod", () => {
+    expect(checkTestDatabaseUrl("mysql://app:pw@localhost:3306/ipenovel_prod").safe).toBe(false);
+  });
+
+  it("rejects a database literally named 'production'", () => {
+    expect(checkTestDatabaseUrl("mysql://app:pw@localhost:3306/production").safe).toBe(false);
+  });
+
+  it("rejects a database named ipenovel_test_backup (superset of the exact name is still not the exact name)", () => {
+    const result = checkTestDatabaseUrl("mysql://app:pw@localhost:3306/ipenovel_test_backup");
+    expect(result.safe).toBe(false);
+    expect(result.parsed?.databaseName).toBe("ipenovel_test_backup");
+  });
+
+  it.each([
+    "ipenovel",
+    "ipenovel_prod",
+    "ipenovel_production",
+    "ipenovel_live",
+    "ipenovel_master",
+    "ipenovel_test_backup",
+    "ipenovel_test2",
+    "ipenoveltest",
+    "IPENOVEL_TEST",
+    "test",
+    "ci",
+    "",
+  ])("rejects any database name other than the exact literal 'ipenovel_test': %s", (databaseName) => {
+    const url = `mysql://app:pw@localhost:3306/${databaseName}`;
+    expect(checkTestDatabaseUrl(url).safe).toBe(false);
+  });
+
+  it("missing TEST_DATABASE_URL fails closed (undefined, null, empty, whitespace-only)", () => {
+    for (const value of [undefined, null, "", "   "]) {
+      const result = checkTestDatabaseUrl(value);
+      expect(result.safe).toBe(false);
+      expect(result.parsed).toBeNull();
+    }
+  });
+
   it("assertSafeTestDatabaseUrl throws (never silently continues) for anything unsafe", () => {
     expect(() => assertSafeTestDatabaseUrl(undefined)).toThrow();
     expect(() => assertSafeTestDatabaseUrl("mysql://app:pw@localhost/ipenovel")).toThrow();
     expect(() => assertSafeTestDatabaseUrl("mysql://app:pw@localhost/ipenovel_production")).toThrow();
+    expect(() => assertSafeTestDatabaseUrl("mysql://app:pw@localhost/ipenovel_test_backup")).toThrow();
   });
 
   it("assertSafeTestDatabaseUrl's thrown message never contains the raw connection string or credentials", () => {
@@ -127,6 +203,56 @@ describe("checkTestDatabaseUrl / assertSafeTestDatabaseUrl - the actual PART B g
   it("assertSafeTestDatabaseUrl returns the parsed URL when safe", () => {
     const parsed = assertSafeTestDatabaseUrl("mysql://app:pw@localhost:3306/ipenovel_test");
     expect(parsed.databaseName).toBe("ipenovel_test");
+  });
+});
+
+describe("DATABASE_URL is never read or modified by test setup (static source checks)", () => {
+  const filesThatMustNeverTouchDatabaseUrl = [
+    "server/test-helpers/testDatabaseGuard.ts",
+    "server/test-helpers/testDb.ts",
+    "server/test-helpers/liveTestDatabaseCheck.ts",
+    "server/test-helpers/resetTestDatabase.ts",
+    "vitest.integration.globalsetup.ts",
+    "scripts/migrate-test-db.ts",
+    "scripts/test-db-prepare.ts",
+  ];
+
+  it.each(filesThatMustNeverTouchDatabaseUrl)("%s never reads or writes process.env.DATABASE_URL", (relativePath) => {
+    const source = fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
+    expect(codeOnly(source)).not.toMatch(/process\.env\.DATABASE_URL/);
+  });
+
+  it("checkTestDatabaseUrl/assertSafeTestDatabaseUrl never read process.env directly - they only inspect the URL argument passed to them", () => {
+    // Regression for the specific failure mode this task guards against:
+    // a guard function that reaches into process.env itself (rather than
+    // taking the connection string as an explicit argument) is one
+    // refactor away from silently falling back to DATABASE_URL.
+    const source = codeOnly(fs.readFileSync(path.join(repoRoot, "server/test-helpers/testDatabaseGuard.ts"), "utf8"));
+    expect(source).not.toMatch(/process\.env/);
+  });
+});
+
+describe("a safe URL still requires the independent live SELECT DATABASE() check", () => {
+  it("checkTestDatabaseUrl/assertSafeTestDatabaseUrl are synchronous and never open a database connection themselves", () => {
+    // Proves these functions cannot, by construction, satisfy "the
+    // database was verified" on their own - assertSafeTestDatabaseUrl
+    // returns synchronously (no Promise, no I/O), so a caller that stops
+    // after this check alone has not actually connected to anything yet.
+    // See server/test-helpers/liveTestDatabaseCheck.test.ts for the
+    // matching proof that the live query independently rejects a mismatch
+    // even when this URL-string check alone would have passed.
+    const result = checkTestDatabaseUrl("mysql://app:pw@localhost:3306/ipenovel_test");
+    expect(result).not.toBeInstanceOf(Promise);
+    expect(result.safe).toBe(true);
+
+    const parsed = assertSafeTestDatabaseUrl("mysql://app:pw@localhost:3306/ipenovel_test");
+    expect(parsed).not.toBeInstanceOf(Promise);
+  });
+
+  it("vitest.integration.globalsetup.ts calls the live check (ensureVerifiedTestDb) in addition to the URL-string check, not instead of it", () => {
+    const source = fs.readFileSync(path.join(repoRoot, "vitest.integration.globalsetup.ts"), "utf8");
+    expect(source).toMatch(/assertSafeTestDatabaseUrl/);
+    expect(source).toMatch(/ensureVerifiedTestDb/);
   });
 });
 
