@@ -223,6 +223,8 @@ describe("DATABASE_URL is never read or modified by test setup (static source ch
     "scripts/test-db-prepare.ts",
     "scripts/test-ci.ts",
     "server/migration-0027-idempotency.integration.test.ts",
+    "server/migration-0024-episode-schema-repair.integration.test.ts",
+    "server/test-helpers/migrateTestDbWithLogging.ts",
   ];
 
   it.each(filesThatMustNeverTouchDatabaseUrl)("%s never reads or writes process.env.DATABASE_URL", (relativePath) => {

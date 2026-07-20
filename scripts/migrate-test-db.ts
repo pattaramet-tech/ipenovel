@@ -17,8 +17,11 @@
 //      (server/test-helpers/liveTestDatabaseCheck.ts) and refuses to
 //      proceed unless it is exactly "ipenovel_test".
 //   4. Only after both checks pass, applies already-committed migrations
-//      (drizzle-orm's programmatic migrator, same mechanism as
-//      scripts/migrate.mjs - never `drizzle-kit generate`).
+//      via server/test-helpers/migrateTestDbWithLogging.ts - a logged
+//      reimplementation of drizzle-orm's exact resume/skip semantics
+//      (never `drizzle-kit generate`) that reports which migration tag is
+//      being attempted/completed/failed. Production (scripts/migrate.mjs)
+//      is unchanged and still uses drizzle-orm's own opaque migrate().
 //   5. Uses the same GET_LOCK/RELEASE_LOCK pattern as scripts/migrate.mjs so
 //      two concurrent test:db:prepare runs against the same test database
 //      can't race on DDL.
@@ -30,12 +33,12 @@
 // test database with "Connections using insecure transport are prohibited".
 import mysql from "mysql2";
 import { drizzle } from "drizzle-orm/mysql2";
-import { migrate } from "drizzle-orm/mysql2/migrator";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { redactDatabaseUrl } from "../server/test-helpers/testDatabaseGuard";
 import { assertLiveTestDatabaseName } from "../server/test-helpers/liveTestDatabaseCheck";
 import { buildTestDbConnectionOptions } from "../server/test-helpers/testDbConnectionOptions";
+import { runMigrationsWithLogging, consoleMigrationLogger } from "../server/test-helpers/migrateTestDbWithLogging";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const migrationsFolder = path.join(__dirname, "..", "drizzle");
@@ -96,7 +99,7 @@ export async function runTestDbMigration(): Promise<void> {
     lockAcquired = true;
 
     console.log("[migrate-test-db] Lock acquired. Applying committed migrations...");
-    await migrate(db, { migrationsFolder });
+    await runMigrationsWithLogging(conn, migrationsFolder, consoleMigrationLogger("[migrate-test-db]"));
     console.log("[migrate-test-db] Done - test database schema is up to date.");
   } finally {
     if (lockAcquired) {
