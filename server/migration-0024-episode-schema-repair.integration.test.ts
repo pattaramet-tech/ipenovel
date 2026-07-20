@@ -5,6 +5,7 @@ import path from "node:path";
 import mysql from "mysql2/promise";
 import { buildTestDbConnectionOptions } from "./test-helpers/testDbConnectionOptions";
 import { runMigrationsWithLogging, consoleMigrationLogger, readMigrationJournal } from "./test-helpers/migrateTestDbWithLogging";
+import { EXPECTED_TEST_DATABASE_NAME } from "./test-helpers/testDatabaseGuard";
 
 /**
  * Real-database coverage for the migration 0024 repair - see
@@ -72,9 +73,57 @@ async function runFullChain(conn: mysql.Connection) {
   await runMigrationsWithLogging(conn, migrationsFolder, consoleMigrationLogger("[integration-test]"));
 }
 
-/** Fully restores episodes/episodePurchases/readingProgress to the complete, correct end state - always run in a finally block regardless of what a test intentionally broke. */
-async function restoreToFullyMigrated(conn: mysql.Connection) {
-  await runFullChain(conn).catch(() => {});
+/**
+ * Fully restores episodes/episodePurchases/readingProgress to the complete,
+ * correct end state - always run in a finally block regardless of what a
+ * test intentionally broke.
+ *
+ * Cleanup failures here used to be silently swallowed (`.catch(() => {})`),
+ * which could leave the shared test database dirty and turn one real
+ * failure into a cascade of confusing, unrelated-looking failures in every
+ * later test in this file. This now logs any cleanup failure loudly (never
+ * swallowed silently) and retries once via a fresh connection that
+ * independently re-verifies a live "SELECT DATABASE()" equals exactly
+ * EXPECTED_TEST_DATABASE_NAME - the same guard connect()/
+ * buildTestDbConnectionOptions() already enforces - before running the
+ * migration chain again, so a bad first attempt can never cascade into a
+ * destructive operation against the wrong database.
+ */
+async function restoreToFullyMigrated(conn: mysql.Connection): Promise<void> {
+  try {
+    await runFullChain(conn);
+    return;
+  } catch (firstError: any) {
+    console.error(
+      "[migration-0024 integration test] restoreToFullyMigrated: primary cleanup failed, attempting a verified emergency reset:",
+      firstError?.message ?? firstError
+    );
+  }
+
+  const emergencyConn = await connect();
+  if (!emergencyConn) {
+    console.error("[migration-0024 integration test] restoreToFullyMigrated: emergency reset skipped - no TEST_DATABASE_URL.");
+    return;
+  }
+  try {
+    const [rows]: any = await emergencyConn.query("SELECT DATABASE() AS name");
+    const liveName = rows?.[0]?.name;
+    if (liveName !== EXPECTED_TEST_DATABASE_NAME) {
+      throw new Error(
+        `Refusing emergency reset: live SELECT DATABASE() returned "${liveName ?? "(none)"}", not "${EXPECTED_TEST_DATABASE_NAME}".`
+      );
+    }
+    await runFullChain(emergencyConn);
+    console.error("[migration-0024 integration test] restoreToFullyMigrated: emergency reset succeeded - database restored to fully migrated state.");
+  } catch (secondError: any) {
+    console.error(
+      "[migration-0024 integration test] restoreToFullyMigrated: emergency reset FAILED - the test database may be left dirty; " +
+        "subsequent tests in this file re-run the full chain themselves before asserting, but this failure needs direct investigation:",
+      secondError?.message ?? secondError
+    );
+  } finally {
+    await emergencyConn.end();
+  }
 }
 
 const journal = readMigrationJournal(migrationsFolder);
@@ -334,6 +383,26 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
     // never touches or corrupts the real repo migration files - proves the
     // exact resume/skip property this task cares about using a deliberately
     // broken migration, without risking the real chain.
+    //
+    // The synthetic entries' `when` values must be strictly greater than
+    // BOTH the highest timestamp in the repo's own journal AND whatever is
+    // currently the live high-water mark in this shared database's
+    // __drizzle_migrations table. Hardcoded small values like `when: 1`/
+    // `when: 2` are invalid here: this table's real high-water mark is
+    // already far larger (every real migration in drizzle/meta/_journal.json
+    // has already run against this database via runFullChain() in earlier
+    // tests), so drizzle's resume logic - "pending if
+    // lastMigration.created_at < entry.when" - would see both synthetic
+    // entries as already-in-the-past and skip them entirely, meaning the
+    // intentionally invalid SQL in tag2 would never even be attempted and
+    // this test would pass for the wrong reason.
+    const repositoryJournalMax = Math.max(...journal.map((entry) => entry.when));
+    const [liveMaxRows]: any = await conn.query(`SELECT MAX(created_at) as latest FROM \`__drizzle_migrations\``);
+    const liveDatabaseMax = Number(liveMaxRows[0]?.latest ?? 0);
+    const syntheticBaseWhen = Math.max(repositoryJournalMax, liveDatabaseMax) + 1000; // safe positive offset, clear of both watermarks
+    const when1 = syntheticBaseWhen;
+    const when2 = syntheticBaseWhen + 1;
+
     const tmpFolder = fs.mkdtempSync(path.join(os.tmpdir(), "ipenovel-migration-failure-test-"));
     const tag1 = "0000_synthetic_ok";
     const tag2 = "0001_synthetic_broken";
@@ -345,8 +414,8 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
           version: "5",
           dialect: "mysql",
           entries: [
-            { idx: 0, version: "5", when: 1, tag: tag1, breakpoints: true },
-            { idx: 1, version: "5", when: 2, tag: tag2, breakpoints: true },
+            { idx: 0, version: "5", when: when1, tag: tag1, breakpoints: true },
+            { idx: 1, version: "5", when: when2, tag: tag2, breakpoints: true },
           ],
         })
       );
@@ -355,16 +424,24 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
 
       await expect(runMigrationsWithLogging(conn, tmpFolder, consoleMigrationLogger("[integration-test]"))).rejects.toThrow();
 
-      const [rows]: any = await conn.query(`SELECT hash, created_at FROM \`__drizzle_migrations\` WHERE created_at IN (1, 2)`);
+      // The first synthetic migration ran and was recorded; the second ran and failed, and got no record.
+      const [rows]: any = await conn.query(
+        `SELECT hash, created_at FROM \`__drizzle_migrations\` WHERE created_at IN (${when1}, ${when2})`
+      );
       expect(rows.length).toBe(1); // only the first (successful) migration was recorded
-      expect(Number(rows[0].created_at)).toBe(1);
+      expect(Number(rows[0].created_at)).toBe(when1);
 
       const [tableRows]: any = await conn.query(
         `SELECT COUNT(*) as cnt FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'ipenovel_synthetic_ok'`
       );
       expect(Number(tableRows[0].cnt)).toBe(1); // the successful migration's DDL really ran
+
+      // The journal's resume high-water mark does not advance past the failed migration.
+      const [finalMaxRows]: any = await conn.query(`SELECT MAX(created_at) as latest FROM \`__drizzle_migrations\``);
+      expect(Number(finalMaxRows[0].latest)).toBe(when1);
     } finally {
-      await conn.query(`DELETE FROM \`__drizzle_migrations\` WHERE created_at IN (1, 2)`).catch(() => {});
+      // Cleanup deletes only these exact synthetic timestamps - never a range - so it can never touch real migration history.
+      await conn.query(`DELETE FROM \`__drizzle_migrations\` WHERE created_at IN (${when1}, ${when2})`).catch(() => {});
       await conn.query("DROP TABLE IF EXISTS `ipenovel_synthetic_ok`").catch(() => {});
       fs.rmSync(tmpFolder, { recursive: true, force: true });
       await conn.end();
