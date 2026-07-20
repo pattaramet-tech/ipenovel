@@ -115,7 +115,7 @@ export default function Navbar() {
                   className="flex items-center gap-2 px-4 py-2 rounded-full text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium transition text-sm"
                 >
                   <UserIcon className="w-4 h-4" />
-                  {t("nav.profile")}
+                  {t("nav.profile") || "โปรไฟล์"}
                 </button>
                 <button
                   onClick={handleLogout}
@@ -216,7 +216,7 @@ export default function Navbar() {
                     className="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium transition text-sm"
                   >
                     <UserIcon className="w-4 h-4" />
-                    {t("nav.profile")}
+                    {t("nav.profile") || "โปรไฟล์"}
                   </button>
                   <button
                     onClick={handleLogout}

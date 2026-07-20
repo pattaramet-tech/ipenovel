@@ -1,6 +1,8 @@
 import * as db from "../db";
+import { sportsMatchRewards } from "../../drizzle/schema";
 
 import { ApprovalService } from "./approvalService";
+import { eq } from "drizzle-orm";
 import { normalizeMoneyAmount, formatMoney } from "../helpers/moneyNormalizer";
 
 /**
@@ -33,28 +35,41 @@ export async function validateAndApplyCoupon(couponCode: string, subtotal: strin
     throw new Error("Coupon not found");
   }
 
-  // Check if this is a reward coupon (sports match win or daily check-in)
-  // and enforce ownership + status. getRewardCouponOwnership checks every
-  // known reward-tracking table - see docs/DAILY_CHECKIN_COUPON.md PART A.
+  // Check if this is a reward coupon and enforce ownership + status
   if (userId && coupon.id) {
-    const ownership = await db.getRewardCouponOwnership(coupon.id, tx);
+    const dbInstance = tx || (await db.getDb());
+    if (dbInstance) {
+      // Check if this coupon is a reward coupon
+      const rewards = await dbInstance
+        .select()
+        .from(sportsMatchRewards)
+        .where(eq(sportsMatchRewards.couponId, coupon.id))
+        .limit(1);
 
-    if (ownership) {
-      // Enforce ownership: reward coupon must belong to this user
-      if (ownership.userId !== userId) {
-        throw new Error("This coupon belongs to another user");
-      }
+      if (rewards.length > 0) {
+        const reward = rewards[0];
 
-      // Enforce one-time use: reward coupon must be in "issued" status
-      if (ownership.status !== "issued") {
-        if (ownership.status === "used") {
+        // Enforce ownership: reward coupon must belong to this user
+        if (reward.userId !== userId) {
+          throw new Error("This coupon belongs to another user");
+        }
+
+        // Enforce one-time use: reward coupon must be in "issued" status
+        if (reward.status !== "issued") {
+          if (reward.status === "used") {
+            throw new Error("This reward coupon has already been used");
+          } else if (reward.status === "expired") {
+            throw new Error("This reward coupon has expired");
+          } else if (reward.status === "void") {
+            throw new Error("This reward coupon has been cancelled");
+          } else {
+            throw new Error(`Invalid reward coupon status: ${reward.status}`);
+          }
+        }
+
+        // Double-check: if usedAt is set, reject even if status says issued
+        if (reward.usedAt) {
           throw new Error("This reward coupon has already been used");
-        } else if (ownership.status === "expired") {
-          throw new Error("This reward coupon has expired");
-        } else if (ownership.status === "void") {
-          throw new Error("This reward coupon has been cancelled");
-        } else {
-          throw new Error(`Invalid reward coupon status: ${ownership.status}`);
         }
       }
     }
@@ -95,15 +110,7 @@ export async function validateAndApplyCoupon(couponCode: string, subtotal: strin
   if (coupon.discountType === "flat") {
     discountAmount = formatMoney(Math.min(subtotalNum, discountValue), "discountAmount");
   } else if (coupon.discountType === "percentage") {
-    let percentDiscount = (subtotalNum * discountValue) / 100;
-    // maxDiscountAmount is nullable - only applied when the coupon actually
-    // has a cap set (e.g. the daily check-in reward: "5% off, capped at
-    // ฿10"). Every coupon created before this column existed has it as
-    // NULL, so this branch never changes their computed discount.
-    if (coupon.maxDiscountAmount != null) {
-      const cap = normalizeMoneyAmount(coupon.maxDiscountAmount, "maxDiscountAmount");
-      percentDiscount = Math.min(percentDiscount, cap);
-    }
+    const percentDiscount = (subtotalNum * discountValue) / 100;
     discountAmount = formatMoney(percentDiscount, "percentDiscount");
   }
 
@@ -364,11 +371,8 @@ export async function finalizeOrderCompletion(orderId: number, userId: number, t
     const coupon = await db.getCouponByCode(order.couponCodeSnapshot, tx);
     if (coupon) {
       await db.recordCouponUsage(coupon.id, userId, orderId, tx);
-      // Update reward coupon status if this is a reward coupon (sports
-      // match win or daily check-in) - each is a no-op if the coupon isn't
-      // that reward type, so both are safe to call unconditionally.
+      // Update sports reward coupon status if this is a reward coupon
       await db.markSportsRewardCouponUsed(coupon.id, userId, tx);
-      await db.markDailyCheckinCouponUsed(coupon.id, userId, tx);
     }
   }
 }

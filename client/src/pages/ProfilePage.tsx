@@ -10,7 +10,6 @@ import { Loader2, BookOpen, ChevronDown, ChevronUp, Wallet, Clock, Mail, User } 
 import { useState, useMemo } from "react";
 import { formatEpisodeLabel, compareEpisodes } from "@/utils/episodeUtils";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
-import DailyCheckinCard from "@/components/DailyCheckinCard";
 
 export default function ProfilePage() {
   useDocumentHead({ robots: "noindex,nofollow" });
@@ -79,13 +78,6 @@ export default function ProfilePage() {
         <div className="mb-8">
           <h1 className="text-4xl font-bold text-slate-900">โปรไฟล์ของฉัน</h1>
         </div>
-
-        {/* Daily Check-in - moved here from Home (see
-            docs/DAILY_CHECKIN_DEPLOYMENT_FIX.md PART C). Only reachable past
-            the `if (!user) return ...` guard above, so its own
-            dailyCheckin.getStatus query is never fired for a signed-out
-            visitor. */}
-        <DailyCheckinCard />
 
         {/* Personal Info Section */}
         <Card className="p-6 mb-8">
