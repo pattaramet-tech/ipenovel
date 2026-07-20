@@ -3,6 +3,17 @@
 Status: **design only — no implementation code in this commit.**
 Branch: `feature/daily-checkin-dynamic-rewards`, based on `fix/daily-checkin-safe` @ `b320a3dd11f83e09b65123c357b920727f94e4f5`.
 
+**Amendment 1** (this revision, starting commit `ba2d885b19678e084df73472029c4261f1d7fa00`):
+five corrections applied before implementation begins — reward-level
+coupon status (not parent-row status), a server-generated `dedupeKey` for
+rule deduplication (replacing a unique index that NULLs would defeat),
+strict in-memory point-balance sequencing, a `draft`/`active`/`ended`
+campaign lifecycle (replacing the ambiguous `isActive` boolean), and
+immutability of dates/rules/templates once a campaign has any check-in.
+Eleven product decisions that were previously open are now locked (see
+"Locked product decisions" below). The implementation plan is regrouped
+into five major stages.
+
 This document audits the existing hardcoded, coupon-only daily check-in
 system and proposes a fully admin-configurable replacement supporting
 points, coupons, streak milestones (one-time and repeating), and immutable
@@ -35,6 +46,11 @@ always produces exactly one coupon.** There is no concept of points, no
 streak, no milestone, and `campaignKey` is a free-text string that is never
 actually varied — every row today has `campaignKey = "default"`
 (`server/db.ts:4398`, `const DAILY_CHECKIN_CAMPAIGN_KEY = "default"`).
+
+**Amendment 1 finding**: this table's `status`/`usedAt` describe the fate of
+the check-in's *one* coupon, which is exactly why keeping status here breaks
+once a check-in can issue multiple coupons — redeeming one must not look
+like redeeming all of them. See Correction 1 (PART A/I) below.
 
 ### `coupons` / `couponUsages` (drizzle/schema.ts:431-482)
 
@@ -78,6 +94,15 @@ implementation. **The new point-reward grants must reuse this exact
 lock-then-read-then-write sequence inside the check-in's own transaction —
 it must not invent a new concurrency mechanism.**
 
+**Amendment 1 finding**: `getUserPointsBalance`'s `ORDER BY createdAt DESC
+LIMIT 1` has no tie-breaker. `timestamp` columns can share the same value
+across two rows inserted in rapid succession within one transaction (the
+exact situation a check-in granting two point rewards creates), making
+"most recent" ambiguous without a secondary sort key. See Correction 3
+(PART H) — the new claim engine avoids this entirely by never re-reading
+balance between grants, and this audit separately recommends fixing the
+general-purpose query too.
+
 ### Daily check-in API (`server/db.ts:4396-4640`, `server/routers.ts:816-853`)
 
 - `getEffectiveDailyCheckinConfig()` / `DEFAULT_DAILY_CHECKIN_CONFIG`
@@ -101,7 +126,8 @@ it must not invent a new concurrency mechanism.**
 - `getDailyCheckinStatus(userId)` — read-only status/reward-summary query.
 - `markDailyCheckinCouponUsed(couponId, userId, tx)` — flips
   `dailyCheckins.status` to `"used"` when the coupon is redeemed at
-  checkout (called from the order flow, not shown above).
+  checkout (called from the order flow, not shown above). **Amendment 1**:
+  this must move to updating the matched grant row instead — see PART I.
 - tRPC (`server/routers.ts:822-853`): `dailyCheckin.getStatus` is
   `publicProcedure` (returns `{authenticated: false}` for anonymous
   visitors instead of throwing); `dailyCheckin.claim` is `protectedProcedure`.
@@ -170,7 +196,7 @@ single-campaign* parts are what get replaced.
 
 ## A. Proposed database tables and columns
 
-### `dailyCheckinCampaigns` (new)
+### `dailyCheckinCampaigns` (new) — Correction 4 applied
 
 ```
 id            int PK autoincrement
@@ -180,14 +206,32 @@ description   text nullable
 timezone      varchar(50) not null default "Asia/Bangkok"
 startDate     varchar(10) not null           -- "YYYY-MM-DD", Bangkok calendar date, inclusive
 endDate       varchar(10) not null           -- inclusive
-isActive      boolean not null default true  -- admin on/off switch, independent of date range
+status        enum("draft","active","ended") not null default "draft"
 createdBy     int nullable                   -- admin userId, audit trail
 createdAt     timestamp default now() not null
 updatedAt     timestamp default now() on update now() not null
 
 UNIQUE (campaignKey)
-INDEX  (isActive, startDate, endDate)          -- "find the active campaign for today"
+INDEX  (status, startDate, endDate)          -- "which campaign is active today" lookup
 ```
+
+The previous `isActive boolean` is **replaced**, not supplemented, by
+`status`. A boolean cannot distinguish "never launched" from "launched and
+later paused" from "finished on schedule" — all three need different
+editability rules (PART J) and none of them should ever look like the
+others in an audit trail. Lifecycle:
+
+- `draft` — fully editable (dates, rules, templates, name, description).
+  Can transition to `active` exactly once.
+- `active` — inside its Bangkok date range, claimable. Can transition to
+  `ended` ("end early"). Cannot transition back to `draft`.
+- `ended` — terminal. Never reactivated, never transitions anywhere else.
+  This is Locked decision 6 (below): deactivation is permanent.
+
+Only `status = "active"` campaigns whose Bangkok date range contains
+`checkinDate` are claimable — a `draft` campaign (even one whose dates
+technically overlap "today") is never claimable, and neither is an `ended`
+one whose dates haven't technically elapsed yet (e.g. ended early).
 
 `timezone` is stored but the application enforces `"Asia/Bangkok"` only in
 v1 (rejects any other value) — this avoids a schema change if multi-region
@@ -214,13 +258,19 @@ createdAt/updatedAt timestamps
 INDEX (campaignId)
 ```
 
+Unchanged by this amendment, except its editability is now explicitly tied
+to the owning campaign's lifecycle (Correction 5, PART J/L): a template may
+be created/edited freely while its campaign is `draft`, and becomes
+permanently frozen the moment that campaign has any `dailyCheckins` row —
+regardless of the campaign's own `status`.
+
 This is exactly today's `DailyCheckinCampaignConfig` shape, moved from one
 global JSON blob into a relational, per-campaign, admin-editable row. A
 template is **parameters used to mint a fresh coupon at grant time** — never
 a real, pre-existing `coupons.id`. Real `coupons` rows continue to be
 created one-per-grant, exactly as today (see PART I).
 
-### `dailyCheckinRewardRules` (new — the configurable reward model)
+### `dailyCheckinRewardRules` (new — the configurable reward model) — Correction 2 applied
 
 ```
 id                int PK autoincrement
@@ -231,13 +281,47 @@ milestoneDay      int nullable              -- required iff ruleType="milestone"
 repeatEvery       int nullable              -- milestone only: if set, fires every N days (e.g. 10) instead of once
 pointsAmount      decimal(10,2) nullable    -- required iff rewardKind="points"
 couponTemplateId  int nullable              -- FK: dailyCheckinCouponTemplates.id, required iff rewardKind="coupon"
+dedupeKey         varchar(120) not null     -- SERVER-GENERATED ONLY, see below
 isActive          boolean not null default true  -- disable one rule without touching the whole campaign
-sortOrder         int not null default 0    -- admin display ordering only
+sortOrder         int not null default 0    -- admin display ordering AND point-grant sequencing tiebreaker (Correction 3)
 createdAt/updatedAt timestamps
 
-UNIQUE (campaignId, ruleType, milestoneDay, rewardKind)
+UNIQUE (campaignId, dedupeKey)
 INDEX  (campaignId, isActive)
 ```
+
+**Correction 2 — why the old constraint is wrong and what replaces it**:
+the original `UNIQUE(campaignId, ruleType, milestoneDay, rewardKind)` is
+unsound because `milestoneDay` is `NULL` for every `ruleType="daily"` rule,
+and MySQL/TiDB unique indexes treat each `NULL` as distinct from every other
+`NULL` — two "daily points" rules in the same campaign would both insert
+successfully, silently double-granting points every day. A `NULL`-bearing
+column can never be load-bearing in a uniqueness constraint here.
+
+The replacement is a single **server-computed, deterministic** string
+column, never accepted from a client request body (the server recomputes it
+from the validated rule fields and discards any client-supplied value —
+this is a hard rule, not a convenience):
+
+```
+daily:points
+daily:coupon
+milestone:<milestoneDay>:once:<rewardKind>
+milestone:<milestoneDay>:repeat:<repeatEvery>:<rewardKind>
+```
+
+Examples: `daily:points`, `daily:coupon`, `milestone:10:once:points`,
+`milestone:10:repeat:10:points`, `milestone:7:once:coupon`.
+
+`UNIQUE(campaignId, dedupeKey)` then directly enforces v1's exact limits:
+
+- at most **one** daily points rule per campaign (`daily:points` collides)
+- at most **one** daily coupon rule per campaign (`daily:coupon` collides)
+- at most **one** rule for each exact `(milestoneDay, once-or-repeat-N,
+  rewardKind)` combination — e.g. `milestone:10:once:points` and
+  `milestone:10:repeat:10:points` are *different* keys and could both be
+  inserted; this is caught separately (see validation below), not by the
+  unique index.
 
 Application-level invariants (validated in code, not DB `CHECK` — see PART C
 for why):
@@ -246,13 +330,18 @@ for why):
 - `rewardKind="points"` ⇒ `pointsAmount IS NOT NULL AND pointsAmount > 0`
 - `rewardKind="coupon"` ⇒ `couponTemplateId IS NOT NULL`, and that template's
   `campaignId` must equal this rule's `campaignId`
+- **new**: a given `(milestoneDay, rewardKind)` pair must not be configured
+  as *both* a one-time (`repeatEvery IS NULL`) and a repeating
+  (`repeatEvery IS NOT NULL`) rule at the same time — the unique index
+  alone does not catch this (their `dedupeKey`s differ by design), so it is
+  an explicit extra validation check at rule-creation time (PART C).
 
 A milestone with both a points bonus *and* a coupon bonus (capability 4 in
 combination with 3) is modeled as **two rule rows sharing the same
-`milestoneDay`** with different `rewardKind` — permitted by the unique
-constraint above since `rewardKind` differs.
+`milestoneDay`** with different `rewardKind` — permitted since their
+`dedupeKey`s differ only in the trailing `<rewardKind>` segment.
 
-### `dailyCheckinRewardGrants` (new — the immutable snapshot / reward ledger)
+### `dailyCheckinRewardGrants` (new — the immutable snapshot / reward ledger) — Correction 1 applied
 
 This is the single, universal reward representation the task requires
 instead of reusing `couponId`:
@@ -275,6 +364,9 @@ discountType          enum("flat","percentage") nullable  -- SNAPSHOT of the min
 discountValue         decimal(10,2) nullable               -- SNAPSHOT
 maxDiscountAmount     decimal(10,2) nullable               -- SNAPSHOT
 minPurchaseAmount     decimal(10,2) nullable               -- SNAPSHOT
+status                enum("granted","used","void") not null default "granted"  -- NEW, reward-level
+usedAt                timestamp nullable     -- NEW
+voidedAt              timestamp nullable     -- NEW, optional, for future audit tooling
 createdAt             timestamp default now() not null
 
 UNIQUE (dailyCheckinId, ruleId)                       -- guarantee 1 (below)
@@ -282,14 +374,36 @@ UNIQUE (userId, ruleId, milestoneInstanceNumber)      -- guarantee 2 (below)
 INDEX  (campaignId)
 INDEX  (pointsTransactionId)
 INDEX  (couponId)
+INDEX  (status)
 ```
+
+**Correction 1 — reward-level status, not parent-row status**: the previous
+design left `used`/`void` status on the parent `dailyCheckins` row, which
+is wrong the moment a single check-in can issue more than one coupon (a
+daily coupon *and* a milestone coupon on the same day) — marking the check-in
+"used" when only one of its two coupons is redeemed would incorrectly mark
+both. Status now lives on the grant itself:
+
+- Point grants are always created with `status = "granted"` and never
+  transition — points have no "used" concept at the grant level (spending
+  points is tracked entirely by `pointsTransactions`, unaffected by this
+  change).
+- Coupon grants start as `status = "granted"`.
+- Redeeming a coupon at checkout updates **only the one
+  `dailyCheckinRewardGrants` row** matched by `couponId` — never any
+  sibling grant from the same check-in, and never the parent
+  `dailyCheckins` row.
+- Multiple coupons granted by the same check-in are therefore
+  **independently redeemable**: using the daily coupon has no effect on
+  the milestone coupon's status, and vice versa.
 
 Every reward-defining field is duplicated here at grant time (not just
 referenced via `ruleId`) — this is the literal implementation of "historical
 rewards must store immutable snapshots" and "editing a campaign must not
 alter rewards already granted": once a grant row exists, nothing about what
 the user actually received can change even if the admin later edits or
-deactivates the rule.
+deactivates the rule (and, per Correction 5, the admin cannot edit it at all
+once any grant exists — PART J/L).
 
 ---
 
@@ -298,11 +412,12 @@ deactivates the rule.
 | Table | Constraint | Purpose |
 |---|---|---|
 | `dailyCheckinCampaigns` | `UNIQUE(campaignKey)` | stable admin-facing identity |
-| `dailyCheckinCampaigns` | `INDEX(isActive, startDate, endDate)` | "which campaign is active today" lookup |
-| `dailyCheckinRewardRules` | `UNIQUE(campaignId, ruleType, milestoneDay, rewardKind)` | prevent duplicate rule definitions |
+| `dailyCheckinCampaigns` | `INDEX(status, startDate, endDate)` | "which campaign is active today" lookup |
+| `dailyCheckinRewardRules` | `UNIQUE(campaignId, dedupeKey)` | prevent duplicate rule definitions, NULL-safe (Correction 2) |
 | `dailyCheckins` (enhanced) | `UNIQUE(userId, checkinDate, campaignId)` *(new, additive alongside the legacy key-based one — see PART L)* | one check-in per user per day per campaign — the primary race arbiter, unchanged in spirit from today |
 | `dailyCheckinRewardGrants` | `UNIQUE(dailyCheckinId, ruleId)` | one check-in event cannot grant the same rule twice (same-request/retry safety) |
 | `dailyCheckinRewardGrants` | `UNIQUE(userId, ruleId, milestoneInstanceNumber)` | a specific milestone *instance* (the one-time milestone, or one specific repeat boundary) is granted at most once ever, across the user's full history — independent of which day it happened on |
+| `dailyCheckinRewardGrants` | `INDEX(status)` | redemption-state queries (e.g. admin support lookups) without a full scan |
 
 No table needs a cross-column `CHECK` constraint enforced by the database:
 this repo targets MySQL/TiDB via Drizzle, and TiDB's `CHECK` constraint
@@ -330,23 +445,58 @@ Worked example — the campaign from the product requirement:
 ```
 dailyCheckinCampaigns:
   { campaignKey: "august-2026", name: "August Daily Check-in",
-    startDate: "2026-08-01", endDate: "2026-08-31", isActive: true }
+    startDate: "2026-08-01", endDate: "2026-08-31", status: "draft" }
 
 dailyCheckinRewardRules:
-  { ruleType: "daily", rewardKind: "points", pointsAmount: 1.00 }
+  { ruleType: "daily", rewardKind: "points", pointsAmount: 1.00,
+    dedupeKey: "daily:points" }
   { ruleType: "milestone", rewardKind: "points", milestoneDay: 10,
-    repeatEvery: NULL, pointsAmount: 2.00 }
+    repeatEvery: NULL, pointsAmount: 2.00,
+    dedupeKey: "milestone:10:once:points" }
 ```
 
 A campaign combining every listed capability would add rows such as:
 
 ```
-  { ruleType: "daily", rewardKind: "coupon", couponTemplateId: <5%-off template> }
+  { ruleType: "daily", rewardKind: "coupon", couponTemplateId: <5%-off template>,
+    dedupeKey: "daily:coupon" }
   { ruleType: "milestone", rewardKind: "coupon", milestoneDay: 7,
-    repeatEvery: NULL, couponTemplateId: <bigger one-time template> }
+    repeatEvery: NULL, couponTemplateId: <bigger one-time template>,
+    dedupeKey: "milestone:7:once:coupon" }
   { ruleType: "milestone", rewardKind: "points", milestoneDay: 10,
-    repeatEvery: 10, pointsAmount: 5.00 }   -- fires again at day 20, 30, ...
+    repeatEvery: 10, pointsAmount: 5.00,
+    dedupeKey: "milestone:10:repeat:10:points" }   -- fires again at day 20, 30, ...
 ```
+
+### Validation rules (server-side, at rule create/update time)
+
+1. `dedupeKey` is **always** computed by the server from the rule's own
+   validated fields, using the exact four formats above — a client-supplied
+   `dedupeKey` in the request body is ignored/overwritten, never trusted or
+   persisted as given. This is a hard rule: trusting a client value would
+   let a malicious or buggy admin-tool request bypass the uniqueness
+   guarantee entirely (e.g. by sending two different, non-colliding
+   synthetic keys for what should be the same duplicate rule).
+2. Inserting a rule whose computed `dedupeKey` already exists for that
+   `campaignId` is rejected with a clear validation error (surfaced via the
+   admin API, never a raw DB duplicate-key error — same "never expose raw
+   SQL errors" rule as everywhere else in this codebase).
+3. **New cross-rule check**: rejecting a rule whose `(milestoneDay,
+   rewardKind)` pair already has a rule with the *opposite* `repeatEvery`
+   nullability in the same campaign (i.e. can't configure day 10 as both
+   "once" and "repeat every 10") — this is checked explicitly, since (per
+   above) the two configurations produce different `dedupeKey`s and the
+   unique index does not catch it.
+4. Test cases required (PART M): creating a second `daily`/`points` rule in
+   the same campaign is rejected; creating a second `daily`/`coupon` rule is
+   rejected; creating a second rule at the same `(milestoneDay, once,
+   rewardKind)` is rejected; creating a second rule at the same
+   `(milestoneDay, repeat:N, rewardKind)` is rejected; creating a rule at
+   the same `milestoneDay` with a *different* `repeatEvery` (e.g. `once` vs
+   `repeat:10`) is rejected by the cross-rule check even though the
+   `dedupeKey`s differ; two rules at the *same* `milestoneDay` with
+   *different* `rewardKind` (points + coupon) **succeed** (this is the
+   intended "both a point and a coupon bonus at day 10" case).
 
 All of this is admin-editable data — zero code changes for a new campaign,
 satisfying the core product requirement.
@@ -355,37 +505,46 @@ satisfying the core product requirement.
 
 ## D. Daily reward and streak milestone calculation
 
-### Streak scope decision (flagged in PART N as needing product confirmation)
+### Streak scope — Locked decision 1 (was previously flagged as open)
 
 Streak is computed **per campaign**, not globally across a user's lifetime.
-"10 consecutive days" naturally means 10 consecutive days *within that
-campaign's own run* — a September campaign's day 10 is independent of
-August's. This is the simpler, safer interpretation given the product
-brief doesn't specify cross-campaign carryover; see PART N.
+"10 consecutive days" means 10 consecutive days *within that campaign's own
+run* — a September campaign's day 10 is independent of August's. This is no
+longer a recommendation; it is resolved (see "Locked product decisions").
 
 ### Algorithm (inside the check-in transaction)
 
 1. `checkinDate = getBangkokBusinessDate()`.
-2. Look up the single active campaign for `checkinDate`:
-   `SELECT * FROM dailyCheckinCampaigns WHERE isActive = true AND startDate
-   <= checkinDate AND endDate >= checkinDate ORDER BY startDate DESC LIMIT
-   1`. (`ORDER BY ... LIMIT 1` is defense-in-depth; PART F's overlap
-   guard is what should make this always return ≤1 row.) If none, behave
-   like today's kill-switch path (`campaignActive: false`, no new rewards).
+2. Look up the single campaign claimable for `checkinDate`:
+   `SELECT * FROM dailyCheckinCampaigns WHERE status = 'active' AND
+   startDate <= checkinDate AND endDate >= checkinDate ORDER BY startDate
+   DESC LIMIT 1`. (`ORDER BY ... LIMIT 1` is defense-in-depth; PART F's
+   overlap guard is what should make this always return ≤1 row.) If none,
+   behave like today's kill-switch path (`campaignActive: false`, no new
+   rewards).
 3. Compute the user's streak: read this user+campaign's most recent
    `dailyCheckins` row (`ORDER BY checkinDate DESC LIMIT 1`). If its
    `checkinDate` equals `checkinDate` minus one Bangkok day (a **new**
    helper — see PART E) *and* its `streakCount > 0`, the new
    `streakCount = previous.streakCount + 1`; otherwise (no prior row, or a
-   gap) `streakCount = 1`.
+   gap) **`streakCount = 1`** — Locked decision 2: missing one day resets
+   the streak to 1 on the next claim, it does not resume from where it left
+   off and does not go to 0.
 4. Determine which rules fire, from the campaign's active
    `dailyCheckinRewardRules`:
    - every `ruleType="daily"` rule fires unconditionally.
    - a `ruleType="milestone"` rule fires when: `repeatEvery IS NULL AND
-     streakCount === milestoneDay` (one-time), **or** `repeatEvery IS NOT
+     streakCount === milestoneDay` (one-time — Locked decision 3: granted
+     once per user per campaign, full stop), **or** `repeatEvery IS NOT
      NULL AND streakCount >= milestoneDay AND (streakCount - milestoneDay)
-     % repeatEvery === 0` (repeating, first fire at `milestoneDay`, then
-     every `repeatEvery` days after).
+     % repeatEvery === 0` (repeating — Locked decision 5: fires at
+     uninterrupted streak boundaries such as 10, 20, 30).
+   - Locked decision 4: reaching the same threshold again *after* a broken
+     streak does **not** re-grant a one-time milestone — this falls out of
+     guarantee 2 below (the uniqueness is on `(userId, ruleId,
+     milestoneInstanceNumber)`, not on the specific `dailyCheckinId` the
+     streak happened to reach it on), not from any special-case check in
+     this step.
 5. For a firing milestone rule, compute
    `milestoneInstanceNumber = repeatEvery ? ((streakCount - milestoneDay) /
    repeatEvery) + 1 : 1` — this is the value `UNIQUE(userId, ruleId,
@@ -396,7 +555,9 @@ brief doesn't specify cross-campaign carryover; see PART N.
 6. Insert the enhanced `dailyCheckins` row (arbiter: `UNIQUE(userId,
    checkinDate, campaignId)`, unchanged in spirit from today).
 7. For each firing rule, attempt the corresponding grant (PART F/G/H/I) —
-   guarded by the two `dailyCheckinRewardGrants` unique constraints.
+   guarded by the two `dailyCheckinRewardGrants` unique constraints, with
+   point-kind rules applying the strict in-memory sequencing from
+   Correction 3 (PART H).
 8. On a duplicate-key at step 6 (a concurrent request won first): roll back
    fully, re-read the winner's `dailyCheckins` row *and* its associated
    `dailyCheckinRewardGrants` rows, and return those — exactly today's
@@ -441,29 +602,52 @@ how `checkinDate` string equality is already used today.
   DML); a failure at any point rolls back everything cleanly, and a client
   retry is always safe by construction.
 - Point grants reuse `lockUserForPoints(userId, tx)` (`SELECT ... FOR
-  UPDATE` on the `users` row) **once per check-in transaction**, before any
-  `recordPointsTransaction` call — if a check-in grants both a daily point
-  and a milestone point bonus, both `recordPointsTransaction` calls happen
-  sequentially inside the same lock, so each correctly reads the
-  just-written `balanceAfter` from the previous call within the same `tx`
-  (see PART H).
+  UPDATE` on the `users` row) **exactly once per check-in transaction**,
+  and all point-kind grants within that check-in are sequenced strictly
+  in-memory afterward — see Correction 3 / PART H for the full algorithm.
+  `getUserPointsBalance` is **not** called again between grants.
 - Coupon grants reuse today's `tx.insert(coupons)` + `extractInsertId`
   pattern per grant — no coupon row is ever shared between grants or users.
-- **Campaign overlap enforcement** (admin-side, not check-in-side): MySQL/
-  TiDB has no native exclusion constraint (no Postgres-style `EXCLUDE USING
-  gist`), so "no two *active* campaigns may overlap" cannot be a plain
-  unique index. The create/activate admin endpoint must serialize this
-  check-then-write critical section — recommended approach: a MySQL named
-  lock (`GET_LOCK('daily_checkin_campaign_activation', <timeout>)` /
-  `RELEASE_LOCK(...)`, the same primitive already used for migration-runner
-  concurrency elsewhere in this codebase's tooling) wrapped around "query
-  active campaigns overlapping the requested range" + "insert/activate" as
-  one critical section, so two admins racing to activate overlapping
-  campaigns can't both succeed.
-- Only **active** campaigns are checked for overlap — an admin may freely
-  create/edit a *draft* (`isActive: false`) campaign that overlaps an
-  already-running active one, to prepare it ahead of time; the rejection
-  only fires at the moment a campaign is (re)activated.
+  Each coupon grant's `dailyCheckinRewardGrants.status` starts at
+  `"granted"` independently of any other grant from the same check-in
+  (Correction 1).
+- **Campaign activation-overlap enforcement** (admin-side, not
+  check-in-side) — Correction 4: MySQL/TiDB has no native exclusion
+  constraint (no Postgres-style `EXCLUDE USING gist`), so "no two `active`
+  campaigns may overlap" cannot be a plain unique index. The
+  create-then-activate admin action must serialize this check-then-write
+  critical section using a **TiDB named lock**:
+
+  ```sql
+  SELECT GET_LOCK('daily_checkin_campaign_activation', 1) -- timeout ≥ 1 second
+  -- ... query campaigns WHERE status = 'active' AND date range overlaps ...
+  -- ... if none overlap: UPDATE the target campaign SET status = 'active' ...
+  SELECT RELEASE_LOCK('daily_checkin_campaign_activation')
+  ```
+
+  Two hard requirements on this critical section:
+  1. **Timeout is at least 1 second** (`GET_LOCK(name, 1)` or higher) — long
+     enough that a legitimate concurrent admin request isn't spuriously
+     rejected, short enough that a stuck/crashed holder doesn't wedge every
+     future activation attempt indefinitely.
+  2. **Acquire and release on the same, single dedicated connection**, and
+     **always release in a `finally` block**, even if the overlap check or
+     the activation update throws. `GET_LOCK`/`RELEASE_LOCK` are
+     session-scoped in MySQL/TiDB — if the connection used to acquire the
+     lock is not the exact same connection used to release it (e.g. a
+     pooled connection silently handing the release call to a different
+     underlying session), the release is a silent no-op and the lock stays
+     held until that other session ends, wedging every subsequent
+     activation attempt for up to the lock's own timeout, repeatedly. This
+     is the same "dedicated connection, never a pool, for session-scoped
+     state" precedent already established for `SET`/`PREPARE`/`EXECUTE`
+     variables in this repo's migration test files (PART 0).
+- Only campaigns with `status = "active"` (never `draft`, never `ended`)
+  are checked for overlap — an admin may freely create/edit a `draft`
+  campaign that overlaps an already-`active` one, to prepare it ahead of
+  time; the rejection only fires at the moment a campaign is activated.
+  Since `ended` is terminal (no reactivation, Locked decision 6), an ended
+  campaign can never re-enter the overlap check either.
 
 ---
 
@@ -481,43 +665,80 @@ Formal restatement of PART B/D/F as the guarantee this design provides:
    within the same campaign — enforced by `UNIQUE(userId, ruleId,
    milestoneInstanceNumber)` with `milestoneInstanceNumber` always `1` for
    non-repeating rules, independent of *which* `dailyCheckinId` the streak
-   happened to reach it on.
+   happened to reach it on. (Locked decisions 3 and 4.)
 3. **A repeating milestone's Nth boundary is rewarded exactly once**, but
    different boundaries (day 10, day 20, day 30, …) are independently
    grantable — the same constraint, with `milestoneInstanceNumber`
-   incrementing per boundary.
+   incrementing per boundary. (Locked decision 5.)
 4. A retried/failed transaction is always safe to retry from scratch: no
    partial-grant recovery logic is needed because everything commits or
    rolls back atomically as pure DML (PART F).
+5. **Reward redemption status is independently idempotent per grant**
+   (Correction 1): redeeming one coupon grant from a check-in that produced
+   several never changes any sibling grant's `status`; the redemption
+   update is always scoped to the one `dailyCheckinRewardGrants` row
+   matched by `couponId`.
 
 ---
 
-## H. Point reward integration with `pointsTransactions`
+## H. Point reward integration with `pointsTransactions` — Correction 3 applied
 
-No changes to `pointsTransactions`' schema. Each points grant calls the
-existing `recordPointsTransaction` with:
+No changes to `pointsTransactions`' schema. **The previous design's mistake
+was implying a `getUserPointsBalance` re-read between each point grant** —
+this is unsafe because two `pointsTransactions` rows inserted moments apart
+inside the same transaction can share the same `createdAt` `timestamp`
+value, making "the most recent one" ambiguous to a query with no
+tie-breaker (PART 0 finding). The corrected algorithm never re-reads
+balance mid-transaction:
 
-- `type: "earn"`
-- `amount: rule.pointsAmount` (as recorded on the grant snapshot, not
-  re-read from the live rule row)
-- `referenceType: "daily_checkin_reward"` (new value, following the
-  existing convention alongside `"order"`, `"sports_vote"`, `"refund"`)
-- `referenceId: dailyCheckinRewardGrants.id` — **not** `dailyCheckins.id** —
-  so that a daily point grant and a same-day milestone point grant produce
-  two distinguishable `pointsTransactions` rows, each traceable to exactly
-  one grant.
+1. `lockUserForPoints(userId, tx)` — **once**, at the start of the
+   check-in's points-granting phase.
+2. Read the initial balance **once**: `let runningBalance =
+   Number(await getUserPointsBalance(userId, tx))`.
+3. Sort the check-in's firing point-kind rules deterministically:
+   `ORDER BY sortOrder ASC, id ASC` (the same `sortOrder` column rules
+   already have for admin display, reused here as the actual grant
+   sequencing key — daily rules and milestone rules can be interleaved by
+   an admin's chosen `sortOrder`, e.g. always granting the daily point
+   before a same-day milestone bonus).
+4. For each point rule, in that order:
+   a. Insert the `dailyCheckinRewardGrants` snapshot row first (with
+      `pointsTransactionId` initially `NULL`) and obtain its `grantId`
+      (`extractInsertId`).
+   b. `runningBalance += Number(rule.pointsAmount)` — **in memory only**,
+      never via another `getUserPointsBalance` call.
+   c. Insert `pointsTransactions` with `type: "earn"`, `amount:
+      rule.pointsAmount`, `balanceAfter: runningBalance.toFixed(2)`,
+      `referenceType: "daily_checkin_reward_grant"` (Amendment 1: renamed
+      from the previous design's `"daily_checkin_reward"` to point at the
+      grant, not the parent check-in), `referenceId: grantId`.
+   d. Update the grant row: `pointsTransactionId = <the just-inserted
+      pointsTransactions.id>`.
+5. Never call `getUserPointsBalance` again for the remainder of this
+   check-in's transaction — `runningBalance` is the single source of truth
+   for the whole grant loop.
 
-`balanceAfter` correctness across multiple point grants in one check-in:
-`lockUserForPoints` holds the row lock for the whole transaction, and each
-subsequent `getUserPointsBalance(userId, tx)` call inside that same `tx`
-sees the previous `recordPointsTransaction` call's own uncommitted write
-(same-transaction read-your-writes) — so a check-in with two point rules
-firing produces two `pointsTransactions` rows with correctly chained
-`balanceAfter` values, atomically.
+This guarantees `balanceAfter` is correct and monotonic across any number
+of same-transaction point grants regardless of `createdAt` timestamp
+collisions, because the chain is built entirely from one initial read plus
+in-memory arithmetic, never from re-querying a table whose ordering can be
+ambiguous.
+
+**Separately recommended (general hardening, not specific to this
+feature)**: `getUserPointsBalance`'s existing `ORDER BY createdAt DESC
+LIMIT 1` (`server/db.ts:1605-1617`) and any similarly-ordered balance read
+elsewhere should add `id DESC` as an explicit tie-breaker —
+`ORDER BY createdAt DESC, id DESC LIMIT 1` — so that even code paths
+*outside* this feature that do re-read balance between writes get a
+deterministic "most recent" row. This is a small, additive, backward-compatible
+change (same result whenever timestamps are already unique) recommended as
+part of Stage 3 (PART N) but is not itself a blocker for this feature's own
+correctness, since this feature no longer depends on that read being
+repeated.
 
 ---
 
-## I. Coupon reward integration with `coupons`/`couponUsages`
+## I. Coupon reward integration with `coupons`/`couponUsages` — Correction 1 applied
 
 No schema changes to `coupons`/`couponUsages`. Each coupon grant mints a
 fresh `coupons` row from its rule's `dailyCheckinCouponTemplates` snapshot —
@@ -528,18 +749,45 @@ of the global config.
 `getRewardCouponOwnership()` (`server/db.ts:1407-1433`) gains a **third**
 check (after `sportsMatchRewards` and the legacy `dailyCheckins.couponId`
 path): a lookup against `dailyCheckinRewardGrants WHERE couponId = ? AND
-rewardKind = 'coupon'`, returning `{userId, status}` sourced from the
-grant's parent `dailyCheckins.status` (the check-in row remains the status
-owner — `markDailyCheckinCouponUsed` continues to flip it, just now
-resolved through the grant instead of the direct `couponId` column for new
-rows). `validateAndApplyCoupon` requires **zero changes** — it already
-calls `getRewardCouponOwnership` generically and doesn't know or care which
-table produced the ownership record.
+rewardKind = 'coupon'`, returning `{userId, status}` sourced **from the
+grant row's own `status` column** — not the parent `dailyCheckins.status`.
+This is the direct fix for Correction 1: ownership/one-time-use enforcement
+must reflect the fate of the *specific coupon in question*, not the
+check-in event that happened to produce it alongside others.
+
+`markDailyCheckinCouponUsed(couponId, userId, tx)` is rewritten to update
+**only the matched grant row**:
+
+```
+UPDATE dailyCheckinRewardGrants
+SET status = 'used', usedAt = NOW()
+WHERE couponId = :couponId AND userId = :userId AND status = 'granted'
+```
+
+— never the parent `dailyCheckins` row. `dailyCheckins.status`/`usedAt`
+remain in the schema **as legacy-only fields during the transition**
+(PART L): they keep whatever meaning they had for pre-cutover rows, but new
+code never writes to them, and `getRewardCouponOwnership`/
+`markDailyCheckinCouponUsed` never read/write them for grant-sourced
+coupons. This is exactly why a check-in producing two coupons (a daily one
+and a milestone one) is safe: redeeming the daily coupon runs the `UPDATE`
+above scoped to that one `couponId`, and the milestone coupon's grant row —
+a different row entirely — is untouched, remaining independently
+redeemable.
+
+`validateAndApplyCoupon` requires **zero changes** — it already calls
+`getRewardCouponOwnership` generically and doesn't know or care which table
+produced the ownership record, or that "status" now lives one join further
+away than it used to.
 
 Per the explicit instruction, `couponId` is never treated as the universal
 reward representation elsewhere in the new code — `rewardKind` on
 `dailyCheckinRewardGrants` is the actual discriminator every new code path
-branches on; points grants never touch `coupons` at all.
+branches on; points grants never touch `coupons` at all, and their
+`status` column, while present on every grant row for schema uniformity,
+is meaningless for `rewardKind = "points"` rows and always stays
+`"granted"` (there is nothing to "use" or "void" at the grant level for
+points — spending is tracked entirely by `pointsTransactions`).
 
 ---
 
@@ -548,32 +796,70 @@ branches on; points grants never touch `coupons` at all.
 New server endpoints, following the exact `adminProcedure` pattern used
 everywhere else (`server/_core/trpc.ts`):
 
-- `admin.dailyCheckinCampaigns.list/get/create/update/activate/deactivate`
+- `admin.dailyCheckinCampaigns.list/get/create/update` (draft-only fields),
+  `.activate` (draft → active, GET_LOCK-guarded overlap check, PART F),
+  `.endEarly` (active → ended)
 - `admin.dailyCheckinCampaigns.rules.list/create/update/deactivate`
-  (nested under a campaign)
+  (nested under a campaign; create/update/deactivate all rejected once the
+  campaign has any `dailyCheckins` row — see Correction 5 below)
+- `admin.dailyCheckinCampaigns.templates.create/update` (same
+  once-frozen-after-first-check-in rule)
 - `admin.dailyCheckinCampaigns.grants.list` (read-only audit/history view,
   paginated, for support/debugging — never mutable)
+
+There is deliberately **no** `deactivate`/`reactivate` pair — Correction 4
+replaces that ambiguous toggle with the one-way `draft → active → ended`
+lifecycle; the only admin actions on a live campaign are "end it early" and
+edit its still-mutable fields (name/description, and anything at all, if
+still `draft`).
 
 New client page(s), modeled after `AdminCouponsPage.tsx`'s existing
 list+form pattern and gated the same way (`user.role === "admin"` client
 check, mirrored by server-side `adminProcedure`):
 
 - A campaign list/create/edit form: name, key, Bangkok-date range picker,
-  active toggle, description.
+  status badge (`draft`/`active`/`ended`), description, an "Activate"
+  button (draft only) and an "End early" button (active only).
 - A nested rule editor within a campaign: add daily/milestone rows, choose
   points vs. coupon, milestone day + optional "repeat every N days" toggle,
   and (for coupon rules) the template fields (discount type/value/cap/min
-  purchase/validity).
+  purchase/validity). The whole rule editor becomes **read-only** the
+  moment the campaign has any check-in (see below), not just the
+  reward-defining fields.
 
-**Immutability enforcement in the admin UI, not just the data layer**: once
-any `dailyCheckinRewardGrants` row references a rule, that rule's
-reward-defining fields (`rewardKind`, `pointsAmount`, `couponTemplateId`,
-`milestoneDay`, `repeatEvery`) become read-only in the form and are
-rejected server-side if a change is attempted — only `isActive`/`sortOrder`
-remain editable. This is defense-in-depth for "editing a campaign must not
-alter rewards already granted": the grant snapshot already guarantees it
-structurally, but blocking the edit at the admin layer prevents a confusing
-UI state where an edit silently "succeeds" but has no retroactive effect.
+### Immutability after first check-in — Correction 5 (Locked decision 8)
+
+The moment a campaign has **any** `dailyCheckins` row (i.e. at least one
+user has checked in under it — this can only happen while `status =
+"active"`, so in practice this means "since it was activated and at least
+one claim succeeded"):
+
+- `startDate` and `endDate` become permanently frozen — no extension, no
+  shortening via direct edit. (Ending the campaign early remains available
+  as a distinct, explicit action — see PART F/D — that changes `status`,
+  not the dates.)
+- Reward rules cannot be added, deleted, activated, or deactivated, and no
+  rule's fields (`rewardKind`, `pointsAmount`, `couponTemplateId`,
+  `milestoneDay`, `repeatEvery`, `dedupeKey`, `isActive`) can be changed.
+- Coupon templates referenced by any rule in the campaign cannot be
+  changed.
+- `name` and `description` remain editable at any time (display-only
+  fields with no bearing on reward computation).
+
+This guarantees every user who checks in under a given campaign — on day 1
+or day 30 — sees and receives exactly the same configured reward schedule,
+which is the actual product guarantee "editing a campaign must not alter
+rewards already granted" is protecting: it is not enough that *already
+granted* rewards keep their snapshot values (PART A already guarantees
+that structurally) — the *schedule itself* must stop moving once real users
+are depending on it, so that a user on day 3 and a user on day 25 of the
+same campaign were both playing by the same rules the whole time.
+
+This is enforced at **both** layers, per the original design's
+defense-in-depth principle: the admin API rejects the mutation attempt with
+a clear validation error (never a raw DB error) before it reaches the
+database, and the admin UI disables/hides the corresponding form fields
+once it detects the campaign has any recorded check-in.
 
 ---
 
@@ -584,21 +870,27 @@ patterns) with:
 
 - current streak count for the active campaign
 - **a list** of today's reward(s) — no longer a single `reward` object,
-  since a daily point *and* a coupon can both fire on the same day
+  since a daily point *and* a coupon can both fire on the same day. This
+  is Locked decision 9: `getDailyCheckinStatus` changes directly to
+  `rewards: RewardSummary[]`, no deprecation window (no external consumers
+  of this internal API).
+- each coupon reward in the list carries **its own** redemption state
+  (`status: "granted" | "used" | "void"`, sourced from its own
+  `dailyCheckinRewardGrants` row, Correction 1) — the UI must render each
+  coupon's usability independently; a used daily coupon and a still-valid
+  milestone coupon from the same day must never be conflated into one
+  "used" state for the whole check-in.
 - progress toward the next milestone (e.g. "7/10 days to your next bonus"),
   computed client-side from the campaign's rule list + the user's current
   streak, or server-computed and included in the status response
 - the same `authenticated`/`campaignActive`/`checkedInToday` branch
   structure as today, and the same rule of never rendering a raw server
   error message
-
-**Open decision** (flagged in PART N): whether `getDailyCheckinStatus`'s
-response shape changes `reward: RewardSummary | null` directly to `rewards:
-RewardSummary[]` in the same rollout, versus keeping `reward` for one
-deprecation window. Recommendation: change it directly — this is a
-pre-existing, low-traffic feature being redesigned, not a public API with
-external consumers, so a compatibility shim would add complexity without a
-real corresponding benefit.
+- Locked decision 11: all Profile-page and Admin-page copy introduced by
+  this feature is written in **Thai** during their respective
+  implementation stages (Stage 5 for Profile, Stage 4 for Admin) — this
+  replaces the previous design's "UI copy/i18n deferred to product/design"
+  open item.
 
 ---
 
@@ -609,21 +901,23 @@ Every step below follows this repo's established idempotent,
 pattern (0024/0026/0027/0028) — safe to re-run against a partially-migrated
 database, consistent with this repo's whole migration philosophy.
 
-1. **Additive only, zero risk**: create `dailyCheckinCampaigns`,
-   `dailyCheckinCouponTemplates`, `dailyCheckinRewardRules`,
-   `dailyCheckinRewardGrants`. Backfill exactly one campaign row
-   (`campaignKey: "default"`) plus one daily-coupon rule + one coupon
-   template, migrated from the current `settings` JSON blob's live values
-   — so existing behavior is representable in the new model from day one,
-   with no behavior change yet.
+1. **Additive only, zero risk**: create `dailyCheckinCampaigns` (with
+   `status enum`, not `isActive`), `dailyCheckinCouponTemplates`,
+   `dailyCheckinRewardRules` (with `dedupeKey`, not the old composite
+   unique), `dailyCheckinRewardGrants` (with `status`/`usedAt`/`voidedAt`
+   from day one — these are not a later add-on). Backfill exactly one
+   campaign row (`campaignKey: "default"`, `status: "active"`) plus one
+   daily-coupon rule (`dedupeKey: "daily:coupon"`) + one coupon template,
+   migrated from the current `settings` JSON blob's live values — so
+   existing behavior is representable in the new model from day one, with
+   no behavior change yet.
 2. Add nullable `campaignId int` and `streakCount int not null default 0`
    to `dailyCheckins` (additive, guarded). Backfill `campaignId` for every
-   existing row to the migrated "default" campaign's `id`. Backfilling a
-   correct historical `streakCount` from `checkinDate` contiguity is a
-   one-time data-migration script — flagged as an implementation decision
-   in PART N (alternative: leave existing rows at `streakCount = 0` since
-   the *old* system never rewarded streaks, so no historical milestone
-   should retroactively fire anyway).
+   existing row to the migrated "default" campaign's `id`. Per Locked
+   decision 7, existing rows keep `streakCount = 0` and are never
+   retroactively recomputed — the old system never rewarded streaks, so no
+   historical milestone should ever fire for check-ins that happened under
+   it.
 3. Add `UNIQUE(userId, checkinDate, campaignId)` **alongside** the existing
    `UNIQUE(userId, checkinDate, campaignKey)` — both coexist during the
    transition; nothing is dropped yet.
@@ -636,30 +930,51 @@ database, consistent with this repo's whole migration philosophy.
    `UNIQUE(couponId)` constraint (a check-in that only grants points has no
    coupon at all) — only after confirming `getRewardCouponOwnership`/
    `markDailyCheckinCouponUsed` no longer require the old invariant (PART
-   I). `couponId` itself is kept, deprecated, for one more release as a
-   "first coupon grant, if any" convenience mirror, then dropped in a final
-   cleanup migration once nothing reads it.
+   I). Per Locked decision 10, `couponId` itself is kept, deprecated, for
+   exactly **one transitional release** as a "first coupon grant, if any"
+   convenience mirror, then dropped in a final cleanup migration once
+   nothing reads it.
 6. Final cleanup migration + code removal: drop the legacy
-   `UNIQUE(userId, checkinDate, campaignKey)` constraint and the
+   `UNIQUE(userId, checkinDate, campaignKey)` constraint, the legacy
+   `dailyCheckins.couponId`/`status`/`usedAt` columns, and the
    `dailyCheckinConfig.ts` JSON-blob code path, once step 4 has been
-   running in production and nothing depends on the legacy path.
+   running in production for the one transitional release and nothing
+   depends on the legacy paths.
 
 ---
 
 ## M. Test plan
+
+Do not reduce coverage from the original design — every item below either
+carries forward a prior test case unchanged or extends it for the five
+corrections; nothing is removed.
 
 **Unit (no database)**: `getPreviousBangkokBusinessDate` boundary tests
 (mirroring the existing 16:59:59Z/17:00:00Z Bangkok-boundary tests already
 in the timezone test suite); milestone-firing/`milestoneInstanceNumber`
 calculation as a pure function, covering one-time, repeating, and
 "streak jumped past the boundary" edge cases; rule-validation logic
-(`ruleType`/`rewardKind` invariants from PART A).
+(`ruleType`/`rewardKind` invariants from PART A); **`dedupeKey` generation**
+as a pure function for all four formats, including that it is
+recomputed/overwritten even when a caller supplies one; the point-grant
+sequencing algorithm (PART H) as a pure function over an in-memory list of
+rules + a starting balance, independent of the database.
 
 **Integration (real disposable `ipenovel_test` database, following the
 exact conventions of `migration-0024-episode-schema-repair.integration.test.ts`
 / `migration-0027-idempotency.integration.test.ts`)**:
-- Campaign CRUD, including rejecting an overlapping-active-campaign
-  activation attempt.
+- Campaign CRUD: create as `draft`, edit freely while `draft`, activate
+  once (second activation attempt rejected), reject activating a campaign
+  whose date range overlaps an already-`active` one, `endEarly` transitions
+  `active → ended`, and reactivating an `ended` campaign is rejected.
+- **Duplicate rule validation** (Correction 2): a second `daily`/`points`
+  rule in the same campaign is rejected; a second `daily`/`coupon` rule is
+  rejected; a second rule at the same `(milestoneDay, once, rewardKind)` is
+  rejected; a second rule at the same `(milestoneDay, repeat:N,
+  rewardKind)` is rejected; a rule at the same `milestoneDay` with a
+  different `repeatEvery`-nullability (once vs. repeat) is rejected by the
+  cross-rule check; two rules at the same `milestoneDay` with different
+  `rewardKind` (points + coupon) both succeed.
 - A daily-points-only campaign: correct grant + `pointsTransactions` row
   each day, no coupon ever minted.
 - A milestone-only campaign: no grant before the milestone day, exactly one
@@ -669,83 +984,187 @@ exact conventions of `migration-0024-episode-schema-repair.integration.test.ts`
   grant, both under one `dailyCheckinId`.
 - A repeating milestone across multiple boundaries (day 10, 20, 30) —
   each boundary grants exactly once, verified via PART G guarantee 3.
+- **Broken-streak milestone non-repetition** (Locked decisions 3/4):
+  streak reaches a one-time milestone, resets (missed day), climbs back to
+  the same `milestoneDay` a second time within the same campaign — verify
+  no second grant is produced.
 - Concurrent double-claim (parallel requests for the same user/day) —
   verify exactly one `dailyCheckins` row and one grant set is produced,
   the loser converges on the winner's grants.
-- Editing a campaign/rule after grants exist against it — reward-defining
-  fields rejected server-side; existing grants' snapshot values unchanged.
+- **Campaign activation overlap under concurrency** (Correction 4): two
+  parallel activation attempts for overlapping campaigns — verify exactly
+  one succeeds, the `GET_LOCK` is always released (a subsequent, unrelated
+  activation attempt is never blocked by a leaked lock), and the loser
+  receives a clear rejection, not a raw DB/lock error.
+- **Immutability after first check-in** (Correction 5): attempting to edit
+  `startDate`/`endDate`, add/remove/change a rule, or change a coupon
+  template on a campaign that already has a `dailyCheckins` row — all
+  rejected server-side; `name`/`description` edits on the same campaign
+  still succeed.
+- Editing a campaign/rule *before* any check-in exists — still fully
+  permitted (draft-stage editability is not weakened by the immutability
+  rule).
 - `validateAndApplyCoupon`/`getRewardCouponOwnership` integration for a
   grant-sourced coupon (ownership, one-time-use, cap enforcement all still
   work through the new path).
-- `balanceAfter` correctness across a check-in producing two point grants
-  in the same transaction (PART H).
+- **Independent multi-coupon redemption** (Correction 1): a check-in
+  produces both a daily coupon grant and a milestone coupon grant; redeem
+  one via `markDailyCheckinCouponUsed` and verify only that grant's
+  `status`/`usedAt` change — the sibling grant's `status` stays `"granted"`
+  and it remains independently redeemable; verify the parent
+  `dailyCheckins.status`/`usedAt` are untouched by either redemption
+  (legacy-only fields).
+- **`balanceAfter` correctness across two point grants in the same
+  transaction** (Correction 3): a check-in firing both a daily points rule
+  and a milestone points rule — verify both `pointsTransactions` rows have
+  correctly chained `balanceAfter` values (initial + first amount, then +
+  second amount) even when their `createdAt` values are identical (forcing
+  the test to prove correctness independent of timestamp ordering, exactly
+  the scenario the corrected algorithm exists to make safe), and that each
+  grant's `pointsTransactionId` points at its own distinct
+  `pointsTransactions` row with `referenceType = "daily_checkin_reward_grant"`.
 - Migration idempotency: fully-absent → fully-present → partially-present
   → rerun, for every new table/column, matching the exact test pattern
   established for migrations 0024/0026/0027/0028.
 
 ---
 
-## N. Recommended implementation commits
+## Locked product decisions
 
-Small, independently reviewable commits, not one mega-commit:
+These were open recommendations in the prior revision of this document;
+they are now resolved and must be implemented as stated, not revisited
+during Phase 2 without a new product decision:
 
-1. Schema + migration: the four new tables (additive only) + idempotency
-   integration tests for the migration itself.
-2. Backfill migration: default campaign/template/rule from the current
-   `settings` JSON config; `campaignId`/`streakCount` columns on
-   `dailyCheckins` (nullable/defaulted, additive) + backfill.
-3. `getPreviousBangkokBusinessDate` + milestone/streak pure-function helpers
-   + unit tests.
-4. Read-side query functions (`db.ts`): campaign lookup, rule lookup, grant
-   history — plus their integration tests, no behavior change yet (old
-   `claimDailyCheckin` untouched).
-5. Rewritten `claimDailyCheckin`/`getDailyCheckinStatus` on the new model +
-   full integration test suite (PART M). This is the actual behavior
-   cutover commit.
-6. `getRewardCouponOwnership` extension for grant-sourced coupons +
-   targeted `validateAndApplyCoupon` integration tests.
-7. Admin campaign/rule/template CRUD API endpoints + validation +
-   overlap-locking (PART F).
-8. Admin campaign/rule management UI pages.
-9. User-facing profile/check-in UI: streak + multi-reward display.
-10. Cleanup migration: drop legacy `dailyCheckins.couponId` uniqueness,
-    the legacy `campaignKey`-based unique constraint, and the
-    `dailyCheckinConfig.ts` JSON-blob path, once step 5 has run in
-    production long enough to confirm nothing depends on them.
+1. Streak scope is **per campaign** (PART D).
+2. Missing one day resets `streakCount` to `1` on the next claim — it does
+   not resume, and it does not go to `0` (PART D step 3).
+3. A one-time milestone is granted **once per user per campaign** (PART G
+   guarantee 2).
+4. Reaching the same threshold again after a broken streak does **not**
+   grant a one-time milestone again (PART D/G, enforced structurally by
+   `UNIQUE(userId, ruleId, milestoneInstanceNumber)`).
+5. Repeating milestones grant at **uninterrupted** streak boundaries such
+   as 10, 20, and 30 (PART D step 4/5) — a broken streak that later climbs
+   back up restarts the boundary sequence from the first one again (streak
+   `1` → `10` still hits `milestoneInstanceNumber = 1` the next time it
+   reaches 10, which is a *new*, previously-ungranted instance only if the
+   first instance was never granted before the break; if it *was* already
+   granted, the same instance-1 constraint from decision 4 still applies).
+6. **Deactivation means permanently ending the campaign** — `status:
+   "ended"` is terminal; there is no reactivation path, ever (PART A/F/J).
+7. Historical legacy check-ins (rows that existed before this feature)
+   keep `streakCount = 0` and receive no retroactive milestones (PART L
+   step 2).
+8. Campaign dates, rules, and coupon templates become **immutable** after
+   the first check-in against that campaign — only `name`/`description`
+   remain editable, and only "end early" remains available as a lifecycle
+   action (PART J, Correction 5).
+9. `getDailyCheckinStatus` changes **directly** to `rewards:
+   RewardSummary[]` — no deprecation window, no compatibility shim (PART K).
+10. Legacy `dailyCheckins.couponId` is made nullable and kept for
+    **exactly one transitional release** before final cleanup removal
+    (PART L step 5/6).
+11. Profile and Admin UI copy introduced by this feature will be
+    **Thai** during their implementation phases (PART K, Stage 4/5).
 
 ---
 
-## Risks and unresolved decisions (need product/eng confirmation before Phase 2)
+## N. Implementation plan — five major stages
 
-1. **Streak scope**: per-campaign reset (recommended, PART D) vs. carrying
-   a streak across consecutive campaigns. The product brief doesn't say;
-   per-campaign is simpler and matches "10 consecutive days" reading most
-   naturally as "within this campaign."
-2. **Deactivate-then-reactivate mid-campaign**: does a user's in-progress
-   streak survive a temporary admin deactivation, or reset? Recommendation:
-   resets — deactivation is treated as an effective campaign pause/end for
-   streak purposes, to avoid ambiguous "how many days were paused" logic.
-3. **Historical `streakCount` backfill** (PART L step 2): backfill by
-   recomputing from `checkinDate` contiguity, or leave existing rows at 0
-   since the old system never rewarded streaks? Recommendation: leave at 0
-   — no historical milestone should retroactively fire under the new rules
-   for check-ins that happened under the old, streak-less system.
-4. **Campaign date-range edits after check-ins exist**: should changing a
-   live campaign's `endDate`/`startDate` be restricted once any check-in
-   has been recorded against it, symmetric to rule-field immutability
-   (PART J)? Recommendation: yes, same principle — extending is probably
-   safe, shortening or moving the start later is not, and the simplest safe
-   rule is "no date-range edits once any check-in exists," with a separate,
-   explicit "end the campaign early" action (sets `isActive: false`,
-   distinct from editing `endDate`) if admins need to stop a campaign
-   immediately.
-5. **`getDailyCheckinStatus` response shape change** (PART K): direct
-   breaking change vs. deprecation window. Recommendation: direct change
-   (no external consumers of this internal API).
-6. **`couponId` legacy column removal timing** (PART L step 5/6): kept for
-   one release as a convenience mirror before final removal, to reduce the
-   blast radius of the cutover commit — flagged as a judgment call that
-   could instead be done in the same commit if preferred.
-7. **UI copy/i18n** for streak/multi-reward display: out of scope for this
-   design document; a follow-up for product/design once Phase 2
-   implementation begins.
+Regrouped from the prior revision's flat ten-item list into five major
+stages, per this amendment's instruction. Each stage still proceeds as
+several small, independently reviewable commits — the grouping is for
+sequencing and review-batching, not a reduction in granularity, and no test
+coverage from the prior revision (or this amendment's additions) is
+dropped.
+
+### Stage 1 — Schema, migration, backfill, and migration idempotency tests
+1. Create the four new tables (`dailyCheckinCampaigns` with `status` enum,
+   `dailyCheckinCouponTemplates`, `dailyCheckinRewardRules` with
+   `dedupeKey`, `dailyCheckinRewardGrants` with `status`/`usedAt`/
+   `voidedAt`) — additive only, plus their own idempotency integration
+   tests (PART M).
+2. Backfill migration: default campaign (`status: "active"`)/template/rule
+   from the current `settings` JSON config; `campaignId`
+   (nullable)/`streakCount` (default 0) columns on `dailyCheckins` +
+   backfill; the additive `UNIQUE(userId, checkinDate, campaignId)`
+   constraint alongside the legacy one (PART L steps 1-3).
+
+### Stage 2 — Bangkok date, streak, milestone, rule-validation, and read-side helpers
+3. `getPreviousBangkokBusinessDate` + milestone/streak pure-function
+   helpers (`milestoneInstanceNumber` calculation) + unit tests.
+4. `dedupeKey` generation (all four formats) + rule-validation logic
+   (including the new cross-rule once-vs-repeat check, Correction 2) +
+   unit tests, including the duplicate-rule rejection cases (PART C/M).
+5. Read-side query functions (`db.ts`): active-campaign lookup, rule
+   lookup, grant history — plus their integration tests, no behavior
+   change yet (old `claimDailyCheckin` untouched).
+
+### Stage 3 — Transactional claim engine, points, coupons, grants, concurrency tests
+6. Rewritten `claimDailyCheckin`/`getDailyCheckinStatus` on the new model,
+   implementing the exact point-grant sequencing algorithm from Correction
+   3 (PART H) and the reward-level status model from Correction 1
+   (PART I) — the actual behavior cutover commit, with the full
+   integration test suite (PART M), including the two-point-grants and
+   multi-coupon-independent-redemption cases.
+7. `getRewardCouponOwnership` extension for grant-sourced coupons (reading
+   `status` from the grant, not the parent row) + targeted
+   `validateAndApplyCoupon` integration tests.
+8. General hardening follow-up: add the `id DESC` tie-breaker to
+   `getUserPointsBalance`'s `ORDER BY` (PART H's separately-recommended
+   fix) + its own regression test.
+
+### Stage 4 — Admin Campaign/Rule/Template API and UI
+9. Admin campaign CRUD + `activate` (GET_LOCK-guarded overlap check,
+   Correction 4) + `endEarly` endpoints, with validation, and their
+   concurrency integration tests (parallel activation attempts, lock
+   release verification).
+10. Admin rule/template CRUD endpoints, enforcing the Correction 5
+    immutability rule (rejecting mutations once any check-in exists against
+    the campaign) + integration tests for both the allowed (draft-stage)
+    and rejected (post-check-in) cases.
+11. Admin campaign/rule/template management UI pages (Thai copy, Locked
+    decision 11), modeled on `AdminCouponsPage.tsx`'s existing patterns,
+    with immutable fields disabled/hidden once a campaign has any
+    check-in.
+
+### Stage 5 — Profile UI, complete integration tests, test:ci, test:repeat, and release gate
+12. User-facing profile/check-in UI: streak + multi-reward display, each
+    coupon reward showing its own independent redemption state (Thai copy,
+    Locked decision 11).
+13. Full integration test suite finalized end-to-end (every case in PART M
+    passing together, not just individually) + `pnpm test:ci` full flow
+    (migrate → unit → integration) verified green.
+14. `pnpm test:repeat 3` determinism check and `pnpm test:gate` release-gate
+    comparison against the existing known-failure baseline, both passing,
+    before this feature is considered ready to ship.
+15. Cleanup migration (PART L step 6): drop legacy `dailyCheckins.couponId`
+    uniqueness/column, the legacy `campaignKey`-based unique constraint,
+    the legacy `status`/`usedAt` columns, and the `dailyCheckinConfig.ts`
+    JSON-blob path — only after Stage 3's cutover has run in production for
+    the one transitional release required by Locked decision 10.
+
+---
+
+## Remaining implementation-detail follow-ups (not product decisions)
+
+Everything that was an open product/business-rule question in the prior
+revision is now resolved above ("Locked product decisions"). What remains
+are pure implementation judgment calls, deliberately left for the engineer
+implementing each stage rather than fixed here:
+
+1. The exact `GET_LOCK` timeout value above the required 1-second floor
+   (e.g. 1s vs. 3s vs. 5s) — tune based on observed admin-tool latency once
+   Stage 4 is in review, not speculatively now.
+2. Whether the `id DESC` tie-breaker fix to `getUserPointsBalance` (PART H)
+   ships in Stage 3 alongside this feature's own cutover, or as an
+   independent, slightly earlier hardening commit — either is acceptable;
+   Stage 3 lists it last specifically so it can be pulled forward without
+   reordering anything else.
+3. Exact Thai copy strings for the Profile/Admin UI (Locked decision 11
+   fixes the *language*, not the specific wording) — a follow-up for
+   product/design once Stage 4/5 implementation begins.
+4. Whether `admin.dailyCheckinCampaigns.grants.list`'s pagination/filtering
+   shape needs anything beyond a basic paginated list for the initial
+   support/debugging use case — expand only if a real support workflow
+   needs it.
