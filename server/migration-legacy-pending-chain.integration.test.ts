@@ -34,6 +34,19 @@ import { closeMysqlConnectionSafely } from "./test-helpers/closeMysqlConnectionS
 
 const migrationsFolder = path.resolve(__dirname, "..", "drizzle");
 
+const migration0030Entry = readMigrationJournal(migrationsFolder).find(
+  (entry) => entry.tag === "0030_repair_missing_daily_checkins"
+);
+
+if (!migration0030Entry) {
+  throw new Error(
+    'Required migration journal entry "0030_repair_missing_daily_checkins" was not found'
+  );
+}
+
+/** Migration 0030's journal timestamp - the expected final high-water mark after the full repair chain runs. Resolved once at file scope (the main test body has no `journal` variable of its own). */
+const MIGRATION_0030_WHEN = migration0030Entry.when;
+
 /** The confirmed production migration high-water mark - strictly before migration 0017's own journal timestamp. */
 const PRODUCTION_HIGH_WATER_MARK = 1778343285119;
 
@@ -313,15 +326,14 @@ describe.sequential("legacy pending migration chain repair (real disposable test
         expect(await indexExists(conn, "dailyCheckinRewardGrants", "dailyCheckinRewardGrants_checkin_rule_unique")).toBe(true);
 
         // Final migration high-water mark reaches exactly migration 0030.
-        const idx0030When = journal.find((e) => e.tag === "0030_repair_missing_daily_checkins")!.when;
-        expect(await latestRecordedMigrationTimestamp(conn)).toBe(idx0030When);
+        expect(await latestRecordedMigrationTimestamp(conn)).toBe(MIGRATION_0030_WHEN);
 
         // A second full-chain run is a clean no-op: nothing is pending
         // anymore, so nothing is (re-)attempted.
         const secondRun = createTrackingLogger("[legacy-chain-test:second-pass]");
         await expect(runMigrationsWithLogging(conn, migrationsFolder, secondRun.logger)).resolves.not.toThrow();
         expect(secondRun.completedTags).toEqual([]);
-        expect(await latestRecordedMigrationTimestamp(conn)).toBe(idx0030When);
+        expect(await latestRecordedMigrationTimestamp(conn)).toBe(MIGRATION_0030_WHEN);
 
         // No existing application row was deleted or rewritten by any of
         // the six repaired migrations' guarded ADD COLUMN/CREATE
