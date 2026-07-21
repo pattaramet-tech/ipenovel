@@ -139,11 +139,15 @@ describe("scripts/migrate-test-db.ts uses a single mysql2 connection, never a po
     expect(source).not.toMatch(/mysql\.createPool\(/);
   });
 
-  it("closes the connection in a finally block", () => {
+  it("closes the connection in a finally block via closeMysqlConnectionSafely", () => {
     const source = fs.readFileSync(path.join(repoRoot, "scripts/migrate-test-db.ts"), "utf8");
     const finallyIndex = source.indexOf("} finally {");
-    const endCallIndex = source.indexOf("conn.end()");
+    // closeMysqlConnectionSafely() (server/test-helpers/closeMysqlConnectionSafely.ts)
+    // replaced the previous bare `conn.end().catch(() => {})` - a close
+    // failure must never be silently swallowed, see that module's own tests.
+    const closeCallIndex = source.indexOf("closeMysqlConnectionSafely(connection");
     expect(finallyIndex).toBeGreaterThan(-1);
-    expect(endCallIndex).toBeGreaterThan(finallyIndex);
+    expect(closeCallIndex).toBeGreaterThan(finallyIndex);
+    expect(source).not.toMatch(/\.end\(\)\.catch\(\(\)\s*=>\s*\{\}\)/);
   });
 });

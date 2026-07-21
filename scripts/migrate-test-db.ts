@@ -31,7 +31,7 @@
 // `mysql.createConnection(testUrl!)` (no TLS options) is exactly the bug
 // class this file previously had - it failed against a real TiDB Cloud
 // test database with "Connections using insecure transport are prohibited".
-import mysql from "mysql2";
+import mysql from "mysql2/promise";
 import { drizzle } from "drizzle-orm/mysql2";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,6 +39,7 @@ import { redactDatabaseUrl } from "../server/test-helpers/testDatabaseGuard";
 import { assertLiveTestDatabaseName } from "../server/test-helpers/liveTestDatabaseCheck";
 import { buildTestDbConnectionOptions } from "../server/test-helpers/testDbConnectionOptions";
 import { runMigrationsWithLogging, consoleMigrationLogger } from "../server/test-helpers/migrateTestDbWithLogging";
+import { closeMysqlConnectionSafely } from "../server/test-helpers/closeMysqlConnectionSafely";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const migrationsFolder = path.join(__dirname, "..", "drizzle");
@@ -72,16 +73,16 @@ export async function runTestDbMigration(): Promise<void> {
   const options = buildTestDbConnectionOptions(testUrl);
   console.log(`[migrate-test-db] Connection string validated: ${redactDatabaseUrl(testUrl)}`);
 
-  let connection: ReturnType<typeof mysql.createConnection>;
+  let connection: Awaited<ReturnType<typeof mysql.createConnection>>;
   try {
-    connection = mysql.createConnection(options);
+    connection = await mysql.createConnection(options);
   } catch (error) {
     throw new Error(`[migrate-test-db] Failed to create a database connection: ${safeErrorSummary(error)}`);
   }
-  const conn = connection.promise();
   const db = drizzle({ client: connection });
 
   let lockAcquired = false;
+  let primaryError: unknown;
   try {
     // Live check FIRST, before anything that could touch schema/data -
     // this is the "reject unless SELECT DATABASE() returns exactly
@@ -91,7 +92,7 @@ export async function runTestDbMigration(): Promise<void> {
     console.log(`[migrate-test-db] Live check passed - connected database is "${actualName}".`);
 
     console.log(`[migrate-test-db] Acquiring migration lock "${LOCK_NAME}" (timeout ${LOCK_TIMEOUT_SECONDS}s)...`);
-    const [lockRows]: any = await conn.query("SELECT GET_LOCK(?, ?) AS acquired", [LOCK_NAME, LOCK_TIMEOUT_SECONDS]);
+    const [lockRows]: any = await connection.query("SELECT GET_LOCK(?, ?) AS acquired", [LOCK_NAME, LOCK_TIMEOUT_SECONDS]);
     const acquired = lockRows?.[0]?.acquired;
     if (acquired !== 1) {
       throw new Error(`Could not acquire the test migration lock within ${LOCK_TIMEOUT_SECONDS}s (GET_LOCK returned ${acquired}).`);
@@ -99,17 +100,20 @@ export async function runTestDbMigration(): Promise<void> {
     lockAcquired = true;
 
     console.log("[migrate-test-db] Lock acquired. Applying committed migrations...");
-    await runMigrationsWithLogging(conn, migrationsFolder, consoleMigrationLogger("[migrate-test-db]"));
+    await runMigrationsWithLogging(connection, migrationsFolder, consoleMigrationLogger("[migrate-test-db]"));
     console.log("[migrate-test-db] Done - test database schema is up to date.");
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
     if (lockAcquired) {
       try {
-        await conn.query("SELECT RELEASE_LOCK(?)", [LOCK_NAME]);
+        await connection.query("SELECT RELEASE_LOCK(?)", [LOCK_NAME]);
       } catch (releaseError) {
         console.warn("[migrate-test-db] Failed to release the migration lock (non-fatal):", safeErrorSummary(releaseError));
       }
     }
-    await conn.end().catch(() => {});
+    await closeMysqlConnectionSafely(connection, { primaryError });
   }
 }
 
