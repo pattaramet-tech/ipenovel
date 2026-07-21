@@ -208,6 +208,62 @@ describe("scripts/test-db-prepare.ts diagnostics never use private Node APIs", (
   });
 });
 
+describe("scripts/test-db-prepare.ts uses top-level await + try/catch, not a .then().catch() promise chain", () => {
+  it("uses a top-level `await main()` inside a try block", () => {
+    const source = codeOnly(fs.readFileSync(path.join(repoRoot, "scripts/test-db-prepare.ts"), "utf8"));
+    expect(source).toMatch(/try\s*\{[\s\S]*?await main\(\)/);
+  });
+
+  it("never chains main() with .then()/.catch() - the failure path is a plain catch block", () => {
+    const source = codeOnly(fs.readFileSync(path.join(repoRoot, "scripts/test-db-prepare.ts"), "utf8"));
+    expect(source).not.toMatch(/main\(\)\s*\.then\(/);
+    expect(source).not.toMatch(/main\(\)\s*\.catch\(/);
+  });
+
+  it("passes onDiagnostic to closeMysqlConnectionSafely so the new close-sequence markers are wired through", () => {
+    const source = codeOnly(fs.readFileSync(path.join(repoRoot, "scripts/test-db-prepare.ts"), "utf8"));
+    expect(source).toMatch(/closeMysqlConnectionSafely\(connection,\s*\{\s*primaryError,\s*onDiagnostic:\s*logDiagnostic\s*\}\)/);
+  });
+});
+
+describe("scripts/migrate-test-db.ts also wires onDiagnostic into closeMysqlConnectionSafely", () => {
+  it("passes onDiagnostic to closeMysqlConnectionSafely", () => {
+    const source = codeOnly(fs.readFileSync(path.join(repoRoot, "scripts/migrate-test-db.ts"), "utf8"));
+    expect(source).toMatch(/closeMysqlConnectionSafely\(connection,\s*\{\s*primaryError,\s*onDiagnostic:\s*logDiagnostic\s*\}\)/);
+  });
+});
+
+describe("server/test-helpers/closeMysqlConnectionSafely.ts no longer requires the remote 'end' event for success", () => {
+  it("the module never gates its success path on the 'end' event - a bare `await Promise.race([connection.end()...` never appears combined with the event in a Promise.all", () => {
+    const source = codeOnly(
+      fs.readFileSync(path.join(repoRoot, "server/test-helpers/closeMysqlConnectionSafely.ts"), "utf8")
+    );
+    // The previous (rejected) design combined end() and the 'end' event via
+    // Promise.all before racing the timeout - that combinator must not
+    // reappear; local finalization (destroy()) is what determines success now.
+    expect(source).not.toMatch(/Promise\.all\(\s*\[\s*connection\.end\(\)/);
+  });
+
+  it("destroy() is called unconditionally after end() resolves, as the normal (not forced) close path", () => {
+    const source = codeOnly(
+      fs.readFileSync(path.join(repoRoot, "server/test-helpers/closeMysqlConnectionSafely.ts"), "utf8")
+    );
+    expect(source).toMatch(/local transport finalization started/);
+    expect(source).toMatch(/local transport finalization completed/);
+  });
+
+  it("never accesses connection.stream, connection.connection, or any underscore-prefixed property", () => {
+    const source = codeOnly(
+      fs.readFileSync(path.join(repoRoot, "server/test-helpers/closeMysqlConnectionSafely.ts"), "utf8")
+    );
+    expect(source).not.toMatch(/connection\.stream/);
+    expect(source).not.toMatch(/connection\.connection/);
+    expect(source).not.toMatch(/\._closing/);
+    expect(source).not.toMatch(/_getActiveHandles/);
+    expect(source).not.toMatch(/_getActiveRequests/);
+  });
+});
+
 describe("scripts/test-db-prepare.ts and scripts/migrate-test-db.ts diagnostics come from the shared, directly-tested testDbDiagnostics module", () => {
   // The diagnostics failure-path contract itself (bare `catch {}`, fixed
   // non-interpolated message, no error/error.message/String(error) of any

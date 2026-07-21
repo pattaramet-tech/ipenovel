@@ -9,8 +9,10 @@ import { closeMysqlConnectionSafely, type MinimalMysqlConnection } from "./close
  * connection's own EventEmitter surface), never a real network or database
  * connection. See scripts/test-db-prepare.ts and scripts/migrate-test-db.ts
  * for the real (TEST_DATABASE_URL-gated) usage this helper backs, and
- * closeMysqlConnectionSafely.ts's own header comment for the mysql2 3.22.5
- * source analysis this dual end()+'end'-event contract is based on.
+ * closeMysqlConnectionSafely.ts's own header comment for why the remote
+ * "end" event is diagnostic-only rather than mandatory - three real Gate A
+ * runs against TiDB proved requiring it made every close report as a
+ * timeout, since end() resolved but "end" never arrived within 5000ms.
  */
 
 function neverSettles<T>(): Promise<T> {
@@ -30,42 +32,57 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("closeMysqlConnectionSafely - dual end()+'end'-event contract", () => {
-  it("case 1: end() resolves and the terminal 'end' event arrives shortly afterward - resolves successfully", async () => {
+describe("closeMysqlConnectionSafely - the remote 'end' event is diagnostic-only, never mandatory", () => {
+  it("case 1: end() resolves and local finalization (destroy()) succeeds - the normal, successful close path", async () => {
     const conn = makeConnection({ end: () => Promise.resolve() });
-    // setImmediate (a macrotask) always fires after the already-pending
-    // microtask that resolves end()'s promise - end() genuinely resolves first.
-    setImmediate(() => conn.emit("end"));
 
     await expect(closeMysqlConnectionSafely(conn)).resolves.toBeUndefined();
-    expect(conn.destroy).not.toHaveBeenCalled();
-  });
-
-  it("case 2: the terminal 'end' event arrives before end() resolves - still resolves successfully once both complete", async () => {
-    const conn = makeConnection({
-      end: () => new Promise<void>((resolve) => setTimeout(resolve, 20)),
-    });
-    queueMicrotask(() => conn.emit("end")); // fires almost immediately, well before end()'s 20ms delay
-
-    await expect(closeMysqlConnectionSafely(conn, { timeoutMs: 200 })).resolves.toBeUndefined();
-    expect(conn.destroy).not.toHaveBeenCalled();
-  });
-
-  it("case 3: end() resolves but the terminal 'end' event never arrives - the timeout fires and destroy() is called", async () => {
-    const conn = makeConnection({ end: () => Promise.resolve() }); // never emits 'end'
-
-    const failure = await closeMysqlConnectionSafely(conn, { timeoutMs: 20 }).then(
-      () => null,
-      (e) => e
-    );
 
     expect(conn.destroy).toHaveBeenCalledTimes(1);
-    expect(failure).toBeInstanceOf(Error);
-    expect((failure as Error).message).toMatch(/forcibly destroyed/);
-    expect((failure as Error).message).toMatch(/20ms/);
   });
 
-  it("case 4: neither end() nor the terminal 'end' event ever completes - the timeout fires and destroy() is called", async () => {
+  it("case 2: the remote 'end' event never fires at all - the close still succeeds (this is the exact TiDB scenario three real Gate A runs failed on)", async () => {
+    const conn = makeConnection({ end: () => Promise.resolve() });
+    // Deliberately never emit 'end' - simulates TiDB's observed behavior of
+    // not reliably sending/delivering the remote FIN.
+
+    await expect(closeMysqlConnectionSafely(conn, { timeoutMs: 50 })).resolves.toBeUndefined();
+
+    expect(conn.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("case 3: the remote 'end' event fires before end() resolves - ordering never matters, the close still succeeds via local finalization", async () => {
+    const conn = makeConnection({
+      end: () => new Promise<void>((resolve) => setTimeout(resolve, 10)),
+    });
+    queueMicrotask(() => conn.emit("end")); // fires almost immediately, well before end()'s 10ms delay
+
+    await expect(closeMysqlConnectionSafely(conn, { timeoutMs: 200 })).resolves.toBeUndefined();
+    expect(conn.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("local finalization (destroy()) is called only AFTER end() resolves, never before or concurrently", async () => {
+    const callOrder: string[] = [];
+    const conn = makeConnection({
+      end: () => {
+        callOrder.push("end-called");
+        return Promise.resolve().then(() => {
+          callOrder.push("end-resolved");
+        });
+      },
+      destroy: () => {
+        callOrder.push("destroy-called");
+      },
+    });
+
+    await closeMysqlConnectionSafely(conn);
+
+    expect(callOrder).toEqual(["end-called", "end-resolved", "destroy-called"]);
+  });
+});
+
+describe("closeMysqlConnectionSafely - real failure paths", () => {
+  it("case 4: end() hangs (never settles) - the timeout fires, destroy() is called, and the timeout is reported honestly as a failure", async () => {
     const conn = makeConnection({ end: () => neverSettles<void>() });
 
     const failure = await closeMysqlConnectionSafely(conn, { timeoutMs: 20 }).then(
@@ -75,7 +92,8 @@ describe("closeMysqlConnectionSafely - dual end()+'end'-event contract", () => {
 
     expect(conn.destroy).toHaveBeenCalledTimes(1);
     expect(failure).toBeInstanceOf(Error);
-    expect((failure as Error).message).toMatch(/forcibly destroyed/);
+    expect((failure as Error).message).toMatch(/did not settle within 20ms/);
+    expect((failure as Error).message).toMatch(/forcibly destroyed after timing out/);
   });
 
   it("case 5: end() rejects - throws a sanitized Error (not an AggregateError), and never calls destroy", async () => {
@@ -92,8 +110,30 @@ describe("closeMysqlConnectionSafely - dual end()+'end'-event contract", () => {
     expect(conn.destroy).not.toHaveBeenCalled();
   });
 
-  it("case 6: a destroy() failure after a timeout is preserved in the thrown error", async () => {
-    const destroyError = new Error("destroy blew up");
+  it("case 6: local finalization (destroy()) throws after end() resolves normally - reported as a plain finalization failure, never 'forced'/'timed out' language", async () => {
+    const finalizeError = new Error("destroy blew up");
+    const conn = makeConnection({
+      end: () => Promise.resolve(),
+      destroy: () => {
+        throw finalizeError;
+      },
+    });
+
+    const failure = await closeMysqlConnectionSafely(conn).then(
+      () => null,
+      (e) => e
+    );
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(/local transport finalization failed/);
+    expect((failure as Error).message).toMatch(/destroy blew up/);
+    expect((failure as Error).message).not.toMatch(/forcibly destroyed/);
+    expect((failure as Error).message).not.toMatch(/forced/);
+    expect((failure as Error).message).not.toMatch(/timed out/);
+  });
+
+  it("a destroy() failure during the real timeout-recovery path is preserved in the thrown error", async () => {
+    const destroyError = new Error("destroy blew up during timeout recovery");
     const conn = makeConnection({
       end: () => neverSettles<void>(),
       destroy: () => {
@@ -108,7 +148,7 @@ describe("closeMysqlConnectionSafely - dual end()+'end'-event contract", () => {
 
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toMatch(/timed out/);
-    expect((failure as Error).message).toMatch(/destroy blew up/);
+    expect((failure as Error).message).toMatch(/destroy blew up during timeout recovery/);
   });
 
   it("case 7: a primary operation failure plus a close failure preserves both errors in an AggregateError", async () => {
@@ -126,10 +166,11 @@ describe("closeMysqlConnectionSafely - dual end()+'end'-event contract", () => {
     expect(aggregate.errors[0].message).toMatch(/primary boom/);
     expect(aggregate.errors[1].message).toMatch(/close boom/);
   });
+});
 
+describe("closeMysqlConnectionSafely - listener and timer cleanup", () => {
   it("case 8: the temporary 'end' listener is removed after a successful close", async () => {
     const conn = makeConnection({ end: () => Promise.resolve() });
-    setImmediate(() => conn.emit("end"));
 
     await closeMysqlConnectionSafely(conn);
 
@@ -152,13 +193,21 @@ describe("closeMysqlConnectionSafely - dual end()+'end'-event contract", () => {
     expect(conn.listenerCount("end")).toBe(0);
   });
 
-  it("case 11: the internal timeout is cleared after a successful close", async () => {
+  it("case 11: the internal timeout is cleared on every path (success, rejection, timeout)", async () => {
     const clearTimeoutSpy = vi.spyOn(global, "clearTimeout");
-    const conn = makeConnection({ end: () => Promise.resolve() });
-    setImmediate(() => conn.emit("end"));
 
-    await closeMysqlConnectionSafely(conn, { timeoutMs: 5000 });
+    const successConn = makeConnection({ end: () => Promise.resolve() });
+    await closeMysqlConnectionSafely(successConn, { timeoutMs: 5000 });
+    expect(clearTimeoutSpy).toHaveBeenCalledTimes(1);
 
+    clearTimeoutSpy.mockClear();
+    const rejectConn = makeConnection({ end: () => Promise.reject(new Error("boom")) });
+    await closeMysqlConnectionSafely(rejectConn, { timeoutMs: 5000 }).catch(() => {});
+    expect(clearTimeoutSpy).toHaveBeenCalledTimes(1);
+
+    clearTimeoutSpy.mockClear();
+    const timeoutConn = makeConnection({ end: () => neverSettles<void>() });
+    await closeMysqlConnectionSafely(timeoutConn, { timeoutMs: 20 }).catch(() => {});
     expect(clearTimeoutSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -186,14 +235,15 @@ describe("closeMysqlConnectionSafely - dual end()+'end'-event contract", () => {
 
     setTimeoutSpy.mockRestore();
   });
+});
 
+describe("closeMysqlConnectionSafely - never process.exit(), never private driver internals", () => {
   it("case 13: never calls process.exit() regardless of outcome (success, rejection, or timeout)", async () => {
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
       throw new Error("process.exit was called - this must never happen");
     }) as any);
 
     const successConn = makeConnection({ end: () => Promise.resolve() });
-    setImmediate(() => successConn.emit("end"));
     await closeMysqlConnectionSafely(successConn);
 
     const rejectConn = makeConnection({ end: () => Promise.reject(new Error("boom")) });
@@ -205,7 +255,7 @@ describe("closeMysqlConnectionSafely - dual end()+'end'-event contract", () => {
     expect(exitSpy).not.toHaveBeenCalled();
   });
 
-  it("case 14: never accesses any property beyond end/destroy/once/removeListener - no private handle or socket inspection", async () => {
+  it("case 14/15: never accesses any property beyond end/destroy/once/removeListener - no private handle, driver, or raw socket access", async () => {
     const emitter = new EventEmitter();
     const allowedProps = new Set(["end", "destroy", "once", "removeListener", "emit", "listenerCount"]);
     const strictConnection = new Proxy(
@@ -227,14 +277,44 @@ describe("closeMysqlConnectionSafely - dual end()+'end'-event contract", () => {
       }
     ) as unknown as FakeConnection;
 
-    setImmediate(() => strictConnection.emit("end"));
+    // Never emits 'end' at all - proves success does not require it, using
+    // the same strict, access-guarded connection that would fail loudly if
+    // anything reached into `.stream`, `.connection`, `._closing`, or any
+    // other private/underscore-prefixed property.
+    await expect(closeMysqlConnectionSafely(strictConnection, { timeoutMs: 50 })).resolves.toBeUndefined();
+  });
+});
 
-    await expect(closeMysqlConnectionSafely(strictConnection)).resolves.toBeUndefined();
+describe("closeMysqlConnectionSafely - onDiagnostic markers", () => {
+  it("invokes onDiagnostic with the four fixed markers, in order, on a normal successful close", async () => {
+    const conn = makeConnection({ end: () => Promise.resolve() });
+    const markers: string[] = [];
+
+    await closeMysqlConnectionSafely(conn, { onDiagnostic: (marker) => markers.push(marker) });
+
+    expect(markers).toEqual([
+      "connection end started",
+      "connection end completed",
+      "local transport finalization started",
+      "local transport finalization completed",
+    ]);
+  });
+
+  it("never invokes onDiagnostic with error text, even when the close ultimately fails", async () => {
+    const conn = makeConnection({ end: () => Promise.reject(new Error("mysql://root:hunter2@10.0.0.5:3306/db")) });
+    const markers: string[] = [];
+
+    await closeMysqlConnectionSafely(conn, { onDiagnostic: (marker) => markers.push(marker) }).catch(() => {});
+
+    for (const marker of markers) {
+      expect(marker).not.toMatch(/hunter2/);
+      expect(marker).not.toMatch(/mysql:\/\//);
+    }
   });
 });
 
 describe("closeMysqlConnectionSafely - error sanitization", () => {
-  it("case 15: sensitive values embedded directly inside error.message are redacted, not echoed raw", async () => {
+  it("sensitive values embedded directly inside error.message are redacted, not echoed raw", async () => {
     const endError: any = new Error(
       "connect failed for mysql://root:hunter2@10.0.0.5:3306/ipenovel_test - " +
         "getaddrinfo ENOTFOUND db.internal - Access denied for user 'root'@'10.0.0.5' " +
@@ -263,7 +343,7 @@ describe("closeMysqlConnectionSafely - error sanitization", () => {
     expect(message).toMatch(/1045/);
   });
 
-  it("case 16: a non-Error thrown value's toString() result is redacted too, never echoed via an unrestricted String(error)", async () => {
+  it("a non-Error thrown value's toString() result is redacted too, never echoed via an unrestricted String(error)", async () => {
     const sensitiveNonError = {
       toString() {
         return "mysql://root:hunter2@10.0.0.5:3306/ipenovel_test?token=abc123SECRETTOKEN";

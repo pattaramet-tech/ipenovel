@@ -133,7 +133,7 @@ export async function runTestDbMigration(): Promise<void> {
       }
     }
     logDiagnostic("migration connection close started");
-    await closeMysqlConnectionSafely(connection, { primaryError });
+    await closeMysqlConnectionSafely(connection, { primaryError, onDiagnostic: logDiagnostic });
     logDiagnostic("migration connection close completed");
     logActiveResourceSnapshot(logDiagnostic, "after migration connection close");
   }

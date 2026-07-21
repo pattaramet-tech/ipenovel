@@ -464,6 +464,19 @@ at a database whose name doesn't clearly identify it as disposable** (e.g.
 `ipenovel_test`, `ipenovel_ci`) - every layer in this document exists to
 make that mistake loud and immediate instead of silently destructive.
 
+**If any of these commands' output is piped through `tee` (or any other
+pipeline stage) in CI/Manus, the invoking shell MUST set `set -o pipefail`
+first** (e.g. `set -o pipefail && pnpm test:db:prepare | tee prepare.log`).
+Without it, `$?`/the pipeline's reported exit status reflects only the
+*last* command in the pipe (`tee`, which itself normally exits 0
+regardless of what it received on stdin) - silently hiding a real,
+nonzero exit code from `pnpm test:db:prepare` (or any other script here)
+even when that script correctly set `process.exitCode = 1` and printed an
+error. This was directly observed: a real Gate A run showed
+`scripts/test-db-prepare.ts` print a sanitized error to stderr while the
+orchestrating layer still reported Exit Code 0, purely because the
+pipeline itself (not the script) was masking the real status.
+
 ## Concurrency policy
 
 - **Unit project**: `fileParallelism: false` (temporary, see trade-off

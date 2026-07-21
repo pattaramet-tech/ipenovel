@@ -17,19 +17,22 @@
 // server/test-helpers/testDbConnectionOptions.ts.
 //
 // Connection lifecycle note: this script was observed to print its final
-// "Done" log and then never exit, even after a first fix that closed the
-// reset connection via closeMysqlConnectionSafely() and treated a resolved
-// `end()` as complete shutdown. A real Gate A run proved that insufficient:
-// diagnostics showed "reset connection close completed" logged, yet the
-// process stayed alive for ~210s with TCPSocketWrap/PipeWrap handles still
-// active. Reading the installed mysql2 3.22.5 source (see
+// "Done" log and then never exit, through two iterations of a fix - see
 // server/test-helpers/closeMysqlConnectionSafely.ts's own header for the
-// full analysis) showed why: `end()` resolves as soon as the QUIT command
-// is dispatched from mysql2's internal command queue - well before the
-// underlying socket actually finishes closing. closeMysqlConnectionSafely()
-// now requires BOTH `end()` to resolve AND the connection's own public
-// `'end'` event (the real transport-closed signal) to fire before treating
-// a close as genuinely complete.
+// full mysql2 3.22.5 source analysis. The final design never depends on
+// TiDB sending a remote FIN: once end() resolves, the local transport is
+// deterministically finalized via mysql2's own public destroy()/close()
+// API, which is a synchronous, local-only operation.
+//
+// Exit-code note: this file uses a top-level `await` + `try`/`catch`
+// (never a fire-and-forget `.then().catch()` promise chain, and never
+// `process.exit()`) so a failure unambiguously sets `process.exitCode = 1`
+// before the module finishes evaluating. If this script's output is piped
+// through `tee` (or any other pipeline stage) in CI/Manus, the invoking
+// shell MUST set `set -o pipefail` first - without it, `$?` reflects only
+// the last command in the pipe (`tee`, which itself normally exits 0
+// regardless of what it received on stdin), silently hiding this script's
+// real exit code even though `process.exitCode` was set correctly here.
 import mysql from "mysql2/promise";
 import { drizzle } from "drizzle-orm/mysql2";
 import { redactDatabaseUrl } from "../server/test-helpers/testDatabaseGuard";
@@ -90,35 +93,35 @@ async function main() {
     throw error;
   } finally {
     logDiagnostic("reset connection close started");
-    await closeMysqlConnectionSafely(connection, { primaryError });
+    await closeMysqlConnectionSafely(connection, { primaryError, onDiagnostic: logDiagnostic });
     logDiagnostic("reset connection close completed");
     logActiveResourceSnapshot(logDiagnostic, "after reset connection close");
   }
 }
 
-main()
-  .then(async () => {
-    logDiagnostic("main resolved");
-    logActiveResourceSnapshot(logDiagnostic, "immediately after main resolves");
+// Top-level await + explicit try/catch - not a `.then().catch()` promise
+// chain. On failure: print exactly one sanitized error and set
+// process.exitCode = 1; never call process.exit(). Node then exits
+// naturally once the event loop is actually empty, so a real leaked handle
+// still surfaces as a hang instead of being papered over.
+try {
+  await main();
+  logDiagnostic("main resolved");
+  logActiveResourceSnapshot(logDiagnostic, "immediately after main resolves");
 
-    // The event-loop-turn/settlement-delay snapshots exist purely to
-    // observe whether resources are STILL active slightly after main()
-    // resolves - they must never run (and never cost anything) unless
-    // diagnostics are explicitly enabled; they never gate or delay normal
-    // process exit on a real (non-diagnostic) run.
-    if (isDiagnosticsEnabled()) {
-      await waitOneEventLoopTurn();
-      logActiveResourceSnapshot(logDiagnostic, "after one completed event-loop turn");
+  // The event-loop-turn/settlement-delay snapshots exist purely to
+  // observe whether resources are STILL active slightly after main()
+  // resolves - they must never run (and never cost anything) unless
+  // diagnostics are explicitly enabled; they never gate or delay normal
+  // process exit on a real (non-diagnostic) run.
+  if (isDiagnosticsEnabled()) {
+    await waitOneEventLoopTurn();
+    logActiveResourceSnapshot(logDiagnostic, "after one completed event-loop turn");
 
-      await waitForDiagnosticSettlement();
-      logActiveResourceSnapshot(logDiagnostic, "after diagnostic settlement delay");
-    }
-  })
-  .catch((error) => {
-    console.error(`[test:db:prepare] ${error?.message || error}`);
-    // Setting exitCode (not calling process.exit()) lets Node exit
-    // naturally once the event loop is actually empty - an explicit
-    // process.exit() here would hide a leaked handle instead of surfacing
-    // it, and could cut off buffered log output.
-    process.exitCode = 1;
-  });
+    await waitForDiagnosticSettlement();
+    logActiveResourceSnapshot(logDiagnostic, "after diagnostic settlement delay");
+  }
+} catch (error: any) {
+  console.error(`[test:db:prepare] ${error?.message || error}`);
+  process.exitCode = 1;
+}

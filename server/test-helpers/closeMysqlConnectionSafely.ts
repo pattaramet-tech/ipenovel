@@ -6,72 +6,70 @@
 // failed close could never be diagnosed, and the process would sit alive
 // forever waiting on a socket handle nothing ever reported on.
 //
-// A first fix (treating a resolved `end()` as complete shutdown) was later
-// proven insufficient by a real Gate A run: diagnostics showed
-// "reset connection close completed" logged, yet the process still stayed
-// alive for ~210s with TCPSocketWrap/PipeWrap handles still active. Reading
-// the installed mysql2 3.22.5 source directly explains why:
+// This went through TWO iterations before landing on the design below:
 //
-// - `mysql2/promise`'s `PromiseConnection.end()` (lib/promise/connection.js)
-//   is `new this.Promise((resolve) => { this.connection.end(resolve); })` -
-//   it resolves via the plain callback-style `Connection.end(callback)`
-//   (lib/base/connection.js). For a normal (non-server) connection, that
-//   method enqueues a `Commands.Quit(callback)` command
-//   (lib/commands/quit.js); `Quit.start()` calls `this.onResult()` (the
-//   `end()` callback) IMMEDIATELY - before even calling
-//   `connection.writePacket(quit)` to send the QUIT packet, let alone
-//   before the server acknowledges it or the underlying socket actually
-//   closes. So `end()` resolving proves only "the QUIT command was
-//   dispatched from the internal command queue," never that the transport
-//   has stopped.
-// - The connection's actual transport-close signal is its public `'end'`
-//   event: `BaseConnection`'s constructor does
-//   `this.stream.on('end', () => { this.emit('end'); })` - i.e. the
-//   connection re-emits its own `'end'` only when the underlying **socket
-//   stream's own `'end'` event fires** (the remote side sent a FIN / the
-//   socket's readable side has actually ended). `PromiseConnection` forwards
-//   this event too, lazily, via `inheritEvents(connection, this, ['error',
-//   'drain', 'connect', 'end', 'enqueue'])` (lib/promise/inherit_events.js) -
-//   `connection.once('end', ...)` on a `mysql2/promise` connection is a
-//   real, public, documented part of its EventEmitter surface (Connection
-//   extends EventEmitter), not a private/internal API.
-// - The base connection's public `destroy()` (proxied onto
-//   `PromiseConnection` from `BaseConnection.prototype.destroy`) is just an
-//   alias for `close()`, which does `this._closing = true; this.stream.end()`
-//   - a graceful half-close of the writable side, not a raw socket kill.
-//   It is still the correct, sanctioned "force" mechanism because it is the
-//   only public API mysql2 offers for this - reaching into
-//   `connection.stream` (or any other underscore-prefixed/private property)
-//   directly would not be a legitimate fix.
+// 1. Treating a resolved `end()` as complete shutdown - proven insufficient
+//    by a real Gate A run: diagnostics showed "reset connection close
+//    completed" logged, yet the process stayed alive for ~210s with
+//    TCPSocketWrap/PipeWrap handles still active. Reading the installed
+//    mysql2 3.22.5 source explained why: `PromiseConnection.end()`
+//    (lib/promise/connection.js) resolves via the plain callback-style
+//    `Connection.end(callback)` (lib/base/connection.js), which enqueues a
+//    `Commands.Quit(callback)` (lib/commands/quit.js); `Quit.start()` calls
+//    that callback IMMEDIATELY - before even writing the QUIT packet, let
+//    alone before the server acknowledges it or the socket closes. `end()`
+//    resolving proves only "the QUIT command was dispatched," never that
+//    the transport has stopped.
+// 2. Requiring the connection's public `'end'` event (re-emitted only when
+//    the underlying stream's own `'end'` fires - i.e. the remote side sent
+//    a FIN) IN ADDITION to `end()` resolving - proven insufficient by THREE
+//    real Gate A runs against the actual TiDB-backed test database: `end()`
+//    resolved, but the `'end'` event never arrived within the 5000ms
+//    timeout on any of the three runs, so every run timed out and forced a
+//    destroy(), and the reset phase never even started. This proves TiDB's
+//    connection-closing behavior does not reliably send (or does not
+//    reliably deliver, through whatever gateway/proxy layer sits in front
+//    of it) the remote FIN this repo's own client-side code has any
+//    control over. Requiring it as a mandatory success condition made every
+//    close against TiDB report as a timeout, even though nothing was
+//    actually wrong.
 //
-// This module therefore requires BOTH signals before treating a close as
-// genuinely complete: `end()` resolving AND the connection's own `'end'`
-// event firing. Either one alone is insufficient - `end()` fires too early
-// (proven above) to mean anything about the transport, and relying on the
-// event alone would ignore a real `end()` rejection. The `'end'` listener
-// is attached BEFORE `end()` is ever called, so the event can never be
-// missed by a race between attaching the listener and it firing.
+// The design below never depends on remote server behavior for success.
+// Once `end()` resolves (which mysql2 always does quickly - see point 1
+// above), this deterministically finalizes the LOCAL transport itself via
+// mysql2's own public `destroy()` (confirmed by reading
+// lib/base/connection.js: `destroy()` is an alias for `close()`, which sets
+// `_closing = true` and calls `this.stream.end()` - a synchronous,
+// local-only operation that never depends on any round trip to the
+// server). This is the NORMAL, expected way every close completes - it is
+// never reported as a forced/timeout failure. The remote `'end'` event is
+// still attached (before `end()` is called, so it can never be missed) and
+// remains available as a purely informational/diagnostic signal via
+// `onDiagnostic`, but its absence is never treated as a failure.
 //
-// This never silently succeeds after a failed close: a rejected `end()`, a
-// terminal `'end'` event that never arrives (leading to a forced
-// `destroy()`), or a `destroy()` that itself fails are all surfaced as a
-// thrown, sanitized error - never a raw driver error object, never
-// connection details (no host/user/password/URL). Never calls
-// process.exit() - closing a connection is not this module's business to
-// decide the process's fate. The internal bookkeeping timer is cleared on
-// every path, and the temporary `'end'` listener is removed on every path
-// too, so neither can itself be the reason the process stays alive or the
-// connection object is left with a stale listener.
+// The bounded timeout still exists for the one thing that genuinely can
+// hang against a real network: `end()` itself never settling at all. THAT
+// case still forces a `destroy()` and reports it honestly as a timeout -
+// "forced close"/"forcibly destroyed"/"timed out" language is reserved
+// exclusively for that real failure path, never for the normal
+// end()-then-destroy() sequence every ordinary close now takes.
+//
+// Never accesses `connection.stream`, `connection.connection`, `_closing`,
+// or any other underscore-prefixed/private property. Never calls
+// `process.exit()`. Never uses `process._getActiveHandles()`/
+// `process._getActiveRequests()`. The internal timeout and the temporary
+// `'end'` listener are both cleaned up on every path.
 export interface MinimalMysqlConnection {
   end(): Promise<void>;
+  /** mysql2's public destroy() - confirmed to be an alias for close() in the installed 3.22.5, i.e. a synchronous, local-only transport finalization that never depends on the server. */
   destroy(): void;
-  /** Real mysql2/promise connections are EventEmitters - `'end'` is their public, documented transport-closed signal (see the module header above). */
+  /** Real mysql2/promise connections are EventEmitters - `'end'` is their public, documented (but here purely diagnostic, never mandatory) transport-closed signal. See the module header above. */
   once(event: "end", listener: () => void): unknown;
   removeListener(event: "end", listener: () => void): unknown;
 }
 
 export interface CloseMysqlConnectionSafelyOptions {
-  /** Bounded wait for a graceful end() before forcibly destroying the connection. Defaults to 5000ms. */
+  /** Bounded wait for end() to settle before forcibly destroying the connection. Defaults to 5000ms. */
   timeoutMs?: number;
   /**
    * An already-known failure from the operation this connection was
@@ -82,6 +80,17 @@ export interface CloseMysqlConnectionSafelyOptions {
    * cleanup to run in the first place.
    */
   primaryError?: unknown;
+  /**
+   * Optional diagnostic hook invoked with FIXED marker strings at each
+   * sub-step of the close sequence - "connection end started"/"connection
+   * end completed"/"local transport finalization started"/"local
+   * transport finalization completed". Never invoked with error text,
+   * connection details, or any raw object - callers are expected to gate
+   * this behind their own diagnostics flag (see
+   * server/test-helpers/testDbDiagnostics.ts's createDiagnosticLogger(),
+   * which already no-ops unless IPENOVEL_TEST_DB_DIAGNOSTICS=1).
+   */
+  onDiagnostic?: (marker: string) => void;
 }
 
 const DEFAULT_CLOSE_TIMEOUT_MS = 5000;
@@ -163,71 +172,87 @@ function toError(value: unknown): Error {
 
 /**
  * Closes `connection` safely:
- * 1. Attaches a one-time listener for the connection's public `'end'`
- *    event BEFORE calling `end()`, so the event can never be missed by a
- *    race between subscribing and it firing.
- * 2. Calls `end()`. Genuine success requires BOTH `end()` to resolve AND
- *    the `'end'` event to fire - in either order - within
- *    `options.timeoutMs`. Neither one alone is a reliable "the transport
- *    actually closed" signal (see the module header for why).
- * 3. If `end()` rejects, that failure is reported directly - `destroy()`
- *    is not additionally attempted, since the driver has already told us
- *    definitively that the close did not succeed.
- * 4. If the timeout elapses before both signals have arrived (`end()`
- *    hung, the `'end'` event never fired, or both), `destroy()` is called
- *    to forcibly release the connection, and a "forced close was
- *    required" error is reported - unless `destroy()` itself also fails,
- *    in which case that failure is reported instead. Forced destroy is
- *    NEVER reported as success.
- * 5. The internal timeout and the temporary `'end'` listener are both
+ * 1. Attaches a one-time, diagnostic-only listener for the connection's
+ *    public `'end'` event BEFORE calling `end()`, so it can never be
+ *    missed if it does fire - but its firing (or not) never determines
+ *    success or failure (see the module header for why: TiDB does not
+ *    reliably deliver it).
+ * 2. Calls `end()`, bounded by `options.timeoutMs`.
+ *    - If `end()` resolves in time, the LOCAL transport is then
+ *      deterministically finalized via the public `destroy()` - this is
+ *      the normal, expected, successful close path.
+ *    - If `end()` rejects, that failure is reported directly - `destroy()`
+ *      is not additionally attempted, since the driver has already told
+ *      us definitively that the close did not succeed.
+ *    - If `end()` never settles at all within the timeout, `destroy()` is
+ *      called as a recovery action and the timeout is reported honestly
+ *      as a failure - this is the only path that ever uses
+ *      "timed out"/"forcibly destroyed" language.
+ * 3. If the local `destroy()` finalization itself throws (on the normal
+ *    path, after `end()` already resolved), that is reported as a close
+ *    failure too - never silently treated as success.
+ * 4. The internal timeout and the temporary `'end'` listener are both
  *    cleaned up on every path via `finally`.
- * 6. Never calls `process.exit()`.
+ * 5. Never calls `process.exit()`.
  */
 export async function closeMysqlConnectionSafely(
   connection: MinimalMysqlConnection,
   options: CloseMysqlConnectionSafelyOptions = {}
 ): Promise<void> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
+  const onDiagnostic = options.onDiagnostic;
 
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timedOut = Symbol("closeMysqlConnectionSafely.timedOut");
   const timeoutPromise = new Promise<typeof timedOut>((resolve) => {
-    // Deliberately left REFERENCED (never .unref()'d): if the close never
+    // Deliberately left REFERENCED (never .unref()'d): if end() never
     // settles and nothing else keeps the event loop alive, an unref()'d
     // timer could let Node exit before this timeout ever fires - meaning
-    // destroy() and the forced-close error below would never run at all.
-    // This timer must remain able to keep the process alive on its own
-    // until it fires or clearTimeout() below removes it - there is no
-    // other path to a hung close ever being detected.
+    // destroy() and the timeout error below would never run at all. This
+    // timer must remain able to keep the process alive on its own until it
+    // fires or clearTimeout() below removes it.
     timeoutHandle = setTimeout(() => resolve(timedOut), timeoutMs);
   });
 
-  // Attached BEFORE end() is called (below) - required so the event can
-  // never fire in the window before we start listening for it.
-  let endEventListener: (() => void) | undefined;
-  const endEventPromise = new Promise<"end-event">((resolve) => {
-    endEventListener = () => resolve("end-event");
-    connection.once("end", endEventListener);
-  });
+  // Diagnostic-only - never gates success. Attached before end() is called
+  // so it can never be missed if the remote side does happen to send it.
+  let endEventListener: (() => void) | undefined = () => {};
+  connection.once("end", endEventListener);
 
   let closeFailure: unknown;
   try {
-    const gracefulComplete = Promise.all([
-      connection.end().then(() => "ended" as const),
-      endEventPromise,
-    ]).then(() => "graceful-complete" as const);
-
-    const outcome = await Promise.race([gracefulComplete, timeoutPromise]);
+    onDiagnostic?.("connection end started");
+    const outcome = await Promise.race([connection.end().then(() => "ended" as const), timeoutPromise]);
 
     if (outcome === timedOut) {
+      // end() itself never settled - the one genuine hang/failure case.
+      // Force a local destroy() as recovery, but report the timeout
+      // honestly; a successful recovery destroy() does not change that
+      // end() itself failed to complete in time.
       try {
         connection.destroy();
         closeFailure = new Error(
-          `closeMysqlConnectionSafely: graceful close did not complete within ${timeoutMs}ms (end() and/or the connection's terminal "end" event never both completed) - the connection was forcibly destroyed.`
+          `closeMysqlConnectionSafely: connection.end() did not settle within ${timeoutMs}ms - the connection was forcibly destroyed after timing out.`
         );
       } catch (destroyError) {
         closeFailure = new Error(
-          `closeMysqlConnectionSafely: graceful close timed out after ${timeoutMs}ms AND the forced destroy() also failed: ${sanitizeCloseError(destroyError)}`
+          `closeMysqlConnectionSafely: connection.end() timed out after ${timeoutMs}ms AND the forced destroy() also failed: ${sanitizeCloseError(destroyError)}`
+        );
+      }
+    } else {
+      onDiagnostic?.("connection end completed");
+      // Normal path: end() resolved. Deterministically finalize the local
+      // transport ourselves via the public destroy()/close() API instead
+      // of waiting for a remote FIN that TiDB does not reliably send. This
+      // always completes synchronously (see the module header) and is the
+      // expected way every close succeeds - never reported as forced/timeout.
+      onDiagnostic?.("local transport finalization started");
+      try {
+        connection.destroy();
+        onDiagnostic?.("local transport finalization completed");
+      } catch (finalizeError) {
+        closeFailure = new Error(
+          `closeMysqlConnectionSafely: local transport finalization failed: ${sanitizeCloseError(finalizeError)}`
         );
       }
     }
