@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +7,7 @@ import { buildTestDbConnectionOptions } from "./test-helpers/testDbConnectionOpt
 import { runMigrationsWithLogging, consoleMigrationLogger, readMigrationJournal } from "./test-helpers/migrateTestDbWithLogging";
 import { EXPECTED_TEST_DATABASE_NAME } from "./test-helpers/testDatabaseGuard";
 import { restoreToFullyMigratedWithRetry } from "./test-helpers/restoreWithEmergencyRetry";
+import { closeMysqlConnectionSafely } from "./test-helpers/closeMysqlConnectionSafely";
 
 /**
  * Real-database coverage for the migration 0024 repair - see
@@ -22,9 +23,60 @@ import { restoreToFullyMigratedWithRetry } from "./test-helpers/restoreWithEmerg
  * Uses a single dedicated mysql2 connection (never a pool) throughout, for
  * the same session-variable-continuity reason documented in
  * server/migration-0027-idempotency.integration.test.ts.
+ *
+ * Test isolation (added after Gate B/C proved non-deterministic under real
+ * Manus runs - failures included duplicate columns, migration journal
+ * timestamp mismatches, and cleanup/schema inconsistencies): the observed
+ * pattern is exactly what an async-test-timeout race produces - Vitest's
+ * `testTimeout` races a test's returned promise against a timer; if the
+ * timer wins, Vitest reports the test as failed and moves on to the NEXT
+ * test, but the original test's still-pending database work (its own body,
+ * or its `finally` cleanup) is NOT cancelled - it keeps running in the
+ * background and can mutate shared schema/journal state WHILE the next
+ * scenario's own setup is already running, producing exactly the
+ * "duplicate column"/"journal mismatch" symptoms Gate B and Gate C
+ * reported. Three changes address this directly:
+ *   1. `describe.sequential(...)` makes execution order explicit in code,
+ *      not just inherited from this project's global `sequence.concurrent:
+ *      false` default.
+ *   2. Each scenario's own per-test timeout is raised from 60s to 180s (see
+ *      the constant below) - a value based on measured real Manus runtime
+ *      for the most expensive scenario (a full migration chain against a
+ *      completely empty database) plus headroom, so a legitimately slow
+ *      but successful run is never mistaken for a hang and abandoned
+ *      mid-flight. This is scoped to this file's own `it(...)` calls only -
+ *      vitest.integration.config.ts's project-wide `testTimeout` is
+ *      untouched.
+ *   3. A dedicated MySQL named lock (GET_LOCK), held for this file's entire
+ *      duration via beforeAll/afterAll, so a second process (a retried or
+ *      overlapping gate run) can never execute these destructive scenarios
+ *      concurrently against the same shared database.
+ * Additionally, every scenario now explicitly re-verifies the fully-migrated
+ * baseline (verifyFullyMigratedBaseline()) immediately after establishing
+ * it and again after cleanup - turning a previous scenario's incomplete
+ * cleanup into an immediate, clearly-attributed failure in the scenario
+ * that actually inherited the bad state, instead of a confusing failure
+ * surfacing later in a different, seemingly-unrelated scenario.
  */
 
 const migrationsFolder = path.resolve(__dirname, "..", "drizzle");
+
+/**
+ * Based on measured real Manus runtime for this file's most expensive
+ * scenario (a full migration chain, 0000 through the newest migration,
+ * against a completely empty database) plus reasonable headroom - NOT a
+ * blind bump. Exists specifically to prevent Vitest from marking a test
+ * failed (and moving on to the next one) while its database work or
+ * cleanup is still legitimately running in the background; it does not
+ * hide a real hang, since every connection close inside these scenarios is
+ * itself bounded by closeMysqlConnectionSafely()'s own timeout. Scoped to
+ * this file's `it(...)` calls only - the project-wide testTimeout in
+ * vitest.integration.config.ts is unchanged.
+ */
+const MIGRATION_0024_TEST_TIMEOUT_MS = 180000;
+
+const LOCK_NAME = "ipenovel_test_migration_0024_suite";
+const LOCK_TIMEOUT_SECONDS = 60;
 
 async function connect(): Promise<mysql.Connection | null> {
   if (!process.env.TEST_DATABASE_URL) return null;
@@ -110,6 +162,54 @@ async function runFullChain(conn: mysql.Connection) {
   await runMigrationsWithLogging(conn, migrationsFolder, consoleMigrationLogger("[integration-test]"));
 }
 
+const journal = readMigrationJournal(migrationsFolder);
+const idx23When = journal.find((e) => e.tag === "0023_add_episode_sale_mode")!.when;
+const idx24When = journal.find((e) => e.tag === "0024_widen_episode_content_mediumtext")!.when;
+const idx27When = journal.find((e) => e.tag === "0027_add_daily_checkin_and_coupon_cap")!.when;
+const latestJournalWhen = journal[journal.length - 1].when;
+
+/**
+ * Explicitly verifies the database is at the fully-migrated baseline -
+ * called immediately after runFullChain(conn) at the START of every
+ * scenario (proving it truly began from a clean baseline, not one silently
+ * inherited from a possibly-incomplete previous cleanup) and again as part
+ * of cleanup itself (proving cleanup actually finished, not just that it
+ * was attempted). Added directly in response to Gate B/C's observed
+ * failure class: an inherited bad state previously only became visible as
+ * a confusing failure in a LATER, unrelated-looking scenario ("duplicate
+ * column isPublished", a journal timestamp mismatch); this turns that into
+ * an immediate, correctly-attributed failure at the point the bad state
+ * actually originated.
+ */
+async function verifyFullyMigratedBaseline(conn: mysql.Connection): Promise<void> {
+  const [rows]: any = await conn.query(`SELECT MAX(created_at) as latest FROM \`__drizzle_migrations\``);
+  const liveLatest = Number(rows[0]?.latest ?? -1);
+  if (liveLatest !== latestJournalWhen) {
+    throw new Error(
+      `verifyFullyMigratedBaseline: expected the migration journal high-water mark to be ${latestJournalWhen}, found ${liveLatest} - the database is not at the expected fully-migrated baseline (a previous scenario's cleanup may not have completed).`
+    );
+  }
+  for (const table of ["episodePurchases", "readingProgress"]) {
+    if (!(await tableExists(conn, table))) {
+      throw new Error(`verifyFullyMigratedBaseline: expected table "${table}" to exist at the fully-migrated baseline.`);
+    }
+  }
+  if (!(await columnExists(conn, "episodes", "content"))) {
+    throw new Error(`verifyFullyMigratedBaseline: expected column "episodes.content" to exist at the fully-migrated baseline.`);
+  }
+  for (const idx of EPISODES_DEPENDENT_INDEXES) {
+    if (!(await indexExists(conn, "episodes", idx))) {
+      throw new Error(`verifyFullyMigratedBaseline: expected index "${idx}" to exist at the fully-migrated baseline.`);
+    }
+  }
+}
+
+/** Runs the full chain and then explicitly verifies the result - the one function every scenario uses to establish (or restore) its starting/ending baseline. */
+async function runFullChainAndVerify(conn: mysql.Connection): Promise<void> {
+  await runFullChain(conn);
+  await verifyFullyMigratedBaseline(conn);
+}
+
 /**
  * Fully restores episodes/episodePurchases/readingProgress to the complete,
  * correct end state - always run in a finally block regardless of what a
@@ -122,21 +222,22 @@ async function runFullChain(conn: mysql.Connection) {
  * flow to restoreToFullyMigratedWithRetry() (see test-helpers/
  * restoreWithEmergencyRetry.ts and its dedicated unit tests) so a cleanup
  * failure is NEVER swallowed: it either resolves for real (primary or
- * verified emergency retry both succeeded) or throws - preserving the
- * primary failure - so this test is correctly reported as failed instead of
- * silently leaving the shared database dirty for later tests.
+ * verified emergency retry both succeeded AND independently re-verified via
+ * verifyFullyMigratedBaseline()) or throws - preserving the primary failure
+ * - so this test is correctly reported as failed instead of silently
+ * leaving the shared database dirty for later tests.
  */
 async function restoreToFullyMigrated(conn: mysql.Connection): Promise<void> {
   await restoreToFullyMigratedWithRetry(
-    () => runFullChain(conn),
+    () => runFullChainAndVerify(conn),
     {
       connect,
       queryLiveDatabaseName: async (emergencyConn) => {
         const [rows]: any = await emergencyConn.query("SELECT DATABASE() AS name");
         return rows?.[0]?.name ?? null;
       },
-      runCleanup: runFullChain,
-      closeConnection: (emergencyConn) => emergencyConn.end(),
+      runCleanup: runFullChainAndVerify,
+      closeConnection: (emergencyConn) => closeMysqlConnectionSafely(emergencyConn),
       expectedDatabaseName: EXPECTED_TEST_DATABASE_NAME,
     }
   );
@@ -148,23 +249,63 @@ async function restoreToFullyMigrated(conn: mysql.Connection): Promise<void> {
  * now throws on real cleanup failure (see above), and a plain
  * `await restoreToFullyMigrated(conn); await conn.end();` sequence would
  * skip the second statement entirely if the first throws, leaking the
- * connection. This wraps both so the connection is always released,
- * regardless of whether cleanup ultimately succeeded.
+ * connection. This wraps both so the connection is always released -
+ * through closeMysqlConnectionSafely(), never a bare `.end()` - regardless
+ * of whether cleanup ultimately succeeded.
  */
 async function cleanupTestConnection(conn: mysql.Connection): Promise<void> {
   try {
     await restoreToFullyMigrated(conn);
   } finally {
-    await conn.end();
+    await closeMysqlConnectionSafely(conn);
   }
 }
 
-const journal = readMigrationJournal(migrationsFolder);
-const idx23When = journal.find((e) => e.tag === "0023_add_episode_sale_mode")!.when;
-const idx24When = journal.find((e) => e.tag === "0024_widen_episode_content_mediumtext")!.when;
-const idx27When = journal.find((e) => e.tag === "0027_add_daily_checkin_and_coupon_cap")!.when;
+describe.sequential("migration 0024/0025/0028 repair - real disposable test database", () => {
+  // A dedicated named lock held for this file's ENTIRE run (acquired once
+  // before any scenario, released once after all of them) - so a second
+  // process (an overlapping or retried gate run) can never execute these
+  // destructive scenarios concurrently against the same shared database.
+  // This is distinct from (and does not replace) describe.sequential()
+  // above, which only orders execution WITHIN this one process - the named
+  // lock is the cross-process guarantee.
+  let lockConnection: mysql.Connection | null = null;
+  let lockHeld = false;
 
-describe("migration 0024/0025/0028 repair - real disposable test database", () => {
+  beforeAll(async () => {
+    lockConnection = await connect();
+    if (!lockConnection) return; // no TEST_DATABASE_URL - every test below already no-ops in this case
+    const [rows]: any = await lockConnection.query("SELECT GET_LOCK(?, ?) AS acquired", [LOCK_NAME, LOCK_TIMEOUT_SECONDS]);
+    const acquired = rows?.[0]?.acquired;
+    if (acquired !== 1) {
+      throw new Error(
+        `migration-0024 integration suite: could not acquire the dedicated named lock "${LOCK_NAME}" within ${LOCK_TIMEOUT_SECONDS}s (GET_LOCK returned ${acquired}) - another process appears to be running these destructive scenarios concurrently.`
+      );
+    }
+    lockHeld = true;
+  }, (LOCK_TIMEOUT_SECONDS + 30) * 1000);
+
+  afterAll(async () => {
+    if (!lockConnection) return;
+    try {
+      if (lockHeld) {
+        const [rows]: any = await lockConnection.query("SELECT RELEASE_LOCK(?) AS released", [LOCK_NAME]);
+        const released = rows?.[0]?.released;
+        // Only ever reported as released when RELEASE_LOCK genuinely
+        // returns 1 - anything else (0 = not held by this session, NULL =
+        // lock did not exist) is a non-fatal warning, never silently
+        // treated as a successful release.
+        if (released !== 1) {
+          console.warn(
+            `[migration-0024 integration test] RELEASE_LOCK did not report success (non-fatal): returned ${released}`
+          );
+        }
+      }
+    } finally {
+      await closeMysqlConnectionSafely(lockConnection);
+    }
+  }, 30000);
+
   it("1. a completely empty database (no relevant tables, no migration history) migrates 0000 through the newest migration successfully", async () => {
     const conn = await connect();
     if (!conn) return;
@@ -173,7 +314,9 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
       // this IS "completely empty" with respect to this migration chain's
       // own bookkeeping (__drizzle_migrations), which is what determines
       // whether migrations 0000-0022's non-idempotent CREATE TABLE
-      // statements are even attempted.
+      // statements are even attempted. (Deliberately does NOT call
+      // runFullChainAndVerify() first - the whole point of this scenario
+      // is to start from nothing, not from a verified baseline.)
       const [tables]: any = await conn.query(
         `SELECT table_name as name FROM information_schema.tables WHERE table_schema = DATABASE()`
       );
@@ -192,13 +335,13 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
     } finally {
       await cleanupTestConnection(conn!);
     }
-  }, 60000);
+  }, MIGRATION_0024_TEST_TIMEOUT_MS);
 
   it("2. episodes exists without the legacy reader columns - migration 0024 creates them", async () => {
     const conn = await connect();
     if (!conn) return;
     try {
-      await runFullChain(conn); // known-good starting baseline
+      await runFullChainAndVerify(conn); // verified fully-migrated baseline
       await rewindMigrationHistoryAfter(conn, idx23When); // pretend only 0000-0023 ever ran
       // isPublished/sortOrder are covered by secondary indexes (see
       // EPISODES_DEPENDENT_INDEXES) - TiDB refuses to drop those columns
@@ -228,13 +371,13 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
     } finally {
       await cleanupTestConnection(conn!);
     }
-  }, 60000);
+  }, MIGRATION_0024_TEST_TIMEOUT_MS);
 
   it("3. journal history shows 0023 already applied, but the 0024 prerequisites are missing", async () => {
     const conn = await connect();
     if (!conn) return;
     try {
-      await runFullChain(conn);
+      await runFullChainAndVerify(conn);
       await rewindMigrationHistoryAfter(conn, idx23When);
       await dropColumnIfExists(conn, "episodes", "content");
       await dropTableIfExists(conn, "episodePurchases");
@@ -253,13 +396,13 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
     } finally {
       await cleanupTestConnection(conn!);
     }
-  }, 60000);
+  }, MIGRATION_0024_TEST_TIMEOUT_MS);
 
   it("4. only some legacy columns are present - migration adds exactly the missing ones without erroring on the rest", async () => {
     const conn = await connect();
     if (!conn) return;
     try {
-      await runFullChain(conn);
+      await runFullChainAndVerify(conn);
       await rewindMigrationHistoryAfter(conn, idx23When);
       // isPublished/sortOrder are covered by secondary indexes (see
       // EPISODES_DEPENDENT_INDEXES) - TiDB refuses to drop those columns
@@ -290,13 +433,13 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
     } finally {
       await cleanupTestConnection(conn!);
     }
-  }, 60000);
+  }, MIGRATION_0024_TEST_TIMEOUT_MS);
 
   it("5. the full legacy schema is already present (e.g. via a manual drizzle-kit push) - migration is a guarded no-op", async () => {
     const conn = await connect();
     if (!conn) return;
     try {
-      await runFullChain(conn);
+      await runFullChainAndVerify(conn);
       await rewindMigrationHistoryAfter(conn, idx23When);
       // Everything already present (it never was dropped) - this is the
       // "already fully correct, migration must not error" case.
@@ -310,20 +453,20 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
     } finally {
       await cleanupTestConnection(conn!);
     }
-  }, 60000);
+  }, MIGRATION_0024_TEST_TIMEOUT_MS);
 
   it("6. readingProgress is missing entirely despite the journal already being fully recorded - migration 0028 recreates it", async () => {
     const conn = await connect();
     if (!conn) return;
     try {
-      await runFullChain(conn); // full history recorded, including 0028
+      await runFullChainAndVerify(conn); // full history recorded, including 0028
       await dropTableIfExists(conn, "readingProgress");
       expect(await tableExists(conn, "readingProgress")).toBe(false);
 
       // History is already past 0024/0025 - only a migration newer than
       // everything before it (0028) can possibly run now.
       const [rows]: any = await conn.query(`SELECT COUNT(*) as cnt FROM \`__drizzle_migrations\` WHERE created_at > ?`, [idx27When]);
-      expect(Number(rows[0].cnt)).toBeGreaterThan(0); // 0028 already recorded from the runFullChain() above
+      expect(Number(rows[0].cnt)).toBeGreaterThan(0); // 0028 already recorded from runFullChainAndVerify() above
 
       // Rewind ONLY 0028's own record so it can run again and prove the repair.
       await conn.query(`DELETE FROM \`__drizzle_migrations\` WHERE created_at > ?`, [idx27When]);
@@ -334,13 +477,13 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
     } finally {
       await cleanupTestConnection(conn!);
     }
-  }, 60000);
+  }, MIGRATION_0024_TEST_TIMEOUT_MS);
 
   it("7. readingProgress exists without the 0025 TOC columns - migration 0025 adds exactly those", async () => {
     const conn = await connect();
     if (!conn) return;
     try {
-      await runFullChain(conn);
+      await runFullChainAndVerify(conn);
       await rewindMigrationHistoryAfter(conn, idx24When); // 0024 recorded, 0025 not yet
       for (const col of ["currentChapterNumber", "currentChapterTitle", "anchorKey"]) {
         await dropColumnIfExists(conn, "readingProgress", col);
@@ -356,13 +499,13 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
     } finally {
       await cleanupTestConnection(conn!);
     }
-  }, 60000);
+  }, MIGRATION_0024_TEST_TIMEOUT_MS);
 
   it("8. migration rerun is idempotent - running the full chain twice in a row makes no further changes", async () => {
     const conn = await connect();
     if (!conn) return;
     try {
-      await runFullChain(conn);
+      await runFullChainAndVerify(conn);
       await expect(runFullChain(conn)).resolves.not.toThrow(); // second run: nothing pending, must be a clean no-op
 
       // Force 0024/0025/0028's raw SQL to run again directly, bypassing the
@@ -382,13 +525,13 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
     } finally {
       await cleanupTestConnection(conn!);
     }
-  }, 60000);
+  }, MIGRATION_0024_TEST_TIMEOUT_MS);
 
   it("9. the final schema agrees with drizzle/schema.ts for the objects this repair concerns", async () => {
     const conn = await connect();
     if (!conn) return;
     try {
-      await runFullChain(conn);
+      await runFullChainAndVerify(conn);
 
       const expectedEpisodesColumns: Record<string, string> = {
         content: "mediumtext",
@@ -417,7 +560,7 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
     } finally {
       await cleanupTestConnection(conn!);
     }
-  }, 60000);
+  }, MIGRATION_0024_TEST_TIMEOUT_MS);
 
   it("10. the migration journal does not advance past a migration that fails", async () => {
     const conn = await connect();
@@ -427,30 +570,37 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
     // never touches or corrupts the real repo migration files - proves the
     // exact resume/skip property this task cares about using a deliberately
     // broken migration, without risking the real chain.
-    //
-    // The synthetic entries' `when` values must be strictly greater than
-    // BOTH the highest timestamp in the repo's own journal AND whatever is
-    // currently the live high-water mark in this shared database's
-    // __drizzle_migrations table. Hardcoded small values like `when: 1`/
-    // `when: 2` are invalid here: this table's real high-water mark is
-    // already far larger (every real migration in drizzle/meta/_journal.json
-    // has already run against this database via runFullChain() in earlier
-    // tests), so drizzle's resume logic - "pending if
-    // lastMigration.created_at < entry.when" - would see both synthetic
-    // entries as already-in-the-past and skip them entirely, meaning the
-    // intentionally invalid SQL in tag2 would never even be attempted and
-    // this test would pass for the wrong reason.
-    const repositoryJournalMax = Math.max(...journal.map((entry) => entry.when));
-    const [liveMaxRows]: any = await conn.query(`SELECT MAX(created_at) as latest FROM \`__drizzle_migrations\``);
-    const liveDatabaseMax = Number(liveMaxRows[0]?.latest ?? 0);
-    const syntheticBaseWhen = Math.max(repositoryJournalMax, liveDatabaseMax) + 1000; // safe positive offset, clear of both watermarks
-    const when1 = syntheticBaseWhen;
-    const when2 = syntheticBaseWhen + 1;
-
     const tmpFolder = fs.mkdtempSync(path.join(os.tmpdir(), "ipenovel-migration-failure-test-"));
     const tag1 = "0000_synthetic_ok";
     const tag2 = "0001_synthetic_broken";
+    let when1 = -1;
+    let when2 = -1;
     try {
+      // Explicit, verified baseline before computing synthetic timestamps -
+      // this scenario does not mutate the real schema, but it DOES read
+      // and write __drizzle_migrations, so it must start from the same
+      // guaranteed-correct state every other scenario does.
+      await runFullChainAndVerify(conn);
+
+      // The synthetic entries' `when` values must be strictly greater than
+      // BOTH the highest timestamp in the repo's own journal AND whatever is
+      // currently the live high-water mark in this shared database's
+      // __drizzle_migrations table. Hardcoded small values like `when: 1`/
+      // `when: 2` are invalid here: this table's real high-water mark is
+      // already far larger (every real migration in drizzle/meta/_journal.json
+      // has already run against this database via runFullChainAndVerify()
+      // above), so drizzle's resume logic - "pending if
+      // lastMigration.created_at < entry.when" - would see both synthetic
+      // entries as already-in-the-past and skip them entirely, meaning the
+      // intentionally invalid SQL in tag2 would never even be attempted and
+      // this test would pass for the wrong reason.
+      const repositoryJournalMax = Math.max(...journal.map((entry) => entry.when));
+      const [liveMaxRows]: any = await conn.query(`SELECT MAX(created_at) as latest FROM \`__drizzle_migrations\``);
+      const liveDatabaseMax = Number(liveMaxRows[0]?.latest ?? 0);
+      const syntheticBaseWhen = Math.max(repositoryJournalMax, liveDatabaseMax) + 1000; // safe positive offset, clear of both watermarks
+      when1 = syntheticBaseWhen;
+      when2 = syntheticBaseWhen + 1;
+
       fs.mkdirSync(path.join(tmpFolder, "meta"));
       fs.writeFileSync(
         path.join(tmpFolder, "meta", "_journal.json"),
@@ -468,27 +618,43 @@ describe("migration 0024/0025/0028 repair - real disposable test database", () =
 
       await expect(runMigrationsWithLogging(conn, tmpFolder, consoleMigrationLogger("[integration-test]"))).rejects.toThrow();
 
-      // The first synthetic migration ran and was recorded; the second ran and failed, and got no record.
-      const [rows]: any = await conn.query(
-        `SELECT hash, created_at FROM \`__drizzle_migrations\` WHERE created_at IN (${when1}, ${when2})`
+      // Verified directly (never via a global MAX(created_at) comparison,
+      // which could be wrong if unrelated valid rows with even newer
+      // timestamps legitimately exist elsewhere in the table): the
+      // successful synthetic migration's exact row exists, and the failed
+      // synthetic migration's exact row does not.
+      const [successRows]: any = await conn.query(
+        `SELECT COUNT(*) as cnt FROM \`__drizzle_migrations\` WHERE created_at = ?`,
+        [when1]
       );
-      expect(rows.length).toBe(1); // only the first (successful) migration was recorded
-      expect(Number(rows[0].created_at)).toBe(when1);
+      expect(Number(successRows[0].cnt)).toBe(1);
+
+      const [failedRows]: any = await conn.query(
+        `SELECT COUNT(*) as cnt FROM \`__drizzle_migrations\` WHERE created_at = ?`,
+        [when2]
+      );
+      expect(Number(failedRows[0].cnt)).toBe(0);
 
       const [tableRows]: any = await conn.query(
         `SELECT COUNT(*) as cnt FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'ipenovel_synthetic_ok'`
       );
       expect(Number(tableRows[0].cnt)).toBe(1); // the successful migration's DDL really ran
-
-      // The journal's resume high-water mark does not advance past the failed migration.
-      const [finalMaxRows]: any = await conn.query(`SELECT MAX(created_at) as latest FROM \`__drizzle_migrations\``);
-      expect(Number(finalMaxRows[0].latest)).toBe(when1);
     } finally {
-      // Cleanup deletes only these exact synthetic timestamps - never a range - so it can never touch real migration history.
-      await conn.query(`DELETE FROM \`__drizzle_migrations\` WHERE created_at IN (${when1}, ${when2})`).catch(() => {});
+      // Cleanup deletes only these exact synthetic timestamps - never a
+      // range - so it can never touch real migration history. Cleanup
+      // failures are never swallowed: restoreToFullyMigrated() (via
+      // cleanupTestConnection()) still throws on a genuine failure below,
+      // it is only the synthetic-row/table teardown here that is
+      // best-effort (there is nothing further to escalate to if deleting
+      // two specific, already-isolated synthetic rows fails - the real
+      // schema-restoration guarantee is restoreToFullyMigrated()'s, invoked
+      // via cleanupTestConnection() below regardless).
+      if (when1 !== -1) {
+        await conn.query(`DELETE FROM \`__drizzle_migrations\` WHERE created_at IN (${when1}, ${when2})`).catch(() => {});
+      }
       await conn.query("DROP TABLE IF EXISTS `ipenovel_synthetic_ok`").catch(() => {});
       fs.rmSync(tmpFolder, { recursive: true, force: true });
-      await conn.end();
+      await cleanupTestConnection(conn);
     }
-  }, 60000);
+  }, MIGRATION_0024_TEST_TIMEOUT_MS);
 });

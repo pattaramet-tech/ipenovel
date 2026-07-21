@@ -457,6 +457,14 @@ pnpm test:repeat 3
 
 # Release gate - compare against the known-failure baseline
 pnpm test:gate
+
+# Gate B - prepare, then run ONLY the migration-0024 integration test file
+# (the destructive migration-repair suite) as two directly-spawned child
+# processes (no shell pipeline, so no `| tee` exit-code-masking risk - see
+# the pipefail note above). Requires TEST_DATABASE_URL like the other
+# database-backed commands above.
+export TEST_DATABASE_URL="mysql://user:pass@host:3306/ipenovel_test"
+pnpm test:gate:b
 ```
 
 **Never point `TEST_DATABASE_URL` or `DATABASE_URL` (while running tests)
