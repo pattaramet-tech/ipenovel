@@ -26,6 +26,19 @@ const translations: Record<Language, Record<string, string>> = {
     "nav.signedInAs": "ลงชื่อเข้าใช้เป็น",
     "nav.viewOrders": "ดูคำสั่งซื้อ",
     "nav.backToCart": "กลับไปยังตะกร้า",
+    "nav.profile": "โปรไฟล์",
+
+    // Daily check-in
+    "checkin.title": "เช็กอินรายวัน รับคูปองส่วนลด",
+    "checkin.description": "เช็กอินได้วันละ 1 ครั้ง",
+    "checkin.loginPrompt": "เข้าสู่ระบบเพื่อรับคูปองส่วนลดทุกวัน",
+    "checkin.claimButton": "เช็กอินรับคูปอง",
+    "checkin.claiming": "กำลังเช็กอิน...",
+    "checkin.alreadyCheckedIn": "เช็กอินวันนี้แล้ว",
+    "checkin.retry": "ลองใหม่อีกครั้ง",
+    "checkin.error": "ไม่สามารถโหลดข้อมูลเช็กอินได้ กรุณาลองใหม่อีกครั้ง",
+    "checkin.couponCode": "รหัสคูปอง",
+    "checkin.expires": "หมดอายุ",
 
     // Home page
     "home.title": "ยินดีต้อนรับสู่ Ipe นิยายแปล",
@@ -543,6 +556,19 @@ const translations: Record<Language, Record<string, string>> = {
     "nav.signedInAs": "Signed in as",
     "nav.viewOrders": "View Orders",
     "nav.backToCart": "Back to Cart",
+    "nav.profile": "Profile",
+
+    // Daily check-in
+    "checkin.title": "Daily Check-in: Get a Discount Coupon",
+    "checkin.description": "Check in once per day",
+    "checkin.loginPrompt": "Sign in to get a discount coupon every day",
+    "checkin.claimButton": "Check In for a Coupon",
+    "checkin.claiming": "Checking in...",
+    "checkin.alreadyCheckedIn": "Checked in today",
+    "checkin.retry": "Try again",
+    "checkin.error": "Unable to load check-in information. Please try again.",
+    "checkin.couponCode": "Coupon code",
+    "checkin.expires": "Expires",
 
     // Home page
     "home.title": "Welcome to Ipe นิยายแปล",

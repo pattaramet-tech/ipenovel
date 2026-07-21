@@ -197,6 +197,20 @@
       "when": 1784489747346,
       "tag": "0027_add_daily_checkin_and_coupon_cap",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "5",
+      "when": 1784600000000,
+      "tag": "0028_repair_episode_reader_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "5",
+      "when": 1784601000000,
+      "tag": "0029_add_dynamic_daily_checkin_reward_schema",
+      "breakpoints": true
     }
   ]
 }

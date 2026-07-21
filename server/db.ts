@@ -31,15 +31,35 @@ import {
   sportsMatches,
   sportsMatchVotes,
   sportsMatchRewards,
+  dailyCheckins,
   Novel,
   couponUsages as couponUsagesTable,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import { pickRandom } from "./utils/random";
+import { getBangkokBusinessDate, getNextBangkokDayStart } from "./_core/timezone";
+import { getEffectiveDailyCheckinConfig } from "./_core/dailyCheckinConfig";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
+// Test-only dependency-injection hook - lets integration test setup point
+// every production function in this file (claimDailyCheckin,
+// validateAndApplyCoupon's callers, etc.) at a real TEST_DATABASE_URL
+// connection without getDb() ever reading or writing process.env.DATABASE_URL.
+// This exists specifically so vitest.integration.globalsetup.ts can satisfy
+// "no test/reset/seed/cleanup/migration command may touch DATABASE_URL"
+// while still exercising real production code paths against a real
+// database, rather than reimplementing business logic in test files. See
+// docs/INCIDENT_DAILY_CHECKIN_ROLLBACK.md. Never called by production code -
+// grep confirms the only callers are test setup/teardown.
+let _dbOverrideForTests: ReturnType<typeof drizzle> | null = null;
+
+export function __setDbForTests(db: ReturnType<typeof drizzle> | null): void {
+  _dbOverrideForTests = db;
+}
+
 export async function getDb() {
+  if (_dbOverrideForTests) return _dbOverrideForTests;
   if (!_db && process.env.DATABASE_URL) {
     try {
       _db = drizzle(process.env.DATABASE_URL);
@@ -1371,6 +1391,47 @@ export async function getAllCoupons() {
   return db.select().from(coupons).orderBy(desc(coupons.createdAt));
 }
 
+/**
+ * Look up which reward-tracking table (if any) a coupon belongs to, and
+ * return its ownership/status. A coupon with no match in any reward table
+ * is a regular, non-user-scoped coupon (usable by anyone, subject only to
+ * the normal isActive/expiresAt/usageCount checks).
+ *
+ * Single shared source of truth for "is this a reward coupon, and who owns
+ * it" - both validateAndApplyCoupon (orderService.ts) and
+ * getActiveCouponsForCart (below) call this instead of querying each
+ * reward table directly, so adding a third reward type later only means
+ * extending this one function. See docs/DAILY_CHECKIN_COUPON.md PART A
+ * risk #1.
+ */
+export async function getRewardCouponOwnership(
+  couponId: number,
+  tx?: any
+): Promise<{ userId: number; status: string } | null> {
+  const database = tx || (await getDb());
+  if (!database) return null;
+
+  const sportsReward = await database
+    .select()
+    .from(sportsMatchRewards)
+    .where(eq(sportsMatchRewards.couponId, couponId))
+    .limit(1);
+  if (sportsReward.length > 0) {
+    return { userId: sportsReward[0].userId, status: sportsReward[0].status };
+  }
+
+  const checkinReward = await database
+    .select()
+    .from(dailyCheckins)
+    .where(eq(dailyCheckins.couponId, couponId))
+    .limit(1);
+  if (checkinReward.length > 0) {
+    return { userId: checkinReward[0].userId, status: checkinReward[0].status };
+  }
+
+  return null;
+}
+
 export async function getActiveCouponsForCart(subtotal?: string | number, userId?: number) {
   const db = await getDb();
   if (!db) return [];
@@ -1399,21 +1460,18 @@ export async function getActiveCouponsForCart(subtotal?: string | number, userId
   if (userId) {
     filteredResult = [];
     for (const coupon of result) {
-      const rewardCheck = await db
-        .select()
-        .from(sportsMatchRewards)
-        .where(eq(sportsMatchRewards.couponId, coupon.id))
-        .limit(1);
+      const ownership = await getRewardCouponOwnership(coupon.id);
 
-      // Include coupon if it's not a reward coupon, or if it belongs to this user AND has issued status
-      if (rewardCheck.length === 0) {
-        // Not a sports reward coupon, include it
+      // Include coupon if it's not a reward coupon (any user/sports match or
+      // daily check-in), or if it belongs to this user AND has issued status
+      if (!ownership) {
+        // Not a reward coupon, include it
         filteredResult.push(coupon);
-      } else if (rewardCheck[0].userId === userId && rewardCheck[0].status === "issued") {
-        // Sports reward coupon that belongs to this user and is still issued (not used/expired/void)
+      } else if (ownership.userId === userId && ownership.status === "issued") {
+        // Reward coupon that belongs to this user and is still issued (not used/void)
         filteredResult.push(coupon);
       }
-      // Otherwise exclude: either belongs to different user, or status is used/expired/void
+      // Otherwise exclude: either belongs to different user, or status is used/void
     }
   }
 
@@ -4333,6 +4391,252 @@ export async function getSportsRewardsForUser(userId: number) {
                   reward.expiresAt && new Date(reward.expiresAt).getTime() <= Date.now() ? "expired" :
                   "issued",
   }));
+}
+
+// ============ DAILY CHECK-IN ============
+
+const DAILY_CHECKIN_CAMPAIGN_KEY = "default";
+
+function buildDailyCheckinCouponCode(userId: number, checkinDate: string): string {
+  const random = Math.random().toString(36).slice(2, 8).toUpperCase();
+  const compactDate = checkinDate.replace(/-/g, "");
+  return `CHKIN${compactDate}U${userId}${random}`.slice(0, 50);
+}
+
+export interface DailyCheckinRewardSummary {
+  couponId: number;
+  couponCode: string;
+  discountType: string;
+  discountValue: string;
+  maxDiscountAmount: string | null;
+  minPurchaseAmount: string;
+  expiresAt: Date | null;
+  status: string;
+}
+
+interface DailyCheckinJoinedRow {
+  id: number;
+  checkinDate: string;
+  status: string;
+  issuedAt: Date;
+  couponId: number;
+  couponCode: string;
+  discountType: string;
+  discountValue: string;
+  maxDiscountAmount: string | null;
+  minPurchaseAmount: string;
+  expiresAt: Date | null;
+}
+
+function toDailyCheckinRewardSummary(row: DailyCheckinJoinedRow): DailyCheckinRewardSummary {
+  return {
+    couponId: row.couponId,
+    couponCode: row.couponCode,
+    discountType: row.discountType,
+    discountValue: row.discountValue,
+    maxDiscountAmount: row.maxDiscountAmount,
+    minPurchaseAmount: row.minPurchaseAmount,
+    expiresAt: row.expiresAt,
+    status: row.status,
+  };
+}
+
+async function getDailyCheckinForUserAndDate(
+  userId: number,
+  checkinDate: string,
+  tx?: any
+): Promise<DailyCheckinJoinedRow | undefined> {
+  const database = tx || (await getDb());
+  if (!database) return undefined;
+
+  const result = await database
+    .select({
+      id: dailyCheckins.id,
+      checkinDate: dailyCheckins.checkinDate,
+      status: dailyCheckins.status,
+      issuedAt: dailyCheckins.issuedAt,
+      couponId: coupons.id,
+      couponCode: coupons.code,
+      discountType: coupons.discountType,
+      discountValue: coupons.discountValue,
+      maxDiscountAmount: coupons.maxDiscountAmount,
+      minPurchaseAmount: coupons.minPurchaseAmount,
+      expiresAt: coupons.expiresAt,
+    })
+    .from(dailyCheckins)
+    .innerJoin(coupons, eq(dailyCheckins.couponId, coupons.id))
+    .where(
+      and(
+        eq(dailyCheckins.userId, userId),
+        eq(dailyCheckins.checkinDate, checkinDate),
+        eq(dailyCheckins.campaignKey, DAILY_CHECKIN_CAMPAIGN_KEY)
+      )
+    )
+    .limit(1);
+
+  return result[0];
+}
+
+export async function getDailyCheckinStatus(userId: number): Promise<{
+  checkedInToday: boolean;
+  checkinDate: string;
+  checkedInAt: Date | null;
+  campaignActive: boolean;
+  reward: DailyCheckinRewardSummary | null;
+  nextCheckinAt: Date;
+}> {
+  const database = await getDb();
+  if (!database) throw new Error("Database not available");
+
+  const config = await getEffectiveDailyCheckinConfig();
+  const checkinDate = getBangkokBusinessDate();
+  const existing = await getDailyCheckinForUserAndDate(userId, checkinDate);
+
+  return {
+    checkedInToday: !!existing,
+    checkinDate,
+    checkedInAt: existing?.issuedAt ?? null,
+    campaignActive: config.isActive,
+    reward: existing ? toDailyCheckinRewardSummary(existing) : null,
+    nextCheckinAt: getNextBangkokDayStart(checkinDate),
+  };
+}
+
+/**
+ * Claim today's daily check-in reward. Idempotent in its result: calling
+ * this twice on the same Bangkok business day never issues a second coupon
+ * - the second call (and any concurrent racing call) returns
+ * alreadyClaimed: true with the same coupon the first/winning call issued.
+ *
+ * Concurrency safety comes from the DB, not from the pre-check below (which
+ * is a fast-path optimization only): the coupon and the dailyCheckins row
+ * are inserted in one transaction, and dailyCheckins' UNIQUE(userId,
+ * checkinDate, campaignKey) constraint is what actually arbitrates two
+ * simultaneous requests - the loser's whole transaction (coupon insert
+ * included) is rolled back, and it re-reads the winner's row to answer with
+ * the same reward. See docs/DAILY_CHECKIN_COUPON.md PART C.
+ */
+export async function claimDailyCheckin(userId: number): Promise<{
+  claimed: boolean;
+  alreadyClaimed: boolean;
+  campaignActive: boolean;
+  checkinDate: string;
+  reward: DailyCheckinRewardSummary | null;
+}> {
+  const database = await getDb();
+  if (!database) throw new Error("Database not available");
+
+  const config = await getEffectiveDailyCheckinConfig();
+  const checkinDate = getBangkokBusinessDate();
+
+  // Kill switch: report an already-issued reward honestly (a user who
+  // claimed before the campaign was disabled keeps their coupon), but never
+  // issue a new one while disabled.
+  if (!config.isActive) {
+    const existing = await getDailyCheckinForUserAndDate(userId, checkinDate);
+    return {
+      claimed: false,
+      alreadyClaimed: !!existing,
+      campaignActive: false,
+      checkinDate,
+      reward: existing ? toDailyCheckinRewardSummary(existing) : null,
+    };
+  }
+
+  // Fast path only - not the correctness guarantee (see unique-constraint
+  // fallback below). Avoids opening a write transaction for the common
+  // "already checked in today" / duplicate-click case.
+  const existingBeforeTx = await getDailyCheckinForUserAndDate(userId, checkinDate);
+  if (existingBeforeTx) {
+    return {
+      claimed: false,
+      alreadyClaimed: true,
+      campaignActive: true,
+      checkinDate,
+      reward: toDailyCheckinRewardSummary(existingBeforeTx),
+    };
+  }
+
+  try {
+    const issued = await database.transaction(async (tx: any) => {
+      const code = buildDailyCheckinCouponCode(userId, checkinDate);
+      const expiresAt = new Date(Date.now() + config.validityDays * 24 * 60 * 60 * 1000);
+      const discountValue = config.rewardPercent.toFixed(2);
+      const maxDiscountAmount = config.maxDiscountAmount.toFixed(2);
+      const minPurchaseAmount = config.minPurchaseAmount.toFixed(2);
+
+      const couponResult = await tx.insert(coupons).values({
+        code,
+        discountType: "percentage",
+        discountValue,
+        maxDiscountAmount,
+        minPurchaseAmount,
+        maxUsageCount: 1,
+        usageCount: 0,
+        isActive: true,
+        expiresAt,
+      });
+      const couponId = extractInsertId(couponResult);
+
+      // This insert is the actual race arbiter - if a concurrent request
+      // already committed a row for this (userId, checkinDate,
+      // campaignKey), this throws ER_DUP_ENTRY and the whole transaction
+      // (including the coupon insert above) is rolled back.
+      await tx.insert(dailyCheckins).values({
+        userId,
+        checkinDate,
+        campaignKey: DAILY_CHECKIN_CAMPAIGN_KEY,
+        couponId,
+        status: "issued",
+        issuedAt: new Date(),
+      });
+
+      return {
+        couponId,
+        couponCode: code,
+        discountType: "percentage",
+        discountValue,
+        maxDiscountAmount,
+        minPurchaseAmount,
+        expiresAt,
+        status: "issued",
+      };
+    });
+
+    return { claimed: true, alreadyClaimed: false, campaignActive: true, checkinDate, reward: issued };
+  } catch (error: any) {
+    if (error?.errno === 1062 || error?.code === "ER_DUP_ENTRY") {
+      const winner = await getDailyCheckinForUserAndDate(userId, checkinDate);
+      if (winner) {
+        return {
+          claimed: false,
+          alreadyClaimed: true,
+          campaignActive: true,
+          checkinDate,
+          reward: toDailyCheckinRewardSummary(winner),
+        };
+      }
+    }
+    throw error;
+  }
+}
+
+export async function markDailyCheckinCouponUsed(couponId: number, userId: number, tx?: any): Promise<void> {
+  const database = tx || (await getDb());
+  if (!database) throw new Error("Database not available");
+
+  const reward = await database
+    .select()
+    .from(dailyCheckins)
+    .where(and(eq(dailyCheckins.couponId, couponId), eq(dailyCheckins.userId, userId)))
+    .limit(1);
+
+  if (reward.length > 0 && reward[0].status === "issued") {
+    await database
+      .update(dailyCheckins)
+      .set({ status: "used", usedAt: new Date() })
+      .where(eq(dailyCheckins.id, reward[0].id));
+  }
 }
 
 /**

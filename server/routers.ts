@@ -813,6 +813,45 @@ export const appRouter = router({
       }),
   }),
 
+  // ============ DAILY CHECK-IN ============
+  // getStatus is intentionally public (not protectedProcedure) - it must
+  // return a clean { authenticated: false } for anonymous visitors so the
+  // UI can render a login CTA, instead of the generic UNAUTHORIZED error a
+  // protectedProcedure would throw. claim is the actual write path and
+  // stays protected: an anonymous claim attempt must be rejected outright.
+  dailyCheckin: router({
+    getStatus: publicProcedure.query(async ({ ctx }) => {
+      if (!ctx.user) {
+        return { authenticated: false as const };
+      }
+      try {
+        const status = await db.getDailyCheckinStatus(ctx.user.id);
+        return { authenticated: true as const, ...status };
+      } catch (error: any) {
+        // Never let a raw DB/SQL error (table name, column name, query
+        // shape) reach the client - log full detail server-side only. See
+        // docs/DAILY_CHECKIN_DEPLOYMENT_FIX.md PART B.
+        console.error("[dailyCheckin.getStatus] failed", { userId: ctx.user.id, message: error?.message });
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Unable to load check-in information. Please try again.",
+        });
+      }
+    }),
+
+    claim: protectedProcedure.mutation(async ({ ctx }) => {
+      try {
+        return await db.claimDailyCheckin(ctx.user.id);
+      } catch (error: any) {
+        console.error("[dailyCheckin.claim] failed", { userId: ctx.user.id, message: error?.message });
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Unable to process check-in right now. Please try again.",
+        });
+      }
+    }),
+  }),
+
   // ============ FILE MANAGEMENT ============
   files: fileRouter,
 
@@ -1850,6 +1889,39 @@ export const appRouter = router({
           }
 
           console.log(`[Admin] OCR settings updated:`, input);
+          return { success: true };
+        }),
+    }),
+
+    // Daily check-in campaign config (Phase 5) - reuses the same
+    // settings-table-backed pattern as OCR settings above, not a new large
+    // admin page. See docs/DAILY_CHECKIN_COUPON.md PART H.
+    dailyCheckin: router({
+      getConfig: adminProcedure.query(async () => {
+        const { getEffectiveDailyCheckinConfig } = await import("./_core/dailyCheckinConfig");
+        return getEffectiveDailyCheckinConfig();
+      }),
+
+      updateConfig: adminProcedure
+        .input(
+          z.object({
+            isActive: z.boolean().optional(),
+            rewardPercent: z.number().positive().max(100).optional(),
+            maxDiscountAmount: z.number().positive().optional(),
+            minPurchaseAmount: z.number().min(0).optional(),
+            validityDays: z.number().int().positive().max(365).optional(),
+          })
+        )
+        .mutation(async ({ input }) => {
+          const { saveDailyCheckinCampaignConfig } = await import("./_core/dailyCheckinConfig");
+          const result = await saveDailyCheckinCampaignConfig(input);
+          if (!result.success) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: result.errors?.join(", ") || "Failed to save daily check-in config",
+            });
+          }
+          console.log(`[Admin] Daily check-in config updated:`, input);
           return { success: true };
         }),
     }),
