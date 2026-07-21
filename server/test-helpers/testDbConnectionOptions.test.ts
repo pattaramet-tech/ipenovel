@@ -174,3 +174,52 @@ describe("scripts/test-db-prepare.ts diagnostics never use private Node APIs", (
     expect(source).toMatch(/process\.exitCode\s*=\s*1/);
   });
 });
+
+describe("scripts/test-db-prepare.ts logActiveResources() never logs the caught error on its diagnostics failure path", () => {
+  function extractLogActiveResourcesSource(): string {
+    const source = codeOnly(fs.readFileSync(path.join(repoRoot, "scripts/test-db-prepare.ts"), "utf8"));
+    const start = source.indexOf("function logActiveResources()");
+    expect(start).toBeGreaterThan(-1);
+    // logActiveResources() is immediately followed by `async function main()` -
+    // slicing up to there isolates exactly this one function's body.
+    const end = source.indexOf("async function main()", start);
+    expect(end).toBeGreaterThan(start);
+    return source.slice(start, end);
+  }
+
+  it("catches with no bound error variable at all (a bare `catch {}`)", () => {
+    const fnSource = extractLogActiveResourcesSource();
+    expect(fnSource).toMatch(/catch\s*\{/);
+    expect(fnSource).not.toMatch(/catch\s*\(/);
+  });
+
+  it("logs a single fixed, non-interpolated message on failure", () => {
+    const fnSource = extractLogActiveResourcesSource();
+    expect(fnSource).toMatch(/console\.log\("\[test:db:prepare\]\[diagnostics\] failed to read active resource types"\)/);
+  });
+
+  it("never references error.message", () => {
+    const fnSource = extractLogActiveResourcesSource();
+    expect(fnSource).not.toMatch(/error\s*\?\.\s*message/);
+    expect(fnSource).not.toMatch(/error\s*\.\s*message/);
+  });
+
+  it("never calls String(error)", () => {
+    const fnSource = extractLogActiveResourcesSource();
+    expect(fnSource).not.toMatch(/String\s*\(\s*error\s*\)/);
+  });
+
+  it("never references an `error` identifier anywhere in the function - proves no raw error object, stack, or cause can be logged", () => {
+    const fnSource = extractLogActiveResourcesSource();
+    // A bare `catch {}` (asserted above) means no variable named `error` is
+    // even in scope inside this function - so the identifier "error"
+    // appearing anywhere here at all would indicate the caught exception
+    // (or some other error-shaped value) is being referenced/logged.
+    expect(fnSource).not.toMatch(/\berror\b/);
+  });
+
+  it("still contains no reference to _getActiveHandles", () => {
+    const fnSource = extractLogActiveResourcesSource();
+    expect(fnSource).not.toMatch(/_getActiveHandles/);
+  });
+});

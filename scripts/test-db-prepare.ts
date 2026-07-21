@@ -61,12 +61,14 @@ function logActiveResources(): void {
     const resourceTypes: string[] =
       typeof (process as any).getActiveResourcesInfo === "function" ? (process as any).getActiveResourcesInfo() : [];
     console.log(`[test:db:prepare][diagnostics] remaining active resource types: ${JSON.stringify(resourceTypes)}`);
-  } catch (error) {
-    console.log(
-      `[test:db:prepare][diagnostics] failed to read active resources (non-fatal): ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    );
+  } catch {
+    // Fixed, non-interpolated message only - the caught error/exception is
+    // NEVER included (not error.message, not String(error), not stack,
+    // not cause, not any other property) since diagnostic output must only
+    // ever contain fixed lifecycle marker strings and
+    // process.getActiveResourcesInfo()'s own resource type strings, never
+    // arbitrary exception text that could carry unrelated details.
+    console.log("[test:db:prepare][diagnostics] failed to read active resource types");
   }
 }
 
