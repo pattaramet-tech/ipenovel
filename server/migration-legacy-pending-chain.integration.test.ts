@@ -189,7 +189,15 @@ describe.sequential("legacy pending migration chain repair (real disposable test
         // known-good state to insert pre-existing application rows into.
         await runFullChain(conn);
 
-        const [paymentResult]: any = await conn.query(`INSERT INTO \`payments\` (orderId) VALUES (?)`, [markerOrderId]);
+        // payments.ocrConfidence is INT NOT NULL with no default in the
+        // final migrated schema (migration 0021 tightens it), so the
+        // marker row must supply it explicitly - 0 is the neutral,
+        // schema-valid value. ocrDecision is intentionally left unset so
+        // its schema default ('needs_review') applies.
+        const [paymentResult]: any = await conn.query(
+          `INSERT INTO \`payments\` (orderId, ocrConfidence) VALUES (?, ?)`,
+          [markerOrderId, 0]
+        );
         paymentId = paymentResult.insertId;
         const [episodeResult]: any = await conn.query(
           `INSERT INTO \`episodes\` (novelId, episodeNumber, title) VALUES (?, ?, ?)`,
@@ -318,9 +326,10 @@ describe.sequential("legacy pending migration chain repair (real disposable test
         // No existing application row was deleted or rewritten by any of
         // the six repaired migrations' guarded ADD COLUMN/CREATE
         // TABLE/CREATE INDEX statements.
-        const [paymentRows]: any = await conn.query(`SELECT id, orderId FROM \`payments\` WHERE id = ?`, [paymentId]);
+        const [paymentRows]: any = await conn.query(`SELECT id, orderId, ocrConfidence FROM \`payments\` WHERE id = ?`, [paymentId]);
         expect(paymentRows).toHaveLength(1);
         expect(paymentRows[0].orderId).toBe(markerOrderId);
+        expect(paymentRows[0].ocrConfidence).toBe(0);
 
         const [episodeRows]: any = await conn.query(`SELECT id, novelId, title FROM \`episodes\` WHERE id = ?`, [episodeId]);
         expect(episodeRows).toHaveLength(1);
