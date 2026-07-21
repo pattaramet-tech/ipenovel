@@ -161,11 +161,44 @@ describe("scripts/migrate-test-db.ts uses a single mysql2 connection, never a po
   });
 });
 
+describe("scripts/migrate-test-db.ts migration-connection diagnostics markers", () => {
+  const source = () => codeOnly(fs.readFileSync(path.join(repoRoot, "scripts/migrate-test-db.ts"), "utf8"));
+
+  it.each([
+    "migration connection created",
+    "migration lock release started",
+    "migration lock release completed",
+    "migration connection close started",
+    "migration connection close completed",
+  ])('logs the fixed marker "%s"', (marker) => {
+    expect(source()).toMatch(new RegExp(`logDiagnostic\\("${marker}"\\)`));
+  });
+
+  it("logs an active-resource snapshot after migration connection close", () => {
+    expect(source()).toMatch(/logActiveResourceSnapshot\(logDiagnostic,\s*"after migration connection close"\)/);
+  });
+
+  it('only logs "migration lock release completed" inside the branch where RELEASE_LOCK reported real success (released === 1), never unconditionally', () => {
+    const fullSource = source();
+    const releaseQueryIndex = fullSource.indexOf("RELEASE_LOCK(?)");
+    expect(releaseQueryIndex).toBeGreaterThan(-1);
+    const releasedCheckIndex = fullSource.indexOf("released === 1", releaseQueryIndex);
+    const completedLogIndex = fullSource.indexOf('logDiagnostic("migration lock release completed")', releaseQueryIndex);
+    expect(releasedCheckIndex).toBeGreaterThan(releaseQueryIndex);
+    expect(completedLogIndex).toBeGreaterThan(releasedCheckIndex);
+  });
+
+  it("warns (does not report success) when RELEASE_LOCK does not return exactly 1", () => {
+    const fullSource = source();
+    expect(fullSource).toMatch(/RELEASE_LOCK returned \$\{released\}/);
+  });
+});
+
 describe("scripts/test-db-prepare.ts diagnostics never use private Node APIs", () => {
-  it("contains no reference to process._getActiveHandles - only the public getActiveResourcesInfo() is used", () => {
+  it("contains no reference to process._getActiveHandles - only the shared testDbDiagnostics module (itself getActiveResourcesInfo()-only) is used", () => {
     const source = codeOnly(fs.readFileSync(path.join(repoRoot, "scripts/test-db-prepare.ts"), "utf8"));
     expect(source).not.toMatch(/_getActiveHandles/);
-    expect(source).toMatch(/getActiveResourcesInfo/);
+    expect(source).toMatch(/logActiveResourceSnapshot/);
   });
 
   it("contains no process.exit() call anywhere - only process.exitCode is set on failure", () => {
@@ -175,51 +208,25 @@ describe("scripts/test-db-prepare.ts diagnostics never use private Node APIs", (
   });
 });
 
-describe("scripts/test-db-prepare.ts logActiveResources() never logs the caught error on its diagnostics failure path", () => {
-  function extractLogActiveResourcesSource(): string {
-    const source = codeOnly(fs.readFileSync(path.join(repoRoot, "scripts/test-db-prepare.ts"), "utf8"));
-    const start = source.indexOf("function logActiveResources()");
-    expect(start).toBeGreaterThan(-1);
-    // logActiveResources() is immediately followed by `async function main()` -
-    // slicing up to there isolates exactly this one function's body.
-    const end = source.indexOf("async function main()", start);
-    expect(end).toBeGreaterThan(start);
-    return source.slice(start, end);
-  }
+describe("scripts/test-db-prepare.ts and scripts/migrate-test-db.ts diagnostics come from the shared, directly-tested testDbDiagnostics module", () => {
+  // The diagnostics failure-path contract itself (bare `catch {}`, fixed
+  // non-interpolated message, no error/error.message/String(error) of any
+  // kind) moved into server/test-helpers/testDbDiagnostics.ts's own
+  // logActiveResourceSnapshot() - see testDbDiagnostics.test.ts for the
+  // full, function-level coverage of that contract. These checks just
+  // confirm both scripts actually import and use the shared module rather
+  // than reimplementing their own (and possibly diverging) version of it.
+  const filesToCheck = ["scripts/test-db-prepare.ts", "scripts/migrate-test-db.ts"];
 
-  it("catches with no bound error variable at all (a bare `catch {}`)", () => {
-    const fnSource = extractLogActiveResourcesSource();
-    expect(fnSource).toMatch(/catch\s*\{/);
-    expect(fnSource).not.toMatch(/catch\s*\(/);
+  it.each(filesToCheck)("%s imports logActiveResourceSnapshot/createDiagnosticLogger from the shared testDbDiagnostics module", (relativePath) => {
+    const source = codeOnly(fs.readFileSync(path.join(repoRoot, relativePath), "utf8"));
+    expect(source).toMatch(/from\s+["'].*testDbDiagnostics["']/);
+    expect(source).toMatch(/createDiagnosticLogger/);
+    expect(source).toMatch(/logActiveResourceSnapshot/);
   });
 
-  it("logs a single fixed, non-interpolated message on failure", () => {
-    const fnSource = extractLogActiveResourcesSource();
-    expect(fnSource).toMatch(/console\.log\("\[test:db:prepare\]\[diagnostics\] failed to read active resource types"\)/);
-  });
-
-  it("never references error.message", () => {
-    const fnSource = extractLogActiveResourcesSource();
-    expect(fnSource).not.toMatch(/error\s*\?\.\s*message/);
-    expect(fnSource).not.toMatch(/error\s*\.\s*message/);
-  });
-
-  it("never calls String(error)", () => {
-    const fnSource = extractLogActiveResourcesSource();
-    expect(fnSource).not.toMatch(/String\s*\(\s*error\s*\)/);
-  });
-
-  it("never references an `error` identifier anywhere in the function - proves no raw error object, stack, or cause can be logged", () => {
-    const fnSource = extractLogActiveResourcesSource();
-    // A bare `catch {}` (asserted above) means no variable named `error` is
-    // even in scope inside this function - so the identifier "error"
-    // appearing anywhere here at all would indicate the caught exception
-    // (or some other error-shaped value) is being referenced/logged.
-    expect(fnSource).not.toMatch(/\berror\b/);
-  });
-
-  it("still contains no reference to _getActiveHandles", () => {
-    const fnSource = extractLogActiveResourcesSource();
-    expect(fnSource).not.toMatch(/_getActiveHandles/);
+  it.each(filesToCheck)("%s never defines its own local logActiveResources-style function", (relativePath) => {
+    const source = codeOnly(fs.readFileSync(path.join(repoRoot, relativePath), "utf8"));
+    expect(source).not.toMatch(/function\s+logActiveResources/);
   });
 });

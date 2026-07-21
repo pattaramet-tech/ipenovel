@@ -40,6 +40,9 @@ import { assertLiveTestDatabaseName } from "../server/test-helpers/liveTestDatab
 import { buildTestDbConnectionOptions } from "../server/test-helpers/testDbConnectionOptions";
 import { runMigrationsWithLogging, consoleMigrationLogger } from "../server/test-helpers/migrateTestDbWithLogging";
 import { closeMysqlConnectionSafely } from "../server/test-helpers/closeMysqlConnectionSafely";
+import { createDiagnosticLogger, logActiveResourceSnapshot } from "../server/test-helpers/testDbDiagnostics";
+
+const logDiagnostic = createDiagnosticLogger("[migrate-test-db]");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const migrationsFolder = path.join(__dirname, "..", "drizzle");
@@ -75,7 +78,10 @@ export async function runTestDbMigration(): Promise<void> {
 
   let connection: Awaited<ReturnType<typeof mysql.createConnection>>;
   try {
+    logActiveResourceSnapshot(logDiagnostic, "before migration connection creation");
     connection = await mysql.createConnection(options);
+    logDiagnostic("migration connection created");
+    logActiveResourceSnapshot(logDiagnostic, "after migration connection creation");
   } catch (error) {
     throw new Error(`[migrate-test-db] Failed to create a database connection: ${safeErrorSummary(error)}`);
   }
@@ -107,13 +113,29 @@ export async function runTestDbMigration(): Promise<void> {
     throw error;
   } finally {
     if (lockAcquired) {
+      logDiagnostic("migration lock release started");
       try {
-        await connection.query("SELECT RELEASE_LOCK(?)", [LOCK_NAME]);
+        const [releaseRows]: any = await connection.query("SELECT RELEASE_LOCK(?) AS released", [LOCK_NAME]);
+        const released = releaseRows?.[0]?.released;
+        // RELEASE_LOCK() returns 1 on real success, 0 if this session did
+        // not hold the lock, or NULL if the named lock did not exist -
+        // only 1 is ever reported as a successful release; anything else
+        // is a (non-fatal) warning, never a false "completed" marker.
+        if (released === 1) {
+          logDiagnostic("migration lock release completed");
+        } else {
+          console.warn(
+            `[migrate-test-db] Migration lock release did not report success (non-fatal): RELEASE_LOCK returned ${released}`
+          );
+        }
       } catch (releaseError) {
         console.warn("[migrate-test-db] Failed to release the migration lock (non-fatal):", safeErrorSummary(releaseError));
       }
     }
+    logDiagnostic("migration connection close started");
     await closeMysqlConnectionSafely(connection, { primaryError });
+    logDiagnostic("migration connection close completed");
+    logActiveResourceSnapshot(logDiagnostic, "after migration connection close");
   }
 }
 

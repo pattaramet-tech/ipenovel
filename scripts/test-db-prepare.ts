@@ -17,18 +17,19 @@
 // server/test-helpers/testDbConnectionOptions.ts.
 //
 // Connection lifecycle note: this script was observed to print its final
-// "Done" log and then never exit. The reset connection was opened via
-// callback-style `mysql2` (`mysql.createConnection`), wrapped in a second,
-// separate promise facade via `.promise()` for drizzle, and closed with
-// `await connection.promise().end().catch(() => {})` - a close failure (or
-// a close that simply never settled) was silently swallowed, so neither a
-// hang nor a real error could ever be diagnosed. This now uses a single
-// `mysql2/promise` connection throughout (no callback/promise wrapper
-// mismatch - see drizzle-orm/mysql2's own driver typings, which accept a
-// native mysql2/promise Connection directly), and closes it via
-// closeMysqlConnectionSafely() (bounded timeout, forced destroy() as a
-// last resort, and a loud, sanitized error on any close failure - never a
-// silently swallowed one).
+// "Done" log and then never exit, even after a first fix that closed the
+// reset connection via closeMysqlConnectionSafely() and treated a resolved
+// `end()` as complete shutdown. A real Gate A run proved that insufficient:
+// diagnostics showed "reset connection close completed" logged, yet the
+// process stayed alive for ~210s with TCPSocketWrap/PipeWrap handles still
+// active. Reading the installed mysql2 3.22.5 source (see
+// server/test-helpers/closeMysqlConnectionSafely.ts's own header for the
+// full analysis) showed why: `end()` resolves as soon as the QUIT command
+// is dispatched from mysql2's internal command queue - well before the
+// underlying socket actually finishes closing. closeMysqlConnectionSafely()
+// now requires BOTH `end()` to resolve AND the connection's own public
+// `'end'` event (the real transport-closed signal) to fire before treating
+// a close as genuinely complete.
 import mysql from "mysql2/promise";
 import { drizzle } from "drizzle-orm/mysql2";
 import { redactDatabaseUrl } from "../server/test-helpers/testDatabaseGuard";
@@ -37,40 +38,22 @@ import { buildTestDbConnectionOptions } from "../server/test-helpers/testDbConne
 import { resetTestDatabase } from "../server/test-helpers/resetTestDatabase";
 import { runTestDbMigration } from "./migrate-test-db";
 import { closeMysqlConnectionSafely } from "../server/test-helpers/closeMysqlConnectionSafely";
+import {
+  createDiagnosticLogger,
+  isDiagnosticsEnabled,
+  logActiveResourceSnapshot,
+  waitForDiagnosticSettlement,
+  waitOneEventLoopTurn,
+} from "../server/test-helpers/testDbDiagnostics";
 
-// Opt-in only - off by default, and even when enabled this only ever logs
-// fixed lifecycle marker strings and the public resource TYPE strings from
-// process.getActiveResourcesInfo(), never credentials, URLs, hosts, IP
-// addresses, query text, or raw connection/handle objects.
-const DIAGNOSTICS_ENABLED = process.env.IPENOVEL_TEST_DB_DIAGNOSTICS === "1";
-
-function logDiagnostic(marker: string): void {
-  if (!DIAGNOSTICS_ENABLED) return;
-  console.log(`[test:db:prepare][diagnostics] ${marker}`);
-}
-
-/**
- * Reports only the resource TYPE strings from the public, documented
- * process.getActiveResourcesInfo() API (e.g. "TCPSOCKETWRAP", "Timeout") -
- * never process._getActiveHandles() (a private/undocumented Node API) and
- * never a raw handle/object of any kind.
- */
-function logActiveResources(): void {
-  if (!DIAGNOSTICS_ENABLED) return;
-  try {
-    const resourceTypes: string[] =
-      typeof (process as any).getActiveResourcesInfo === "function" ? (process as any).getActiveResourcesInfo() : [];
-    console.log(`[test:db:prepare][diagnostics] remaining active resource types: ${JSON.stringify(resourceTypes)}`);
-  } catch {
-    // Fixed, non-interpolated message only - the caught error/exception is
-    // NEVER included (not error.message, not String(error), not stack,
-    // not cause, not any other property) since diagnostic output must only
-    // ever contain fixed lifecycle marker strings and
-    // process.getActiveResourcesInfo()'s own resource type strings, never
-    // arbitrary exception text that could carry unrelated details.
-    console.log("[test:db:prepare][diagnostics] failed to read active resource types");
-  }
-}
+// Opt-in only - off by default (IPENOVEL_TEST_DB_DIAGNOSTICS=1), and even
+// when enabled this only ever logs fixed lifecycle marker strings and the
+// public resource TYPE names/counts from process.getActiveResourcesInfo(),
+// never credentials, URLs, hosts, IP addresses, query text, caught-error
+// text, or raw connection/handle objects. See
+// server/test-helpers/testDbDiagnostics.ts for the shared implementation
+// (also used by scripts/migrate-test-db.ts).
+const logDiagnostic = createDiagnosticLogger("[test:db:prepare]");
 
 async function main() {
   const testUrl = process.env.TEST_DATABASE_URL;
@@ -83,7 +66,8 @@ async function main() {
   // 2. Apply migrations (this also independently re-verifies the live
   // "SELECT DATABASE()" check via its own connection - see
   // scripts/migrate-test-db.ts - so schema changes never run before that
-  // check passes).
+  // check passes). Its own connection's create/close diagnostics and
+  // resource snapshots are logged from within that module.
   await runTestDbMigration();
 
   // 3. Reset/seed - a separate, short-lived connection, re-verified live
@@ -92,6 +76,7 @@ async function main() {
   // independently safe even if run alone.
   const connection = await mysql.createConnection(options);
   logDiagnostic("reset connection created");
+  logActiveResourceSnapshot(logDiagnostic, "after reset connection creation");
   const db = drizzle({ client: connection });
   let primaryError: unknown;
   try {
@@ -107,13 +92,27 @@ async function main() {
     logDiagnostic("reset connection close started");
     await closeMysqlConnectionSafely(connection, { primaryError });
     logDiagnostic("reset connection close completed");
+    logActiveResourceSnapshot(logDiagnostic, "after reset connection close");
   }
 }
 
 main()
-  .then(() => {
+  .then(async () => {
     logDiagnostic("main resolved");
-    logActiveResources();
+    logActiveResourceSnapshot(logDiagnostic, "immediately after main resolves");
+
+    // The event-loop-turn/settlement-delay snapshots exist purely to
+    // observe whether resources are STILL active slightly after main()
+    // resolves - they must never run (and never cost anything) unless
+    // diagnostics are explicitly enabled; they never gate or delay normal
+    // process exit on a real (non-diagnostic) run.
+    if (isDiagnosticsEnabled()) {
+      await waitOneEventLoopTurn();
+      logActiveResourceSnapshot(logDiagnostic, "after one completed event-loop turn");
+
+      await waitForDiagnosticSettlement();
+      logActiveResourceSnapshot(logDiagnostic, "after diagnostic settlement delay");
+    }
   })
   .catch((error) => {
     console.error(`[test:db:prepare] ${error?.message || error}`);
