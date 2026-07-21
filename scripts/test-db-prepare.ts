@@ -39,9 +39,9 @@ import { runTestDbMigration } from "./migrate-test-db";
 import { closeMysqlConnectionSafely } from "../server/test-helpers/closeMysqlConnectionSafely";
 
 // Opt-in only - off by default, and even when enabled this only ever logs
-// fixed lifecycle marker strings and resource/handle TYPE NAMES, never
-// credentials, URLs, hosts, IP addresses, query text, or raw connection/
-// handle objects.
+// fixed lifecycle marker strings and the public resource TYPE strings from
+// process.getActiveResourcesInfo(), never credentials, URLs, hosts, IP
+// addresses, query text, or raw connection/handle objects.
 const DIAGNOSTICS_ENABLED = process.env.IPENOVEL_TEST_DB_DIAGNOSTICS === "1";
 
 function logDiagnostic(marker: string): void {
@@ -49,23 +49,18 @@ function logDiagnostic(marker: string): void {
   console.log(`[test:db:prepare][diagnostics] ${marker}`);
 }
 
+/**
+ * Reports only the resource TYPE strings from the public, documented
+ * process.getActiveResourcesInfo() API (e.g. "TCPSOCKETWRAP", "Timeout") -
+ * never process._getActiveHandles() (a private/undocumented Node API) and
+ * never a raw handle/object of any kind.
+ */
 function logActiveResources(): void {
   if (!DIAGNOSTICS_ENABLED) return;
   try {
     const resourceTypes: string[] =
       typeof (process as any).getActiveResourcesInfo === "function" ? (process as any).getActiveResourcesInfo() : [];
     console.log(`[test:db:prepare][diagnostics] remaining active resource types: ${JSON.stringify(resourceTypes)}`);
-
-    // process._getActiveHandles() is a private/undocumented Node API,
-    // inspected only behind this same diagnostic flag and only for
-    // diagnosing this exact hang - only each handle's constructor/type
-    // NAME is ever logged, never the handle itself (which could expose
-    // raw sockets, buffers, or connection internals).
-    const getActiveHandles = (process as any)._getActiveHandles;
-    if (typeof getActiveHandles === "function") {
-      const handleTypeNames = getActiveHandles.call(process).map((handle: any) => handle?.constructor?.name ?? typeof handle);
-      console.log(`[test:db:prepare][diagnostics] active handle constructor names: ${JSON.stringify(handleTypeNames)}`);
-    }
   } catch (error) {
     console.log(
       `[test:db:prepare][diagnostics] failed to read active resources (non-fatal): ${

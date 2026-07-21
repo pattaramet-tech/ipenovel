@@ -119,10 +119,16 @@ export async function runTestDbMigration(): Promise<void> {
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
-  runTestDbMigration()
-    .then(() => process.exit(0))
-    .catch((error) => {
-      console.error(safeErrorSummary(error) === "unknown error" ? error : `[migrate-test-db] ${safeErrorSummary(error)}`);
-      process.exit(1);
-    });
+  // No explicit success handler, and no process.exit() anywhere here -
+  // an explicit process.exit(0) on success would hide a leaked handle
+  // instead of surfacing it (the exact bug class this whole file's
+  // connection-closing logic exists to fix - see closeMysqlConnectionSafely
+  // above). Node exits naturally once the event loop is actually empty.
+  // On failure, only process.exitCode is set - the process still only
+  // terminates once everything it owns (including this run's connection,
+  // closed in the finally block above) has actually finished.
+  runTestDbMigration().catch((error) => {
+    console.error(safeErrorSummary(error) === "unknown error" ? error : `[migrate-test-db] ${safeErrorSummary(error)}`);
+    process.exitCode = 1;
+  });
 }

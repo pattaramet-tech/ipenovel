@@ -119,14 +119,14 @@ describe("closeMysqlConnectionSafely", () => {
     expect(aggregate.errors[1].message).toMatch(/close boom/);
   });
 
-  it("case 7: the sanitized error never contains connection details even if the underlying error object carries them", async () => {
-    const endError: any = new Error("insecure transport");
+  it("case 7: sensitive values embedded directly inside error.message are redacted, not echoed raw", async () => {
+    const endError: any = new Error(
+      "connect failed for mysql://root:hunter2@10.0.0.5:3306/ipenovel_test - " +
+        "getaddrinfo ENOTFOUND db.internal - Access denied for user 'root'@'10.0.0.5' " +
+        "(using password: YES) token=abc123SECRETTOKEN"
+    );
     endError.code = "ER_ACCESS_DENIED_ERROR";
     endError.errno = 1045;
-    // Simulate a driver error object that (like real mysql2 errors can)
-    // carries connection config as extra fields - the sanitizer must never
-    // surface these even if present on the error object.
-    endError.config = { user: "root", password: "hunter2", host: "db.internal", uri: "mysql://root:hunter2@db.internal:3306/ipenovel_test" };
 
     const connection: MinimalMysqlConnection = {
       end: vi.fn().mockRejectedValue(endError),
@@ -141,9 +141,67 @@ describe("closeMysqlConnectionSafely", () => {
     expect(failure).toBeInstanceOf(Error);
     const message = (failure as Error).message;
     expect(message).not.toMatch(/hunter2/);
+    expect(message).not.toMatch(/10\.0\.0\.5/);
     expect(message).not.toMatch(/db\.internal/);
     expect(message).not.toMatch(/mysql:\/\//);
-    expect(message).not.toMatch(/password/i);
+    expect(message).not.toMatch(/'root'/);
+    expect(message).not.toMatch(/abc123SECRETTOKEN/);
+    // Safe fields are still preserved.
     expect(message).toMatch(/ER_ACCESS_DENIED_ERROR/);
+    expect(message).toMatch(/1045/);
+  });
+
+  it("case 8: a non-Error thrown value's toString() result is redacted too, never echoed via an unrestricted String(error)", async () => {
+    const sensitiveNonError = {
+      toString() {
+        return "mysql://root:hunter2@10.0.0.5:3306/ipenovel_test?token=abc123SECRETTOKEN";
+      },
+    };
+    const connection: MinimalMysqlConnection = {
+      end: vi.fn().mockRejectedValue(sensitiveNonError),
+      destroy: vi.fn(),
+    };
+
+    const failure = await closeMysqlConnectionSafely(connection).then(
+      () => null,
+      (e) => e
+    );
+
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).not.toMatch(/hunter2/);
+    expect(message).not.toMatch(/10\.0\.0\.5/);
+    expect(message).not.toMatch(/root/);
+    expect(message).not.toMatch(/mysql:\/\//);
+    expect(message).not.toMatch(/abc123SECRETTOKEN/);
+  });
+
+  it("case 9: the internal timeout handle is never unref'd - it must remain able to keep the process alive until it fires or is cleared", async () => {
+    const realSetTimeout = global.setTimeout;
+    let unrefCallCount = 0;
+
+    const setTimeoutSpy = vi.spyOn(global, "setTimeout").mockImplementation(((fn: any, ms?: number, ...args: any[]) => {
+      const handle: any = realSetTimeout(fn, ms, ...args);
+      const originalUnref = handle.unref?.bind(handle);
+      if (originalUnref) {
+        handle.unref = (...unrefArgs: any[]) => {
+          unrefCallCount += 1;
+          return originalUnref(...unrefArgs);
+        };
+      }
+      return handle;
+    }) as any);
+
+    const connection: MinimalMysqlConnection = {
+      end: vi.fn().mockImplementation(() => neverSettles<void>()),
+      destroy: vi.fn(),
+    };
+
+    await closeMysqlConnectionSafely(connection, { timeoutMs: 20 }).catch(() => {});
+
+    expect(setTimeoutSpy).toHaveBeenCalled();
+    expect(unrefCallCount).toBe(0);
+
+    setTimeoutSpy.mockRestore();
   });
 });

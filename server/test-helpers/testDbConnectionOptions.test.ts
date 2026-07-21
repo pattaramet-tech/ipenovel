@@ -150,4 +150,27 @@ describe("scripts/migrate-test-db.ts uses a single mysql2 connection, never a po
     expect(closeCallIndex).toBeGreaterThan(finallyIndex);
     expect(source).not.toMatch(/\.end\(\)\.catch\(\(\)\s*=>\s*\{\}\)/);
   });
+
+  it("contains no process.exit() call anywhere - an explicit process.exit(0) would hide a leaked handle instead of surfacing it", () => {
+    const source = codeOnly(fs.readFileSync(path.join(repoRoot, "scripts/migrate-test-db.ts"), "utf8"));
+    expect(source).not.toMatch(/process\.exit\(/);
+    // The failure path still reports sanitized errors and sets exitCode
+    // instead, letting Node terminate naturally once the event loop is
+    // actually empty.
+    expect(source).toMatch(/process\.exitCode\s*=\s*1/);
+  });
+});
+
+describe("scripts/test-db-prepare.ts diagnostics never use private Node APIs", () => {
+  it("contains no reference to process._getActiveHandles - only the public getActiveResourcesInfo() is used", () => {
+    const source = codeOnly(fs.readFileSync(path.join(repoRoot, "scripts/test-db-prepare.ts"), "utf8"));
+    expect(source).not.toMatch(/_getActiveHandles/);
+    expect(source).toMatch(/getActiveResourcesInfo/);
+  });
+
+  it("contains no process.exit() call anywhere - only process.exitCode is set on failure", () => {
+    const source = codeOnly(fs.readFileSync(path.join(repoRoot, "scripts/test-db-prepare.ts"), "utf8"));
+    expect(source).not.toMatch(/process\.exit\(/);
+    expect(source).toMatch(/process\.exitCode\s*=\s*1/);
+  });
 });
