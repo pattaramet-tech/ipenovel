@@ -1,9 +1,58 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 
 const repoRoot = path.resolve(__dirname, "..");
+
+/**
+ * The authoritative base commit this branch was cut from - the single
+ * source of truth for "what these migration files looked like before this
+ * repair." Kept as an exact SHA (not a symbolic ref like main, which can
+ * move) so the baseline can never silently drift.
+ */
+const BASE_SHA = "6c895e952a74d839014d70586f8eb0e8a754af0f";
+
+/**
+ * The exact bytes of a tracked path as stored in git at `ref`, read
+ * straight from git's object store via `git show <ref>:<path>`.
+ *
+ * Both sides of every "unchanged from base" comparison below are read this
+ * way (base blob vs current committed blob) rather than by hashing the
+ * working-tree file. That is deliberate: this repo runs with
+ * core.autocrlf=true and no .gitattributes, so tracked files are stored
+ * LF in git but smudged to CRLF on a Windows checkout. A raw working-tree
+ * read therefore produces different bytes (and a different SHA-256) on
+ * Windows than on an LF Linux/CI checkout - which is exactly why the
+ * previous hardcoded SHA-256 baseline passed locally yet failed the release
+ * gate for 0021, 0027, and _journal.json. Comparing git blob to git blob is
+ * immune to that: both come from object storage in identical canonical
+ * form, so the check means the same thing in every environment and matches
+ * what GitHub's own base-vs-branch file comparison reports.
+ */
+function gitBlob(ref: string, repoRelativePath: string): Buffer {
+  try {
+    return execFileSync("git", ["show", `${ref}:${repoRelativePath}`], {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch (error: any) {
+    throw new Error(
+      `Unable to read "${repoRelativePath}" at git ref "${ref}". The base commit ${BASE_SHA} must be present ` +
+        `locally for this baseline check (fetch it first if this fails in CI). ` +
+        `git error: ${error?.shortMessage ?? error?.message ?? "unknown"}`
+    );
+  }
+}
+
+/**
+ * True when a tracked path is byte-for-byte identical between the base
+ * commit and the current branch tip (HEAD) - i.e. this branch's cumulative
+ * changes did not alter that file at all.
+ */
+function isByteIdenticalToBase(repoRelativePath: string): boolean {
+  return gitBlob(BASE_SHA, repoRelativePath).equals(gitBlob("HEAD", repoRelativePath));
+}
 
 /**
  * DB-independent static coverage for the legacy pending migration chain
@@ -207,10 +256,8 @@ describe("no destructive statement anywhere in the six repaired migrations", () 
 });
 
 describe("journal and timestamps are untouched by this repair", () => {
-  it("drizzle/meta/_journal.json's content hash matches its pre-repair value exactly", () => {
-    const journalContent = fs.readFileSync(path.join(repoRoot, "drizzle/meta/_journal.json"), "utf8");
-    const hash = crypto.createHash("sha256").update(journalContent).digest("hex");
-    expect(hash).toBe("c6e645ba118b5e9137e3961ded89a4d6b18e77b5ef007aa2fdc9bb8401632383");
+  it("drizzle/meta/_journal.json is byte-identical to the base commit (no journal entry or timestamp changed)", () => {
+    expect(isByteIdenticalToBase("drizzle/meta/_journal.json")).toBe(true);
   });
 
   it("no new migration file (0031) was created, and no journal entry beyond 0030 exists", () => {
@@ -223,22 +270,25 @@ describe("journal and timestamps are untouched by this repair", () => {
 });
 
 describe("migrations 0021 and 0024-0030 are byte-identical to their pre-repair content (untouched by this task)", () => {
-  const UNTOUCHED_MIGRATIONS: Record<string, string> = {
-    "0021_skinny_slayback": "e187c2054bb398d8e88cac84ea36c998036a62ba3be90767a64eba2f677b23ce",
-    "0024_widen_episode_content_mediumtext": "68bbc9ec192afaa33a287c1aa26fbab7a7949daf5d6528a7cbc5ee9e9d65f6e5",
-    "0025_add_reading_progress_toc_columns": "876aef2259bca3b6f3a250b9b00d31a2d1615ab759e4985e07490d3e8c42c0a0",
-    "0026_add_homepage_performance_indexes": "4f4c943b84286d13b23d5628682faf21182ace3499d37578854a0ba28ccd90a0",
-    "0027_add_daily_checkin_and_coupon_cap": "bdfd25ca383ccbe961c6a4f32ff1125e53fb377589295553038d231efe1386ee",
-    "0028_repair_episode_reader_schema": "bc53c8abd09f80449546e090ebcd7beb67ba08f07678470c6141a05c9bfb3071",
-    "0029_add_dynamic_daily_checkin_reward_schema": "a90fe99f2a28d681954fd5b9dd96b5840ec132c1757ecafa66c25d748b7c54ec",
-    "0030_repair_missing_daily_checkins": "98b83cbe66e8ee49d1e2456ef62c1b370cb023254d0ace7be9b5438f30be9cfc",
-  };
+  // Verified by comparing each file's git blob at the base commit against
+  // its git blob at HEAD (see gitBlob/isByteIdenticalToBase) - a stable,
+  // line-ending-independent baseline derived from the authoritative base
+  // commit itself, rather than a hardcoded SHA-256 that silently goes stale
+  // whenever it is regenerated on a checkout with different line endings.
+  const UNTOUCHED_MIGRATIONS = [
+    "0021_skinny_slayback",
+    "0024_widen_episode_content_mediumtext",
+    "0025_add_reading_progress_toc_columns",
+    "0026_add_homepage_performance_indexes",
+    "0027_add_daily_checkin_and_coupon_cap",
+    "0028_repair_episode_reader_schema",
+    "0029_add_dynamic_daily_checkin_reward_schema",
+    "0030_repair_missing_daily_checkins",
+  ];
 
-  for (const [tag, expectedHash] of Object.entries(UNTOUCHED_MIGRATIONS)) {
-    it(`${tag}.sql content hash is unchanged`, () => {
-      const sql = readMigration(tag);
-      const hash = crypto.createHash("sha256").update(sql).digest("hex");
-      expect(hash).toBe(expectedHash);
+  for (const tag of UNTOUCHED_MIGRATIONS) {
+    it(`${tag}.sql is byte-identical to the base commit`, () => {
+      expect(isByteIdenticalToBase(`drizzle/${tag}.sql`)).toBe(true);
     });
   }
 });
