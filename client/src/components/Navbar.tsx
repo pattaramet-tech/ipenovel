@@ -20,13 +20,10 @@ export default function Navbar() {
   });
   const cartCount = cartData?.items?.length || 0;
 
-  // The Reader page has its own sticky header (back button, title, font/theme/TOC
-  // controls). Rendering the global navbar on top of it produced two independent
-  // `position: sticky; top: 0` bars that stacked/overlapped once both were pinned,
-  // squeezing the episode title against the language/cart/menu icons. Reader owns
-  // its own full-width header instead - the language switcher is still reachable
-  // there via the reader options menu.
-  if (location.startsWith("/read/")) {
+  // Reader and admin routes own their complete navigation shells. Rendering the
+  // storefront navbar there creates competing sticky/fixed headers and causes
+  // the admin control panel top bar and sidebar to overlap.
+  if (location.startsWith("/read/") || location.startsWith("/admin")) {
     return null;
   }
 
