@@ -1,16 +1,4 @@
--- Rewritten to be idempotent as part of the legacy pending migration chain
--- repair. Production's recorded migration history high-water mark is
--- currently before this migration's own timestamp; per the confirmed
--- diagnosis both `sportsMatchVotes`/`sportsMatches` and their indexes are
--- completely absent there, so this migration's bare CREATE TABLE
--- statements would succeed as-is - but the whole legacy chain (0017-0023)
--- is being made uniformly idempotent so any later resume, partial
--- application, or re-run converges safely regardless of exact starting
--- state, matching the pattern already established for migrations
--- 0024-0030. Every original column, enum, default, primary key, and
--- unique constraint is preserved exactly - only how safely each object is
--- reached has changed.
-CREATE TABLE IF NOT EXISTS `sportsMatchVotes` (
+CREATE TABLE `sportsMatchVotes` (
 	`id` int AUTO_INCREMENT NOT NULL,
 	`matchId` int NOT NULL,
 	`userId` int NOT NULL,
@@ -25,7 +13,7 @@ CREATE TABLE IF NOT EXISTS `sportsMatchVotes` (
 	CONSTRAINT `unique_sports_match_user_vote` UNIQUE(`matchId`,`userId`)
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS `sportsMatches` (
+CREATE TABLE `sportsMatches` (
 	`id` int AUTO_INCREMENT NOT NULL,
 	`title` varchar(255) NOT NULL,
 	`leagueName` varchar(255),
@@ -50,93 +38,10 @@ CREATE TABLE IF NOT EXISTS `sportsMatches` (
 	CONSTRAINT `sportsMatches_id` PRIMARY KEY(`id`)
 );
 --> statement-breakpoint
-SET @ipenovel_0018_idx_exists = (
-	SELECT COUNT(*) FROM information_schema.statistics
-	WHERE table_schema = DATABASE() AND table_name = 'sportsMatchVotes' AND index_name = 'sportsMatchVotes_matchId_idx'
-);
---> statement-breakpoint
-SET @ipenovel_0018_idx_sql = IF(@ipenovel_0018_idx_exists = 0, "CREATE INDEX `sportsMatchVotes_matchId_idx` ON `sportsMatchVotes` (`matchId`)", 'DO 0');
---> statement-breakpoint
-PREPARE ipenovel_0018_idx_stmt FROM @ipenovel_0018_idx_sql;
---> statement-breakpoint
-EXECUTE ipenovel_0018_idx_stmt;
---> statement-breakpoint
-DEALLOCATE PREPARE ipenovel_0018_idx_stmt;
---> statement-breakpoint
-SET @ipenovel_0018_idx_exists = (
-	SELECT COUNT(*) FROM information_schema.statistics
-	WHERE table_schema = DATABASE() AND table_name = 'sportsMatchVotes' AND index_name = 'sportsMatchVotes_userId_idx'
-);
---> statement-breakpoint
-SET @ipenovel_0018_idx_sql = IF(@ipenovel_0018_idx_exists = 0, "CREATE INDEX `sportsMatchVotes_userId_idx` ON `sportsMatchVotes` (`userId`)", 'DO 0');
---> statement-breakpoint
-PREPARE ipenovel_0018_idx_stmt FROM @ipenovel_0018_idx_sql;
---> statement-breakpoint
-EXECUTE ipenovel_0018_idx_stmt;
---> statement-breakpoint
-DEALLOCATE PREPARE ipenovel_0018_idx_stmt;
---> statement-breakpoint
-SET @ipenovel_0018_idx_exists = (
-	SELECT COUNT(*) FROM information_schema.statistics
-	WHERE table_schema = DATABASE() AND table_name = 'sportsMatchVotes' AND index_name = 'sportsMatchVotes_status_idx'
-);
---> statement-breakpoint
-SET @ipenovel_0018_idx_sql = IF(@ipenovel_0018_idx_exists = 0, "CREATE INDEX `sportsMatchVotes_status_idx` ON `sportsMatchVotes` (`status`)", 'DO 0');
---> statement-breakpoint
-PREPARE ipenovel_0018_idx_stmt FROM @ipenovel_0018_idx_sql;
---> statement-breakpoint
-EXECUTE ipenovel_0018_idx_stmt;
---> statement-breakpoint
-DEALLOCATE PREPARE ipenovel_0018_idx_stmt;
---> statement-breakpoint
-SET @ipenovel_0018_idx_exists = (
-	SELECT COUNT(*) FROM information_schema.statistics
-	WHERE table_schema = DATABASE() AND table_name = 'sportsMatches' AND index_name = 'sportsMatches_status_idx'
-);
---> statement-breakpoint
-SET @ipenovel_0018_idx_sql = IF(@ipenovel_0018_idx_exists = 0, "CREATE INDEX `sportsMatches_status_idx` ON `sportsMatches` (`status`)", 'DO 0');
---> statement-breakpoint
-PREPARE ipenovel_0018_idx_stmt FROM @ipenovel_0018_idx_sql;
---> statement-breakpoint
-EXECUTE ipenovel_0018_idx_stmt;
---> statement-breakpoint
-DEALLOCATE PREPARE ipenovel_0018_idx_stmt;
---> statement-breakpoint
-SET @ipenovel_0018_idx_exists = (
-	SELECT COUNT(*) FROM information_schema.statistics
-	WHERE table_schema = DATABASE() AND table_name = 'sportsMatches' AND index_name = 'sportsMatches_isActive_idx'
-);
---> statement-breakpoint
-SET @ipenovel_0018_idx_sql = IF(@ipenovel_0018_idx_exists = 0, "CREATE INDEX `sportsMatches_isActive_idx` ON `sportsMatches` (`isActive`)", 'DO 0');
---> statement-breakpoint
-PREPARE ipenovel_0018_idx_stmt FROM @ipenovel_0018_idx_sql;
---> statement-breakpoint
-EXECUTE ipenovel_0018_idx_stmt;
---> statement-breakpoint
-DEALLOCATE PREPARE ipenovel_0018_idx_stmt;
---> statement-breakpoint
-SET @ipenovel_0018_idx_exists = (
-	SELECT COUNT(*) FROM information_schema.statistics
-	WHERE table_schema = DATABASE() AND table_name = 'sportsMatches' AND index_name = 'sportsMatches_voteDeadlineAt_idx'
-);
---> statement-breakpoint
-SET @ipenovel_0018_idx_sql = IF(@ipenovel_0018_idx_exists = 0, "CREATE INDEX `sportsMatches_voteDeadlineAt_idx` ON `sportsMatches` (`voteDeadlineAt`)", 'DO 0');
---> statement-breakpoint
-PREPARE ipenovel_0018_idx_stmt FROM @ipenovel_0018_idx_sql;
---> statement-breakpoint
-EXECUTE ipenovel_0018_idx_stmt;
---> statement-breakpoint
-DEALLOCATE PREPARE ipenovel_0018_idx_stmt;
---> statement-breakpoint
-SET @ipenovel_0018_idx_exists = (
-	SELECT COUNT(*) FROM information_schema.statistics
-	WHERE table_schema = DATABASE() AND table_name = 'sportsMatches' AND index_name = 'sportsMatches_displayOrder_idx'
-);
---> statement-breakpoint
-SET @ipenovel_0018_idx_sql = IF(@ipenovel_0018_idx_exists = 0, "CREATE INDEX `sportsMatches_displayOrder_idx` ON `sportsMatches` (`displayOrder`)", 'DO 0');
---> statement-breakpoint
-PREPARE ipenovel_0018_idx_stmt FROM @ipenovel_0018_idx_sql;
---> statement-breakpoint
-EXECUTE ipenovel_0018_idx_stmt;
---> statement-breakpoint
-DEALLOCATE PREPARE ipenovel_0018_idx_stmt;
+CREATE INDEX `sportsMatchVotes_matchId_idx` ON `sportsMatchVotes` (`matchId`);--> statement-breakpoint
+CREATE INDEX `sportsMatchVotes_userId_idx` ON `sportsMatchVotes` (`userId`);--> statement-breakpoint
+CREATE INDEX `sportsMatchVotes_status_idx` ON `sportsMatchVotes` (`status`);--> statement-breakpoint
+CREATE INDEX `sportsMatches_status_idx` ON `sportsMatches` (`status`);--> statement-breakpoint
+CREATE INDEX `sportsMatches_isActive_idx` ON `sportsMatches` (`isActive`);--> statement-breakpoint
+CREATE INDEX `sportsMatches_voteDeadlineAt_idx` ON `sportsMatches` (`voteDeadlineAt`);--> statement-breakpoint
+CREATE INDEX `sportsMatches_displayOrder_idx` ON `sportsMatches` (`displayOrder`);

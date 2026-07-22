@@ -211,13 +211,6 @@
       "when": 1784601000000,
       "tag": "0029_add_dynamic_daily_checkin_reward_schema",
       "breakpoints": true
-    },
-    {
-      "idx": 30,
-      "version": "5",
-      "when": 1784602000000,
-      "tag": "0030_repair_missing_daily_checkins",
-      "breakpoints": true
     }
   ]
 }
