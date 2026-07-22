@@ -1,5 +1,5 @@
 import { ReactNode } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { LucideIcon } from "lucide-react";
 import { useLanguage } from "@/contexts/LanguageContext";
@@ -9,7 +9,6 @@ import { useLanguage } from "@/contexts/LanguageContext";
  * Provides consistent styling and layout for admin pages
  */
 
-// Stat Card - for dashboard summary
 export function StatCard({
   label,
   value,
@@ -24,28 +23,34 @@ export function StatCard({
   trend?: { value: number; direction: "up" | "down" };
 }) {
   const colorClasses = {
-    blue: "bg-blue-50 text-blue-600",
-    green: "bg-green-50 text-green-600",
-    yellow: "bg-yellow-50 text-yellow-600",
-    red: "bg-red-50 text-red-600",
-    purple: "bg-purple-50 text-purple-600",
+    blue: "bg-blue-50 text-blue-600 ring-blue-100",
+    green: "bg-green-50 text-green-600 ring-green-100",
+    yellow: "bg-amber-50 text-amber-600 ring-amber-100",
+    red: "bg-red-50 text-red-600 ring-red-100",
+    purple: "bg-purple-50 text-purple-600 ring-purple-100",
   };
 
   return (
-    <Card className="hover:shadow-md transition-shadow">
-      <CardContent className="pt-6">
-        <div className="flex items-start justify-between">
-          <div>
-            <p className="text-sm font-medium text-slate-600">{label}</p>
-            <p className="text-3xl font-bold text-slate-900 mt-2">{value}</p>
+    <Card className="border-slate-200/80 bg-white shadow-sm transition duration-200 hover:-translate-y-0.5 hover:shadow-md">
+      <CardContent className="p-4 sm:p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="truncate text-xs font-medium text-slate-500 sm:text-sm">{label}</p>
+            <p className="mt-1.5 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
+              {value}
+            </p>
             {trend && (
-              <p className={`text-xs mt-2 ${trend.direction === "up" ? "text-green-600" : "text-red-600"}`}>
+              <p
+                className={`mt-2 text-xs font-medium ${
+                  trend.direction === "up" ? "text-green-600" : "text-red-600"
+                }`}
+              >
                 {trend.direction === "up" ? "↑" : "↓"} {Math.abs(trend.value)}%
               </p>
             )}
           </div>
-          <div className={`p-3 rounded-lg ${colorClasses[color]}`}>
-            <Icon className="w-6 h-6" />
+          <div className={`shrink-0 rounded-xl p-2.5 ring-1 ${colorClasses[color]}`}>
+            <Icon className="h-5 w-5 sm:h-6 sm:w-6" />
           </div>
         </div>
       </CardContent>
@@ -53,7 +58,6 @@ export function StatCard({
   );
 }
 
-// Section Header - for page sections
 export function SectionHeader({
   title,
   description,
@@ -64,29 +68,28 @@ export function SectionHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between mb-6">
-      <div>
-        <h2 className="text-2xl font-bold text-slate-900">{title}</h2>
-        {description && <p className="text-sm text-slate-600 mt-1">{description}</p>}
+    <div className="mb-4 flex flex-col gap-3 sm:mb-5 sm:flex-row sm:items-start sm:justify-between">
+      <div className="min-w-0">
+        <h2 className="text-lg font-bold tracking-tight text-slate-900 sm:text-xl">{title}</h2>
+        {description && <p className="mt-1 text-sm leading-6 text-slate-500">{description}</p>}
       </div>
-      {action && <div>{action}</div>}
+      {action && <div className="shrink-0">{action}</div>}
     </div>
   );
 }
 
-// Status Badge - for order/payment status
 export function StatusBadge({ status }: { status: string }) {
   const { t } = useLanguage();
   const statusConfig: Record<string, { bg: string; text: string; label: string }> = {
-    pending: { bg: "bg-yellow-100", text: "text-yellow-800", label: t("status.pending") },
+    pending: { bg: "bg-amber-100", text: "text-amber-800", label: t("status.pending") },
     approved: { bg: "bg-green-100", text: "text-green-800", label: "Approved" },
     rejected: { bg: "bg-red-100", text: "text-red-800", label: "Rejected" },
     completed: { bg: "bg-green-100", text: "text-green-800", label: "Completed" },
     active: { bg: "bg-green-100", text: "text-green-800", label: "Active" },
-    inactive: { bg: "bg-slate-100", text: "text-slate-800", label: "Inactive" },
-    draft: { bg: "bg-slate-100", text: "text-slate-800", label: "Draft" },
+    inactive: { bg: "bg-slate-100", text: "text-slate-700", label: "Inactive" },
+    draft: { bg: "bg-slate-100", text: "text-slate-700", label: "Draft" },
     published: { bg: "bg-green-100", text: "text-green-800", label: t("status.published") },
-    archived: { bg: "bg-slate-100", text: "text-slate-800", label: t("status.archived") },
+    archived: { bg: "bg-slate-100", text: "text-slate-700", label: t("status.archived") },
     ongoing: { bg: "bg-blue-100", text: "text-blue-800", label: t("status.ongoing") },
     finished: { bg: "bg-purple-100", text: "text-purple-800", label: t("status.finished") },
   };
@@ -94,13 +97,12 @@ export function StatusBadge({ status }: { status: string }) {
   const config = statusConfig[status.toLowerCase()] || statusConfig.pending;
 
   return (
-    <Badge className={`${config.bg} ${config.text} border-0`}>
+    <Badge className={`${config.bg} ${config.text} border-0 font-medium shadow-none`}>
       {config.label}
     </Badge>
   );
 }
 
-// Empty State - for empty lists
 export function EmptyState({
   icon: Icon,
   title,
@@ -113,18 +115,19 @@ export function EmptyState({
   action?: ReactNode;
 }) {
   return (
-    <Card>
-      <CardContent className="pt-12 pb-12 text-center">
-        <Icon className="w-12 h-12 text-slate-300 mx-auto mb-4" />
-        <h3 className="text-lg font-semibold text-slate-900 mb-2">{title}</h3>
-        <p className="text-sm text-slate-600 mb-6">{description}</p>
+    <Card className="border-slate-200/80 bg-white shadow-sm">
+      <CardContent className="px-6 py-12 text-center">
+        <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100">
+          <Icon className="h-6 w-6 text-slate-400" />
+        </div>
+        <h3 className="mb-2 text-lg font-semibold text-slate-900">{title}</h3>
+        <p className="mx-auto mb-6 max-w-md text-sm leading-6 text-slate-500">{description}</p>
         {action && <div>{action}</div>}
       </CardContent>
     </Card>
   );
 }
 
-// Data Table - for lists
 export function DataTable({
   columns,
   data,
@@ -140,41 +143,46 @@ export function DataTable({
   onRowClick?: (row: any) => void;
 }) {
   return (
-    <div className="overflow-x-auto border border-slate-200 rounded-lg">
-      <table className="w-full">
-        <thead>
-          <tr className="border-b bg-slate-50">
-            {columns.map((col) => (
-              <th
-                key={col.key}
-                className={`text-left px-4 py-3 font-semibold text-slate-700 text-sm ${col.width || ""}`}
-              >
-                {col.label}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {data.map((row, idx) => (
-            <tr
-              key={idx}
-              className={`border-b hover:bg-slate-50 transition-colors ${onRowClick ? "cursor-pointer" : ""}`}
-              onClick={() => onRowClick?.(row)}
-            >
+    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-max">
+          <thead>
+            <tr className="border-b border-slate-200 bg-slate-50/80">
               {columns.map((col) => (
-                <td key={col.key} className="px-4 py-3 text-sm text-slate-700">
-                  {col.render ? col.render(row[col.key], row) : row[col.key]}
-                </td>
+                <th
+                  key={col.key}
+                  className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600 ${
+                    col.width || ""
+                  }`}
+                >
+                  {col.label}
+                </th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {data.map((row, idx) => (
+              <tr
+                key={idx}
+                className={`bg-white transition-colors hover:bg-slate-50/80 ${
+                  onRowClick ? "cursor-pointer" : ""
+                }`}
+                onClick={() => onRowClick?.(row)}
+              >
+                {columns.map((col) => (
+                  <td key={col.key} className="px-4 py-3 text-sm text-slate-700">
+                    {col.render ? col.render(row[col.key], row) : row[col.key]}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
 
-// Form Section - for grouping form fields
 export function FormSection({
   title,
   description,
@@ -185,17 +193,16 @@ export function FormSection({
   children: ReactNode;
 }) {
   return (
-    <div className="mb-8">
+    <section className="mb-8">
       <div className="mb-4">
         <h3 className="text-lg font-semibold text-slate-900">{title}</h3>
-        {description && <p className="text-sm text-slate-600 mt-1">{description}</p>}
+        {description && <p className="mt-1 text-sm leading-6 text-slate-500">{description}</p>}
       </div>
       <div className="space-y-4">{children}</div>
-    </div>
+    </section>
   );
 }
 
-// Info Box - for displaying important information
 export function InfoBox({
   type = "info",
   title,
@@ -207,7 +214,7 @@ export function InfoBox({
 }) {
   const typeConfig = {
     info: { bg: "bg-blue-50", border: "border-blue-200", icon: "ℹ️", text: "text-blue-900" },
-    warning: { bg: "bg-yellow-50", border: "border-yellow-200", icon: "⚠️", text: "text-yellow-900" },
+    warning: { bg: "bg-amber-50", border: "border-amber-200", icon: "⚠️", text: "text-amber-900" },
     success: { bg: "bg-green-50", border: "border-green-200", icon: "✓", text: "text-green-900" },
     error: { bg: "bg-red-50", border: "border-red-200", icon: "✕", text: "text-red-900" },
   };
@@ -215,19 +222,18 @@ export function InfoBox({
   const config = typeConfig[type];
 
   return (
-    <div className={`${config.bg} border ${config.border} rounded-lg p-4`}>
+    <div className={`${config.bg} rounded-xl border ${config.border} p-4`}>
       <div className="flex gap-3">
-        <span className="text-lg flex-shrink-0">{config.icon}</span>
-        <div>
-          {title && <h4 className={`font-semibold ${config.text} mb-1`}>{title}</h4>}
-          <p className={`text-sm ${config.text}`}>{message}</p>
+        <span className="shrink-0 text-lg">{config.icon}</span>
+        <div className="min-w-0">
+          {title && <h4 className={`mb-1 font-semibold ${config.text}`}>{title}</h4>}
+          <p className={`text-sm leading-6 ${config.text}`}>{message}</p>
         </div>
       </div>
     </div>
   );
 }
 
-// Action Row - for row actions
 export function ActionRow({ children }: { children: ReactNode }) {
-  return <div className="flex gap-2 items-center">{children}</div>;
+  return <div className="flex flex-wrap items-center gap-2">{children}</div>;
 }
