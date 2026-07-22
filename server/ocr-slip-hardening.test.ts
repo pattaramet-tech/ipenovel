@@ -37,6 +37,14 @@ import { getReviewReasonDescription } from "./ocr-slip-integration";
 
 // ─── Shared fixtures ──────────────────────────────────────────────────────────
 
+/** Formats a Date as a Thai-slip-style "DD/MM/YYYY" string using the Buddhist Era year (Gregorian + 543) - used to build test fixtures anchored to real wall-clock time instead of a hardcoded calendar date. */
+function formatThaiBuddhistDate(date: Date): string {
+  const day = String(date.getDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const buddhistYear = date.getFullYear() + 543;
+  return `${day}/${month}/${buddhistYear}`;
+}
+
 /** A payment context where the payment was submitted on 2026-04-25 10:05 UTC */
 const baseContext: OrderPaymentContext = {
   orderId: 100,
@@ -278,17 +286,38 @@ describe("7. pending_review duplicate is blocked (race condition protection)", (
 // ─── 8. Old transaction is sent to manual review ─────────────────────────────
 describe("8. Old transaction is sent to manual review", () => {
   it("rejects transaction more than 24 hours before payment submission", () => {
-    // Transaction date: 2026-04-23 (2 days before payment on 2026-04-25)
+    // This test needs a transaction date that is (a) more than 24h before
+    // the payment, so verifySlipData rejects it as
+    // TRANSACTION_OUTSIDE_TIME_WINDOW, and (b) recent enough in REAL
+    // wall-clock terms to survive extractTransactionDate's own freshness
+    // filter (server/ocr-slip-verification.ts's buildDate() rejects any
+    // parsed date more than 90 real-world days old - a legitimate
+    // production safeguard against stale slip photos, not a test bug).
+    // A calendar date hardcoded to this file's original authoring day
+    // (2026-04-23) inevitably ages past that 90-day window as real time
+    // passes - which is exactly what started failing here. Anchoring both
+    // dates to a freshly-captured `now` makes the test permanently
+    // immune to wall-clock drift while testing the identical business
+    // rule. Scoped to this one test's own local payment context - the
+    // shared `baseContext` (and the other 83 tests using it) is untouched.
+    const now = new Date();
+    const paymentContext: OrderPaymentContext = {
+      ...baseContext,
+      orderCreatedAt: now,
+      paymentCreatedAt: now,
+    };
+    const twoDaysBeforeNow = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000);
+    const transactionDateThai = formatThaiBuddhistDate(twoDaysBeforeNow);
     const slip = `
       ธนาคารกรุงเทพ
       ชื่อร้านค้า: Ipe Novel
       รหัสร้านค้า: KB000002283068
       จำนวนเงิน: 250.00 บาท
-      วันที่: 23/04/2569
+      วันที่: ${transactionDateThai}
       เลขที่อ้างอิง: REF1234567890
     `;
     const extracted = extractSlipData(slip);
-    const result = verifySlipData(extracted, baseContext, new Set(), new Set());
+    const result = verifySlipData(extracted, paymentContext, new Set(), new Set());
     expect(result.isAutoApproved).toBe(false);
     expect(result.reviewReason).toBe("TRANSACTION_OUTSIDE_TIME_WINDOW");
   });
