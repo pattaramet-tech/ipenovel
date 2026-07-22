@@ -14,6 +14,22 @@ const repoRoot = path.resolve(__dirname, "..");
 const BASE_SHA = "6c895e952a74d839014d70586f8eb0e8a754af0f";
 
 /**
+ * Migration 0024's CURRENT intentional baseline.
+ *
+ * 0024 is the only migration in this file's protected set whose content was
+ * deliberately changed after BASE_SHA: commit c8d9c31 (merged as PR #5)
+ * guarded its final `ALTER TABLE episodes MODIFY COLUMN content mediumtext`
+ * so it can no longer downgrade a column that is already LONGTEXT - the
+ * unguarded version aborted a real production deployment with TiDB errno
+ * 8025 ("Entry too large"). That change is reviewed, merged, and must stay.
+ *
+ * Pinning 0024 here (instead of removing it from the protected set) keeps
+ * the file under byte-integrity protection against its real, current,
+ * intended content, so a future unreviewed edit still fails the gate.
+ */
+const MIGRATION_0024_INTENTIONAL_BASELINE_SHA = "c8d9c314975990eb04ba76a6b294b7f5ed1233e8";
+
+/**
  * The exact bytes of a tracked path as stored in git at `ref`, read
  * straight from git's object store via `git show <ref>:<path>`.
  *
@@ -51,7 +67,19 @@ function gitBlob(ref: string, repoRelativePath: string): Buffer {
  * changes did not alter that file at all.
  */
 function isByteIdenticalToBase(repoRelativePath: string): boolean {
-  return gitBlob(BASE_SHA, repoRelativePath).equals(gitBlob("HEAD", repoRelativePath));
+  return isByteIdenticalToBaseline(repoRelativePath, BASE_SHA);
+}
+
+/**
+ * True when a tracked path is byte-for-byte identical between an explicit
+ * baseline commit and the current branch tip (HEAD). Same guarantee as
+ * isByteIdenticalToBase, but lets one file be pinned to a later,
+ * deliberately-changed baseline (see
+ * MIGRATION_0024_INTENTIONAL_BASELINE_SHA) without loosening the check for
+ * every other file.
+ */
+function isByteIdenticalToBaseline(repoRelativePath: string, baselineSha: string): boolean {
+  return gitBlob(baselineSha, repoRelativePath).equals(gitBlob("HEAD", repoRelativePath));
 }
 
 /**
@@ -269,26 +297,56 @@ describe("journal and timestamps are untouched by this repair", () => {
   });
 });
 
-describe("migrations 0021 and 0024-0030 are byte-identical to their pre-repair content (untouched by this task)", () => {
-  // Verified by comparing each file's git blob at the base commit against
-  // its git blob at HEAD (see gitBlob/isByteIdenticalToBase) - a stable,
-  // line-ending-independent baseline derived from the authoritative base
+describe("migrations 0021 and 0024-0030 are byte-identical to their intentional baseline", () => {
+  // Verified by comparing each file's git blob at its baseline commit
+  // against its git blob at HEAD (see gitBlob/isByteIdenticalToBaseline) - a
+  // stable, line-ending-independent baseline derived from an authoritative
   // commit itself, rather than a hardcoded SHA-256 that silently goes stale
   // whenever it is regenerated on a checkout with different line endings.
-  const UNTOUCHED_MIGRATIONS = [
-    "0021_skinny_slayback",
-    "0024_widen_episode_content_mediumtext",
-    "0025_add_reading_progress_toc_columns",
-    "0026_add_homepage_performance_indexes",
-    "0027_add_daily_checkin_and_coupon_cap",
-    "0028_repair_episode_reader_schema",
-    "0029_add_dynamic_daily_checkin_reward_schema",
-    "0030_repair_missing_daily_checkins",
+  //
+  // Each migration is pinned to the commit that last INTENTIONALLY defined
+  // its content, which is BASE_SHA for everything that has never been
+  // touched since. Migration 0024 is the one deliberate exception: it was
+  // changed on purpose by c8d9c31 (merged as PR #5) to stop the migration
+  // downgrading an already-LONGTEXT episodes.content back to MEDIUMTEXT,
+  // which aborted a real production deploy with TiDB errno 8025. Leaving it
+  // pinned to BASE_SHA made this assertion permanently red on clean main -
+  // it was asserting that a merged, intended fix had never happened.
+  //
+  // Re-pinning rather than deleting is the point: 0024 is still fully
+  // protected here, just against its post-fix content, so any FURTHER
+  // unreviewed edit to it still fails this test.
+  const MIGRATION_BASELINES: Array<{ tag: string; baselineSha: string; baselineLabel: string }> = [
+    { tag: "0021_skinny_slayback", baselineSha: BASE_SHA, baselineLabel: "base commit" },
+    {
+      tag: "0024_widen_episode_content_mediumtext",
+      baselineSha: MIGRATION_0024_INTENTIONAL_BASELINE_SHA,
+      baselineLabel: "its intentional post-PR#5 baseline (c8d9c31)",
+    },
+    { tag: "0025_add_reading_progress_toc_columns", baselineSha: BASE_SHA, baselineLabel: "base commit" },
+    { tag: "0026_add_homepage_performance_indexes", baselineSha: BASE_SHA, baselineLabel: "base commit" },
+    { tag: "0027_add_daily_checkin_and_coupon_cap", baselineSha: BASE_SHA, baselineLabel: "base commit" },
+    { tag: "0028_repair_episode_reader_schema", baselineSha: BASE_SHA, baselineLabel: "base commit" },
+    { tag: "0029_add_dynamic_daily_checkin_reward_schema", baselineSha: BASE_SHA, baselineLabel: "base commit" },
+    { tag: "0030_repair_missing_daily_checkins", baselineSha: BASE_SHA, baselineLabel: "base commit" },
   ];
 
-  for (const tag of UNTOUCHED_MIGRATIONS) {
-    it(`${tag}.sql is byte-identical to the base commit`, () => {
-      expect(isByteIdenticalToBase(`drizzle/${tag}.sql`)).toBe(true);
+  for (const { tag, baselineSha, baselineLabel } of MIGRATION_BASELINES) {
+    it(`${tag}.sql is byte-identical to ${baselineLabel}`, () => {
+      expect(isByteIdenticalToBaseline(`drizzle/${tag}.sql`, baselineSha)).toBe(true);
     });
   }
+
+  it("every migration except 0024 is still pinned to the original base commit", () => {
+    const rePinned = MIGRATION_BASELINES.filter((m) => m.baselineSha !== BASE_SHA);
+    expect(rePinned.map((m) => m.tag)).toEqual(["0024_widen_episode_content_mediumtext"]);
+  });
+
+  it("migration 0027 and 0030 remain pinned to the original base commit (never re-baselined)", () => {
+    for (const tag of ["0027_add_daily_checkin_and_coupon_cap", "0030_repair_missing_daily_checkins"]) {
+      const entry = MIGRATION_BASELINES.find((m) => m.tag === tag);
+      expect(entry).toBeDefined();
+      expect(entry!.baselineSha).toBe(BASE_SHA);
+    }
+  });
 });

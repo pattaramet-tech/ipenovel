@@ -8,6 +8,7 @@ import {
   novels,
 } from "../../drizzle/schema";
 import { resolveSaleMode } from "./readerService";
+import { isDuplicateKeyError } from "../helpers/databaseErrorClassifier";
 
 export interface PurchaseResult {
   success: boolean;
@@ -433,10 +434,15 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
     }
 
     // Fallback for unexpected/driver-level errors (e.g. MySQL duplicate key
-    // races on the unique_user_episode_purchase constraint)
+    // races on the unique_user_episode_purchase constraint).
+    // isDuplicateKeyError is the reliable check (errno/code anywhere in the
+    // cause chain - drizzle wraps the driver error, so the message-based
+    // checks below never see "Duplicate entry" for a wrapped exception).
+    // The original message matches are kept as a purely additive fallback so
+    // this stays behavior-compatible for any non-wrapped throw site.
     const errorMsg = (error as Error).message || "";
 
-    if (errorMsg.includes("Duplicate entry") || errorMsg.includes("unique")) {
+    if (isDuplicateKeyError(error) || errorMsg.includes("Duplicate entry") || errorMsg.includes("unique")) {
       return {
         success: false,
         error: "Already purchased",
