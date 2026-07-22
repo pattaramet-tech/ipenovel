@@ -1,5 +1,7 @@
-#!/usr/bin/env node
-// Safe production migration runner.
+// Safe production migration runner. Always invoked as `node scripts/migrate.mjs`
+// (package.json's db:migrate, server/_core/startupMigrations.ts's spawn) or
+// imported directly for unit-testing findMissingSchemaObjects - never
+// executed as a standalone `./scripts/migrate.mjs`, so no shebang is needed.
 //
 // Why this exists (see docs/DAILY_CHECKIN_DEPLOYMENT_FIX.md): the Phase 5
 // deploy shipped code that queries the `dailyCheckins` table and
@@ -55,15 +57,15 @@ const LOCK_TIMEOUT_SECONDS = 60;
 // migrate() reports success, so a migration run that "succeeded" but left
 // the schema incomplete still fails the deploy instead of letting the
 // server boot and serve errors. See docs/DAILY_CHECKIN_DEPLOYMENT_FIX.md.
-const REQUIRED_TABLES = [
+export const REQUIRED_TABLES = [
   "dailyCheckins",
   "dailyCheckinCampaigns",
   "dailyCheckinCouponTemplates",
   "dailyCheckinRewardRules",
   "dailyCheckinRewardGrants",
 ];
-const REQUIRED_COLUMNS = [{ table: "coupons", column: "maxDiscountAmount" }];
-const REQUIRED_INDEXES = [
+export const REQUIRED_COLUMNS = [{ table: "coupons", column: "maxDiscountAmount" }];
+export const REQUIRED_INDEXES = [
   { table: "dailyCheckins", index: "PRIMARY" },
   { table: "dailyCheckins", index: "unique_daily_checkin_user_date_campaign" },
   { table: "dailyCheckins", index: "unique_daily_checkins_coupon" },
@@ -79,7 +81,7 @@ const REQUIRED_INDEXES = [
  * MySQL 8 and TiDB (which differ in information_schema column casing).
  * No user table is read.
  */
-async function findMissingSchemaObjects(conn) {
+export async function findMissingSchemaObjects(conn) {
   const missing = [];
 
   const [tableRows] = await conn.query(
@@ -87,9 +89,22 @@ async function findMissingSchemaObjects(conn) {
      WHERE table_schema = DATABASE() AND table_name IN (${REQUIRED_TABLES.map(() => "?").join(",")})`,
     REQUIRED_TABLES
   );
-  const presentTables = new Set((tableRows ?? []).map((row) => String(row.name)));
+  // Compared case-insensitively: MySQL on a case-sensitive filesystem
+  // (the typical production/TiDB setup) preserves table names exactly as
+  // declared, but MariaDB/MySQL with lower_case_table_names=1 or 2 (the
+  // default on Windows and macOS installs) stores and returns them
+  // lowercased - information_schema.tables.table_name would come back as
+  // "dailycheckins", not "dailyCheckins". The WHERE clause above already
+  // matches case-insensitively at the SQL level (that part was never the
+  // problem); a plain Set built from the exact declared casing would
+  // still reject that lowercased row with a case-sensitive Set.has(),
+  // reporting every table "missing" even though the query found them all -
+  // exactly what a real disposable-database run against local MariaDB
+  // caught. This has no bearing on column/index checks below, which do
+  // their table-name comparison in SQL (via WHERE), never in JS.
+  const presentTables = new Set((tableRows ?? []).map((row) => String(row.name).toLowerCase()));
   for (const table of REQUIRED_TABLES) {
-    if (!presentTables.has(table)) missing.push(`table ${table}`);
+    if (!presentTables.has(table.toLowerCase())) missing.push(`table ${table}`);
   }
 
   for (const { table, column } of REQUIRED_COLUMNS) {
@@ -103,8 +118,9 @@ async function findMissingSchemaObjects(conn) {
 
   for (const { table, index } of REQUIRED_INDEXES) {
     // An index on a missing table is already reported as a missing table -
-    // don't report the same root cause twice.
-    if (!presentTables.has(table)) continue;
+    // don't report the same root cause twice. Same case-insensitive
+    // comparison as the table check above, for the same reason.
+    if (!presentTables.has(table.toLowerCase())) continue;
     const [indexRows] = await conn.query(
       `SELECT DISTINCT index_name AS name FROM information_schema.statistics
        WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?`,
@@ -189,6 +205,12 @@ async function main() {
   }
 }
 
-main().then(() => {
-  process.exit(process.exitCode ?? 0);
-});
+// Guarded so this module can be imported (e.g. to unit-test
+// findMissingSchemaObjects with a fake connection, no real database
+// involved) without main() firing and attempting a real DB connection.
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  main().then(() => {
+    process.exit(process.exitCode ?? 0);
+  });
+}
