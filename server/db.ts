@@ -1646,11 +1646,19 @@ export async function getUserPointsBalance(userId: number, tx?: any) {
   const db = tx || await getDb();
   if (!db) return "0.00";
 
+  // `id DESC` is a required tiebreaker, not decoration: pointsTransactions
+  // .createdAt is a MySQL `timestamp` with second-level precision, so two
+  // transactions written in the same second carry an identical createdAt.
+  // Ordering by createdAt alone leaves those rows tied, and which one the
+  // engine returns for LIMIT 1 is then unspecified - it could hand back a
+  // stale balanceAfter and silently rewind the user's balance. The
+  // autoincrement id is strictly monotonic per insert, so (createdAt DESC,
+  // id DESC) makes "the latest transaction" deterministic.
   const result = await db
     .select({ balanceAfter: pointsTransactions.balanceAfter })
     .from(pointsTransactions)
     .where(eq(pointsTransactions.userId, userId))
-    .orderBy(desc(pointsTransactions.createdAt))
+    .orderBy(desc(pointsTransactions.createdAt), desc(pointsTransactions.id))
     .limit(1);
 
   return result.length > 0 ? result[0].balanceAfter.toString() : "0.00";
