@@ -6,6 +6,7 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import viteConfig from "../../vite.config";
 import { renderSeoHtml } from "../services/serverSeoRenderer";
+import { HTML_CACHE_CONTROL, resolveStaticCacheControl } from "./staticCachePolicy";
 
 export async function setupVite(app: Express, server: Server) {
   const serverOptions = {
@@ -72,14 +73,29 @@ export function serveStatic(app: Express) {
     );
   }
 
-  app.use(express.static(distPath));
+  // setHeaders decides Cache-Control per file: a long, immutable cache for
+  // Vite's content-hashed assets/ files, a short one for anything else this
+  // serves directly (e.g. public/ files with no hash - favicon, robots.txt).
+  // index.html is handled by the SPA fallback below, not by this static
+  // middleware, but classifyStaticFile still routes it correctly if it's
+  // ever hit here too. ETag/Last-Modified are left at express.static's
+  // defaults (never disabled).
+  app.use(
+    express.static(distPath, {
+      setHeaders: (res, filePath) => {
+        res.setHeader("Cache-Control", resolveStaticCacheControl(filePath));
+      },
+    })
+  );
 
   // fall through to index.html if the file doesn't exist - this is the SPA
   // route (/, /novels, /novels/:id, ...) response, so it's also where
   // server-side <head> metadata for those routes gets injected (see
   // server/services/serverSeoRenderer.ts). Falls back to the raw,
   // unmodified file via res.sendFile if anything above throws, so a bug in
-  // the SEO renderer can never take the whole site down.
+  // the SEO renderer can never take the whole site down. HTML is never
+  // long-cached - it's what points at the current hashed asset URLs, so a
+  // deploy must be visible immediately rather than served stale.
   app.use("*", async (req, res) => {
     const indexPath = path.resolve(distPath, "index.html");
     try {
@@ -89,9 +105,10 @@ export function serveStatic(app: Express) {
       // req.originalUrl, not req.path - see the matching note in setupVite
       // above (Express rebases req.path to "/" for a "*"-mounted handler).
       const html = await renderSeoHtml(cachedProductionTemplate, req.originalUrl);
-      res.status(200).set({ "Content-Type": "text/html" }).send(html);
+      res.status(200).set({ "Content-Type": "text/html", "Cache-Control": HTML_CACHE_CONTROL }).send(html);
     } catch (error) {
       console.error("[ServerSEO] Failed to render HTML, falling back to raw file:", error);
+      res.set("Cache-Control", HTML_CACHE_CONTROL);
       res.sendFile(indexPath);
     }
   });

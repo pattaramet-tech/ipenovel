@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import compression from "compression";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
@@ -81,6 +82,12 @@ async function startServer() {
   // unnecessary work, and after `trust proxy` so it agrees with the rest of
   // the app about the real client-facing host/protocol.
   app.use(canonicalDomainRedirect);
+  // gzip/deflate response compression - after the redirect (so a redirected
+  // request does no extra work) and before every route that produces a real
+  // response body (body parsers, OAuth, tRPC, static files/HTML), so all of
+  // them benefit. Default compression filter (respects Content-Type and a
+  // client's Accept-Encoding), default threshold override only.
+  app.use(compression({ level: 6, threshold: 1024 }));
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
