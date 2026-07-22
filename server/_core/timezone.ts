@@ -33,3 +33,23 @@ export function getNextBangkokDayStart(businessDate: string): Date {
   const startOfBusinessDate = new Date(`${businessDate}T00:00:00+07:00`);
   return new Date(startOfBusinessDate.getTime() + 24 * 60 * 60 * 1000);
 }
+
+/**
+ * The Bangkok business date immediately before the given "YYYY-MM-DD"
+ * business date. Pure calendar arithmetic on the date string itself - it
+ * never consults the current time and never depends on the server's own
+ * timezone, so it is safe to call while walking a check-in streak backwards.
+ *
+ * Built on UTC date math rather than string slicing so month/year rollovers
+ * and leap days are handled by the platform (2026-03-01 -> 2026-02-28,
+ * 2028-03-01 -> 2028-02-29, 2027-01-01 -> 2026-12-31).
+ */
+export function getPreviousBangkokBusinessDate(businessDate: string): string {
+  const [year, month, day] = businessDate.split("-").map(Number);
+  const previous = new Date(Date.UTC(year, month - 1, day));
+  previous.setUTCDate(previous.getUTCDate() - 1);
+  const y = previous.getUTCFullYear();
+  const m = String(previous.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(previous.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}

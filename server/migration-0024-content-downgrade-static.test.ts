@@ -135,19 +135,31 @@ describe("migration 0024 - safety invariants unchanged", () => {
     expect(isByteIdenticalToBase("drizzle/0027_add_daily_checkin_and_coupon_cap.sql")).toBe(true);
   });
 
-  it("no migration 0031 file was created, and no journal entry beyond idx 30 exists", () => {
+  it("the 0024 fix itself added no migration - the only entry past 0030 is the known, unrelated 0031", () => {
+    // This assertion's job is "repairing migration 0024 did not require a new
+    // migration", not "no migration may ever be added again". Migration 0031
+    // (dailyCheckins.couponId -> nullable, for the 1-point Daily Check-in
+    // reward) is a separate, later, intentional change, so it is named
+    // explicitly here rather than silently allowed.
     const journal = JSON.parse(fs.readFileSync(path.join(repoRoot, "drizzle/meta/_journal.json"), "utf8"));
-    expect(journal.entries.find((e: any) => e.idx === 31)).toBeUndefined();
-    const strayFiles = fs.readdirSync(path.join(repoRoot, "drizzle")).filter((f) => /^0031/.test(f));
+    expect(journal.entries.find((e: any) => e.idx === 31)?.tag).toBe("0031_enable_daily_checkin_point_rewards");
+    expect(journal.entries.find((e: any) => e.idx === 32)).toBeUndefined();
+
+    const strayFiles = fs
+      .readdirSync(path.join(repoRoot, "drizzle"))
+      .filter((f) => /^003[12]/.test(f) && f !== "0031_enable_daily_checkin_point_rewards.sql");
     expect(strayFiles).toHaveLength(0);
   });
 
-  it("the journal ends at exactly migration 0030", () => {
+  it("migration 0030 is still recorded at idx 30, immediately before 0031", () => {
     const journal = JSON.parse(fs.readFileSync(path.join(repoRoot, "drizzle/meta/_journal.json"), "utf8"));
+    const entry0030 = journal.entries.find((e: any) => e.idx === 30);
+    expect(entry0030.tag).toBe("0030_repair_missing_daily_checkins");
+
     const last = journal.entries[journal.entries.length - 1];
-    expect(last.tag).toBe("0030_repair_missing_daily_checkins");
-    expect(last.idx).toBe(30);
-    expect(journal.entries).toHaveLength(31);
+    expect(last.tag).toBe("0031_enable_daily_checkin_point_rewards");
+    expect(last.idx).toBe(31);
+    expect(journal.entries).toHaveLength(32);
   });
 
   it("no destructive statement (DROP/TRUNCATE/RENAME/DELETE) was introduced anywhere in migration 0024", () => {

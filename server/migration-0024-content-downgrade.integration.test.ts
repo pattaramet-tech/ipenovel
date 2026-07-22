@@ -128,7 +128,7 @@ describe.sequential("migration 0024 - LONGTEXT episodes.content is never downgra
         expect(Buffer.byteLength(rows[0].content, "utf8")).toBe(LARGE_CONTENT_SIZE);
 
         const journal = readMigrationJournal(migrationsFolder);
-        const idx0030When = journal.find((e) => e.tag === "0030_repair_missing_daily_checkins")!.when;
+        const idx0030When = journal[journal.length - 1].when; // end of chain, not a pinned migration
         expect(await latestRecordedMigrationTimestamp(conn)).toBe(idx0030When);
 
         for (const table of [
@@ -234,7 +234,7 @@ describe.sequential("migration 0024 - LONGTEXT episodes.content is never downgra
         expect(["mediumtext", "longtext"]).toContain(finalType);
 
         const journal = readMigrationJournal(migrationsFolder);
-        const idx0030When = journal.find((e) => e.tag === "0030_repair_missing_daily_checkins")!.when;
+        const idx0030When = journal[journal.length - 1].when; // end of chain, not a pinned migration
         expect(await latestRecordedMigrationTimestamp(conn)).toBe(idx0030When);
       } finally {
         await restoreFullChain(conn!);
