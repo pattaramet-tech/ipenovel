@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sanitizeTrpcErrorShape, GENERIC_INTERNAL_ERROR_MESSAGE } from "./trpc";
+import { sanitizeTrpcErrorShape, looksLikeRawDatabaseError, GENERIC_INTERNAL_ERROR_MESSAGE } from "./trpc";
 
 /**
  * Test 5 - tRPC database error sanitization.
@@ -127,5 +127,87 @@ describe("the sanitizer applies to every unexpected code, not just one procedure
       const result = sanitizeTrpcErrorShape(shapeFor("raw internal detail"), { code }, logger);
       expect(result.message).toBe(GENERIC_INTERNAL_ERROR_MESSAGE);
     }
+  });
+});
+
+describe("Part 4 - a raw database exception disguised behind an allowlisted code is still sanitized", () => {
+  // Real gap this covers: several call sites in server/routers.ts do
+  // `throw new TRPCError({ code: "BAD_REQUEST", message: error?.message })`
+  // after catching a service call (e.g. orderService.approvePayment) that
+  // normally only throws deliberate application errors - but if that
+  // service call ever surfaces a raw, un-wrapped drizzle exception instead,
+  // its message would flow straight through an allowlisted code unless the
+  // message itself is also checked.
+  const drizzleMessage =
+    "Failed query: select `id`, `userId` from `dailyCheckins` where `userId` = ? limit ?\nparams: 2160001,1";
+
+  const ALLOWLISTED_CODES = [
+    "UNAUTHORIZED",
+    "FORBIDDEN",
+    "BAD_REQUEST",
+    "NOT_FOUND",
+    "CONFLICT",
+    "TOO_MANY_REQUESTS",
+    "PAYLOAD_TOO_LARGE",
+    "UNPROCESSABLE_CONTENT",
+    "PRECONDITION_FAILED",
+    "METHOD_NOT_SUPPORTED",
+  ];
+
+  for (const code of ALLOWLISTED_CODES) {
+    it(`a drizzle-style error wrapped in ${code} is sanitized, not passed through`, () => {
+      const { logger } = collectingLogger();
+      const result = sanitizeTrpcErrorShape(shapeFor(drizzleMessage), { code }, logger);
+      const serialized = JSON.stringify(result);
+
+      expect(result.message).toBe(GENERIC_INTERNAL_ERROR_MESSAGE);
+      expect(result.data.message).toBe(GENERIC_INTERNAL_ERROR_MESSAGE);
+      expect(serialized).not.toMatch(/failed\s+query/i);
+      expect(serialized).not.toContain("dailyCheckins");
+      expect(serialized).not.toContain("2160001");
+      expect(serialized).not.toContain("params:");
+      expect(serialized.toLowerCase()).not.toContain("select");
+      expect(result.data.stack).toBeUndefined();
+      expect(serialized).not.toContain("cause");
+    });
+  }
+
+  it("still logs a sanitized server-side diagnostic even though the code was allowlisted", () => {
+    const { logger, lines } = collectingLogger();
+    sanitizeTrpcErrorShape(shapeFor(drizzleMessage), { code: "BAD_REQUEST" }, logger);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("raw DB error behind an allowlisted code");
+  });
+
+  it("a raw connection string disguised behind CONFLICT is also sanitized", () => {
+    const message = "duplicate entry for mysql://appuser:S3cr3t@db.internal.example.com:3306/ipenovel";
+    const result = sanitizeTrpcErrorShape(shapeFor(message), { code: "CONFLICT" });
+    expect(result.message).toBe(GENERIC_INTERNAL_ERROR_MESSAGE);
+    expect(JSON.stringify(result)).not.toContain("S3cr3t");
+  });
+});
+
+describe("looksLikeRawDatabaseError - precision (no false positives on ordinary safe messages)", () => {
+  it("detects drizzle's own leak signatures", () => {
+    expect(looksLikeRawDatabaseError("Failed query: select `id` from `coupons`")).toBe(true);
+    expect(looksLikeRawDatabaseError("something\nparams: 1,2,3")).toBe(true);
+    expect(looksLikeRawDatabaseError("boom select `id` from `x`")).toBe(true);
+    expect(looksLikeRawDatabaseError("mysql://user:pass@host:3306/db")).toBe(true);
+  });
+
+  it("does NOT flag ordinary application messages that happen to contain common English words", () => {
+    // These are real, legitimate messages already used in this codebase's
+    // allowlisted-code TRPCErrors - the detector must never neuter them.
+    expect(looksLikeRawDatabaseError("Please select a payment method")).toBe(false);
+    expect(looksLikeRawDatabaseError("Please update your shipping address")).toBe(false);
+    expect(looksLikeRawDatabaseError("This episode has already been purchased")).toBe(false);
+    expect(looksLikeRawDatabaseError("Your cart is empty")).toBe(false);
+    expect(looksLikeRawDatabaseError("Invalid amount")).toBe(false);
+  });
+
+  it("handles non-string input safely", () => {
+    expect(looksLikeRawDatabaseError(undefined)).toBe(false);
+    expect(looksLikeRawDatabaseError(null)).toBe(false);
+    expect(looksLikeRawDatabaseError(123)).toBe(false);
   });
 });
