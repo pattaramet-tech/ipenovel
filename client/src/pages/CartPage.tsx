@@ -22,6 +22,7 @@ import { useLanguage } from "@/contexts/LanguageContext";
 import { useEffect, useState } from "react";
 import { QR_PAYMENT_IMAGE, PAYMENT_DETAILS } from "@/constants/payment";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
+import { resolveUploadFailureMessage, resolveCheckoutFailureMessage, resolveCheckoutSuccessMessage } from "./checkoutOutcome";
 
 export default function CartPage() {
   useDocumentHead({ robots: "noindex,nofollow" });
@@ -201,54 +202,47 @@ export default function CartPage() {
       return;
     }
 
-    try {
-      setIsUploadingSlip(true);
+    setIsUploadingSlip(true);
 
-      // Step 1: Upload file to S3
+    // Step 1: Upload file to S3. Kept in its own try/catch, separate from
+    // checkout.create below - an error here is genuinely an upload failure
+    // (no Order exists yet), so it is the only case allowed to show
+    // payment.uploadFailed.
+    let uploadResult: { slipImageUrl: string };
+    try {
       const base64 = await fileToBase64(selectedSlipFile);
       const mimeType = selectedSlipFile.type as "image/jpeg" | "image/png" | "application/pdf";
-      const uploadResult = await uploadSlipFileMutation.mutateAsync({
+      uploadResult = await uploadSlipFileMutation.mutateAsync({
         fileName: selectedSlipFile.name,
         mimeType,
         fileBase64: base64,
         context: "checkout",
         orderTotal: Number(total),
       });
+    } catch (error: any) {
+      toast.error(resolveUploadFailureMessage(error, t));
+      setIsUploadingSlip(false);
+      return;
+    }
 
-      // Step 2: Create order with the uploaded slip URL
+    // Step 2: Create the order with the uploaded slip URL. The upload above
+    // already succeeded, so any error here is a checkout-specific failure
+    // (e.g. the cart was already consumed by a concurrent submission) - it
+    // must never be shown as "upload failed", and no Order was committed at
+    // this point, so retrying is safe. A successful response here always
+    // means the Order/Payment already committed server-side, even if
+    // post-commit OCR processing was deferred - see resolveCheckoutSuccessMessage.
+    try {
       const orderResult = await createOrderMutation.mutateAsync({
         couponCode: appliedCouponCode || undefined,
         pointsToRedeem: safePointsToRedeem > 0 ? safePointsToRedeem.toFixed(2) : undefined,
         slipImageUrl: uploadResult.slipImageUrl,
       });
 
-      // Show user-friendly message based on OCR/payment result
-      if (orderResult?.slipResult) {
-        const sr = orderResult.slipResult;
-        let msg = "Payment submitted successfully.";
-        
-        if (sr.status === "approved") {
-          msg = t("payment.autoApprovedOrderMessage");
-        } else if (sr.status === "pending_review") {
-          if (sr.reviewReason === "OCR_PROCESSING_ERROR") {
-            msg = t("payment.ocrErrorReviewMessage");
-          } else if (sr.duplicateStatus?.isDuplicateReference || sr.duplicateStatus?.isDuplicateFingerprint) {
-            msg = t("payment.duplicateReviewMessage");
-          } else if (sr.ocrConfidence && sr.ocrConfidence < 85) {
-            msg = t("payment.lowConfidenceReviewMessage");
-          } else {
-            msg = t("payment.pendingReviewOrderMessage");
-          }
-        }
-        
-        toast.success(msg);
-        navigate("/orders");
-      } else {
-        toast.success(t("order.createdSuccess"));
-        navigate("/orders");
-      }
+      toast.success(resolveCheckoutSuccessMessage(orderResult?.slipResult, t));
+      navigate("/orders");
     } catch (error: any) {
-      toast.error(error?.message || t("payment.uploadFailed"));
+      toast.error(resolveCheckoutFailureMessage(error, t));
     } finally {
       setIsUploadingSlip(false);
     }

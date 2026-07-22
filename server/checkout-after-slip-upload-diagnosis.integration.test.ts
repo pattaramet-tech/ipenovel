@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll } from "vitest";
-import { eq, count } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 import * as db from "./db";
@@ -12,20 +12,29 @@ import {
   uniqueTestTag,
   deleteFixtures,
 } from "./test-helpers/fixtures";
-import { carts, cartItems, dailyCheckins, orders, orderItems, payments, couponUsages } from "../drizzle/schema";
+import { carts, cartItems, dailyCheckins, orders, orderItems, payments, couponUsages, purchases } from "../drizzle/schema";
 
 /**
- * Diagnosis for the confirmed Production symptom: after payment.uploadSlipFile
- * succeeds, checkout.create returns/fails such that the client shows the
- * generic sanitized message "Unable to process this request at this time.
- * Please try again." (server/_core/trpc.ts GENERIC_INTERNAL_ERROR_MESSAGE).
- * That message only ever appears for an INTERNAL_SERVER_ERROR-coded error, or
- * a BAD_REQUEST-coded error whose message looks like a raw drizzle/mysql
- * exception (see looksLikeRawDatabaseError) - checkout.create's own catch
- * block always rethrows as BAD_REQUEST with the caught error's message, so
- * seeing the generic message implies either (a) an uncaught throw before
- * that try/catch, or (b) the caught error's message is itself a raw DB
- * exception string.
+ * Diagnosis + regression coverage for two rounds of the same Production
+ * incident:
+ *
+ * Round 1 (fixed by explicitly setting `ocrConfidence: 0` in
+ * db.createPayment): after payment.uploadSlipFile succeeded, checkout.create
+ * failed on the INSERT INTO payments statement itself (migration 0021 left
+ * `ocrConfidence` with no DEFAULT), which the client saw as the generic
+ * sanitized "Unable to process this request at this time" message.
+ *
+ * Round 2 (this file's Cases E/F and the retry case): checkout.create's own
+ * Order/OrderItems/Payment creation was not transactional, so (a) a failure
+ * after Order/Payment creation (e.g. in post-commit OCR processing) could
+ * leave partial data, and (b) two concurrent checkout.create calls for the
+ * same cart could both succeed, creating two Orders from one cart. Fixed by
+ * splitting checkout.create into a Phase 1 atomic transaction (lock the
+ * cart row with SELECT ... FOR UPDATE, re-read cart items, create
+ * Order/OrderItems/Payment, clear the cart, commit) and a Phase 2
+ * post-commit step (OCR/Storage/Discord, with no transaction held open)
+ * whose failure is never reported as a checkout failure - see
+ * server/routers.ts checkout.create and server/db.ts lockCartForCheckout.
  *
  * Storage/OCR/Discord are never called for real here: OCR_ENABLED=false
  * (must be set in the environment before this file is imported - see
@@ -96,7 +105,7 @@ async function seedDailyCheckinRewardCoupon(userId: number): Promise<{ couponId:
 
 async function counts(orderId: number) {
   const testDb = getTestDb();
-  const [orderRows] = [await testDb.select().from(orders).where(eq(orders.id, orderId))];
+  const orderRows = await testDb.select().from(orders).where(eq(orders.id, orderId));
   const orderItemRows = await testDb.select().from(orderItems).where(eq(orderItems.orderId, orderId));
   const paymentRows = await testDb.select().from(payments).where(eq(payments.orderId, orderId));
   return {
@@ -110,6 +119,38 @@ async function cartItemCount(cartId: number): Promise<number> {
   const testDb = getTestDb();
   const rows = await testDb.select().from(cartItems).where(eq(cartItems.cartId, cartId));
   return rows.length;
+}
+
+async function purchaseCount(userId: number): Promise<number> {
+  const testDb = getTestDb();
+  const rows = await testDb.select().from(purchases).where(eq(purchases.userId, userId));
+  return rows.length;
+}
+
+async function couponUsageCount(couponId: number): Promise<number> {
+  const testDb = getTestDb();
+  const rows = await testDb.select().from(couponUsages).where(eq(couponUsages.couponId, couponId));
+  return rows.length;
+}
+
+async function ordersForUser(userId: number) {
+  const testDb = getTestDb();
+  return testDb.select().from(orders).where(eq(orders.userId, userId));
+}
+
+async function cleanupOrder(orderId: number, seeded: Seeded, extraCouponIds: number[] = []) {
+  const testDb = getTestDb();
+  const orderItemIds = (await testDb.select().from(orderItems).where(eq(orderItems.orderId, orderId))).map((r) => r.id);
+  const paymentRows = await testDb.select().from(payments).where(eq(payments.orderId, orderId));
+  await deleteFixtures({
+    orderItemIds,
+    paymentIds: paymentRows.map((p) => p.id),
+    orderIds: [orderId],
+    episodeIds: [seeded.episodeId],
+    novelIds: [seeded.novelId],
+    couponIds: extraCouponIds,
+    userIds: [seeded.userId],
+  });
 }
 
 describe.sequential("Checkout-after-slip-upload diagnosis (real disposable test database)", () => {
@@ -134,14 +175,7 @@ describe.sequential("Checkout-after-slip-upload diagnosis (real disposable test 
     expect(state.payment?.slipImageUrl).toBe(SYNTHETIC_SLIP_URL);
     expect(await cartItemCount(seeded.cartId)).toBe(0);
 
-    await deleteFixtures({
-      orderItemIds: (await getTestDb().select().from(orderItems).where(eq(orderItems.orderId, result.id))).map((r) => r.id),
-      paymentIds: state.payment ? [state.payment.id] : [],
-      orderIds: [result.id],
-      episodeIds: [seeded.episodeId],
-      novelIds: [seeded.novelId],
-      userIds: [seeded.userId],
-    });
+    await cleanupOrder(result.id, seeded);
   }, 30000);
 
   it("Case B - checkout with an ordinary (non-reward) coupon, with synthetic slip URL, succeeds", async () => {
@@ -157,15 +191,7 @@ describe.sequential("Checkout-after-slip-upload diagnosis (real disposable test 
     expect(Number(state.order?.discountAmount)).toBeCloseTo(20.0, 2);
     expect(Number(state.order?.totalAmount)).toBeCloseTo(180.0, 2);
 
-    await deleteFixtures({
-      orderItemIds: (await getTestDb().select().from(orderItems).where(eq(orderItems.orderId, result.id))).map((r) => r.id),
-      paymentIds: state.payment ? [state.payment.id] : [],
-      orderIds: [result.id],
-      episodeIds: [seeded.episodeId],
-      novelIds: [seeded.novelId],
-      couponIds: [coupon.id],
-      userIds: [seeded.userId],
-    });
+    await cleanupOrder(result.id, seeded, [coupon.id]);
   }, 30000);
 
   it("Case C - checkout with a Daily Check-in-style reward coupon (percentage + maxDiscountAmount, owned, issued), with synthetic slip URL, succeeds", async () => {
@@ -182,15 +208,7 @@ describe.sequential("Checkout-after-slip-upload diagnosis (real disposable test 
     expect(Number(state.order?.discountAmount)).toBeCloseTo(10.0, 2);
     expect(Number(state.order?.totalAmount)).toBeCloseTo(490.0, 2);
 
-    await deleteFixtures({
-      orderItemIds: (await getTestDb().select().from(orderItems).where(eq(orderItems.orderId, result.id))).map((r) => r.id),
-      paymentIds: state.payment ? [state.payment.id] : [],
-      orderIds: [result.id],
-      episodeIds: [seeded.episodeId],
-      novelIds: [seeded.novelId],
-      couponIds: [reward.couponId],
-      userIds: [seeded.userId],
-    });
+    await cleanupOrder(result.id, seeded, [reward.couponId]);
   }, 30000);
 
   it("Case D - a mocked payment.uploadSlipFile result fed into the exact same client follow-up payload (checkout.create) succeeds", async () => {
@@ -218,108 +236,114 @@ describe.sequential("Checkout-after-slip-upload diagnosis (real disposable test 
     const state = await counts(result.id);
     expect(state.payment?.slipImageUrl).toBe(uploadResult.slipImageUrl);
 
-    await deleteFixtures({
-      orderItemIds: (await getTestDb().select().from(orderItems).where(eq(orderItems.orderId, result.id))).map((r) => r.id),
-      paymentIds: state.payment ? [state.payment.id] : [],
-      orderIds: [result.id],
-      episodeIds: [seeded.episodeId],
-      novelIds: [seeded.novelId],
-      userIds: [seeded.userId],
-    });
+    await cleanupOrder(result.id, seeded);
   }, 30000);
 
-  it("Case E - forcing submitPaymentSlip to fail AFTER Order/Payment creation reveals whether partial data is left behind", async () => {
+  it("Case E - post-commit slip/OCR processing failure returns a successful, pending-processing checkout response with no partial data", async () => {
     if (!process.env.TEST_DATABASE_URL) return;
     const seeded = await seedUserNovelEpisodeCart();
     const caller = appRouter.createCaller(makeUserContext(seeded.userId));
 
+    // Forces the ONLY thing that runs after the Phase 1 transaction commits
+    // (Phase 2 - submitPaymentSlip's manual-review path, since OCR is
+    // disabled) to throw. recordOrderHistory is called deep inside
+    // submitPaymentSlip, well after the Order/OrderItems/Payment have
+    // already committed and the cart has already been cleared.
     const recordOrderHistorySpy = vi
       .spyOn(db, "recordOrderHistory")
-      .mockRejectedValueOnce(new Error("Simulated DB failure - Case E diagnostic"));
+      .mockRejectedValueOnce(new Error("Simulated post-commit OCR/processing failure - Case E"));
 
-    let caughtError: any;
-    try {
-      await caller.checkout.create({ slipImageUrl: SYNTHETIC_SLIP_URL });
-    } catch (error: any) {
-      caughtError = error;
-    }
+    const result = await caller.checkout.create({ slipImageUrl: SYNTHETIC_SLIP_URL });
     recordOrderHistorySpy.mockRestore();
 
-    expect(caughtError).toBeDefined();
-    expect(caughtError.code).toBe("BAD_REQUEST");
+    // checkout.create must report SUCCESS, not throw, even though Phase 2 failed.
+    expect(result).toBeDefined();
+    expect(result.slipResult?.success).toBe(true);
+    expect(result.slipResult?.processingDeferred).toBe(true);
+    expect(result.slipResult?.status).toBe("pending_review");
 
-    // Find whatever order got created for this user (there is no other way
-    // to get its id back - checkout.create threw before returning anything).
-    const testDb = getTestDb();
-    const createdOrders = await testDb.select().from(orders).where(eq(orders.userId, seeded.userId));
-    expect(createdOrders).toHaveLength(1);
-    const orphanOrder = createdOrders[0];
-    const state = await counts(orphanOrder.id);
+    // Exactly one Order, one Payment, one set of OrderItems - no partial data.
+    const allOrders = await ordersForUser(seeded.userId);
+    expect(allOrders).toHaveLength(1);
+    const state = await counts(result.id);
+    expect(state.orderItemCount).toBe(1);
+    expect(state.payment).toBeDefined();
+    expect(state.payment?.slipImageUrl).toBe(SYNTHETIC_SLIP_URL);
+    expect(state.order?.paymentStatus).toBe("submitted");
 
-    // This assertion documents the actual (not hypothetical) behavior: does
-    // checkout.create leave the Order/Payment committed when a later step
-    // throws? (checkout.create's own orderService.createOrderFromCart call
-    // is NOT given a transaction - see server/routers.ts checkout.create.)
-    console.log(
-      "[Case E result] order status:",
-      orphanOrder.status,
-      "paymentStatus:",
-      orphanOrder.paymentStatus,
-      "payment exists:",
-      !!state.payment,
-      "cart item count still present:",
-      await cartItemCount(seeded.cartId)
-    );
+    // Cart already cleared (Phase 1 committed) - not left dangling because
+    // of the Phase 2 failure.
+    expect(await cartItemCount(seeded.cartId)).toBe(0);
 
-    await deleteFixtures({
-      orderItemIds: (await testDb.select().from(orderItems).where(eq(orderItems.orderId, orphanOrder.id))).map((r) => r.id),
-      paymentIds: state.payment ? [state.payment.id] : [],
-      orderIds: [orphanOrder.id],
-      episodeIds: [seeded.episodeId],
-      novelIds: [seeded.novelId],
-      userIds: [seeded.userId],
-    });
+    // Finalization (purchases, coupon usage) never ran - manual review is
+    // still pending, exactly as if OCR itself had sent this to review.
+    expect(await purchaseCount(seeded.userId)).toBe(0);
+
+    await cleanupOrder(result.id, seeded);
   }, 30000);
 
-  it("Case F - the same checkout run twice in immediate succession (double-click simulation) reveals whether duplicate Orders are created", async () => {
+  it("Case F - two concurrent checkout.create calls for the same cart: exactly one succeeds, the other gets a controlled conflict response, no duplicate Order", async () => {
     if (!process.env.TEST_DATABASE_URL) return;
-    const seeded = await seedUserNovelEpisodeCart();
+    const seeded = await seedUserNovelEpisodeCart("300.00");
+    const coupon = await createTestCoupon({ discountType: "percentage", discountValue: "10.00" });
     const callerA = appRouter.createCaller(makeUserContext(seeded.userId));
     const callerB = appRouter.createCaller(makeUserContext(seeded.userId));
 
     const results = await Promise.allSettled([
-      callerA.checkout.create({ slipImageUrl: SYNTHETIC_SLIP_URL }),
-      callerB.checkout.create({ slipImageUrl: SYNTHETIC_SLIP_URL }),
+      callerA.checkout.create({ couponCode: coupon.code, slipImageUrl: SYNTHETIC_SLIP_URL }),
+      callerB.checkout.create({ couponCode: coupon.code, slipImageUrl: SYNTHETIC_SLIP_URL }),
     ]);
 
-    const testDb = getTestDb();
-    const createdOrders = await testDb.select().from(orders).where(eq(orders.userId, seeded.userId));
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
 
-    console.log(
-      "[Case F result] settled statuses:",
-      results.map((r) => r.status),
-      "orders created:",
-      createdOrders.length
-    );
+    // Exactly one request succeeds, the other is a controlled BAD_REQUEST/CONFLICT.
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    const rejection = rejected[0] as PromiseRejectedResult;
+    expect(["BAD_REQUEST", "CONFLICT"]).toContain(rejection.reason?.code);
 
-    const orderIds = createdOrders.map((o) => o.id);
-    const paymentRows = orderIds.length
-      ? await testDb.select().from(payments).where(eq(payments.orderId, orderIds[0]))
-      : [];
-    const allPayments = [];
-    for (const oid of orderIds) {
-      allPayments.push(...(await testDb.select().from(payments).where(eq(payments.orderId, oid))));
+    const allOrders = await ordersForUser(seeded.userId);
+    expect(allOrders).toHaveLength(1);
+    const successfulOrder = (fulfilled[0] as PromiseFulfilledResult<any>).value;
+    expect(successfulOrder.id).toBe(allOrders[0].id);
+
+    const state = await counts(successfulOrder.id);
+    expect(state.orderItemCount).toBe(1);
+    expect(state.payment).toBeDefined();
+    expect(await cartItemCount(seeded.cartId)).toBe(0);
+
+    // Coupon usage is only ever recorded at finalization (approval), which
+    // never ran here (payment still pending review) - so it must be 0, not
+    // double-recorded once per racing request.
+    expect(await couponUsageCount(coupon.id)).toBe(0);
+
+    await cleanupOrder(successfulOrder.id, seeded, [coupon.id]);
+  }, 30000);
+
+  it("Retry after success - calling checkout.create again after the cart was already cleared creates no new Order", async () => {
+    if (!process.env.TEST_DATABASE_URL) return;
+    const seeded = await seedUserNovelEpisodeCart();
+    const caller = appRouter.createCaller(makeUserContext(seeded.userId));
+
+    const first = await caller.checkout.create({ slipImageUrl: SYNTHETIC_SLIP_URL });
+    expect(first.slipResult?.success).toBe(true);
+    expect(await cartItemCount(seeded.cartId)).toBe(0);
+
+    let retryError: any;
+    try {
+      await caller.checkout.create({ slipImageUrl: SYNTHETIC_SLIP_URL });
+    } catch (error: any) {
+      retryError = error;
     }
 
-    await deleteFixtures({
-      orderItemIds: (
-        await Promise.all(orderIds.map((oid) => testDb.select().from(orderItems).where(eq(orderItems.orderId, oid))))
-      ).flat().map((r) => r.id),
-      paymentIds: allPayments.map((p) => p.id),
-      orderIds,
-      episodeIds: [seeded.episodeId],
-      novelIds: [seeded.novelId],
-      userIds: [seeded.userId],
-    });
+    expect(retryError).toBeDefined();
+    expect(["BAD_REQUEST", "CONFLICT"]).toContain(retryError.code);
+
+    const allOrders = await ordersForUser(seeded.userId);
+    expect(allOrders).toHaveLength(1);
+    expect(allOrders[0].id).toBe(first.id);
+
+    await cleanupOrder(first.id, seeded);
   }, 30000);
 });
