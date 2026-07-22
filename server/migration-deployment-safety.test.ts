@@ -71,15 +71,45 @@ describe("Migration journal and schema (no DB required - static file checks)", (
 describe("Deploy pipeline runs migrations safely (no DB required - static config checks)", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
 
-  it("start script runs the migration step before booting the server", () => {
-    expect(pkg.scripts.start).toMatch(/scripts\/migrate\.mjs/);
-    // Must be a hard dependency (&&), not a background/optional step -
-    // otherwise a failed migration wouldn't stop the server from booting.
-    const migrateIndex = pkg.scripts.start.indexOf("scripts/migrate.mjs");
-    const serverIndex = pkg.scripts.start.indexOf("dist/index.js");
+  // The migration step used to be chained into `start` with `&&`. That was
+  // necessary but NOT sufficient: a later production incident proved the
+  // hosting platform can start the app with `node dist/index.js` directly,
+  // bypassing package.json entirely - so nothing migrated, production stayed
+  // at migration 0023, and the app queried a table that did not exist.
+  //
+  // Enforcement therefore moved INTO the built executable
+  // (server/_core/startupMigrations.ts, awaited by server/_core/index.ts
+  // before any port is opened). These assertions are strengthened
+  // accordingly: they now require the guarantee to hold for a bare
+  // `node dist/index.js`, which the old `&&` chain could not provide, and
+  // additionally require that migrations are not run twice.
+  it("the built server executable enforces migrations itself, before it can listen", () => {
+    const bootstrap = fs.readFileSync(path.join(repoRoot, "server/_core/index.ts"), "utf8");
+    const helper = fs.readFileSync(path.join(repoRoot, "server/_core/startupMigrations.ts"), "utf8");
+
+    // The bootstrap awaits the migration step before constructing Express
+    // or announcing that it is listening.
+    const migrateIndex = bootstrap.indexOf("await ensureDatabaseMigrated()");
+    const expressIndex = bootstrap.indexOf("const app = express()");
+    const runningIndex = bootstrap.indexOf("Server running on");
     expect(migrateIndex).toBeGreaterThanOrEqual(0);
-    expect(serverIndex).toBeGreaterThan(migrateIndex);
-    expect(pkg.scripts.start.slice(migrateIndex, serverIndex)).toContain("&&");
+    expect(expressIndex).toBeGreaterThan(migrateIndex);
+    expect(runningIndex).toBeGreaterThan(migrateIndex);
+
+    // It delegates to the one migration implementation rather than
+    // reimplementing drizzle's migrator inside the server.
+    expect(helper).toMatch(/scripts.{0,4}migrate\.mjs/);
+    expect(bootstrap).not.toMatch(/drizzle-orm\/mysql2\/migrator/);
+
+    // A failed migration must stop startup with a non-zero exit status.
+    expect(bootstrap).toMatch(/process\.exitCode\s*=\s*1/);
+  });
+
+  it("start boots the self-migrating executable and does not run the migration a second time", () => {
+    expect(pkg.scripts.start).toMatch(/dist\/index\.js/);
+    // Exactly one migration path: the executable's own. Chaining
+    // scripts/migrate.mjs here as well would run migrations twice per boot.
+    expect(pkg.scripts.start).not.toMatch(/scripts\/migrate\.mjs/);
   });
 
   it("start script never calls drizzle-kit generate (must not generate new migrations during deploy)", () => {

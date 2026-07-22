@@ -68,11 +68,28 @@ describe("Daily check-in error states never reference the raw error object (stat
   // Strip comments before checking - the file's own docblock explains this
   // rule in prose (mentioning "error.message" as the thing NOT to do),
   // which would otherwise false-positive against the code-only check below.
-  const cardCodeOnly = cardSource
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n")
-    .map((line) => line.replace(/\/\/.*$/, ""))
-    .join("\n");
+  //
+  // Line endings are normalized to LF BEFORE splitting. On a CRLF checkout
+  // (this repo's default on Windows - core.autocrlf=true, no
+  // .gitattributes), each split line retains a trailing "\r". JavaScript's
+  // `$` anchor (no /m flag) only matches the true end of the string, and
+  // `.` never matches a line-terminator character including "\r" - so
+  // `/\/\/.*$/` silently fails to match on every such line, and the "//"
+  // comment is never actually stripped. That let a `// ... err.message ...`
+  // prose comment leak into the code-only text and false-positive this
+  // exact check. Normalizing first removes the "\r" so `$` and "." behave
+  // identically regardless of which line-ending style the file was
+  // checked out with.
+  function stripComments(source: string): string {
+    return source
+      .replace(/\r\n?/g, "\n")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split("\n")
+      .map((line) => line.replace(/\/\/.*$/, ""))
+      .join("\n");
+  }
+
+  const cardCodeOnly = stripComments(cardSource);
 
   it("does not interpolate error.message or err.message anywhere in actual code", () => {
     expect(cardCodeOnly).not.toMatch(/error\?\.message/);
@@ -84,6 +101,44 @@ describe("Daily check-in error states never reference the raw error object (stat
   it("uses the fixed, translated checkin.error string for both the query error state and the mutation error toast", () => {
     const errorStateMatches = cardSource.match(/t\("checkin\.error"\)/g) || [];
     expect(errorStateMatches.length).toBeGreaterThanOrEqual(2);
+  });
+
+  describe("stripComments is line-ending independent (regression fixture)", () => {
+    // Regression coverage for the actual bug: on a CRLF checkout, each
+    // split("\n") line kept a trailing "\r". Since JS's `$` anchor (no /m
+    // flag) only matches the true end of the string, and "." never matches
+    // "\r", `/\/\/.*$/` silently failed to match - the "//" comment (here,
+    // one that mentions "err.message" in prose, exactly like the real
+    // DailyCheckinCard.tsx docblock) was never actually stripped. Built
+    // with literal "\r\n" so this fixture is byte-identical regardless of
+    // which line-ending style THIS test file itself is checked out with.
+    const crlfFixture = [
+      "const ok = 1;",
+      '// this comment mentions err.message and error.message in prose',
+      "const alsoOk = 2; // trailing comment mentions error.message too",
+      "/* block comment mentions err.message */",
+      "const stillOk = 3;",
+    ].join("\r\n");
+
+    it("strips a trailing // comment even when the source uses CRLF line endings", () => {
+      const result = stripComments(crlfFixture);
+      expect(result).not.toMatch(/err\.message/);
+      expect(result).not.toMatch(/error\.message/);
+      expect(result).toContain("const ok = 1;");
+      expect(result).toContain("const alsoOk = 2;");
+      expect(result).toContain("const stillOk = 3;");
+    });
+
+    it("would have failed before the fix - the same input, stripped WITHOUT normalizing CRLF first, still leaks the comment", () => {
+      const unnormalizedStrip = crlfFixture
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .split("\n")
+        .map((line) => line.replace(/\/\/.*$/, ""))
+        .join("\n");
+      // Proves the bug is real and specifically about the missing
+      // normalization step, not about this fixture being contrived.
+      expect(unnormalizedStrip).toMatch(/err\.message|error\.message/);
+    });
   });
 });
 

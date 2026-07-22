@@ -1,5 +1,7 @@
-#!/usr/bin/env node
-// Safe production migration runner.
+// Safe production migration runner. Always invoked as `node scripts/migrate.mjs`
+// (package.json's db:migrate, server/_core/startupMigrations.ts's spawn) or
+// imported directly for unit-testing findMissingSchemaObjects - never
+// executed as a standalone `./scripts/migrate.mjs`, so no shebang is needed.
 //
 // Why this exists (see docs/DAILY_CHECKIN_DEPLOYMENT_FIX.md): the Phase 5
 // deploy shipped code that queries the `dailyCheckins` table and
@@ -39,6 +41,10 @@ import { drizzle } from "drizzle-orm/mysql2";
 import { migrate } from "drizzle-orm/mysql2/migrator";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+// Single shared sanitizer - see scripts/lib/safeErrorSummary.mjs for why
+// drizzle's own error messages must never be logged verbatim (they embed
+// the failing SQL and its bound parameters).
+import { safeErrorSummary } from "./lib/safeErrorSummary.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const migrationsFolder = path.join(__dirname, "..", "drizzle");
@@ -46,17 +52,84 @@ const migrationsFolder = path.join(__dirname, "..", "drizzle");
 const LOCK_NAME = "ipenovel_schema_migrations";
 const LOCK_TIMEOUT_SECONDS = 60;
 
-// Never log a raw error object or its .sql/.config - those can echo back
-// query text or connection details. Only the small set of fields mysql2
-// populates for diagnosing a failure, nothing else.
-function safeErrorSummary(error) {
-  if (!error) return "unknown error";
-  const parts = [];
-  if (error.code) parts.push(`code=${error.code}`);
-  if (error.errno) parts.push(`errno=${error.errno}`);
-  if (error.sqlState) parts.push(`sqlState=${error.sqlState}`);
-  if (error.message) parts.push(`message=${String(error.message).slice(0, 300)}`);
-  return parts.length > 0 ? parts.join(" ") : "unknown error";
+// Schema objects the running application hard-depends on. Verified
+// read-only (information_schema, SELECT only - never user rows) after
+// migrate() reports success, so a migration run that "succeeded" but left
+// the schema incomplete still fails the deploy instead of letting the
+// server boot and serve errors. See docs/DAILY_CHECKIN_DEPLOYMENT_FIX.md.
+export const REQUIRED_TABLES = [
+  "dailyCheckins",
+  "dailyCheckinCampaigns",
+  "dailyCheckinCouponTemplates",
+  "dailyCheckinRewardRules",
+  "dailyCheckinRewardGrants",
+];
+export const REQUIRED_COLUMNS = [{ table: "coupons", column: "maxDiscountAmount" }];
+export const REQUIRED_INDEXES = [
+  { table: "dailyCheckins", index: "PRIMARY" },
+  { table: "dailyCheckins", index: "unique_daily_checkin_user_date_campaign" },
+  { table: "dailyCheckins", index: "unique_daily_checkins_coupon" },
+  { table: "dailyCheckins", index: "dailyCheckins_userId_idx" },
+];
+
+/**
+ * Read-only post-migration schema verification. Returns the names of any
+ * missing objects (empty array = everything present).
+ *
+ * Every query is a plain information_schema SELECT scoped to DATABASE(),
+ * with explicit column aliases so the result keys are stable across
+ * MySQL 8 and TiDB (which differ in information_schema column casing).
+ * No user table is read.
+ */
+export async function findMissingSchemaObjects(conn) {
+  const missing = [];
+
+  const [tableRows] = await conn.query(
+    `SELECT table_name AS name FROM information_schema.tables
+     WHERE table_schema = DATABASE() AND table_name IN (${REQUIRED_TABLES.map(() => "?").join(",")})`,
+    REQUIRED_TABLES
+  );
+  // Compared case-insensitively: MySQL on a case-sensitive filesystem
+  // (the typical production/TiDB setup) preserves table names exactly as
+  // declared, but MariaDB/MySQL with lower_case_table_names=1 or 2 (the
+  // default on Windows and macOS installs) stores and returns them
+  // lowercased - information_schema.tables.table_name would come back as
+  // "dailycheckins", not "dailyCheckins". The WHERE clause above already
+  // matches case-insensitively at the SQL level (that part was never the
+  // problem); a plain Set built from the exact declared casing would
+  // still reject that lowercased row with a case-sensitive Set.has(),
+  // reporting every table "missing" even though the query found them all -
+  // exactly what a real disposable-database run against local MariaDB
+  // caught. This has no bearing on column/index checks below, which do
+  // their table-name comparison in SQL (via WHERE), never in JS.
+  const presentTables = new Set((tableRows ?? []).map((row) => String(row.name).toLowerCase()));
+  for (const table of REQUIRED_TABLES) {
+    if (!presentTables.has(table.toLowerCase())) missing.push(`table ${table}`);
+  }
+
+  for (const { table, column } of REQUIRED_COLUMNS) {
+    const [columnRows] = await conn.query(
+      `SELECT column_name AS name FROM information_schema.columns
+       WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+      [table, column]
+    );
+    if (!columnRows || columnRows.length === 0) missing.push(`column ${table}.${column}`);
+  }
+
+  for (const { table, index } of REQUIRED_INDEXES) {
+    // An index on a missing table is already reported as a missing table -
+    // don't report the same root cause twice. Same case-insensitive
+    // comparison as the table check above, for the same reason.
+    if (!presentTables.has(table.toLowerCase())) continue;
+    const [indexRows] = await conn.query(
+      `SELECT DISTINCT index_name AS name FROM information_schema.statistics
+       WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?`,
+      [table, index]
+    );
+    if (!indexRows || indexRows.length === 0) missing.push(`index ${table}.${index}`);
+  }
+
+  return missing;
 }
 
 async function main() {
@@ -101,6 +174,19 @@ async function main() {
     const db = drizzle({ client: connection });
     await migrate(db, { migrationsFolder });
 
+    // migrate() returning is not sufficient proof the schema is usable -
+    // verify the objects the application actually queries really exist
+    // before reporting success (and therefore before the server is allowed
+    // to open a port).
+    console.log("[migrate] Verifying required schema objects (read-only)...");
+    const missing = await findMissingSchemaObjects(conn);
+    if (missing.length > 0) {
+      // Only the object names - never the query, the schema name, or any row.
+      console.error(`[migrate] Migration failed: schema verification found missing object(s): ${missing.join(", ")}`);
+      process.exitCode = 1;
+      return;
+    }
+
     console.log("[migrate] Done - schema is up to date.");
   } catch (error) {
     // Never swallow this - a failed migration must stop the deploy, not
@@ -119,6 +205,12 @@ async function main() {
   }
 }
 
-main().then(() => {
-  process.exit(process.exitCode ?? 0);
-});
+// Guarded so this module can be imported (e.g. to unit-test
+// findMissingSchemaObjects with a fake connection, no real database
+// involved) without main() firing and attempting a real DB connection.
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  main().then(() => {
+    process.exit(process.exitCode ?? 0);
+  });
+}
