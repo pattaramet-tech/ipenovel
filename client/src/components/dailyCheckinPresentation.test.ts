@@ -17,7 +17,10 @@ const pointsReward = {
   kind: "points" as const,
   pointsAmount: "1.00",
   pointsTransactionId: 42,
-  balanceAfter: "6.00",
+  // Deliberately different from statusOf()'s default pointsBalance ("0.00")
+  // in the tests below that combine the two - this is the fixed historical
+  // snapshot from grant time, never what the card should display.
+  balanceAfterGrant: "6.00",
   streakCountAtGrant: 3,
 };
 
@@ -98,12 +101,33 @@ describe("resolveDailyCheckinCardState", () => {
     const view = resolveDailyCheckinCardState({
       isLoading: false,
       isError: false,
-      status: statusOf({ checkedInToday: true, rewardMode: "points", rewards: [pointsReward] }),
+      status: statusOf({ checkedInToday: true, rewardMode: "points", rewards: [pointsReward], pointsBalance: "6.00" }),
     });
     expect(view.state).toBe("claimed_points");
     if (view.state === "claimed_points") {
       expect(view.reward.pointsAmount).toBe("1.00");
-      expect(view.reward.balanceAfter).toBe("6.00");
+      expect(view.reward.balanceAfterGrant).toBe("6.00");
+      expect(view.pointsBalance).toBe("6.00");
+    }
+  });
+
+  it("POST-SPEND: a user who earned 1 point and later spent it shows the reward as received, but the CURRENT balance - not the grant-time snapshot", () => {
+    // statusOf's default pointsBalance is "0.00"; pointsReward's
+    // balanceAfterGrant is fixed at "6.00" (the balance at grant time,
+    // before any later spend). The card must show 0.00, not 6.00.
+    const view = resolveDailyCheckinCardState({
+      isLoading: false,
+      isError: false,
+      status: statusOf({ checkedInToday: true, rewardMode: "points", rewards: [pointsReward], pointsBalance: "0.00" }),
+    });
+    expect(view.state).toBe("claimed_points");
+    if (view.state === "claimed_points") {
+      // The reward itself still honestly reports 1 point was received.
+      expect(view.reward.pointsAmount).toBe("1.00");
+      // The grant-time snapshot is untouched by the later spend.
+      expect(view.reward.balanceAfterGrant).toBe("6.00");
+      // But the balance the card must actually DISPLAY is current, not historical.
+      expect(view.pointsBalance).toBe("0.00");
     }
   });
 

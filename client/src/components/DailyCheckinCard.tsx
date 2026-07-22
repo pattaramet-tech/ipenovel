@@ -142,7 +142,10 @@ export default function DailyCheckinCard() {
   // none is rendered.
   if (view.state === "claimed_points") {
     const amount = formatPointsForDisplay(view.reward.pointsAmount);
-    const balance = formatPointsForDisplay(view.reward.balanceAfter);
+    // The CURRENT balance, not the reward's historical balanceAfterGrant
+    // snapshot - a user who earned this point and later spent it must see
+    // their real current balance here, not the stale grant-time value.
+    const balance = formatPointsForDisplay(view.pointsBalance);
     return (
       <Card className="mb-8 p-5 sm:p-6 flex flex-col sm:flex-row items-center justify-between gap-4 bg-gradient-to-br from-green-50 to-emerald-50 border-green-100">
         <div className="flex items-center gap-3 text-center sm:text-left">

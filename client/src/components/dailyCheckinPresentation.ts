@@ -13,7 +13,12 @@ export type DailyCheckinRewardView =
       kind: "points";
       pointsAmount: string;
       pointsTransactionId: number;
-      balanceAfter: string;
+      // The HISTORICAL balanceAfter snapshot recorded on the linked ledger
+      // row at grant time - NOT the user's current balance, which can
+      // differ if points were earned or spent since. The card must display
+      // the CURRENT balance ("คะแนนคงเหลือ") from the top-level
+      // `pointsBalance` field, never this one.
+      balanceAfterGrant: string;
       streakCountAtGrant: number;
     }
   | {
@@ -45,7 +50,15 @@ export type DailyCheckinCardState =
   | { state: "hidden" }
   | { state: "claimable_points" }
   | { state: "claimable_coupon" }
-  | { state: "claimed_points"; reward: Extract<DailyCheckinRewardView, { kind: "points" }> }
+  | {
+      state: "claimed_points";
+      reward: Extract<DailyCheckinRewardView, { kind: "points" }>;
+      // The CURRENT points balance (server's top-level `pointsBalance`) -
+      // this is what "คะแนนคงเหลือ" must display, never
+      // reward.balanceAfterGrant (that is a fixed historical snapshot from
+      // the moment of the grant, which does not reflect points spent since).
+      pointsBalance: string;
+    }
   | { state: "claimed_coupon"; reward: Extract<DailyCheckinRewardView, { kind: "coupon" }> };
 
 /**
@@ -72,7 +85,7 @@ export function resolveDailyCheckinCardState(params: {
 
   if (status.checkedInToday) {
     const points = rewards.find((r) => r.kind === "points");
-    if (points) return { state: "claimed_points", reward: points };
+    if (points) return { state: "claimed_points", reward: points, pointsBalance: status.pointsBalance ?? "0.00" };
 
     const coupon = rewards.find((r) => r.kind === "coupon");
     if (coupon) return { state: "claimed_coupon", reward: coupon };
