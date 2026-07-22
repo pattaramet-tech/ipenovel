@@ -1197,6 +1197,15 @@ export async function createPayment(orderId: number, slipImageUrl?: string, tx?:
     status: "pending",
     slipImageUrl: slipImageUrl || null,
     slipSubmittedAt: slipImageUrl ? new Date() : null,
+    // Explicit, not relying on the column's own DEFAULT clause: migration
+    // 0021 sets `ocrConfidence int NOT NULL DEFAULT 0` and then immediately
+    // re-runs `MODIFY COLUMN ocrConfidence int NOT NULL` with no DEFAULT,
+    // silently dropping it - every insert that omits this column resolves
+    // to the SQL keyword DEFAULT, which errors under strict SQL mode
+    // ("Field 'ocrConfidence' doesn't have a default value") since the
+    // column has none. This was the root cause of every checkout failing
+    // right after a successful slip upload.
+    ocrConfidence: 0,
   });
   
   // Extract insertId from Drizzle MySQL result
