@@ -45,6 +45,34 @@ async function runMigrationStatements(conn: mysql.Connection): Promise<void> {
   }
 }
 
+// Migration 0027's own CREATE TABLE declares `dailyCheckins.couponId` NOT
+// NULL - correct for what 0027 alone is responsible for, since it predates
+// migration 0031 (which makes that column nullable for point-only
+// check-ins). The "fresh database" test below drops `dailyCheckins` entirely
+// and rebuilds it from 0027's raw SQL in isolation, which is exactly what
+// this file is proving is safe - but doing that on the ONE shared
+// integration-project database (vitest.integration.config.ts runs every
+// *.integration.test.ts file sequentially against it, fileParallelism:
+// false) leaves couponId back at NOT NULL for whichever file runs next,
+// even after this file's own "restore full schema state" cleanup - that
+// cleanup only ever re-ran 0027, so it never restored what 0031 undoes.
+// Re-applying 0031's own guarded statements after 0027's is what actually
+// restores the schema this test's own database is expected to be left in.
+const migration0031Sql = fs.readFileSync(
+  path.resolve(__dirname, "..", "drizzle", "0031_enable_daily_checkin_point_rewards.sql"),
+  "utf8"
+);
+const migration0031Statements = migration0031Sql
+  .split("--> statement-breakpoint")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+async function restoreCouponIdNullability(conn: mysql.Connection): Promise<void> {
+  for (const statement of migration0031Statements) {
+    await conn.query(statement);
+  }
+}
+
 async function tableExists(conn: mysql.Connection, tableName: string): Promise<boolean> {
   const [rows]: any = await conn.query(
     `SELECT COUNT(*) as cnt FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?`,
@@ -97,6 +125,7 @@ describe("migration 0027 idempotency (real disposable test database)", () => {
       expect(await indexExists(conn, "dailyCheckins", "dailyCheckins_userId_idx")).toBe(true);
     } finally {
       await runMigrationStatements(conn).catch(() => {}); // always leave the schema fully migrated
+      await restoreCouponIdNullability(conn).catch(() => {}); // ...including 0031's nullable couponId, which 0027 alone does not know about
       await conn.end();
     }
   });
@@ -119,8 +148,11 @@ describe("migration 0027 idempotency (real disposable test database)", () => {
       expect(await indexExists(conn, "dailyCheckins", "dailyCheckins_userId_idx")).toBe(true);
     } finally {
       // Always restore full schema state for every other integration test
-      // file in this run, regardless of pass/fail above.
+      // file in this run, regardless of pass/fail above - "full" includes
+      // migration 0031's nullable couponId, since this test drops and
+      // rebuilds dailyCheckins from 0027's raw SQL alone (couponId NOT NULL).
       await runMigrationStatements(conn).catch(() => {});
+      await restoreCouponIdNullability(conn).catch(() => {});
       await conn.end();
     }
   });

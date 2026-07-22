@@ -28,6 +28,9 @@ export default defineConfig({
     environment: "node",
     include: ["server/**/*.integration.test.ts"],
     globalSetup: ["./vitest.integration.globalsetup.ts"],
+    // Runs inside each worker's own module registry, unlike globalSetup -
+    // see vitest.integration.setupfile.ts for why both are needed.
+    setupFiles: ["./vitest.integration.setupfile.ts"],
     fileParallelism: false,
     sequence: {
       concurrent: false,

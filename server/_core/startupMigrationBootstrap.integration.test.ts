@@ -92,9 +92,30 @@ interface ServerRun {
   exitCode: number | null;
 }
 
-/** Starts the built executable against the disposable database, waits for it to either announce it is listening or exit, then always terminates it. */
+/**
+ * Starts the built executable against the disposable database, waits for it
+ * to either announce it is listening or exit, terminates it, and only
+ * resolves once the OS process has actually closed.
+ *
+ * The previous version called child.kill("SIGKILL") and resolved
+ * immediately afterward, without waiting for the real 'close' event. A
+ * signal being SENT is not the same as the process having actually exited -
+ * killing it does not synchronously tear down its held resources, most
+ * importantly the migration advisory lock (GET_LOCK('ipenovel_schema_migrations',
+ * ...) in scripts/migrate.mjs) tied to the child's own dedicated DB
+ * connection. A SIGKILL'd process cannot run its own `finally` block to call
+ * RELEASE_LOCK, so the lock is only actually freed once MySQL/MariaDB itself
+ * notices the underlying TCP connection is gone - normally near-instant once
+ * the OS closes the socket during process teardown, but not guaranteed to
+ * have already happened at the instant `.kill()` returns. Resolving before
+ * `close` fires let the next test (or the next `test:db:prepare` run)
+ * occasionally start racing that teardown, which is the exact "advisory-lock
+ * still held" flakiness this rewrite exists to eliminate - not via a fixed
+ * sleep or a blind retry, but by never resolving until the OS confirms the
+ * process, and therefore its DB connection, is actually gone.
+ */
 function startBuiltServer(port: number, timeoutMs = 180000): Promise<ServerRun> {
-  return new Promise((resolve) => {
+  return new Promise((resolveOuter) => {
     const child = spawn(process.execPath, [distEntry], {
       cwd: repoRoot,
       env: {
@@ -107,30 +128,66 @@ function startBuiltServer(port: number, timeoutMs = 180000): Promise<ServerRun> 
     });
 
     let output = "";
-    let settled = false;
+    let startedDetected = false;
+    let terminationStarted = false;
 
-    const finish = (started: boolean, exitCode: number | null) => {
-      if (settled) return;
-      settled = true;
+    const beginTermination = () => {
+      if (terminationStarted) return;
+      terminationStarted = true;
       clearTimeout(timer);
       try {
         child.kill("SIGKILL");
       } catch {
         /* already gone */
       }
-      resolve({ output, started, exitCode });
+      // Deliberately no resolve() here - only the 'close' handler below
+      // resolves the outer promise, once the OS confirms the process (and
+      // the migration-lock-holding DB connection it owned) is actually gone.
     };
 
     const onData = (chunk: Buffer) => {
       output += chunk.toString();
-      if (output.includes("Server running")) finish(true, null);
+      if (!startedDetected && output.includes("Server running")) {
+        startedDetected = true;
+        beginTermination();
+      }
     };
 
     child.stdout?.on("data", onData);
     child.stderr?.on("data", onData);
-    child.on("close", (code) => finish(output.includes("Server running"), code));
-    const timer = setTimeout(() => finish(output.includes("Server running"), null), timeoutMs);
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      // Explicitly detach - stdout/stderr going away with the process would
+      // clean these up anyway, but this makes the intent unambiguous rather
+      // than relying on GC to eventually collect the closure.
+      child.stdout?.removeAllListeners();
+      child.stderr?.removeAllListeners();
+      resolveOuter({ output, started: startedDetected || output.includes("Server running"), exitCode: code });
+    });
+
+    const timer = setTimeout(() => beginTermination(), timeoutMs);
   });
+}
+
+/**
+ * Polls IS_FREE_LOCK for the migration advisory lock until it reports free,
+ * rather than assuming `startBuiltServer`'s resolution (the OS process
+ * having closed) is instantaneously sufficient. Bounded by attempts, not a
+ * blind sleep - fails loudly with the exact last-seen state if the lock is
+ * never actually released, rather than silently proceeding into a test that
+ * would then race it.
+ */
+async function waitForMigrationLockReleased(conn: mysql.Connection, maxAttempts = 100): Promise<void> {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const [rows]: any = await conn.query("SELECT IS_FREE_LOCK('ipenovel_schema_migrations') AS free");
+    if (Number(rows[0]?.free) === 1) return;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error(
+    `Migration advisory lock "ipenovel_schema_migrations" was still held after ${maxAttempts} polls - ` +
+      "a prior startBuiltServer() child process may not have released it."
+  );
 }
 
 describe.skipIf(!hasTestDb || !hasBuild).sequential(
@@ -147,6 +204,11 @@ describe.skipIf(!hasTestDb || !hasBuild).sequential(
         expect(await columnExists(conn, "coupons", "maxDiscountAmount")).toBe(false);
 
         const run = await startBuiltServer(41731);
+        // Belt-and-suspenders on top of startBuiltServer already awaiting
+        // the child's real 'close' event: explicitly confirm the migration
+        // advisory lock the child's own DB connection held is free before
+        // this test's own connection (or the next test) touches it.
+        await waitForMigrationLockReleased(conn);
 
         expect(run.started).toBe(true);
         // Migration output must precede the listening announcement.
@@ -179,6 +241,7 @@ describe.skipIf(!hasTestDb || !hasBuild).sequential(
         const before = await latestRecordedMigration(conn);
 
         const run = await startBuiltServer(41732);
+        await waitForMigrationLockReleased(conn);
 
         expect(run.started).toBe(true);
         expect(run.output).toContain("[migrate] Done - schema is up to date");
