@@ -218,6 +218,13 @@
       "when": 1784602000000,
       "tag": "0030_repair_missing_daily_checkins",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "5",
+      "when": 1784731972971,
+      "tag": "0031_enable_daily_checkin_point_rewards",
+      "breakpoints": true
     }
   ]
 }
