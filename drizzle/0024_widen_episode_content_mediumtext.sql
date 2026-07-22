@@ -256,4 +256,30 @@ EXECUTE ipenovel_0024_stmt;
 --> statement-breakpoint
 DEALLOCATE PREPARE ipenovel_0024_stmt;
 --> statement-breakpoint
-ALTER TABLE `episodes` MODIFY COLUMN `content` mediumtext;
+-- LONGTEXT is a wider, storage-compatible supertype of MEDIUMTEXT (max
+-- 4GiB vs 16MiB) - MODIFY COLUMN ... mediumtext on a column that is
+-- already LONGTEXT is a genuine downgrade, and TiDB implements any
+-- column-type change as a full Reorg-Data operation that copies and
+-- re-validates every row. Running that downgrade against a database
+-- where the column is already LONGTEXT is pure waste at best, and at
+-- worst aborts the whole migration (a production row already exceeding
+-- the reorg's internal entry-size ceiling caused exactly that - errno
+-- 8025 "Entry too large"). Existing LONGTEXT content must therefore be
+-- preserved exactly - never downgraded - while a genuinely narrower type
+-- (TEXT/TINYTEXT) still widens to MEDIUMTEXT as originally intended.
+SET @ipenovel_0024_content_type = (
+	SELECT LOWER(DATA_TYPE) FROM information_schema.columns
+	WHERE table_schema = DATABASE() AND table_name = 'episodes' AND column_name = 'content'
+);
+--> statement-breakpoint
+SET @ipenovel_0024_content_sql = IF(
+	@ipenovel_0024_content_type IN ('mediumtext', 'longtext'),
+	'DO 0',
+	'ALTER TABLE `episodes` MODIFY COLUMN `content` mediumtext'
+);
+--> statement-breakpoint
+PREPARE ipenovel_0024_content_stmt FROM @ipenovel_0024_content_sql;
+--> statement-breakpoint
+EXECUTE ipenovel_0024_content_stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE ipenovel_0024_content_stmt;
