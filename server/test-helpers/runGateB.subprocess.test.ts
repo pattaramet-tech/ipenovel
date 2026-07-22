@@ -78,7 +78,15 @@ describe("scripts/run-gate-b.ts CLI entrypoint (real subprocess, DB-independent)
 
   it("never calls process.exit() - only process.exitCode is set", () => {
     const source = fs.readFileSync(gateBScript, "utf8");
+    // Line endings normalized to LF before splitting - on a CRLF checkout
+    // (this repo's default on Windows) each split line keeps a trailing
+    // "\r", and JS's `$` anchor (no /m flag) only matches the true end of
+    // the string while `.` never matches "\r" - so `/\/\/.*$/` silently
+    // fails to strip the comment on every such line. See
+    // daily-checkin-ui-safety.test.ts's matching fix for the concrete
+    // failure this caused elsewhere.
     const codeOnly = source
+      .replace(/\r\n?/g, "\n")
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .split("\n")
       .map((line) => line.replace(/\/\/.*$/, ""))
