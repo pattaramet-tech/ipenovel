@@ -64,12 +64,40 @@ export const REQUIRED_TABLES = [
   "dailyCheckinRewardRules",
   "dailyCheckinRewardGrants",
 ];
-export const REQUIRED_COLUMNS = [{ table: "coupons", column: "maxDiscountAmount" }];
+export const REQUIRED_COLUMNS = [
+  { table: "coupons", column: "maxDiscountAmount" },
+  { table: "dailyCheckins", column: "couponId" },
+  // Written on every point-reward claim. streakCountAtGrant in particular is
+  // NOT NULL with no database default, so a build that reaches the claim path
+  // without it present fails at INSERT time rather than at boot - verify it
+  // here instead.
+  { table: "dailyCheckinRewardGrants", column: "pointsTransactionId" },
+  { table: "dailyCheckinRewardGrants", column: "streakCountAtGrant" },
+];
+
+/**
+ * Columns that MUST be nullable for the running application to work.
+ *
+ * dailyCheckins.couponId was NOT NULL until migration 0031. A point-reward
+ * check-in mints no coupon, so on a database still stuck at 0030 every point
+ * claim would fail at INSERT time with "Column 'couponId' cannot be null".
+ * Verifying nullability at boot turns that into a fail-closed deploy error
+ * instead of a runtime error for every user who taps "check in".
+ */
+export const REQUIRED_NULLABLE_COLUMNS = [{ table: "dailyCheckins", column: "couponId" }];
+
 export const REQUIRED_INDEXES = [
   { table: "dailyCheckins", index: "PRIMARY" },
   { table: "dailyCheckins", index: "unique_daily_checkin_user_date_campaign" },
   { table: "dailyCheckins", index: "unique_daily_checkins_coupon" },
   { table: "dailyCheckins", index: "dailyCheckins_userId_idx" },
+  // Reward-grant idempotency guards: one grant per (check-in, rule), and one
+  // grant per points transaction. These are what make a retried or racing
+  // claim structurally unable to credit twice.
+  { table: "dailyCheckinRewardGrants", index: "dailyCheckinRewardGrants_checkin_rule_unique" },
+  { table: "dailyCheckinRewardGrants", index: "dailyCheckinRewardGrants_pointsTransactionId_unique" },
+  { table: "dailyCheckinRewardRules", index: "dailyCheckinRewardRules_campaign_dedupe_unique" },
+  { table: "dailyCheckinCampaigns", index: "dailyCheckinCampaigns_campaignKey_unique" },
 ];
 
 /**
@@ -114,6 +142,21 @@ export async function findMissingSchemaObjects(conn) {
       [table, column]
     );
     if (!columnRows || columnRows.length === 0) missing.push(`column ${table}.${column}`);
+  }
+
+  for (const { table, column } of REQUIRED_NULLABLE_COLUMNS) {
+    const [nullableRows] = await conn.query(
+      `SELECT is_nullable AS nullable FROM information_schema.columns
+       WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+      [table, column]
+    );
+    // A missing column is already reported by REQUIRED_COLUMNS above - only
+    // report the distinct "present but still NOT NULL" failure here.
+    if (nullableRows && nullableRows.length > 0) {
+      if (String(nullableRows[0].nullable).toUpperCase() !== "YES") {
+        missing.push(`column ${table}.${column} must be nullable (migration 0031 not applied)`);
+      }
+    }
   }
 
   for (const { table, index } of REQUIRED_INDEXES) {

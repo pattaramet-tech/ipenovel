@@ -15,7 +15,13 @@ export default defineConfig({
   test: {
     name: "unit",
     environment: "node",
-    include: ["server/**/*.test.ts", "server/**/*.spec.ts"],
+    // client/** added for pure client-logic modules (no DOM harness needed):
+    // client/src/components/dailyCheckinPresentation.ts and
+    // client/src/pages/checkoutOutcome.ts deliberately keep their decision
+    // logic outside React so it can be tested directly. This also finally
+    // runs client/src/pages/{PaymentPage,PointsPage}.test.ts, which existed
+    // but were never picked up by any config - all of them pass.
+    include: ["server/**/*.test.ts", "server/**/*.spec.ts", "client/**/*.test.ts"],
     // *.integration.test.ts also matches the pattern above (it ends in
     // .test.ts) - excluded explicitly so the unit project (no TEST_DATABASE_URL
     // requirement, no live-DB safety checks) never picks up a file that

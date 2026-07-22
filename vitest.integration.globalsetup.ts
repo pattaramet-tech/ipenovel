@@ -1,6 +1,8 @@
 // globalSetup for the integration project (vitest.integration.config.ts,
-// `pnpm test:integration`). Runs once before any integration test file
-// loads.
+// `pnpm test:integration`). Runs once, before any test file is collected,
+// in the CLI's own main process - NOT in the worker (thread or forked
+// process) that later actually runs test files. That distinction matters
+// for what this file can and cannot do (see point 3 below).
 //
 // 1. Requires TEST_DATABASE_URL - never falls back to DATABASE_URL. If
 //    unset, the whole integration run aborts immediately with a clear
@@ -10,15 +12,17 @@
 //    (server/test-helpers/testDatabaseGuard.ts) - the database name must be
 //    EXACTLY "ipenovel_test", then re-verifies that live via a real
 //    "SELECT DATABASE()" query (server/test-helpers/liveTestDatabaseCheck.ts)
-//    before anything else runs.
-// 3. Injects the verified test connection into server/db.ts's getDb()
-//    singleton via __setDbForTests() so every pre-existing test file's
-//    server/db.ts function calls (claimDailyCheckin, validateAndApplyCoupon,
-//    etc.) transparently run against the real test database - WITHOUT this
-//    file ever reading or writing process.env.DATABASE_URL. This is the
-//    redesign required after the daily check-in incident review: see
-//    docs/INCIDENT_DAILY_CHECKIN_ROLLBACK.md and the explicit instruction
-//    "no test/reset/seed/cleanup/migration command may touch DATABASE_URL."
+//    before anything else runs. This is what makes a misconfigured
+//    TEST_DATABASE_URL fail loudly and immediately rather than lazily inside
+//    whichever test file happens to touch the database first.
+// 3. Also calls __setDbForTests() on ITS OWN copy of server/db.ts, purely
+//    for symmetry/documentation - this has no effect on any test file,
+//    since a worker gets a completely separate module registry from this
+//    process and never observes a mutation made here. The mutation that
+//    actually matters for test files is made by vitest.integration.setupfile.ts
+//    (configured via `setupFiles`, not `globalSetup`), which runs inside
+//    each worker's own registry. See that file for the full story of why
+//    this split is required, not a redundant duplicate.
 //
 // See docs/TEST_INFRASTRUCTURE.md for the full integration test lifecycle
 // (pnpm test:db:prepare -> run -> cleanup) that wraps this at the

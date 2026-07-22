@@ -829,7 +829,12 @@ export const dailyCheckins = mysqlTable(
     userId: int("userId").notNull(),
     checkinDate: varchar("checkinDate", { length: 10 }).notNull(),
     campaignKey: varchar("campaignKey", { length: 50 }).default("default").notNull(),
-    couponId: int("couponId").notNull(),
+    // Nullable since migration 0031: a point-reward check-in mints no coupon
+    // at all, so there is nothing to reference. Legacy coupon check-ins keep
+    // their couponId unchanged, and the unique index below still holds -
+    // MySQL/TiDB allow many NULLs in a UNIQUE index, which is exactly what
+    // lets an unlimited number of point-only check-ins coexist.
+    couponId: int("couponId"),
     status: mysqlEnum("status", ["issued", "used", "void"]).default("issued").notNull(),
     issuedAt: timestamp("issuedAt").defaultNow().notNull(),
     usedAt: timestamp("usedAt"),

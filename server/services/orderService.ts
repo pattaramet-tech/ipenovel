@@ -327,9 +327,17 @@ export async function finalizeOrderCompletion(orderId: number, userId: number, t
   // 1. Deduct redeemed points (if any) - only if not already deducted
   const pointsDiscountNum = normalizeMoneyAmount(order.pointsDiscountAmount?.toString() || "0", "pointsDiscountAmount");
   if (pointsDiscountNum > 0) {
-    const alreadyDeducted = await db.hasPointsBeenRedeemedForOrder(orderId, tx);
-    if (!alreadyDeducted) {
-      const currentBalanceStr = await db.getUserPointsBalance(userId, tx);
+    // Locked read-modify-write: hasPointsBeenRedeemedForOrder has no unique
+    // constraint backing it (unlike Daily Check-in's UNIQUE index), so
+    // without the lock two concurrent finalizations of the SAME order (a
+    // double-webhook, an admin double-click) could both see "not yet
+    // deducted" and both insert a redeem row. When this function is called
+    // with no outer tx (e.g. OCR auto-approval), withUserPointsLock opens
+    // its own transaction scoped to just this section.
+    await db.withUserPointsLock(userId, tx, async (lockedTx) => {
+      const alreadyDeducted = await db.hasPointsBeenRedeemedForOrder(orderId, lockedTx);
+      if (alreadyDeducted) return;
+      const currentBalanceStr = await db.getUserPointsBalance(userId, lockedTx);
       const currentBalance = normalizeMoneyAmount(currentBalanceStr, "currentBalance");
       const newBalance = Math.max(0, currentBalance - pointsDiscountNum);
       await db.recordPointsTransaction({
@@ -340,8 +348,8 @@ export async function finalizeOrderCompletion(orderId: number, userId: number, t
         referenceType: "order",
         referenceId: orderId,
         note: `Points redeemed for order ${order.orderNumber}`,
-      }, tx);
-    }
+      }, lockedTx);
+    });
   }
 
   // 2. Create purchase records (idempotent: skip if already purchased)
@@ -379,14 +387,9 @@ export async function finalizeOrderCompletion(orderId: number, userId: number, t
  * Only awards once per order (idempotent)
  */
 async function awardPointsForOrder(orderId: number, userId: number, amount: string, tx?: any): Promise<void> {
-  // Check if points already awarded for this order
-  const alreadyAwarded = await db.hasPointsBeenAwardedForOrder(orderId, tx);
-  if (alreadyAwarded) {
-    console.log(`Points already awarded for order ${orderId}, skipping`);
-    return;
-  }
-
-  // Calculate points: 100 currency units = 1 point
+  // Calculate points: 100 currency units = 1 point. Pure computation from
+  // `amount`, not from the balance - safe to skip the lock entirely when
+  // there is nothing to award.
   const amountNum = normalizeMoneyAmount(amount, "amount");
   const pointsToAward = Math.floor(amountNum / 100);
 
@@ -395,21 +398,32 @@ async function awardPointsForOrder(orderId: number, userId: number, amount: stri
     return;
   }
 
-  // Get current balance
-  const currentBalance = await db.getUserPointsBalance(userId, tx);
-  const currentBalanceNum = normalizeMoneyAmount(currentBalance, "currentBalance");
-  const newBalance = formatMoney(currentBalanceNum + pointsToAward, "newBalance");
+  // Locked read-modify-write, same reasoning as the redeem section above:
+  // hasPointsBeenAwardedForOrder has no unique constraint backing it, so the
+  // idempotency check itself must run under the lock, not just the balance
+  // arithmetic - otherwise two concurrent finalizations of the same order
+  // could both see "not yet awarded" and both insert an earn row.
+  await db.withUserPointsLock(userId, tx, async (lockedTx) => {
+    const alreadyAwarded = await db.hasPointsBeenAwardedForOrder(orderId, lockedTx);
+    if (alreadyAwarded) {
+      console.log(`Points already awarded for order ${orderId}, skipping`);
+      return;
+    }
 
-  // Record the transaction
-  await db.recordPointsTransaction({
-    userId,
-    type: "earn",
-    amount: pointsToAward.toString(),
-    balanceAfter: newBalance,
-    referenceType: "order",
-    referenceId: orderId,
-    note: `Points earned from order ${orderId}`,
-  }, tx);
+    const currentBalance = await db.getUserPointsBalance(userId, lockedTx);
+    const currentBalanceNum = normalizeMoneyAmount(currentBalance, "currentBalance");
+    const newBalance = formatMoney(currentBalanceNum + pointsToAward, "newBalance");
+
+    await db.recordPointsTransaction({
+      userId,
+      type: "earn",
+      amount: pointsToAward.toString(),
+      balanceAfter: newBalance,
+      referenceType: "order",
+      referenceId: orderId,
+      note: `Points earned from order ${orderId}`,
+    }, lockedTx);
+  });
 }
 
 /**

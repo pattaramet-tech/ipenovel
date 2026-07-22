@@ -31,11 +31,23 @@ describe("Migration 0030 journal and file (no DB required - static checks)", () 
     expect(entry0030.when).toBeGreaterThan(entry0029.when);
   });
 
-  it("migration 0030 is the very last entry in the journal - nothing was inserted out of order", () => {
+  it("migration 0030 sits at idx 30 with nothing inserted out of order around it", () => {
+    // Originally asserted 0030 was the final entry. Migration 0031
+    // (dailyCheckins.couponId -> nullable, for the 1-point Daily Check-in
+    // reward) was added deliberately afterwards, so the invariant worth
+    // protecting is 0030's own position and ordering - not that it stays
+    // last forever.
     const journal = JSON.parse(fs.readFileSync(path.join(repoRoot, "drizzle/meta/_journal.json"), "utf8"));
-    const lastEntry = journal.entries[journal.entries.length - 1];
-    expect(lastEntry.tag).toBe("0030_repair_missing_daily_checkins");
-    expect(lastEntry.idx).toBe(journal.entries.length - 1);
+    const index0030 = journal.entries.findIndex((e: any) => e.tag === "0030_repair_missing_daily_checkins");
+    expect(index0030).toBeGreaterThanOrEqual(0);
+    expect(journal.entries[index0030].idx).toBe(30);
+    // Array position matches idx: no entry was spliced in ahead of it.
+    expect(index0030).toBe(30);
+    // Every entry is strictly ordered by idx and timestamp.
+    for (let i = 1; i < journal.entries.length; i += 1) {
+      expect(journal.entries[i].idx).toBe(journal.entries[i - 1].idx + 1);
+      expect(journal.entries[i].when).toBeGreaterThan(journal.entries[i - 1].when);
+    }
   });
 
   it("no earlier journal entry's when/idx/tag was modified by this change", () => {

@@ -804,24 +804,37 @@ export const appRouter = router({
           if (isNaN(amountNum)) {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid amount" });
           }
-          // Bidirectional points adjustment: positive = add, negative = subtract
-          const absAmount = Math.abs(amountNum);
-          let operation = 'add';
-          
-          if (amountNum > 0) {
-            // Add points
-            const newPointsBalance = (parseFloat(await db.getUserPointsBalance(input.userId)) + absAmount).toString();
-          await db.recordPointsTransaction({ userId: input.userId, amount: absAmount.toString(), type: "adjust", balanceAfter: newPointsBalance, note: `Admin add: ${input.reason}` });
-          } else if (amountNum < 0) {
-            // Subtract points
-            const newPointsBalance2 = (parseFloat(await db.getUserPointsBalance(input.userId)) - absAmount).toString();
-          await db.recordPointsTransaction({ userId: input.userId, amount: (-absAmount).toString(), type: "adjust", balanceAfter: newPointsBalance2, note: `Admin subtract: ${input.reason}` });
-            operation = 'subtract';
-          } else {
+          if (amountNum === 0) {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Amount must be non-zero" });
           }
-          
-          const newBalance = await db.getUserPointsBalance(input.userId);
+          // Bidirectional points adjustment: positive = add, negative = subtract
+          const absAmount = Math.abs(amountNum);
+          const operation = amountNum > 0 ? "add" : "subtract";
+
+          // Locked read-modify-write: this used to read the balance and
+          // insert the adjustment as two separate, unwrapped statements -
+          // no transaction, no lock - so a concurrent adjustment (or any
+          // other points writer for the same user) could race it and lose
+          // an update. withUserPointsLock opens its own transaction here
+          // since none was open before.
+          const newBalance = await db.withUserPointsLock(input.userId, undefined, async (lockedTx) => {
+            const currentBalance = parseFloat(await db.getUserPointsBalance(input.userId, lockedTx));
+            const updatedBalance =
+              operation === "add" ? currentBalance + absAmount : currentBalance - absAmount;
+            const balanceAfter = updatedBalance.toString();
+            await db.recordPointsTransaction(
+              {
+                userId: input.userId,
+                amount: (operation === "add" ? absAmount : -absAmount).toString(),
+                type: "adjust",
+                balanceAfter,
+                note: `Admin ${operation}: ${input.reason}`,
+              },
+              lockedTx
+            );
+            return balanceAfter;
+          });
+
           return { success: true, newBalance, operation };
         }),
     }),
@@ -884,6 +897,8 @@ export const appRouter = router({
   dailyCheckin: router({
     getStatus: publicProcedure.query(async ({ ctx }) => {
       if (!ctx.user) {
+        // Anonymous stays deliberately minimal - no dates, no balances, no
+        // campaign internals leak to a visitor who cannot claim anything.
         return { authenticated: false as const };
       }
       try {
@@ -1896,6 +1911,54 @@ export const appRouter = router({
           await db.deleteCoupon(input.couponId);
           return { success: true };
         }),
+    }),
+
+    // Minimal Daily Check-in 1-point rollout controls. Deliberately NOT a
+    // campaign-management system: the point amount, campaignKey, dedupeKey,
+    // ruleType and rewardKind are all server-fixed constants that no caller
+    // can influence. The only input is the Bangkok start date.
+    dailyCheckinRollout: router({
+      status: adminProcedure.query(async () => {
+        const { getDailyCheckinRolloutStatus } = await import("./services/dailyCheckinRewardModeService");
+        return getDailyCheckinRolloutStatus();
+      }),
+
+      schedule: adminProcedure
+        .input(z.object({ startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "startDate must be YYYY-MM-DD") }))
+        .mutation(async ({ input, ctx }) => {
+          const { scheduleDailyCheckinPointRollout, DailyCheckinRolloutError } = await import(
+            "./services/dailyCheckinRewardModeService"
+          );
+          try {
+            return await scheduleDailyCheckinPointRollout(input.startDate, ctx.user.id);
+          } catch (error: any) {
+            // Allowlist, not blocklist: only an error the service itself
+            // deliberately raised as a DailyCheckinRolloutError is safe to
+            // forward verbatim. Anything else - a raw driver exception, a
+            // programming error - is logged sanitized and answered with the
+            // fixed generic message, never error.message directly.
+            if (error instanceof DailyCheckinRolloutError) {
+              throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
+            }
+            console.error(`[admin.dailyCheckinRollout.schedule] ${safeErrorSummary(error)}`);
+            throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          }
+        }),
+
+      cancel: adminProcedure.mutation(async () => {
+        const { cancelDailyCheckinPointRollout, DailyCheckinRolloutError } = await import(
+          "./services/dailyCheckinRewardModeService"
+        );
+        try {
+          return await cancelDailyCheckinPointRollout();
+        } catch (error: any) {
+          if (error instanceof DailyCheckinRolloutError) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
+          }
+          console.error(`[admin.dailyCheckinRollout.cancel] ${safeErrorSummary(error)}`);
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        }
+      }),
     }),
 
     settings: router({

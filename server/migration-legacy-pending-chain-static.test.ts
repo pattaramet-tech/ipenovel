@@ -288,11 +288,22 @@ describe("journal and timestamps are untouched by this repair", () => {
     expect(isByteIdenticalToBase("drizzle/meta/_journal.json")).toBe(true);
   });
 
-  it("no new migration file (0031) was created, and no journal entry beyond 0030 exists", () => {
+  it("this repair created no migration of its own - the only idx-31 entry is the unrelated point-reward migration", () => {
+    // The invariant being protected is that the legacy pending-chain repair
+    // was achieved WITHOUT adding a migration. Migration 0031
+    // (dailyCheckins.couponId -> nullable, for the 1-point Daily Check-in
+    // reward) is a separate, later, intentional change - named explicitly so
+    // it cannot be used as cover for an unrelated one.
     const journal = JSON.parse(fs.readFileSync(path.join(repoRoot, "drizzle/meta/_journal.json"), "utf8"));
-    expect(journal.entries.find((e: any) => e.idx === 31)).toBeUndefined();
+    expect(journal.entries.find((e: any) => e.idx === 31)?.tag).toBe("0031_enable_daily_checkin_point_rewards");
+    expect(journal.entries.find((e: any) => e.idx === 32)).toBeUndefined();
+
+    // The repair-flavored 0031 this task might have written must not exist.
     expect(fs.existsSync(path.join(repoRoot, "drizzle/0031_repair_missing_daily_checkins.sql"))).toBe(false);
-    const migrationFiles = fs.readdirSync(path.join(repoRoot, "drizzle")).filter((f) => /^0031/.test(f));
+
+    const migrationFiles = fs
+      .readdirSync(path.join(repoRoot, "drizzle"))
+      .filter((f) => /^0031/.test(f) && f !== "0031_enable_daily_checkin_point_rewards.sql");
     expect(migrationFiles).toHaveLength(0);
   });
 });

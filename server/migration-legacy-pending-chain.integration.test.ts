@@ -45,7 +45,7 @@ if (!migration0030Entry) {
 }
 
 /** Migration 0030's journal timestamp - the expected final high-water mark after the full repair chain runs. Resolved once at file scope (the main test body has no `journal` variable of its own). */
-const MIGRATION_0030_WHEN = migration0030Entry.when;
+const MIGRATION_0030_WHEN = readMigrationJournal(migrationsFolder).slice(-1)[0].when;
 
 /** The confirmed production migration high-water mark - strictly before migration 0017's own journal timestamp. */
 const PRODUCTION_HIGH_WATER_MARK = 1778343285119;
@@ -269,6 +269,7 @@ describe.sequential("legacy pending migration chain repair (real disposable test
           "0028_repair_episode_reader_schema",
           "0029_add_dynamic_daily_checkin_reward_schema",
           "0030_repair_missing_daily_checkins",
+          "0031_enable_daily_checkin_point_rewards",
         ];
         expect(firstRun.completedTags).toEqual(expectedTags);
 

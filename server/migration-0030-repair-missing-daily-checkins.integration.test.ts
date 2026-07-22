@@ -153,6 +153,8 @@ async function cleanupTestConnectionFullChain(conn: mysql.Connection): Promise<v
 const journal = readMigrationJournal(migrationsFolder);
 const idx29When = journal.find((e) => e.tag === "0029_add_dynamic_daily_checkin_reward_schema")!.when;
 const idx30When = journal.find((e) => e.tag === "0030_repair_missing_daily_checkins")!.when;
+/** The last journal entry's timestamp - what a COMPLETED chain run must reach. Derived from the journal rather than pinned to a specific migration so adding a later migration (e.g. 0031) does not falsely fail "the chain finished". */
+const finalJournalWhen = journal[journal.length - 1].when;
 
 describe.sequential("migration 0030 - repair missing dailyCheckins (real disposable test database)", () => {
   it("1. dailyCheckins absent, coupons.maxDiscountAmount present - migration recreates the table and index without touching the column", async () => {
@@ -412,7 +414,7 @@ describe.sequential("migration 0030 - repair missing dailyCheckins (real disposa
       expect(await tableExists(conn, "dailyCheckins")).toBe(true);
       expect(await indexExists(conn, "dailyCheckins", "dailyCheckins_userId_idx")).toBe(true);
       const highWaterMarkAfter = await latestRecordedMigrationTimestamp(conn);
-      expect(highWaterMarkAfter).toBe(idx30When);
+      expect(highWaterMarkAfter).toBe(finalJournalWhen);
     } finally {
       // This test uniquely rewinds __drizzle_migrations bookkeeping -
       // restore the FULL chain (not just the raw schema) so later test

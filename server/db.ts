@@ -1,4 +1,4 @@
-import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql, gt, ne, like } from "drizzle-orm";
+import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql, gt, lt, ne, like } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { getTableColumns } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
@@ -32,15 +32,31 @@ import {
   sportsMatchVotes,
   sportsMatchRewards,
   dailyCheckins,
+  dailyCheckinRewardGrants,
   Novel,
   couponUsages as couponUsagesTable,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import { pickRandom } from "./utils/random";
-import { getBangkokBusinessDate, getNextBangkokDayStart } from "./_core/timezone";
+import { getBangkokBusinessDate, getNextBangkokDayStart, getPreviousBangkokBusinessDate } from "./_core/timezone";
 import { getEffectiveDailyCheckinConfig } from "./_core/dailyCheckinConfig";
 import { isDuplicateKeyError } from "./helpers/databaseErrorClassifier";
 import { safeErrorSummary } from "../scripts/lib/safeErrorSummary.mjs";
+import { formatMoney, moneyAdd } from "./helpers/moneyNormalizer";
+import {
+  resolveDailyCheckinRuntimeMode,
+  type DailyCheckinRuntimeMode,
+} from "./services/dailyCheckinRewardModeService";
+
+/**
+ * referenceType for a Daily Check-in point reward in the pointsTransactions
+ * ledger. 13 characters, comfortably inside varchar(50), and consistent with
+ * the existing snake_case conventions ("order", "sports_vote"). Combined with
+ * referenceId = dailyCheckins.id it traces a ledger row back to the exact
+ * check-in that produced it, and it is indexed by
+ * pointsTransactions_referenceType_referenceId_idx.
+ */
+export const DAILY_CHECKIN_POINTS_REFERENCE_TYPE = "daily_checkin";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -1685,6 +1701,45 @@ export async function recordPointsTransaction(data: {
     referenceId: data.referenceId,
     note: data.note,
   });
+}
+
+/**
+ * Same insert as recordPointsTransaction, but returns the new row's id.
+ *
+ * Added rather than changing recordPointsTransaction's signature so every
+ * existing caller keeps working untouched. The id is required by the Daily
+ * Check-in point reward, which stores it on dailyCheckinRewardGrants
+ * .pointsTransactionId (a UNIQUE column) - that link is both the audit trail
+ * back to the exact ledger row and one of the guards that makes a second
+ * credit for the same grant structurally impossible.
+ *
+ * Callers must compute balanceAfter INSIDE the same transaction, after
+ * taking the user lock - this helper deliberately does not read the balance
+ * itself, so the read-modify-write stays in one place under one lock.
+ */
+export async function recordPointsTransactionReturningId(data: {
+  userId: number;
+  type: "earn" | "redeem" | "adjust" | "refund";
+  amount: string;
+  balanceAfter: string;
+  referenceType?: string;
+  referenceId?: number;
+  note?: string;
+}, tx?: any): Promise<number> {
+  const db = tx || await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const result = await db.insert(pointsTransactions).values({
+    userId: data.userId,
+    type: data.type,
+    amount: data.amount as any,
+    balanceAfter: data.balanceAfter as any,
+    referenceType: data.referenceType,
+    referenceId: data.referenceId,
+    note: data.note,
+  });
+
+  return extractInsertId(result);
 }
 
 export async function getPointsHistory(userId: number, limit?: number) {
@@ -4188,11 +4243,52 @@ export function parseStrictPositiveDecimal(value: any, fieldName: string): numbe
 export async function lockUserForPoints(userId: number, tx?: any) {
   const database = tx || (await getDb());
   if (!database) throw new Error("Database not available");
-  
-  const userRow = await database.execute(sql`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`);
+
+  // mysql2's raw .execute() resolves to a [rows, fields] tuple, not the bare
+  // rows array (see lockCartForCheckout for the same driver-level shape).
+  // Reading `userRow.length` on the unwrapped tuple was always 2 regardless
+  // of whether a matching row existed, so "User not found" never actually
+  // fired - harmless today only because every current caller ignores the
+  // return value and relies purely on the row lock as a side effect.
+  const rawResult: any = await database.execute(sql`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`);
+  const userRow = Array.isArray(rawResult?.[0]) ? rawResult[0] : rawResult;
   if (!userRow || userRow.length === 0) throw new Error("User not found");
-  
+
   return userRow[0];
+}
+
+/**
+ * Runs `fn` with the given user's row locked (via lockUserForPoints) for the
+ * duration - the shared coordination point every points balance
+ * read-modify-write must go through.
+ *
+ * - If `tx` is already an open transaction, the lock is taken inside it and
+ *   `fn` runs on that same tx - it is only ever meaningful because the
+ *   CALLER's transaction is what eventually commits or rolls back.
+ * - If no `tx` is given, this opens its own transaction scoped to exactly
+ *   `fn`'s read-modify-write. This exists because several runtime call
+ *   sites (OCR auto-approval finalizing an order, admin points adjustment)
+ *   historically called getUserPointsBalance/recordPointsTransaction as two
+ *   separate autocommit statements with no lock at all - a real lost-update
+ *   window between two concurrent writers for the same user. Wrapping just
+ *   the points section here closes that without changing any of the
+ *   surrounding (non-points) business logic those callers also run.
+ */
+export async function withUserPointsLock<T>(
+  userId: number,
+  tx: any | undefined,
+  fn: (lockedTx: any) => Promise<T>
+): Promise<T> {
+  if (tx) {
+    await lockUserForPoints(userId, tx);
+    return fn(tx);
+  }
+  const database = await getDb();
+  if (!database) throw new Error("Database not available");
+  return database.transaction(async (newTx: any) => {
+    await lockUserForPoints(userId, newTx);
+    return fn(newTx);
+  });
 }
 
 export async function castSportsVote(userId: number, matchId: number, prediction: SportsPrediction) {
@@ -4353,6 +4449,13 @@ export async function cancelSportsMatch(matchId: number) {
       .where(and(eq(sportsMatchVotes.matchId, matchId), eq(sportsMatchVotes.status, "pending")));
 
     for (const vote of pendingVotes) {
+      // Lock this voter's row BEFORE reading their balance - refunding N
+      // voters in a loop with no lock is a real read-modify-write race
+      // against any other concurrent points writer for the same user
+      // (this refund loop was already inside a real transaction, it just
+      // never took the row lock that makes that transaction's isolation
+      // actually protect the balance arithmetic).
+      await lockUserForPoints(vote.userId, tx);
       const refundAmount = Number(vote.pointsSpent || 0);
       const currentBalance = Number(await getUserPointsBalance(vote.userId, tx));
       const newBalance = (currentBalance + refundAmount).toFixed(2);
@@ -4463,26 +4566,143 @@ interface DailyCheckinJoinedRow {
   checkinDate: string;
   status: string;
   issuedAt: Date;
-  couponId: number;
-  couponCode: string;
-  discountType: string;
-  discountValue: string;
+  /** NULL for a point-reward check-in - those mint no coupon at all. */
+  couponId: number | null;
+  couponCode: string | null;
+  discountType: string | null;
+  discountValue: string | null;
   maxDiscountAmount: string | null;
-  minPurchaseAmount: string;
+  minPurchaseAmount: string | null;
   expiresAt: Date | null;
 }
 
-function toDailyCheckinRewardSummary(row: DailyCheckinJoinedRow): DailyCheckinRewardSummary {
+/**
+ * A single reward attached to a check-in, as an explicit discriminated
+ * union. Point rewards and coupon rewards never share fields - overloading
+ * the coupon fields to carry a point value is exactly the ambiguity this
+ * shape exists to prevent.
+ */
+export type DailyCheckinReward =
+  | {
+      kind: "points";
+      pointsAmount: string;
+      pointsTransactionId: number;
+      // The HISTORICAL balanceAfter recorded on the linked pointsTransactions
+      // row at the moment this grant was created - a fixed snapshot, not the
+      // user's current balance (which can differ if they earned or spent
+      // points since). Deliberately named distinctly from the CURRENT
+      // balance, which is reported once at the top level of the
+      // status/claim response as `pointsBalance`. A user who earned this
+      // point and later spent it still shows balanceAfterGrant unchanged;
+      // only pointsBalance reflects the spend.
+      balanceAfterGrant: string;
+      streakCountAtGrant: number;
+    }
+  | {
+      kind: "coupon";
+      couponId: number;
+      couponCode: string;
+      discountType: string;
+      discountValue: string;
+      maxDiscountAmount: string | null;
+      minPurchaseAmount: string;
+      expiresAt: Date | null;
+      status: string;
+    };
+
+/**
+ * The legacy coupon-only summary. Retained for backward compatibility with
+ * clients that still read `reward`; it is populated ONLY for a coupon
+ * reward and is always null for a point reward (never repurposed).
+ */
+function toDailyCheckinRewardSummary(row: DailyCheckinJoinedRow): DailyCheckinRewardSummary | null {
+  if (row.couponId === null || row.couponCode === null) return null;
   return {
     couponId: row.couponId,
     couponCode: row.couponCode,
-    discountType: row.discountType,
-    discountValue: row.discountValue,
+    discountType: row.discountType!,
+    discountValue: row.discountValue!,
     maxDiscountAmount: row.maxDiscountAmount,
-    minPurchaseAmount: row.minPurchaseAmount,
+    minPurchaseAmount: row.minPurchaseAmount!,
     expiresAt: row.expiresAt,
     status: row.status,
   };
+}
+
+/**
+ * The consecutive-day streak this check-in represents, counting the claim
+ * being made right now as the newest day.
+ *
+ * Counts BOTH legacy coupon check-ins and point check-ins - a user who
+ * checked in every day across the cutover has an unbroken streak, because
+ * from their point of view they did check in every day.
+ *
+ * Exact for any streak length, with no arbitrary cap: rather than one
+ * unbounded SELECT (or capping the answer at some maximum, which would
+ * quietly under-report a real 401-day streak as 400), history is paged
+ * backwards in bounded batches of STREAK_BATCH_SIZE rows. Each batch is
+ * walked date-by-date; the walk stops the instant a date is missing from
+ * that batch (a real gap - the streak is final) and only fetches another,
+ * older batch when the current one was entirely consecutive with no gap
+ * found in it. A user's total history is therefore read at most
+ * ceil(streakLength / STREAK_BATCH_SIZE) times, never once as an unbounded
+ * scan of their whole check-in history.
+ *
+ * Assumes at most one dailyCheckins row per (userId, checkinDate) - true
+ * today because every claim path uses the single DAILY_CHECKIN_CAMPAIGN_KEY
+ * ("default"); a second campaignKey sharing a date would need its own
+ * de-duplication here, which does not yet exist because nothing writes one.
+ *
+ * All arithmetic is on "YYYY-MM-DD" Bangkok business dates via
+ * getPreviousBangkokBusinessDate - never Date.toISOString().slice(0,10)
+ * (that is UTC, and is wrong for every request between 00:00 and 06:59 Thai
+ * time), so month/year/leap-day boundaries are handled correctly.
+ */
+const STREAK_BATCH_SIZE = 400;
+
+export async function calculateDailyCheckinStreak(
+  userId: number,
+  currentCheckinDate: string,
+  tx?: any
+): Promise<number> {
+  const database = tx || (await getDb());
+  if (!database) return 1;
+
+  let streak = 1; // the claim happening right now is the newest day
+  let cursor = getPreviousBangkokBusinessDate(currentCheckinDate);
+  let upperBoundExclusive = currentCheckinDate;
+
+  for (;;) {
+    const rows = await database
+      .select({ checkinDate: dailyCheckins.checkinDate })
+      .from(dailyCheckins)
+      .where(and(eq(dailyCheckins.userId, userId), lt(dailyCheckins.checkinDate, upperBoundExclusive)))
+      .orderBy(desc(dailyCheckins.checkinDate))
+      .limit(STREAK_BATCH_SIZE);
+
+    if (rows.length === 0) break; // no more history at all
+
+    const datesInBatch = new Set<string>(rows.map((r: any) => String(r.checkinDate)));
+
+    let foundGap = false;
+    for (let i = 0; i < STREAK_BATCH_SIZE; i += 1) {
+      if (!datesInBatch.has(cursor)) {
+        foundGap = true;
+        break;
+      }
+      streak += 1;
+      cursor = getPreviousBangkokBusinessDate(cursor);
+    }
+
+    if (foundGap) break; // a real gap - the streak is final
+    if (rows.length < STREAK_BATCH_SIZE) break; // consumed all remaining history with no gap
+
+    // Whole batch was consecutive - page further back, strictly before the
+    // oldest date this batch returned.
+    upperBoundExclusive = String(rows[rows.length - 1].checkinDate);
+  }
+
+  return streak;
 }
 
 async function getDailyCheckinForUserAndDate(
@@ -4508,7 +4728,11 @@ async function getDailyCheckinForUserAndDate(
       expiresAt: coupons.expiresAt,
     })
     .from(dailyCheckins)
-    .innerJoin(coupons, eq(dailyCheckins.couponId, coupons.id))
+    // LEFT JOIN, not INNER: since migration 0031 a point-reward check-in has
+    // couponId = NULL and no coupon row at all. An INNER JOIN would make
+    // every point check-in silently vanish from status/claim reads, which
+    // would in turn let the same user claim again.
+    .leftJoin(coupons, eq(dailyCheckins.couponId, coupons.id))
     .where(
       and(
         eq(dailyCheckins.userId, userId),
@@ -4521,154 +4745,382 @@ async function getDailyCheckinForUserAndDate(
   return result[0];
 }
 
-export async function getDailyCheckinStatus(userId: number): Promise<{
+/**
+ * The point reward attached to a given check-in row, if any. Read separately
+ * from the coupon join above so neither reward kind has to be squeezed into
+ * the other's columns.
+ */
+async function getDailyCheckinPointsReward(
+  dailyCheckinId: number,
+  tx?: any
+): Promise<{ pointsAmount: string; pointsTransactionId: number; streakCountAtGrant: number; balanceAfterGrant: string } | undefined> {
+  const database = tx || (await getDb());
+  if (!database) return undefined;
+
+  // LEFT JOIN pointsTransactions to read its balanceAfter - the historical
+  // snapshot recorded at the moment of THIS grant, not the user's current
+  // balance (which getUserPointsBalance would return, and which can differ
+  // if the user has since earned or spent more points).
+  const rows = await database
+    .select({
+      pointsAmount: dailyCheckinRewardGrants.pointsAmount,
+      pointsTransactionId: dailyCheckinRewardGrants.pointsTransactionId,
+      streakCountAtGrant: dailyCheckinRewardGrants.streakCountAtGrant,
+      balanceAfterGrant: pointsTransactions.balanceAfter,
+    })
+    .from(dailyCheckinRewardGrants)
+    .leftJoin(pointsTransactions, eq(dailyCheckinRewardGrants.pointsTransactionId, pointsTransactions.id))
+    .where(
+      and(
+        eq(dailyCheckinRewardGrants.dailyCheckinId, dailyCheckinId),
+        eq(dailyCheckinRewardGrants.rewardKind, "points")
+      )
+    )
+    .limit(1);
+
+  const row = rows[0];
+  if (!row || row.pointsTransactionId === null) return undefined;
+  return {
+    pointsAmount: String(row.pointsAmount ?? "0.00"),
+    pointsTransactionId: row.pointsTransactionId,
+    streakCountAtGrant: row.streakCountAtGrant,
+    balanceAfterGrant: String(row.balanceAfterGrant ?? "0.00"),
+  };
+}
+
+/**
+ * Builds the forward-compatible `rewards[]` array for one check-in row:
+ * exactly one coupon entry for a legacy claim, or exactly one points entry
+ * for a point claim, never both and never a hybrid.
+ */
+async function buildDailyCheckinRewards(row: DailyCheckinJoinedRow, tx?: any): Promise<DailyCheckinReward[]> {
+  const couponSummary = toDailyCheckinRewardSummary(row);
+  if (couponSummary) {
+    return [{ kind: "coupon", ...couponSummary }];
+  }
+
+  const points = await getDailyCheckinPointsReward(row.id, tx);
+  if (!points) return [];
+
+  return [
+    {
+      kind: "points",
+      pointsAmount: points.pointsAmount,
+      pointsTransactionId: points.pointsTransactionId,
+      balanceAfterGrant: points.balanceAfterGrant,
+      streakCountAtGrant: points.streakCountAtGrant,
+    },
+  ];
+}
+
+export interface DailyCheckinStatusResult {
   checkedInToday: boolean;
   checkinDate: string;
   checkedInAt: Date | null;
   campaignActive: boolean;
-  reward: DailyCheckinRewardSummary | null;
+  /** Which reward the server would hand out right now. */
+  rewardMode: "legacy_coupon" | "points" | "disabled";
   nextCheckinAt: Date;
-}> {
+  pointsBalance: string;
+  /** Forward-compatible, explicitly discriminated. Primary field. */
+  rewards: DailyCheckinReward[];
+  /** Compatibility only - populated for a legacy coupon reward, always null for a point reward. */
+  reward: DailyCheckinRewardSummary | null;
+}
+
+export async function getDailyCheckinStatus(userId: number): Promise<DailyCheckinStatusResult> {
   const database = await getDb();
   if (!database) throw new Error("Database not available");
 
-  const config = await getEffectiveDailyCheckinConfig();
-  const checkinDate = getBangkokBusinessDate();
+  const runtime = await resolveDailyCheckinRuntimeMode();
+  const checkinDate = runtime.businessDate;
   const existing = await getDailyCheckinForUserAndDate(userId, checkinDate);
 
   return {
     checkedInToday: !!existing,
     checkinDate,
     checkedInAt: existing?.issuedAt ?? null,
-    campaignActive: config.isActive,
-    reward: existing ? toDailyCheckinRewardSummary(existing) : null,
+    campaignActive: runtime.mode !== "disabled",
+    rewardMode: runtime.mode,
     nextCheckinAt: getNextBangkokDayStart(checkinDate),
+    pointsBalance: await getUserPointsBalance(userId),
+    rewards: existing ? await buildDailyCheckinRewards(existing) : [],
+    reward: existing ? toDailyCheckinRewardSummary(existing) : null,
   };
 }
 
-/**
- * Claim today's daily check-in reward. Idempotent in its result: calling
- * this twice on the same Bangkok business day never issues a second coupon
- * - the second call (and any concurrent racing call) returns
- * alreadyClaimed: true with the same coupon the first/winning call issued.
- *
- * Concurrency safety comes from the DB, not from the pre-check below (which
- * is a fast-path optimization only): the coupon and the dailyCheckins row
- * are inserted in one transaction, and dailyCheckins' UNIQUE(userId,
- * checkinDate, campaignKey) constraint is what actually arbitrates two
- * simultaneous requests - the loser's whole transaction (coupon insert
- * included) is rolled back, and it re-reads the winner's row to answer with
- * the same reward. See docs/DAILY_CHECKIN_COUPON.md PART C.
- */
-export async function claimDailyCheckin(userId: number): Promise<{
+export interface DailyCheckinClaimResult {
   claimed: boolean;
   alreadyClaimed: boolean;
   campaignActive: boolean;
+  rewardMode: "legacy_coupon" | "points" | "disabled";
   checkinDate: string;
+  pointsBalance: string;
+  rewards: DailyCheckinReward[];
+  /** Compatibility only - null for a point reward. */
   reward: DailyCheckinRewardSummary | null;
-}> {
+}
+
+/**
+ * Claim today's daily check-in reward.
+ *
+ * Two reward modes, chosen entirely server-side by
+ * resolveDailyCheckinRuntimeMode() - the client never sends a date, an
+ * amount, or a mode:
+ *
+ *   "legacy_coupon" - the historical behavior: mint a one-use percentage
+ *                     coupon and link it to the check-in row.
+ *   "points"        - grant exactly 1.00 point through the pointsTransactions
+ *                     ledger, with couponId left NULL.
+ *
+ * Idempotent in its result either way: calling this twice on the same
+ * Bangkok business day never produces a second reward. The second call - and
+ * any concurrent racing call - returns alreadyClaimed: true describing the
+ * same reward the winner created.
+ *
+ * Concurrency safety comes from the database, not from the fast-path
+ * pre-check: dailyCheckins' UNIQUE(userId, checkinDate, campaignKey) is the
+ * race arbiter. The loser's ENTIRE transaction rolls back - coupon insert,
+ * points transaction, and reward grant included - and it then re-reads the
+ * winner's row. Because both modes share that one campaignKey ("default"),
+ * a coupon claimed earlier on the cutover date also blocks a point claim
+ * later the same Bangkok day.
+ */
+export async function claimDailyCheckin(userId: number): Promise<DailyCheckinClaimResult> {
   const database = await getDb();
   if (!database) throw new Error("Database not available");
 
-  const config = await getEffectiveDailyCheckinConfig();
-  const checkinDate = getBangkokBusinessDate();
+  const runtime = await resolveDailyCheckinRuntimeMode();
+  const checkinDate = runtime.businessDate;
 
-  // Kill switch: report an already-issued reward honestly (a user who
-  // claimed before the campaign was disabled keeps their coupon), but never
-  // issue a new one while disabled.
-  if (!config.isActive) {
-    const existing = await getDailyCheckinForUserAndDate(userId, checkinDate);
-    return {
-      claimed: false,
-      alreadyClaimed: !!existing,
-      campaignActive: false,
-      checkinDate,
-      reward: existing ? toDailyCheckinRewardSummary(existing) : null,
-    };
+  const describeExisting = async (row: DailyCheckinJoinedRow | undefined): Promise<DailyCheckinClaimResult> => ({
+    claimed: false,
+    alreadyClaimed: !!row,
+    campaignActive: runtime.mode !== "disabled",
+    rewardMode: runtime.mode,
+    checkinDate,
+    pointsBalance: await getUserPointsBalance(userId),
+    rewards: row ? await buildDailyCheckinRewards(row) : [],
+    reward: row ? toDailyCheckinRewardSummary(row) : null,
+  });
+
+  // Kill switch (or any unsafe/ambiguous configuration): report an already
+  // issued reward honestly - a user who claimed before it was disabled keeps
+  // what they earned - but never create a new one.
+  if (runtime.mode === "disabled") {
+    return describeExisting(await getDailyCheckinForUserAndDate(userId, checkinDate));
   }
 
-  // Fast path only - not the correctness guarantee (see unique-constraint
-  // fallback below). Avoids opening a write transaction for the common
-  // "already checked in today" / duplicate-click case.
+  // Fast path only - NOT the correctness guarantee (see the duplicate-key
+  // recovery below). Avoids opening a write transaction for the common
+  // "already checked in today" / double-click case.
   const existingBeforeTx = await getDailyCheckinForUserAndDate(userId, checkinDate);
   if (existingBeforeTx) {
-    return {
-      claimed: false,
-      alreadyClaimed: true,
-      campaignActive: true,
-      checkinDate,
-      reward: toDailyCheckinRewardSummary(existingBeforeTx),
-    };
+    return describeExisting(existingBeforeTx);
   }
 
   try {
-    const issued = await database.transaction(async (tx: any) => {
-      const code = buildDailyCheckinCouponCode(userId, checkinDate);
-      const expiresAt = new Date(Date.now() + config.validityDays * 24 * 60 * 60 * 1000);
-      const discountValue = config.rewardPercent.toFixed(2);
-      const maxDiscountAmount = config.maxDiscountAmount.toFixed(2);
-      const minPurchaseAmount = config.minPurchaseAmount.toFixed(2);
-
-      const couponResult = await tx.insert(coupons).values({
-        code,
-        discountType: "percentage",
-        discountValue,
-        maxDiscountAmount,
-        minPurchaseAmount,
-        maxUsageCount: 1,
-        usageCount: 0,
-        isActive: true,
-        expiresAt,
-      });
-      const couponId = extractInsertId(couponResult);
-
-      // This insert is the actual race arbiter - if a concurrent request
-      // already committed a row for this (userId, checkinDate,
-      // campaignKey), this throws ER_DUP_ENTRY and the whole transaction
-      // (including the coupon insert above) is rolled back.
-      await tx.insert(dailyCheckins).values({
-        userId,
-        checkinDate,
-        campaignKey: DAILY_CHECKIN_CAMPAIGN_KEY,
-        couponId,
-        status: "issued",
-        issuedAt: new Date(),
-      });
-
+    if (runtime.mode === "points") {
+      const claimed = await claimDailyCheckinPointReward(database, userId, checkinDate, runtime);
+      // A racer that lost the under-lock re-read granted nothing - it must
+      // report alreadyClaimed, not claim credit for the winner's reward.
       return {
-        couponId,
-        couponCode: code,
-        discountType: "percentage",
-        discountValue,
-        maxDiscountAmount,
-        minPurchaseAmount,
-        expiresAt,
-        status: "issued",
+        claimed: claimed.granted,
+        alreadyClaimed: !claimed.granted,
+        campaignActive: true,
+        rewardMode: "points",
+        checkinDate,
+        pointsBalance: claimed.currentBalance,
+        rewards: claimed.reward ? [claimed.reward] : [],
+        reward: null, // never repurpose the coupon field for a point reward
       };
-    });
+    }
 
-    return { claimed: true, alreadyClaimed: false, campaignActive: true, checkinDate, reward: issued };
+    const issued = await claimDailyCheckinCouponReward(database, userId, checkinDate);
+    return {
+      claimed: true,
+      alreadyClaimed: false,
+      campaignActive: true,
+      rewardMode: "legacy_coupon",
+      checkinDate,
+      pointsBalance: await getUserPointsBalance(userId),
+      rewards: [{ kind: "coupon", ...issued }],
+      reward: issued,
+    };
   } catch (error: any) {
     // The losing side of a same-day race. isDuplicateKeyError walks the
     // cause chain - drizzle wraps the mysql2 error, so errno/code are
     // undefined on the error we actually catch here and only appear on
-    // `error.cause`. Reading the top level alone (the previous behavior)
+    // `error.cause`. Reading the top level alone (the original behavior)
     // made this whole branch unreachable, so a user who double-clicked got
     // an INTERNAL_SERVER_ERROR even though their check-in had succeeded.
     if (isDuplicateKeyError(error)) {
       const winner = await getDailyCheckinForUserAndDate(userId, checkinDate);
-      if (winner) {
-        return {
-          claimed: false,
-          alreadyClaimed: true,
-          campaignActive: true,
-          checkinDate,
-          reward: toDailyCheckinRewardSummary(winner),
-        };
-      }
+      if (winner) return describeExisting(winner);
     }
     throw error;
   }
+}
+
+/** Legacy path: one transaction inserting the coupon and its check-in row. */
+async function claimDailyCheckinCouponReward(
+  database: any,
+  userId: number,
+  checkinDate: string
+): Promise<DailyCheckinRewardSummary> {
+  const config = await getEffectiveDailyCheckinConfig();
+
+  return database.transaction(async (tx: any) => {
+    const code = buildDailyCheckinCouponCode(userId, checkinDate);
+    const expiresAt = new Date(Date.now() + config.validityDays * 24 * 60 * 60 * 1000);
+    const discountValue = config.rewardPercent.toFixed(2);
+    const maxDiscountAmount = config.maxDiscountAmount.toFixed(2);
+    const minPurchaseAmount = config.minPurchaseAmount.toFixed(2);
+
+    const couponResult = await tx.insert(coupons).values({
+      code,
+      discountType: "percentage",
+      discountValue,
+      maxDiscountAmount,
+      minPurchaseAmount,
+      maxUsageCount: 1,
+      usageCount: 0,
+      isActive: true,
+      expiresAt,
+    });
+    const couponId = extractInsertId(couponResult);
+
+    // The race arbiter - a concurrent request that already committed this
+    // (userId, checkinDate, campaignKey) makes this throw ER_DUP_ENTRY and
+    // rolls the whole transaction back, coupon insert included.
+    await tx.insert(dailyCheckins).values({
+      userId,
+      checkinDate,
+      campaignKey: DAILY_CHECKIN_CAMPAIGN_KEY,
+      couponId,
+      status: "issued",
+      issuedAt: new Date(),
+    });
+
+    return {
+      couponId,
+      couponCode: code,
+      discountType: "percentage",
+      discountValue,
+      maxDiscountAmount,
+      minPurchaseAmount,
+      expiresAt,
+      status: "issued",
+    };
+  });
+}
+
+/**
+ * Point path. All three rows - dailyCheckins, pointsTransactions and
+ * dailyCheckinRewardGrants - commit or roll back together, so a failure at
+ * any step leaves no check-in, no ledger entry, no grant, and an unchanged
+ * balance.
+ *
+ * Ordering inside the transaction is deliberate:
+ *   1. lockUserForPoints  - serializes this user's balance arithmetic
+ *                           against any other points writer.
+ *   2. re-read the check-in row UNDER the lock - a racer that committed
+ *                           while we waited is detected here without ever
+ *                           touching the ledger.
+ *   3. read the balance once, then compute the new balance from it.
+ *   4. insert the check-in row (the arbiter) BEFORE the ledger write, so a
+ *                           loser fails before crediting anything.
+ *   5. insert the points transaction, then the grant that links them.
+ */
+async function claimDailyCheckinPointReward(
+  database: any,
+  userId: number,
+  checkinDate: string,
+  runtime: Extract<DailyCheckinRuntimeMode, { mode: "points" }>
+): Promise<{ granted: boolean; reward: DailyCheckinReward | undefined; currentBalance: string }> {
+  const result = await database.transaction(async (tx: any) => {
+    await lockUserForPoints(userId, tx);
+
+    // Re-read under the lock; never trust the pre-lock fast path.
+    const alreadyExists = await getDailyCheckinForUserAndDate(userId, checkinDate, tx);
+    if (alreadyExists) return { existing: alreadyExists as DailyCheckinJoinedRow };
+
+    const previousBalance = await getUserPointsBalance(userId, tx);
+    const balanceAfter = formatMoney(
+      moneyAdd(previousBalance, runtime.pointsAmount),
+      "dailyCheckinBalanceAfter"
+    );
+    const streakCountAtGrant = await calculateDailyCheckinStreak(userId, checkinDate, tx);
+
+    // Race arbiter, and deliberately before any ledger write.
+    const checkinResult = await tx.insert(dailyCheckins).values({
+      userId,
+      checkinDate,
+      campaignKey: DAILY_CHECKIN_CAMPAIGN_KEY,
+      couponId: null,
+      status: "issued",
+      issuedAt: new Date(),
+    });
+    const dailyCheckinId = extractInsertId(checkinResult);
+
+    const pointsTransactionId = await recordPointsTransactionReturningId(
+      {
+        userId,
+        type: "earn",
+        amount: runtime.pointsAmount,
+        balanceAfter,
+        referenceType: DAILY_CHECKIN_POINTS_REFERENCE_TYPE,
+        referenceId: dailyCheckinId,
+        // Non-PII: a Bangkok business date and nothing else.
+        note: `Daily check-in reward ${checkinDate}`,
+      },
+      tx
+    );
+
+    await tx.insert(dailyCheckinRewardGrants).values({
+      dailyCheckinId,
+      userId,
+      campaignId: runtime.campaign.id,
+      ruleId: runtime.rule.id,
+      rewardKind: "points",
+      grantReason: "daily",
+      milestoneDay: null,
+      milestoneInstanceNumber: null,
+      // NOT NULL with no database default - must always be set explicitly.
+      streakCountAtGrant,
+      pointsAmount: runtime.pointsAmount,
+      pointsTransactionId,
+      couponId: null,
+      status: "granted",
+    });
+
+    return {
+      granted: {
+        reward: {
+          kind: "points" as const,
+          pointsAmount: runtime.pointsAmount,
+          pointsTransactionId,
+          balanceAfterGrant: balanceAfter,
+          streakCountAtGrant,
+        },
+        currentBalance: balanceAfter,
+      },
+    };
+  });
+
+  if ("existing" in result && result.existing) {
+    // A racer won while we waited on the user lock. Surface its reward, but
+    // report granted:false - this call created nothing.
+    const rewards = await buildDailyCheckinRewards(result.existing);
+    const points = rewards.find((r) => r.kind === "points");
+    return {
+      granted: false,
+      reward: points ?? rewards[0],
+      currentBalance: await getUserPointsBalance(userId),
+    };
+  }
+
+  return { granted: true, ...(result as any).granted };
 }
 
 export async function markDailyCheckinCouponUsed(couponId: number, userId: number, tx?: any): Promise<void> {

@@ -39,6 +39,14 @@ const translations: Record<Language, Record<string, string>> = {
     "checkin.error": "ไม่สามารถโหลดข้อมูลเช็กอินได้ กรุณาลองใหม่อีกครั้ง",
     "checkin.couponCode": "รหัสคูปอง",
     "checkin.expires": "หมดอายุ",
+    // 1-point reward copy. 'checkin.title' stays reward-neutral so it reads
+    // correctly in BOTH coupon and point mode; the reward itself is described
+    // by checkin.description / checkin.pointsDescription.
+    "checkin.pointsDescription": "รับ 1 คะแนนเมื่อเช็กอินวันนี้",
+    "checkin.pointsClaimSuccess": "เช็กอินสำเร็จ",
+    "checkin.pointsEarned": "ได้รับ {amount} คะแนน",
+    "checkin.pointsBalance": "คะแนนคงเหลือ {balance} คะแนน",
+    "checkin.pointsClaimAriaLabel": "เช็กอินวันนี้เพื่อรับ 1 คะแนน",
 
     // Home page
     "home.title": "ยินดีต้อนรับสู่ Ipe นิยายแปล",
@@ -570,6 +578,11 @@ const translations: Record<Language, Record<string, string>> = {
     "checkin.error": "Unable to load check-in information. Please try again.",
     "checkin.couponCode": "Coupon code",
     "checkin.expires": "Expires",
+    "checkin.pointsDescription": "Get 1 point when you check in today",
+    "checkin.pointsClaimSuccess": "Checked in successfully",
+    "checkin.pointsEarned": "You received {amount} point(s)",
+    "checkin.pointsBalance": "Points balance: {balance}",
+    "checkin.pointsClaimAriaLabel": "Check in today to receive 1 point",
 
     // Home page
     "home.title": "Welcome to Ipe นิยายแปล",
