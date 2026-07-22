@@ -21,6 +21,7 @@ import { dailyCheckinCampaigns, dailyCheckinRewardRules, dailyCheckinRewardGrant
 import { getDb } from "../db";
 import { getBangkokBusinessDate } from "../_core/timezone";
 import { getEffectiveDailyCheckinConfig } from "../_core/dailyCheckinConfig";
+import { isDuplicateKeyError } from "../helpers/databaseErrorClassifier";
 
 /** The campaignKey every Daily Check-in row - legacy and point - uses. */
 export const DAILY_CHECKIN_CAMPAIGN_KEY = "default";
@@ -30,6 +31,29 @@ export const DAILY_POINTS_DEDUPE_KEY = "daily:points";
 
 /** The fixed reward for this rollout. Not configurable by admins or clients. */
 export const DAILY_CHECKIN_POINTS_AMOUNT = "1.00";
+
+/**
+ * A deliberate, known-safe validation/business error from the rollout admin
+ * flow (bad startDate, conflicting schedule, grants already exist, etc.).
+ * Its `.message` was written by this module for an admin to read and is
+ * always safe to return to the client verbatim.
+ *
+ * This is the allowlist half of defense-in-depth for admin errors: the
+ * router (server/routers.ts admin.dailyCheckinRollout.*) only ever forwards
+ * a caught error's `.message` to the client when it is an INSTANCE of this
+ * class. Anything else - a raw driver exception, a programming error, an
+ * unexpected null-dereference - is logged via safeErrorSummary() and
+ * answered with the fixed generic message instead. This does not replace
+ * the existing global tRPC formatter's blocklist-based detection
+ * (sanitizeTrpcErrorShape/looksLikeRawDatabaseError in server/_core/trpc.ts)
+ * - it is a second, independent, allowlist-based layer in front of it.
+ */
+export class DailyCheckinRolloutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DailyCheckinRolloutError";
+  }
+}
 
 export interface DailyCheckinCampaignRow {
   id: number;
@@ -149,22 +173,61 @@ export async function loadDailyCheckinPointsRule(
 }
 
 /**
+ * Stable reason returned instead of "legacy_coupon" whenever the relational
+ * configuration looks like it would otherwise fall back to coupon issuance,
+ * but Daily Check-in point grants already exist somewhere in history. Used
+ * uniformly across every drift scenario below so callers/logs/tests can
+ * match on one constant rather than several ad hoc strings.
+ */
+export const POINT_HISTORY_SAFE_STOP_REASON = "point_history_requires_safe_stop";
+
+/**
+ * True if ANY Daily Check-in point grant has ever been issued, regardless of
+ * which campaign (if any) currently exists. Deliberately not scoped to a
+ * specific campaignId: this is the guard for the case where the campaign
+ * row itself is unexpectedly missing, so there may be no campaign.id left to
+ * scope by. countDailyCheckinPointGrants (below) is used instead whenever a
+ * concrete campaign row IS available, since scoping to it is more precise.
+ */
+async function anyDailyCheckinPointGrantsExist(tx?: any): Promise<boolean> {
+  const database = tx || (await getDb());
+  if (!database) return false;
+  const rows = await database
+    .select({ id: dailyCheckinRewardGrants.id })
+    .from(dailyCheckinRewardGrants)
+    .where(eq(dailyCheckinRewardGrants.rewardKind, "points"))
+    .limit(1);
+  return rows.length > 0;
+}
+
+/**
  * The runtime decision. Resolution order, and why each branch exists:
  *
  *  1. Global kill switch off            -> "disabled". Covers BOTH modes; a
  *     disabled campaign never issues a coupon and never grants a point.
- *  2. No relational campaign row        -> "legacy_coupon". This is today's
- *     production state, so shipping this code alone changes nothing.
+ *  2. No relational campaign row        -> "legacy_coupon", UNLESS point
+ *     grants already exist somewhere (the campaign row went missing after
+ *     the fact) - then "disabled". This is today's production state absent
+ *     any grant history, so shipping this code alone changes nothing.
  *  3. Campaign exists, start date is in
- *     the future (Bangkok)              -> "legacy_coupon". The rollout is
- *     scheduled but has not begun; coupons continue until midnight Bangkok
- *     on startDate, with no redeploy needed to flip over.
+ *     the future (Bangkok), or status
+ *     is "draft"                        -> "legacy_coupon", UNLESS point
+ *     grants already exist FOR THIS CAMPAIGN (its startDate was pushed back
+ *     out, or its status was reverted to draft, after grants were already
+ *     issued) - then "disabled". The rollout is scheduled but has not begun;
+ *     coupons continue until midnight Bangkok on startDate, with no
+ *     redeploy needed to flip over.
  *  4. Campaign ended / not active /
- *     malformed rule                    -> "disabled", NOT a silent fall back
- *     to coupons. Once point grants may exist, quietly resuming coupon
+ *     missing or malformed rule         -> "disabled", NOT a silent fall
+ *     back to coupons. Once point grants may exist, quietly resuming coupon
  *     issuance would be a second reward model running behind the operator's
  *     back; stopping is the safe failure.
  *  5. Otherwise                         -> "points".
+ *
+ * Every path that would otherwise return "legacy_coupon" is therefore
+ * guarded by a grant-existence check first - a coupon is never minted once
+ * any point has been granted, no matter how the relational configuration
+ * drifted to look like the pre-rollout state again.
  *
  * `at` exists only so tests can pin an instant. It is never derived from
  * client input - the tRPC layer does not accept a date.
@@ -179,17 +242,30 @@ export async function resolveDailyCheckinRuntimeMode(at: Date = new Date()): Pro
 
   const database = await getDb();
   if (!database) {
-    // No database means no campaign can be read; the legacy path is the
-    // historical default and will fail loudly on its own if it needs a DB.
+    // No database means no campaign - and no grant history - can be read;
+    // the legacy path is the historical default and will fail loudly on its
+    // own if it needs a DB.
     return { mode: "legacy_coupon", reason: "no_relational_campaign", businessDate };
   }
 
   const campaign = await loadCampaign(database);
   if (!campaign) {
+    if (await anyDailyCheckinPointGrantsExist(database)) {
+      console.error(
+        "[dailyCheckinRewardMode] no relational campaign row found, but Daily Check-in point grants already exist - refusing to fall back to coupon issuance"
+      );
+      return { mode: "disabled", reason: POINT_HISTORY_SAFE_STOP_REASON, businessDate };
+    }
     return { mode: "legacy_coupon", reason: "no_relational_campaign", businessDate };
   }
 
   if (campaign.status === "draft") {
+    if ((await countDailyCheckinPointGrants(campaign.id, database)) > 0) {
+      console.error(
+        `[dailyCheckinRewardMode] campaign ${campaign.id} is draft but already has point grants - refusing to fall back to coupon issuance`
+      );
+      return { mode: "disabled", reason: POINT_HISTORY_SAFE_STOP_REASON, businessDate };
+    }
     return { mode: "legacy_coupon", reason: "before_scheduled_start", businessDate, scheduledStartDate: campaign.startDate };
   }
 
@@ -203,6 +279,12 @@ export async function resolveDailyCheckinRuntimeMode(at: Date = new Date()): Pro
   }
 
   if (!isOnOrAfter(businessDate, campaign.startDate)) {
+    if ((await countDailyCheckinPointGrants(campaign.id, database)) > 0) {
+      console.error(
+        `[dailyCheckinRewardMode] campaign ${campaign.id} startDate moved into the future but already has point grants - refusing to fall back to coupon issuance`
+      );
+      return { mode: "disabled", reason: POINT_HISTORY_SAFE_STOP_REASON, businessDate };
+    }
     return {
       mode: "legacy_coupon",
       reason: "before_scheduled_start",
@@ -317,68 +399,103 @@ export async function scheduleDailyCheckinPointRollout(
   createdBy?: number
 ): Promise<{ scheduled: boolean; alreadyScheduled: boolean; startDate: string }> {
   if (!isValidBangkokDateString(startDate)) {
-    throw new Error("startDate must be a real calendar date in YYYY-MM-DD form");
+    throw new DailyCheckinRolloutError("startDate must be a real calendar date in YYYY-MM-DD form");
   }
 
   const today = getBangkokBusinessDate();
   if (startDate <= today) {
-    throw new Error("startDate must be strictly later than the current Bangkok date");
+    throw new DailyCheckinRolloutError("startDate must be strictly later than the current Bangkok date");
   }
 
   const database = await getDb();
   if (!database) throw new Error("Database not available");
 
-  return database.transaction(async (tx: any) => {
-    const existing = await loadCampaign(tx);
+  try {
+    return await database.transaction(async (tx: any) => {
+      const existing = await loadCampaign(tx);
 
-    if (existing) {
-      const grants = await countDailyCheckinPointGrants(existing.id, tx);
-      if (grants > 0) {
-        throw new Error("Point rewards have already been granted - this rollout cannot be rescheduled");
+      if (existing) {
+        const grants = await countDailyCheckinPointGrants(existing.id, tx);
+        if (grants > 0) {
+          throw new DailyCheckinRolloutError("Point rewards have already been granted - this rollout cannot be rescheduled");
+        }
+        if (existing.startDate === startDate) {
+          // Idempotent re-run: make sure the rule exists, then report success.
+          await ensureDailyPointsRule(existing.id, tx);
+          return { scheduled: false, alreadyScheduled: true, startDate };
+        }
+        throw new DailyCheckinRolloutError(
+          `A Daily Check-in campaign is already scheduled for ${existing.startDate}; cancel it before scheduling a different date`
+        );
       }
-      if (existing.startDate === startDate) {
-        // Idempotent re-run: make sure the rule exists, then report success.
-        await ensureDailyPointsRule(tx, existing.id);
-        return { scheduled: false, alreadyScheduled: true, startDate };
-      }
-      throw new Error(
-        `A Daily Check-in campaign is already scheduled for ${existing.startDate}; cancel it before scheduling a different date`
-      );
-    }
 
-    const inserted = await tx.insert(dailyCheckinCampaigns).values({
-      campaignKey: DAILY_CHECKIN_CAMPAIGN_KEY,
-      name: "Daily Check-in - 1 Point",
-      description: "Grants exactly 1.00 point per successful Bangkok business-day check-in.",
-      timezone: "Asia/Bangkok",
-      startDate,
-      endDate: "2099-12-31",
-      status: "active",
-      createdBy: createdBy ?? null,
+      const inserted = await tx.insert(dailyCheckinCampaigns).values({
+        campaignKey: DAILY_CHECKIN_CAMPAIGN_KEY,
+        name: "Daily Check-in - 1 Point",
+        description: "Grants exactly 1.00 point per successful Bangkok business-day check-in.",
+        timezone: "Asia/Bangkok",
+        startDate,
+        endDate: "2099-12-31",
+        status: "active",
+        createdBy: createdBy ?? null,
+      });
+      const campaignId = extractInsertIdLocal(inserted);
+
+      await ensureDailyPointsRule(campaignId, tx);
+      return { scheduled: true, alreadyScheduled: false, startDate };
     });
-    const campaignId = extractInsertIdLocal(inserted);
+  } catch (error) {
+    if (error instanceof DailyCheckinRolloutError) throw error;
 
-    await ensureDailyPointsRule(tx, campaignId);
-    return { scheduled: true, alreadyScheduled: false, startDate };
-  });
+    // Concurrent schedule race: two callers can both see "no campaign yet"
+    // and both attempt the insert - dailyCheckinCampaigns.campaignKey is
+    // UNIQUE, so exactly one wins and the other lands here. Recovered the
+    // same way the Daily Check-in claim race is: never surface the raw
+    // driver error, re-read the winner (on a fresh connection - the failed
+    // transaction above has already rolled back), and answer
+    // deterministically from ITS row rather than throwing.
+    if (isDuplicateKeyError(error)) {
+      const winner = await loadDailyCheckinCampaign();
+      if (winner) {
+        if (winner.startDate === startDate) {
+          await ensureDailyPointsRule(winner.id);
+          return { scheduled: false, alreadyScheduled: true, startDate };
+        }
+        throw new DailyCheckinRolloutError(
+          `A Daily Check-in campaign is already scheduled for ${winner.startDate}; cancel it before scheduling a different date`
+        );
+      }
+    }
+    throw error;
+  }
 }
 
-async function ensureDailyPointsRule(tx: any, campaignId: number): Promise<void> {
-  const existing = await loadDailyPointsRule(tx, campaignId);
+async function ensureDailyPointsRule(campaignId: number, tx?: any): Promise<void> {
+  const database = tx || (await getDb());
+  if (!database) throw new Error("Database not available");
+  const existing = await loadDailyPointsRule(database, campaignId);
   if (existing) return;
-  await tx.insert(dailyCheckinRewardRules).values({
-    campaignId,
-    ruleType: "daily",
-    rewardKind: "points",
-    milestoneDay: null,
-    repeatEvery: null,
-    pointsAmount: DAILY_CHECKIN_POINTS_AMOUNT,
-    couponTemplateId: null,
-    // Server-generated, never accepted from input.
-    dedupeKey: DAILY_POINTS_DEDUPE_KEY,
-    isActive: true,
-    sortOrder: 0,
-  });
+  try {
+    await database.insert(dailyCheckinRewardRules).values({
+      campaignId,
+      ruleType: "daily",
+      rewardKind: "points",
+      milestoneDay: null,
+      repeatEvery: null,
+      pointsAmount: DAILY_CHECKIN_POINTS_AMOUNT,
+      couponTemplateId: null,
+      // Server-generated, never accepted from input.
+      dedupeKey: DAILY_POINTS_DEDUPE_KEY,
+      isActive: true,
+      sortOrder: 0,
+    });
+  } catch (error) {
+    // UNIQUE(campaignId, dedupeKey) race: another concurrent caller already
+    // created this exact rule between the read above and this insert - that
+    // is success, not a failure, so swallow only a genuine duplicate-key
+    // error and let anything else propagate.
+    if (!isDuplicateKeyError(error)) throw error;
+  }
 }
 
 /**
@@ -399,10 +516,10 @@ export async function cancelDailyCheckinPointRollout(): Promise<{ cancelled: boo
 
     const grants = await countDailyCheckinPointGrants(campaign.id, tx);
     if (grants > 0) {
-      throw new Error("Point rewards have already been granted - use the kill switch instead of cancelling");
+      throw new DailyCheckinRolloutError("Point rewards have already been granted - use the kill switch instead of cancelling");
     }
     if (today >= campaign.startDate) {
-      throw new Error("The rollout has already started - use the kill switch instead of cancelling");
+      throw new DailyCheckinRolloutError("The rollout has already started - use the kill switch instead of cancelling");
     }
 
     // Safe: no grants exist, so nothing historical is being destroyed.

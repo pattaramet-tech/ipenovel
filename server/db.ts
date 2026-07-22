@@ -4243,11 +4243,52 @@ export function parseStrictPositiveDecimal(value: any, fieldName: string): numbe
 export async function lockUserForPoints(userId: number, tx?: any) {
   const database = tx || (await getDb());
   if (!database) throw new Error("Database not available");
-  
-  const userRow = await database.execute(sql`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`);
+
+  // mysql2's raw .execute() resolves to a [rows, fields] tuple, not the bare
+  // rows array (see lockCartForCheckout for the same driver-level shape).
+  // Reading `userRow.length` on the unwrapped tuple was always 2 regardless
+  // of whether a matching row existed, so "User not found" never actually
+  // fired - harmless today only because every current caller ignores the
+  // return value and relies purely on the row lock as a side effect.
+  const rawResult: any = await database.execute(sql`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`);
+  const userRow = Array.isArray(rawResult?.[0]) ? rawResult[0] : rawResult;
   if (!userRow || userRow.length === 0) throw new Error("User not found");
-  
+
   return userRow[0];
+}
+
+/**
+ * Runs `fn` with the given user's row locked (via lockUserForPoints) for the
+ * duration - the shared coordination point every points balance
+ * read-modify-write must go through.
+ *
+ * - If `tx` is already an open transaction, the lock is taken inside it and
+ *   `fn` runs on that same tx - it is only ever meaningful because the
+ *   CALLER's transaction is what eventually commits or rolls back.
+ * - If no `tx` is given, this opens its own transaction scoped to exactly
+ *   `fn`'s read-modify-write. This exists because several runtime call
+ *   sites (OCR auto-approval finalizing an order, admin points adjustment)
+ *   historically called getUserPointsBalance/recordPointsTransaction as two
+ *   separate autocommit statements with no lock at all - a real lost-update
+ *   window between two concurrent writers for the same user. Wrapping just
+ *   the points section here closes that without changing any of the
+ *   surrounding (non-points) business logic those callers also run.
+ */
+export async function withUserPointsLock<T>(
+  userId: number,
+  tx: any | undefined,
+  fn: (lockedTx: any) => Promise<T>
+): Promise<T> {
+  if (tx) {
+    await lockUserForPoints(userId, tx);
+    return fn(tx);
+  }
+  const database = await getDb();
+  if (!database) throw new Error("Database not available");
+  return database.transaction(async (newTx: any) => {
+    await lockUserForPoints(userId, newTx);
+    return fn(newTx);
+  });
 }
 
 export async function castSportsVote(userId: number, matchId: number, prediction: SportsPrediction) {
@@ -4408,6 +4449,13 @@ export async function cancelSportsMatch(matchId: number) {
       .where(and(eq(sportsMatchVotes.matchId, matchId), eq(sportsMatchVotes.status, "pending")));
 
     for (const vote of pendingVotes) {
+      // Lock this voter's row BEFORE reading their balance - refunding N
+      // voters in a loop with no lock is a real read-modify-write race
+      // against any other concurrent points writer for the same user
+      // (this refund loop was already inside a real transaction, it just
+      // never took the row lock that makes that transaction's isolation
+      // actually protect the balance arithmetic).
+      await lockUserForPoints(vote.userId, tx);
       const refundAmount = Number(vote.pointsSpent || 0);
       const currentBalance = Number(await getUserPointsBalance(vote.userId, tx));
       const newBalance = (currentBalance + refundAmount).toFixed(2);
@@ -4539,7 +4587,15 @@ export type DailyCheckinReward =
       kind: "points";
       pointsAmount: string;
       pointsTransactionId: number;
-      balanceAfter: string;
+      // The HISTORICAL balanceAfter recorded on the linked pointsTransactions
+      // row at the moment this grant was created - a fixed snapshot, not the
+      // user's current balance (which can differ if they earned or spent
+      // points since). Deliberately named distinctly from the CURRENT
+      // balance, which is reported once at the top level of the
+      // status/claim response as `pointsBalance`. A user who earned this
+      // point and later spent it still shows balanceAfterGrant unchanged;
+      // only pointsBalance reflects the spend.
+      balanceAfterGrant: string;
       streakCountAtGrant: number;
     }
   | {
@@ -4581,13 +4637,28 @@ function toDailyCheckinRewardSummary(row: DailyCheckinJoinedRow): DailyCheckinRe
  * checked in every day across the cutover has an unbroken streak, because
  * from their point of view they did check in every day.
  *
- * Bounded on purpose: it reads at most STREAK_LOOKBACK_DAYS rows, newest
- * first, instead of a user's entire history. All arithmetic is on
- * "YYYY-MM-DD" Bangkok business dates via getPreviousBangkokBusinessDate -
- * never Date.toISOString().slice(0,10) (that is UTC, and is wrong for every
- * request between 00:00 and 06:59 Thai time).
+ * Exact for any streak length, with no arbitrary cap: rather than one
+ * unbounded SELECT (or capping the answer at some maximum, which would
+ * quietly under-report a real 401-day streak as 400), history is paged
+ * backwards in bounded batches of STREAK_BATCH_SIZE rows. Each batch is
+ * walked date-by-date; the walk stops the instant a date is missing from
+ * that batch (a real gap - the streak is final) and only fetches another,
+ * older batch when the current one was entirely consecutive with no gap
+ * found in it. A user's total history is therefore read at most
+ * ceil(streakLength / STREAK_BATCH_SIZE) times, never once as an unbounded
+ * scan of their whole check-in history.
+ *
+ * Assumes at most one dailyCheckins row per (userId, checkinDate) - true
+ * today because every claim path uses the single DAILY_CHECKIN_CAMPAIGN_KEY
+ * ("default"); a second campaignKey sharing a date would need its own
+ * de-duplication here, which does not yet exist because nothing writes one.
+ *
+ * All arithmetic is on "YYYY-MM-DD" Bangkok business dates via
+ * getPreviousBangkokBusinessDate - never Date.toISOString().slice(0,10)
+ * (that is UTC, and is wrong for every request between 00:00 and 06:59 Thai
+ * time), so month/year/leap-day boundaries are handled correctly.
  */
-const STREAK_LOOKBACK_DAYS = 400;
+const STREAK_BATCH_SIZE = 400;
 
 export async function calculateDailyCheckinStreak(
   userId: number,
@@ -4597,23 +4668,40 @@ export async function calculateDailyCheckinStreak(
   const database = tx || (await getDb());
   if (!database) return 1;
 
-  const previousRows = await database
-    .select({ checkinDate: dailyCheckins.checkinDate })
-    .from(dailyCheckins)
-    .where(and(eq(dailyCheckins.userId, userId), lt(dailyCheckins.checkinDate, currentCheckinDate)))
-    .orderBy(desc(dailyCheckins.checkinDate))
-    .limit(STREAK_LOOKBACK_DAYS);
-
-  const seen = new Set<string>(previousRows.map((r: any) => String(r.checkinDate)));
-
-  // The claim happening now is day 1; walk backwards while each preceding
-  // Bangkok date is also present. The first gap ends the streak.
-  let streak = 1;
+  let streak = 1; // the claim happening right now is the newest day
   let cursor = getPreviousBangkokBusinessDate(currentCheckinDate);
-  while (seen.has(cursor) && streak < STREAK_LOOKBACK_DAYS) {
-    streak += 1;
-    cursor = getPreviousBangkokBusinessDate(cursor);
+  let upperBoundExclusive = currentCheckinDate;
+
+  for (;;) {
+    const rows = await database
+      .select({ checkinDate: dailyCheckins.checkinDate })
+      .from(dailyCheckins)
+      .where(and(eq(dailyCheckins.userId, userId), lt(dailyCheckins.checkinDate, upperBoundExclusive)))
+      .orderBy(desc(dailyCheckins.checkinDate))
+      .limit(STREAK_BATCH_SIZE);
+
+    if (rows.length === 0) break; // no more history at all
+
+    const datesInBatch = new Set<string>(rows.map((r: any) => String(r.checkinDate)));
+
+    let foundGap = false;
+    for (let i = 0; i < STREAK_BATCH_SIZE; i += 1) {
+      if (!datesInBatch.has(cursor)) {
+        foundGap = true;
+        break;
+      }
+      streak += 1;
+      cursor = getPreviousBangkokBusinessDate(cursor);
+    }
+
+    if (foundGap) break; // a real gap - the streak is final
+    if (rows.length < STREAK_BATCH_SIZE) break; // consumed all remaining history with no gap
+
+    // Whole batch was consecutive - page further back, strictly before the
+    // oldest date this batch returned.
+    upperBoundExclusive = String(rows[rows.length - 1].checkinDate);
   }
+
   return streak;
 }
 
@@ -4665,17 +4753,23 @@ async function getDailyCheckinForUserAndDate(
 async function getDailyCheckinPointsReward(
   dailyCheckinId: number,
   tx?: any
-): Promise<{ pointsAmount: string; pointsTransactionId: number; streakCountAtGrant: number } | undefined> {
+): Promise<{ pointsAmount: string; pointsTransactionId: number; streakCountAtGrant: number; balanceAfterGrant: string } | undefined> {
   const database = tx || (await getDb());
   if (!database) return undefined;
 
+  // LEFT JOIN pointsTransactions to read its balanceAfter - the historical
+  // snapshot recorded at the moment of THIS grant, not the user's current
+  // balance (which getUserPointsBalance would return, and which can differ
+  // if the user has since earned or spent more points).
   const rows = await database
     .select({
       pointsAmount: dailyCheckinRewardGrants.pointsAmount,
       pointsTransactionId: dailyCheckinRewardGrants.pointsTransactionId,
       streakCountAtGrant: dailyCheckinRewardGrants.streakCountAtGrant,
+      balanceAfterGrant: pointsTransactions.balanceAfter,
     })
     .from(dailyCheckinRewardGrants)
+    .leftJoin(pointsTransactions, eq(dailyCheckinRewardGrants.pointsTransactionId, pointsTransactions.id))
     .where(
       and(
         eq(dailyCheckinRewardGrants.dailyCheckinId, dailyCheckinId),
@@ -4690,6 +4784,7 @@ async function getDailyCheckinPointsReward(
     pointsAmount: String(row.pointsAmount ?? "0.00"),
     pointsTransactionId: row.pointsTransactionId,
     streakCountAtGrant: row.streakCountAtGrant,
+    balanceAfterGrant: String(row.balanceAfterGrant ?? "0.00"),
   };
 }
 
@@ -4698,11 +4793,7 @@ async function getDailyCheckinPointsReward(
  * exactly one coupon entry for a legacy claim, or exactly one points entry
  * for a point claim, never both and never a hybrid.
  */
-async function buildDailyCheckinRewards(
-  row: DailyCheckinJoinedRow,
-  userId: number,
-  tx?: any
-): Promise<DailyCheckinReward[]> {
+async function buildDailyCheckinRewards(row: DailyCheckinJoinedRow, tx?: any): Promise<DailyCheckinReward[]> {
   const couponSummary = toDailyCheckinRewardSummary(row);
   if (couponSummary) {
     return [{ kind: "coupon", ...couponSummary }];
@@ -4716,7 +4807,7 @@ async function buildDailyCheckinRewards(
       kind: "points",
       pointsAmount: points.pointsAmount,
       pointsTransactionId: points.pointsTransactionId,
-      balanceAfter: await getUserPointsBalance(userId, tx),
+      balanceAfterGrant: points.balanceAfterGrant,
       streakCountAtGrant: points.streakCountAtGrant,
     },
   ];
@@ -4753,7 +4844,7 @@ export async function getDailyCheckinStatus(userId: number): Promise<DailyChecki
     rewardMode: runtime.mode,
     nextCheckinAt: getNextBangkokDayStart(checkinDate),
     pointsBalance: await getUserPointsBalance(userId),
-    rewards: existing ? await buildDailyCheckinRewards(existing, userId) : [],
+    rewards: existing ? await buildDailyCheckinRewards(existing) : [],
     reward: existing ? toDailyCheckinRewardSummary(existing) : null,
   };
 }
@@ -4809,7 +4900,7 @@ export async function claimDailyCheckin(userId: number): Promise<DailyCheckinCla
     rewardMode: runtime.mode,
     checkinDate,
     pointsBalance: await getUserPointsBalance(userId),
-    rewards: row ? await buildDailyCheckinRewards(row, userId) : [],
+    rewards: row ? await buildDailyCheckinRewards(row) : [],
     reward: row ? toDailyCheckinRewardSummary(row) : null,
   });
 
@@ -4839,7 +4930,7 @@ export async function claimDailyCheckin(userId: number): Promise<DailyCheckinCla
         campaignActive: true,
         rewardMode: "points",
         checkinDate,
-        pointsBalance: claimed.balanceAfter,
+        pointsBalance: claimed.currentBalance,
         rewards: claimed.reward ? [claimed.reward] : [],
         reward: null, // never repurpose the coupon field for a point reward
       };
@@ -4946,7 +5037,7 @@ async function claimDailyCheckinPointReward(
   userId: number,
   checkinDate: string,
   runtime: Extract<DailyCheckinRuntimeMode, { mode: "points" }>
-): Promise<{ granted: boolean; reward: DailyCheckinReward | undefined; balanceAfter: string }> {
+): Promise<{ granted: boolean; reward: DailyCheckinReward | undefined; currentBalance: string }> {
   const result = await database.transaction(async (tx: any) => {
     await lockUserForPoints(userId, tx);
 
@@ -5009,10 +5100,10 @@ async function claimDailyCheckinPointReward(
           kind: "points" as const,
           pointsAmount: runtime.pointsAmount,
           pointsTransactionId,
-          balanceAfter,
+          balanceAfterGrant: balanceAfter,
           streakCountAtGrant,
         },
-        balanceAfter,
+        currentBalance: balanceAfter,
       },
     };
   });
@@ -5020,12 +5111,12 @@ async function claimDailyCheckinPointReward(
   if ("existing" in result && result.existing) {
     // A racer won while we waited on the user lock. Surface its reward, but
     // report granted:false - this call created nothing.
-    const rewards = await buildDailyCheckinRewards(result.existing, userId);
+    const rewards = await buildDailyCheckinRewards(result.existing);
     const points = rewards.find((r) => r.kind === "points");
     return {
       granted: false,
       reward: points ?? rewards[0],
-      balanceAfter: await getUserPointsBalance(userId),
+      currentBalance: await getUserPointsBalance(userId),
     };
   }
 
