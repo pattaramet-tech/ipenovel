@@ -515,6 +515,8 @@ export default function AdminSettingsPage() {
           </div>
         </Card>
 
+        <DailyCheckinRolloutSection />
+
         {/* System Information */}
         <Card className="p-6">
           <h2 className="text-lg font-semibold mb-4">System Information</h2>
@@ -545,5 +547,136 @@ export default function AdminSettingsPage() {
         </div>
       </div>
     </AdminLayout>
+  );
+}
+
+/**
+ * Minimal Daily Check-in 1-point rollout control.
+ *
+ * Deliberately NOT a campaign-management UI: the reward is fixed at 1 point
+ * per day and the only input is the Bangkok start date. Scheduling is what
+ * flips the reward - a deploy on its own never does, because the server only
+ * switches at Bangkok midnight on that date.
+ */
+function DailyCheckinRolloutSection() {
+  const [startDate, setStartDate] = useState("");
+  const statusQuery = trpc.admin.dailyCheckinRollout.status.useQuery();
+  const utils = trpc.useUtils();
+
+  const scheduleMutation = trpc.admin.dailyCheckinRollout.schedule.useMutation({
+    onSuccess: (r) => {
+      toast.success(r.alreadyScheduled ? "Rollout already scheduled for that date" : `Rollout scheduled for ${r.startDate}`);
+      utils.admin.dailyCheckinRollout.status.invalidate();
+      setStartDate("");
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const cancelMutation = trpc.admin.dailyCheckinRollout.cancel.useMutation({
+    onSuccess: (r) => {
+      toast.success(r.cancelled ? "Scheduled rollout cancelled" : "No scheduled rollout to cancel");
+      utils.admin.dailyCheckinRollout.status.invalidate();
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const status = statusQuery.data;
+
+  const modeLabel = (() => {
+    if (!status) return "-";
+    if (status.runtimeMode === "disabled") return "ปิดการเช็กอิน (disabled)";
+    if (status.runtimeMode === "points") return "รับ 1 คะแนน (1 point)";
+    if (status.scheduledStartDate) return "กำหนดเริ่มรับ 1 คะแนนแล้ว (scheduled)";
+    return "คูปองแบบเดิม (legacy coupon)";
+  })();
+
+  const canCancel =
+    !!status?.scheduledStartDate &&
+    !status.hasPointGrants &&
+    status.currentBangkokDate < status.scheduledStartDate;
+
+  return (
+    <Card className="p-6 border-2 border-amber-200 bg-amber-50">
+      <h2 className="text-lg font-semibold mb-1">Daily Check-in — 1 Point Rollout</h2>
+      <p className="text-sm text-slate-600 mb-4">
+        Fixed at 1 point per day. Scheduling takes effect at Bangkok midnight on the chosen date — no redeploy needed.
+      </p>
+
+      {statusQuery.isLoading ? (
+        <p className="text-sm text-slate-600">Loading…</p>
+      ) : !status ? (
+        <p className="text-sm text-red-600">Unable to load rollout status.</p>
+      ) : (
+        <>
+          <div className="space-y-1 text-sm mb-4">
+            <p><span className="font-semibold">Current mode:</span> {modeLabel}</p>
+            <p><span className="font-semibold">Current Bangkok date:</span> {status.currentBangkokDate}</p>
+            <p><span className="font-semibold">Scheduled start date:</span> {status.scheduledStartDate ?? "— not scheduled —"}</p>
+            <p><span className="font-semibold">Reward:</span> 1 คะแนนต่อวัน ({status.pointsAmount} point/day)</p>
+            <p><span className="font-semibold">Point rewards already granted:</span> {status.hasPointGrants ? "yes" : "no"}</p>
+            <p>
+              <span className="font-semibold">Global kill switch:</span>{" "}
+              {status.killSwitchActive ? "check-in enabled" : "check-in DISABLED"}
+            </p>
+          </div>
+
+          {!status.hasPointGrants && (
+            <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
+              <div className="flex-1">
+                <Label htmlFor="checkin-rollout-date">Start date (Bangkok, must be a future date)</Label>
+                <Input
+                  id="checkin-rollout-date"
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                />
+              </div>
+              <Button
+                disabled={!startDate || scheduleMutation.isPending}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      `Schedule the 1-point Daily Check-in reward to begin at Bangkok midnight on ${startDate}?\n\n` +
+                        `Until then, legacy coupons continue. Existing coupons remain valid either way.`
+                    )
+                  ) {
+                    scheduleMutation.mutate({ startDate });
+                  }
+                }}
+              >
+                {scheduleMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+                Schedule rollout
+              </Button>
+              {canCancel && (
+                <Button
+                  variant="outline"
+                  disabled={cancelMutation.isPending}
+                  onClick={() => {
+                    if (
+                      window.confirm(
+                        "Cancel the scheduled 1-point rollout?\n\n" +
+                          "This is only possible because it has not started and no points have been granted. " +
+                          "No historical data is deleted."
+                      )
+                    ) {
+                      cancelMutation.mutate();
+                    }
+                  }}
+                >
+                  Cancel schedule
+                </Button>
+              )}
+            </div>
+          )}
+
+          {status.hasPointGrants && (
+            <p className="text-sm text-slate-700">
+              Point rewards have already been granted. This rollout can no longer be rescheduled or cancelled — use the
+              global Daily Check-in kill switch to stop new claims. Points already granted are never removed.
+            </p>
+          )}
+        </>
+      )}
+    </Card>
   );
 }

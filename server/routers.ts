@@ -884,6 +884,8 @@ export const appRouter = router({
   dailyCheckin: router({
     getStatus: publicProcedure.query(async ({ ctx }) => {
       if (!ctx.user) {
+        // Anonymous stays deliberately minimal - no dates, no balances, no
+        // campaign internals leak to a visitor who cannot claim anything.
         return { authenticated: false as const };
       }
       try {
@@ -1896,6 +1898,40 @@ export const appRouter = router({
           await db.deleteCoupon(input.couponId);
           return { success: true };
         }),
+    }),
+
+    // Minimal Daily Check-in 1-point rollout controls. Deliberately NOT a
+    // campaign-management system: the point amount, campaignKey, dedupeKey,
+    // ruleType and rewardKind are all server-fixed constants that no caller
+    // can influence. The only input is the Bangkok start date.
+    dailyCheckinRollout: router({
+      status: adminProcedure.query(async () => {
+        const { getDailyCheckinRolloutStatus } = await import("./services/dailyCheckinRewardModeService");
+        return getDailyCheckinRolloutStatus();
+      }),
+
+      schedule: adminProcedure
+        .input(z.object({ startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "startDate must be YYYY-MM-DD") }))
+        .mutation(async ({ input, ctx }) => {
+          const { scheduleDailyCheckinPointRollout } = await import("./services/dailyCheckinRewardModeService");
+          try {
+            return await scheduleDailyCheckinPointRollout(input.startDate, ctx.user.id);
+          } catch (error: any) {
+            // Deliberate, human-readable validation messages only - never a
+            // raw driver error (which the global formatter would replace
+            // with the generic message anyway).
+            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Unable to schedule rollout" });
+          }
+        }),
+
+      cancel: adminProcedure.mutation(async () => {
+        const { cancelDailyCheckinPointRollout } = await import("./services/dailyCheckinRewardModeService");
+        try {
+          return await cancelDailyCheckinPointRollout();
+        } catch (error: any) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Unable to cancel rollout" });
+        }
+      }),
     }),
 
     settings: router({
