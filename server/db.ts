@@ -39,6 +39,8 @@ import { ENV } from "./_core/env";
 import { pickRandom } from "./utils/random";
 import { getBangkokBusinessDate, getNextBangkokDayStart } from "./_core/timezone";
 import { getEffectiveDailyCheckinConfig } from "./_core/dailyCheckinConfig";
+import { isDuplicateKeyError } from "./helpers/databaseErrorClassifier";
+import { safeErrorSummary } from "../scripts/lib/safeErrorSummary.mjs";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -1610,8 +1612,15 @@ export async function recordCouponUsage(couponId: number, userId: number | undef
     await db.update(coupons).set({ usageCount: sql`${coupons.usageCount} + 1` }).where(eq(coupons.id, couponId));
     return { recorded: true };
   } catch (err: any) {
-    // Handle unique constraint violation gracefully (duplicate key error)
-    if (err.code === "ER_DUP_ENTRY" || err.message?.includes("UNIQUE constraint failed")) {
+    // Handle unique constraint violation gracefully (duplicate key error).
+    // The pre-check above only narrows the race window - two concurrent
+    // finalizations can both pass it and then collide on
+    // UNIQUE(couponId, orderId), so this branch is the real guarantee.
+    // isDuplicateKeyError walks the cause chain: drizzle wraps the mysql2
+    // error, so `err.code` is undefined here. (The previous fallback also
+    // matched "UNIQUE constraint failed", which is SQLite's wording -
+    // MySQL/MariaDB never emit it, so that half was always dead.)
+    if (isDuplicateKeyError(err)) {
       // Duplicate key - already recorded, skip silently
       return { alreadyRecorded: true };
     }
@@ -3054,23 +3063,19 @@ export async function getOrCreateWalletAccount(userId: number, tx?: any) {
       });
       account = (await db.select().from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1))[0];
     } catch (insertError: any) {
-      console.error("[getOrCreateWalletAccount] insert wallet account failed", {
-        message: insertError?.message,
-        code: insertError?.code,
-        errno: insertError?.errno,
-        sqlState: insertError?.sqlState,
-        sqlMessage: insertError?.sqlMessage,
-        userId,
-        error: insertError,
-      });
-
-      // Handle concurrent insert: if another request already created the account, retry select
-      if (insertError?.errno === 1062 || insertError?.code === "ER_DUP_ENTRY") {
-        console.warn("[getOrCreateWalletAccount] concurrent insert detected, retrying select", { userId });
+      // A concurrent insert is an EXPECTED, fully-recovered race - not an
+      // error worth a console.error. Log it only if recovery below fails.
+      // Sanitized via safeErrorSummary: the previous version logged
+      // insertError.message and the raw error object, and drizzle embeds the
+      // failing SQL plus its bound parameters in that message.
+      if (isDuplicateKeyError(insertError)) {
         account = (await db.select().from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1))[0];
         if (account) return account;
       }
 
+      console.error(
+        `[getOrCreateWalletAccount] insert wallet account failed for user ${userId}: ${safeErrorSummary(insertError)}`
+      );
       throw insertError;
     }
   }
@@ -4636,7 +4641,13 @@ export async function claimDailyCheckin(userId: number): Promise<{
 
     return { claimed: true, alreadyClaimed: false, campaignActive: true, checkinDate, reward: issued };
   } catch (error: any) {
-    if (error?.errno === 1062 || error?.code === "ER_DUP_ENTRY") {
+    // The losing side of a same-day race. isDuplicateKeyError walks the
+    // cause chain - drizzle wraps the mysql2 error, so errno/code are
+    // undefined on the error we actually catch here and only appear on
+    // `error.cause`. Reading the top level alone (the previous behavior)
+    // made this whole branch unreachable, so a user who double-clicked got
+    // an INTERNAL_SERVER_ERROR even though their check-in had succeeded.
+    if (isDuplicateKeyError(error)) {
       const winner = await getDailyCheckinForUserAndDate(userId, checkinDate);
       if (winner) {
         return {
