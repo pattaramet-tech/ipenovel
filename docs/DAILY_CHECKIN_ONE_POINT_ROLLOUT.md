@@ -27,10 +27,19 @@ flip the reward mid-day" structurally true.
 | Condition | Mode |
 |---|---|
 | Kill switch `isActive: false` | `disabled` (blocks **both** modes) |
-| No campaign row | `legacy_coupon` |
-| Campaign exists, Bangkok today `< startDate` | `legacy_coupon` |
+| No campaign row, no point grants exist | `legacy_coupon` |
+| No campaign row, but point grants already exist | `disabled` (`point_history_requires_safe_stop`) |
+| Campaign `draft` or `startDate` in the future, no grants for it yet | `legacy_coupon` |
+| Campaign `draft` or `startDate` in the future, but grants already exist for it | `disabled` (`point_history_requires_safe_stop`) |
 | Campaign `active`, today within `[startDate, endDate]`, valid 1.00-point rule | `points` |
 | Campaign ended / non-active / rule missing or malformed | `disabled` — **never** a silent fall back to coupons |
+
+**Once any point has been granted, no configuration drift can resume coupon
+issuance.** Every path that would otherwise return `legacy_coupon` — campaign
+row missing, reverted to `draft`, or its `startDate` pushed back into the
+future — checks for existing point grants first (globally, or scoped to that
+campaign) and returns `disabled` instead if any are found. This holds even if
+the drift happens by operator error or a bug, not just through the admin UI.
 
 Both modes share `campaignKey = "default"`, so the existing
 `UNIQUE(userId, checkinDate, campaignKey)` index means a coupon claimed
@@ -40,14 +49,42 @@ earlier on the cutover date still blocks a point claim later that same day.
 
 1. `lockUserForPoints(userId, tx)` — `SELECT … FOR UPDATE` on `users`.
 2. Re-read the check-in row **under the lock** (never trust the pre-lock fast path).
-3. Read the balance once; compute `balanceAfter` with decimal-safe helpers.
-4. Compute the consecutive Bangkok-date streak.
+3. Read the balance once; compute the new `balanceAfter` with decimal-safe helpers.
+4. Compute the consecutive Bangkok-date streak (see below).
 5. Insert `dailyCheckins` (`couponId = NULL`) — **the race arbiter**, before any ledger write.
 6. Insert `pointsTransactions` (`earn`, `1.00`, `referenceType = "daily_checkin"`, `referenceId = dailyCheckins.id`).
 7. Insert `dailyCheckinRewardGrants` linking the check-in, the rule and the ledger row, with `streakCountAtGrant` set explicitly.
 8. Commit.
 
 All three rows commit or roll back together.
+
+**Every points ledger writer** (Daily Check-in, order redemption/award, sports
+vote/refund, admin adjustment) coordinates on the same `lockUserForPoints`
+row lock via a shared `withUserPointsLock(userId, tx, fn)` helper — a writer
+called with no open transaction gets one opened just for its own
+read-balance/insert-transaction section, so no writer can lose an update to
+a concurrent one for the same user.
+
+**Two distinct balance fields — do not confuse them:**
+
+| Field | Meaning |
+|---|---|
+| `rewards[].balanceAfterGrant` (point reward only) | The **historical** `balanceAfter` recorded on the linked `pointsTransactions` row at the moment of that grant. Fixed forever once written. |
+| `pointsBalance` (top level of `getStatus`/`claim`) | The user's **current** balance, read fresh every time. |
+
+A user who earned 1 point from today's check-in and later spent it shows
+`rewards[0].balanceAfterGrant` unchanged (still reflecting the moment of the
+grant) while `pointsBalance` reflects the spend. The UI card's
+"คะแนนคงเหลือ X คะแนน" always uses `pointsBalance`, never
+`balanceAfterGrant`.
+
+**Streak calculation** (`calculateDailyCheckinStreak`) is exact for any
+streak length, with no arbitrary cap. Rather than one unbounded query, it
+pages backward through history in batches of 400 rows, walking each batch
+date-by-date until it hits a genuine gap (which ends the streak) or runs out
+of batches to fetch. A 1-day streak, a 400-day streak, and an 801-day streak
+are all computed exactly, at a cost proportional to the streak length divided
+by 400, never to the user's entire history.
 
 ---
 
