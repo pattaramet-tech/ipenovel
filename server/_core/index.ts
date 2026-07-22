@@ -11,6 +11,8 @@ import { storagePut } from "../storage";
 import { checkUploadServiceHealth } from "../helpers/uploadHealthCheck";
 import { canonicalDomainRedirect } from "./canonicalDomainRedirect";
 import { handleSitemapXml } from "./sitemap";
+import { ensureDatabaseMigrated } from "./startupMigrations";
+import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
 
 // Procedures that have caused "No procedure found on path ..." client errors
 // in production when an older server build was still deployed after the
@@ -56,6 +58,16 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 }
 
 async function startServer() {
+  // STEP 1-3: environment is loaded by `import "dotenv/config"` at the top of
+  // this file; migrations and the post-migration read-only schema
+  // verification both run here, inside scripts/migrate.mjs. Nothing below
+  // this line may execute unless that succeeded - in particular no Express
+  // app is constructed and no port is opened. This is what makes a direct
+  // `node dist/index.js` start (bypassing package.json, as the hosting
+  // platform did during the incident) safe.
+  await ensureDatabaseMigrated();
+
+  // STEP 4: construct the Express application.
   const app = express();
   // Trust the first hop reverse proxy (e.g. Manus production) so Express
   // reads X-Forwarded-Proto/-For correctly - without this, req.protocol
@@ -114,4 +126,17 @@ async function startServer() {
   });
 }
 
-startServer().catch(console.error);
+// Fail closed. The previous `startServer().catch(console.error)` logged the
+// raw error (which for a database failure can embed SQL and connection
+// details) and still let the process exit 0, so a hosting platform saw a
+// "clean" exit after a failed startup. Now the summary is sanitized and the
+// exit status is always non-zero, so a failed migration can never be
+// mistaken for a successful boot.
+//
+// process.exitCode (rather than process.exit) lets Node flush stdio and
+// exit naturally - at this point the server never called listen(), so
+// nothing is holding the event loop open.
+startServer().catch((error: unknown) => {
+  console.error(`[startup] FATAL: server did not start: ${safeErrorSummary(error)}`);
+  process.exitCode = 1;
+});

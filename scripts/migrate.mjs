@@ -39,6 +39,10 @@ import { drizzle } from "drizzle-orm/mysql2";
 import { migrate } from "drizzle-orm/mysql2/migrator";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+// Single shared sanitizer - see scripts/lib/safeErrorSummary.mjs for why
+// drizzle's own error messages must never be logged verbatim (they embed
+// the failing SQL and its bound parameters).
+import { safeErrorSummary } from "./lib/safeErrorSummary.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const migrationsFolder = path.join(__dirname, "..", "drizzle");
@@ -46,17 +50,70 @@ const migrationsFolder = path.join(__dirname, "..", "drizzle");
 const LOCK_NAME = "ipenovel_schema_migrations";
 const LOCK_TIMEOUT_SECONDS = 60;
 
-// Never log a raw error object or its .sql/.config - those can echo back
-// query text or connection details. Only the small set of fields mysql2
-// populates for diagnosing a failure, nothing else.
-function safeErrorSummary(error) {
-  if (!error) return "unknown error";
-  const parts = [];
-  if (error.code) parts.push(`code=${error.code}`);
-  if (error.errno) parts.push(`errno=${error.errno}`);
-  if (error.sqlState) parts.push(`sqlState=${error.sqlState}`);
-  if (error.message) parts.push(`message=${String(error.message).slice(0, 300)}`);
-  return parts.length > 0 ? parts.join(" ") : "unknown error";
+// Schema objects the running application hard-depends on. Verified
+// read-only (information_schema, SELECT only - never user rows) after
+// migrate() reports success, so a migration run that "succeeded" but left
+// the schema incomplete still fails the deploy instead of letting the
+// server boot and serve errors. See docs/DAILY_CHECKIN_DEPLOYMENT_FIX.md.
+const REQUIRED_TABLES = [
+  "dailyCheckins",
+  "dailyCheckinCampaigns",
+  "dailyCheckinCouponTemplates",
+  "dailyCheckinRewardRules",
+  "dailyCheckinRewardGrants",
+];
+const REQUIRED_COLUMNS = [{ table: "coupons", column: "maxDiscountAmount" }];
+const REQUIRED_INDEXES = [
+  { table: "dailyCheckins", index: "PRIMARY" },
+  { table: "dailyCheckins", index: "unique_daily_checkin_user_date_campaign" },
+  { table: "dailyCheckins", index: "unique_daily_checkins_coupon" },
+  { table: "dailyCheckins", index: "dailyCheckins_userId_idx" },
+];
+
+/**
+ * Read-only post-migration schema verification. Returns the names of any
+ * missing objects (empty array = everything present).
+ *
+ * Every query is a plain information_schema SELECT scoped to DATABASE(),
+ * with explicit column aliases so the result keys are stable across
+ * MySQL 8 and TiDB (which differ in information_schema column casing).
+ * No user table is read.
+ */
+async function findMissingSchemaObjects(conn) {
+  const missing = [];
+
+  const [tableRows] = await conn.query(
+    `SELECT table_name AS name FROM information_schema.tables
+     WHERE table_schema = DATABASE() AND table_name IN (${REQUIRED_TABLES.map(() => "?").join(",")})`,
+    REQUIRED_TABLES
+  );
+  const presentTables = new Set((tableRows ?? []).map((row) => String(row.name)));
+  for (const table of REQUIRED_TABLES) {
+    if (!presentTables.has(table)) missing.push(`table ${table}`);
+  }
+
+  for (const { table, column } of REQUIRED_COLUMNS) {
+    const [columnRows] = await conn.query(
+      `SELECT column_name AS name FROM information_schema.columns
+       WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+      [table, column]
+    );
+    if (!columnRows || columnRows.length === 0) missing.push(`column ${table}.${column}`);
+  }
+
+  for (const { table, index } of REQUIRED_INDEXES) {
+    // An index on a missing table is already reported as a missing table -
+    // don't report the same root cause twice.
+    if (!presentTables.has(table)) continue;
+    const [indexRows] = await conn.query(
+      `SELECT DISTINCT index_name AS name FROM information_schema.statistics
+       WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?`,
+      [table, index]
+    );
+    if (!indexRows || indexRows.length === 0) missing.push(`index ${table}.${index}`);
+  }
+
+  return missing;
 }
 
 async function main() {
@@ -100,6 +157,19 @@ async function main() {
 
     const db = drizzle({ client: connection });
     await migrate(db, { migrationsFolder });
+
+    // migrate() returning is not sufficient proof the schema is usable -
+    // verify the objects the application actually queries really exist
+    // before reporting success (and therefore before the server is allowed
+    // to open a port).
+    console.log("[migrate] Verifying required schema objects (read-only)...");
+    const missing = await findMissingSchemaObjects(conn);
+    if (missing.length > 0) {
+      // Only the object names - never the query, the schema name, or any row.
+      console.error(`[migrate] Migration failed: schema verification found missing object(s): ${missing.join(", ")}`);
+      process.exitCode = 1;
+      return;
+    }
 
     console.log("[migrate] Done - schema is up to date.");
   } catch (error) {
