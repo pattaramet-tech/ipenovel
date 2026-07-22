@@ -759,10 +759,32 @@ export async function getOrCreateCart(userId: number) {
   return { id: cartId as number, userId, createdAt: new Date(), updatedAt: new Date() };
 }
 
-export async function getCartItems(cartId: number) {
-  const db = await getDb();
+export async function getCartItems(cartId: number, tx?: any) {
+  const db = tx || await getDb();
   if (!db) return [];
   return db.select().from(cartItems).where(eq(cartItems.cartId, cartId));
+}
+
+/**
+ * Locks the current user's cart row for the duration of a checkout
+ * transaction (SELECT ... FOR UPDATE), so a concurrent checkout.create call
+ * for the same cart blocks until this transaction commits or rolls back,
+ * and a retry against an already-cleared cart sees the post-commit state
+ * rather than racing it. Always called with an explicit transaction - never
+ * falls back to a bare connection, since locking outside a transaction
+ * would release the lock immediately and defeat the purpose.
+ *
+ * Returns the cart's id, or null if the user has no cart row at all - the
+ * caller should treat that exactly like an empty cart, not as an error.
+ */
+export async function lockCartForCheckout(userId: number, tx: any): Promise<number | null> {
+  // mysql2's raw .execute() resolves to a [rows, fields] tuple, not the bare
+  // rows array - unwrap it the same way runMigrationsWithLogging.ts does
+  // for the same driver-level shape.
+  const rawResult: any = await tx.execute(sql`SELECT id FROM carts WHERE userId = ${userId} FOR UPDATE`);
+  const cartRows = Array.isArray(rawResult?.[0]) ? rawResult[0] : rawResult;
+  if (!cartRows || cartRows.length === 0) return null;
+  return cartRows[0].id as number;
 }
 
 export async function addToCart(cartId: number, episodeId: number, novelId: number, price: string) {
@@ -1197,6 +1219,15 @@ export async function createPayment(orderId: number, slipImageUrl?: string, tx?:
     status: "pending",
     slipImageUrl: slipImageUrl || null,
     slipSubmittedAt: slipImageUrl ? new Date() : null,
+    // Explicit, not relying on the column's own DEFAULT clause: migration
+    // 0021 sets `ocrConfidence int NOT NULL DEFAULT 0` and then immediately
+    // re-runs `MODIFY COLUMN ocrConfidence int NOT NULL` with no DEFAULT,
+    // silently dropping it - every insert that omits this column resolves
+    // to the SQL keyword DEFAULT, which errors under strict SQL mode
+    // ("Field 'ocrConfidence' doesn't have a default value") since the
+    // column has none. This was the root cause of every checkout failing
+    // right after a successful slip upload.
+    ocrConfidence: 0,
   });
   
   // Extract insertId from Drizzle MySQL result

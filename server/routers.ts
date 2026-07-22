@@ -11,6 +11,7 @@ import * as walletService from "./services/walletService";
 import { ApprovalService } from "./services/approvalService";
 import { submitPaymentSlip } from "./services/slipSubmissionService";
 import { uploadPaymentSlipFile } from "./services/slipFileUploadService";
+import { safeErrorSummary } from "../scripts/lib/safeErrorSummary.mjs";
 import { fileRouter } from "./routers/fileRouter";
 import { ocrMetricsRouter } from "./routers/ocrMetricsRouter";
 import { storagePut } from "./storage";
@@ -427,36 +428,97 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ input, ctx }) => {
-        const cart = await db.getOrCreateCart(ctx.user.id);
-        if (!cart) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const dbConnection = await db.getDb();
+        if (!dbConnection) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
-        const cartItems = await db.getCartItems(cart.id);
-        if (cartItems.length === 0) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "Your cart is empty. Please add items before checkout." });
+        // Phase 1 - one short atomic transaction. Locks the cart row first
+        // (SELECT ... FOR UPDATE), so a concurrent checkout.create for the
+        // same cart either waits behind this transaction or - after this one
+        // commits and clears the cart - correctly sees an empty cart instead
+        // of creating a second Order. Order/OrderItems/Payment/cart-clear all
+        // commit or roll back together: a failure anywhere in this phase
+        // leaves no partial rows and the cart uncleared, safe to retry.
+        // Never holds this transaction open across OCR/Storage/Discord/any
+        // external network call - that all happens afterward, in Phase 2.
+        let order: any;
+        try {
+          order = await dbConnection.transaction(async (tx: any) => {
+            const cartId = await db.lockCartForCheckout(ctx.user.id, tx);
+            if (cartId === null) {
+              throw new TRPCError({ code: "BAD_REQUEST", message: "Your cart is empty. Please add items before checkout." });
+            }
+
+            // Re-read cart items only after the lock is held - never reuse
+            // any cart/cartItems read before acquiring it, which could
+            // already be stale (e.g. consumed by another request that
+            // committed while this one was waiting for the lock).
+            const cartItems = await db.getCartItems(cartId, tx);
+            if (cartItems.length === 0) {
+              throw new TRPCError({ code: "BAD_REQUEST", message: "Your cart is empty. Please add items before checkout." });
+            }
+
+            const newOrder = await orderService.createOrderFromCart(
+              String(ctx.user.id),
+              cartItems,
+              input.couponCode,
+              input.pointsToRedeem,
+              input.slipImageUrl,
+              tx
+            );
+
+            if (input.slipImageUrl) {
+              await db.updateOrder(newOrder.id, { paymentStatus: "submitted" }, tx);
+            }
+
+            await db.clearCart(cartId, tx);
+
+            // Re-fetch within the same transaction so the returned order
+            // reflects the paymentStatus update above, not the pre-update
+            // snapshot createOrderFromCart returned.
+            return (await db.getOrderById(newOrder.id, tx)) || newOrder;
+          });
+        } catch (error: any) {
+          if (error instanceof TRPCError) throw error;
+          const message = error?.message || "Failed to create order";
+          throw new TRPCError({ code: "BAD_REQUEST", message });
         }
 
-        try {
-          // Create order WITHOUT slipImageUrl - let submitPaymentSlip handle the slip flow
-          const order = await orderService.createOrderFromCart(String(ctx.user.id), cartItems, input.couponCode, input.pointsToRedeem, undefined);
-
-          let slipResult = undefined;
-          if (input.slipImageUrl) {
-            // Call shared slip submission service
+        // Phase 2 - post-commit slip processing. The Order/OrderItems/Payment
+        // are already durably committed and the cart already cleared - OCR,
+        // Storage, and Discord calls all happen with no transaction held
+        // open. A failure here must never be reported as a checkout failure
+        // (the Order genuinely exists) and must never encourage the customer
+        // to submit the same cart again - the Payment already has its slip
+        // URL and submission timestamp, and the Order stays pending/submitted
+        // for manual review or a later retry of slip processing alone.
+        let slipResult: any = undefined;
+        if (input.slipImageUrl) {
+          try {
             slipResult = await submitPaymentSlip({
               orderId: order.id,
               slipImageUrl: input.slipImageUrl,
               userId: ctx.user.id,
             });
+          } catch (error: any) {
+            console.error(
+              `[checkout.create] Post-commit slip processing failed for order ${order.id}: ${safeErrorSummary(error)}`
+            );
+            const payment = await db.getPaymentByOrderId(order.id);
+            slipResult = {
+              success: true,
+              orderId: order.id,
+              paymentId: payment?.id,
+              status: "pending_review",
+              slipImageUrl: input.slipImageUrl,
+              isAutoApproved: false,
+              isShadowMode: false,
+              reviewReason: "OCR_PROCESSING_ERROR",
+              processingDeferred: true,
+            };
           }
-
-          // Clear cart only after order and slip submission both succeed
-          await db.clearCart(cart.id);
-
-          return { ...order, slipResult };
-        } catch (error: any) {
-          const message = error?.message || "Failed to create order";
-          throw new TRPCError({ code: "BAD_REQUEST", message });
         }
+
+        return { ...order, slipResult };
       }),
 
     walletCheckout: protectedProcedure
