@@ -177,4 +177,120 @@
       max-width: 1280px; /* Standard content width */
     }
   }
+
+  /* Cart coupon UI: scoped to the cart layout so other dialogs remain unchanged. */
+  body:has(.container.max-w-4xl > .grid.grid-cols-1) .container.max-w-4xl > .grid.grid-cols-1 > .lg\:col-span-1 > [data-slot="card"] {
+    border-color: rgb(226 232 240);
+    border-radius: 1rem;
+    box-shadow: 0 12px 32px -24px rgb(15 23 42 / 0.45);
+  }
+
+  body:has(.container.max-w-4xl > .grid.grid-cols-1) .container.max-w-4xl > .grid.grid-cols-1 > .lg\:col-span-1 > [data-slot="card"] > [data-slot="card-header"] {
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid rgb(241 245 249);
+  }
+
+  body:has(.container.max-w-4xl > .grid.grid-cols-1) .container.max-w-4xl button:has(> svg.lucide-ticket-percent) {
+    min-height: 3rem;
+    justify-content: flex-start;
+    padding: 0.75rem 1rem;
+    border: 1px dashed rgb(147 197 253);
+    border-radius: 0.75rem;
+    background: linear-gradient(135deg, rgb(239 246 255), rgb(248 250 252));
+    color: rgb(29 78 216);
+    font-weight: 600;
+    transition: border-color 160ms ease, background-color 160ms ease, transform 160ms ease;
+  }
+
+  body:has(.container.max-w-4xl > .grid.grid-cols-1) .container.max-w-4xl button:has(> svg.lucide-ticket-percent):hover {
+    border-color: rgb(59 130 246);
+    background: rgb(239 246 255);
+    transform: translateY(-1px);
+  }
+
+  body:has(.container.max-w-4xl > .grid.grid-cols-1) .container.max-w-4xl .bg-green-50.border-green-200:has(button > svg.lucide-x) {
+    gap: 0.75rem;
+    padding: 0.875rem 1rem;
+    border-radius: 0.75rem;
+    box-shadow: inset 3px 0 0 rgb(34 197 94);
+  }
+
+  body:has(.container.max-w-4xl > .grid.grid-cols-1) > div.fixed.inset-0:not(.overflow-y-auto):has([data-slot="card"] button > span, [data-slot="card"] input) {
+    padding: 1rem;
+    background: rgb(15 23 42 / 0.58);
+    backdrop-filter: blur(4px);
+  }
+
+  body:has(.container.max-w-4xl > .grid.grid-cols-1) > div.fixed.inset-0:not(.overflow-y-auto) > [data-slot="card"] {
+    max-height: min(80vh, 42rem);
+    overflow: hidden;
+    border: 0;
+    border-radius: 1rem;
+    box-shadow: 0 24px 64px -24px rgb(15 23 42 / 0.7);
+  }
+
+  body:has(.container.max-w-4xl > .grid.grid-cols-1) > div.fixed.inset-0:not(.overflow-y-auto) > [data-slot="card"] > [data-slot="card-header"] {
+    padding: 1.25rem 1.25rem 1rem;
+    border-bottom: 1px solid rgb(226 232 240);
+    background: rgb(248 250 252);
+  }
+
+  body:has(.container.max-w-4xl > .grid.grid-cols-1) > div.fixed.inset-0:not(.overflow-y-auto) > [data-slot="card"] > [data-slot="card-content"] {
+    max-height: calc(min(80vh, 42rem) - 4.75rem);
+    overflow-y: auto;
+    padding: 1.25rem;
+  }
+
+  body:has(.container.max-w-4xl > .grid.grid-cols-1) > div.fixed.inset-0:not(.overflow-y-auto) [data-slot="card-content"] > .flex.gap-2 {
+    align-items: stretch;
+  }
+
+  body:has(.container.max-w-4xl > .grid.grid-cols-1) > div.fixed.inset-0:not(.overflow-y-auto) [data-slot="card-content"] > .flex.gap-2 input {
+    min-width: 0;
+    height: 2.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  body:has(.container.max-w-4xl > .grid.grid-cols-1) > div.fixed.inset-0:not(.overflow-y-auto) [data-slot="card-content"] > .flex.gap-2 button {
+    height: 2.75rem;
+    padding-inline: 1.1rem;
+    white-space: nowrap;
+  }
+
+  body:has(.container.max-w-4xl > .grid.grid-cols-1) > div.fixed.inset-0:not(.overflow-y-auto) [data-slot="card-content"] .space-y-2 > button.w-full.p-3 {
+    padding: 0.875rem 1rem;
+    border-color: rgb(226 232 240);
+    border-radius: 0.75rem;
+    background: white;
+    box-shadow: 0 1px 2px rgb(15 23 42 / 0.04);
+  }
+
+  body:has(.container.max-w-4xl > .grid.grid-cols-1) > div.fixed.inset-0:not(.overflow-y-auto) [data-slot="card-content"] .space-y-2 > button.w-full.p-3:hover {
+    border-color: rgb(96 165 250);
+    background: rgb(239 246 255);
+    box-shadow: 0 8px 20px -16px rgb(37 99 235 / 0.6);
+  }
+
+  @media (max-width: 639px) {
+    body:has(.container.max-w-4xl > .grid.grid-cols-1) > div.fixed.inset-0:not(.overflow-y-auto) {
+      align-items: flex-end;
+      padding: 0;
+    }
+
+    body:has(.container.max-w-4xl > .grid.grid-cols-1) > div.fixed.inset-0:not(.overflow-y-auto) > [data-slot="card"] {
+      width: 100%;
+      max-width: none;
+      max-height: 85vh;
+      border-radius: 1.25rem 1.25rem 0 0;
+    }
+
+    body:has(.container.max-w-4xl > .grid.grid-cols-1) > div.fixed.inset-0:not(.overflow-y-auto) [data-slot="card-content"] > .flex.gap-2 {
+      flex-direction: column;
+    }
+
+    body:has(.container.max-w-4xl > .grid.grid-cols-1) > div.fixed.inset-0:not(.overflow-y-auto) [data-slot="card-content"] > .flex.gap-2 button {
+      width: 100%;
+    }
+  }
 }
