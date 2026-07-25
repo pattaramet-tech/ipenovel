@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { getDb } from "../db";
 import { episodes, purchases } from "../../drizzle/schema";
 import { eq, and } from "drizzle-orm";
+import { resolveStoredFileValue, R2PrivateStorageError } from "../services/r2PrivateStorage";
 
 const router = Router();
 
@@ -76,13 +77,33 @@ router.get("/download/:episodeId", async (req: Request, res: Response) => {
       }
     }
 
+    // 5. Resolve the stored reference to something actually fetchable now
+    // that access is confirmed - a legacy absolute URL passes through
+    // unchanged; a private object reference becomes a fresh, short-lived
+    // presigned URL. Never redirect to a raw r2p: reference.
+    let resolvedUrl: string | null;
+    try {
+      resolvedUrl = await resolveStoredFileValue(episode.fileUrl, "episodeFile");
+    } catch (error) {
+      console.error(
+        `[Download] Failed to resolve file reference for episode ${episodeId}`,
+        error instanceof R2PrivateStorageError ? error.getSafeDetails() : {}
+      );
+      return res.status(503).json({ error: "File temporarily unavailable" });
+    }
+
+    if (!resolvedUrl) {
+      console.warn(`[Download] Episode ${episodeId} resolved to an empty URL`);
+      return res.status(404).json({ error: "Episode file not available" });
+    }
+
     // Log successful access
     console.info(
       `[Download] User ${user.id} redirected to episode ${episodeId} (free=${isFree})`
     );
 
-    // 5. Redirect to fileUrl
-    return res.redirect(episode.fileUrl);
+    // 6. Redirect to the resolved URL
+    return res.redirect(resolvedUrl);
   } catch (error) {
     console.error(`[Download] Error processing episode ${episodeId}:`, error);
     return res.status(500).json({ error: "Server error" });

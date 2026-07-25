@@ -12,6 +12,7 @@ import { getEffectiveOCRConfig } from "../_core/ocr-effective-config";
 import { generateApprovalNote, generateShadowModeNote, generateManualReviewNote } from "../_core/ocr-order-notes";
 import * as orderService from "./orderService";
 import { sendOCRReviewNotification } from "./discordNotificationService";
+import { resolveStoredFileValue, R2PrivateStorageError } from "./r2PrivateStorage";
 
 export interface SlipSubmissionInput {
   orderId: number;
@@ -92,9 +93,18 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
     // OCR is enabled: run OCR processing with error handling
     console.log(`[OCR] Processing slip for order ${order.id} (OCR enabled)`);
     try {
+      // Resolve a FRESH signed URL immediately before every OCR call (never
+      // reused/cached across retries) - if input.slipImageUrl is a private
+      // object reference it must be turned into something the OCR vision
+      // call can actually fetch; a legacy absolute URL passes through
+      // unchanged. A resolution failure here falls into the same catch
+      // block below as any other OCR technical error, routing the slip to
+      // manual review instead of crashing the submission.
+      const ocrImageUrl = await resolveStoredFileValue(input.slipImageUrl, "paymentSlip");
+
       // Extract OCR text from slip image (returns structured result with confidence)
-      const slipOcrResult = await parseSlipImage(input.slipImageUrl);
-      
+      const slipOcrResult = await parseSlipImage(ocrImageUrl || "");
+
       // Check if OCR/LLM technical error occurred
       if (slipOcrResult.technicalError) {
         console.error(`[OCR] Technical error detected for order ${order.id}`);

@@ -3,7 +3,8 @@
  * Ensures access control through entitlements
  */
 
-import { storagePut } from "../storage";
+import { putPrivateObject, resolveStoredFileValue, R2PrivateStorageError } from "./r2PrivateStorage";
+import { toPrivateObjectRef } from "@shared/privateFileRef";
 import * as db from "../db";
 
 const ALLOWED_MIME_TYPES = ["application/pdf", "application/epub+zip", "text/plain", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
@@ -35,11 +36,15 @@ export async function uploadEpisodeFile(
   const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, "_");
   const fileKey = `episodes/${episodeId}/${timestamp}-${randomSuffix}-${sanitizedFileName}`;
 
-  // Upload to S3
-  const result = await storagePut(fileKey, fileBuffer, mimeType);
+  // Upload to the PRIVATE R2 bucket. The returned "url" is a private object
+  // reference ("r2p:episodes/..."), never a permanent public URL - it's
+  // stored in episodes.fileUrl as-is and only resolved to a working,
+  // short-lived link by getEpisodeDownloadUrl() below (or any other
+  // entitlement-gated read site), never eagerly.
+  const result = await putPrivateObject("episodeFile", fileKey, fileBuffer, mimeType);
 
   return {
-    url: result.url,
+    url: toPrivateObjectRef(result.key),
     key: fileKey,
   };
 }
@@ -55,20 +60,32 @@ export async function getEpisodeDownloadUrl(userId: number, episodeId: number, e
     throw new Error("Episode not found");
   }
 
-  // Check if free episode
-  if (episode.isFree) {
-    // Free episodes can be downloaded by anyone
-    return episode.fileUrl || "";
+  // Free episodes are downloadable by anyone; paid episodes require a
+  // purchase record. Either way, the file itself may live in the private R2
+  // bucket - the entitlement check above must run BEFORE resolving the
+  // stored reference, so a private object reference is only ever turned
+  // into a working (signed, short-lived) URL after access is confirmed,
+  // never handed to the client raw.
+  if (!episode.isFree) {
+    const purchase = await db.getPurchaseByUserAndEpisode(userId, episodeId);
+    if (!purchase) {
+      throw new Error("Access denied: Episode not purchased");
+    }
   }
 
-  // Check if user has purchased
-  const purchase = await db.getPurchaseByUserAndEpisode(userId, episodeId);
-  if (!purchase) {
-    throw new Error("Access denied: Episode not purchased");
-  }
+  if (!episode.fileUrl) return "";
 
-  // Return the file URL (in production, this could be a pre-signed URL)
-  return episode.fileUrl || "";
+  try {
+    return (await resolveStoredFileValue(episode.fileUrl, "episodeFile")) || "";
+  } catch (error) {
+    console.error(
+      "[FileService] Failed to resolve episode file reference",
+      error instanceof R2PrivateStorageError ? error.getSafeDetails() : { episodeId }
+    );
+    // Never leak bucket/key/endpoint/secret details - the generic message
+    // below is what fileRouter.ts's getDownloadUrl surfaces to the client.
+    throw new Error("ไม่สามารถเปิดไฟล์ได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง");
+  }
 }
 
 /**
