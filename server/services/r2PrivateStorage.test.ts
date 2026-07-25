@@ -89,11 +89,12 @@ describe("r2PrivateStorage", () => {
       );
     });
 
-    it("strips a leading slash from an otherwise-valid key", async () => {
-      sendMock.mockResolvedValueOnce({});
+    it("rejects a leading-slash key instead of silently stripping it, and never calls S3", async () => {
       const mod = await freshModule();
-      const result = await mod.putPrivateObject("episodeFile", "/episodes/9/file.pdf", Buffer.from("x"), "application/pdf");
-      expect(result.key).toBe("episodes/9/file.pdf");
+      await expect(
+        mod.putPrivateObject("episodeFile", "/episodes/9/file.pdf", Buffer.from("x"), "application/pdf")
+      ).rejects.toMatchObject({ reason: "invalid_reference" });
+      expect(sendMock).not.toHaveBeenCalled();
     });
 
     it("throws not_configured and never calls S3 when a private-R2 env var is missing", async () => {
@@ -118,6 +119,7 @@ describe("r2PrivateStorage", () => {
     describe("key safety (context: paymentSlip requires payment-slips/ prefix)", () => {
       it.each([
         ["empty key", ""],
+        ["leading slash", "/payment-slips/1/x.jpg"],
         ["wrong prefix", "episodes/1/x.jpg"],
         ["path traversal", "payment-slips/../secrets/x.jpg"],
         ["backslash", "payment-slips\\1\\x.jpg"],
@@ -206,6 +208,14 @@ describe("r2PrivateStorage", () => {
       });
       expect(getSignedUrlMock).not.toHaveBeenCalled();
     });
+
+    it("rejects a leading-slash key instead of silently stripping it, and never calls the presigner", async () => {
+      const mod = await freshModule();
+      await expect(mod.getPrivateObjectSignedUrl("paymentSlip", "/payment-slips/1/x.jpg")).rejects.toMatchObject({
+        reason: "invalid_reference",
+      });
+      expect(getSignedUrlMock).not.toHaveBeenCalled();
+    });
   });
 
   describe("deletePrivateObject", () => {
@@ -229,6 +239,14 @@ describe("r2PrivateStorage", () => {
     it("rejects an unsafe key before ever calling S3", async () => {
       const mod = await freshModule();
       await expect(mod.deletePrivateObject("episodeFile", "episodes/../x.pdf")).rejects.toMatchObject({
+        reason: "invalid_reference",
+      });
+      expect(sendMock).not.toHaveBeenCalled();
+    });
+
+    it("rejects a leading-slash key instead of silently stripping it, and never calls S3", async () => {
+      const mod = await freshModule();
+      await expect(mod.deletePrivateObject("episodeFile", "/episodes/1/x.pdf")).rejects.toMatchObject({
         reason: "invalid_reference",
       });
       expect(sendMock).not.toHaveBeenCalled();
@@ -281,11 +299,12 @@ describe("r2PrivateStorage", () => {
   });
 
   describe("credential/secret safety", () => {
-    it("R2PrivateStorageError.getSafeDetails() never includes bucket, endpoint, or credential values", async () => {
+    it("R2PrivateStorageError.getSafeDetails() returns ONLY operation, context, reason - never key, bucket, endpoint, or credential values", async () => {
       const mod = await freshModule();
       const error = new mod.R2PrivateStorageError("Private R2 upload failed", "upload_failed", {
         key: "payment-slips/1/x.jpg",
         context: "paymentSlip",
+        operation: "put",
       });
       const details = error.getSafeDetails();
       const serialized = JSON.stringify(details);
@@ -293,7 +312,8 @@ describe("r2PrivateStorage", () => {
       expect(serialized).not.toContain(FULL_ENV.r2PrivateAccessKeyId);
       expect(serialized).not.toContain(FULL_ENV.r2PrivateBucketName);
       expect(serialized).not.toContain(FULL_ENV.r2PrivateEndpoint);
-      expect(details).toEqual({ reason: "upload_failed", context: "paymentSlip", key: "payment-slips/1/x.jpg" });
+      expect(serialized).not.toContain("payment-slips/1/x.jpg");
+      expect(details).toEqual({ operation: "put", context: "paymentSlip", reason: "upload_failed" });
     });
 
     it("never logs the secret access key or a full signed URL to the console on any code path", async () => {
@@ -324,6 +344,76 @@ describe("r2PrivateStorage", () => {
         consoleErrorSpy.mockRestore();
         consoleLogSpy.mockRestore();
         consoleInfoSpy.mockRestore();
+      }
+    });
+
+    it("logs ONLY the fixed safe fields (operation, context, reason) on a put/get/delete failure - never the object key", async () => {
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        sendMock.mockRejectedValue(new Error("boom"));
+        getSignedUrlMock.mockRejectedValue(new Error("boom"));
+
+        const mod = await freshModule();
+
+        await mod.putPrivateObject("paymentSlip", "payment-slips/42/secret-key-fragment.jpg", Buffer.from("x"), "image/jpeg").catch(() => {});
+        await mod.getPrivateObjectSignedUrl("paymentSlip", "payment-slips/42/secret-key-fragment.jpg").catch(() => {});
+        await mod.deletePrivateObject("paymentSlip", "payment-slips/42/secret-key-fragment.jpg").catch(() => {});
+
+        expect(consoleErrorSpy).toHaveBeenCalledTimes(3);
+        for (const call of consoleErrorSpy.mock.calls) {
+          expect(call[0]).toBe("[R2PrivateStorage] Operation failed");
+          expect(Object.keys(call[1] as object).sort()).toEqual(["context", "operation", "reason"]);
+        }
+        const serialized = JSON.stringify(consoleErrorSpy.mock.calls);
+        expect(serialized).not.toContain("secret-key-fragment");
+        expect(serialized).not.toContain(FULL_ENV.r2PrivateBucketName);
+        expect(serialized).not.toContain(FULL_ENV.r2PrivateEndpoint);
+      } finally {
+        consoleErrorSpy.mockRestore();
+      }
+    });
+
+    it("never surfaces a simulated SDK error that embeds endpoint/bucket/credential values, in console logs or the thrown client-facing error", async () => {
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        // Simulates a worst-case AWS SDK error whose own .message string
+        // leaks exactly what must never reach a log or a client.
+        const leakySdkError = new Error(
+          `Request failed for endpoint ${FULL_ENV.r2PrivateEndpoint} bucket ${FULL_ENV.r2PrivateBucketName} using credential AKID=${FULL_ENV.r2PrivateAccessKeyId} secret=${FULL_ENV.r2PrivateSecretAccessKey}`
+        );
+        sendMock.mockRejectedValueOnce(leakySdkError);
+        getSignedUrlMock.mockRejectedValueOnce(leakySdkError);
+
+        const mod = await freshModule();
+
+        let putError: any;
+        try {
+          await mod.putPrivateObject("paymentSlip", "payment-slips/1/x.jpg", Buffer.from("x"), "image/jpeg");
+        } catch (e) {
+          putError = e;
+        }
+        let getError: any;
+        try {
+          await mod.getPrivateObjectSignedUrl("paymentSlip", "payment-slips/1/x.jpg");
+        } catch (e) {
+          getError = e;
+        }
+
+        // The thrown, client-facing errors must not echo the leaky SDK message.
+        expect(putError?.message).not.toContain(FULL_ENV.r2PrivateEndpoint);
+        expect(putError?.message).not.toContain(FULL_ENV.r2PrivateBucketName);
+        expect(putError?.message).not.toContain(FULL_ENV.r2PrivateSecretAccessKey);
+        expect(JSON.stringify(putError?.getSafeDetails())).not.toContain(FULL_ENV.r2PrivateSecretAccessKey);
+        expect(getError?.message).not.toContain(FULL_ENV.r2PrivateEndpoint);
+        expect(getError?.message).not.toContain(FULL_ENV.r2PrivateSecretAccessKey);
+
+        const serialized = JSON.stringify(consoleErrorSpy.mock.calls);
+        expect(serialized).not.toContain(FULL_ENV.r2PrivateEndpoint);
+        expect(serialized).not.toContain(FULL_ENV.r2PrivateBucketName);
+        expect(serialized).not.toContain(FULL_ENV.r2PrivateAccessKeyId);
+        expect(serialized).not.toContain(FULL_ENV.r2PrivateSecretAccessKey);
+      } finally {
+        consoleErrorSpy.mockRestore();
       }
     });
   });

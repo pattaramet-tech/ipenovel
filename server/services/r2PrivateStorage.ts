@@ -23,6 +23,10 @@ const CONTEXT_KEY_PREFIXES: Record<PrivateObjectContext, string> = {
   episodeFile: "episodes/",
 };
 
+/** Which S3 operation was being attempted - one of the fixed safe fields
+ *  allowed in logs (see getSafeDetails()). */
+export type PrivateObjectOperation = "put" | "get" | "delete";
+
 export class R2PrivateStorageError extends Error {
   constructor(
     message: string,
@@ -32,7 +36,7 @@ export class R2PrivateStorageError extends Error {
       | "download_failed"
       | "delete_failed"
       | "invalid_reference",
-    public readonly details?: { key?: string; context?: PrivateObjectContext }
+    public readonly details?: { key?: string; context?: PrivateObjectContext; operation?: PrivateObjectOperation }
   ) {
     super(message);
     this.name = "R2PrivateStorageError";
@@ -40,13 +44,15 @@ export class R2PrivateStorageError extends Error {
 
   /**
    * Safe, no-secrets summary for server-side logging or for building a
-   * client-facing error message from. Deliberately excludes `.message`
-   * (which may echo an underlying SDK error string) - callers must map
-   * `.reason` to a fixed, generic message before it ever reaches a client.
-   * Never includes bucket name, endpoint, credentials, or a signed URL.
+   * client-facing error message from. Returns ONLY these three fixed
+   * fields - operation, context, reason - and nothing else: never the
+   * object key, never `.message` (which may echo an underlying SDK error
+   * string), never a bucket name, endpoint, credential, or signed URL.
+   * Callers must map `.reason` to a fixed, generic message before it ever
+   * reaches a client.
    */
   getSafeDetails() {
-    return { reason: this.reason, context: this.details?.context, key: this.details?.key };
+    return { operation: this.details?.operation, context: this.details?.context, reason: this.reason };
   }
 }
 
@@ -94,21 +100,18 @@ function getPrivateR2Client(): S3Client {
   return cachedClient;
 }
 
-function normalizeKey(relKey: string): string {
-  return typeof relKey === "string" ? relKey.replace(/^\/+/, "") : relKey;
-}
-
 /**
- * Validates an object key before any S3 call: non-empty, no control/null
- * characters, no backslashes, no leading slash (checked again here even
- * after normalizeKey strips leading slashes from well-formed input, so a
- * key built any other way still gets the same guarantee), no `..`
- * path-traversal segment, and must live under the exact prefix owned by
- * `context` (payment-slips/ or episodes/). Throws "invalid_reference" on
- * any violation - this never runs against user-typed free text, only
- * against server-generated keys or values already stored in our own DB
- * columns, so a failure here indicates a bug or tampering, not a normal
- * user error.
+ * Validates a RAW object key before any S3 call - never strips or
+ * normalizes anything first (a previous version stripped a leading slash
+ * before validating, which meant "/episodes/9/file.pdf" was silently
+ * accepted as "episodes/9/file.pdf" instead of being rejected; that
+ * silent-rewrite behavior is gone). Checks: non-empty, no control/null
+ * characters, no backslashes, no leading slash, no `..` path-traversal
+ * segment, and must live under the exact prefix owned by `context`
+ * (payment-slips/ or episodes/). Throws "invalid_reference" on any
+ * violation - this never runs against user-typed free text, only against
+ * server-generated keys or values already stored in our own DB columns, so
+ * a failure here indicates a bug or tampering, not a normal user error.
  */
 function assertSafeObjectKey(key: string, context: PrivateObjectContext): string {
   if (typeof key !== "string" || key.length === 0) {
@@ -146,7 +149,7 @@ export async function putPrivateObject(
   contentType: string
 ): Promise<{ key: string }> {
   const client = getPrivateR2Client();
-  const key = assertSafeObjectKey(normalizeKey(relKey), context);
+  const key = assertSafeObjectKey(relKey, context);
 
   try {
     await client.send(
@@ -157,13 +160,12 @@ export async function putPrivateObject(
         ContentType: contentType,
       })
     );
-  } catch (error) {
-    console.error("[R2PrivateStorage] Upload failed", {
-      key,
-      context,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    throw new R2PrivateStorageError("Private R2 upload failed", "upload_failed", { key, context });
+  } catch {
+    // Fixed, safe fields only - never the object key, never the raw SDK
+    // error (which can itself echo the endpoint/bucket in some AWS SDK
+    // error variants), never a bucket name, endpoint, or credential.
+    console.error("[R2PrivateStorage] Operation failed", { operation: "put", context, reason: "upload_failed" });
+    throw new R2PrivateStorageError("Private R2 upload failed", "upload_failed", { key, context, operation: "put" });
   }
 
   return { key };
@@ -181,18 +183,17 @@ export async function getPrivateObjectSignedUrl(
   expiresInSeconds: number = ENV.r2PrivateSignedUrlExpiresSeconds
 ): Promise<string> {
   const client = getPrivateR2Client();
-  const key = assertSafeObjectKey(normalizeKey(relKey), context);
+  const key = assertSafeObjectKey(relKey, context);
 
   try {
     const command = new GetObjectCommand({ Bucket: ENV.r2PrivateBucketName, Key: key });
     return await getSignedUrl(client, command, { expiresIn: expiresInSeconds });
-  } catch (error) {
-    console.error("[R2PrivateStorage] Failed to create signed URL", {
-      key,
-      context,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    throw new R2PrivateStorageError("Failed to create signed URL for private object", "download_failed", { key, context });
+  } catch {
+    // Fixed, safe fields only - see putPrivateObject's catch block above.
+    // Deliberately never logs the signed URL itself (it wouldn't exist yet
+    // on a failure) or anything from the underlying SDK/presigner error.
+    console.error("[R2PrivateStorage] Operation failed", { operation: "get", context, reason: "download_failed" });
+    throw new R2PrivateStorageError("Failed to create signed URL for private object", "download_failed", { key, context, operation: "get" });
   }
 }
 
@@ -205,17 +206,14 @@ export async function getPrivateObjectSignedUrl(
  */
 export async function deletePrivateObject(context: PrivateObjectContext, relKey: string): Promise<void> {
   const client = getPrivateR2Client();
-  const key = assertSafeObjectKey(normalizeKey(relKey), context);
+  const key = assertSafeObjectKey(relKey, context);
 
   try {
     await client.send(new DeleteObjectCommand({ Bucket: ENV.r2PrivateBucketName, Key: key }));
-  } catch (error) {
-    console.error("[R2PrivateStorage] Delete failed", {
-      key,
-      context,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    throw new R2PrivateStorageError("Private R2 delete failed", "delete_failed", { key, context });
+  } catch {
+    // Fixed, safe fields only - see putPrivateObject's catch block above.
+    console.error("[R2PrivateStorage] Operation failed", { operation: "delete", context, reason: "delete_failed" });
+    throw new R2PrivateStorageError("Private R2 delete failed", "delete_failed", { key, context, operation: "delete" });
   }
 }
 

@@ -51,9 +51,12 @@ export async function uploadEpisodeFile(
 
 /**
  * Get download URL for episode file
- * Verifies user has access before generating URL
+ * Verifies user has access before generating URL. Signed-URL expiry is not
+ * a parameter here - it's controlled entirely by R2_PRIVATE_SIGNED_URL_EXPIRES_SECONDS
+ * (see resolveStoredFileValue -> getPrivateObjectSignedUrl's default), so
+ * there is exactly one source of truth for how long a link stays valid.
  */
-export async function getEpisodeDownloadUrl(userId: number, episodeId: number, expiresIn: number = 3600): Promise<string> {
+export async function getEpisodeDownloadUrl(userId: number, episodeId: number): Promise<string> {
   // Verify user has access to this episode
   const episode = await db.getEpisodeById(episodeId);
   if (!episode) {
