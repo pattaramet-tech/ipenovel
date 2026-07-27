@@ -157,7 +157,11 @@ describe("uploadPaymentSlipFile", () => {
         });
         expect.fail("Should have thrown");
       } catch (error: any) {
-        expect(error.message).toContain("ยังไม่รองรับ");
+        // Unified "invalid file" wording (task requirement) - the same
+        // message shown for any rejected-file reason (MIME, base64, magic
+        // bytes), not a MIME-specific string, so it stays correct even if
+        // the exact rejection reason changes later.
+        expect(error.message).toContain("ไฟล์ไม่ถูกต้อง");
         expect(error.message).toContain("JPG");
       }
     });
@@ -252,24 +256,58 @@ describe("uploadPaymentSlipFile", () => {
         })
       ).rejects.toThrow(TRPCError);
     });
+
+    it("should reject base64 that decodes to an empty (zero-byte) file", async () => {
+      // zod's fileBase64 min(1) at the router boundary only checks the
+      // STRING length, not the decoded byte length - a client could still
+      // send a short, syntactically-valid base64 string that decodes to
+      // nothing. Never let an empty buffer reach putPrivateObject().
+      try {
+        await uploadPaymentSlipFile({
+          userId: 123,
+          fileName: "slip.jpg",
+          mimeType: "image/jpeg",
+          fileBase64: "",
+          context: "payment_page",
+        });
+        expect.fail("Should have thrown");
+      } catch (error: any) {
+        expect(error).toBeInstanceOf(TRPCError);
+        expect(error.code).toBe("BAD_REQUEST");
+        expect(error.message).toContain("ไฟล์ไม่ถูกต้อง");
+      }
+      expect(r2PrivateStorage.putPrivateObject).not.toHaveBeenCalled();
+    });
   });
 
   describe("Storage error handling", () => {
-    it("should return SERVICE_UNAVAILABLE for missing private R2 config", async () => {
+    it("should return SERVICE_UNAVAILABLE with the config-unavailable Thai message for missing private R2 config", async () => {
       const { R2PrivateStorageError } = await import("./r2PrivateStorage");
       vi.mocked(r2PrivateStorage.putPrivateObject).mockRejectedValueOnce(
-        new R2PrivateStorageError("Private R2 storage is not configured - missing env var(s): R2_PRIVATE_BUCKET_NAME", "not_configured")
+        new R2PrivateStorageError(
+          "Private R2 storage is not configured - missing env var(s): R2_PRIVATE_BUCKET_NAME",
+          "not_configured",
+          { category: "CONFIG_MISSING", retryable: false }
+        )
       );
 
-      await expect(
-        uploadPaymentSlipFile({
+      try {
+        await uploadPaymentSlipFile({
           userId: 123,
           fileName: "slip.jpg",
           mimeType: "image/jpeg",
           fileBase64: createBase64File("image/jpeg"),
           context: "payment_page",
-        })
-      ).rejects.toThrow(TRPCError);
+        });
+        expect.fail("Should have thrown");
+      } catch (error: any) {
+        expect(error).toBeInstanceOf(TRPCError);
+        expect(error.code).toBe("SERVICE_UNAVAILABLE");
+        expect(error.message).toContain("ระบบแนบสลิปยังไม่พร้อมใช้งาน");
+        // Safe reference ID present so an admin can correlate this exact
+        // customer error with the server-side [SlipUpload] log line.
+        expect(error.message).toMatch(/รหัสอ้างอิง: upload-/);
+      }
     });
 
     it("should never leak the underlying error message to the client on a missing-config failure", async () => {
@@ -293,21 +331,58 @@ describe("uploadPaymentSlipFile", () => {
       }
     });
 
-    it("should return INTERNAL_SERVER_ERROR for an upload failure", async () => {
+    it("should return SERVICE_UNAVAILABLE with the temporary-retry Thai message for a retryable upload failure", async () => {
       const { R2PrivateStorageError } = await import("./r2PrivateStorage");
       vi.mocked(r2PrivateStorage.putPrivateObject).mockRejectedValueOnce(
-        new R2PrivateStorageError("Private R2 upload failed", "upload_failed", { key: "payment-slips/123/x.jpg", context: "paymentSlip" })
+        new R2PrivateStorageError("Private R2 upload failed", "upload_failed", {
+          key: "payment-slips/123/x.jpg",
+          context: "paymentSlip",
+          category: "NETWORK_FAILED",
+          retryable: true,
+        })
       );
 
-      await expect(
-        uploadPaymentSlipFile({
+      try {
+        await uploadPaymentSlipFile({
           userId: 123,
           fileName: "slip.jpg",
           mimeType: "image/jpeg",
           fileBase64: createBase64File("image/jpeg"),
           context: "payment_page",
+        });
+        expect.fail("Should have thrown");
+      } catch (error: any) {
+        expect(error).toBeInstanceOf(TRPCError);
+        expect(error.code).toBe("SERVICE_UNAVAILABLE");
+        expect(error.message).toContain("ไม่สามารถอัปโหลดสลิปได้ชั่วคราว");
+        expect(error.message).toMatch(/รหัสอ้างอิง: upload-/);
+      }
+    });
+
+    it("should return SERVICE_UNAVAILABLE with the config/admin Thai message for a non-retryable (e.g. access-denied) upload failure", async () => {
+      const { R2PrivateStorageError } = await import("./r2PrivateStorage");
+      vi.mocked(r2PrivateStorage.putPrivateObject).mockRejectedValueOnce(
+        new R2PrivateStorageError("Private R2 upload failed", "upload_failed", {
+          key: "payment-slips/123/x.jpg",
+          context: "paymentSlip",
+          category: "ACCESS_DENIED",
+          retryable: false,
         })
-      ).rejects.toThrow(TRPCError);
+      );
+
+      try {
+        await uploadPaymentSlipFile({
+          userId: 123,
+          fileName: "slip.jpg",
+          mimeType: "image/jpeg",
+          fileBase64: createBase64File("image/jpeg"),
+          context: "payment_page",
+        });
+        expect.fail("Should have thrown");
+      } catch (error: any) {
+        expect(error.code).toBe("SERVICE_UNAVAILABLE");
+        expect(error.message).toContain("ระบบแนบสลิปยังไม่พร้อมใช้งาน");
+      }
     });
   });
 

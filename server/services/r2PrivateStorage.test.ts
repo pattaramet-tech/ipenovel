@@ -97,14 +97,80 @@ describe("r2PrivateStorage", () => {
       expect(sendMock).not.toHaveBeenCalled();
     });
 
-    it("throws not_configured and never calls S3 when a private-R2 env var is missing", async () => {
+    it("throws not_configured (category CONFIG_MISSING) and never calls S3 when a private-R2 env var is missing", async () => {
       mockEnv = { ...FULL_ENV, r2PrivateBucketName: "" };
       const mod = await freshModule();
 
       await expect(
         mod.putPrivateObject("paymentSlip", "payment-slips/1/x.jpg", Buffer.from("x"), "image/jpeg")
-      ).rejects.toMatchObject({ reason: "not_configured" });
+      ).rejects.toMatchObject({ reason: "not_configured", details: { category: "CONFIG_MISSING", retryable: false } });
       expect(sendMock).not.toHaveBeenCalled();
+    });
+
+    describe("malformed endpoint (category ENDPOINT_INVALID) - never calls S3", () => {
+      it.each([
+        ["endpoint is not https", { r2PrivateEndpoint: "http://test-account.r2.cloudflarestorage.com" }],
+        ["endpoint has an invalid URL shape", { r2PrivateEndpoint: "not a url" }],
+        ["endpoint contains a query string", { r2PrivateEndpoint: "https://test-account.r2.cloudflarestorage.com/?x=1" }],
+        ["endpoint contains a fragment", { r2PrivateEndpoint: "https://test-account.r2.cloudflarestorage.com/#frag" }],
+        ["endpoint contains a bucket path", { r2PrivateEndpoint: "https://test-account.r2.cloudflarestorage.com/test-private-bucket" }],
+        ["endpoint is not a Cloudflare R2 host", { r2PrivateEndpoint: "https://test-account.example.com" }],
+        ["endpoint account does not match R2_PRIVATE_ACCOUNT_ID", { r2PrivateEndpoint: "https://different-account.r2.cloudflarestorage.com" }],
+      ] as const)("%s", async (_label, override) => {
+        mockEnv = { ...FULL_ENV, ...override };
+        const mod = await freshModule();
+
+        await expect(
+          mod.putPrivateObject("paymentSlip", "payment-slips/1/x.jpg", Buffer.from("x"), "image/jpeg")
+        ).rejects.toMatchObject({ reason: "not_configured", details: { category: "ENDPOINT_INVALID", retryable: false } });
+        expect(sendMock).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("malformed configuration (category CONFIG_INVALID) - never calls S3", () => {
+      it.each([
+        ["bucket name is a URL", { r2PrivateBucketName: "https://evil.example.com/bucket" }],
+        ["bucket name contains a path separator", { r2PrivateBucketName: "test/private/bucket" }],
+        ["bucket name contains whitespace", { r2PrivateBucketName: "test private bucket" }],
+        ["signed URL expiry is negative", { r2PrivateSignedUrlExpiresSeconds: -1 }],
+        ["signed URL expiry is absurdly large", { r2PrivateSignedUrlExpiresSeconds: 10 * 365 * 24 * 60 * 60 }],
+      ] as const)("%s", async (_label, override) => {
+        mockEnv = { ...FULL_ENV, ...override };
+        const mod = await freshModule();
+
+        await expect(
+          mod.putPrivateObject("paymentSlip", "payment-slips/1/x.jpg", Buffer.from("x"), "image/jpeg")
+        ).rejects.toMatchObject({ reason: "not_configured", details: { category: "CONFIG_INVALID", retryable: false } });
+        expect(sendMock).not.toHaveBeenCalled();
+      });
+    });
+
+    it("accepts endpoint/account/bucket case-insensitively (uppercase account ID still matches its own lowercase endpoint hostname)", async () => {
+      mockEnv = { ...FULL_ENV, r2PrivateAccountId: "TEST-ACCOUNT" };
+      sendMock.mockResolvedValueOnce({});
+      const mod = await freshModule();
+
+      await expect(
+        mod.putPrivateObject("paymentSlip", "payment-slips/1/x.jpg", Buffer.from("x"), "image/jpeg")
+      ).resolves.toEqual({ key: "payment-slips/1/x.jpg" });
+    });
+
+    it("trims whitespace around every configured value before validating or using it", async () => {
+      mockEnv = {
+        ...FULL_ENV,
+        r2PrivateAccountId: "  test-account  ",
+        r2PrivateEndpoint: "  https://test-account.r2.cloudflarestorage.com  ",
+        r2PrivateBucketName: "  test-private-bucket  ",
+        r2PrivateAccessKeyId: "  test-access-key-id  ",
+        r2PrivateSecretAccessKey: "  super-secret-value-should-never-be-logged  ",
+      };
+      sendMock.mockResolvedValueOnce({});
+      const mod = await freshModule();
+
+      await expect(
+        mod.putPrivateObject("paymentSlip", "payment-slips/1/x.jpg", Buffer.from("x"), "image/jpeg")
+      ).resolves.toEqual({ key: "payment-slips/1/x.jpg" });
+      expect(putObjectCommandMock).toHaveBeenCalledWith(expect.objectContaining({ Bucket: "test-private-bucket" }));
     });
 
     it("throws upload_failed when the S3 call rejects", async () => {
@@ -347,7 +413,7 @@ describe("r2PrivateStorage", () => {
       }
     });
 
-    it("logs ONLY the fixed safe fields (operation, context, reason) on a put/get/delete failure - never the object key", async () => {
+    it("logs ONLY the fixed, allowlisted safe fields on a put/get/delete failure - never the object key, bucket, endpoint, or credential", async () => {
       const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       try {
         sendMock.mockRejectedValue(new Error("boom"));
@@ -360,14 +426,27 @@ describe("r2PrivateStorage", () => {
         await mod.deletePrivateObject("paymentSlip", "payment-slips/42/secret-key-fragment.jpg").catch(() => {});
 
         expect(consoleErrorSpy).toHaveBeenCalledTimes(3);
+        // A plain `new Error("boom")` (no AWS SDK shape at all) classifies as
+        // UNKNOWN_STORAGE_ERROR with only sdkErrorName ("Error", the
+        // constructor name - not the message) additionally present; a real
+        // AWS SDK error would also add httpStatusCode/providerRequestId when
+        // available - see the r2ErrorClassifier tests for every category.
+        const ALLOWED_KEYS = new Set(["operation", "context", "reason", "category", "retryable", "sdkErrorName", "httpStatusCode", "providerRequestId"]);
         for (const call of consoleErrorSpy.mock.calls) {
           expect(call[0]).toBe("[R2PrivateStorage] Operation failed");
-          expect(Object.keys(call[1] as object).sort()).toEqual(["context", "operation", "reason"]);
+          const keys = Object.keys(call[1] as object);
+          for (const key of keys) {
+            expect(ALLOWED_KEYS.has(key), `unexpected logged field: ${key}`).toBe(true);
+          }
+          expect(keys.sort()).toEqual(["category", "context", "operation", "reason", "retryable", "sdkErrorName"]);
+          expect((call[1] as any).category).toBe("UNKNOWN_STORAGE_ERROR");
+          expect((call[1] as any).sdkErrorName).toBe("Error");
         }
         const serialized = JSON.stringify(consoleErrorSpy.mock.calls);
         expect(serialized).not.toContain("secret-key-fragment");
         expect(serialized).not.toContain(FULL_ENV.r2PrivateBucketName);
         expect(serialized).not.toContain(FULL_ENV.r2PrivateEndpoint);
+        expect(serialized).not.toContain("boom"); // the raw Error.message must never be logged
       } finally {
         consoleErrorSpy.mockRestore();
       }

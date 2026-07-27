@@ -101,7 +101,7 @@ describe("Test 5 - unexpected database errors are never exposed to the client", 
 });
 
 describe("intentional application errors keep their user-facing message", () => {
-  const safeCodes = ["UNAUTHORIZED", "FORBIDDEN", "BAD_REQUEST", "NOT_FOUND", "CONFLICT"];
+  const safeCodes = ["UNAUTHORIZED", "FORBIDDEN", "BAD_REQUEST", "NOT_FOUND", "CONFLICT", "SERVICE_UNAVAILABLE"];
 
   for (const code of safeCodes) {
     it(`${code} preserves its message`, () => {
@@ -152,6 +152,7 @@ describe("Part 4 - a raw database exception disguised behind an allowlisted code
     "UNPROCESSABLE_CONTENT",
     "PRECONDITION_FAILED",
     "METHOD_NOT_SUPPORTED",
+    "SERVICE_UNAVAILABLE",
   ];
 
   for (const code of ALLOWLISTED_CODES) {
@@ -184,6 +185,61 @@ describe("Part 4 - a raw database exception disguised behind an allowlisted code
     const result = sanitizeTrpcErrorShape(shapeFor(message), { code: "CONFLICT" });
     expect(result.message).toBe(GENERIC_INTERNAL_ERROR_MESSAGE);
     expect(JSON.stringify(result)).not.toContain("S3cr3t");
+  });
+});
+
+describe("SERVICE_UNAVAILABLE is allowlisted, INTERNAL_SERVER_ERROR is deliberately not", () => {
+  it("SERVICE_UNAVAILABLE preserves a deliberate, hand-written message unchanged", () => {
+    const message = "ระบบแนบสลิปยังไม่พร้อมใช้งาน กรุณาติดต่อแอดมิน";
+    const { logger, lines } = collectingLogger();
+    const result = sanitizeTrpcErrorShape(shapeFor(message), { code: "SERVICE_UNAVAILABLE" }, logger);
+    expect(result.message).toBe(message);
+    expect(result.data.message).toBe(message);
+    expect(lines).toHaveLength(0);
+  });
+
+  it("INTERNAL_SERVER_ERROR still replaces the SAME message with the generic fallback (INTERNAL_SERVER_ERROR was never added to the allowlist)", () => {
+    const message = "ระบบแนบสลิปยังไม่พร้อมใช้งาน กรุณาติดต่อแอดมิน";
+    const { logger } = collectingLogger();
+    const result = sanitizeTrpcErrorShape(shapeFor(message), { code: "INTERNAL_SERVER_ERROR" }, logger);
+    expect(result.message).toBe(GENERIC_INTERNAL_ERROR_MESSAGE);
+    expect(result.message).not.toBe(message);
+  });
+
+  it("a SERVICE_UNAVAILABLE message that itself looks like a raw database error is still sanitized (defense in depth is not bypassed by the new allowlist entry)", () => {
+    const message = "Failed query: select `id` from `coupons`\nparams: 1";
+    const result = sanitizeTrpcErrorShape(shapeFor(message), { code: "SERVICE_UNAVAILABLE" });
+    expect(result.message).toBe(GENERIC_INTERNAL_ERROR_MESSAGE);
+  });
+});
+
+describe("regression: payment.uploadSlipFile's customer-facing message must survive tRPC sanitization", () => {
+  // Reproduces the exact defect: uploadPaymentSlipFile (slipFileUploadService.ts)
+  // threw TRPCError({ code: "SERVICE_UNAVAILABLE" | "INTERNAL_SERVER_ERROR", message: <Thai> }),
+  // and every one of those Thai messages was being silently replaced with
+  // GENERIC_INTERNAL_ERROR_MESSAGE ("Unable to process this request at this
+  // time. Please try again.") before ever reaching the browser - the exact
+  // customer-visible symptom reported for the payment-slip-upload
+  // regression, because SERVICE_UNAVAILABLE was missing from
+  // CLIENT_SAFE_ERROR_CODES. This locks in both halves: the fix (the code
+  // this feature actually uses now survives) and the regression it fixed
+  // (the code it used to effectively behave like does not survive).
+  const configMessage = "ระบบแนบสลิปยังไม่พร้อมใช้งาน กรุณาติดต่อแอดมิน";
+  const temporaryMessage = "ไม่สามารถอัปโหลดสลิปได้ชั่วคราว กรุณาลองใหม่อีกครั้ง";
+
+  it("the config-unavailable message (SERVICE_UNAVAILABLE) reaches the client unchanged", () => {
+    const result = sanitizeTrpcErrorShape(shapeFor(configMessage), { code: "SERVICE_UNAVAILABLE" });
+    expect(result.message).toBe(configMessage);
+  });
+
+  it("the temporary-upload-problem message (SERVICE_UNAVAILABLE) reaches the client unchanged", () => {
+    const result = sanitizeTrpcErrorShape(shapeFor(temporaryMessage), { code: "SERVICE_UNAVAILABLE" });
+    expect(result.message).toBe(temporaryMessage);
+  });
+
+  it("the same temporary-upload-problem message, if ever coded as INTERNAL_SERVER_ERROR again, would regress back to the generic English fallback", () => {
+    const result = sanitizeTrpcErrorShape(shapeFor(temporaryMessage), { code: "INTERNAL_SERVER_ERROR" });
+    expect(result.message).toBe(GENERIC_INTERNAL_ERROR_MESSAGE);
   });
 });
 

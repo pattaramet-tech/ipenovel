@@ -16,6 +16,27 @@ import {
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 const ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "application/pdf"] as const;
 
+/** The exact four customer-facing Thai messages this service ever shows -
+ *  every failure path below maps to exactly one of these, never a raw SDK/
+ *  driver error and never the generic English tRPC fallback (see
+ *  server/_core/trpc.ts's CLIENT_SAFE_ERROR_CODES - every TRPCError thrown
+ *  here uses a code in that allowlist specifically so these messages are
+ *  not silently replaced before reaching the client). */
+const CUSTOMER_MESSAGES = {
+  configUnavailable: "ระบบแนบสลิปยังไม่พร้อมใช้งาน กรุณาติดต่อแอดมิน",
+  temporaryUploadProblem: "ไม่สามารถอัปโหลดสลิปได้ชั่วคราว กรุณาลองใหม่อีกครั้ง",
+  fileTooLarge: "ไฟล์มีขนาดใหญ่เกินกำหนด กรุณาเลือกไฟล์ที่เล็กลง",
+  invalidFile: "ไฟล์ไม่ถูกต้อง กรุณาใช้ไฟล์ JPG, PNG หรือ PDF",
+} as const;
+
+/** Appends a safe, opaque reference ID an admin can grep for in server logs
+ *  (every [SlipUpload] log line below is tagged with the same requestId) -
+ *  never any internal storage detail (no endpoint, bucket, key, category,
+ *  or SDK error name is ever part of the customer-visible string). */
+function withReferenceId(message: string, requestId: string): string {
+  return `${message} (รหัสอ้างอิง: ${requestId})`;
+}
+
 export interface UploadPaymentSlipFileInput {
   userId: number;
   fileName: string;
@@ -78,11 +99,10 @@ export async function uploadPaymentSlipFile(
       console.warn("[SlipUpload]", requestId, "MIME type not supported:", {
         ...context,
         mimeType: input.mimeType,
-        error: error.message,
       });
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: error.message || "ไฟล์นี้ยังไม่รองรับ กรุณาอัปโหลด JPG, PNG หรือ PDF",
+        message: withReferenceId(CUSTOMER_MESSAGES.invalidFile, requestId),
       });
     }
 
@@ -93,7 +113,7 @@ export async function uploadPaymentSlipFile(
       });
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "ไฟล์นี้ยังไม่รองรับ กรุณาอัปโหลด JPG, PNG หรือ PDF",
+        message: withReferenceId(CUSTOMER_MESSAGES.invalidFile, requestId),
       });
     }
 
@@ -101,14 +121,16 @@ export async function uploadPaymentSlipFile(
     let fileBuffer: Buffer;
     try {
       fileBuffer = base64ToBuffer(input.fileBase64);
+      if (fileBuffer.length === 0) {
+        throw new Error("Decoded to an empty buffer");
+      }
     } catch (error: any) {
       console.warn("[SlipUpload]", requestId, "Invalid base64:", {
         ...context,
-        error: error.message,
       });
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "ไฟล์ไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง",
+        message: withReferenceId(CUSTOMER_MESSAGES.invalidFile, requestId),
       });
     }
 
@@ -123,7 +145,7 @@ export async function uploadPaymentSlipFile(
       });
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `ไฟล์ใหญ่เกินไป (${sizeMB}MB) กรุณาอัปโหลดไฟล์ที่เล็กกว่า 5MB`,
+        message: withReferenceId(CUSTOMER_MESSAGES.fileTooLarge, requestId),
       });
     }
 
@@ -136,7 +158,7 @@ export async function uploadPaymentSlipFile(
       });
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "ไฟล์ไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง",
+        message: withReferenceId(CUSTOMER_MESSAGES.invalidFile, requestId),
       });
     }
 
@@ -195,34 +217,49 @@ export async function uploadPaymentSlipFile(
         orderTotal: input.orderTotal,
       };
     } catch (error: any) {
-      // Handle R2PrivateStorageError - map by `.reason` only, never forward
-      // `.message` (which may echo an underlying SDK error string) to the
-      // client, and never log/return the bucket, key path beyond what's
-      // already in getSafeDetails(), endpoint, or credentials.
+      // Handle R2PrivateStorageError - map by `.details.retryable` (derived
+      // from the safe classifier - see r2ErrorClassifier.ts) to exactly one
+      // of the two allowed Thai messages, never forward `.message` (which
+      // may echo an underlying SDK error string) to the client, and never
+      // log/return anything beyond error.getSafeDetails()'s fixed,
+      // allowlisted fields (operation, context, reason, category,
+      // retryable, sdkErrorName, httpStatusCode, providerRequestId) - never
+      // the bucket, key, endpoint, or credentials. Both SERVICE_UNAVAILABLE
+      // paths below rely on that code being in trpc.ts's
+      // CLIENT_SAFE_ERROR_CODES allowlist so this message actually survives
+      // to the client instead of being replaced by the generic fallback.
       if (error instanceof R2PrivateStorageError) {
         console.error("[SlipUpload]", requestId, "Private R2 upload failed:", {
           ...context,
           ...error.getSafeDetails(),
         });
 
+        const isConfigProblem = error.reason === "not_configured";
+        const message = isConfigProblem
+          ? CUSTOMER_MESSAGES.configUnavailable
+          : error.details?.retryable === false
+            ? CUSTOMER_MESSAGES.configUnavailable
+            : CUSTOMER_MESSAGES.temporaryUploadProblem;
+
         throw new TRPCError({
-          code: error.reason === "not_configured" ? "SERVICE_UNAVAILABLE" : "INTERNAL_SERVER_ERROR",
-          message:
-            error.reason === "not_configured"
-              ? "ระบบอัปโหลดไฟล์ยังไม่พร้อมใช้งาน กรุณาติดต่อแอดมิน"
-              : "อัปโหลดไฟล์ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
+          code: "SERVICE_UNAVAILABLE",
+          message: withReferenceId(message, requestId),
         });
       }
 
-      // Handle other errors
+      // Handle other (non-R2) errors - never log the raw message, only a
+      // safe, non-leaking classification of the error's own constructor
+      // name (e.g. "TypeError") - this is a true catch-all for a bug
+      // anywhere else in this function, not a storage-specific failure, so
+      // there is no SDK error shape to classify further here.
       console.error("[SlipUpload]", requestId, "Upload error:", {
         ...context,
-        error: error.message,
+        errorName: typeof error?.name === "string" ? error.name : "UnknownError",
       });
 
       throw new TRPCError({
-        code: "INTERNAL_SERVER_ERROR",
-        message: "อัปโหลดไฟล์ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
+        code: "SERVICE_UNAVAILABLE",
+        message: withReferenceId(CUSTOMER_MESSAGES.temporaryUploadProblem, requestId),
       });
     }
   } catch (error: any) {
@@ -231,15 +268,16 @@ export async function uploadPaymentSlipFile(
       throw error;
     }
 
-    // Catch-all for unexpected errors
+    // Catch-all for unexpected errors - never the raw message, only the
+    // error's own constructor name (safe, non-leaking classification).
     console.error("[SlipUpload]", requestId, "Unexpected error:", {
       ...context,
-      error: error.message,
+      errorName: typeof error?.name === "string" ? error.name : "UnknownError",
     });
 
     throw new TRPCError({
-      code: "INTERNAL_SERVER_ERROR",
-      message: "อัปโหลดไฟล์ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
+      code: "SERVICE_UNAVAILABLE",
+      message: withReferenceId(CUSTOMER_MESSAGES.temporaryUploadProblem, requestId),
     });
   }
 }

@@ -10,6 +10,8 @@ import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } fro
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { ENV } from "../_core/env";
 import { isPrivateObjectRef, extractPrivateObjectKey } from "@shared/privateFileRef";
+import { classifyStorageSdkError, type StorageErrorCategory } from "./r2ErrorClassifier";
+import { validatePrivateR2Config } from "./r2PrivateConfigValidator";
 
 /**
  * Which stored field a key/reference belongs to. Enforced on every
@@ -27,6 +29,26 @@ const CONTEXT_KEY_PREFIXES: Record<PrivateObjectContext, string> = {
  *  allowed in logs (see getSafeDetails()). */
 export type PrivateObjectOperation = "put" | "get" | "delete";
 
+export interface R2PrivateStorageErrorDetails {
+  key?: string;
+  context?: PrivateObjectContext;
+  operation?: PrivateObjectOperation;
+  /** Stable, safe classification - see r2ErrorClassifier.ts. Present for
+   *  config problems (CONFIG_MISSING/CONFIG_INVALID) and for classified SDK
+   *  failures on put/get/delete; absent for invalid_reference (a caller bug,
+   *  not a storage failure). */
+  category?: StorageErrorCategory;
+  /** True when a retry might succeed (transient network/upstream issue);
+   *  false when only an admin fixing config/credentials/bucket can help. */
+  retryable?: boolean;
+  /** The AWS/S3 SDK's own fixed error name (e.g. "NoSuchBucket") - never a
+   *  free-text message. */
+  sdkErrorName?: string;
+  httpStatusCode?: number;
+  /** Cloudflare/AWS's own opaque request-correlation ID - safe to log. */
+  providerRequestId?: string;
+}
+
 export class R2PrivateStorageError extends Error {
   constructor(
     message: string,
@@ -36,7 +58,7 @@ export class R2PrivateStorageError extends Error {
       | "download_failed"
       | "delete_failed"
       | "invalid_reference",
-    public readonly details?: { key?: string; context?: PrivateObjectContext; operation?: PrivateObjectOperation }
+    public readonly details?: R2PrivateStorageErrorDetails
   ) {
     super(message);
     this.name = "R2PrivateStorageError";
@@ -44,15 +66,27 @@ export class R2PrivateStorageError extends Error {
 
   /**
    * Safe, no-secrets summary for server-side logging or for building a
-   * client-facing error message from. Returns ONLY these three fixed
-   * fields - operation, context, reason - and nothing else: never the
-   * object key, never `.message` (which may echo an underlying SDK error
-   * string), never a bucket name, endpoint, credential, or signed URL.
-   * Callers must map `.reason` to a fixed, generic message before it ever
-   * reaches a client.
+   * client-facing error message from. Always includes operation, context,
+   * reason; additionally includes category/retryable/sdkErrorName/
+   * httpStatusCode/providerRequestId when known - all individually
+   * allowlisted safe fields (see r2ErrorClassifier.ts) - and nothing else:
+   * never the object key, never `.message` (which may echo an underlying
+   * SDK error string), never a bucket name, endpoint, credential, or signed
+   * URL. Callers must map `.reason`/`.details.category` to a fixed, generic
+   * message before it ever reaches a client.
    */
   getSafeDetails() {
-    return { operation: this.details?.operation, context: this.details?.context, reason: this.reason };
+    const d = this.details;
+    return {
+      operation: d?.operation,
+      context: d?.context,
+      reason: this.reason,
+      ...(d?.category !== undefined ? { category: d.category } : {}),
+      ...(d?.retryable !== undefined ? { retryable: d.retryable } : {}),
+      ...(d?.sdkErrorName !== undefined ? { sdkErrorName: d.sdkErrorName } : {}),
+      ...(d?.httpStatusCode !== undefined ? { httpStatusCode: d.httpStatusCode } : {}),
+      ...(d?.providerRequestId !== undefined ? { providerRequestId: d.providerRequestId } : {}),
+    };
   }
 }
 
@@ -73,9 +107,28 @@ export function isR2PrivateConfigured(): boolean {
   return getMissingR2PrivateEnvVars().length === 0;
 }
 
-let cachedClient: S3Client | null = null;
+let cachedClient: { client: S3Client; bucketName: string } | null = null;
 
-function getPrivateR2Client(): S3Client {
+/**
+ * Builds (and caches) the private-R2 S3 client, after two independent safety
+ * gates: presence (CONFIG_MISSING) then structural validity (CONFIG_INVALID
+ * - see r2PrivateConfigValidator.ts for the exact rules: HTTPS-only, no
+ * embedded credentials/query/fragment, no bucket path in the endpoint, the
+ * endpoint's account hostname must agree with R2_PRIVATE_ACCOUNT_ID, the
+ * bucket name must be a plain bucket name (not a URL), and the signed-URL
+ * expiry must be in a sane range). All string values are trimmed before
+ * either check and before being handed to the SDK - a trailing newline or
+ * leading space pasted into an env var must never silently misconfigure the
+ * client differently than what CONFIG_INVALID would have caught outright.
+ *
+ * Distinguishing CONFIG_MISSING from CONFIG_INVALID matters for real
+ * diagnosis: "nothing set" and "endpoint has a typo" look identical as a
+ * customer-facing "not available" message, but are very different admin
+ * fixes, and only the latter previously surfaced as an opaque
+ * "upload_failed" once the SDK attempted (and failed) to use the malformed
+ * value.
+ */
+function getPrivateR2Client(): { client: S3Client; bucketName: string } {
   if (cachedClient) return cachedClient;
 
   const missing = getMissingR2PrivateEnvVars();
@@ -84,19 +137,44 @@ function getPrivateR2Client(): S3Client {
     // visibility, never forwarded to a client (see getSafeDetails()).
     throw new R2PrivateStorageError(
       `Private R2 storage is not configured - missing env var(s): ${missing.join(", ")}`,
-      "not_configured"
+      "not_configured",
+      { category: "CONFIG_MISSING", retryable: false }
     );
   }
 
-  cachedClient = new S3Client({
-    region: "auto",
+  const problem = validatePrivateR2Config({
+    accountId: ENV.r2PrivateAccountId,
+    accessKeyId: ENV.r2PrivateAccessKeyId,
+    secretAccessKey: ENV.r2PrivateSecretAccessKey,
     endpoint: ENV.r2PrivateEndpoint,
-    forcePathStyle: true,
-    credentials: {
-      accessKeyId: ENV.r2PrivateAccessKeyId,
-      secretAccessKey: ENV.r2PrivateSecretAccessKey,
-    },
+    bucketName: ENV.r2PrivateBucketName,
+    signedUrlExpiresSeconds: ENV.r2PrivateSignedUrlExpiresSeconds,
   });
+  if (problem) {
+    // `problem.detail` names the failed rule only (e.g. "R2_PRIVATE_ENDPOINT
+    // must use https") - never the actual configured endpoint/bucket/account
+    // value, safe to log and to include in the thrown error's own message.
+    console.error("[R2PrivateStorage] Configuration invalid", { category: problem.category, detail: problem.detail });
+    throw new R2PrivateStorageError(
+      `Private R2 storage configuration is invalid: ${problem.detail}`,
+      "not_configured",
+      { category: problem.category, retryable: false }
+    );
+  }
+
+  const bucketName = ENV.r2PrivateBucketName.trim();
+  cachedClient = {
+    bucketName,
+    client: new S3Client({
+      region: "auto",
+      endpoint: ENV.r2PrivateEndpoint.trim(),
+      forcePathStyle: true,
+      credentials: {
+        accessKeyId: ENV.r2PrivateAccessKeyId.trim(),
+        secretAccessKey: ENV.r2PrivateSecretAccessKey.trim(),
+      },
+    }),
+  };
   return cachedClient;
 }
 
@@ -148,24 +226,26 @@ export async function putPrivateObject(
   data: Buffer,
   contentType: string
 ): Promise<{ key: string }> {
-  const client = getPrivateR2Client();
+  const { client, bucketName } = getPrivateR2Client();
   const key = assertSafeObjectKey(relKey, context);
 
   try {
     await client.send(
       new PutObjectCommand({
-        Bucket: ENV.r2PrivateBucketName,
+        Bucket: bucketName,
         Key: key,
         Body: data,
         ContentType: contentType,
       })
     );
-  } catch {
-    // Fixed, safe fields only - never the object key, never the raw SDK
-    // error (which can itself echo the endpoint/bucket in some AWS SDK
-    // error variants), never a bucket name, endpoint, or credential.
-    console.error("[R2PrivateStorage] Operation failed", { operation: "put", context, reason: "upload_failed" });
-    throw new R2PrivateStorageError("Private R2 upload failed", "upload_failed", { key, context, operation: "put" });
+  } catch (err) {
+    // Fixed, safe fields only - never the object key, never `.message`
+    // (which can itself echo the endpoint/bucket in some AWS SDK error
+    // variants), never a bucket name, endpoint, or credential. See
+    // r2ErrorClassifier.ts - only structural, non-secret fields are read.
+    const classified = classifyStorageSdkError(err);
+    console.error("[R2PrivateStorage] Operation failed", { operation: "put", context, reason: "upload_failed", ...classified });
+    throw new R2PrivateStorageError("Private R2 upload failed", "upload_failed", { key, context, operation: "put", ...classified });
   }
 
   return { key };
@@ -182,18 +262,19 @@ export async function getPrivateObjectSignedUrl(
   relKey: string,
   expiresInSeconds: number = ENV.r2PrivateSignedUrlExpiresSeconds
 ): Promise<string> {
-  const client = getPrivateR2Client();
+  const { client, bucketName } = getPrivateR2Client();
   const key = assertSafeObjectKey(relKey, context);
 
   try {
-    const command = new GetObjectCommand({ Bucket: ENV.r2PrivateBucketName, Key: key });
+    const command = new GetObjectCommand({ Bucket: bucketName, Key: key });
     return await getSignedUrl(client, command, { expiresIn: expiresInSeconds });
-  } catch {
+  } catch (err) {
     // Fixed, safe fields only - see putPrivateObject's catch block above.
     // Deliberately never logs the signed URL itself (it wouldn't exist yet
     // on a failure) or anything from the underlying SDK/presigner error.
-    console.error("[R2PrivateStorage] Operation failed", { operation: "get", context, reason: "download_failed" });
-    throw new R2PrivateStorageError("Failed to create signed URL for private object", "download_failed", { key, context, operation: "get" });
+    const classified = classifyStorageSdkError(err);
+    console.error("[R2PrivateStorage] Operation failed", { operation: "get", context, reason: "download_failed", ...classified });
+    throw new R2PrivateStorageError("Failed to create signed URL for private object", "download_failed", { key, context, operation: "get", ...classified });
   }
 }
 
@@ -205,15 +286,16 @@ export async function getPrivateObjectSignedUrl(
  * stub with zero callers).
  */
 export async function deletePrivateObject(context: PrivateObjectContext, relKey: string): Promise<void> {
-  const client = getPrivateR2Client();
+  const { client, bucketName } = getPrivateR2Client();
   const key = assertSafeObjectKey(relKey, context);
 
   try {
-    await client.send(new DeleteObjectCommand({ Bucket: ENV.r2PrivateBucketName, Key: key }));
-  } catch {
+    await client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: key }));
+  } catch (err) {
     // Fixed, safe fields only - see putPrivateObject's catch block above.
-    console.error("[R2PrivateStorage] Operation failed", { operation: "delete", context, reason: "delete_failed" });
-    throw new R2PrivateStorageError("Private R2 delete failed", "delete_failed", { key, context, operation: "delete" });
+    const classified = classifyStorageSdkError(err);
+    console.error("[R2PrivateStorage] Operation failed", { operation: "delete", context, reason: "delete_failed", ...classified });
+    throw new R2PrivateStorageError("Private R2 delete failed", "delete_failed", { key, context, operation: "delete", ...classified });
   }
 }
 
