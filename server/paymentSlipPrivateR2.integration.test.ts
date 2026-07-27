@@ -22,7 +22,11 @@ import { payments } from "../drizzle/schema";
  * below, so no network call ever happens.
  */
 
-const sendMock = vi.fn();
+const { sendMock, getSignedUrlMock } = vi.hoisted(() => ({
+  sendMock: vi.fn(),
+  getSignedUrlMock: vi.fn(),
+}));
+
 vi.mock("@aws-sdk/client-s3", async () => {
   const actual = await vi.importActual<typeof import("@aws-sdk/client-s3")>("@aws-sdk/client-s3");
   return {
@@ -31,7 +35,6 @@ vi.mock("@aws-sdk/client-s3", async () => {
   };
 });
 
-const getSignedUrlMock = vi.fn();
 vi.mock("@aws-sdk/s3-request-presigner", () => ({
   getSignedUrl: getSignedUrlMock,
 }));
