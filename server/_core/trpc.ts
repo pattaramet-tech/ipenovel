@@ -13,6 +13,22 @@ export const GENERIC_INTERNAL_ERROR_MESSAGE = "Unable to process this request at
  * records). Every other code - most importantly INTERNAL_SERVER_ERROR, which
  * is what an unhandled database exception becomes - has its message replaced
  * with a generic one.
+ *
+ * SERVICE_UNAVAILABLE is included because every existing caller of this code
+ * (server/helpers/storageErrorHandler.ts, server/routers.ts's image/media
+ * upload paths, server/services/slipFileUploadService.ts's payment-slip
+ * upload path) throws it only for a deliberately classified, non-leaking
+ * condition (storage not configured / storage temporarily unavailable) with
+ * a fixed, hand-written Thai message - never a forwarded `.message`, stack
+ * trace, or raw SDK/driver error. Before this was added, every one of those
+ * messages was being silently replaced by GENERIC_INTERNAL_ERROR_MESSAGE
+ * (the exact customer-visible symptom of the payment-slip-upload
+ * regression this was fixed for) - see trpc.test.ts's regression coverage.
+ * INTERNAL_SERVER_ERROR is deliberately NOT added: unlike SERVICE_UNAVAILABLE,
+ * it is Node/tRPC's own default for any uncaught exception (including a raw
+ * database error), so most of its current uses are NOT deliberately-safe
+ * messages - keeping it excluded is what makes the generic-message fallback
+ * meaningful at all.
  */
 const CLIENT_SAFE_ERROR_CODES = new Set([
   "UNAUTHORIZED",
