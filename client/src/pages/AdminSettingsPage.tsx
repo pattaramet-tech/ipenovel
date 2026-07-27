@@ -12,6 +12,7 @@ import { trpc } from "@/lib/trpc";
 import { Switch } from "@/components/ui/switch";
 import AdminLayout from "@/components/AdminLayout";
 import { X } from "lucide-react";
+import { CheckoutMaintenanceBanner, type CheckoutMaintenanceBannerStatus } from "@/components/CheckoutMaintenanceBanner";
 
 export default function AdminSettingsPage() {
   const [settings, setSettings] = useState({
@@ -20,6 +21,30 @@ export default function AdminSettingsPage() {
     contactEmail: "support@ipenovel.com",
   });
   const [isSaving, setIsSaving] = useState(false);
+  const [maintenance, setMaintenance] = useState<CheckoutMaintenanceBannerStatus>({
+    enabled: false,
+    scope: "notice_only",
+    severity: "warning",
+    title: "",
+    message: "",
+  });
+  const maintenanceQuery = trpc.admin.settings.getCheckoutMaintenance.useQuery();
+  const updateMaintenance = trpc.admin.settings.updateCheckoutMaintenance.useMutation();
+
+  useEffect(() => {
+    if (maintenanceQuery.data) setMaintenance(maintenanceQuery.data);
+  }, [maintenanceQuery.data]);
+
+  const saveMaintenance = async () => {
+    try {
+      const saved = await updateMaintenance.mutateAsync(maintenance);
+      setMaintenance(saved);
+      await maintenanceQuery.refetch();
+      toast.success("บันทึกการแจ้งเตือนหน้าชำระเงินแล้ว");
+    } catch (error: any) {
+      toast.error(error?.message || "บันทึกการแจ้งเตือนไม่สำเร็จ");
+    }
+  };
 
   // OCR Settings state (Phase 4 - single source of truth)
   const [ocrSettings, setOcrSettings] = useState({
@@ -224,6 +249,106 @@ export default function AdminSettingsPage() {
               </p>
             </div>
           </div>
+        </Card>
+
+        <Card className="p-6">
+          <h2 className="text-lg font-semibold mb-4">ระบบแจ้งเตือนหน้าชำระเงิน</h2>
+          {maintenanceQuery.isLoading ? (
+            <div className="flex items-center gap-2 text-sm text-slate-600">
+              <Loader2 className="h-4 w-4 animate-spin" /> กำลังโหลด...
+            </div>
+          ) : (
+            <div className="space-y-5">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <Label htmlFor="checkout-maintenance-enabled">เปิดการแจ้งเตือน</Label>
+                  <p className="text-sm text-slate-600">มีผลทันทีหลังบันทึก โดยไม่ต้อง deploy ใหม่</p>
+                </div>
+                <Switch
+                  id="checkout-maintenance-enabled"
+                  checked={maintenance.enabled}
+                  onCheckedChange={(enabled) => setMaintenance((value) => ({ ...value, enabled }))}
+                />
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <Label htmlFor="checkout-maintenance-scope">ขอบเขต</Label>
+                  <select
+                    id="checkout-maintenance-scope"
+                    className="mt-1 h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    value={maintenance.scope}
+                    onChange={(event) => {
+                      const scope = event.target.value as CheckoutMaintenanceBannerStatus["scope"];
+                      setMaintenance((value) => ({
+                        ...value,
+                        scope,
+                        ...(scope === "slip_only" && !value.title && !value.message
+                          ? {
+                              title: "ระบบแนบสลิปอยู่ระหว่างปรับปรุง",
+                              message: "ขณะนี้ไม่สามารถแนบสลิปได้ชั่วคราว ทีมงานกำลังดำเนินการแก้ไข กรุณาลองใหม่อีกครั้งภายหลัง",
+                            }
+                          : {}),
+                      }));
+                    }}
+                  >
+                    <option value="notice_only">แจ้งเตือนอย่างเดียว</option>
+                    <option value="slip_only">ปิดเฉพาะการแนบสลิป</option>
+                    <option value="all_checkout">ปิดการชำระเงินทั้งหมด</option>
+                  </select>
+                </div>
+                <div>
+                  <Label htmlFor="checkout-maintenance-severity">ระดับ</Label>
+                  <select
+                    id="checkout-maintenance-severity"
+                    className="mt-1 h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    value={maintenance.severity}
+                    onChange={(event) =>
+                      setMaintenance((value) => ({
+                        ...value,
+                        severity: event.target.value as CheckoutMaintenanceBannerStatus["severity"],
+                      }))
+                    }
+                  >
+                    <option value="info">ข้อมูล</option>
+                    <option value="warning">คำเตือน</option>
+                    <option value="error">ระบบขัดข้อง</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <Label htmlFor="checkout-maintenance-title">หัวข้อ</Label>
+                <Input
+                  id="checkout-maintenance-title"
+                  maxLength={120}
+                  value={maintenance.title}
+                  onChange={(event) => setMaintenance((value) => ({ ...value, title: event.target.value }))}
+                />
+                <p className="mt-1 text-xs text-slate-500">{maintenance.title.length}/120</p>
+              </div>
+              <div>
+                <Label htmlFor="checkout-maintenance-message">รายละเอียด</Label>
+                <Textarea
+                  id="checkout-maintenance-message"
+                  maxLength={500}
+                  rows={4}
+                  value={maintenance.message}
+                  onChange={(event) => setMaintenance((value) => ({ ...value, message: event.target.value }))}
+                />
+                <p className="mt-1 text-xs text-slate-500">{maintenance.message.length}/500</p>
+              </div>
+              <div>
+                <Label>ตัวอย่าง Banner</Label>
+                <CheckoutMaintenanceBanner status={{ ...maintenance, enabled: true }} className="mt-2" />
+              </div>
+              <Button
+                onClick={saveMaintenance}
+                disabled={updateMaintenance.isPending || (maintenance.enabled && (!maintenance.title.trim() || !maintenance.message.trim()))}
+              >
+                {updateMaintenance.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                บันทึก
+              </Button>
+            </div>
+          )}
         </Card>
 
         {/* OCR Settings - Phase 4 (Single Source of Truth) */}

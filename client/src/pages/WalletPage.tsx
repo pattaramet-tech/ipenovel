@@ -58,6 +58,12 @@ export default function WalletPage() {
   const { data: summary, isLoading, error, refetch: refetchSummary } = trpc.wallet.getSummary.useQuery();
   const createTopupMutation = trpc.wallet.createTopupRequest.useMutation();
   const uploadSlipFileMutation = trpc.payment.uploadSlipFile.useMutation();
+  const { data: maintenance } = trpc.checkout.maintenanceStatus.useQuery(undefined, {
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    retry: 1,
+  });
+  const slipBlocked = maintenance?.enabled && (maintenance.scope === "slip_only" || maintenance.scope === "all_checkout");
 
   // Bonus preview state and hooks
   const [bonusPreview, setBonusPreview] = useState<any>(null);
@@ -107,6 +113,10 @@ export default function WalletPage() {
   };
 
   const handleCreateTopupWithSlip = async () => {
+    if (slipBlocked) {
+      toast.error("ช่องทางแนบสลิปปิดให้บริการชั่วคราว");
+      return;
+    }
     // Validate amount
     if (!topupAmount || parseFloat(topupAmount) <= 0) {
       toast.error(t("wallet.pleaseEnterValidAmount"));
@@ -423,7 +433,7 @@ export default function WalletPage() {
                   type="file"
                   accept="image/jpeg,image/png,application/pdf"
                   onChange={(e) => handleFileSelect(e.target.files?.[0] || null)}
-                  disabled={isUploading || isCreatingRequest}
+                  disabled={Boolean(slipBlocked) || isUploading || isCreatingRequest}
                   className="hidden"
                   id="slip-file-input"
                 />
@@ -482,11 +492,12 @@ export default function WalletPage() {
             <div className="flex gap-2">
               <Button
                 onClick={handleCreateTopupWithSlip}
-                disabled={!topupAmount || !selectedFile || isUploading || isCreatingRequest}
+                disabled={Boolean(slipBlocked) || !topupAmount || !selectedFile || isUploading || isCreatingRequest}
                 className="flex-1"
               >
                 {isUploading || isCreatingRequest ? t("common.pleaseWait") : t("wallet.createRequest")}
               </Button>
+              {slipBlocked && <p className="text-sm text-amber-800">ช่องทางแนบสลิปปิดให้บริการชั่วคราว</p>}
               <Button variant="outline" onClick={() => {
                 setShowTopupForm(false);
                 setTopupAmount("");
