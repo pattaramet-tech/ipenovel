@@ -816,6 +816,33 @@ export async function lockCartForCheckout(userId: number, tx: any): Promise<numb
   return cartRows[0].id as number;
 }
 
+/**
+ * Locks and returns the cart's items (SELECT ... FOR UPDATE) - the re-read
+ * checkout.create must use immediately after lockCartForCheckout, instead
+ * of a plain getCartItems, to decide whether the cart is actually empty.
+ *
+ * Same reasoning as lockCouponForUsage below: locking the `carts` row does
+ * not make a later PLAIN SELECT against the separate `cartItems` table
+ * current. Under TiDB's pessimistic-transaction model, a non-locking SELECT
+ * is served from the transaction's start_ts (fixed before this statement
+ * even waited on the cart row's lock) - only a locking read (FOR UPDATE) is
+ * guaranteed to observe the latest committed value, which is what actually
+ * matters here: whether the cart was already cleared by the transaction
+ * this one just waited behind. A plain re-read can still see the
+ * pre-clearing rows and let a second Order be created from the same cart
+ * even though the row lock itself worked exactly as intended. (Standard
+ * InnoDB REPEATABLE READ does not exhibit this - its first non-locking read
+ * in a transaction establishes a fresh snapshot at that point - but this
+ * function is the correct fix on both engines: it is never wrong to make a
+ * decision-critical read a locking read once its row lock prerequisite is
+ * already held.)
+ */
+export async function getCartItemsForUpdate(cartId: number, tx: any) {
+  const rawResult: any = await tx.execute(sql`SELECT * FROM cartItems WHERE cartId = ${cartId} FOR UPDATE`);
+  const rows = Array.isArray(rawResult?.[0]) ? rawResult[0] : rawResult;
+  return rows || [];
+}
+
 export async function addToCart(cartId: number, episodeId: number, novelId: number, price: string) {
   const db = await getDb();
   if (!db) return undefined;
