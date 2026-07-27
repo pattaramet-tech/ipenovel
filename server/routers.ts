@@ -527,8 +527,12 @@ export const appRouter = router({
             // Re-read cart items only after the lock is held - never reuse
             // any cart/cartItems read before acquiring it, which could
             // already be stale (e.g. consumed by another request that
-            // committed while this one was waiting for the lock).
-            const cartItems = await db.getCartItems(cartId, tx);
+            // committed while this one was waiting for the lock). This must
+            // itself be a locking read (FOR UPDATE), not a plain SELECT: the
+            // cart-row lock above does not make a later plain read of the
+            // separate cartItems table current on every backend - see
+            // getCartItemsForUpdate's own comment in server/db.ts.
+            const cartItems = await db.getCartItemsForUpdate(cartId, tx);
             if (cartItems.length === 0) {
               throw new TRPCError({ code: "BAD_REQUEST", message: "Your cart is empty. Please add items before checkout." });
             }

@@ -38,14 +38,37 @@ import { carts, cartItems, dailyCheckins, orders, orderItems, payments, couponUs
  *
  * Storage/OCR/Discord are never called for real here: OCR_ENABLED=false
  * (must be set in the environment before this file is imported - see
- * server/_core/env.ts, a module-level const), storagePut is mocked to
- * return a synthetic https://local.invalid/... URL, and
- * DISCORD_OCR_REVIEW_WEBHOOK_URL is left unset so
+ * server/_core/env.ts, a module-level const), the private-R2 S3 client is
+ * mocked (see below - Case D is the only case that actually exercises the
+ * upload path; every other case passes a synthetic https://local.invalid/...
+ * URL directly as slipImageUrl, which checkout.create stores as-is without
+ * ever calling storage), and DISCORD_OCR_REVIEW_WEBHOOK_URL is left unset so
  * sendOCRReviewNotification's own no-op guard fires.
  */
 
-vi.mock("./storage", () => ({
-  storagePut: vi.fn(async (key: string) => ({ key, url: `https://local.invalid/${key}` })),
+// The payment-slip upload flow now uses the PRIVATE R2 bucket
+// (server/services/r2PrivateStorage.ts's putPrivateObject(), never the old
+// server/storage.ts Manus proxy) and returns an "r2p:payment-slips/..."
+// reference, never a URL - see server/paymentSlipPrivateR2.integration.test.ts,
+// the established pattern this mirrors. Mocking the S3 SDK directly (not
+// putPrivateObject itself) means Case D exercises the real
+// slipFileUploadService validation/key-building logic - only the actual
+// network call is faked, so no real R2 call is ever made.
+const { sendMock, getSignedUrlMock } = vi.hoisted(() => ({
+  sendMock: vi.fn(),
+  getSignedUrlMock: vi.fn(),
+}));
+
+vi.mock("@aws-sdk/client-s3", async () => {
+  const actual = await vi.importActual<typeof import("@aws-sdk/client-s3")>("@aws-sdk/client-s3");
+  return {
+    ...actual,
+    S3Client: vi.fn().mockImplementation(() => ({ send: sendMock })),
+  };
+});
+
+vi.mock("@aws-sdk/s3-request-presigner", () => ({
+  getSignedUrl: getSignedUrlMock,
 }));
 
 const SYNTHETIC_SLIP_URL = "https://local.invalid/test-payment-slip.png";
@@ -217,7 +240,9 @@ describe.sequential("Checkout-after-slip-upload diagnosis (real disposable test 
     const caller = appRouter.createCaller(makeUserContext(seeded.userId));
 
     // Step 1: exactly what the client does - call payment.uploadSlipFile
-    // (mocked storagePut underneath, so no real S3/R2 call happens).
+    // (the private-R2 S3 client is mocked at the top of this file, so no
+    // real S3/R2 call happens).
+    sendMock.mockReset().mockResolvedValue({});
     const uploadResult = await caller.payment.uploadSlipFile({
       fileName: "slip.png",
       mimeType: "image/png",
@@ -227,7 +252,10 @@ describe.sequential("Checkout-after-slip-upload diagnosis (real disposable test 
       context: "checkout",
       orderTotal: Number(seeded.episodePrice),
     });
-    expect(uploadResult.slipImageUrl).toMatch(/^https:\/\/local\.invalid\//);
+    // Never a public/permanent URL - always the private object reference
+    // (see server/paymentSlipPrivateR2.integration.test.ts).
+    expect(uploadResult.slipImageUrl).toMatch(/^r2p:payment-slips\//);
+    expect(sendMock).toHaveBeenCalledTimes(1);
 
     // Step 2: the exact client follow-up payload.
     const result = await caller.checkout.create({ slipImageUrl: uploadResult.slipImageUrl });
