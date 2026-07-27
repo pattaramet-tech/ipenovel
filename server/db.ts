@@ -1761,10 +1761,25 @@ export async function deleteCoupon(couponId: number) {
 /**
  * Locks the coupon row (SELECT ... FOR UPDATE) for the duration of a
  * usage-consumption check - same pattern as lockUserForPoints/
- * lockCartForCheckout above.
+ * lockCartForCheckout above, EXCEPT this selects every column (not just
+ * `id`) and returns the full row, which callers must use directly instead
+ * of re-reading the coupon afterward.
+ *
+ * That difference is required, not stylistic: confirmed by a real
+ * concurrency run (server/couponOwnership.integration.test.ts's two-orders-
+ * race-one-single-use-reward-coupon scenario) that a SELECT-id-only lock
+ * followed by a SEPARATE plain (non-FOR UPDATE) re-read of usageCount for
+ * the actual limit check is unsafe under InnoDB REPEATABLE READ: a plain
+ * read inside an already-open transaction can return that transaction's
+ * consistent snapshot from before this lock was even acquired, rather than
+ * the row this FOR UPDATE just locked - only a locking read is guaranteed
+ * to see the latest committed value. Two concurrent finalizations for
+ * DIFFERENT orders against the same maxUsageCount=1 coupon both read
+ * usageCount=0 this way and both recorded usage, reaching usageCount=2 -
+ * reproduced against a real disposable database, not a theoretical concern.
  */
 export async function lockCouponForUsage(couponId: number, tx: any) {
-  const rawResult: any = await tx.execute(sql`SELECT id FROM coupons WHERE id = ${couponId} FOR UPDATE`);
+  const rawResult: any = await tx.execute(sql`SELECT * FROM coupons WHERE id = ${couponId} FOR UPDATE`);
   const rows = Array.isArray(rawResult?.[0]) ? rawResult[0] : rawResult;
   if (!rows || rows.length === 0) throw new Error("Coupon not found");
   return rows[0];
@@ -1774,18 +1789,25 @@ export async function lockCouponForUsage(couponId: number, tx: any) {
  * Runs `fn` with the given coupon's row locked, same self-transacting
  * convention as withUserPointsLock: if `tx` is already an open transaction,
  * the lock is taken inside it; otherwise this opens its own transaction
- * scoped to exactly `fn`.
+ * scoped to exactly `fn`. `fn` receives the locked row itself (from the
+ * FOR UPDATE read) as its second argument - see lockCouponForUsage's own
+ * comment for why every usage-limit decision must be made from that row,
+ * never from a later, separate, non-locking re-read.
  */
-export async function withCouponLock<T>(couponId: number, tx: any | undefined, fn: (lockedTx: any) => Promise<T>): Promise<T> {
+export async function withCouponLock<T>(
+  couponId: number,
+  tx: any | undefined,
+  fn: (lockedTx: any, lockedCoupon: any) => Promise<T>
+): Promise<T> {
   if (tx) {
-    await lockCouponForUsage(couponId, tx);
-    return fn(tx);
+    const lockedCoupon = await lockCouponForUsage(couponId, tx);
+    return fn(tx, lockedCoupon);
   }
   const database = await getDb();
   if (!database) throw new Error("Database not available");
   return database.transaction(async (newTx: any) => {
-    await lockCouponForUsage(couponId, newTx);
-    return fn(newTx);
+    const lockedCoupon = await lockCouponForUsage(couponId, newTx);
+    return fn(newTx, lockedCoupon);
   });
 }
 
@@ -1815,9 +1837,7 @@ export async function recordCouponUsage(couponId: number, userId: number | undef
     return { alreadyRecorded: true };
   }
 
-  return withCouponLock(couponId, tx, async (lockedTx) => {
-    const couponRows = await lockedTx.select().from(coupons).where(eq(coupons.id, couponId)).limit(1);
-    const coupon = couponRows[0];
+  return withCouponLock(couponId, tx, async (lockedTx, coupon) => {
     if (!coupon) {
       throw new Error("Coupon not found");
     }

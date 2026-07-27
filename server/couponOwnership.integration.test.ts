@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 import * as db from "./db";
@@ -14,7 +14,7 @@ import {
   uniqueTestTag,
   deleteFixtures,
 } from "./test-helpers/fixtures";
-import { coupons, couponUsages, sportsMatchRewards, dailyCheckins, orders } from "../drizzle/schema";
+import { coupons, couponUsages, sportsMatchRewards, dailyCheckins, orders, payments, purchases, pointsTransactions } from "../drizzle/schema";
 
 /**
  * fix/coupon-owner-enforcement - end-to-end coverage for personal/reward
@@ -395,6 +395,193 @@ describe.sequential("Coupon ownership enforcement (real disposable test database
 
     await cleanupSportsReward(couponId);
     await deleteFixtures({ episodeIds: [episode.id], novelIds: [novel.id], userIds: [userA.id, userB.id] });
+  }, 30000);
+
+  it("12. Two simultaneous retries finalizing the SAME already-created order resolve idempotently - one couponUsages row, usageCount incremented once, one purchase, points credited once", async () => {
+    if (!process.env.TEST_DATABASE_URL) return;
+    const userA = await createTestUser();
+    const admin = await createTestUser({ role: "admin" });
+    // Unlimited-use coupon (maxUsageCount: null) - this scenario is about
+    // the SAME order being finalized twice concurrently (an admin
+    // double-click / duplicate webhook retry), not a usage-limit race
+    // between two different orders (that is the separate reward-coupon
+    // race scenario below) - a single-use coupon here would make the
+    // outcome depend on exactly which of the two concurrent calls'
+    // pre-lock (couponId, orderId) idempotency check happens to run before
+    // the other commits, which is not the property this test is for.
+    // Episode price 200.00 with a 10% coupon leaves a 180.00 total (>=100)
+    // so a real points-earn row is actually created - otherwise "points
+    // credited once" would pass trivially with zero rows either way.
+    const coupon = await createTestCoupon({ discountValue: "10.00", maxUsageCount: null });
+    const novel = await createTestNovel();
+    const episode = await createTestEpisode(novel.id, { price: "200.00" });
+    const caller = appRouter.createCaller(userContext(userA.id));
+    const adminCaller = appRouter.createCaller(adminContext(admin.id));
+
+    const cart = await db.getOrCreateCart(userA.id);
+    await db.addToCart(cart!.id as number, episode.id, novel.id, "200.00");
+
+    const checkoutResult = await caller.checkout.create({
+      couponCode: coupon.code,
+      slipImageUrl: "https://local.invalid/test-slip-retry.png",
+    });
+    const paymentId = (await db.getPaymentByOrderId(checkoutResult.id))!.id;
+
+    // Two concurrent, independent admin-approval calls for the SAME
+    // payment - real separate transactions racing on the same order/
+    // coupon/user-points rows via Promise.allSettled, not a simulated or
+    // sequential retry.
+    const results = await Promise.allSettled([
+      adminCaller.admin.payments.approve({ paymentId }),
+      adminCaller.admin.payments.approve({ paymentId }),
+    ]);
+
+    // Both must settle without an uncontrolled crash - either both succeed
+    // (the idempotency guards make the second call a clean no-op), or the
+    // loser gets a clean, controlled rejection. Neither may leave a raw
+    // driver/lock-timeout error surfaced to the caller.
+    for (const r of results) {
+      if (r.status === "rejected") {
+        expect(String((r.reason as any)?.message ?? r.reason)).not.toMatch(
+          /ECONNRESET|ER_LOCK_WAIT_TIMEOUT|undefined is not|Cannot read prop/i
+        );
+      }
+    }
+
+    const usages = await getTestDb().select().from(couponUsages).where(eq(couponUsages.couponId, coupon.id));
+    expect(usages).toHaveLength(1);
+    expect(usages[0].orderId).toBe(checkoutResult.id);
+
+    const [updatedCoupon] = await getTestDb().select().from(coupons).where(eq(coupons.id, coupon.id));
+    expect(updatedCoupon.usageCount).toBe(1);
+
+    const userPurchases = await db.getPurchasedEpisodesByNovelAndUser(novel.id, userA.id);
+    expect(userPurchases.length).toBe(1);
+
+    const earnRows = await getTestDb()
+      .select()
+      .from(pointsTransactions)
+      .where(
+        and(
+          eq(pointsTransactions.userId, userA.id),
+          eq(pointsTransactions.referenceId, checkoutResult.id),
+          eq(pointsTransactions.type, "earn")
+        )
+      );
+    expect(earnRows).toHaveLength(1);
+
+    const [finalOrder] = await getTestDb().select().from(orders).where(eq(orders.id, checkoutResult.id));
+    expect(finalOrder.status).toBe("approved");
+    expect(finalOrder.paymentStatus).toBe("approved");
+    const [finalPayment] = await getTestDb().select().from(payments).where(eq(payments.id, paymentId));
+    expect(finalPayment.status).toBe("approved");
+
+    await cleanupCouponUsages(coupon.id);
+    await deleteFixtures({
+      paymentIds: [paymentId],
+      orderIds: [checkoutResult.id],
+      episodeIds: [episode.id],
+      novelIds: [novel.id],
+      couponIds: [coupon.id],
+      userIds: [userA.id, admin.id],
+    });
+  }, 30000);
+
+  it("14. Two different orders for the SAME owner racing to consume one single-use reward coupon - exactly one wins, the loser's order/payment fully rolls back", async () => {
+    if (!process.env.TEST_DATABASE_URL) return;
+    const owner = await createTestUser();
+    const admin = await createTestUser({ role: "admin" });
+    const { couponId, code } = await createSportsRewardCoupon(owner.id);
+    const novel = await createTestNovel();
+    // Price 150.00 with the reward coupon's fixed 10% discount leaves a
+    // 135.00 total (>=100), so each order actually earns a real points row -
+    // otherwise "no points effect for loser" would pass trivially.
+    const episode1 = await createTestEpisode(novel.id, { price: "150.00" });
+    const episode2 = await createTestEpisode(novel.id, { price: "150.00" });
+    const caller = appRouter.createCaller(userContext(owner.id));
+    const adminCaller = appRouter.createCaller(adminContext(admin.id));
+
+    // Two separate orders for the SAME owner, each independently applying
+    // the SAME single-use reward coupon at creation time - both succeed at
+    // creation (the coupon is still "issued"/unused at that point; the real
+    // race is at approval/finalization time, not here). checkout.create
+    // clears the cart itself after each call, so reusing db.getOrCreateCart
+    // for the second order does not double up on episode1.
+    const cart1 = await db.getOrCreateCart(owner.id);
+    await db.addToCart(cart1!.id as number, episode1.id, novel.id, "150.00");
+    const order1 = await caller.checkout.create({ couponCode: code, slipImageUrl: "https://local.invalid/race-1.png" });
+
+    const cart2 = await db.getOrCreateCart(owner.id);
+    await db.addToCart(cart2!.id as number, episode2.id, novel.id, "150.00");
+    const order2 = await caller.checkout.create({ couponCode: code, slipImageUrl: "https://local.invalid/race-2.png" });
+
+    const payment1Id = (await db.getPaymentByOrderId(order1.id))!.id;
+    const payment2Id = (await db.getPaymentByOrderId(order2.id))!.id;
+
+    const results = await Promise.allSettled([
+      adminCaller.admin.payments.approve({ paymentId: payment1Id }),
+      adminCaller.admin.payments.approve({ paymentId: payment2Id }),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    // A controlled, coupon-specific rejection - never a raw SQL/driver
+    // error or an uncaught exception shape.
+    expect(String((rejected[0] as any).reason?.message ?? "")).toMatch(/usage limit|coupon/i);
+
+    const usages = await getTestDb().select().from(couponUsages).where(eq(couponUsages.couponId, couponId));
+    expect(usages).toHaveLength(1);
+    const winningOrderId = usages[0].orderId;
+    const losingOrderId = winningOrderId === order1.id ? order2.id : order1.id;
+
+    const [updatedCoupon] = await getTestDb().select().from(coupons).where(eq(coupons.id, couponId));
+    expect(updatedCoupon.usageCount).toBe(1);
+
+    // Reward status transitions issued -> used exactly once - never fought
+    // over, never left "issued" despite a real order having consumed it.
+    const [rewardRow] = await getTestDb()
+      .select()
+      .from(sportsMatchRewards)
+      .where(eq(sportsMatchRewards.couponId, couponId));
+    expect(rewardRow.status).toBe("used");
+
+    const [winningOrder] = await getTestDb().select().from(orders).where(eq(orders.id, winningOrderId));
+    expect(winningOrder.status).toBe("approved");
+    expect(winningOrder.paymentStatus).toBe("approved");
+    const [winningPayment] = await getTestDb().select().from(payments).where(eq(payments.orderId, winningOrderId));
+    expect(winningPayment.status).toBe("approved");
+
+    // The loser's order/payment fully rolled back to its pre-approval
+    // state - never left half-approved.
+    const [losingOrder] = await getTestDb().select().from(orders).where(eq(orders.id, losingOrderId));
+    expect(losingOrder.status).toBe("pending");
+    expect(losingOrder.paymentStatus).toBe("submitted");
+    const [losingPayment] = await getTestDb().select().from(payments).where(eq(payments.orderId, losingOrderId));
+    expect(losingPayment.status).not.toBe("approved");
+
+    const losingEpisodeId = winningOrderId === order1.id ? episode2.id : episode1.id;
+    const losingPurchases = await getTestDb()
+      .select()
+      .from(purchases)
+      .where(and(eq(purchases.userId, owner.id), eq(purchases.episodeId, losingEpisodeId)));
+    expect(losingPurchases).toHaveLength(0);
+
+    const losingEarnRows = await getTestDb()
+      .select()
+      .from(pointsTransactions)
+      .where(and(eq(pointsTransactions.userId, owner.id), eq(pointsTransactions.referenceId, losingOrderId)));
+    expect(losingEarnRows).toHaveLength(0);
+
+    await cleanupSportsReward(couponId);
+    await deleteFixtures({
+      paymentIds: [payment1Id, payment2Id],
+      orderIds: [order1.id, order2.id],
+      episodeIds: [episode1.id, episode2.id],
+      novelIds: [novel.id],
+      userIds: [owner.id, admin.id],
+    });
   }, 30000);
 
   it("13. Existing coupons are never deleted or status-changed by this feature", async () => {
