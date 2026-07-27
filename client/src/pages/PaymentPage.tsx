@@ -38,6 +38,12 @@ export default function PaymentPage() {
 
 
   const uploadSlipFileMutation = trpc.payment.uploadSlipFile.useMutation();
+  const { data: maintenance } = trpc.checkout.maintenanceStatus.useQuery(undefined, {
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    retry: 1,
+  });
+  const slipBlocked = maintenance?.enabled && (maintenance.scope === "slip_only" || maintenance.scope === "all_checkout");
   const submitPaymentSlipMutation = trpc.orders.uploadPaymentSlip.useMutation({
     onSuccess: () => {
       setSelectedFile(null);
@@ -67,6 +73,10 @@ export default function PaymentPage() {
   };
 
   const handleUploadSlip = async () => {
+    if (slipBlocked) {
+      toast.error("ช่องทางแนบสลิปปิดให้บริการชั่วคราว");
+      return;
+    }
     if (!selectedFile) {
       toast.error(t("payment.selectFileFirst"));
       return;
@@ -287,7 +297,7 @@ export default function PaymentPage() {
                 type="file"
                 accept="image/jpeg,image/png,application/pdf"
                 onChange={handleFileSelect}
-                disabled={isUploading}
+                disabled={Boolean(slipBlocked) || isUploading}
               />
               <p className="text-xs text-slate-500">{t("payment.fileRequirements")}</p>
             </div>
@@ -300,12 +310,13 @@ export default function PaymentPage() {
 
             <Button
               onClick={handleUploadSlip}
-              disabled={!selectedFile || isUploading}
+              disabled={Boolean(slipBlocked) || !selectedFile || isUploading}
               className="w-full"
             >
               <Upload className="w-4 h-4 mr-2" />
               {isUploading ? t("common.uploading") : t("payment.uploadButton")}
             </Button>
+            {slipBlocked && <p className="text-sm text-amber-800">ช่องทางแนบสลิปปิดให้บริการชั่วคราว</p>}
           </CardContent>
         </Card>
 

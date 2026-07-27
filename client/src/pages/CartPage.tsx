@@ -16,6 +16,7 @@ import {
   ChevronRight,
   Tag,
   AlertCircle,
+  Info,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
@@ -23,6 +24,7 @@ import { useEffect, useState } from "react";
 import { QR_PAYMENT_IMAGE, PAYMENT_DETAILS } from "@/constants/payment";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
 import { resolveUploadFailureMessage, resolveCheckoutFailureMessage, resolveCheckoutSuccessMessage } from "./checkoutOutcome";
+import { CheckoutMaintenanceBanner } from "@/components/CheckoutMaintenanceBanner";
 
 export default function CartPage() {
   useDocumentHead({ robots: "noindex,nofollow" });
@@ -41,6 +43,20 @@ export default function CartPage() {
   const [appliedCoupon, setAppliedCoupon] = useState<any | null>(null);
   const [showCouponPicker, setShowCouponPicker] = useState(false);
   const utils = trpc.useUtils();
+  const maintenanceQuery = trpc.checkout.maintenanceStatus.useQuery(undefined, {
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    retry: 1,
+  });
+  const maintenance = maintenanceQuery.data;
+  const slipBlocked = maintenance?.enabled && (maintenance.scope === "slip_only" || maintenance.scope === "all_checkout");
+  const allCheckoutBlocked = maintenance?.enabled && maintenance.scope === "all_checkout";
+
+  useEffect(() => {
+    if (maintenanceQuery.error) {
+      console.warn("[checkout-maintenance] status unavailable; checkout remains enabled");
+    }
+  }, [maintenanceQuery.error]);
 
   const { data: cartData, isLoading: cartLoading, refetch: refetchCart } = trpc.cart.get.useQuery(undefined, {
     enabled: isAuthenticated,
@@ -193,6 +209,7 @@ export default function CartPage() {
   const total = Math.max(0, subtotalNum - discountNum - safePointsToRedeem).toFixed(2);
 
   const handleCheckoutWithSlip = async () => {
+    if (slipBlocked) return;
     if (items.length === 0) {
       toast.error(t("cart.empty"));
       return;
@@ -249,6 +266,7 @@ export default function CartPage() {
   };
 
   const handleCheckout = () => {
+    if (slipBlocked) return;
     if (items.length === 0) {
       toast.error(t("cart.empty"));
       return;
@@ -406,10 +424,11 @@ export default function CartPage() {
                 </div>
 
                 <div className="space-y-2 pt-4 border-t">
+                  <CheckoutMaintenanceBanner status={maintenance} className="mb-3" />
                   <Button
                     onClick={handleCheckout}
                     className="w-full bg-blue-600 hover:bg-blue-700"
-                    disabled={isUploadingSlip || createOrderMutation.isPending}
+                    disabled={Boolean(slipBlocked) || isUploadingSlip || createOrderMutation.isPending}
                   >
                     {isUploadingSlip ? t("common.loading") : t("cart.proceedToPayment")}
                   </Button>
@@ -417,10 +436,16 @@ export default function CartPage() {
                     onClick={() => walletCheckoutMutation.mutate({ couponCode: appliedCouponCode || undefined, pointsToRedeem: safePointsToRedeem > 0 ? safePointsToRedeem.toFixed(2) : undefined })}
                     variant="outline"
                     className="w-full"
-                    disabled={walletCheckoutMutation.isPending}
+                    disabled={Boolean(allCheckoutBlocked) || walletCheckoutMutation.isPending}
                   >
                     {t("wallet.payWithWallet")}
                   </Button>
+                  {slipBlocked && (
+                    <p className="text-sm text-amber-800 flex items-center gap-2">
+                      <Info className="h-4 w-4" aria-hidden="true" />
+                      ช่องทางแนบสลิปปิดให้บริการชั่วคราว
+                    </p>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -507,7 +532,7 @@ export default function CartPage() {
                   type="file"
                   accept="image/jpeg,image/png,application/pdf"
                   onChange={(e) => handleSlipFileSelect(e.target.files?.[0] || null)}
-                  disabled={isUploadingSlip}
+                  disabled={Boolean(slipBlocked) || isUploadingSlip}
                   className="w-full px-3 py-2 border rounded text-sm"
                 />
                 <p className="text-xs text-slate-500">{t("payment.fileRequirements")}</p>
@@ -544,7 +569,7 @@ export default function CartPage() {
                 <Button
                   onClick={handleCheckoutWithSlip}
                   className="flex-1 bg-blue-600 hover:bg-blue-700"
-                  disabled={!selectedSlipFile || isUploadingSlip}
+                  disabled={Boolean(slipBlocked) || !selectedSlipFile || isUploadingSlip}
                 >
                   {isUploadingSlip ? t("common.uploading") : t("payment.uploadAndCheckout")}
                 </Button>

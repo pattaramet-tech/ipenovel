@@ -11,6 +11,13 @@ import * as walletService from "./services/walletService";
 import { ApprovalService } from "./services/approvalService";
 import { submitPaymentSlip } from "./services/slipSubmissionService";
 import { uploadPaymentSlipFile } from "./services/slipFileUploadService";
+import {
+  assertCheckoutAvailable,
+  assertSlipCheckoutAvailable,
+  getCheckoutMaintenanceStatus,
+  saveCheckoutMaintenanceStatus,
+  checkoutMaintenanceAdminInputSchema,
+} from "./services/checkoutMaintenanceService";
 import { safeErrorSummary } from "../scripts/lib/safeErrorSummary.mjs";
 import { fileRouter } from "./routers/fileRouter";
 import { ocrMetricsRouter } from "./routers/ocrMetricsRouter";
@@ -467,6 +474,9 @@ export const appRouter = router({
 
   // ============ CHECKOUT & ORDERS ============
   checkout: router({
+    maintenanceStatus: publicProcedure.query(async () => {
+      return getCheckoutMaintenanceStatus();
+    }),
     activeCoupons: protectedProcedure
       .input(z.object({ subtotal: z.string() }).optional())
       .query(async ({ input, ctx }) => {
@@ -504,6 +514,8 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ input, ctx }) => {
+        await assertCheckoutAvailable("checkout.create");
+        if (input.slipImageUrl) await assertSlipCheckoutAvailable("checkout.create.slip");
         const dbConnection = await db.getDb();
         if (!dbConnection) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
@@ -600,6 +612,7 @@ export const appRouter = router({
     walletCheckout: protectedProcedure
       .input(z.object({ couponCode: z.string().optional(), pointsToRedeem: z.string().optional() }))
       .mutation(async ({ input, ctx }) => {
+        await assertCheckoutAvailable("checkout.walletCheckout");
         const cart = await db.getOrCreateCart(ctx.user.id);
         if (!cart) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
@@ -739,6 +752,7 @@ export const appRouter = router({
     uploadPaymentSlip: protectedProcedure
       .input(z.object({ orderId: z.number(), slipImageUrl: requiredStoredFileRefSchema("Payment slip is required") }))
       .mutation(async ({ input, ctx }) => {
+        await assertSlipCheckoutAvailable("orders.uploadPaymentSlip");
         // Use shared slip submission service
         const result = await submitPaymentSlip({
           orderId: input.orderId,
@@ -763,6 +777,7 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ input, ctx }) => {
+        await assertSlipCheckoutAvailable(`payment.uploadSlipFile.${input.context}`);
         // Upload file to S3 using shared service
         const result = await uploadPaymentSlipFile({
           userId: ctx.user.id,
@@ -2102,6 +2117,15 @@ export const appRouter = router({
     }),
 
     settings: router({
+      getCheckoutMaintenance: adminProcedure.query(async () => {
+        return getCheckoutMaintenanceStatus();
+      }),
+
+      updateCheckoutMaintenance: adminProcedure
+        .input(checkoutMaintenanceAdminInputSchema)
+        .mutation(async ({ input }) => {
+          return saveCheckoutMaintenanceStatus(input);
+        }),
       get: adminProcedure
         .input(z.object({ key: z.string() }))
         .query(async ({ input }) => {
@@ -2344,6 +2368,7 @@ export const appRouter = router({
     createTopupRequest: protectedProcedure
       .input(z.object({ requestedAmount: z.string(), slipImageUrl: optionalStoredFileRefSchema }))
       .mutation(async ({ ctx, input }) => {
+        await assertSlipCheckoutAvailable("wallet.createTopupRequest");
         return walletService.createWalletTopupRequest(ctx.user.id, input.requestedAmount, input.slipImageUrl);
       }),
     // DEPRECATED: uploadTopupSlip is kept for backward compatibility with existing pending top-ups
@@ -2351,6 +2376,7 @@ export const appRouter = router({
     uploadTopupSlip: protectedProcedure
       .input(z.object({ topupId: z.number(), slipImageUrl: requiredStoredFileRefSchema("Payment slip is required") }))
       .mutation(async ({ ctx, input }) => {
+        await assertSlipCheckoutAvailable("wallet.uploadTopupSlip");
         return walletService.uploadWalletTopupSlip(input.topupId, ctx.user.id, input.slipImageUrl);
       }),
     admin: router({

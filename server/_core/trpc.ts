@@ -25,6 +25,7 @@ const CLIENT_SAFE_ERROR_CODES = new Set([
   "UNPROCESSABLE_CONTENT",
   "PRECONDITION_FAILED",
   "METHOD_NOT_SUPPORTED",
+  "SERVICE_UNAVAILABLE",
 ]);
 
 /**
@@ -83,9 +84,14 @@ export function looksLikeRawDatabaseError(message: unknown): boolean {
  * - `cause` is never copied into the response.
  */
 export function sanitizeTrpcErrorShape(shape: any, error: { code: string }, logger: Pick<Console, "error"> = console): any {
+  const causeCode = (error as any)?.cause?.code;
+  const safeCauseCode =
+    causeCode === "CHECKOUT_MAINTENANCE" || causeCode === "SLIP_PAYMENT_MAINTENANCE"
+      ? causeCode
+      : undefined;
   const safeShape = {
     ...shape,
-    data: { ...shape?.data, stack: undefined },
+    data: { ...shape?.data, stack: undefined, maintenanceCode: safeCauseCode },
   };
 
   const rawMessage = shape?.message ?? (error as any)?.message;
