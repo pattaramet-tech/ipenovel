@@ -9,10 +9,13 @@ import { Plus, Edit2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
 
+type CouponOwner = { id: number; name: string | null; email: string | null } | null;
+
 export default function AdminCouponsPage() {
   const { user, isAuthenticated } = useAuth();
   const [isCreating, setIsCreating] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingHasUsage, setEditingHasUsage] = useState(false);
   const [formData, setFormData] = useState({
     code: "",
     discountType: "flat" as "flat" | "percentage",
@@ -21,11 +24,19 @@ export default function AdminCouponsPage() {
     maxUsageCount: "",
     expiresAt: "",
     isActive: true,
+    scope: "global" as "global" | "user",
   });
+  const [ownerEmailInput, setOwnerEmailInput] = useState("");
+  const [resolvedOwner, setResolvedOwner] = useState<CouponOwner>(null);
 
   const { data: coupons, isLoading, refetch } = trpc.admin.coupons.list.useQuery(
     undefined,
     { enabled: !!user && user.role === "admin" }
+  );
+
+  const findOwnerQuery = trpc.admin.coupons.findUserByEmail.useQuery(
+    { email: ownerEmailInput.trim() },
+    { enabled: false }
   );
 
   const createMutation = trpc.admin.coupons.create.useMutation({
@@ -34,8 +45,8 @@ export default function AdminCouponsPage() {
       resetForm();
       refetch();
     },
-    onError: () => {
-      toast.error("Failed to create coupon");
+    onError: (error) => {
+      toast.error(error.message || "Failed to create coupon");
     },
   });
 
@@ -45,8 +56,8 @@ export default function AdminCouponsPage() {
       resetForm();
       refetch();
     },
-    onError: () => {
-      toast.error("Failed to update coupon");
+    onError: (error) => {
+      toast.error(error.message || "Failed to update coupon");
     },
   });
 
@@ -55,8 +66,8 @@ export default function AdminCouponsPage() {
       toast.success("Coupon deleted!");
       refetch();
     },
-    onError: () => {
-      toast.error("Failed to delete coupon");
+    onError: (error) => {
+      toast.error(error.message || "Failed to delete coupon");
     },
   });
 
@@ -93,13 +104,18 @@ export default function AdminCouponsPage() {
       maxUsageCount: "",
       expiresAt: "",
       isActive: true,
+      scope: "global",
     });
+    setOwnerEmailInput("");
+    setResolvedOwner(null);
     setIsCreating(false);
     setEditingId(null);
+    setEditingHasUsage(false);
   };
 
   const handleEdit = (coupon: any) => {
     setEditingId(coupon.id);
+    setEditingHasUsage(Boolean(coupon.usageCount) || Boolean(coupon.isOwnershipRestricted && coupon.owner));
     setIsCreating(false);
     setFormData({
       code: coupon.code || "",
@@ -109,12 +125,31 @@ export default function AdminCouponsPage() {
       maxUsageCount: coupon.maxUsageCount ? String(coupon.maxUsageCount) : "",
       expiresAt: coupon.expiresAt ? new Date(coupon.expiresAt).toISOString().split("T")[0] : "",
       isActive: coupon.isActive ?? true,
+      scope: coupon.scope === "user" ? "user" : "global",
     });
+    setResolvedOwner(coupon.owner ?? null);
+    setOwnerEmailInput(coupon.owner?.email ?? "");
+  };
+
+  const handleFindOwner = async () => {
+    if (!ownerEmailInput.trim()) return;
+    const result = await findOwnerQuery.refetch();
+    if (result.data) {
+      setResolvedOwner(result.data);
+      toast.success(`Found ${result.data.name || result.data.email}`);
+    } else {
+      setResolvedOwner(null);
+      toast.error("No user found with that email");
+    }
   };
 
   const handleSave = () => {
     if (!formData.code || !formData.discountValue) {
       toast.error("Code and discount value are required");
+      return;
+    }
+    if (formData.scope === "user" && !resolvedOwner) {
+      toast.error("Search and select an owner by email for a user-specific coupon");
       return;
     }
 
@@ -126,18 +161,29 @@ export default function AdminCouponsPage() {
       maxUsageCount: formData.maxUsageCount ? parseInt(formData.maxUsageCount) : undefined,
       expiresAt: formData.expiresAt ? new Date(formData.expiresAt) : undefined,
       isActive: formData.isActive,
+      scope: formData.scope,
+      ownerUserId: formData.scope === "user" ? resolvedOwner?.id : undefined,
     };
 
     if (editingId) {
-      updateMutation.mutate({ couponId: editingId, ...payload });
+      // Never send scope/ownerUserId for an edit of an already-used coupon -
+      // the server independently rejects this too, but omitting it here
+      // means a no-op re-save can never even attempt the change.
+      const { scope, ownerUserId, ...rest } = payload;
+      const updatePayload = editingHasUsage ? rest : payload;
+      updateMutation.mutate({ couponId: editingId, ...updatePayload });
     } else {
       createMutation.mutate(payload);
     }
   };
 
-  const handleDelete = (couponId: number) => {
+  const handleDelete = (coupon: any) => {
+    if (coupon.usageCount > 0 || coupon.isOwnershipRestricted) {
+      toast.error("This coupon has usage history - deactivate it instead of deleting.");
+      return;
+    }
     if (confirm("Are you sure you want to delete this coupon?")) {
-      deleteMutation.mutate({ couponId });
+      deleteMutation.mutate({ couponId: coupon.id });
     }
   };
 
@@ -170,6 +216,53 @@ export default function AdminCouponsPage() {
                   placeholder="e.g., SAVE20"
                 />
               </div>
+
+              <div>
+                <label className="text-sm font-semibold">Coupon Scope</label>
+                <Select
+                  value={formData.scope}
+                  onValueChange={(value: any) => setFormData({ ...formData, scope: value })}
+                  disabled={editingHasUsage}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="global">Global (anyone can use)</SelectItem>
+                    <SelectItem value="user">User-specific (one owner only)</SelectItem>
+                  </SelectContent>
+                </Select>
+                {editingHasUsage && (
+                  <p className="text-xs text-amber-600 mt-1">
+                    This coupon already has usage history - scope and owner can no longer be changed.
+                  </p>
+                )}
+              </div>
+
+              {formData.scope === "user" && (
+                <div>
+                  <label className="text-sm font-semibold">Owner (search by email)</label>
+                  <div className="flex gap-2">
+                    <Input
+                      value={ownerEmailInput}
+                      onChange={(e) => {
+                        setOwnerEmailInput(e.target.value);
+                        setResolvedOwner(null);
+                      }}
+                      placeholder="user@example.com"
+                      disabled={editingHasUsage}
+                    />
+                    <Button type="button" variant="outline" onClick={handleFindOwner} disabled={editingHasUsage}>
+                      Find
+                    </Button>
+                  </div>
+                  {resolvedOwner && (
+                    <p className="text-xs text-green-700 mt-1">
+                      Owner: {resolvedOwner.name || "(no name)"} - {resolvedOwner.email} (ID {resolvedOwner.id})
+                    </p>
+                  )}
+                </div>
+              )}
 
               <div className="grid md:grid-cols-2 gap-4">
                 <div>
@@ -271,6 +364,7 @@ export default function AdminCouponsPage() {
               <thead>
                 <tr className="border-b bg-slate-50">
                   <th className="text-left p-3 font-semibold">Code</th>
+                  <th className="text-left p-3 font-semibold">Scope / Owner</th>
                   <th className="text-left p-3 font-semibold">Discount</th>
                   <th className="text-left p-3 font-semibold">Min Purchase</th>
                   <th className="text-left p-3 font-semibold">Usage</th>
@@ -283,6 +377,22 @@ export default function AdminCouponsPage() {
                 {coupons.map((coupon: any) => (
                   <tr key={coupon.id} className="border-b hover:bg-slate-50">
                     <td className="p-3 font-medium">{coupon.code}</td>
+                    <td className="p-3">
+                      {coupon.isOwnershipRestricted ? (
+                        <div>
+                          <span className="text-xs px-2 py-1 rounded bg-purple-100 text-purple-800">User-owned</span>
+                          {coupon.owner && (
+                            <p className="text-xs text-slate-600 mt-1">
+                              {coupon.owner.name || "(no name)"}
+                              <br />
+                              {coupon.owner.email} (ID {coupon.owner.id})
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-xs px-2 py-1 rounded bg-blue-100 text-blue-800">Global</span>
+                      )}
+                    </td>
                     <td className="p-3">
                       {coupon.discountType === "flat" ? "฿" : ""}{coupon.discountValue || "0.00"}
                       {coupon.discountType === "percentage" ? "%" : ""}
@@ -312,8 +422,9 @@ export default function AdminCouponsPage() {
                       <Button
                         size="sm"
                         variant="destructive"
-                        onClick={() => handleDelete(coupon.id)}
-                        disabled={deleteMutation.isPending}
+                        onClick={() => handleDelete(coupon)}
+                        disabled={deleteMutation.isPending || coupon.usageCount > 0 || coupon.isOwnershipRestricted}
+                        title={coupon.usageCount > 0 || coupon.isOwnershipRestricted ? "Has usage history - deactivate instead" : "Delete"}
                       >
                         <Trash2 className="w-4 h-4" />
                       </Button>

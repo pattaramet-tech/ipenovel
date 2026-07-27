@@ -135,31 +135,41 @@ describe("migration 0024 - safety invariants unchanged", () => {
     expect(isByteIdenticalToBase("drizzle/0027_add_daily_checkin_and_coupon_cap.sql")).toBe(true);
   });
 
-  it("the 0024 fix itself added no migration - the only entry past 0030 is the known, unrelated 0031", () => {
+  it("the 0024 fix itself added no migration - the only entries past 0030 are the known, unrelated 0031 and 0032", () => {
     // This assertion's job is "repairing migration 0024 did not require a new
     // migration", not "no migration may ever be added again". Migration 0031
     // (dailyCheckins.couponId -> nullable, for the 1-point Daily Check-in
-    // reward) is a separate, later, intentional change, so it is named
-    // explicitly here rather than silently allowed.
+    // reward) and migration 0032 (coupons.scope/ownerUserId, for
+    // fix/coupon-owner-enforcement) are separate, later, intentional
+    // changes, so each is named explicitly here rather than silently allowed.
     const journal = JSON.parse(fs.readFileSync(path.join(repoRoot, "drizzle/meta/_journal.json"), "utf8"));
     expect(journal.entries.find((e: any) => e.idx === 31)?.tag).toBe("0031_enable_daily_checkin_point_rewards");
-    expect(journal.entries.find((e: any) => e.idx === 32)).toBeUndefined();
+    expect(journal.entries.find((e: any) => e.idx === 32)?.tag).toBe("0032_add_coupon_ownership_scope");
+    expect(journal.entries.find((e: any) => e.idx === 33)).toBeUndefined();
 
     const strayFiles = fs
       .readdirSync(path.join(repoRoot, "drizzle"))
-      .filter((f) => /^003[12]/.test(f) && f !== "0031_enable_daily_checkin_point_rewards.sql");
+      .filter(
+        (f) =>
+          /^003[123]/.test(f) &&
+          f !== "0031_enable_daily_checkin_point_rewards.sql" &&
+          f !== "0032_add_coupon_ownership_scope.sql"
+      );
     expect(strayFiles).toHaveLength(0);
   });
 
-  it("migration 0030 is still recorded at idx 30, immediately before 0031", () => {
+  it("migration 0030 is still recorded at idx 30, immediately before 0031 and 0032", () => {
     const journal = JSON.parse(fs.readFileSync(path.join(repoRoot, "drizzle/meta/_journal.json"), "utf8"));
     const entry0030 = journal.entries.find((e: any) => e.idx === 30);
     expect(entry0030.tag).toBe("0030_repair_missing_daily_checkins");
 
+    const entry0031 = journal.entries.find((e: any) => e.idx === 31);
+    expect(entry0031.tag).toBe("0031_enable_daily_checkin_point_rewards");
+
     const last = journal.entries[journal.entries.length - 1];
-    expect(last.tag).toBe("0031_enable_daily_checkin_point_rewards");
-    expect(last.idx).toBe(31);
-    expect(journal.entries).toHaveLength(32);
+    expect(last.tag).toBe("0032_add_coupon_ownership_scope");
+    expect(last.idx).toBe(32);
+    expect(journal.entries).toHaveLength(33);
   });
 
   it("no destructive statement (DROP/TRUNCATE/RENAME/DELETE) was introduced anywhere in migration 0024", () => {

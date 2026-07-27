@@ -62,22 +62,21 @@ describe("migration 0031 - journal integrity", () => {
     expect(entry.tag).toBe(MIGRATION_TAG);
   });
 
-  it("is the last entry and its timestamp is strictly after migration 0030's", () => {
-    const last = journal.entries[journal.entries.length - 1];
-    expect(last.tag).toBe(MIGRATION_TAG);
-    expect(journal.entries).toHaveLength(32);
+  it("comes strictly after migration 0030's timestamp (0032, a separate later migration for fix/coupon-owner-enforcement, is now the actual last entry)", () => {
+    const entry = journal.entries.find((e: any) => e.idx === 31);
+    expect(entry.tag).toBe(MIGRATION_TAG);
 
     const migration0030 = journal.entries.find((e: any) => e.idx === 30);
     expect(migration0030.when).toBe(1784602000000);
-    expect(last.when).toBeGreaterThan(migration0030.when);
+    expect(entry.when).toBeGreaterThan(migration0030.when);
   });
 
   it("has a drizzle-generated (not hand-invented) millisecond timestamp", () => {
-    const last = journal.entries[journal.entries.length - 1];
+    const entry = journal.entries.find((e: any) => e.idx === 31);
     // A hand-written placeholder would be a suspiciously round number.
-    expect(Number.isInteger(last.when)).toBe(true);
-    expect(String(last.when)).toHaveLength(13);
-    expect(last.when % 1000).not.toBe(0);
+    expect(Number.isInteger(entry.when)).toBe(true);
+    expect(String(entry.when)).toHaveLength(13);
+    expect(entry.when % 1000).not.toBe(0);
   });
 
   it("has a matching snapshot file", () => {
@@ -164,9 +163,15 @@ describe("migration 0031 - earlier migrations remain untouched", () => {
     expect(isUnchangedSinceBase("drizzle/meta/0030_snapshot.json")).toBe(true);
   });
 
-  it("no migration 0032 exists", () => {
-    expect(journal.entries.find((e: any) => e.idx === 32)).toBeUndefined();
-    expect(fs.readdirSync(path.join(repoRoot, "drizzle")).filter((f) => /^0032/.test(f))).toHaveLength(0);
+  it("0032 (fix/coupon-owner-enforcement) is a separate, later, intentional migration - not something 0031 itself introduced", () => {
+    // Same reasoning as the "no migration may ever be added again" note
+    // above this describe block: 0031's job is proven by the assertions in
+    // this file, and a later, unrelated migration adding coupons.scope/
+    // ownerUserId doesn't retroactively make 0031 wrong. Named explicitly
+    // here (like 0031 is in migration-0024-content-downgrade-static.test.ts)
+    // rather than silently ignored.
+    expect(journal.entries.find((e: any) => e.idx === 32)?.tag).toBe("0032_add_coupon_ownership_scope");
+    expect(journal.entries.find((e: any) => e.idx === 33)).toBeUndefined();
   });
 
   it("every 0000-0030 journal entry kept its original timestamp", () => {

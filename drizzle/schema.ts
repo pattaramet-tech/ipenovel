@@ -447,11 +447,36 @@ export const coupons = mysqlTable(
     usageCount: int("usageCount").default(0).notNull(),
     isActive: boolean("isActive").default(true).notNull(),
     expiresAt: timestamp("expiresAt"),
+    // Coupon ownership scope - added by migration 0032 (fix/coupon-owner-enforcement).
+    // "global": usable by any user, subject only to the normal
+    // isActive/expiresAt/usageCount/minPurchaseAmount checks - this is the
+    // default, preserving every pre-existing coupon's exact behavior with
+    // zero backfill (see docs on migration 0032).
+    // "user": usable only by ownerUserId. Application layer (server/db.ts
+    // createCoupon/updateCoupon) enforces scope="user" <=> ownerUserId set -
+    // deliberately not a DB CHECK constraint, to stay consistent with how
+    // every other cross-field invariant in this schema (money normalization,
+    // episode sale mode, etc.) is enforced in code, not SQL.
+    //
+    // This is independent of (and does not replace) the legacy
+    // sportsMatchRewards/dailyCheckins reward-coupon ownership fallback in
+    // server/db.ts's getRewardCouponOwnership() - a coupon can be protected
+    // by EITHER mechanism, and both are checked. Existing reward coupons
+    // keep scope="global"/ownerUserId=NULL (the column default) since they
+    // were never backfilled; they remain fully protected because
+    // getRewardCouponOwnership()'s join-based check runs unconditionally,
+    // regardless of what `scope` says.
+    scope: mysqlEnum("scope", ["global", "user"]).default("global").notNull(),
+    // Nullable - only ever set when scope="user". NOT a trusted client input:
+    // always resolved server-side (admin.coupons.create/update looks the
+    // target user up via db.getUserById before writing this column).
+    ownerUserId: int("ownerUserId"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (table) => ({
     codeIdx: uniqueIndex("coupons_code_idx").on(table.code),
+    ownerUserIdIdx: index("coupons_ownerUserId_idx").on(table.ownerUserId),
   })
 );
 
