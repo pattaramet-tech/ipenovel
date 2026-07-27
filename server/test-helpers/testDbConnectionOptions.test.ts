@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { buildTestDbConnectionOptions } from "./testDbConnectionOptions";
+import { buildTestDbConnectionOptions, isLoopbackTestHost } from "./testDbConnectionOptions";
 import { redactDatabaseUrl } from "./testDatabaseGuard";
 
 const repoRoot = path.resolve(__dirname, "..", "..");
@@ -108,6 +108,93 @@ describe("buildTestDbConnectionOptions - fails closed", () => {
     expect(() =>
       buildTestDbConnectionOptions("mysql://user:pw@gateway01.ap-southeast-1.prod.aws.tidbcloud.com:4000/ipenovel_prod")
     ).toThrow();
+  });
+});
+
+describe("isLoopbackTestHost - loopback-only integration-test TLS exception (NOT an application runtime policy)", () => {
+  it.each(["127.0.0.1", "localhost", "::1", "LOCALHOST", "[::1]"])(
+    "%s is recognized as loopback",
+    (host) => {
+      expect(isLoopbackTestHost(host)).toBe(true);
+    }
+  );
+
+  it.each([
+    "127.0.0.1.example.com",
+    "localhost.example.com",
+    "%6c%6f%63%61%6c%68%6f%73%74",
+    "0177.0.0.1",
+    "2130706433",
+    "example.com",
+    "203.0.113.5",
+    "gateway01.ap-southeast-1.prod.aws.tidbcloud.com",
+    "",
+  ])("%s is never recognized as loopback (lookalikes and remote hosts fail closed)", (host) => {
+    expect(isLoopbackTestHost(host)).toBe(false);
+  });
+
+  it("fails closed (false) for null/undefined rather than throwing", () => {
+    expect(isLoopbackTestHost(null)).toBe(false);
+    expect(isLoopbackTestHost(undefined)).toBe(false);
+  });
+});
+
+describe("buildTestDbConnectionOptions - loopback-only integration-test TLS exception", () => {
+  it("omits ssl entirely for 127.0.0.1 + ipenovel_test", () => {
+    const options = buildTestDbConnectionOptions("mysql://root:pw@127.0.0.1:3308/ipenovel_test");
+    expect(options.ssl).toBeUndefined();
+  });
+
+  it("omits ssl entirely for localhost + ipenovel_test", () => {
+    const options = buildTestDbConnectionOptions("mysql://root:pw@localhost:3308/ipenovel_test");
+    expect(options.ssl).toBeUndefined();
+  });
+
+  it("omits ssl entirely for [::1] (IPv6 loopback) + ipenovel_test", () => {
+    const options = buildTestDbConnectionOptions("mysql://root:pw@[::1]:3308/ipenovel_test");
+    expect(options.ssl).toBeUndefined();
+  });
+
+  it("never sets rejectUnauthorized: false or ssl: false as the mechanism - ssl is simply absent from the object", () => {
+    const options = buildTestDbConnectionOptions("mysql://root:pw@127.0.0.1:3308/ipenovel_test");
+    expect(options).not.toHaveProperty("ssl");
+    expect(Object.prototype.hasOwnProperty.call(options, "ssl")).toBe(false);
+  });
+
+  it("still requires TLS for a remote hostname even with the exact test database name", () => {
+    const options = buildTestDbConnectionOptions(TIDB_URL);
+    expect(options.ssl).toBeDefined();
+    expect(options.ssl?.rejectUnauthorized).toBe(true);
+  });
+
+  it("still requires TLS for a remote IP address even with the exact test database name", () => {
+    const options = buildTestDbConnectionOptions("mysql://root:pw@203.0.113.5:3306/ipenovel_test");
+    expect(options.ssl).toBeDefined();
+    expect(options.ssl?.rejectUnauthorized).toBe(true);
+  });
+
+  it.each(["127.0.0.1.example.com", "localhost.example.com"])(
+    "lookalike host %s still requires TLS, never bypasses it",
+    (host) => {
+      const options = buildTestDbConnectionOptions(`mysql://root:pw@${host}:3306/ipenovel_test`);
+      expect(options.ssl).toBeDefined();
+      expect(options.ssl?.rejectUnauthorized).toBe(true);
+    }
+  );
+
+  it("a percent-encoded host lookalike still requires TLS, never bypasses it", () => {
+    const options = buildTestDbConnectionOptions("mysql://root:pw@%6c%6f%63%61%6c%68%6f%73%74:3306/ipenovel_test");
+    expect(options.ssl).toBeDefined();
+    expect(options.ssl?.rejectUnauthorized).toBe(true);
+  });
+
+  it("a loopback host with a database name that is not the exact test database name is rejected outright (throws), never silently downgraded to no-TLS", () => {
+    expect(() => buildTestDbConnectionOptions("mysql://root:pw@127.0.0.1:3308/ipenovel_prod")).toThrow();
+    expect(() => buildTestDbConnectionOptions("mysql://root:pw@localhost:3308/production")).toThrow();
+  });
+
+  it("a malformed URL fails closed (throws) rather than defaulting to skipping TLS", () => {
+    expect(() => buildTestDbConnectionOptions("not-a-url")).toThrow();
   });
 });
 
