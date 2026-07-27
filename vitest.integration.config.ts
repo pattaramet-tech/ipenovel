@@ -27,6 +27,20 @@ export default defineConfig({
     name: "integration",
     environment: "node",
     include: ["server/**/*.integration.test.ts"],
+    // Dummy, non-secret private-R2 config so server/_core/env.ts's
+    // module-level ENV const (read once, at import time - see comments on
+    // OCR_ENABLED elsewhere in this project) resolves isR2PrivateConfigured()
+    // to true for the integration project. Every test file that exercises
+    // this path mocks @aws-sdk/client-s3 / @aws-sdk/s3-request-presigner
+    // itself - no real network call is ever made using these values.
+    env: {
+      R2_PRIVATE_ACCOUNT_ID: "test-account",
+      R2_PRIVATE_ACCESS_KEY_ID: "test-access-key-id",
+      R2_PRIVATE_SECRET_ACCESS_KEY: "test-secret-access-key",
+      R2_PRIVATE_ENDPOINT: "https://test-account.r2.cloudflarestorage.com",
+      R2_PRIVATE_BUCKET_NAME: "test-private-bucket",
+      R2_PRIVATE_SIGNED_URL_EXPIRES_SECONDS: "900",
+    },
     globalSetup: ["./vitest.integration.globalsetup.ts"],
     // Runs inside each worker's own module registry, unlike globalSetup -
     // see vitest.integration.setupfile.ts for why both are needed.

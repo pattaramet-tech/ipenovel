@@ -1,6 +1,7 @@
 import { eq, and, asc } from "drizzle-orm";
 import { getDb } from "../db";
 import { episodes, episodePurchases, purchases, walletAccounts, novels } from "../../drizzle/schema";
+import { resolveStoredFileValue, R2PrivateStorageError } from "./r2PrivateStorage";
 
 export interface ReaderEpisodeData {
   episode: any;
@@ -286,12 +287,29 @@ export async function getReaderEpisode(userId: number | undefined, episodeId: nu
   const { content: _content, fileUrl: _fileUrl, ...safeEpisode } = ep;
   const { hasContent, hasLegacyFile } = computeContentFlags(ep);
 
+  // Resolve to an actually-fetchable link only AFTER canRead is confirmed
+  // (free episode, purchased, or admin) - a private object reference is
+  // never handed to the client raw, and a resolution failure degrades to
+  // null rather than breaking the whole reader page.
+  let resolvedFileUrl: string | null = null;
+  if (canRead && ep.fileUrl) {
+    try {
+      resolvedFileUrl = await resolveStoredFileValue(ep.fileUrl, "episodeFile");
+    } catch (error) {
+      console.error(
+        "[readerService.getReaderEpisode] Failed to resolve episode file reference",
+        error instanceof R2PrivateStorageError ? error.getSafeDetails() : { episodeId }
+      );
+      resolvedFileUrl = null;
+    }
+  }
+
   const result: ReaderEpisodeData = {
     episode: {
       ...safeEpisode,
       hasContent,
       hasLegacyFile,
-      fileUrl: canRead ? ep.fileUrl ?? null : null,
+      fileUrl: resolvedFileUrl,
     },
     novel,
     canRead,

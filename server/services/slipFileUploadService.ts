@@ -4,10 +4,10 @@
  * Used by payment.uploadSlipFile endpoint and optionally /api/upload fallback
  */
 
-import { storagePut } from "../storage";
+import { putPrivateObject, R2PrivateStorageError } from "./r2PrivateStorage";
+import { toPrivateObjectRef } from "@shared/privateFileRef";
 import { TRPCError } from "@trpc/server";
 import {
-  StorageUploadError,
   normalizeMimeType,
   validateMagicBytes,
   sanitizeLogData,
@@ -165,9 +165,14 @@ export async function uploadPaymentSlipFile(
       mimeType: normalizedMimeType,
     });
 
-    // Step 7: Upload to S3
+    // Step 7: Upload to the PRIVATE R2 bucket - never the public bucket, and
+    // never a URL. slipImageUrl is a private object reference
+    // ("r2p:payment-slips/...") that only ever resolves to a working link
+    // via resolveStoredFileValue() at the moment an authorized reader
+    // (admin, OCR) actually needs it - it is never a permanent public URL.
     try {
-      const { url } = await storagePut(fileKey, fileBuffer, normalizedMimeType);
+      const { key } = await putPrivateObject("paymentSlip", fileKey, fileBuffer, normalizedMimeType);
+      const slipImageUrl = toPrivateObjectRef(key);
 
       const isPDF = normalizedMimeType === "application/pdf";
       const userMessage = isPDF
@@ -176,13 +181,12 @@ export async function uploadPaymentSlipFile(
 
       console.info("[SlipUpload]", requestId, "Upload successful:", {
         ...context,
-        fileKey,
-        url: url.substring(0, 100) + "...",
+        fileKey: key,
         isPDF,
       });
 
       return {
-        slipImageUrl: url,
+        slipImageUrl,
         key: fileKey,
         mimeType: normalizedMimeType,
         size: fileBuffer.length,
@@ -191,17 +195,22 @@ export async function uploadPaymentSlipFile(
         orderTotal: input.orderTotal,
       };
     } catch (error: any) {
-      // Handle StorageUploadError
-      if (error instanceof StorageUploadError) {
-        console.error("[SlipUpload]", requestId, "Storage upload failed:", {
+      // Handle R2PrivateStorageError - map by `.reason` only, never forward
+      // `.message` (which may echo an underlying SDK error string) to the
+      // client, and never log/return the bucket, key path beyond what's
+      // already in getSafeDetails(), endpoint, or credentials.
+      if (error instanceof R2PrivateStorageError) {
+        console.error("[SlipUpload]", requestId, "Private R2 upload failed:", {
           ...context,
           ...error.getSafeDetails(),
         });
 
-        const trpcError = error.toTRPCError();
         throw new TRPCError({
-          code: trpcError.code,
-          message: trpcError.message,
+          code: error.reason === "not_configured" ? "SERVICE_UNAVAILABLE" : "INTERNAL_SERVER_ERROR",
+          message:
+            error.reason === "not_configured"
+              ? "ระบบอัปโหลดไฟล์ยังไม่พร้อมใช้งาน กรุณาติดต่อแอดมิน"
+              : "อัปโหลดไฟล์ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
         });
       }
 
