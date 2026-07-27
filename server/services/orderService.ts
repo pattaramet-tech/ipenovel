@@ -3,6 +3,30 @@ import * as db from "../db";
 import { ApprovalService } from "./approvalService";
 import { normalizeMoneyAmount, formatMoney } from "../helpers/moneyNormalizer";
 
+const COUPON_OWNERSHIP_DENIAL_PATTERNS = [/^coupon not found$/i, /belongs to another user/i];
+
+/**
+ * Maps an internal coupon-validation error to a client-safe message.
+ * "Coupon not found" and "belongs to another user" collapse to the exact
+ * same generic message, so a client can never distinguish "this code
+ * doesn't exist" from "this code exists but isn't yours" - the latter
+ * would otherwise let someone enumerate other users' personal/reward
+ * coupon codes by trial and error. Every other validation reason (expired,
+ * inactive, usage limit, minimum purchase amount, already used) is only
+ * ever reached AFTER ownership is already confirmed, so it's safe to
+ * surface verbatim - it can only ever describe the caller's own coupon.
+ * Callers at the tRPC boundary (server/routers.ts) should always pass a
+ * caught coupon-validation error through this before putting it in a
+ * TRPCError message.
+ */
+export function toSafeCouponClientMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (COUPON_OWNERSHIP_DENIAL_PATTERNS.some((pattern) => pattern.test(message))) {
+    return "Coupon not found or not available";
+  }
+  return message || "Invalid coupon";
+}
+
 /**
  * Generate order number in MMDDNNNNNNN format
  * MM = month, DD = day, NNNNNNN = timestamp-based sequence for uniqueness
@@ -33,29 +57,36 @@ export async function validateAndApplyCoupon(couponCode: string, subtotal: strin
     throw new Error("Coupon not found");
   }
 
-  // Check if this is a reward coupon (sports match win or daily check-in)
-  // and enforce ownership + status. getRewardCouponOwnership checks every
-  // known reward-tracking table - see docs/DAILY_CHECKIN_COUPON.md PART A.
-  if (userId && coupon.id) {
-    const ownership = await db.getRewardCouponOwnership(coupon.id, tx);
-
-    if (ownership) {
-      // Enforce ownership: reward coupon must belong to this user
-      if (ownership.userId !== userId) {
-        throw new Error("This coupon belongs to another user");
-      }
-
-      // Enforce one-time use: reward coupon must be in "issued" status
-      if (ownership.status !== "issued") {
-        if (ownership.status === "used") {
-          throw new Error("This reward coupon has already been used");
-        } else if (ownership.status === "expired") {
-          throw new Error("This reward coupon has expired");
-        } else if (ownership.status === "void") {
-          throw new Error("This reward coupon has been cancelled");
-        } else {
-          throw new Error(`Invalid reward coupon status: ${ownership.status}`);
-        }
+  // Ownership enforcement covers BOTH the new explicit
+  // coupons.scope="user"/ownerUserId columns and the legacy
+  // sportsMatchRewards/dailyCheckins reward-table fallback (see
+  // db.resolveCouponOwnership) - and is UNCONDITIONAL, never skipped just
+  // because no userId was passed in. A personal/reward coupon is never
+  // usable by an unauthenticated caller, and never usable by anyone but its
+  // owner, no matter which checkout path calls this function.
+  const ownership = await db.resolveCouponOwnership(coupon, tx);
+  if (ownership.isOwnershipRestricted) {
+    if (!userId) {
+      // Not logged in (or no authenticated userId reached this call at
+      // all) - identical message to "coupon not found" further up, so a
+      // caller can never learn that a guessed code is valid but not theirs.
+      throw new Error("Coupon not found");
+    }
+    if (ownership.ownerUserId !== userId) {
+      throw new Error("This coupon belongs to another user");
+    }
+    // Reward-coupon status (issued/used/expired/void) is only reachable
+    // once ownership is already confirmed, so it's safe to be specific -
+    // this can only ever describe the caller's own coupon.
+    if (ownership.rewardStatus && ownership.rewardStatus !== "issued") {
+      if (ownership.rewardStatus === "used") {
+        throw new Error("This reward coupon has already been used");
+      } else if (ownership.rewardStatus === "expired") {
+        throw new Error("This reward coupon has expired");
+      } else if (ownership.rewardStatus === "void") {
+        throw new Error("This reward coupon has been cancelled");
+      } else {
+        throw new Error(`Invalid reward coupon status: ${ownership.rewardStatus}`);
       }
     }
   }
@@ -258,7 +289,28 @@ export async function createOrderFromCart(
 /**
  * Approve payment and create purchases
  */
+/**
+ * Approve a payment and finalize its order (points, purchases, coupon
+ * usage) atomically. If the caller doesn't already have an open
+ * transaction, this opens its own (mirroring db.ts's
+ * withUserPointsLock/withCouponLock self-transacting convention) so that a
+ * failure partway through - most importantly, finalizeOrderCompletion's
+ * coupon-usage step losing a concurrency race, see db.recordCouponUsage -
+ * rolls back the payment/order status changes too, instead of leaving the
+ * payment marked "approved" with incomplete finalization (no purchase, no
+ * points, no recorded coupon usage). No current caller passes a `tx`, so
+ * this is a pure internal atomicity fix, not a signature change.
+ */
 export async function approvePayment(paymentId: number, approvedBy: string, adminLabel?: string, tx?: any): Promise<{ message: string }> {
+  if (tx) {
+    return approvePaymentInTx(paymentId, approvedBy, adminLabel, tx);
+  }
+  const database = await db.getDb();
+  if (!database) throw new Error("Database not available");
+  return database.transaction((newTx: any) => approvePaymentInTx(paymentId, approvedBy, adminLabel, newTx));
+}
+
+async function approvePaymentInTx(paymentId: number, approvedBy: string, adminLabel: string | undefined, tx: any): Promise<{ message: string }> {
   const payment = await db.getPaymentById(paymentId, tx);
   if (!payment) {
     throw new Error("Payment not found");
@@ -285,11 +337,11 @@ export async function approvePayment(paymentId: number, approvedBy: string, admi
   }
 
   // Update order status and payment status
-  await db.updateOrder(order.id, { 
+  await db.updateOrder(order.id, {
     status: "approved",
     paymentStatus: "approved"
   }, tx);
-  
+
   // Also update reviewedByUserId for backward compatibility
   if (!isNaN(approvedByNum)) {
     await db.approvePayment(paymentId, approvedByNum, tx);

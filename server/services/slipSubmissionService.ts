@@ -190,59 +190,74 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
       };
     }
 
-    // Auto-approved: update payment record with OCR metadata
-    await ApprovalService.approvePaymentWithSource(
-      payment.id,
-      "auto",
-      { autoApprovedAt: new Date() }
-    );
-    
-    // Also save OCR metadata to payment record
-    await db.updatePayment(payment.id, {
-      extractedData: verificationResult.extractedData ? JSON.stringify(verificationResult.extractedData) : null,
-      reviewReason: null,
-      fingerprint: verificationResult.fingerprint || null,
-      linkedOrderId: order.id,
-      linkedPaymentId: payment.id,
-      ocrConfidence: verificationResult.ocrConfidence,
-      ocrDecision: verificationResult.ocrDecision || "auto_approved",
-    });
-    
-    // Auto-approved: mark order as approved (valid enum value)
-    await db.updateOrder(order.id, {
-      paymentStatus: "approved",
-      status: "approved",
-    });
-    // Record order history for auto-approval with detailed breakdown
-    const approvalNote = generateApprovalNote({
-      isAutoApproved: true,
-      isShadowMode: false,
-      ocrConfidence: verificationResult.ocrConfidence,
-      detectedBank: verificationResult.detectedBank,
-      extractedAmount: verificationResult.extractedData?.amount,
-      orderTotal: order.totalAmount as number,
-      extractedDate: verificationResult.extractedData?.transactionDate
-        ? verificationResult.extractedData.transactionDate.toLocaleString("en-TH", {
-            year: "numeric",
-            month: "2-digit",
-            day: "2-digit",
-            hour: "2-digit",
-            minute: "2-digit",
-          })
-        : undefined,
-      breakdown: verificationResult.breakdown,
-    });
+    // Auto-approve, save metadata, mark the order approved, record history,
+    // and finalize (points/purchases/coupon usage) all in ONE transaction -
+    // if finalizeOrderCompletion's coupon-usage step loses a concurrency
+    // race (see db.recordCouponUsage's row lock + re-check), the whole
+    // auto-approval rolls back instead of leaving the payment/order marked
+    // "approved" with incomplete finalization. A throw here is already
+    // handled by every caller as "processing deferred, order stays
+    // pending/submitted for manual review" - never reported as a checkout
+    // failure - so this is a safe place for that new failure mode to surface.
+    const dbConnection = await db.getDb();
+    if (!dbConnection) {
+      throw new Error("Database connection failed");
+    }
+    await dbConnection.transaction(async (tx: any) => {
+      await ApprovalService.approvePaymentWithSource(
+        payment.id,
+        "auto",
+        { autoApprovedAt: new Date() },
+        tx
+      );
 
-    await db.recordOrderHistory({
-      orderId: order.id,
-      action: "payment_auto_approved",
-      fromStatus: order.status,
-      toStatus: "approved",
-      actorUserId: 0, // 0 indicates system auto-approval
-      note: approvalNote,
+      // Also save OCR metadata to payment record
+      await db.updatePayment(payment.id, {
+        extractedData: verificationResult.extractedData ? JSON.stringify(verificationResult.extractedData) : null,
+        reviewReason: null,
+        fingerprint: verificationResult.fingerprint || null,
+        linkedOrderId: order.id,
+        linkedPaymentId: payment.id,
+        ocrConfidence: verificationResult.ocrConfidence,
+        ocrDecision: verificationResult.ocrDecision || "auto_approved",
+      }, tx);
+
+      // Auto-approved: mark order as approved (valid enum value)
+      await db.updateOrder(order.id, {
+        paymentStatus: "approved",
+        status: "approved",
+      }, tx);
+      // Record order history for auto-approval with detailed breakdown
+      const approvalNote = generateApprovalNote({
+        isAutoApproved: true,
+        isShadowMode: false,
+        ocrConfidence: verificationResult.ocrConfidence,
+        detectedBank: verificationResult.detectedBank,
+        extractedAmount: verificationResult.extractedData?.amount,
+        orderTotal: order.totalAmount as number,
+        extractedDate: verificationResult.extractedData?.transactionDate
+          ? verificationResult.extractedData.transactionDate.toLocaleString("en-TH", {
+              year: "numeric",
+              month: "2-digit",
+              day: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit",
+            })
+          : undefined,
+        breakdown: verificationResult.breakdown,
+      });
+
+      await db.recordOrderHistory({
+        orderId: order.id,
+        action: "payment_auto_approved",
+        fromStatus: order.status,
+        toStatus: "approved",
+        actorUserId: 0, // 0 indicates system auto-approval
+        note: approvalNote,
+      }, tx);
+      // Finalize order: create purchase records, award loyalty points, record coupon usage
+      await orderService.finalizeOrderCompletion(order.id, input.userId, tx);
     });
-    // Finalize order: create purchase records, award loyalty points, record coupon usage
-    await orderService.finalizeOrderCompletion(order.id, input.userId);
   } else {
     // Pending review: update payment record with OCR metadata
     await ApprovalService.sendToReview(

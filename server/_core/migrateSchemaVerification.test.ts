@@ -63,19 +63,22 @@ function fakeConn(
 }
 
 describe("findMissingSchemaObjects - required object lists", () => {
-  it("requires exactly the five daily check-in tables", () => {
+  it("requires the five daily check-in tables plus coupons", () => {
     expect(REQUIRED_TABLES).toEqual([
       "dailyCheckins",
       "dailyCheckinCampaigns",
       "dailyCheckinCouponTemplates",
       "dailyCheckinRewardRules",
       "dailyCheckinRewardGrants",
+      "coupons",
     ]);
   });
 
-  it("requires coupons.maxDiscountAmount and the daily check-in point-reward columns", () => {
+  it("requires coupons.maxDiscountAmount/scope/ownerUserId and the daily check-in point-reward columns", () => {
     expect(REQUIRED_COLUMNS).toEqual([
       { table: "coupons", column: "maxDiscountAmount" },
+      { table: "coupons", column: "scope" },
+      { table: "coupons", column: "ownerUserId" },
       { table: "dailyCheckins", column: "couponId" },
       { table: "dailyCheckinRewardGrants", column: "pointsTransactionId" },
       { table: "dailyCheckinRewardGrants", column: "streakCountAtGrant" },
@@ -89,8 +92,9 @@ describe("findMissingSchemaObjects - required object lists", () => {
     expect(REQUIRED_NULLABLE_COLUMNS).toEqual([{ table: "dailyCheckins", column: "couponId" }]);
   });
 
-  it("requires the dailyCheckins indexes plus the reward-grant idempotency guards", () => {
+  it("requires coupons_ownerUserId_idx plus the dailyCheckins indexes and reward-grant idempotency guards", () => {
     expect(REQUIRED_INDEXES.map((i) => i.index)).toEqual([
+      "coupons_ownerUserId_idx",
       "PRIMARY",
       "unique_daily_checkin_user_date_campaign",
       "unique_daily_checkins_coupon",
@@ -100,6 +104,13 @@ describe("findMissingSchemaObjects - required object lists", () => {
       "dailyCheckinRewardRules_campaign_dedupe_unique",
       "dailyCheckinCampaigns_campaignKey_unique",
     ]);
+  });
+
+  it("actually checks coupons_ownerUserId_idx instead of silently skipping it (regression: the index-presence gate only runs for tables listed in REQUIRED_TABLES)", async () => {
+    const allButCouponsIndex = REQUIRED_INDEXES.map((i) => i.index).filter((i) => i !== "coupons_ownerUserId_idx");
+    const { query } = fakeConn("camel", REQUIRED_TABLES, true, allButCouponsIndex);
+    const missing = await findMissingSchemaObjects({ query });
+    expect(missing).toEqual(["index coupons.coupons_ownerUserId_idx"]);
   });
 });
 

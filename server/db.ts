@@ -166,6 +166,17 @@ export async function getUserById(userId: number) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+/** Exact-match email lookup, any role - used by the admin coupon-owner
+ *  picker (admin.coupons.findUserByEmail) to find a candidate user by the
+ *  email an admin already knows, before ownerUserId is independently
+ *  re-verified server-side at create/update time. */
+export async function getUserByEmail(email: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
 // ============ NOVELS & EPISODES ============
 
 export async function getAllNovels(limit?: number, offset?: number) {
@@ -1481,6 +1492,46 @@ export async function getRewardCouponOwnership(
   return null;
 }
 
+export interface CouponOwnershipResolution {
+  /** True when this coupon may only be used by ownerUserId. */
+  isOwnershipRestricted: boolean;
+  ownerUserId: number | null;
+  /** Reward-table status ("issued"/"used"/"expired"/"void"), or null when
+   *  ownership comes from the new scope="user"/ownerUserId columns instead
+   *  of a legacy reward table (those have no separate status gate here -
+   *  isActive/expiresAt/usageCount already cover them). */
+  rewardStatus: string | null;
+}
+
+/**
+ * Single shared source of truth for "is this coupon restricted to one
+ * owner, and to whom" - covers BOTH the new explicit
+ * coupons.scope/ownerUserId columns AND the legacy
+ * sportsMatchRewards/dailyCheckins reward-table fallback. Both
+ * orderService.validateAndApplyCoupon and getActiveCouponsForCart (below)
+ * call this instead of re-implementing the precedence rule.
+ *
+ * The legacy reward-table check always runs, regardless of what `scope`
+ * says - this is what keeps every pre-existing reward coupon (created
+ * before this column existed, so scope defaulted to "global") fully
+ * protected without any backfill.
+ */
+export async function resolveCouponOwnership(
+  coupon: { id: number; scope?: string | null; ownerUserId?: number | null },
+  tx?: any
+): Promise<CouponOwnershipResolution> {
+  if (coupon.scope === "user" && coupon.ownerUserId) {
+    return { isOwnershipRestricted: true, ownerUserId: coupon.ownerUserId, rewardStatus: null };
+  }
+
+  const legacy = await getRewardCouponOwnership(coupon.id, tx);
+  if (legacy) {
+    return { isOwnershipRestricted: true, ownerUserId: legacy.userId, rewardStatus: legacy.status };
+  }
+
+  return { isOwnershipRestricted: false, ownerUserId: null, rewardStatus: null };
+}
+
 export async function getActiveCouponsForCart(subtotal?: string | number, userId?: number) {
   const db = await getDb();
   if (!db) return [];
@@ -1504,24 +1555,21 @@ export async function getActiveCouponsForCart(subtotal?: string | number, userId
     )
     .orderBy(asc(coupons.minPurchaseAmount), desc(coupons.createdAt));
 
-  // Filter out reward coupons that don't belong to the user
-  let filteredResult = result;
-  if (userId) {
-    filteredResult = [];
-    for (const coupon of result) {
-      const ownership = await getRewardCouponOwnership(coupon.id);
-
-      // Include coupon if it's not a reward coupon (any user/sports match or
-      // daily check-in), or if it belongs to this user AND has issued status
-      if (!ownership) {
-        // Not a reward coupon, include it
-        filteredResult.push(coupon);
-      } else if (ownership.userId === userId && ownership.status === "issued") {
-        // Reward coupon that belongs to this user and is still issued (not used/void)
-        filteredResult.push(coupon);
-      }
-      // Otherwise exclude: either belongs to different user, or status is used/void
+  // Filter out coupons (new-style user-owned or legacy reward) that don't
+  // belong to this user. Fail CLOSED: with no authenticated userId, every
+  // ownership-restricted coupon is excluded rather than shown - a cart
+  // query must never leak another user's personal/reward coupon code.
+  const filteredResult: typeof result = [];
+  for (const coupon of result) {
+    const ownership = await resolveCouponOwnership(coupon);
+    if (!ownership.isOwnershipRestricted) {
+      filteredResult.push(coupon);
+      continue;
     }
+    if (!userId) continue;
+    if (ownership.ownerUserId !== userId) continue;
+    if (ownership.rewardStatus && ownership.rewardStatus !== "issued") continue;
+    filteredResult.push(coupon);
   }
 
   return filteredResult.map((coupon: any) => {
@@ -1558,6 +1606,62 @@ export async function getActiveCouponsForCart(subtotal?: string | number, userId
   });
 }
 
+/**
+ * Resolves and validates the final {scope, ownerUserId} pair for a
+ * create/update, given the caller's partial patch and (for updates) the
+ * coupon's current values. Enforces the invariant scope="user" <=>
+ * ownerUserId set at the single point both createCoupon and updateCoupon
+ * write through - never a DB CHECK constraint, consistent with how every
+ * other cross-field invariant in this schema is enforced in code.
+ *
+ * `ownerUserId` is never trusted as a bare client-supplied ID: this always
+ * re-resolves it against a real `users` row via getUserById before
+ * accepting it, so a stale/fabricated/typo'd ID fails loudly here instead
+ * of silently creating an unowned-in-practice "personal" coupon.
+ */
+async function resolveCouponScopeAndOwner(
+  input: { scope?: "global" | "user"; ownerUserId?: number | null },
+  current?: { scope: string; ownerUserId: number | null }
+): Promise<{ scope: "global" | "user"; ownerUserId: number | null }> {
+  const scope: "global" | "user" = input.scope ?? (current?.scope as "global" | "user" | undefined) ?? "global";
+  const ownerUserId = input.ownerUserId !== undefined ? input.ownerUserId : current?.ownerUserId ?? null;
+
+  if (scope === "user") {
+    if (!ownerUserId) {
+      throw new Error("A user-specific coupon requires an owner");
+    }
+    const owner = await getUserById(ownerUserId);
+    if (!owner) {
+      throw new Error("Owner user not found");
+    }
+    return { scope: "user", ownerUserId };
+  }
+
+  if (ownerUserId) {
+    throw new Error("A global coupon must not have an owner");
+  }
+  return { scope: "global", ownerUserId: null };
+}
+
+/** True if a coupon has ever actually been used - by usage record, or by a
+ *  legacy reward-table "used" status (covers the rare case a reward coupon
+ *  was marked used without ever going through couponUsages). Used to block
+ *  destructive/ownership-changing edits on a coupon with real history. */
+async function hasCouponBeenUsed(couponId: number): Promise<boolean> {
+  const database = await getDb();
+  if (!database) return false;
+
+  const usages = await database
+    .select({ id: couponUsages.id })
+    .from(couponUsages)
+    .where(eq(couponUsages.couponId, couponId))
+    .limit(1);
+  if (usages.length > 0) return true;
+
+  const ownership = await getRewardCouponOwnership(couponId);
+  return ownership?.status === "used";
+}
+
 export async function createCoupon(data: {
   code: string;
   discountType: "flat" | "percentage";
@@ -1565,9 +1669,19 @@ export async function createCoupon(data: {
   minPurchaseAmount?: string;
   maxUsageCount?: number;
   expiresAt?: Date;
+  scope?: "global" | "user";
+  ownerUserId?: number | null;
 }) {
   const db = await getDb();
   if (!db) return undefined;
+
+  // Personal coupons created explicitly by an admin default to "user" scope
+  // is opt-in, not automatic - resolveCouponScopeAndOwner defaults to
+  // "global" when `scope` is omitted, preserving every existing caller's
+  // behavior (including plain promotional coupons and reward-coupon
+  // issuance, which never pass `scope` at all).
+  const { scope, ownerUserId } = await resolveCouponScopeAndOwner(data);
+
   // Normalize code: uppercase for consistency
   const normalizedCode = String(data.code || "").trim().toUpperCase();
   const result = await db.insert(coupons).values({
@@ -1579,6 +1693,8 @@ export async function createCoupon(data: {
     expiresAt: data.expiresAt,
     isActive: true,
     usageCount: 0,
+    scope,
+    ownerUserId,
   });
   return result;
 }
@@ -1591,57 +1707,175 @@ export async function updateCoupon(couponId: number, data: {
   maxUsageCount?: number;
   expiresAt?: Date;
   isActive?: boolean;
+  scope?: "global" | "user";
+  ownerUserId?: number | null;
 }) {
   const db = await getDb();
   if (!db) return;
-  // Normalize code if provided
-  const normalizedData = { ...data };
+
+  const existingRows = await db.select().from(coupons).where(eq(coupons.id, couponId)).limit(1);
+  const current = existingRows[0];
+  if (!current) {
+    throw new Error("Coupon not found");
+  }
+
+  const normalizedData: any = { ...data };
   if (data.code) {
     normalizedData.code = String(data.code).trim().toUpperCase();
   }
+
+  if (data.scope !== undefined || data.ownerUserId !== undefined) {
+    const changingOwnerOrScope =
+      (data.scope !== undefined && data.scope !== current.scope) ||
+      (data.ownerUserId !== undefined && data.ownerUserId !== current.ownerUserId);
+    if (changingOwnerOrScope && (await hasCouponBeenUsed(couponId))) {
+      throw new Error("Cannot change scope or owner of a coupon that has already been used");
+    }
+    const resolved = await resolveCouponScopeAndOwner(data, current as any);
+    normalizedData.scope = resolved.scope;
+    normalizedData.ownerUserId = resolved.ownerUserId;
+  }
+
   await db.update(coupons).set(normalizedData).where(eq(coupons.id, couponId));
 }
 
 export async function deleteCoupon(couponId: number) {
   const db = await getDb();
   if (!db) return;
+
+  // Never delete a coupon with real usage history, or one still linked to a
+  // reward-issuance row at all (even unused) - deleting it would leave a
+  // dangling sportsMatchRewards/dailyCheckins.couponId reference. Deactivate
+  // (isActive: false) instead in both cases.
+  if (await hasCouponBeenUsed(couponId)) {
+    throw new Error("Cannot delete a coupon with usage history - deactivate it instead");
+  }
+  const ownership = await getRewardCouponOwnership(couponId);
+  if (ownership) {
+    throw new Error("Cannot delete a reward coupon - deactivate it instead");
+  }
+
   await db.delete(coupons).where(eq(coupons.id, couponId));
 }
 
-export async function recordCouponUsage(couponId: number, userId: number | undefined, orderId: number, tx?: any) {
-  const db = tx || await getDb();
-  if (!db) return { recorded: false };
+/**
+ * Locks the coupon row (SELECT ... FOR UPDATE) for the duration of a
+ * usage-consumption check - same pattern as lockUserForPoints/
+ * lockCartForCheckout above, EXCEPT this selects every column (not just
+ * `id`) and returns the full row, which callers must use directly instead
+ * of re-reading the coupon afterward.
+ *
+ * That difference is required, not stylistic: confirmed by a real
+ * concurrency run (server/couponOwnership.integration.test.ts's two-orders-
+ * race-one-single-use-reward-coupon scenario) that a SELECT-id-only lock
+ * followed by a SEPARATE plain (non-FOR UPDATE) re-read of usageCount for
+ * the actual limit check is unsafe under InnoDB REPEATABLE READ: a plain
+ * read inside an already-open transaction can return that transaction's
+ * consistent snapshot from before this lock was even acquired, rather than
+ * the row this FOR UPDATE just locked - only a locking read is guaranteed
+ * to see the latest committed value. Two concurrent finalizations for
+ * DIFFERENT orders against the same maxUsageCount=1 coupon both read
+ * usageCount=0 this way and both recorded usage, reaching usageCount=2 -
+ * reproduced against a real disposable database, not a theoretical concern.
+ */
+export async function lockCouponForUsage(couponId: number, tx: any) {
+  const rawResult: any = await tx.execute(sql`SELECT * FROM coupons WHERE id = ${couponId} FOR UPDATE`);
+  const rows = Array.isArray(rawResult?.[0]) ? rawResult[0] : rawResult;
+  if (!rows || rows.length === 0) throw new Error("Coupon not found");
+  return rows[0];
+}
 
-  try {
-    // Check if this coupon + order combination already exists
-    const existing = await db.select().from(couponUsages)
-      .where(and(eq(couponUsages.couponId, couponId), eq(couponUsages.orderId, orderId)));
-    
-    if (existing && existing.length > 0) {
-      // Already recorded - skip to prevent duplicate increment
-      return { alreadyRecorded: true };
-    }
-    
-    // Insert new usage record
-    await db.insert(couponUsages).values({ couponId, userId, orderId });
-    // Increment usageCount on the coupon itself
-    await db.update(coupons).set({ usageCount: sql`${coupons.usageCount} + 1` }).where(eq(coupons.id, couponId));
-    return { recorded: true };
-  } catch (err: any) {
-    // Handle unique constraint violation gracefully (duplicate key error).
-    // The pre-check above only narrows the race window - two concurrent
-    // finalizations can both pass it and then collide on
-    // UNIQUE(couponId, orderId), so this branch is the real guarantee.
-    // isDuplicateKeyError walks the cause chain: drizzle wraps the mysql2
-    // error, so `err.code` is undefined here. (The previous fallback also
-    // matched "UNIQUE constraint failed", which is SQLite's wording -
-    // MySQL/MariaDB never emit it, so that half was always dead.)
-    if (isDuplicateKeyError(err)) {
-      // Duplicate key - already recorded, skip silently
-      return { alreadyRecorded: true };
-    }
-    throw err;
+/**
+ * Runs `fn` with the given coupon's row locked, same self-transacting
+ * convention as withUserPointsLock: if `tx` is already an open transaction,
+ * the lock is taken inside it; otherwise this opens its own transaction
+ * scoped to exactly `fn`. `fn` receives the locked row itself (from the
+ * FOR UPDATE read) as its second argument - see lockCouponForUsage's own
+ * comment for why every usage-limit decision must be made from that row,
+ * never from a later, separate, non-locking re-read.
+ */
+export async function withCouponLock<T>(
+  couponId: number,
+  tx: any | undefined,
+  fn: (lockedTx: any, lockedCoupon: any) => Promise<T>
+): Promise<T> {
+  if (tx) {
+    const lockedCoupon = await lockCouponForUsage(couponId, tx);
+    return fn(tx, lockedCoupon);
   }
+  const database = await getDb();
+  if (!database) throw new Error("Database not available");
+  return database.transaction(async (newTx: any) => {
+    const lockedCoupon = await lockCouponForUsage(couponId, newTx);
+    return fn(newTx, lockedCoupon);
+  });
+}
+
+/**
+ * Records a coupon's consumption for one order - the actual point a
+ * single-use coupon (maxUsageCount or a reward coupon's one-time "issued"
+ * status) gets spent. Locks the coupon row and RE-VERIFIES usage limit and
+ * ownership/status under that lock before writing, because
+ * validateAndApplyCoupon's own check (at order-creation time) can be long
+ * before this exact moment for the slip/manual-approval path - a second
+ * single-use order could have been approved in between. Two concurrent
+ * calls for the same coupon (different orders) are serialized by the lock:
+ * the loser re-reads the winner's already-committed usageCount/status and
+ * correctly throws instead of double-spending it.
+ *
+ * Idempotent per (couponId, orderId): re-finalizing the SAME order is a
+ * safe no-op, checked before the lock is even taken since it never races
+ * against other orders.
+ */
+export async function recordCouponUsage(couponId: number, userId: number | undefined, orderId: number, tx?: any) {
+  const readDb = tx || (await getDb());
+  if (!readDb) return { recorded: false };
+
+  const existing = await readDb.select().from(couponUsages)
+    .where(and(eq(couponUsages.couponId, couponId), eq(couponUsages.orderId, orderId)));
+  if (existing && existing.length > 0) {
+    return { alreadyRecorded: true };
+  }
+
+  return withCouponLock(couponId, tx, async (lockedTx, coupon) => {
+    if (!coupon) {
+      throw new Error("Coupon not found");
+    }
+
+    if (coupon.maxUsageCount != null && coupon.usageCount >= coupon.maxUsageCount) {
+      throw new Error("Coupon usage limit reached");
+    }
+
+    const ownership = await resolveCouponOwnership(coupon, lockedTx);
+    if (ownership.isOwnershipRestricted) {
+      if (!userId || ownership.ownerUserId !== userId) {
+        // Same generic message as "not found" - never confirm to a caller
+        // who isn't the owner that this code exists and belongs to someone
+        // else. In practice unreachable here because validateAndApplyCoupon
+        // already enforced this at order creation, but this lock is the
+        // real guarantee, not that earlier check.
+        throw new Error("Coupon not found");
+      }
+      if (ownership.rewardStatus && ownership.rewardStatus !== "issued") {
+        throw new Error(`Reward coupon is no longer usable (status: ${ownership.rewardStatus})`);
+      }
+    }
+
+    try {
+      await lockedTx.insert(couponUsages).values({ couponId, userId, orderId });
+      await lockedTx.update(coupons).set({ usageCount: sql`${coupons.usageCount} + 1` }).where(eq(coupons.id, couponId));
+      return { recorded: true };
+    } catch (err: any) {
+      // Handle unique constraint violation gracefully (duplicate key error) -
+      // belt-and-suspenders alongside the pre-lock idempotency check above.
+      // isDuplicateKeyError walks the cause chain: drizzle wraps the mysql2
+      // error, so `err.code` is undefined here.
+      if (isDuplicateKeyError(err)) {
+        return { alreadyRecorded: true };
+      }
+      throw err;
+    }
+  });
 }
 
 export async function getCouponUsageByUserId(userId: number) {
@@ -4401,6 +4635,12 @@ export async function settleSportsMatch(matchId: number, result: SportsPredictio
           usageCount: 0,
           isActive: true,
           expiresAt: match.rewardCouponExpiresAt || null,
+          // Explicit ownership (in addition to, not instead of, the
+          // sportsMatchRewards row inserted below - getRewardCouponOwnership's
+          // join-based check remains the authoritative fallback for coupons
+          // issued before this column existed).
+          scope: "user",
+          ownerUserId: vote.userId,
         });
         const couponId = extractInsertId(couponResult);
 
@@ -4987,6 +5227,12 @@ async function claimDailyCheckinCouponReward(
       usageCount: 0,
       isActive: true,
       expiresAt,
+      // Explicit ownership (in addition to, not instead of, the
+      // dailyCheckins row inserted below - getRewardCouponOwnership's
+      // join-based check remains the authoritative fallback for coupons
+      // issued before this column existed).
+      scope: "user",
+      ownerUserId: userId,
     });
     const couponId = extractInsertId(couponResult);
 

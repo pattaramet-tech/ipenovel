@@ -75,7 +75,7 @@ async function rewindHistoryBefore0031(conn: mysql.Connection): Promise<void> {
 
 describe.sequential("migration 0031 (real disposable test database)", () => {
   it(
-    "a fresh database migrated 0000 -> 0031 ends with a NULLABLE couponId, the unique index intact, and 32 recorded migrations",
+    "a fresh database migrated through the full chain ends with a NULLABLE couponId, the unique index intact, and every journal migration recorded",
     async () => {
       const conn = await connect();
       try {
@@ -83,10 +83,17 @@ describe.sequential("migration 0031 (real disposable test database)", () => {
         await runChain(conn);
 
         expect(await couponIdNullability(conn)).toBe("YES");
-        expect(await recordedMigrationCount(conn)).toBe(32);
 
+        // Dynamic against the actual journal length/high-water tag rather
+        // than a hardcoded count/tag - runChain() applies every migration
+        // present in the folder (drizzle has no "stop at" mechanism), so a
+        // hardcoded "32"/"0031" here would go stale every time a later
+        // migration (e.g. 0032's coupon-ownership columns) is added, exactly
+        // as it did when this test predated 0032 and asserted a count/tag
+        // that were only ever true for a 0000-0031-only journal.
         const journal = readMigrationJournal(migrationsFolder);
-        expect(await highWater(conn)).toBe(journal.find((e) => e.tag === MIGRATION_0031_TAG)!.when);
+        expect(await recordedMigrationCount(conn)).toBe(journal.length);
+        expect(await highWater(conn)).toBe(journal[journal.length - 1].when);
 
         // The unique index survives - it is what still guarantees one coupon
         // is never attached to two check-ins.

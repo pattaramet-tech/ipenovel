@@ -491,8 +491,7 @@ export const appRouter = router({
             },
           };
         } catch (error: any) {
-          const message = error?.message || "Invalid coupon";
-          throw new TRPCError({ code: "BAD_REQUEST", message });
+          throw new TRPCError({ code: "BAD_REQUEST", message: orderService.toSafeCouponClientMessage(error) });
         }
       }),
 
@@ -556,7 +555,7 @@ export const appRouter = router({
           });
         } catch (error: any) {
           if (error instanceof TRPCError) throw error;
-          const message = error?.message || "Failed to create order";
+          const message = error?.message ? orderService.toSafeCouponClientMessage(error) : "Failed to create order";
           throw new TRPCError({ code: "BAD_REQUEST", message });
         }
 
@@ -686,7 +685,8 @@ export const appRouter = router({
 
           return { order, success: true };
         } catch (error: any) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Wallet checkout failed" });
+          const message = error?.message ? orderService.toSafeCouponClientMessage(error) : "Wallet checkout failed";
+          throw new TRPCError({ code: "BAD_REQUEST", message });
         }
       }),
   }),
@@ -1938,13 +1938,45 @@ export const appRouter = router({
 
     coupons: router({
       list: adminProcedure.query(async () => {
-        const coupons = await db.getAllCoupons();
-        return coupons.map((coupon: any) => ({
-          ...coupon,
-          discountValue: coupon.discountValue ? String(coupon.discountValue).trim() : "0.00",
-          minPurchaseAmount: coupon.minPurchaseAmount ? String(coupon.minPurchaseAmount).trim() : null,
-        }));
+        const allCoupons = await db.getAllCoupons();
+        return Promise.all(
+          allCoupons.map(async (coupon: any) => {
+            // resolveCouponOwnership also surfaces legacy reward coupons
+            // whose `scope` column is still "global" (never backfilled) -
+            // the admin list must show these as owned too, not just
+            // coupons created through the new scope="user" flow.
+            const ownership = await db.resolveCouponOwnership(coupon);
+            let owner: { id: number; name: string | null; email: string | null } | null = null;
+            if (ownership.ownerUserId) {
+              const ownerUser = await db.getUserById(ownership.ownerUserId);
+              if (ownerUser) {
+                owner = { id: ownerUser.id, name: ownerUser.name as string | null, email: ownerUser.email as string | null };
+              }
+            }
+            return {
+              ...coupon,
+              discountValue: coupon.discountValue ? String(coupon.discountValue).trim() : "0.00",
+              minPurchaseAmount: coupon.minPurchaseAmount ? String(coupon.minPurchaseAmount).trim() : null,
+              isOwnershipRestricted: ownership.isOwnershipRestricted,
+              owner,
+            };
+          })
+        );
       }),
+
+      // Minimal user lookup for the admin coupon-owner picker - an admin
+      // searches by the email they already know, never by guessing a raw
+      // numeric ID. This does NOT make ownerUserId trusted client input:
+      // create/update still independently re-verify the chosen ID against
+      // a real user row server-side (db.createCoupon/updateCoupon via
+      // resolveCouponScopeAndOwner) before ever writing it.
+      findUserByEmail: adminProcedure
+        .input(z.object({ email: z.string().min(1) }))
+        .query(async ({ input }) => {
+          const user = await db.getUserByEmail(input.email.trim());
+          if (!user) return null;
+          return { id: user.id, name: user.name, email: user.email };
+        }),
 
       create: adminProcedure
         .input(
@@ -1955,6 +1987,12 @@ export const appRouter = router({
             minPurchaseAmount: z.string().optional(),
             maxUsageCount: z.number().optional(),
             expiresAt: z.date().optional(),
+            // "user" requires ownerUserId - defaults to "global" when
+            // omitted, preserving every existing caller's behavior.
+            // Enforced/re-verified server-side in db.createCoupon; never
+            // trusted here just because the client sent it.
+            scope: z.enum(["global", "user"]).optional(),
+            ownerUserId: z.number().int().positive().optional(),
           })
         )
         .mutation(async ({ input }) => {
@@ -1963,7 +2001,11 @@ export const appRouter = router({
             discountValue: String(input.discountValue).trim(),
             minPurchaseAmount: input.minPurchaseAmount ? String(input.minPurchaseAmount).trim() : undefined,
           };
-          await db.createCoupon(normalizedInput);
+          try {
+            await db.createCoupon(normalizedInput);
+          } catch (error: any) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to create coupon" });
+          }
           return { success: true };
         }),
 
@@ -1978,6 +2020,8 @@ export const appRouter = router({
             maxUsageCount: z.number().optional(),
             expiresAt: z.date().optional(),
             isActive: z.boolean().optional(),
+            scope: z.enum(["global", "user"]).optional(),
+            ownerUserId: z.number().int().positive().nullable().optional(),
           })
         )
         .mutation(async ({ input }) => {
@@ -1989,14 +2033,22 @@ export const appRouter = router({
           if (data.minPurchaseAmount !== undefined) {
             normalizedData.minPurchaseAmount = data.minPurchaseAmount ? String(data.minPurchaseAmount).trim() : null;
           }
-          await db.updateCoupon(couponId, normalizedData);
+          try {
+            await db.updateCoupon(couponId, normalizedData);
+          } catch (error: any) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to update coupon" });
+          }
           return { success: true };
         }),
 
       delete: adminProcedure
         .input(z.object({ couponId: z.number() }))
         .mutation(async ({ input }) => {
-          await db.deleteCoupon(input.couponId);
+          try {
+            await db.deleteCoupon(input.couponId);
+          } catch (error: any) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to delete coupon" });
+          }
           return { success: true };
         }),
     }),

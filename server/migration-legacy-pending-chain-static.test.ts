@@ -288,15 +288,18 @@ describe("journal and timestamps are untouched by this repair", () => {
     expect(isByteIdenticalToBase("drizzle/meta/_journal.json")).toBe(true);
   });
 
-  it("this repair created no migration of its own - the only idx-31 entry is the unrelated point-reward migration", () => {
+  it("this repair created no migration of its own - the only idx-31/32 entries are the unrelated point-reward and coupon-ownership migrations", () => {
     // The invariant being protected is that the legacy pending-chain repair
     // was achieved WITHOUT adding a migration. Migration 0031
     // (dailyCheckins.couponId -> nullable, for the 1-point Daily Check-in
-    // reward) is a separate, later, intentional change - named explicitly so
-    // it cannot be used as cover for an unrelated one.
+    // reward) and migration 0032 (coupons.scope/ownerUserId, for
+    // fix/coupon-owner-enforcement) are separate, later, intentional
+    // changes - each named explicitly so neither can be used as cover for
+    // an unrelated one.
     const journal = JSON.parse(fs.readFileSync(path.join(repoRoot, "drizzle/meta/_journal.json"), "utf8"));
     expect(journal.entries.find((e: any) => e.idx === 31)?.tag).toBe("0031_enable_daily_checkin_point_rewards");
-    expect(journal.entries.find((e: any) => e.idx === 32)).toBeUndefined();
+    expect(journal.entries.find((e: any) => e.idx === 32)?.tag).toBe("0032_add_coupon_ownership_scope");
+    expect(journal.entries.find((e: any) => e.idx === 33)).toBeUndefined();
 
     // The repair-flavored 0031 this task might have written must not exist.
     expect(fs.existsSync(path.join(repoRoot, "drizzle/0031_repair_missing_daily_checkins.sql"))).toBe(false);

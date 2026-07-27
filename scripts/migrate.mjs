@@ -63,9 +63,21 @@ export const REQUIRED_TABLES = [
   "dailyCheckinCouponTemplates",
   "dailyCheckinRewardRules",
   "dailyCheckinRewardGrants",
+  // `coupons` has existed since migration 0000 - listed here (not because it
+  // could ever be missing) purely so the REQUIRED_INDEXES loop's
+  // "don't double-report an index on an already-reported-missing table"
+  // presence check below has an entry for it and actually runs the
+  // coupons_ownerUserId_idx check instead of silently skipping it.
+  "coupons",
 ];
 export const REQUIRED_COLUMNS = [
   { table: "coupons", column: "maxDiscountAmount" },
+  // Coupon ownership scope (migration 0032, fix/coupon-owner-enforcement).
+  // server/db.ts's createCoupon/updateCoupon/validateAndApplyCoupon read and
+  // write these unconditionally - a database still at 0031 would fail every
+  // coupon create/update/validate at query time rather than at boot.
+  { table: "coupons", column: "scope" },
+  { table: "coupons", column: "ownerUserId" },
   { table: "dailyCheckins", column: "couponId" },
   // Written on every point-reward claim. streakCountAtGrant in particular is
   // NOT NULL with no database default, so a build that reaches the claim path
@@ -87,6 +99,7 @@ export const REQUIRED_COLUMNS = [
 export const REQUIRED_NULLABLE_COLUMNS = [{ table: "dailyCheckins", column: "couponId" }];
 
 export const REQUIRED_INDEXES = [
+  { table: "coupons", index: "coupons_ownerUserId_idx" },
   { table: "dailyCheckins", index: "PRIMARY" },
   { table: "dailyCheckins", index: "unique_daily_checkin_user_date_campaign" },
   { table: "dailyCheckins", index: "unique_daily_checkins_coupon" },
