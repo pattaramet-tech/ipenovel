@@ -190,11 +190,26 @@ describe.sequential("Coupon ownership enforcement (real disposable test database
       return;
     }
     const code = claimResult.reward.couponCode;
+    // The reward coupon's own configured minimum purchase amount (set from
+    // the live Daily Check-in config, not a fixed constant this test can
+    // assume) - a hardcoded "10.00" subtotal here previously broke the
+    // moment that config's minimum was raised above it, confirmed for real
+    // against a live database.
+    const subtotal = (Number.parseFloat(String(claimResult.reward.minPurchaseAmount ?? "0")) + 1).toFixed(2);
 
-    await expect(orderService.validateAndApplyCoupon(code, "10.00", undefined, userB.id)).rejects.toThrow(
-      /coupon not found/i
+    // userB.id IS passed (an authenticated caller, just not the owner), so
+    // this hits validateAndApplyCoupon's `ownership.ownerUserId !== userId`
+    // branch - "This coupon belongs to another user", not "Coupon not
+    // found" (that message is reserved for an unauthenticated caller, i.e.
+    // no userId at all - see test 3 and toSafeCouponClientMessage's own
+    // docs). Both collapse to the identical client-facing message (test 2
+    // covers that enumeration-safety property directly) - this assertion is
+    // only about the raw internal error, confirmed for real against a live
+    // database.
+    await expect(orderService.validateAndApplyCoupon(code, subtotal, undefined, userB.id)).rejects.toThrow(
+      /belongs to another user/i
     );
-    const owned = await orderService.validateAndApplyCoupon(code, "10.00", undefined, userA.id);
+    const owned = await orderService.validateAndApplyCoupon(code, subtotal, undefined, userA.id);
     expect(owned.coupon.code).toBe(code.toUpperCase());
 
     await cleanupDailyCheckinReward(userA.id);
@@ -207,8 +222,11 @@ describe.sequential("Coupon ownership enforcement (real disposable test database
     const userB = await createTestUser();
     const { couponId, code } = await createSportsRewardCoupon(userA.id);
 
+    // Same reasoning as test 5 - userB.id is a known, authenticated (just
+    // wrong) caller, so the raw error is "This coupon belongs to another
+    // user", not "Coupon not found".
     await expect(orderService.validateAndApplyCoupon(code, "100.00", undefined, userB.id)).rejects.toThrow(
-      /coupon not found/i
+      /belongs to another user/i
     );
     const owned = await orderService.validateAndApplyCoupon(code, "100.00", undefined, userA.id);
     expect(owned.coupon.code).toBe(code);

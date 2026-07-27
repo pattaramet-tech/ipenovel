@@ -44,7 +44,15 @@ if (!migration0030Entry) {
   );
 }
 
-/** Migration 0030's journal timestamp - the expected final high-water mark after the full repair chain runs. Resolved once at file scope (the main test body has no `journal` variable of its own). */
+/** The last journal entry's timestamp (whatever migration is currently newest,
+ *  e.g. 0032 as of the coupon-ownership feature) - the expected final
+ *  high-water mark after the full repair chain runs, since
+ *  runMigrationsWithLogging() has no "stop at" point and always applies
+ *  every migration present in the folder. Resolved once at file scope (the
+ *  main test body has no `journal` variable of its own). Deliberately NOT
+ *  named after whatever migration happens to be last today - see the
+ *  `expectedTags` computation below for the same "derive from the journal,
+ *  never hardcode a specific migration number" principle. */
 const MIGRATION_0030_WHEN = readMigrationJournal(migrationsFolder).slice(-1)[0].when;
 
 /** The confirmed production migration high-water mark - strictly before migration 0017's own journal timestamp. */
@@ -250,27 +258,17 @@ describe.sequential("legacy pending migration chain repair (real disposable test
         const firstRun = createTrackingLogger("[legacy-chain-test:repair]");
         await expect(runMigrationsWithLogging(conn, migrationsFolder, firstRun.logger)).resolves.not.toThrow();
 
-        // Every historically pending migration (0017 through 0030) was
-        // individually attempted and completed - none were silently
-        // skipped due to an earlier failure, and none threw a
-        // duplicate-column/duplicate-index/duplicate-constraint error.
-        const expectedTags = [
-          "0017_nosy_newton_destine",
-          "0018_strong_thanos",
-          "0019_milky_tarot",
-          "0020_tiny_crusher_hogan",
-          "0021_skinny_slayback",
-          "0022_rich_spectrum",
-          "0023_add_episode_sale_mode",
-          "0024_widen_episode_content_mediumtext",
-          "0025_add_reading_progress_toc_columns",
-          "0026_add_homepage_performance_indexes",
-          "0027_add_daily_checkin_and_coupon_cap",
-          "0028_repair_episode_reader_schema",
-          "0029_add_dynamic_daily_checkin_reward_schema",
-          "0030_repair_missing_daily_checkins",
-          "0031_enable_daily_checkin_point_rewards",
-        ];
+        // Every historically pending migration (0017 through the current
+        // last migration in the journal) was individually attempted and
+        // completed - none were silently skipped due to an earlier failure,
+        // and none threw a duplicate-column/duplicate-index/duplicate-
+        // constraint error. Built from the journal itself (not hardcoded)
+        // so this stays correct as later migrations (e.g. 0032's coupon-
+        // ownership columns) are added - runMigrationsWithLogging() applies
+        // every migration present in the folder, with no "stop at" point.
+        const expectedTags = readMigrationJournal(migrationsFolder)
+          .map((entry) => entry.tag)
+          .filter((tag) => tag >= "0017");
         expect(firstRun.completedTags).toEqual(expectedTags);
 
         // Migration 0017: payments OCR columns/indexes fully repaired.
@@ -326,7 +324,8 @@ describe.sequential("legacy pending migration chain repair (real disposable test
         expect(await indexExists(conn, "dailyCheckinCampaigns", "dailyCheckinCampaigns_campaignKey_unique")).toBe(true);
         expect(await indexExists(conn, "dailyCheckinRewardGrants", "dailyCheckinRewardGrants_checkin_rule_unique")).toBe(true);
 
-        // Final migration high-water mark reaches exactly migration 0030.
+        // Final migration high-water mark reaches exactly the last migration
+        // currently in the journal (see MIGRATION_0030_WHEN's own comment).
         expect(await latestRecordedMigrationTimestamp(conn)).toBe(MIGRATION_0030_WHEN);
 
         // A second full-chain run is a clean no-op: nothing is pending
