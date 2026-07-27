@@ -172,7 +172,17 @@ export async function createTestOrderItem(params: {
 
 export async function createTestPayment(orderId: number): Promise<{ id: number }> {
   const db = getTestDb();
-  const result = await db.insert(payments).values({ orderId });
+  // ocrConfidence has no database default (migration 0021 sets it NOT NULL
+  // then immediately drops the DEFAULT via a MODIFY COLUMN with none) - an
+  // insert that omits it fails under strict SQL mode with
+  // ER_NO_DEFAULT_FOR_FIELD. server/db.ts's own createPayment() already
+  // sends `ocrConfidence: 0` explicitly for the same reason; this fixture
+  // must match that production contract, not just happen to work against
+  // a permissive SQL mode.
+  const result = await db.insert(payments).values({
+    orderId,
+    ocrConfidence: 0,
+  });
   return { id: extractInsertId(result) };
 }
 

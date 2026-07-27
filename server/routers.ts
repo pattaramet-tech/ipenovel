@@ -32,6 +32,12 @@ import {
   MediaMigrationConfigError,
   MediaMigrationLockError,
 } from "./services/mediaMigrationService";
+import {
+  putPrivateObject,
+  resolveStoredFileValue,
+  R2PrivateStorageError,
+} from "./services/r2PrivateStorage";
+import { isValidStoredFileRef } from "@shared/privateFileRef";
 
 // ============ HELPER PROCEDURES ============
 
@@ -41,6 +47,75 @@ const adminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
   }
   return next({ ctx });
 });
+
+// A slipImageUrl/fileUrl input must be either a legacy absolute http(s) URL
+// or a private object reference (r2p:...) - never anything else (e.g.
+// javascript:, file://, or an arbitrary internal address), since these
+// values are later handed to an outbound OCR fetch or turned into a
+// redirect/download link. See shared/privateFileRef.ts.
+const STORED_FILE_REF_MESSAGE = "ต้องเป็น URL http(s) หรือ private object reference (r2p:...) เท่านั้น";
+const optionalStoredFileRefSchema = z.string().refine(isValidStoredFileRef, { message: STORED_FILE_REF_MESSAGE }).optional();
+function requiredStoredFileRefSchema(requiredMessage: string) {
+  return z.string().min(1, requiredMessage).refine(isValidStoredFileRef, { message: STORED_FILE_REF_MESSAGE });
+}
+
+/**
+ * Resolve a stored slipImageUrl/fileUrl value to something actually
+ * fetchable right now, mapping any private-R2 failure to a safe, generic
+ * TRPCError that never echoes bucket/key/endpoint/secret details. Callers
+ * must have already completed any entitlement/ownership/admin check.
+ */
+async function resolveStoredFileValueOrThrow(
+  value: string | null | undefined,
+  context: "paymentSlip" | "episodeFile",
+  logLabel: string
+): Promise<string | null> {
+  try {
+    return await resolveStoredFileValue(value, context);
+  } catch (error) {
+    console.error(
+      `[${logLabel}] Failed to resolve stored file reference`,
+      error instanceof R2PrivateStorageError ? error.getSafeDetails() : { context }
+    );
+    throw new TRPCError({
+      code: "SERVICE_UNAVAILABLE",
+      message: "ไม่สามารถเปิดไฟล์ได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง",
+    });
+  }
+}
+
+/**
+ * Same resolution as above, but for list/detail views where the file link
+ * is one field among many (an order, a payment, a wallet top-up, an
+ * episode row) - a single broken/misconfigured reference must not fail the
+ * whole response. Logs safely server-side and degrades to null.
+ */
+async function resolveStoredFileValueSafe(
+  value: string | null | undefined,
+  context: "paymentSlip" | "episodeFile",
+  logLabel: string
+): Promise<string | null> {
+  try {
+    return await resolveStoredFileValue(value, context);
+  } catch (error) {
+    console.error(
+      `[${logLabel}] Failed to resolve stored file reference`,
+      error instanceof R2PrivateStorageError ? error.getSafeDetails() : { context }
+    );
+    return null;
+  }
+}
+
+/** Returns a copy of a payment/walletTopup row with slipImageUrl resolved
+ * to something actually viewable (see resolveStoredFileValueSafe). Passes
+ * through null/undefined payment rows unchanged. */
+async function withResolvedSlipUrl<T extends { slipImageUrl?: string | null } | null | undefined>(
+  payment: T,
+  logLabel: string
+): Promise<T> {
+  if (!payment) return payment;
+  return { ...payment, slipImageUrl: await resolveStoredFileValueSafe(payment.slipImageUrl, "paymentSlip", logLabel) };
+}
 
 const BANNER_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
 const MAX_BANNER_IMAGE_SIZE = 5 * 1024 * 1024;
@@ -280,7 +355,9 @@ export const appRouter = router({
             hasLegacyFile,
             saleMode,
             saleType,
-            fileUrl: canRead ? fileUrl ?? null : null,
+            fileUrl: canRead
+              ? await resolveStoredFileValueSafe(fileUrl, "episodeFile", "novels.episodes")
+              : null,
             adminCanPreview: isAdmin && !isFree && !hasPurchased,
             progressPercent: progress?.progressPercent ?? null,
             currentChapterNumber: progress?.currentChapterNumber ?? null,
@@ -423,7 +500,7 @@ export const appRouter = router({
         z.object({
           couponCode: z.string().optional(),
           pointsToRedeem: z.string().optional(),
-          slipImageUrl: z.string().optional(),
+          slipImageUrl: optionalStoredFileRefSchema,
         })
       )
       .mutation(async ({ input, ctx }) => {
@@ -622,7 +699,7 @@ export const appRouter = router({
       const enriched = await Promise.all(
         orders.map(async (order: any) => {
           const items = await db.getOrderItems(order.id);
-          const payment = await db.getPaymentByOrderId(order.id);
+          const payment = await withResolvedSlipUrl(await db.getPaymentByOrderId(order.id), "orders.list");
           return { ...order, items, payment };
         })
       );
@@ -642,7 +719,7 @@ export const appRouter = router({
         }
 
         const items = await db.getOrderItems(order.id);
-        const payment = await db.getPaymentByOrderId(order.id);
+        const payment = await withResolvedSlipUrl(await db.getPaymentByOrderId(order.id), "orders.detail");
         const history = await db.getOrderHistory(order.id);
 
         // Enrich items with purchase status
@@ -660,7 +737,7 @@ export const appRouter = router({
       }),
 
     uploadPaymentSlip: protectedProcedure
-      .input(z.object({ orderId: z.number(), slipImageUrl: z.string().min(1, "Payment slip is required") }))
+      .input(z.object({ orderId: z.number(), slipImageUrl: requiredStoredFileRefSchema("Payment slip is required") }))
       .mutation(async ({ input, ctx }) => {
         // Use shared slip submission service
         const result = await submitPaymentSlip({
@@ -762,7 +839,10 @@ export const appRouter = router({
         const episode = await db.getEpisodeById(input.episodeId);
         if (!episode) throw new TRPCError({ code: "NOT_FOUND" });
 
-        return episode;
+        return {
+          ...episode,
+          fileUrl: await resolveStoredFileValueSafe(episode.fileUrl, "episodeFile", "myNovels.episode"),
+        };
       }),
 
     downloadUrl: protectedProcedure
@@ -779,8 +859,12 @@ export const appRouter = router({
           throw new TRPCError({ code: "NOT_FOUND" });
         }
 
-        // In a real implementation, generate a pre-signed URL or proxy the download
-        return { downloadUrl: episode.fileUrl };
+        // Access already confirmed above - now (and only now) turn the
+        // stored reference into an actual working link. A legacy absolute
+        // URL passes through unchanged; a private object reference becomes
+        // a fresh, short-lived presigned URL.
+        const downloadUrl = await resolveStoredFileValueOrThrow(episode.fileUrl, "episodeFile", "myNovels.downloadUrl");
+        return { downloadUrl };
       }),
   }),
 
@@ -977,11 +1061,12 @@ export const appRouter = router({
             // Include approval metadata with display formatting
             const approvalMetadata = ApprovalService.getDisplayMetadata(p);
             const formattedApprovalSource = ApprovalService.formatApprovalSource(p.approvalSource);
-            
-            return { 
-              ...p, 
-              order, 
-              items, 
+
+            return {
+              ...p,
+              slipImageUrl: await resolveStoredFileValueSafe(p.slipImageUrl, "paymentSlip", "admin.payments.pending"),
+              order,
+              items,
               user,
               approvalMetadata,
               formattedApprovalSource,
@@ -1025,11 +1110,12 @@ export const appRouter = router({
             
             const approvalMetadata = ApprovalService.getDisplayMetadata(p);
             const formattedApprovalSource = ApprovalService.formatApprovalSource(p.approvalSource);
-            
-            return { 
-              ...p, 
-              order, 
-              items, 
+
+            return {
+              ...p,
+              slipImageUrl: await resolveStoredFileValueSafe(p.slipImageUrl, "paymentSlip", "admin.payments.approved"),
+              order,
+              items,
               user,
               approvalMetadata,
               formattedApprovalSource,
@@ -1116,16 +1202,18 @@ export const appRouter = router({
           if (!order) throw new TRPCError({ code: "NOT_FOUND" });
 
           const items = await db.getOrderItems(order.id);
-          const payment = await db.getPaymentByOrderId(order.id);
+          const rawPayment = await db.getPaymentByOrderId(order.id);
           const history = await db.getOrderHistory(order.id);
 
           // Include approval metadata if payment exists
           let approvalMetadata = null;
           let formattedApprovalSource = null;
-          if (payment) {
-            approvalMetadata = ApprovalService.getDisplayMetadata(payment);
-            formattedApprovalSource = ApprovalService.formatApprovalSource(payment.approvalSource);
+          if (rawPayment) {
+            approvalMetadata = ApprovalService.getDisplayMetadata(rawPayment);
+            formattedApprovalSource = ApprovalService.formatApprovalSource(rawPayment.approvalSource);
           }
+
+          const payment = await withResolvedSlipUrl(rawPayment, "admin.orders.detail");
 
           return { order, items, payment, history, approvalMetadata, formattedApprovalSource };
         }),
@@ -1368,7 +1456,7 @@ export const appRouter = router({
             title: z.string(),
             price: z.string(),
             isFree: z.boolean().optional(),
-            fileUrl: z.string().optional(),
+            fileUrl: optionalStoredFileRefSchema,
             content: z.string().optional(),
             contentFormat: z.enum(["plain_text", "markdown", "html"]).default("plain_text").optional(),
             // "chapter" = single episode, direct wallet purchase. "package" =
@@ -1393,7 +1481,7 @@ export const appRouter = router({
             title: z.string().optional(),
             price: z.string().optional(),
             isFree: z.boolean().optional(),
-            fileUrl: z.string().optional(),
+            fileUrl: optionalStoredFileRefSchema,
             content: z.string().optional(),
             contentFormat: z.enum(["plain_text", "markdown", "html"]).optional(),
             saleMode: z.enum(["chapter", "package"]).optional(),
@@ -2117,7 +2205,7 @@ export const appRouter = router({
             title: z.string(),
             episodeNumber: z.string(),
             price: z.string(),
-            fileUrl: z.string(),
+            fileUrl: z.string().refine(isValidStoredFileRef, { message: STORED_FILE_REF_MESSAGE }),
           })),
         }))
         .mutation(async ({ input }) => {
@@ -2131,7 +2219,7 @@ export const appRouter = router({
             title: z.string(),
             episodeNumber: z.string(),
             price: z.string(),
-            fileUrl: z.string(),
+            fileUrl: z.string().refine(isValidStoredFileRef, { message: STORED_FILE_REF_MESSAGE }),
           })),
         }))
         .mutation(async ({ input }) => {
@@ -2254,14 +2342,14 @@ export const appRouter = router({
       return db.getWalletSummary(ctx.user.id);
     }),
     createTopupRequest: protectedProcedure
-      .input(z.object({ requestedAmount: z.string(), slipImageUrl: z.string().optional() }))
+      .input(z.object({ requestedAmount: z.string(), slipImageUrl: optionalStoredFileRefSchema }))
       .mutation(async ({ ctx, input }) => {
         return walletService.createWalletTopupRequest(ctx.user.id, input.requestedAmount, input.slipImageUrl);
       }),
     // DEPRECATED: uploadTopupSlip is kept for backward compatibility with existing pending top-ups
     // New flow: slip is uploaded before creating the top-up request
     uploadTopupSlip: protectedProcedure
-      .input(z.object({ topupId: z.number(), slipImageUrl: z.string() }))
+      .input(z.object({ topupId: z.number(), slipImageUrl: requiredStoredFileRefSchema("Payment slip is required") }))
       .mutation(async ({ ctx, input }) => {
         return walletService.uploadWalletTopupSlip(input.topupId, ctx.user.id, input.slipImageUrl);
       }),
@@ -2269,19 +2357,22 @@ export const appRouter = router({
       listPendingTopups: adminProcedure
         .input(z.object({ limit: z.number().default(20), offset: z.number().default(0) }))
         .query(async ({ input }) => {
-          return db.listPendingWalletTopups(input.limit, input.offset);
+          const topups = await db.listPendingWalletTopups(input.limit, input.offset);
+          return Promise.all(topups.map((topup: any) => withResolvedSlipUrl(topup, "wallet.admin.listPendingTopups")));
         }),
       detail: adminProcedure
         .input(z.object({ topupId: z.number() }))
         .query(async ({ input }) => {
-          const topup = await db.getWalletTopupById(input.topupId);
-          if (!topup) throw new TRPCError({ code: "NOT_FOUND" });
+          const rawTopup = await db.getWalletTopupById(input.topupId);
+          if (!rawTopup) throw new TRPCError({ code: "NOT_FOUND" });
 
           // Get user info
-          const user = topup.userId ? await db.getUserById(topup.userId) : null;
+          const user = rawTopup.userId ? await db.getUserById(rawTopup.userId) : null;
 
           // Get topup logs related to this user (audit trail)
-          const logs = topup.userId ? await db.getTopupLogs(topup.userId, undefined, undefined, 50) : [];
+          const logs = rawTopup.userId ? await db.getTopupLogs(rawTopup.userId, undefined, undefined, 50) : [];
+
+          const topup = await withResolvedSlipUrl(rawTopup, "wallet.admin.detail");
 
           return {
             topup,
@@ -2419,7 +2510,7 @@ export const appRouter = router({
             log,
             user,
             createdByUser,
-            relatedTopup,
+            relatedTopup: await withResolvedSlipUrl(relatedTopup, "wallet.admin.logDetail"),
             relatedTransactions,
             userRecentLogs,
           };

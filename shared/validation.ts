@@ -4,6 +4,7 @@
  */
 
 import { z } from "zod";
+import { isValidStoredFileRef } from "./privateFileRef";
 
 // ============ COMMON SCHEMAS ============
 
@@ -75,7 +76,12 @@ export const createEpisodeInputSchema = z.object({
   description: z.string().optional(),
   isFree: z.boolean().default(false),
   price: priceSchema.optional(),
-  fileUrl: z.string().url().optional(),
+  fileUrl: z
+    .string()
+    .refine(isValidStoredFileRef, {
+      message: "fileUrl must be an absolute http(s) URL or a private object reference (r2p:...)",
+    })
+    .optional(),
 });
 
 // ============ CONSTANTS ============

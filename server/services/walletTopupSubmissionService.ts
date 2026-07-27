@@ -19,6 +19,7 @@ import {
 import { getEffectiveOCRConfig } from "../_core/ocr-effective-config";
 import { formatMoney } from "../helpers/moneyNormalizer";
 import { sendOCRReviewNotification } from "./discordNotificationService";
+import { resolveStoredFileValue } from "./r2PrivateStorage";
 
 export interface WalletTopupSubmissionResult {
   topupId: number;
@@ -74,8 +75,13 @@ export async function submitWalletTopupSlip(
     // OCR slip shows 250 (what user paid) → amountMatched should be TRUE
     // If OCR reads 260, that's a mismatch because user never paid 260.
 
-    // Step 1: Parse slip image with OCR
-    const parseResult = await parseSlipImage(slipImageUrl);
+    // Step 1: Resolve a FRESH signed URL immediately before every OCR call
+    // (never reused/cached across retries) - a legacy absolute URL passes
+    // through unchanged; a resolution failure falls into the catch block
+    // below like any other OCR technical error, routing to manual review
+    // instead of crashing the submission.
+    const ocrImageUrl = await resolveStoredFileValue(slipImageUrl, "paymentSlip");
+    const parseResult = await parseSlipImage(ocrImageUrl || "");
 
     // Handle OCR technical error
     if (parseResult.technicalError) {

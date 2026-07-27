@@ -1,9 +1,21 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { uploadPaymentSlipFile } from "./slipFileUploadService";
-import * as storage from "../storage";
+import * as r2PrivateStorage from "./r2PrivateStorage";
+import * as legacyStorage from "../storage";
 import { TRPCError } from "@trpc/server";
 
-// Mock storage module
+// Mock the PRIVATE R2 adapter - payment slips must never touch the legacy
+// Manus storage proxy (server/storage.ts) after this change.
+vi.mock("./r2PrivateStorage", async () => {
+  const actual = await vi.importActual<typeof import("./r2PrivateStorage")>("./r2PrivateStorage");
+  return {
+    ...actual,
+    putPrivateObject: vi.fn(),
+  };
+});
+
+// Also mock the legacy module so a static assertion can prove
+// uploadPaymentSlipFile never calls it, without needing real Manus config.
 vi.mock("../storage", () => ({
   storagePut: vi.fn(),
   isStorageReady: vi.fn(() => true),
@@ -39,11 +51,9 @@ describe("uploadPaymentSlipFile", () => {
   }
 
   describe("Valid uploads", () => {
-    it("should upload valid JPEG file and return URL", async () => {
-      const mockUrl = "https://storage.example.com/file.jpg";
-      vi.mocked(storage.storagePut).mockResolvedValueOnce({
+    it("should upload valid JPEG file to the private bucket and return an r2p: reference", async () => {
+      vi.mocked(r2PrivateStorage.putPrivateObject).mockResolvedValueOnce({
         key: "payment-slips/123/xxx-file.jpg",
-        url: mockUrl,
       });
 
       const result = await uploadPaymentSlipFile({
@@ -55,18 +65,21 @@ describe("uploadPaymentSlipFile", () => {
         orderTotal: 100,
       });
 
-      await expect(result.slipImageUrl).toBe(mockUrl);
-      await expect(result.mimeType).toBe("image/jpeg");
-      await expect(result.isPDF).toBe(false);
-      await expect(result.size).toBeGreaterThan(0);
-      await expect(vi.mocked(storage.storagePut)).toHaveBeenCalled();
+      expect(result.slipImageUrl).toBe("r2p:payment-slips/123/xxx-file.jpg");
+      expect(result.mimeType).toBe("image/jpeg");
+      expect(result.isPDF).toBe(false);
+      expect(result.size).toBeGreaterThan(0);
+      expect(vi.mocked(r2PrivateStorage.putPrivateObject)).toHaveBeenCalledWith(
+        "paymentSlip",
+        expect.stringMatching(/^payment-slips\/123\//),
+        expect.any(Buffer),
+        "image/jpeg"
+      );
     });
 
-    it("should upload valid PNG file and return URL", async () => {
-      const mockUrl = "https://storage.example.com/file.png";
-      vi.mocked(storage.storagePut).mockResolvedValueOnce({
+    it("should upload valid PNG file and return an r2p: reference", async () => {
+      vi.mocked(r2PrivateStorage.putPrivateObject).mockResolvedValueOnce({
         key: "payment-slips/123/xxx-file.png",
-        url: mockUrl,
       });
 
       const result = await uploadPaymentSlipFile({
@@ -77,16 +90,14 @@ describe("uploadPaymentSlipFile", () => {
         context: "payment_page",
       });
 
-      await expect(result.slipImageUrl).toBe(mockUrl);
-      await expect(result.mimeType).toBe("image/png");
-      await expect(result.isPDF).toBe(false);
+      expect(result.slipImageUrl).toBe("r2p:payment-slips/123/xxx-file.png");
+      expect(result.mimeType).toBe("image/png");
+      expect(result.isPDF).toBe(false);
     });
 
-    it("should upload valid PDF file and return URL with manual review message", async () => {
-      const mockUrl = "https://storage.example.com/file.pdf";
-      vi.mocked(storage.storagePut).mockResolvedValueOnce({
+    it("should upload valid PDF file and return manual review message", async () => {
+      vi.mocked(r2PrivateStorage.putPrivateObject).mockResolvedValueOnce({
         key: "payment-slips/123/xxx-file.pdf",
-        url: mockUrl,
       });
 
       const result = await uploadPaymentSlipFile({
@@ -97,19 +108,17 @@ describe("uploadPaymentSlipFile", () => {
         context: "payment_page",
       });
 
-      await expect(result.slipImageUrl).toBe(mockUrl);
-      await expect(result.mimeType).toBe("application/pdf");
-      await expect(result.isPDF).toBe(true);
-      await expect(result.userMessage).toContain("manual review");
+      expect(result.slipImageUrl).toBe("r2p:payment-slips/123/xxx-file.pdf");
+      expect(result.mimeType).toBe("application/pdf");
+      expect(result.isPDF).toBe(true);
+      expect(result.userMessage).toContain("manual review");
     });
   });
 
   describe("MIME type validation", () => {
     it("should normalize image/jpg to image/jpeg", async () => {
-      const mockUrl = "https://storage.example.com/file.jpg";
-      vi.mocked(storage.storagePut).mockResolvedValueOnce({
+      vi.mocked(r2PrivateStorage.putPrivateObject).mockResolvedValueOnce({
         key: "payment-slips/123/xxx-file.jpg",
-        url: mockUrl,
       });
 
       const result = await uploadPaymentSlipFile({
@@ -120,9 +129,9 @@ describe("uploadPaymentSlipFile", () => {
         context: "payment_page",
       });
 
-      await expect(result.mimeType).toBe("image/jpeg");
-      const call = vi.mocked(storage.storagePut).mock.calls[0];
-      await expect(call[2]).toBe("image/jpeg");
+      expect(result.mimeType).toBe("image/jpeg");
+      const call = vi.mocked(r2PrivateStorage.putPrivateObject).mock.calls[0];
+      expect(call[3]).toBe("image/jpeg");
     });
 
     it("should reject unsupported MIME types", async () => {
@@ -148,8 +157,8 @@ describe("uploadPaymentSlipFile", () => {
         });
         expect.fail("Should have thrown");
       } catch (error: any) {
-        await expect(error.message).toContain("ยังไม่รองรับ");
-        await expect(error.message).toContain("JPG");
+        expect(error.message).toContain("ยังไม่รองรับ");
+        expect(error.message).toContain("JPG");
       }
     });
   });
@@ -171,10 +180,8 @@ describe("uploadPaymentSlipFile", () => {
 
     it("should accept files exactly at 5MB limit", async () => {
       const maxBase64 = createBase64File("image/jpeg", 5 * 1024 * 1024);
-      const mockUrl = "https://storage.example.com/file.jpg";
-      vi.mocked(storage.storagePut).mockResolvedValueOnce({
+      vi.mocked(r2PrivateStorage.putPrivateObject).mockResolvedValueOnce({
         key: "payment-slips/123/xxx-file.jpg",
-        url: mockUrl,
       });
 
       const result = await uploadPaymentSlipFile({
@@ -185,7 +192,7 @@ describe("uploadPaymentSlipFile", () => {
         context: "payment_page",
       });
 
-      await expect(result.slipImageUrl).toBe(mockUrl);
+      expect(result.slipImageUrl).toBe("r2p:payment-slips/123/xxx-file.jpg");
     });
   });
 
@@ -248,10 +255,10 @@ describe("uploadPaymentSlipFile", () => {
   });
 
   describe("Storage error handling", () => {
-    it("should return SERVICE_UNAVAILABLE for missing credentials", async () => {
-      const { StorageUploadError } = await import("../helpers/storageErrorHandler");
-      vi.mocked(storage.storagePut).mockRejectedValueOnce(
-        new StorageUploadError(null, null, "Missing config", "path", false, false, "No credentials")
+    it("should return SERVICE_UNAVAILABLE for missing private R2 config", async () => {
+      const { R2PrivateStorageError } = await import("./r2PrivateStorage");
+      vi.mocked(r2PrivateStorage.putPrivateObject).mockRejectedValueOnce(
+        new R2PrivateStorageError("Private R2 storage is not configured - missing env var(s): R2_PRIVATE_BUCKET_NAME", "not_configured")
       );
 
       await expect(
@@ -262,30 +269,34 @@ describe("uploadPaymentSlipFile", () => {
           fileBase64: createBase64File("image/jpeg"),
           context: "payment_page",
         })
-      ).rejects.toThrow();
+      ).rejects.toThrow(TRPCError);
     });
 
-    it("should return SERVICE_UNAVAILABLE for 401 auth error", async () => {
-      const { StorageUploadError } = await import("../helpers/storageErrorHandler");
-      vi.mocked(storage.storagePut).mockRejectedValueOnce(
-        new StorageUploadError(401, "Unauthorized", "Auth failed", "path", true, true, "Auth error")
+    it("should never leak the underlying error message to the client on a missing-config failure", async () => {
+      const { R2PrivateStorageError } = await import("./r2PrivateStorage");
+      vi.mocked(r2PrivateStorage.putPrivateObject).mockRejectedValueOnce(
+        new R2PrivateStorageError("Private R2 storage is not configured - missing env var(s): R2_PRIVATE_SECRET_ACCESS_KEY", "not_configured")
       );
 
-      await expect(
-        uploadPaymentSlipFile({
+      try {
+        await uploadPaymentSlipFile({
           userId: 123,
           fileName: "slip.jpg",
           mimeType: "image/jpeg",
           fileBase64: createBase64File("image/jpeg"),
           context: "payment_page",
-        })
-      ).rejects.toThrow();
+        });
+        expect.fail("Should have thrown");
+      } catch (error: any) {
+        expect(error.message).not.toContain("R2_PRIVATE_SECRET_ACCESS_KEY");
+        expect(error.message).not.toMatch(/https?:\/\//);
+      }
     });
 
-    it("should return SERVICE_UNAVAILABLE for network timeout", async () => {
-      const { StorageUploadError } = await import("../helpers/storageErrorHandler");
-      vi.mocked(storage.storagePut).mockRejectedValueOnce(
-        new StorageUploadError(null, null, "Timeout", "path", true, true, "Network timeout")
+    it("should return INTERNAL_SERVER_ERROR for an upload failure", async () => {
+      const { R2PrivateStorageError } = await import("./r2PrivateStorage");
+      vi.mocked(r2PrivateStorage.putPrivateObject).mockRejectedValueOnce(
+        new R2PrivateStorageError("Private R2 upload failed", "upload_failed", { key: "payment-slips/123/x.jpg", context: "paymentSlip" })
       );
 
       await expect(
@@ -296,16 +307,14 @@ describe("uploadPaymentSlipFile", () => {
           fileBase64: createBase64File("image/jpeg"),
           context: "payment_page",
         })
-      ).rejects.toThrow();
+      ).rejects.toThrow(TRPCError);
     });
   });
 
   describe("Order total validation", () => {
     it("should accept valid order total", async () => {
-      const mockUrl = "https://storage.example.com/file.jpg";
-      vi.mocked(storage.storagePut).mockResolvedValueOnce({
+      vi.mocked(r2PrivateStorage.putPrivateObject).mockResolvedValueOnce({
         key: "payment-slips/123/xxx-file.jpg",
-        url: mockUrl,
       });
 
       const result = await uploadPaymentSlipFile({
@@ -317,7 +326,7 @@ describe("uploadPaymentSlipFile", () => {
         orderTotal: 99.99,
       });
 
-      await expect(result.orderTotal).toBe(99.99);
+      expect(result.orderTotal).toBe(99.99);
     });
 
     it("should reject invalid order total", async () => {
@@ -336,10 +345,8 @@ describe("uploadPaymentSlipFile", () => {
 
   describe("Data URL handling", () => {
     it("should handle data URL format", async () => {
-      const mockUrl = "https://storage.example.com/file.jpg";
-      vi.mocked(storage.storagePut).mockResolvedValueOnce({
+      vi.mocked(r2PrivateStorage.putPrivateObject).mockResolvedValueOnce({
         key: "payment-slips/123/xxx-file.jpg",
-        url: mockUrl,
       });
 
       const base64 = createBase64File("image/jpeg");
@@ -353,7 +360,40 @@ describe("uploadPaymentSlipFile", () => {
         context: "payment_page",
       });
 
-      await expect(result.slipImageUrl).toBe(mockUrl);
+      expect(result.slipImageUrl).toBe("r2p:payment-slips/123/xxx-file.jpg");
+    });
+  });
+
+  describe("Manus storage removal (static assertion)", () => {
+    it("never calls the legacy storagePut, for any successful upload", async () => {
+      vi.mocked(r2PrivateStorage.putPrivateObject).mockResolvedValueOnce({
+        key: "payment-slips/123/xxx-file.jpg",
+      });
+
+      await uploadPaymentSlipFile({
+        userId: 123,
+        fileName: "slip.jpg",
+        mimeType: "image/jpeg",
+        fileBase64: createBase64File("image/jpeg"),
+        context: "payment_page",
+      });
+
+      expect(legacyStorage.storagePut).not.toHaveBeenCalled();
+      expect(r2PrivateStorage.putPrivateObject).toHaveBeenCalledTimes(1);
+    });
+
+    it("never calls the legacy storagePut, even when the upload path is never reached (validation failure)", async () => {
+      await expect(
+        uploadPaymentSlipFile({
+          userId: 123,
+          fileName: "slip.webp",
+          mimeType: "image/webp",
+          fileBase64: createBase64File("image/webp"),
+          context: "payment_page",
+        })
+      ).rejects.toThrow();
+
+      expect(legacyStorage.storagePut).not.toHaveBeenCalled();
     });
   });
 });
