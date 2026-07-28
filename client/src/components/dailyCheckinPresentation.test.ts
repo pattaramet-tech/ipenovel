@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
   resolveDailyCheckinCardState,
+  resolveDailyCheckinCopyKeys,
   formatPointsForDisplay,
   formatCouponDiscountLabel,
   type DailyCheckinStatusView,
 } from "./dailyCheckinPresentation";
+import { translations } from "../contexts/LanguageContext";
 
 /**
  * Card-state coverage for DailyCheckinCard. This repo has no DOM/component
@@ -226,5 +228,77 @@ describe("formatCouponDiscountLabel", () => {
 
   it("flat discount", () => {
     expect(formatCouponDiscountLabel({ ...couponReward, discountType: "flat", discountValue: "25.00" }, "en")).toBe("฿25");
+  });
+});
+
+describe("resolveDailyCheckinCopyKeys", () => {
+  it("POINT mode uses the points title/description/claim-button keys, never the coupon ones", () => {
+    const keys = resolveDailyCheckinCopyKeys("claimable_points");
+    expect(keys.titleKey).toBe("checkin.pointsTitle");
+    expect(keys.descriptionKey).toBe("checkin.pointsDescription");
+    expect(keys.claimButtonKey).toBe("checkin.pointsClaimButton");
+    expect(keys.claimAriaLabelKey).toBe("checkin.pointsClaimAriaLabel");
+  });
+
+  it("COUPON mode uses the legacy title/description/claim-button keys, never the points ones", () => {
+    const keys = resolveDailyCheckinCopyKeys("claimable_coupon");
+    expect(keys.titleKey).toBe("checkin.title");
+    expect(keys.descriptionKey).toBe("checkin.description");
+    expect(keys.claimButtonKey).toBe("checkin.claimButton");
+    expect(keys.claimAriaLabelKey).toBe("checkin.claimButton");
+  });
+});
+
+describe("checkin copy - Thai translations", () => {
+  const th = translations.th;
+
+  it("points title mentions points (คะแนน), not a coupon", () => {
+    expect(th["checkin.pointsTitle"]).toBe("เช็กอินรายวัน รับคะแนน");
+    expect(th["checkin.pointsTitle"]).not.toMatch(/คูปอง/);
+  });
+
+  it("points description", () => {
+    expect(th["checkin.pointsDescription"]).toBe("รับ 1 คะแนนเมื่อเช็กอินวันนี้");
+  });
+
+  it("points claim button mentions 1 point, not a coupon", () => {
+    expect(th["checkin.pointsClaimButton"]).toBe("เช็กอินรับ 1 คะแนน");
+    expect(th["checkin.pointsClaimButton"]).not.toMatch(/คูปอง/);
+  });
+
+  it("claiming (in-flight) copy is shared across both modes", () => {
+    expect(th["checkin.claiming"]).toBe("กำลังเช็กอิน...");
+  });
+
+  it("claimed-state copy names the point amount and current balance", () => {
+    expect(th["checkin.alreadyCheckedIn"]).toBe("เช็กอินวันนี้แล้ว");
+    expect(th["checkin.pointsEarned"].replace("{amount}", "1")).toBe("ได้รับ 1 คะแนน");
+    expect(th["checkin.pointsBalance"].replace("{balance}", "5")).toBe("คะแนนคงเหลือ 5 คะแนน");
+  });
+
+  it("legacy coupon title/button copy is preserved untouched", () => {
+    expect(th["checkin.title"]).toBe("เช็กอินรายวัน รับคูปองส่วนลด");
+    expect(th["checkin.claimButton"]).toBe("เช็กอินรับคูปอง");
+  });
+});
+
+describe("checkin copy - English translations", () => {
+  const en = translations.en;
+
+  it("points title", () => {
+    expect(en["checkin.pointsTitle"]).toBe("Daily Check-in — Earn Points");
+  });
+
+  it("points description", () => {
+    expect(en["checkin.pointsDescription"]).toBe("Earn 1 point when you check in today");
+  });
+
+  it("points claim button", () => {
+    expect(en["checkin.pointsClaimButton"]).toBe("Check in for 1 point");
+  });
+
+  it("legacy coupon title/button copy is preserved untouched", () => {
+    expect(en["checkin.title"]).toBe("Daily Check-in: Get a Discount Coupon");
+    expect(en["checkin.claimButton"]).toBe("Check In for a Coupon");
   });
 });

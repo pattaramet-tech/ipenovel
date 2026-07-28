@@ -102,6 +102,41 @@ export function resolveDailyCheckinCardState(params: {
   return status.rewardMode === "points" ? { state: "claimable_points" } : { state: "claimable_coupon" };
 }
 
+export interface DailyCheckinCopyKeys {
+  titleKey: string;
+  descriptionKey: string;
+  claimButtonKey: string;
+  claimAriaLabelKey: string;
+}
+
+/**
+ * Which translation keys the claimable card must render, keyed by reward
+ * mode - kept out of DailyCheckinCard.tsx so the coupon/points copy split can
+ * be unit-tested without a DOM harness. Points mode and coupon mode each name
+ * their own title/description/button keys; neither falls back to the other's
+ * copy.
+ */
+export function resolveDailyCheckinCopyKeys(
+  state: "claimable_points" | "claimable_coupon"
+): DailyCheckinCopyKeys {
+  if (state === "claimable_points") {
+    return {
+      titleKey: "checkin.pointsTitle",
+      descriptionKey: "checkin.pointsDescription",
+      claimButtonKey: "checkin.pointsClaimButton",
+      claimAriaLabelKey: "checkin.pointsClaimAriaLabel",
+    };
+  }
+  return {
+    titleKey: "checkin.title",
+    descriptionKey: "checkin.description",
+    claimButtonKey: "checkin.claimButton",
+    // The legacy coupon button has no dedicated aria-label copy; its
+    // accessible name is the same string as its visible label.
+    claimAriaLabelKey: "checkin.claimButton",
+  };
+}
+
 /** Trims a decimal string for display: "1.00" -> "1", "12.50" -> "12.5". */
 export function formatPointsForDisplay(value: string | number | null | undefined): string {
   const amount = Number(value ?? 0);

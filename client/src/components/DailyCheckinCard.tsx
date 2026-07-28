@@ -8,6 +8,7 @@ import { getLoginUrl } from "@/const";
 import { useLanguage } from "@/contexts/LanguageContext";
 import {
   resolveDailyCheckinCardState,
+  resolveDailyCheckinCopyKeys,
   formatPointsForDisplay,
   formatCouponDiscountLabel,
   type DailyCheckinStatusView,
@@ -189,6 +190,7 @@ export default function DailyCheckinCard() {
   }
 
   const isPointsMode = view.state === "claimable_points";
+  const copyKeys = resolveDailyCheckinCopyKeys(view.state);
 
   return (
     <Card className="mb-8 p-5 sm:p-6 flex flex-col sm:flex-row items-center justify-between gap-4 bg-gradient-to-br from-blue-50 to-purple-50 border-blue-100">
@@ -199,16 +201,14 @@ export default function DailyCheckinCard() {
           <Gift className="w-8 h-8 text-blue-600 flex-shrink-0" aria-hidden="true" />
         )}
         <div className="min-w-0">
-          <p className="font-semibold text-slate-900">{t("checkin.title")}</p>
-          <p className="text-sm text-slate-600 break-words">
-            {isPointsMode ? t("checkin.pointsDescription") : t("checkin.description")}
-          </p>
+          <p className="font-semibold text-slate-900">{t(copyKeys.titleKey)}</p>
+          <p className="text-sm text-slate-600 break-words">{t(copyKeys.descriptionKey)}</p>
         </div>
       </div>
       <Button
         className="rounded-full w-full sm:w-auto"
         disabled={claimMutation.isPending}
-        aria-label={isPointsMode ? t("checkin.pointsClaimAriaLabel") : t("checkin.claimButton")}
+        aria-label={t(copyKeys.claimAriaLabelKey)}
         onClick={() => claimMutation.mutate()}
       >
         {claimMutation.isPending ? (
@@ -217,7 +217,7 @@ export default function DailyCheckinCard() {
             {t("checkin.claiming")}
           </>
         ) : (
-          t("checkin.claimButton")
+          t(copyKeys.claimButtonKey)
         )}
       </Button>
     </Card>

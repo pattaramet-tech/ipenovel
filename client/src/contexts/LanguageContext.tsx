@@ -11,7 +11,10 @@ interface LanguageContextType {
 const LanguageContext = createContext<LanguageContextType | undefined>(undefined);
 
 // Translation dictionary
-const translations: Record<Language, Record<string, string>> = {
+// Exported (not just used internally) so pure-logic tests - e.g.
+// dailyCheckinPresentation.test.ts - can assert on actual copy strings
+// without rendering through LanguageProvider/useLanguage.
+export const translations: Record<Language, Record<string, string>> = {
   th: {
     // Navbar
     "nav.browse": "เรียกดู",
@@ -39,10 +42,15 @@ const translations: Record<Language, Record<string, string>> = {
     "checkin.error": "ไม่สามารถโหลดข้อมูลเช็กอินได้ กรุณาลองใหม่อีกครั้ง",
     "checkin.couponCode": "รหัสคูปอง",
     "checkin.expires": "หมดอายุ",
-    // 1-point reward copy. 'checkin.title' stays reward-neutral so it reads
-    // correctly in BOTH coupon and point mode; the reward itself is described
-    // by checkin.description / checkin.pointsDescription.
+    // 1-point reward copy. 'checkin.title' and 'checkin.claimButton' above
+    // describe the legacy COUPON reward only - a points-mode card must use
+    // 'checkin.pointsTitle' / 'checkin.pointsClaimButton' below instead, never
+    // fall back to the coupon strings. See resolveDailyCheckinCopyKeys in
+    // dailyCheckinPresentation.ts, which is the single place that picks
+    // between the two sets.
+    "checkin.pointsTitle": "เช็กอินรายวัน รับคะแนน",
     "checkin.pointsDescription": "รับ 1 คะแนนเมื่อเช็กอินวันนี้",
+    "checkin.pointsClaimButton": "เช็กอินรับ 1 คะแนน",
     "checkin.pointsClaimSuccess": "เช็กอินสำเร็จ",
     "checkin.pointsEarned": "ได้รับ {amount} คะแนน",
     "checkin.pointsBalance": "คะแนนคงเหลือ {balance} คะแนน",
@@ -578,7 +586,9 @@ const translations: Record<Language, Record<string, string>> = {
     "checkin.error": "Unable to load check-in information. Please try again.",
     "checkin.couponCode": "Coupon code",
     "checkin.expires": "Expires",
-    "checkin.pointsDescription": "Get 1 point when you check in today",
+    "checkin.pointsTitle": "Daily Check-in — Earn Points",
+    "checkin.pointsDescription": "Earn 1 point when you check in today",
+    "checkin.pointsClaimButton": "Check in for 1 point",
     "checkin.pointsClaimSuccess": "Checked in successfully",
     "checkin.pointsEarned": "You received {amount} point(s)",
     "checkin.pointsBalance": "Points balance: {balance}",
