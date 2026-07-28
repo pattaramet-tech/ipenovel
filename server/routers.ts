@@ -1041,6 +1041,15 @@ export const appRouter = router({
     login: publicProcedure
       .input(z.object({ email: z.string().email(), password: z.string() }))
       .mutation(async ({ input, ctx }) => {
+        // Confirmed available BEFORE the credential lookup - a database
+        // outage must never be reported as "Invalid credentials" (db.
+        // getAdminByEmail returns undefined either way, indistinguishable
+        // from "no such admin"). Propagates as an uncaught error, which
+        // tRPC's default INTERNAL_SERVER_ERROR handling plus this app's
+        // global errorFormatter (server/_core/trpc.ts) already sanitize
+        // before it reaches the client.
+        await db.assertDatabaseAvailable();
+
         const admin = await db.getAdminByEmail(input.email);
         if (!admin || !admin.passwordHash) {
           throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid credentials" });

@@ -2,7 +2,7 @@ import { getLoginUrl } from "@/const";
 import { trpc } from "@/lib/trpc";
 import { TRPCClientError } from "@trpc/client";
 import { useCallback, useEffect, useMemo } from "react";
-import { clearLegacyAuthLocalStorage } from "./authClientStorage";
+import { clearLegacyAuthLocalStorageFromWindow } from "./authClientStorage";
 
 type UseAuthOptions = {
   redirectOnUnauthenticated?: boolean;
@@ -46,9 +46,12 @@ export function useAuth(options?: UseAuthOptions) {
   // this auth.me query (and React Query's own cache) - the full user object
   // is never persisted to localStorage. Runs once on mount (not tied to
   // meQuery.data) purely to clean up a legacy key a browser may still have
-  // from before this change; see authClientStorage.ts.
+  // from before this change; see authClientStorage.ts. Deliberately passes
+  // `window` itself, not its localStorage property - reading that property
+  // can itself throw in some browsers, and that access must happen inside
+  // clearLegacyAuthLocalStorageFromWindow's own try/catch, not here.
   useEffect(() => {
-    clearLegacyAuthLocalStorage(typeof window === "undefined" ? null : window.localStorage);
+    clearLegacyAuthLocalStorageFromWindow(typeof window === "undefined" ? null : window);
   }, []);
 
   const state = useMemo(() => {
