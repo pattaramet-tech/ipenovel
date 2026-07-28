@@ -37,7 +37,7 @@ import mysql from "mysql2/promise";
 import { drizzle } from "drizzle-orm/mysql2";
 import { redactDatabaseUrl } from "../server/test-helpers/testDatabaseGuard";
 import { assertLiveTestDatabaseName } from "../server/test-helpers/liveTestDatabaseCheck";
-import { buildTestDbConnectionOptions } from "../server/test-helpers/testDbConnectionOptions";
+import { buildTestDbConnectionOptions, parseTestDbTransportMode } from "../server/test-helpers/testDbConnectionOptions";
 import { resetTestDatabase } from "../server/test-helpers/resetTestDatabase";
 import { runTestDbMigration } from "./migrate-test-db";
 import { closeMysqlConnectionSafely } from "../server/test-helpers/closeMysqlConnectionSafely";
@@ -63,7 +63,9 @@ async function main() {
 
   // 1. Fail closed on a missing/unsafe connection string.
   // buildTestDbConnectionOptions() runs assertSafeTestDatabaseUrl internally.
-  const options = buildTestDbConnectionOptions(testUrl);
+  // Transport mode is read here, explicitly, and passed in -
+  // buildTestDbConnectionOptions never reads process.env itself.
+  const options = buildTestDbConnectionOptions(testUrl, parseTestDbTransportMode(process.env.TEST_DATABASE_TRANSPORT));
   console.log(`[test:db:prepare] Connection string validated: ${redactDatabaseUrl(testUrl)}`);
 
   // 2. Apply migrations (this also independently re-verifies the live

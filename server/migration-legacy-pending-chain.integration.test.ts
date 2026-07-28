@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import path from "node:path";
 import mysql from "mysql2/promise";
-import { buildTestDbConnectionOptions } from "./test-helpers/testDbConnectionOptions";
+import { buildTestDbConnectionOptions, parseTestDbTransportMode } from "./test-helpers/testDbConnectionOptions";
 import {
   runMigrationsWithLogging,
   consoleMigrationLogger,
@@ -73,7 +73,9 @@ const MIGRATION_0029_TABLES = [
 
 async function connect(): Promise<mysql.Connection | null> {
   if (!process.env.TEST_DATABASE_URL) return null;
-  return mysql.createConnection(buildTestDbConnectionOptions(process.env.TEST_DATABASE_URL));
+  return mysql.createConnection(
+    buildTestDbConnectionOptions(process.env.TEST_DATABASE_URL, parseTestDbTransportMode(process.env.TEST_DATABASE_TRANSPORT))
+  );
 }
 
 function createTrackingLogger(prefix: string): { logger: MigrationLogger; completedTags: string[] } {

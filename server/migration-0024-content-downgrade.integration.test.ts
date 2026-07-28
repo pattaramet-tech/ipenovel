@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import path from "node:path";
 import crypto from "node:crypto";
 import mysql from "mysql2/promise";
-import { buildTestDbConnectionOptions } from "./test-helpers/testDbConnectionOptions";
+import { buildTestDbConnectionOptions, parseTestDbTransportMode } from "./test-helpers/testDbConnectionOptions";
 import { runMigrationsWithLogging, consoleMigrationLogger, readMigrationJournal } from "./test-helpers/migrateTestDbWithLogging";
 import { EXPECTED_TEST_DATABASE_NAME } from "./test-helpers/testDatabaseGuard";
 import { restoreToFullyMigratedWithRetry } from "./test-helpers/restoreWithEmergencyRetry";
@@ -45,7 +45,9 @@ const LARGE_CONTENT_SIZE = 4248726;
 
 async function connect(): Promise<mysql.Connection | null> {
   if (!process.env.TEST_DATABASE_URL) return null;
-  return mysql.createConnection(buildTestDbConnectionOptions(process.env.TEST_DATABASE_URL));
+  return mysql.createConnection(
+    buildTestDbConnectionOptions(process.env.TEST_DATABASE_URL, parseTestDbTransportMode(process.env.TEST_DATABASE_TRANSPORT))
+  );
 }
 
 async function runFullChain(conn: mysql.Connection): Promise<void> {

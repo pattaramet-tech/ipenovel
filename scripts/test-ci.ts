@@ -20,7 +20,7 @@ import { assertSafeTestDatabaseUrl, redactDatabaseUrl } from "../server/test-hel
 import { runTestDbMigration } from "./migrate-test-db";
 import { assertLiveTestDatabaseName } from "../server/test-helpers/liveTestDatabaseCheck";
 import { resetTestDatabase } from "../server/test-helpers/resetTestDatabase";
-import { buildTestDbConnectionOptions } from "../server/test-helpers/testDbConnectionOptions";
+import { buildTestDbConnectionOptions, parseTestDbTransportMode } from "../server/test-helpers/testDbConnectionOptions";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
@@ -63,7 +63,9 @@ async function main() {
   let migrateStatus = 0;
   try {
     await runTestDbMigration();
-    const connection = mysql.createConnection(buildTestDbConnectionOptions(testUrl));
+    const connection = mysql.createConnection(
+      buildTestDbConnectionOptions(testUrl, parseTestDbTransportMode(process.env.TEST_DATABASE_TRANSPORT))
+    );
     const db = drizzle({ client: connection });
     try {
       await assertLiveTestDatabaseName(db);

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import mysql from "mysql2/promise";
-import { buildTestDbConnectionOptions } from "./test-helpers/testDbConnectionOptions";
+import { buildTestDbConnectionOptions, parseTestDbTransportMode } from "./test-helpers/testDbConnectionOptions";
 
 /**
  * Proves the specific safety property the daily check-in incident review
@@ -100,7 +100,9 @@ async function indexExists(conn: mysql.Connection, tableName: string, indexName:
 describe("migration 0027 idempotency (real disposable test database)", () => {
   it("is safe to run twice back-to-back against an already fully-applied schema", async () => {
     if (!process.env.TEST_DATABASE_URL) return; // matches this repo's guarded-DB-test convention; the integration project's own globalSetup already enforces this is set and safe when it runs for real
-    const conn = await mysql.createConnection(buildTestDbConnectionOptions(process.env.TEST_DATABASE_URL));
+    const conn = await mysql.createConnection(
+      buildTestDbConnectionOptions(process.env.TEST_DATABASE_URL, parseTestDbTransportMode(process.env.TEST_DATABASE_TRANSPORT))
+    );
     try {
       await runMigrationStatements(conn); // brings schema to fully-applied (no-op if already there)
       await expect(runMigrationStatements(conn)).resolves.not.toThrow(); // re-run: must not throw
@@ -114,7 +116,9 @@ describe("migration 0027 idempotency (real disposable test database)", () => {
 
   it("is safe when only the secondary index is missing (partially applied)", async () => {
     if (!process.env.TEST_DATABASE_URL) return;
-    const conn = await mysql.createConnection(buildTestDbConnectionOptions(process.env.TEST_DATABASE_URL));
+    const conn = await mysql.createConnection(
+      buildTestDbConnectionOptions(process.env.TEST_DATABASE_URL, parseTestDbTransportMode(process.env.TEST_DATABASE_TRANSPORT))
+    );
     try {
       await runMigrationStatements(conn); // ensure a known starting state
       await conn.query("DROP INDEX `dailyCheckins_userId_idx` ON `dailyCheckins`");
@@ -132,7 +136,9 @@ describe("migration 0027 idempotency (real disposable test database)", () => {
 
   it("is safe on a fresh database where neither dailyCheckins nor coupons.maxDiscountAmount exist yet", async () => {
     if (!process.env.TEST_DATABASE_URL) return;
-    const conn = await mysql.createConnection(buildTestDbConnectionOptions(process.env.TEST_DATABASE_URL));
+    const conn = await mysql.createConnection(
+      buildTestDbConnectionOptions(process.env.TEST_DATABASE_URL, parseTestDbTransportMode(process.env.TEST_DATABASE_TRANSPORT))
+    );
     try {
       await conn.query("DROP TABLE IF EXISTS `dailyCheckins`");
       if (await columnExists(conn, "coupons", "maxDiscountAmount")) {

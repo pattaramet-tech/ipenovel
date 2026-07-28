@@ -37,7 +37,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { redactDatabaseUrl } from "../server/test-helpers/testDatabaseGuard";
 import { assertLiveTestDatabaseName } from "../server/test-helpers/liveTestDatabaseCheck";
-import { buildTestDbConnectionOptions } from "../server/test-helpers/testDbConnectionOptions";
+import { buildTestDbConnectionOptions, parseTestDbTransportMode } from "../server/test-helpers/testDbConnectionOptions";
 import { runMigrationsWithLogging, consoleMigrationLogger } from "../server/test-helpers/migrateTestDbWithLogging";
 import { closeMysqlConnectionSafely } from "../server/test-helpers/closeMysqlConnectionSafely";
 import { createDiagnosticLogger, logActiveResourceSnapshot } from "../server/test-helpers/testDbDiagnostics";
@@ -72,8 +72,9 @@ export async function runTestDbMigration(): Promise<void> {
   // Fail closed: missing or unsafe TEST_DATABASE_URL never falls back to
   // anything else, and never proceeds. buildTestDbConnectionOptions() runs
   // the same assertSafeTestDatabaseUrl gate internally before returning
-  // anything.
-  const options = buildTestDbConnectionOptions(testUrl);
+  // anything. Transport mode is read here, explicitly, and passed in -
+  // buildTestDbConnectionOptions never reads process.env itself.
+  const options = buildTestDbConnectionOptions(testUrl, parseTestDbTransportMode(process.env.TEST_DATABASE_TRANSPORT));
   console.log(`[migrate-test-db] Connection string validated: ${redactDatabaseUrl(testUrl)}`);
 
   let connection: Awaited<ReturnType<typeof mysql.createConnection>>;
