@@ -82,11 +82,32 @@ export async function getDb() {
     try {
       _db = drizzle(process.env.DATABASE_URL);
     } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
+      console.warn("[Database] Failed to connect:", safeErrorSummary(error));
       _db = null;
     }
   }
   return _db;
+}
+
+/**
+ * Throws a plain, sanitized Error when the database connection is
+ * unavailable (DATABASE_URL unset, or the drizzle client failed to
+ * initialize) - never DATABASE_URL, host, username, or password, and never
+ * an AnonymousCredentialError. A database outage is an infrastructure
+ * failure, not "no session" or "invalid credentials" - callers in
+ * server/_core/sdk.ts's authenticateRequest, server/_core/oauth.ts's OAuth
+ * callback, and server/routers.ts's admin.login all call this before any
+ * user/admin lookup so an outage propagates as a real error instead of
+ * being silently misread as "no such user"/"invalid credentials" (every
+ * *Db lookup function in this file already returns undefined/null when the
+ * database is unavailable - that fallback is intentionally left unchanged
+ * for their many other, non-auth callers).
+ */
+export async function assertDatabaseAvailable(): Promise<void> {
+  const db = await getDb();
+  if (!db) {
+    throw new Error("[Database] Database connection is not available");
+  }
 }
 
 export async function upsertUser(user: InsertUser): Promise<void> {
@@ -143,7 +164,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
       set: updateSet,
     });
   } catch (error) {
-    console.error("[Database] Failed to upsert user:", error);
+    console.error("[Database] Failed to upsert user:", safeErrorSummary(error));
     throw error;
   }
 }

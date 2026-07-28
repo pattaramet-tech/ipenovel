@@ -48,6 +48,11 @@ describe("sdk.authenticateRequest", () => {
   beforeEach(() => {
     ENV.cookieSecret = "test-only-session-secret-not-a-real-value-0123456789";
     ENV.appId = "test-app-id";
+    // Available by default - this sandbox has no real DATABASE_URL, so
+    // without this every test below would fail at the assertDatabaseAvailable
+    // guard before ever reaching the behavior it's testing. Individual tests
+    // in the "database unavailable" describe block below override this.
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -56,19 +61,24 @@ describe("sdk.authenticateRequest", () => {
     vi.restoreAllMocks();
   });
 
-  it("missing cookie -> AnonymousCredentialError with reason no_cookie, no DB access", async () => {
+  it("missing cookie -> AnonymousCredentialError with reason no_cookie, no DB access at all (not even the availability guard)", async () => {
     const getUserByOpenIdSpy = vi.spyOn(db, "getUserByOpenId");
+    const assertDbSpy = vi.spyOn(db, "assertDatabaseAvailable");
 
     const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(undefined)));
     expect(error).toBeInstanceOf(AnonymousCredentialError);
     expect((error as AnonymousCredentialError).reason).toBe("no_cookie");
     expect(getUserByOpenIdSpy).not.toHaveBeenCalled();
+    expect(assertDbSpy).not.toHaveBeenCalled();
   });
 
-  it("malformed cookie -> AnonymousCredentialError with reason invalid_session_token (so createContext knows to clear it)", async () => {
+  it("malformed cookie -> AnonymousCredentialError with reason invalid_session_token (so createContext knows to clear it), no DB access at all", async () => {
+    const assertDbSpy = vi.spyOn(db, "assertDatabaseAvailable");
+
     const error = await captureRejection(sdk.authenticateRequest(requestWithCookie("garbage")));
     expect(error).toBeInstanceOf(AnonymousCredentialError);
     expect((error as AnonymousCredentialError).reason).toBe("invalid_session_token");
+    expect(assertDbSpy).not.toHaveBeenCalled();
   });
 
   it("valid session for a known user returns that user and refreshes lastSignedIn only", async () => {
@@ -214,6 +224,76 @@ describe("sdk.authenticateRequest", () => {
       await expect(sdk.authenticateRequest(requestWithCookie(token))).rejects.toBeInstanceOf(
         AnonymousCredentialError
       );
+    });
+  });
+
+  describe("database unavailable", () => {
+    it("valid normal-user JWT + database unavailable -> rejects, NOT AnonymousCredentialError, no OAuth sync attempted", async () => {
+      const dbOutage = new Error("[Database] Database connection is not available");
+      vi.spyOn(db, "assertDatabaseAvailable").mockRejectedValue(dbOutage);
+      const getUserByOpenIdSpy = vi.spyOn(db, "getUserByOpenId");
+      const getUserInfoWithJwtSpy = vi.spyOn(sdk, "getUserInfoWithJwt");
+
+      const token = await sdk.createSessionToken("user-123", {});
+      const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(token)));
+
+      expect(error).toBe(dbOutage);
+      expect(error).not.toBeInstanceOf(AnonymousCredentialError);
+      // The database guard runs before any lookup, so a normal getUserByOpenId
+      // lookup - and, downstream of that, the OAuth-sync fallback - never runs.
+      expect(getUserByOpenIdSpy).not.toHaveBeenCalled();
+      expect(getUserInfoWithJwtSpy).not.toHaveBeenCalled();
+    });
+
+    it("valid admin JWT + database unavailable -> rejects, NOT AnonymousCredentialError, NOT reinterpreted as a demoted/deleted admin", async () => {
+      const dbOutage = new Error("[Database] Database connection is not available");
+      vi.spyOn(db, "assertDatabaseAvailable").mockRejectedValue(dbOutage);
+      const getUserByIdSpy = vi.spyOn(db, "getUserById");
+
+      const token = await sdk.createSessionToken("admin-7", {});
+      const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(token)));
+
+      expect(error).toBe(dbOutage);
+      expect(error).not.toBeInstanceOf(AnonymousCredentialError);
+      // In particular, this must not surface as reason: "admin_session_invalid"
+      // (which would silently misreport a database outage as a demoted/deleted
+      // admin account) - it isn't even the same error class.
+      expect((error as any).reason).toBeUndefined();
+      expect(getUserByIdSpy).not.toHaveBeenCalled();
+    });
+
+    it("database query throwing AFTER the availability guard passes still propagates as-is (unaffected by the new guard)", async () => {
+      const queryError = new Error("ER_LOCK_WAIT_TIMEOUT");
+      vi.spyOn(db, "getUserByOpenId").mockRejectedValue(queryError);
+
+      const token = await sdk.createSessionToken("user-123", {});
+      await expect(sdk.authenticateRequest(requestWithCookie(token))).rejects.toBe(queryError);
+    });
+
+    it("an actually-nonexistent admin, with the database genuinely available, still rejects per existing policy (the guard does not change this outcome)", async () => {
+      vi.spyOn(db, "getUserById").mockResolvedValue(undefined);
+
+      const token = await sdk.createSessionToken("admin-999", {});
+      const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(token)));
+      expect(error).toBeInstanceOf(AnonymousCredentialError);
+      expect((error as AnonymousCredentialError).reason).toBe("admin_session_invalid");
+    });
+
+    it("an actually-nonexistent user, with the database genuinely available, still performs the OAuth sync per existing policy (the guard does not change this outcome)", async () => {
+      vi.spyOn(db, "getUserByOpenId").mockResolvedValue(undefined);
+      const upsertSpy = vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
+      const getUserInfoWithJwtSpy = vi.spyOn(sdk, "getUserInfoWithJwt").mockResolvedValue({
+        openId: "user-123",
+        name: "Somchai",
+        email: null,
+        platform: "google",
+      } as any);
+
+      const token = await sdk.createSessionToken("user-123", {});
+      await captureRejection(sdk.authenticateRequest(requestWithCookie(token)));
+
+      expect(getUserInfoWithJwtSpy).toHaveBeenCalledTimes(1);
+      expect(upsertSpy).toHaveBeenCalled();
     });
   });
 });

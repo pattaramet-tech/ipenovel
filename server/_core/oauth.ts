@@ -30,6 +30,13 @@ export function registerOAuthRoutes(app: Express) {
         return;
       }
 
+      // Confirmed available BEFORE the user is upserted or a session cookie
+      // is minted - an outage here must never look like a successful
+      // login (no upsert, no session token, no res.cookie(), no success
+      // redirect). Propagates to the catch below, which already responds
+      // with a safe generic error and never exposes database detail.
+      await db.assertDatabaseAvailable();
+
       const normalizedName = normalizeProviderName(userInfo.name);
 
       await db.upsertUser({

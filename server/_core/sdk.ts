@@ -337,6 +337,16 @@ class SDKServer {
       );
     }
 
+    // Every path below this point needs the database - confirm it is
+    // actually available BEFORE any user/admin lookup, so an outage
+    // propagates as a real infrastructure error instead of being silently
+    // misread as "no such admin" or "no such user" (db.getUserById /
+    // getUserByOpenId both return undefined - indistinguishable from "not
+    // found" - when the database itself is unavailable). Deliberately
+    // after the session-verification check above: a request with no
+    // cookie, or an invalid one, never touches the database at all.
+    await db.assertDatabaseAvailable();
+
     // Local (email/password) admin sessions use a synthetic "admin-<id>"
     // openId minted only by admin.login (server/routers.ts) - never by
     // OAuth. Role is still re-checked against the database on every

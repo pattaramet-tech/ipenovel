@@ -29,3 +29,28 @@ export function clearLegacyAuthLocalStorage(storage: RemovableStorage | null | u
     // Best-effort only.
   }
 }
+
+type WindowLike = { localStorage?: RemovableStorage | null };
+
+/**
+ * Same as clearLegacyAuthLocalStorage, but takes the `window`-like object
+ * itself rather than an already-resolved storage reference, and reads its
+ * `.localStorage` property from *inside* this function's try/catch.
+ *
+ * That distinction matters: in some browsers/embedded contexts, merely
+ * reading the `window.localStorage` property (its getter, before any method
+ * on it is ever called) can throw a `SecurityError`. A caller that writes
+ * `clearLegacyAuthLocalStorage(window.localStorage)` evaluates that property
+ * access as an argument expression BEFORE entering the callee - outside any
+ * try/catch this function provides - so that throw would be uncaught. This
+ * function accepts `window` itself instead, so the property read happens
+ * here, already guarded.
+ */
+export function clearLegacyAuthLocalStorageFromWindow(windowLike: WindowLike | null | undefined): void {
+  if (!windowLike) return;
+  try {
+    clearLegacyAuthLocalStorage(windowLike.localStorage);
+  } catch {
+    // Reading the `.localStorage` property itself threw - best-effort only.
+  }
+}
