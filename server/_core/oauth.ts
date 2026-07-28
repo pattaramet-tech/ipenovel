@@ -1,7 +1,9 @@
-import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
+import { COOKIE_NAME, SESSION_TTL_MS } from "@shared/const";
 import type { Express, Request, Response } from "express";
 import * as db from "../db";
+import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
 import { getSessionCookieOptions } from "./cookies";
+import { normalizeProviderName } from "./providerName";
 import { sdk } from "./sdk";
 
 function getQueryParam(req: Request, key: string): string | undefined {
@@ -28,25 +30,32 @@ export function registerOAuthRoutes(app: Express) {
         return;
       }
 
+      const normalizedName = normalizeProviderName(userInfo.name);
+
       await db.upsertUser({
         openId: userInfo.openId,
-        name: userInfo.name || null,
+        // undefined (never null) when the provider sent no usable name, so
+        // an existing stored name is never overwritten by an empty one on
+        // a returning login - see normalizeProviderName.
+        name: normalizedName ?? undefined,
         email: userInfo.email ?? null,
         loginMethod: userInfo.loginMethod ?? userInfo.platform ?? null,
         lastSignedIn: new Date(),
       });
 
       const sessionToken = await sdk.createSessionToken(userInfo.openId, {
-        name: userInfo.name || "",
-        expiresInMs: ONE_YEAR_MS,
+        name: normalizedName,
+        expiresInMs: SESSION_TTL_MS,
       });
 
       const cookieOptions = getSessionCookieOptions(req);
-      res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+      res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: SESSION_TTL_MS });
 
       res.redirect(302, "/");
     } catch (error) {
-      console.error("[OAuth] Callback failed", error);
+      // Sanitized: an axios error here can carry the OAuth token-exchange
+      // request/response - never log it raw.
+      console.error("[OAuth] Callback failed:", safeErrorSummary(error));
       res.status(500).json({ error: "OAuth callback failed" });
     }
   });

@@ -2,6 +2,7 @@ import { getLoginUrl } from "@/const";
 import { trpc } from "@/lib/trpc";
 import { TRPCClientError } from "@trpc/client";
 import { useCallback, useEffect, useMemo } from "react";
+import { clearLegacyAuthLocalStorage } from "./authClientStorage";
 
 type UseAuthOptions = {
   redirectOnUnauthenticated?: boolean;
@@ -41,11 +42,16 @@ export function useAuth(options?: UseAuthOptions) {
     }
   }, [logoutMutation, utils]);
 
+  // Source of truth for the signed-in user is the HttpOnly session cookie +
+  // this auth.me query (and React Query's own cache) - the full user object
+  // is never persisted to localStorage. Runs once on mount (not tied to
+  // meQuery.data) purely to clean up a legacy key a browser may still have
+  // from before this change; see authClientStorage.ts.
+  useEffect(() => {
+    clearLegacyAuthLocalStorage(typeof window === "undefined" ? null : window.localStorage);
+  }, []);
+
   const state = useMemo(() => {
-    localStorage.setItem(
-      "manus-runtime-user-info",
-      JSON.stringify(meQuery.data)
-    );
     return {
       user: meQuery.data ?? null,
       loading: meQuery.isLoading || logoutMutation.isPending,
