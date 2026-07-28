@@ -32,12 +32,12 @@ export function StatCard({
   };
 
   return (
-    <Card className="hover:shadow-md transition-shadow">
-      <CardContent className="pt-6">
+    <Card className="transition-shadow hover:shadow-md">
+      <CardContent className="p-4 sm:p-6">
         <div className="flex items-start justify-between">
           <div>
             <p className="text-sm font-medium text-slate-600">{label}</p>
-            <p className="text-3xl font-bold text-slate-900 mt-2">{value}</p>
+            <p className="mt-2 text-2xl font-bold text-slate-900 sm:text-3xl">{value}</p>
             {trend && (
               <p className={`text-xs mt-2 ${trend.direction === "up" ? "text-green-600" : "text-red-600"}`}>
                 {trend.direction === "up" ? "↑" : "↓"} {Math.abs(trend.value)}%
@@ -64,12 +64,12 @@ export function SectionHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between mb-6">
-      <div>
-        <h2 className="text-2xl font-bold text-slate-900">{title}</h2>
+    <div className="mb-5 flex flex-col gap-3 sm:mb-6 sm:flex-row sm:items-start sm:justify-between">
+      <div className="min-w-0">
+        <h2 className="text-xl font-bold text-slate-900 sm:text-2xl">{title}</h2>
         {description && <p className="text-sm text-slate-600 mt-1">{description}</p>}
       </div>
-      {action && <div>{action}</div>}
+      {action && <div className="flex shrink-0 flex-wrap gap-2 [&>*]:max-sm:w-full">{action}</div>}
     </div>
   );
 }
@@ -140,8 +140,8 @@ export function DataTable({
   onRowClick?: (row: any) => void;
 }) {
   return (
-    <div className="overflow-x-auto border border-slate-200 rounded-lg">
-      <table className="w-full">
+    <div className="max-w-full overflow-x-auto rounded-lg border border-slate-200" role="region" aria-label="Data table" tabIndex={0}>
+      <table className="w-full min-w-max">
         <thead>
           <tr className="border-b bg-slate-50">
             {columns.map((col) => (
@@ -229,5 +229,5 @@ export function InfoBox({
 
 // Action Row - for row actions
 export function ActionRow({ children }: { children: ReactNode }) {
-  return <div className="flex gap-2 items-center">{children}</div>;
+  return <div className="flex flex-wrap items-center gap-2">{children}</div>;
 }

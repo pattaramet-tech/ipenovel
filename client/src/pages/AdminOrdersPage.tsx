@@ -224,9 +224,9 @@ export default function AdminOrdersPage() {
         <div className="space-y-3">
           <div className="text-sm font-semibold">Filters</div>
           
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
             {/* Status Filter */}
-            <div className="flex gap-1">
+            <div className="flex flex-wrap gap-1">
               <Button
                 size="sm"
                 variant={statusFilter === 'pending' ? 'default' : 'outline'}
@@ -254,7 +254,7 @@ export default function AdminOrdersPage() {
             </div>
 
             {/* Payment Status Filter */}
-            <div className="flex gap-1 ml-4">
+            <div className="flex flex-wrap gap-1">
               <Button
                 size="sm"
                 variant={paymentStatusFilter === 'approved' ? 'default' : 'outline'}
@@ -274,7 +274,7 @@ export default function AdminOrdersPage() {
             </div>
 
             {/* Discount Filter */}
-            <div className="flex gap-1 ml-4">
+            <div className="flex flex-wrap gap-1">
               <Button
                 size="sm"
                 variant={hasDiscountFilter === true ? 'default' : 'outline'}
@@ -304,7 +304,7 @@ export default function AdminOrdersPage() {
                   setHasDiscountFilter(undefined);
                   setPage(1);
                 }}
-                className="text-xs ml-4"
+                className="text-xs"
               >
                 Clear Filters
               </Button>
@@ -324,8 +324,8 @@ export default function AdminOrdersPage() {
         ) : (
           <>
             {/* Table */}
-            <div className="overflow-x-auto">
-              <table className="w-full">
+            <div className="max-w-full overflow-x-auto rounded-lg border border-slate-200" role="region" aria-label="Orders table" tabIndex={0}>
+              <table className="w-full min-w-[72rem]">
                 <thead>
                   <tr className="border-b bg-slate-50">
                     <th className="text-left p-3 font-semibold cursor-pointer hover:bg-slate-100" onClick={() => handleSort('createdAt')}>
@@ -415,11 +415,11 @@ export default function AdminOrdersPage() {
             </div>
 
             {/* Pagination */}
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="text-sm text-slate-600">
                 Page {page} of {totalPages} ({total} total orders)
               </div>
-              <div className="flex gap-2">
+              <div className="flex max-w-full items-center gap-2 overflow-x-auto pb-1">
                 <Button
                   size="sm"
                   variant="outline"

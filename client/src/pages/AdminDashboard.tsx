@@ -187,7 +187,7 @@ export default function AdminDashboard() {
 
         {/* Tabs - Mobile optimized */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-5 h-auto gap-1 p-1">
+          <TabsList className="flex h-auto w-full justify-start gap-1 overflow-x-auto p-1">
             <TabsTrigger value="overview" className="text-xs md:text-sm py-2">Overview</TabsTrigger>
             <TabsTrigger value="payments" className="text-xs md:text-sm py-2 flex items-center justify-center gap-1">
               <span>Pending</span>
@@ -493,9 +493,9 @@ export default function AdminDashboard() {
                 description="ไม่พบออเดอร์ที่อนุมัติแล้วในช่วงเวลานี้"
               />
             ) : (
-              <div className="overflow-x-auto">
+              <div className="max-w-full overflow-x-auto rounded-lg border border-slate-200">
                 <Card className="p-0">
-                  <div className="hidden md:block">
+                  <div className="hidden min-w-[52rem] md:block">
                     {/* Desktop Table */}
                     <div className="grid grid-cols-6 gap-2 p-3 md:p-4 bg-slate-50 font-semibold text-xs md:text-sm border-b">
                       <div>อันดับ</div>

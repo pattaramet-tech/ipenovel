@@ -413,8 +413,8 @@ export default function AdminNovelsPage() {
             action={!searchTerm ? <Button onClick={() => setIsCreating(true)}>Create First Novel</Button> : undefined}
           />
         ) : (
-          <div className="overflow-x-auto border border-slate-200 rounded-lg">
-            <table className="w-full">
+          <div className="max-w-full overflow-x-auto rounded-lg border border-slate-200" role="region" aria-label="Novels table" tabIndex={0}>
+            <table className="w-full min-w-[48rem]">
               <thead className="bg-slate-100 border-b border-slate-200">
                 <tr>
                   <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Title</th>

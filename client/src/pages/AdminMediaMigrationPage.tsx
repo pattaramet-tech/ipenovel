@@ -270,7 +270,7 @@ export default function AdminMediaMigrationPage() {
                 : "รันจริงแล้ว - รายการที่สำเร็จถูกอัปเดต URL ใน DB แล้ว"}
             </p>
 
-            <div className="grid grid-cols-3 sm:grid-cols-5 gap-3 mb-4 text-center">
+            <div className="mb-4 grid grid-cols-2 gap-3 text-center sm:grid-cols-5">
               <div>
                 <p className="text-2xl font-bold">{lastResult.totalChecked}</p>
                 <p className="text-xs text-muted-foreground">ทั้งหมดที่เช็ค</p>
@@ -303,8 +303,8 @@ export default function AdminMediaMigrationPage() {
             )}
 
             {lastResult.results.length > 0 ? (
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
+              <div className="max-w-full overflow-x-auto rounded-md border" role="region" aria-label="Media migration results" tabIndex={0}>
+                <table className="w-full min-w-[48rem] text-xs">
                   <thead>
                     <tr className="border-b bg-slate-50">
                       <th className="text-left py-2 px-2">Type</th>

@@ -92,7 +92,7 @@ export default function AdminEntitlementsPage() {
 
               <div className="border-t pt-4">
                 <h3 className="text-lg font-semibold mb-2">Entitlement Status</h3>
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                   <div className="p-3 bg-blue-50 rounded">
                     <p className="text-sm text-slate-600">Total Items</p>
                     <p className="text-2xl font-bold">{searchResult.totalItems}</p>

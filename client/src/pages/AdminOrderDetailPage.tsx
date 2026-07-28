@@ -182,7 +182,7 @@ export default function AdminOrderDetailPage() {
 
         {/* Order Details */}
         <Card className="p-6">
-          <div className="grid grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-6">
             <div>
               <p className="text-sm text-muted-foreground">Order ID</p>
               <p className="font-semibold">{order.order.id}</p>
@@ -231,7 +231,7 @@ export default function AdminOrderDetailPage() {
         {order.payment && (
           <Card className="p-6">
             <h2 className="text-lg font-semibold mb-4">Payment Information</h2>
-            <div className="grid grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-6">
               <div>
                 <p className="text-sm text-muted-foreground">Payment ID</p>
                 <p className="font-semibold">{order.payment.id}</p>

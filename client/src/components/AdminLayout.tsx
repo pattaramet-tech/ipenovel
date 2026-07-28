@@ -3,7 +3,6 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { useLocation } from "wouter";
 import {
   Menu,
-  X,
   LogOut,
   ChevronRight,
   Home,
@@ -13,6 +12,13 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { adminNavSections } from "@/config/adminNavItems";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 
 interface AdminLayoutProps {
   children: React.ReactNode;
@@ -87,120 +93,107 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
 
   const currentPageTitle = allNavItems.find((item) => isActive(item.href))?.label || "Admin";
 
-  return (
-    <div className="min-h-screen bg-slate-50">
-      {/* Mobile Menu Overlay */}
-      {mobileMenuOpen && (
-        <div
-          className="fixed inset-0 bg-black/50 z-30 md:hidden"
-          onClick={() => setMobileMenuOpen(false)}
-          aria-hidden="true"
-        />
-      )}
-
-      {/* Mobile Top Bar */}
-      <div className="md:hidden fixed top-0 left-0 right-0 z-50 bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between">
-        <h1 className="font-bold text-slate-900 truncate flex-1">{currentPageTitle}</h1>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-          className="ml-2"
-        >
-          {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-        </Button>
+  const navigation = (
+    <>
+      <div className="shrink-0 border-b border-slate-800 px-5 py-5">
+        <h1 className="text-lg font-bold">Admin Panel</h1>
+        <p className="mt-1 text-xs text-slate-400">Manage your store</p>
       </div>
-
-      {/* Sidebar */}
-      <aside
-        className={`fixed left-0 top-0 bottom-0 w-64 bg-slate-900 text-white transition-transform duration-300 z-40 overflow-y-auto ${
-          mobileMenuOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
-        }`}
-      >
-        {/* Logo */}
-        <div className="p-6 border-b border-slate-800 sticky top-0 bg-slate-900 z-10">
-          <h1 className="text-xl font-bold">Admin Panel</h1>
-          <p className="text-xs text-slate-400 mt-1">Manage your store</p>
-        </div>
-
-        {/* Close Button (Mobile) */}
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setMobileMenuOpen(false)}
-          className="md:hidden absolute top-6 right-6 text-slate-400 hover:text-white"
-        >
-          <X className="w-5 h-5" />
-        </Button>
-
-        {/* Navigation with Sections */}
-        <nav className="p-4 space-y-6 pb-32 mt-6">
-          {adminNavSections.map((section) => (
-            <div key={section.title}>
-              {/* Section Title */}
-              <div className="px-4 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wide">
-                {section.title}
-              </div>
-              {/* Section Items */}
-              <div className="space-y-1 mt-2">
-                {section.items.map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <button
-                      key={item.href}
-                      onClick={() => {
-                        navigate(item.href);
-                        setMobileMenuOpen(false);
-                      }}
-                      className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors min-h-11 md:min-h-auto ${
-                        isActive(item.href)
-                          ? "bg-blue-600 text-white"
-                          : "text-slate-300 hover:bg-slate-800 hover:text-white"
-                      }`}
-                    >
-                      <Icon className="w-4 h-4 shrink-0" />
-                      <span className="flex-1 text-left">{item.label}</span>
-                      {item.badge && (
-                        <span className="bg-red-500 text-white text-xs px-2 py-1 rounded-full">
-                          {item.badge}
-                        </span>
-                      )}
-                      {isActive(item.href) && <ChevronRight className="w-4 h-4 shrink-0" />}
-                    </button>
-                  );
-                })}
-              </div>
+      <nav aria-label="Admin navigation" className="flex-1 space-y-5 overflow-y-auto p-3">
+        {adminNavSections.map((section) => (
+          <div key={section.title}>
+            <div className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              {section.title}
             </div>
-          ))}
-        </nav>
-
-        {/* User Info */}
-        <div className="absolute bottom-0 left-0 right-0 border-t border-slate-800 p-4 bg-slate-800">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold text-sm">
-              {user?.name?.charAt(0) || "A"}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-white truncate">{user?.name || "Admin"}</p>
-              <p className="text-xs text-slate-400 truncate">{user?.email || "admin@store.com"}</p>
+            <div className="mt-1 space-y-1">
+              {section.items.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.href}
+                    type="button"
+                    onClick={() => {
+                      navigate(item.href);
+                      setMobileMenuOpen(false);
+                    }}
+                    aria-current={isActive(item.href) ? "page" : undefined}
+                    className={`flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 ${
+                      isActive(item.href)
+                        ? "bg-blue-600 text-white"
+                        : "text-slate-300 hover:bg-slate-800 hover:text-white"
+                    }`}
+                  >
+                    <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                    <span className="flex-1 text-left">{item.label}</span>
+                    {item.badge && (
+                      <span className="rounded-full bg-red-500 px-2 py-1 text-xs text-white">
+                        {item.badge}
+                      </span>
+                    )}
+                    {isActive(item.href) && <ChevronRight className="h-4 w-4 shrink-0" aria-hidden="true" />}
+                  </button>
+                );
+              })}
             </div>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="w-full text-slate-300 border-slate-600 hover:bg-slate-700 hover:text-white"
-            asChild
-          >
-            <a href="/api/auth/logout">
-              <LogOut className="w-4 h-4 mr-2" />
-              Logout
-            </a>
-          </Button>
+        ))}
+      </nav>
+      <div className="shrink-0 border-t border-slate-800 bg-slate-800 p-4">
+        <div className="mb-3 flex items-center gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm font-bold text-white">
+            {user?.name?.charAt(0) || "A"}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-medium text-white">{user?.name || "Admin"}</p>
+            <p className="truncate text-xs text-slate-400">{user?.email || "admin@store.com"}</p>
+          </div>
         </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="min-h-11 w-full border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white"
+          asChild
+        >
+          <a href="/api/auth/logout">
+            <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />
+            Logout
+          </a>
+        </Button>
+      </div>
+    </>
+  );
+
+  return (
+    <div className="min-h-screen overflow-x-clip bg-slate-50">
+      {/* Mobile Top Bar */}
+      <header className="fixed inset-x-0 top-0 z-40 flex h-14 items-center border-b border-slate-200 bg-white px-3 md:hidden">
+        <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
+          <SheetTrigger asChild>
+            <Button variant="ghost" size="icon" className="mr-2 min-h-11 min-w-11" aria-label="Open admin navigation">
+              <Menu className="h-5 w-5" aria-hidden="true" />
+            </Button>
+          </SheetTrigger>
+          <SheetContent
+            side="left"
+            className="w-[min(20rem,88vw)] gap-0 border-slate-800 bg-slate-900 p-0 text-white [&>button]:right-4 [&>button]:top-5 [&>button]:text-slate-300"
+          >
+            <SheetTitle className="sr-only">Admin navigation</SheetTitle>
+            <SheetDescription className="sr-only">
+              Navigate between administration pages
+            </SheetDescription>
+            {navigation}
+          </SheetContent>
+        </Sheet>
+        <h1 className="min-w-0 flex-1 truncate text-base font-semibold text-slate-900">{currentPageTitle}</h1>
+      </header>
+
+      {/* Sidebar */}
+      <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col bg-slate-900 text-white md:flex">
+        {navigation}
       </aside>
 
       {/* Main Content */}
-      <main className="md:ml-64 pt-16 md:pt-0">
+      <main className="min-w-0 pt-14 md:ml-64 md:pt-0">
         {/* Top Bar (Desktop) */}
         <div className="hidden md:block bg-white border-b border-slate-200 px-6 py-4 sticky top-0 z-30">
           <div className="flex items-center justify-between">
@@ -230,7 +223,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         </div>
 
         {/* Page Content - Responsive Padding */}
-        <div className="p-3 sm:p-4 md:p-6">{children}</div>
+        <div className="mx-auto min-w-0 max-w-[100rem] p-3 sm:p-4 md:p-6">{children}</div>
       </main>
     </div>
   );

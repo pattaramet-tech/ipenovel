@@ -171,7 +171,7 @@ export default function AdminWalletTopupDetailPage() {
         {/* Top-up Details Card */}
         <Card className="p-6">
           <h2 className="text-xl font-bold text-slate-900 mb-4">Top-up Details</h2>
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
             <div>
               <p className="text-sm text-slate-600">Top-up ID</p>
               <p className="text-lg font-semibold text-slate-900">#{topup.id}</p>
@@ -216,7 +216,7 @@ export default function AdminWalletTopupDetailPage() {
         {user && (
           <Card className="p-6">
             <h2 className="text-xl font-bold text-slate-900 mb-4">User Information</h2>
-            <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
               <div>
                 <p className="text-sm text-slate-600">User ID</p>
                 <p className="text-lg font-semibold text-slate-900">#{user.id}</p>
@@ -236,7 +236,7 @@ export default function AdminWalletTopupDetailPage() {
         {/* Amount Comparison Card */}
         <Card className="p-6 border-blue-200 bg-blue-50">
           <h2 className="text-xl font-bold text-slate-900 mb-4">Amount Breakdown</h2>
-          <div className="grid grid-cols-2 gap-6 md:grid-cols-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-6 md:grid-cols-4">
             <div className="p-4 bg-white rounded border border-slate-200">
               <p className="text-sm text-slate-600 mb-1">Requested Amount</p>
               <p className="text-2xl font-bold text-slate-900">
