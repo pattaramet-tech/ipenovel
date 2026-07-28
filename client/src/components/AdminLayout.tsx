@@ -1,16 +1,14 @@
 import { useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { useLocation } from "wouter";
-import {
-  Menu,
-  LogOut,
-  ChevronRight,
-  Home,
-  Loader2,
-} from "lucide-react";
+import { Menu, LogOut, ChevronRight, Home, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { adminNavSections } from "@/config/adminNavItems";
+import {
+  adminNavSections,
+  getAdminRouteTitle,
+  isAdminRouteActive,
+} from "@/config/adminNavItems";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
 import {
   Sheet,
@@ -23,9 +21,6 @@ import {
 interface AdminLayoutProps {
   children: React.ReactNode;
 }
-
-// Get all nav items (flattened for quick lookup)
-const allNavItems = adminNavSections.flatMap((section) => section.items);
 
 export default function AdminLayout({ children }: AdminLayoutProps) {
   // Every admin page renders through this one layout, so setting
@@ -57,7 +52,9 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-slate-50">
         <Card className="p-8 text-center max-w-md">
-          <h1 className="text-2xl font-bold mb-4 text-slate-900">Login Required</h1>
+          <h1 className="text-2xl font-bold mb-4 text-slate-900">
+            Login Required
+          </h1>
           <p className="text-slate-600 mb-6">
             กรุณาเข้าสู่ระบบเพื่อเข้าใช้งานส่วนผู้ดูแลระบบ
           </p>
@@ -74,7 +71,9 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-slate-50">
         <Card className="p-8 text-center max-w-md">
-          <h1 className="text-2xl font-bold mb-4 text-slate-900">Access Denied</h1>
+          <h1 className="text-2xl font-bold mb-4 text-slate-900">
+            Access Denied
+          </h1>
           <p className="text-slate-600 mb-6">
             You do not have permission to access the admin panel.
           </p>
@@ -86,27 +85,26 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
     );
   }
 
-  const isActive = (href: string) =>
-    href === "/admin"
-      ? location === "/admin"
-      : location === href || location.startsWith(href + "/");
-
-  const currentPageTitle = allNavItems.find((item) => isActive(item.href))?.label || "Admin";
+  const isActive = (href: string) => isAdminRouteActive(location, href);
+  const currentPageTitle = getAdminRouteTitle(location);
 
   const navigation = (
     <>
-      <div className="shrink-0 border-b border-slate-800 px-5 py-5">
+      <div className="shrink-0 border-b border-slate-800 px-5 py-5 pr-14">
         <h1 className="text-lg font-bold">Admin Panel</h1>
         <p className="mt-1 text-xs text-slate-400">Manage your store</p>
       </div>
-      <nav aria-label="Admin navigation" className="flex-1 space-y-5 overflow-y-auto p-3">
-        {adminNavSections.map((section) => (
+      <nav
+        aria-label="Admin navigation"
+        className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-3"
+      >
+        {adminNavSections.map(section => (
           <div key={section.title}>
             <div className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
               {section.title}
             </div>
             <div className="mt-1 space-y-1">
-              {section.items.map((item) => {
+              {section.items.map(item => {
                 const Icon = item.icon;
                 return (
                   <button
@@ -130,7 +128,12 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
                         {item.badge}
                       </span>
                     )}
-                    {isActive(item.href) && <ChevronRight className="h-4 w-4 shrink-0" aria-hidden="true" />}
+                    {isActive(item.href) && (
+                      <ChevronRight
+                        className="h-4 w-4 shrink-0"
+                        aria-hidden="true"
+                      />
+                    )}
                   </button>
                 );
               })}
@@ -144,8 +147,12 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
             {user?.name?.charAt(0) || "A"}
           </div>
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium text-white">{user?.name || "Admin"}</p>
-            <p className="truncate text-xs text-slate-400">{user?.email || "admin@store.com"}</p>
+            <p className="truncate text-sm font-medium text-white">
+              {user?.name || "Admin"}
+            </p>
+            <p className="truncate text-xs text-slate-400">
+              {user?.email || "admin@store.com"}
+            </p>
           </div>
         </div>
         <Button
@@ -166,16 +173,21 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
   return (
     <div className="min-h-screen overflow-x-clip bg-slate-50">
       {/* Mobile Top Bar */}
-      <header className="fixed inset-x-0 top-0 z-40 flex h-14 items-center border-b border-slate-200 bg-white px-3 md:hidden">
+      <header className="fixed inset-x-0 top-0 z-40 flex h-14 items-center border-b border-slate-200 bg-white px-2 shadow-sm sm:px-3 lg:hidden">
         <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
           <SheetTrigger asChild>
-            <Button variant="ghost" size="icon" className="mr-2 min-h-11 min-w-11" aria-label="Open admin navigation">
+            <Button
+              variant="outline"
+              className="mr-2 min-h-11 shrink-0 gap-2 border-slate-300 px-3 font-semibold text-slate-800 shadow-sm"
+              aria-label="Open Admin Menu"
+            >
               <Menu className="h-5 w-5" aria-hidden="true" />
+              <span>Admin Menu</span>
             </Button>
           </SheetTrigger>
           <SheetContent
             side="left"
-            className="w-[min(20rem,88vw)] gap-0 border-slate-800 bg-slate-900 p-0 text-white [&>button]:right-4 [&>button]:top-5 [&>button]:text-slate-300"
+            className="flex h-dvh w-[min(20rem,88vw)] flex-col gap-0 overflow-hidden border-slate-800 bg-slate-900 p-0 text-white [&>button]:right-4 [&>button]:top-5 [&>button]:z-10 [&>button]:flex [&>button]:min-h-11 [&>button]:min-w-11 [&>button]:items-center [&>button]:justify-center [&>button]:text-slate-300"
           >
             <SheetTitle className="sr-only">Admin navigation</SheetTitle>
             <SheetDescription className="sr-only">
@@ -184,18 +196,20 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
             {navigation}
           </SheetContent>
         </Sheet>
-        <h1 className="min-w-0 flex-1 truncate text-base font-semibold text-slate-900">{currentPageTitle}</h1>
+        <h1 className="min-w-0 flex-1 truncate text-base font-semibold text-slate-900">
+          {currentPageTitle}
+        </h1>
       </header>
 
       {/* Sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col bg-slate-900 text-white md:flex">
+      <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col overflow-hidden bg-slate-900 text-white lg:flex">
         {navigation}
       </aside>
 
       {/* Main Content */}
-      <main className="min-w-0 pt-14 md:ml-64 md:pt-0">
+      <main className="min-w-0 pt-14 lg:ml-64 lg:pt-0">
         {/* Top Bar (Desktop) */}
-        <div className="hidden md:block bg-white border-b border-slate-200 px-6 py-4 sticky top-0 z-30">
+        <div className="sticky top-0 z-30 hidden border-b border-slate-200 bg-white px-6 py-4 lg:block">
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-2xl font-bold text-slate-900">
@@ -215,15 +229,21 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
                 </a>
               </Button>
               <div className="text-right">
-                <p className="text-sm font-medium text-slate-900">{user?.name || "Admin"}</p>
-                <p className="text-xs text-slate-600">{user?.role || "admin"}</p>
+                <p className="text-sm font-medium text-slate-900">
+                  {user?.name || "Admin"}
+                </p>
+                <p className="text-xs text-slate-600">
+                  {user?.role || "admin"}
+                </p>
               </div>
             </div>
           </div>
         </div>
 
         {/* Page Content - Responsive Padding */}
-        <div className="mx-auto min-w-0 max-w-[100rem] p-3 sm:p-4 md:p-6">{children}</div>
+        <div className="mx-auto min-w-0 max-w-[100rem] p-3 sm:p-4 md:p-6">
+          {children}
+        </div>
       </main>
     </div>
   );
