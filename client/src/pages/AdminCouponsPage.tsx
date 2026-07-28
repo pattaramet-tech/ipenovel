@@ -359,8 +359,8 @@ export default function AdminCouponsPage() {
             </CardContent>
           </Card>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
+          <div className="max-w-full overflow-x-auto rounded-lg border border-slate-200" role="region" aria-label="Coupons table" tabIndex={0}>
+            <table className="w-full min-w-[52rem]">
               <thead>
                 <tr className="border-b bg-slate-50">
                   <th className="text-left p-3 font-semibold">Code</th>

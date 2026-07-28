@@ -206,8 +206,8 @@ export default function AdminTopupLogsPage() {
           </Card>
         ) : (
           /* Table */
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+          <div className="max-w-full overflow-x-auto rounded-lg border border-slate-200" role="region" aria-label="Top-up logs table" tabIndex={0}>
+            <table className="w-full min-w-[56rem] text-sm">
               <thead>
                 <tr className="border-b bg-slate-50">
                   <th className="text-left p-3 font-semibold text-slate-700">วันที่</th>

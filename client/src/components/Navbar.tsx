@@ -7,6 +7,7 @@ import { getLoginUrl } from "@/const";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { trpc } from "@/lib/trpc";
+import { shouldHideGlobalNavbar } from "./navbarVisibility";
 
 export default function Navbar() {
   const { user, logout, isAuthenticated } = useAuth();
@@ -14,19 +15,27 @@ export default function Navbar() {
   const [location, navigate] = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // Get cart count
+  // Reader (/read/*) and the entire Admin section (/admin, /admin/*) own
+  // their own top-level navigation - see navbarVisibility.ts. Computed
+  // before the early return below so the hidden-navbar branch never fires
+  // a cart query it doesn't render, without skipping any hook call.
+  const navbarHidden = shouldHideGlobalNavbar(location);
+
+  // Get cart count - not needed at all when the navbar itself won't render.
   const { data: cartData } = trpc.cart.get.useQuery(undefined, {
-    enabled: isAuthenticated,
+    enabled: isAuthenticated && !navbarHidden,
   });
   const cartCount = cartData?.items?.length || 0;
 
   // The Reader page has its own sticky header (back button, title, font/theme/TOC
-  // controls). Rendering the global navbar on top of it produced two independent
-  // `position: sticky; top: 0` bars that stacked/overlapped once both were pinned,
-  // squeezing the episode title against the language/cart/menu icons. Reader owns
-  // its own full-width header instead - the language switcher is still reachable
-  // there via the reader options menu.
-  if (location.startsWith("/read/")) {
+  // controls) and the Admin section owns its own top bar/sidebar (AdminLayout) -
+  // rendering the storefront Navbar on top of either stacks/overlaps two headers
+  // (on Reader, two `position: sticky; top: 0` bars fight for the same space; on
+  // Admin routes below 1024px, the Navbar's `sticky top-0 z-50` visually covers
+  // AdminLayout's `fixed top-0 z-40` mobile top bar and its "Admin Menu" button).
+  // Both own their navigation entirely - the language switcher is still reachable
+  // from Reader's own options menu.
+  if (navbarHidden) {
     return null;
   }
 

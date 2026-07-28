@@ -170,5 +170,18 @@ export const adminNavSections: NavSection[] = [
  * Used by AdminLayout for responsive mobile navigation
  */
 export function getAdminNavItemsFlat(): NavItem[] {
-  return adminNavSections.flatMap((section) => section.items);
+  return adminNavSections.flatMap(section => section.items);
+}
+
+export function isAdminRouteActive(location: string, href: string): boolean {
+  return href === "/admin"
+    ? location === "/admin"
+    : location === href || location.startsWith(`${href}/`);
+}
+
+export function getAdminRouteTitle(location: string): string {
+  return (
+    getAdminNavItemsFlat().find(item => isAdminRouteActive(location, item.href))
+      ?.label ?? "Admin"
+  );
 }

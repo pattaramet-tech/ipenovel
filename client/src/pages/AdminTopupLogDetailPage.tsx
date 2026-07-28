@@ -114,7 +114,7 @@ export default function AdminTopupLogDetailPage() {
         {/* Log Summary Card */}
         <Card className="p-6">
           <h2 className="text-xl font-bold text-slate-900 mb-4">Log Summary</h2>
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
             <div>
               <p className="text-sm text-slate-600">Log ID</p>
               <p className="text-lg font-semibold text-slate-900">#{log.id}</p>
@@ -150,7 +150,7 @@ export default function AdminTopupLogDetailPage() {
         {user && (
           <Card className="p-6">
             <h2 className="text-xl font-bold text-slate-900 mb-4">User Information</h2>
-            <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
               <div>
                 <p className="text-sm text-slate-600">User ID</p>
                 <p className="text-lg font-semibold text-slate-900">#{user.id}</p>
@@ -171,7 +171,7 @@ export default function AdminTopupLogDetailPage() {
         <Card className="p-6 border-slate-300">
           <h2 className="text-xl font-bold text-slate-900 mb-4">Created By</h2>
           {createdByUser ? (
-            <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
               <div>
                 <p className="text-sm text-slate-600">Admin ID</p>
                 <p className="text-lg font-semibold text-slate-900">#{createdByUser.id}</p>
@@ -195,7 +195,7 @@ export default function AdminTopupLogDetailPage() {
         {/* Amount Breakdown Card */}
         <Card className="p-6 border-blue-200 bg-blue-50">
           <h2 className="text-xl font-bold text-slate-900 mb-4">Amount Breakdown</h2>
-          <div className="grid grid-cols-2 gap-6 md:grid-cols-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-6 md:grid-cols-4">
             <div className="p-4 bg-white rounded border border-slate-200">
               <p className="text-sm text-slate-600 mb-1">Amount</p>
               <p className="text-2xl font-bold text-slate-900">
@@ -248,7 +248,7 @@ export default function AdminTopupLogDetailPage() {
                 View Top-up Detail
               </Button>
             </div>
-            <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
               <div>
                 <p className="text-sm text-slate-600">Top-up ID</p>
                 <p className="text-lg font-semibold text-slate-900">#{relatedTopup.id}</p>
@@ -297,8 +297,8 @@ export default function AdminTopupLogDetailPage() {
         {relatedTransactions && relatedTransactions.length > 0 && (
           <Card className="p-6">
             <h2 className="text-xl font-bold text-slate-900 mb-4">Related Wallet Transactions</h2>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+            <div className="max-w-full overflow-x-auto rounded-lg border border-slate-200" role="region" aria-label="Related top-up logs" tabIndex={0}>
+              <table className="w-full min-w-[44rem] text-sm">
                 <thead>
                   <tr className="border-b border-slate-200">
                     <th className="text-left py-2 px-2 text-slate-600 font-semibold">ID</th>

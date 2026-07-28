@@ -204,7 +204,7 @@ export default function AdminSettingsPage() {
 
   return (
     <AdminLayout>
-      <div className="space-y-6 max-w-3xl">
+      <div className="max-w-3xl space-y-5 sm:space-y-6">
         {/* General Settings */}
         <Card className="p-6">
           <h2 className="text-lg font-semibold mb-4">General Settings</h2>
@@ -570,7 +570,7 @@ export default function AdminSettingsPage() {
                   {/* Add New Tier */}
                   <div className="space-y-3 bg-white p-4 rounded border border-green-200">
                     <p className="text-sm font-medium text-gray-900">Add New Tier</p>
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <div>
                         <Label className="text-sm">Min Amount (฿)</Label>
                         <Input

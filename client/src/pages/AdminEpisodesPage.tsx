@@ -234,7 +234,7 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
       <div className="space-y-6">
         {/* Header with Back Button if Scoped */}
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
+          <div className="flex min-w-0 items-center gap-2 sm:gap-4">
             {isScoped && (
               <Button
                 variant="ghost"
@@ -246,7 +246,7 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
                 Back
               </Button>
             )}
-            <h1 className="text-3xl font-bold text-slate-900">
+            <h1 className="truncate text-2xl font-bold text-slate-900 sm:text-3xl">
               {isScoped ? "Episodes" : "All Episodes"}
             </h1>
           </div>
@@ -254,12 +254,12 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
 
         {/* Filters and Create Button */}
         <div className="flex flex-col gap-4">
-          <div className="flex gap-4 items-center flex-wrap">
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
             {!isScoped && (
               <select
                 value={novelFilter || ""}
                 onChange={(e) => setNovelFilter(e.target.value ? parseInt(e.target.value) : undefined)}
-                className="px-3 py-2 border rounded-md"
+                className="min-h-11 w-full rounded-md border px-3 py-2 sm:w-auto"
               >
                 <option value="">All Novels</option>
                 {novelOptions?.map((novel: any) => (
@@ -470,7 +470,7 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
 
           {/* Search and Sort Controls */}
           <div className="flex gap-4 items-end flex-wrap">
-            <div className="flex-1 min-w-64">
+            <div className="w-full min-w-0 flex-1 sm:min-w-64">
               <Label htmlFor="search" className="text-sm mb-2 block">
                 Search Episodes
               </Label>
@@ -486,7 +486,7 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
                 />
               </div>
             </div>
-            <div>
+            <div className="w-full sm:w-auto">
               <Label htmlFor="sort" className="text-sm mb-2 block">
                 Sort By
               </Label>
@@ -494,7 +494,7 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
                 id="sort"
                 value={sortOption}
                 onChange={(e) => setSortOption(e.target.value as SortOption)}
-                className="px-3 py-2 border rounded-md"
+                className="min-h-11 w-full rounded-md border px-3 py-2 sm:w-auto"
               >
                 <option value="newest">Newest First</option>
                 <option value="oldest">Oldest First</option>
@@ -527,8 +527,8 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
             </div>
             {episodesList.map((episode: any) => (
               <Card key={episode.id} className="p-4">
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="font-semibold text-lg">{episode.title}</h3>
                       <Badge variant={episode.isFree ? "default" : "secondary"}>
@@ -556,7 +556,7 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
                       <p className="text-sm mt-1 text-slate-600">{episode.description}</p>
                     )}
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex shrink-0 gap-2 self-end sm:self-start">
                     <Button
                       size="sm"
                       variant="outline"
@@ -581,7 +581,7 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
             ))}
 
             {/* Pagination */}
-            <div className="flex justify-center items-center gap-4 mt-2">
+            <div className="mt-2 flex flex-wrap items-center justify-center gap-2 sm:gap-4">
               <Button
                 variant="outline"
                 disabled={page <= 1}
