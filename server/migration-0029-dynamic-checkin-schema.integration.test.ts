@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import mysql from "mysql2/promise";
-import { buildTestDbConnectionOptions } from "./test-helpers/testDbConnectionOptions";
+import { buildTestDbConnectionOptions, parseTestDbTransportMode } from "./test-helpers/testDbConnectionOptions";
 import { runMigrationsWithLogging, consoleMigrationLogger, readMigrationJournal } from "./test-helpers/migrateTestDbWithLogging";
 import { restoreToFullyMigratedWithRetry } from "./test-helpers/restoreWithEmergencyRetry";
 import { EXPECTED_TEST_DATABASE_NAME } from "./test-helpers/testDatabaseGuard";
@@ -58,7 +58,9 @@ const NEW_TABLES = [
 
 async function connect(): Promise<mysql.Connection | null> {
   if (!process.env.TEST_DATABASE_URL) return null;
-  return mysql.createConnection(buildTestDbConnectionOptions(process.env.TEST_DATABASE_URL));
+  return mysql.createConnection(
+    buildTestDbConnectionOptions(process.env.TEST_DATABASE_URL, parseTestDbTransportMode(process.env.TEST_DATABASE_TRANSPORT))
+  );
 }
 
 async function runMigrationStatements(conn: mysql.Connection): Promise<void> {

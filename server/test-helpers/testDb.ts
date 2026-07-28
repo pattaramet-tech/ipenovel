@@ -13,7 +13,7 @@ import mysql from "mysql2";
 import { drizzle } from "drizzle-orm/mysql2";
 import { redactDatabaseUrl } from "./testDatabaseGuard";
 import { assertLiveTestDatabaseName } from "./liveTestDatabaseCheck";
-import { buildTestDbConnectionOptions } from "./testDbConnectionOptions";
+import { buildTestDbConnectionOptions, parseTestDbTransportMode } from "./testDbConnectionOptions";
 
 let _testDb: ReturnType<typeof drizzle> | null = null;
 let _testPool: mysql.Pool | null = null;
@@ -39,8 +39,9 @@ export function getTestDb() {
   // buildTestDbConnectionOptions() runs the URL-string safety gate
   // (assertSafeTestDatabaseUrl) internally and throws before any connection
   // is attempted if the URL is missing or its database name isn't exactly
-  // "ipenovel_test".
-  const options = buildTestDbConnectionOptions(url);
+  // "ipenovel_test". Transport mode is read here, explicitly, and passed
+  // in - buildTestDbConnectionOptions never reads process.env itself.
+  const options = buildTestDbConnectionOptions(url, parseTestDbTransportMode(process.env.TEST_DATABASE_TRANSPORT));
   console.log(`[testDb] Connecting to test database: ${redactDatabaseUrl(url)}`);
 
   const pool = mysql.createPool(options);

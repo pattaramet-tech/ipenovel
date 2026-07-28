@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import mysql from "mysql2/promise";
-import { buildTestDbConnectionOptions } from "../test-helpers/testDbConnectionOptions";
+import { buildTestDbConnectionOptions, parseTestDbTransportMode } from "../test-helpers/testDbConnectionOptions";
 import { EXPECTED_TEST_DATABASE_NAME } from "../test-helpers/testDatabaseGuard";
 import { closeMysqlConnectionSafely } from "../test-helpers/closeMysqlConnectionSafely";
 import { readMigrationJournal } from "../test-helpers/migrateTestDbWithLogging";
@@ -42,7 +42,9 @@ const hasTestDb = Boolean(process.env.TEST_DATABASE_URL);
 const hasBuild = fs.existsSync(distEntry);
 
 async function connect(): Promise<mysql.Connection> {
-  return mysql.createConnection(buildTestDbConnectionOptions(process.env.TEST_DATABASE_URL));
+  return mysql.createConnection(
+    buildTestDbConnectionOptions(process.env.TEST_DATABASE_URL, parseTestDbTransportMode(process.env.TEST_DATABASE_TRANSPORT))
+  );
 }
 
 async function assertLiveTestDatabase(conn: mysql.Connection): Promise<void> {

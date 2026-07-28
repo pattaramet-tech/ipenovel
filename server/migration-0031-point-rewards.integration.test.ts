@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import path from "node:path";
 import mysql from "mysql2/promise";
-import { buildTestDbConnectionOptions } from "./test-helpers/testDbConnectionOptions";
+import { buildTestDbConnectionOptions, parseTestDbTransportMode } from "./test-helpers/testDbConnectionOptions";
 import {
   runMigrationsWithLogging,
   consoleMigrationLogger,
@@ -32,7 +32,9 @@ function requireTestUrl(): string {
 }
 
 async function connect(): Promise<mysql.Connection> {
-  return mysql.createConnection(buildTestDbConnectionOptions(requireTestUrl()));
+  return mysql.createConnection(
+    buildTestDbConnectionOptions(requireTestUrl(), parseTestDbTransportMode(process.env.TEST_DATABASE_TRANSPORT))
+  );
 }
 
 async function runChain(conn: mysql.Connection): Promise<void> {
