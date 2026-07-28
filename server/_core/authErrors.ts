@@ -11,10 +11,39 @@
  * is logged out (which, for infrastructure failures, is actively
  * misleading - see docs referenced in context.ts).
  */
+
+/**
+ * Which specific "not authenticated" outcome occurred - lets createContext
+ * decide whether the session cookie itself needs clearing, without
+ * re-parsing the request:
+ *  - "no_cookie": no session cookie was sent at all. Never worth clearing
+ *    (there is nothing to clear) and never logged.
+ *  - "invalid_session_token": a cookie WAS present but verifySession
+ *    rejected it (malformed, expired, wrong issuer/audience/appId,
+ *    unsupported algorithm, or the wrong shape). The browser is holding a
+ *    cookie that can never become valid again, so createContext clears it.
+ *  - "no_user_record" / "admin_session_invalid": the token verified fine
+ *    (real signature, correct issuer/audience/appId) but no database
+ *    record backs it (deleted account) or a local admin session's account
+ *    no longer has the admin role. Deliberately NOT cleared - unlike a
+ *    structurally-invalid token, this is a legitimate, correctly-signed
+ *    credential whose backing account state changed; clearing it isn't
+ *    required to stop any log-flooding or retry loop, and is out of this
+ *    fix's scope.
+ */
+export type AnonymousCredentialReason =
+  | "no_cookie"
+  | "invalid_session_token"
+  | "no_user_record"
+  | "admin_session_invalid";
+
 export class AnonymousCredentialError extends Error {
-  constructor(message: string) {
+  readonly reason: AnonymousCredentialReason;
+
+  constructor(message: string, reason: AnonymousCredentialReason) {
     super(message);
     this.name = "AnonymousCredentialError";
+    this.reason = reason;
   }
 }
 

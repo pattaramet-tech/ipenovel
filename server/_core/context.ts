@@ -1,6 +1,8 @@
+import { COOKIE_NAME } from "@shared/const";
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
 import type { User } from "../../drizzle/schema";
 import { isAnonymousCredentialError } from "./authErrors";
+import { getSessionCookieOptions } from "./cookies";
 import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
 import { sdk } from "./sdk";
 
@@ -24,6 +26,21 @@ export async function createContext(
       // optional for public procedures, so this resolves as anonymous
       // rather than failing the request.
       user = null;
+
+      // A structurally invalid token (malformed/expired/wrong issuer,
+      // audience, appId, or algorithm) can never become valid again - the
+      // browser sending it will otherwise keep resending the same dead
+      // cookie on every request until it happens to sign in again. Clear
+      // it now, with the exact same name/options logout uses, so this is
+      // self-healing after one round trip. Never done for "no_cookie"
+      // (nothing to clear, and would be an unnecessary Set-Cookie on every
+      // anonymous request) or for the "verified fine, but no matching
+      // account" cases (a legitimately-signed credential, not a broken
+      // one - see authErrors.ts).
+      if (error.reason === "invalid_session_token") {
+        const cookieOptions = getSessionCookieOptions(opts.req);
+        opts.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+      }
     } else {
       // Unexpected: a database failure, an OAuth provider/infrastructure
       // failure, a missing server secret, or any other programming error.

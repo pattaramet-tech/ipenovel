@@ -182,6 +182,26 @@ class SDKServer {
   }
 
   /**
+   * Throws (a plain Error, not AnonymousCredentialError) when the given
+   * appId is empty/whitespace-only - a missing VITE_APP_ID is a
+   * configuration failure, not "no session". Signing with an empty appId
+   * would mint a token whose audience/appId claim is an empty string
+   * (never a legitimate value); verifying with an empty *expected*
+   * audience would make jose's audience check trivially satisfiable by any
+   * token that also happens to carry an empty `aud`, quietly reopening the
+   * appId-bypass this hardening closed. Called from both signSession and
+   * verifySession, outside any try/catch that would otherwise fold it into
+   * "invalid session -> anonymous".
+   */
+  private assertConfiguredAppId(appId: string): string {
+    const trimmed = appId.trim();
+    if (!trimmed) {
+      throw new Error("[Auth] VITE_APP_ID is not configured - refusing to sign or verify sessions");
+    }
+    return trimmed;
+  }
+
+  /**
    * Create a session token for a Manus user openId
    * @example
    * const sessionToken = await sdk.createSessionToken(userInfo.openId);
@@ -208,17 +228,18 @@ class SDKServer {
     const expiresInMs = options.expiresInMs ?? SESSION_TTL_MS;
     const expirationSeconds = Math.floor((issuedAt + expiresInMs) / 1000);
     const secretKey = this.getSessionSecret();
+    const appId = this.assertConfiguredAppId(payload.appId);
 
     return new SignJWT({
       openId: payload.openId,
-      appId: payload.appId,
+      appId,
       name: payload.name ?? null,
     })
       .setProtectedHeader({ alg: "HS256", typ: "JWT" })
       .setIssuedAt()
       .setExpirationTime(expirationSeconds)
       .setIssuer(SESSION_JWT_ISSUER)
-      .setAudience(ENV.appId)
+      .setAudience(appId)
       .sign(secretKey);
   }
 
@@ -226,26 +247,33 @@ class SDKServer {
     cookieValue: string | undefined | null
   ): Promise<VerifiedSession | null> {
     // The overwhelmingly common case (every anonymous visitor) - never
-    // warn-logs, so it can never become log-volume noise.
+    // logs, so it can never become log-volume noise.
     if (!cookieValue) return null;
 
-    // Deliberately OUTSIDE the try/catch below: a missing secret is a
-    // configuration error, not a credential error, and must propagate
-    // instead of being folded into "verification failed -> anonymous".
+    // Deliberately OUTSIDE the try/catch below: a missing secret or a
+    // missing VITE_APP_ID is a configuration error, not a credential error,
+    // and must propagate instead of being folded into "verification failed
+    // -> anonymous".
     const secretKey = this.getSessionSecret();
+    const expectedAppId = this.assertConfiguredAppId(ENV.appId);
 
     try {
       const { payload } = await jwtVerify(cookieValue, secretKey, {
         algorithms: ["HS256"],
         issuer: SESSION_JWT_ISSUER,
-        audience: ENV.appId,
+        audience: expectedAppId,
       });
       const { openId, appId, name } = payload as Record<string, unknown>;
 
-      if (!isNonEmptyString(openId) || !isNonEmptyString(appId) || appId !== ENV.appId) {
-        // Sanitized: logs only that shape/appId validation failed, never
-        // the token or its claim values.
-        console.warn("[Auth] Session payload failed shape/appId validation");
+      if (!isNonEmptyString(openId) || !isNonEmptyString(appId) || appId !== expectedAppId) {
+        // No log here (deliberately): once this PR ships, EVERY session
+        // token issued beforehand fails this exact check (old tokens carry
+        // no iss/aud/matching-appId at all) - every browser with an old
+        // cookie would otherwise warn-log on every request until it
+        // signs in again. This is an expected, high-volume rejection, not
+        // a security event worth logging. See authenticateRequest, which
+        // reports this case to createContext as "invalid_session_token" so
+        // the stale cookie gets cleared instead.
         return null;
       }
 
@@ -254,13 +282,12 @@ class SDKServer {
         appId,
         name: typeof name === "string" && name.length > 0 ? name : null,
       };
-    } catch (error) {
+    } catch {
       // Malformed JWT, bad signature, expired, wrong issuer/audience, or an
       // unsupported algorithm all land here (jose rejects all of them given
       // the algorithms/issuer/audience allowlist above) - every one of them
-      // is an expected "not a valid session", not an infrastructure error.
-      // Sanitized: jose's error message/name only, never the raw token.
-      console.warn("[Auth] Session verification failed:", error instanceof Error ? error.name : "unknown error");
+      // is an expected, high-volume rejection for the same reason as above;
+      // deliberately not logged (never the raw token either way).
       return null;
     }
   }
@@ -298,9 +325,16 @@ class SDKServer {
     if (!session) {
       // Covers: no cookie, malformed/expired JWT, wrong appId/issuer/
       // audience/algorithm - all deliberately expected, resolve to
-      // anonymous. A missing JWT_SECRET is NOT among these: verifySession
-      // lets that propagate as a plain Error instead of returning null.
-      throw new AnonymousCredentialError("No valid session credential");
+      // anonymous. A missing JWT_SECRET/VITE_APP_ID is NOT among these:
+      // verifySession lets those propagate as a plain Error instead of
+      // returning null. The reason distinguishes "nothing was sent"
+      // (nothing to clear) from "a cookie was sent but rejected" (the
+      // browser is holding a token that can never verify again) so
+      // createContext knows whether to clear it - see authErrors.ts.
+      throw new AnonymousCredentialError(
+        sessionCookie ? "Invalid session cookie" : "No session cookie",
+        sessionCookie ? "invalid_session_token" : "no_cookie"
+      );
     }
 
     // Local (email/password) admin sessions use a synthetic "admin-<id>"
@@ -315,8 +349,10 @@ class SDKServer {
       }
       // Signature/claims verified fine, but this admin account no longer
       // qualifies (deleted, demoted, or a bogus id) - an expected
-      // "credential no longer grants access" outcome, not an error.
-      throw new AnonymousCredentialError("Admin session no longer valid");
+      // "credential no longer grants access" outcome, not an error. Not
+      // cleared: this is a validly-signed token, not a structurally
+      // invalid one - see authErrors.ts.
+      throw new AnonymousCredentialError("Admin session no longer valid", "admin_session_invalid");
     }
 
     const sessionUserId = session.openId;
@@ -348,7 +384,8 @@ class SDKServer {
     if (!user) {
       // Session verified fine and the OAuth sync succeeded, but there is
       // still no matching user record - an expected "no account" outcome.
-      throw new AnonymousCredentialError("No user record for this session");
+      // Not cleared, for the same reason as the admin case above.
+      throw new AnonymousCredentialError("No user record for this session", "no_user_record");
     }
 
     await db.upsertUser({

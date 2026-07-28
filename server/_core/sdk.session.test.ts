@@ -179,4 +179,79 @@ describe("session JWT signing and verification", () => {
       await expect(sdk.createSessionToken("user-123", { name: "Somchai" })).rejects.toThrow();
     });
   });
+
+  describe("configuration error: missing VITE_APP_ID", () => {
+    it("throws (does not resolve to anonymous / return null) during verification when appId is empty", async () => {
+      const token = await sdk.createSessionToken("user-123", { name: "Somchai" });
+      ENV.appId = "";
+      await expect(sdk.verifySession(token)).rejects.toThrow(/VITE_APP_ID/);
+    });
+
+    it("throws (does not resolve to anonymous / return null) during verification when appId is whitespace-only", async () => {
+      const token = await sdk.createSessionToken("user-123", { name: "Somchai" });
+      ENV.appId = "   ";
+      await expect(sdk.verifySession(token)).rejects.toThrow(/VITE_APP_ID/);
+    });
+
+    it("also throws on sign, not just verify, and never mints a token with an empty audience", async () => {
+      ENV.appId = "";
+      await expect(sdk.createSessionToken("user-123", { name: "Somchai" })).rejects.toThrow(/VITE_APP_ID/);
+    });
+
+    it("throws for whitespace-only appId on sign too", async () => {
+      ENV.appId = "   ";
+      await expect(sdk.createSessionToken("user-123", { name: "Somchai" })).rejects.toThrow(/VITE_APP_ID/);
+    });
+  });
+
+  describe("no log flooding for expected credential rejections", () => {
+    it("never warn- or error-logs for malformed, expired, wrong-appId, wrong-issuer, wrong-audience, or wrong-algorithm tokens", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const expiredToken = await sdk.createSessionToken("user-123", { name: "Somchai", expiresInMs: -1000 });
+      const wrongAppIdToken = await new SignJWT({ openId: "user-123", appId: "some-other-app", name: "Somchai" })
+        .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+        .setIssuedAt()
+        .setExpirationTime(Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS)
+        .setIssuer(SESSION_JWT_ISSUER)
+        .setAudience("test-app-id")
+        .sign(secretKey());
+      const wrongIssuerToken = await new SignJWT({ openId: "user-123", appId: "test-app-id", name: "Somchai" })
+        .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+        .setIssuedAt()
+        .setExpirationTime(Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS)
+        .setIssuer("some-other-issuer")
+        .setAudience("test-app-id")
+        .sign(secretKey());
+      const wrongAudienceToken = await new SignJWT({ openId: "user-123", appId: "test-app-id", name: "Somchai" })
+        .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+        .setIssuedAt()
+        .setExpirationTime(Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS)
+        .setIssuer(SESSION_JWT_ISSUER)
+        .setAudience("some-other-app")
+        .sign(secretKey());
+      const wrongAlgToken = await new SignJWT({ openId: "user-123", appId: "test-app-id", name: "Somchai" })
+        .setProtectedHeader({ alg: "HS384", typ: "JWT" })
+        .setIssuedAt()
+        .setExpirationTime(Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS)
+        .setIssuer(SESSION_JWT_ISSUER)
+        .setAudience("test-app-id")
+        .sign(secretKey());
+
+      await sdk.verifySession("not-a-jwt-at-all");
+      await sdk.verifySession(expiredToken);
+      await sdk.verifySession(wrongAppIdToken);
+      await sdk.verifySession(wrongIssuerToken);
+      await sdk.verifySession(wrongAudienceToken);
+      await sdk.verifySession(wrongAlgToken);
+
+      // Every currently-logged-in browser sends its now-invalid pre-change
+      // cookie on every request until it signs in again - these rejections
+      // are expected and high-volume, not a security event worth a log
+      // line each time (see server/_core/sdk.ts's verifySession).
+      expect(warnSpy).not.toHaveBeenCalled();
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+  });
 });

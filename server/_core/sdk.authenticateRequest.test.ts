@@ -32,6 +32,15 @@ function fakeUser(overrides: Partial<Record<string, unknown>> = {}) {
   } as any;
 }
 
+async function captureRejection(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  throw new Error("expected promise to reject, but it resolved");
+}
+
 describe("sdk.authenticateRequest", () => {
   const originalSecret = ENV.cookieSecret;
   const originalAppId = ENV.appId;
@@ -47,19 +56,19 @@ describe("sdk.authenticateRequest", () => {
     vi.restoreAllMocks();
   });
 
-  it("missing cookie -> AnonymousCredentialError, no DB access", async () => {
+  it("missing cookie -> AnonymousCredentialError with reason no_cookie, no DB access", async () => {
     const getUserByOpenIdSpy = vi.spyOn(db, "getUserByOpenId");
 
-    await expect(sdk.authenticateRequest(requestWithCookie(undefined))).rejects.toBeInstanceOf(
-      AnonymousCredentialError
-    );
+    const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(undefined)));
+    expect(error).toBeInstanceOf(AnonymousCredentialError);
+    expect((error as AnonymousCredentialError).reason).toBe("no_cookie");
     expect(getUserByOpenIdSpy).not.toHaveBeenCalled();
   });
 
-  it("malformed cookie -> AnonymousCredentialError", async () => {
-    await expect(sdk.authenticateRequest(requestWithCookie("garbage"))).rejects.toBeInstanceOf(
-      AnonymousCredentialError
-    );
+  it("malformed cookie -> AnonymousCredentialError with reason invalid_session_token (so createContext knows to clear it)", async () => {
+    const error = await captureRejection(sdk.authenticateRequest(requestWithCookie("garbage")));
+    expect(error).toBeInstanceOf(AnonymousCredentialError);
+    expect((error as AnonymousCredentialError).reason).toBe("invalid_session_token");
   });
 
   it("valid session for a known user returns that user and refreshes lastSignedIn only", async () => {
@@ -134,7 +143,7 @@ describe("sdk.authenticateRequest", () => {
     expect(result.name).toBeNull();
   });
 
-  it("valid session but still no user record after sync -> AnonymousCredentialError (not a generic error)", async () => {
+  it("valid session but still no user record after sync -> AnonymousCredentialError with reason no_user_record (not cleared - a validly-signed token, see context.test.ts)", async () => {
     vi.spyOn(db, "getUserByOpenId").mockResolvedValue(undefined);
     vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
     vi.spyOn(sdk, "getUserInfoWithJwt").mockResolvedValue({
@@ -145,9 +154,19 @@ describe("sdk.authenticateRequest", () => {
     } as any);
 
     const token = await sdk.createSessionToken("ghost-user", {});
-    await expect(sdk.authenticateRequest(requestWithCookie(token))).rejects.toBeInstanceOf(
-      AnonymousCredentialError
-    );
+    const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(token)));
+    expect(error).toBeInstanceOf(AnonymousCredentialError);
+    expect((error as AnonymousCredentialError).reason).toBe("no_user_record");
+  });
+
+  it("missing VITE_APP_ID during verification propagates as a plain configuration error, not AnonymousCredentialError", async () => {
+    const token = await sdk.createSessionToken("user-123", {});
+    ENV.appId = "";
+
+    const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(token)));
+    expect(error).not.toBeInstanceOf(AnonymousCredentialError);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/VITE_APP_ID/);
   });
 
   it("database failure while looking up the user propagates (NOT converted to anonymous)", async () => {
@@ -178,14 +197,14 @@ describe("sdk.authenticateRequest", () => {
       expect(result).toBe(adminUser);
     });
 
-    it("rejects (AnonymousCredentialError) when the database role is not admin - the JWT alone never grants access", async () => {
+    it("rejects with reason admin_session_invalid (not cleared, see context.test.ts) when the database role is not admin - the JWT alone never grants access", async () => {
       const demotedUser = fakeUser({ id: 7, openId: "admin-7", role: "user" });
       vi.spyOn(db, "getUserById").mockResolvedValue(demotedUser);
 
       const token = await sdk.createSessionToken("admin-7", {});
-      await expect(sdk.authenticateRequest(requestWithCookie(token))).rejects.toBeInstanceOf(
-        AnonymousCredentialError
-      );
+      const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(token)));
+      expect(error).toBeInstanceOf(AnonymousCredentialError);
+      expect((error as AnonymousCredentialError).reason).toBe("admin_session_invalid");
     });
 
     it("rejects (AnonymousCredentialError) when no such admin user exists in the database", async () => {
