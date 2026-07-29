@@ -1,10 +1,11 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { beforeEach, describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 import { getTestDb } from "./test-helpers/testDb";
 import { createTestUser, createTestNovel, createTestOrder, uniqueTestTag, deleteFixtures } from "./test-helpers/fixtures";
 import { episodes, purchases, episodePurchases } from "../drizzle/schema";
+import { __resetHybridHealthSummaryStateForTests } from "./services/hybridHealthService";
 
 /**
  * feat/hybrid-content-health-plaintext-audit - Phase 2 coverage for the
@@ -19,6 +20,16 @@ import { episodes, purchases, episodePurchases } from "../drizzle/schema";
  * Not run in this session (no TEST_DATABASE_URL configured in this
  * sandbox) - written for `pnpm test:integration` on a Coolify preview or any
  * environment with a real disposable ipenovel_test database.
+ *
+ * Hybrid Health Summary cache note: getHybridHealthSummary() caches its
+ * result in process memory for 5 minutes - deliberate, intended production
+ * behavior (see hybridHealthService.ts), NOT something this test file
+ * changes or works around by altering. Because these integration tests run
+ * in the same process/module registry across the whole file,
+ * __resetHybridHealthSummaryStateForTests() (test-only, exported purely for
+ * this purpose) is used to give each test a clean cache/single-flight
+ * state - this is test isolation, not a change to how the cache behaves for
+ * real requests.
  */
 
 function adminContext(userId: number): TrpcContext {
@@ -94,7 +105,20 @@ let cleanup: {
   orderIds: number[];
 } = { userIds: [], novelIds: [], episodeIds: [], orderIds: [] };
 
+// Each test starts with no Summary cache and no in-flight scan carried over
+// from whatever the previous test did - without this, a test that happens
+// to call summary() first "warms" the 5-minute cache for every test that
+// runs after it within this file, which is exactly what caused "summary
+// counts increase by exactly the delta..." below to observe a stale,
+// pre-insert result. This resets test-only module state; it never touches
+// the production cache TTL or single-flight behavior itself.
+beforeEach(() => {
+  __resetHybridHealthSummaryStateForTests();
+});
+
 afterEach(async () => {
+  __resetHybridHealthSummaryStateForTests();
+
   const testDb = getTestDb();
   // purchases/episodePurchases have no dedicated fixture cleanup helper -
   // delete by episodeId before deleteFixtures() removes the episodes/novels
@@ -582,11 +606,17 @@ describe("hybridHealth overview/detail - integration (TEST_DATABASE_URL only)", 
     const missingBothEp = await insertEpisode(novel.id, { content: null, isPublished: true });
     cleanup.episodeIds.push(plaintextEp, legacyOnlyEp, missingBothEp);
 
-    // The batch scan is keyset-paginated over the WHOLE episodes table, so
-    // these three new rows are correctly picked up regardless of exactly
-    // which batch boundary they land on - that's the property this test
-    // actually verifies (delta correctness), since the shared ipenovel_test
-    // database's total row count isn't controlled by this test.
+    // The first summary() call above is intentionally cached in production
+    // (see hybridHealthService.ts's 5-minute cache) - without resetting
+    // here, this second call would just replay that cached `before` result
+    // and see a delta of 0 regardless of what was inserted. Reset test-only
+    // state so this call performs a fresh scan and actually observes the
+    // database delta. The batch scan itself is keyset-paginated over the
+    // WHOLE episodes table, so these three new rows are correctly picked up
+    // regardless of exactly which batch boundary they land on - that's the
+    // property this test verifies (delta correctness), since the shared
+    // ipenovel_test database's total row count isn't controlled by this test.
+    __resetHybridHealthSummaryStateForTests();
     const after = await caller.admin.hybridHealth.summary();
 
     expect(after.totalEpisodes - before.totalEpisodes).toBe(3);
@@ -601,6 +631,12 @@ describe("hybridHealth overview/detail - integration (TEST_DATABASE_URL only)", 
     const admin = await createTestUser({ role: "admin" });
     const caller = appRouter.createCaller(adminContext(admin.id));
 
+    // Deliberately NO __resetHybridHealthSummaryStateForTests() between
+    // these two calls - beforeEach/afterEach reset the state around this
+    // test as a whole, but resetting mid-test here would defeat the exact
+    // thing being proven: that the second call is served from the
+    // production 5-minute cache (cached:true, identical generatedAt)
+    // instead of performing a second scan.
     const first = await caller.admin.hybridHealth.summary();
     const second = await caller.admin.hybridHealth.summary();
 
