@@ -170,11 +170,42 @@ describe("useAuth.ts source shape (static regression guard - no DOM harness in t
     expect(afterCatch).toMatch(/await utils\.auth\.me\.invalidate\(\)/);
   });
 
-  it("the unauthenticated-redirect effect resolves its target via the shared, narrow resolveUnauthorizedRedirectPath helper", () => {
-    expect(useAuthSource).toMatch(/import \{ resolveUnauthorizedRedirectPath \} from ".\/unauthorizedRedirect"/);
+  it("the unauthenticated-redirect effect resolves its target via the shared, narrow resolveUnauthorizedRedirectTarget helper - never a bespoke, divergent copy of the /admin/* rule", () => {
+    expect(useAuthSource).toMatch(/import \{ resolveUnauthorizedRedirectTarget \} from ".\/unauthorizedRedirect"/);
     expect(useAuthSource).toMatch(
-      /resolveUnauthorizedRedirectPath\(window\.location\.pathname, redirectPath\)/
+      /resolveUnauthorizedRedirectTarget\(window\.location\.pathname\)/
     );
+  });
+
+  it("never evaluates getLoginUrl() eagerly - only inside the 'oauth' branch of the redirect effect, never unconditionally on every render", () => {
+    expect(useAuthSource).not.toMatch(/redirectPath\s*=\s*getLoginUrl\(\)/);
+    const redirectEffectStart = useAuthSource.indexOf("useEffect(() => {\n    if (!redirectOnUnauthenticated) return;");
+    expect(redirectEffectStart).toBeGreaterThan(-1);
+    const redirectEffectEnd = useAuthSource.indexOf("state.user,\n  ]);", redirectEffectStart);
+    expect(redirectEffectEnd).toBeGreaterThan(-1);
+    const redirectEffectBlock = useAuthSource.slice(redirectEffectStart, redirectEffectEnd);
+    expect(redirectEffectBlock).toMatch(/target === "admin_login" \? "\/admin\/login" : getLoginUrl\(\)/);
+  });
+
+  it("the redirect effect bails out on a genuine auth.me infrastructure error (meQuery.error) BEFORE checking state.user - an error means 'unknown', not 'unauthenticated', and must never be treated as proof of no session", () => {
+    const redirectEffectStart = useAuthSource.indexOf("useEffect(() => {\n    if (!redirectOnUnauthenticated) return;");
+    expect(redirectEffectStart).toBeGreaterThan(-1);
+    const redirectEffectEnd = useAuthSource.indexOf("state.user,\n  ]);", redirectEffectStart);
+    expect(redirectEffectEnd).toBeGreaterThan(-1);
+    const redirectEffectBlock = useAuthSource.slice(redirectEffectStart, redirectEffectEnd);
+
+    const errorGuardIndex = redirectEffectBlock.indexOf("if (meQuery.error) return;");
+    const userGuardIndex = redirectEffectBlock.indexOf("if (state.user) return;");
+    expect(errorGuardIndex).toBeGreaterThan(-1);
+    expect(userGuardIndex).toBeGreaterThan(-1);
+    expect(errorGuardIndex).toBeLessThan(userGuardIndex);
+  });
+
+  it("the redirect effect's dependency array includes meQuery.error, so a settling auth.me error re-evaluates the guard instead of running stale", () => {
+    const redirectEffectStart = useAuthSource.indexOf("useEffect(() => {\n    if (!redirectOnUnauthenticated) return;");
+    const redirectEffectEnd = useAuthSource.indexOf("]);", useAuthSource.indexOf("state.user,\n  ]);", redirectEffectStart));
+    const redirectEffectBlock = useAuthSource.slice(redirectEffectStart, redirectEffectEnd + "]);".length);
+    expect(redirectEffectBlock).toMatch(/\[\s*redirectOnUnauthenticated,\s*logoutMutation\.isPending,\s*meQuery\.isLoading,\s*meQuery\.error,\s*state\.user,\s*\]/);
   });
 });
 

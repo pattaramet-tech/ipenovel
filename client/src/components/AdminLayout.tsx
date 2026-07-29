@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { resolveAdminAccessState } from "@/_core/hooks/adminAccess";
-import { resolveUnauthorizedRedirectPath } from "@/_core/hooks/unauthorizedRedirect";
+import { resolveUnauthorizedRedirectTarget } from "@/_core/hooks/unauthorizedRedirect";
 import { getLoginUrl } from "@/const";
 import { useLocation } from "wouter";
 import { Menu, LogOut, ChevronRight, Home, Loader2, RefreshCw, AlertTriangle } from "lucide-react";
@@ -55,16 +55,19 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
   // doing it here (not inline in the render body below) avoids a
   // "Cannot update a component while rendering a different component"
   // warning/render-time navigation, and re-runs cleanly if accessState
-  // flips back and forth (e.g. a query refetch). Uses the same narrow,
-  // path-aware helper useAuth's own (currently unused) redirect option
-  // uses - AdminLayout only ever renders on /admin/* (never on
-  // /admin/login, see App.tsx's route table), so this always resolves to
-  // "/admin/login" in practice, but sharing the helper keeps both places
-  // agreeing on the rule by construction instead of by convention.
+  // flips back and forth (e.g. a query refetch). Uses the SAME
+  // resolveUnauthorizedRedirectTarget helper as useAuth's own redirect
+  // effect and main.tsx's global tRPC error handler - AdminLayout only
+  // ever renders on /admin/* (never on /admin/login, see App.tsx's route
+  // table), so this always resolves to "admin_login" in practice, but
+  // sharing the helper keeps all three places agreeing on the rule by
+  // construction instead of by convention. getLoginUrl() is only called
+  // for the (here, unreachable) "oauth" case - never unconditionally.
   useEffect(() => {
     if (accessState !== "unauthenticated") return;
-    const target = resolveUnauthorizedRedirectPath(location, getLoginUrl());
-    if (target) navigate(target);
+    const target = resolveUnauthorizedRedirectTarget(location);
+    if (target === "none") return;
+    navigate(target === "admin_login" ? "/admin/login" : getLoginUrl());
   }, [accessState, location, navigate]);
 
   async function handleLogout() {

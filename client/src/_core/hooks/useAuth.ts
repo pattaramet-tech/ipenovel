@@ -3,16 +3,14 @@ import { trpc } from "@/lib/trpc";
 import { useCallback, useEffect, useMemo } from "react";
 import { clearLegacyAuthLocalStorageFromWindow } from "./authClientStorage";
 import { classifyLogoutFailure } from "./logoutOutcome";
-import { resolveUnauthorizedRedirectPath } from "./unauthorizedRedirect";
+import { resolveUnauthorizedRedirectTarget } from "./unauthorizedRedirect";
 
 type UseAuthOptions = {
   redirectOnUnauthenticated?: boolean;
-  redirectPath?: string;
 };
 
 export function useAuth(options?: UseAuthOptions) {
-  const { redirectOnUnauthenticated = false, redirectPath = getLoginUrl() } =
-    options ?? {};
+  const { redirectOnUnauthenticated = false } = options ?? {};
   const utils = trpc.useUtils();
 
   const meQuery = trpc.auth.me.useQuery(undefined, {
@@ -88,29 +86,39 @@ export function useAuth(options?: UseAuthOptions) {
     logoutMutation.isPending,
   ]);
 
-  // Narrow, path-aware redirect - see resolveUnauthorizedRedirectPath's
+  // Narrow, path-aware redirect - see resolveUnauthorizedRedirectTarget's
   // docstring: /admin and /admin/* go back to /admin/login (a local
   // email/password session, never OAuth), every other route keeps going to
   // the OAuth login flow, and /admin/login itself is never redirected
-  // (would otherwise strand the login form in a loop). Only reacts to
-  // "no session" (state.user is null) - never to FORBIDDEN (a real,
-  // signed-in user whose role just isn't admin), which is a
-  // fundamentally different state this effect must never touch.
+  // (would otherwise strand the login form in a loop). getLoginUrl() is
+  // only ever called for the "oauth" target - never unconditionally, so an
+  // admin route never depends on OAuth config being present just to decide
+  // "no redirect needed here."
+  //
+  // Only reacts to a CONFIRMED "no session" (meQuery settled, no error, and
+  // state.user is null). Never redirects while auth.me is still loading,
+  // and - just as importantly - never redirects when auth.me itself failed
+  // with an infrastructure error (meQuery.error): that failure means we
+  // don't actually know whether there's a session or not, so treating it
+  // as "definitely logged out" would be wrong and could redirect an
+  // otherwise-valid admin away from the page they were on. Never reacts to
+  // FORBIDDEN either (a real, signed-in user whose role just isn't admin) -
+  // a fundamentally different state this effect must never touch.
   useEffect(() => {
     if (!redirectOnUnauthenticated) return;
     if (meQuery.isLoading || logoutMutation.isPending) return;
+    if (meQuery.error) return;
     if (state.user) return;
     if (typeof window === "undefined") return;
 
-    const target = resolveUnauthorizedRedirectPath(window.location.pathname, redirectPath);
-    if (!target) return;
-
-    window.location.href = target;
+    const target = resolveUnauthorizedRedirectTarget(window.location.pathname);
+    if (target === "none") return;
+    window.location.href = target === "admin_login" ? "/admin/login" : getLoginUrl();
   }, [
     redirectOnUnauthenticated,
-    redirectPath,
     logoutMutation.isPending,
     meQuery.isLoading,
+    meQuery.error,
     state.user,
   ]);
 

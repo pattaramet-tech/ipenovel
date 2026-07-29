@@ -39,14 +39,15 @@ describe("AdminLayout source shape", () => {
     expect(source).toMatch(/accessState === "forbidden"/);
   });
 
-  it("redirects unauthenticated users via the shared resolveUnauthorizedRedirectPath helper, from inside a useEffect, not during render", () => {
-    expect(source).toMatch(/import \{ resolveUnauthorizedRedirectPath \} from "@\/_core\/hooks\/unauthorizedRedirect"/);
+  it("redirects unauthenticated users via the shared resolveUnauthorizedRedirectTarget helper, from inside a useEffect, not during render", () => {
+    expect(source).toMatch(/import \{ resolveUnauthorizedRedirectTarget \} from "@\/_core\/hooks\/unauthorizedRedirect"/);
 
     const effectStart = source.indexOf("useEffect(() => {\n    if (accessState !== \"unauthenticated\") return;");
     expect(effectStart).toBeGreaterThan(-1);
     const effectBlock = source.slice(effectStart, effectStart + 300);
-    expect(effectBlock).toMatch(/resolveUnauthorizedRedirectPath\(location, getLoginUrl\(\)\)/);
-    expect(effectBlock).toMatch(/if \(target\) navigate\(target\);/);
+    expect(effectBlock).toMatch(/resolveUnauthorizedRedirectTarget\(location\)/);
+    expect(effectBlock).toMatch(/if \(target === "none"\) return;/);
+    expect(effectBlock).toMatch(/navigate\(target === "admin_login" \? "\/admin\/login" : getLoginUrl\(\)\)/);
 
     // The "unauthenticated" render branch itself must NOT call navigate()
     // directly - only the effect above may.
@@ -55,6 +56,16 @@ describe("AdminLayout source shape", () => {
     const renderBranchEnd = source.indexOf("if (accessState ===", renderBranchStart + 10);
     const renderBranchBlock = source.slice(renderBranchStart, renderBranchEnd);
     expect(renderBranchBlock).not.toMatch(/navigate\(/);
+  });
+
+  it("resolves the redirect target from the current location BEFORE ever touching getLoginUrl() - the OAuth URL factory is only reachable inside the ternary's false branch, never called unconditionally", () => {
+    const effectStart = source.indexOf("useEffect(() => {\n    if (accessState !== \"unauthenticated\") return;");
+    const effectBlock = source.slice(effectStart, effectStart + 300);
+    const targetCallIndex = effectBlock.indexOf("resolveUnauthorizedRedirectTarget(location)");
+    const getLoginUrlIndex = effectBlock.indexOf("getLoginUrl()");
+    expect(targetCallIndex).toBeGreaterThan(-1);
+    expect(getLoginUrlIndex).toBeGreaterThan(-1);
+    expect(targetCallIndex).toBeLessThan(getLoginUrlIndex);
   });
 
   it("the error (infrastructure failure) screen never shows the raw error and offers a Retry that refetches auth.me", () => {
