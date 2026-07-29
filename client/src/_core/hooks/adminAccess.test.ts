@@ -33,6 +33,28 @@ describe("resolveAdminAccessState", () => {
     expect(resolveAdminAccessState({ loading: false, user: { role: "admin" } })).toBe("allowed");
   });
 
+  it("authMeError (truthy) -> 'error', even for an admin user or no user at all", () => {
+    const error = new Error("database unavailable");
+    expect(resolveAdminAccessState({ loading: false, user: null, authMeError: error })).toBe("error");
+    expect(resolveAdminAccessState({ loading: false, user: { role: "admin" }, authMeError: error })).toBe("error");
+    expect(resolveAdminAccessState({ loading: false, user: { role: "user" }, authMeError: error })).toBe("error");
+  });
+
+  it("authMeError does not override 'loading' - loading takes priority", () => {
+    expect(resolveAdminAccessState({ loading: true, user: null, authMeError: new Error("x") })).toBe("loading");
+  });
+
+  it("a falsy authMeError (undefined/null) never triggers 'error'", () => {
+    expect(resolveAdminAccessState({ loading: false, user: { role: "admin" }, authMeError: undefined })).toBe("allowed");
+    expect(resolveAdminAccessState({ loading: false, user: { role: "admin" }, authMeError: null })).toBe("allowed");
+    expect(resolveAdminAccessState({ loading: false, user: null, authMeError: undefined })).toBe("unauthenticated");
+  });
+
+  it("omitting authMeError entirely behaves the same as not having one (backward compatible)", () => {
+    expect(resolveAdminAccessState({ loading: false, user: { role: "admin" } })).toBe("allowed");
+    expect(resolveAdminAccessState({ loading: false, user: null })).toBe("unauthenticated");
+  });
+
   it("is a pure function: localStorage/window/document are never touched, and the result depends only on its arguments", () => {
     const getItemSpy = vi.fn();
     const originalLocalStorage = globalThis.localStorage;

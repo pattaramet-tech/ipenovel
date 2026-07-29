@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
-import { AlertCircle, LogIn, Loader2 } from "lucide-react";
+import { AlertCircle, LogIn, Loader2, RefreshCw, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -19,7 +19,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 export default function AdminLoginPage() {
   useDocumentHead({ robots: "noindex,nofollow" });
   const [, navigate] = useLocation();
-  const { user, loading: authLoading, logout, isLoggingOut } = useAuth();
+  const { user, loading: authLoading, authMeError, logout, isLoggingOut, refresh } = useAuth();
   const utils = trpc.useUtils();
 
   const [email, setEmail] = useState("");
@@ -111,6 +111,34 @@ export default function AdminLoginPage() {
           <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
           <p>Checking your session...</p>
         </div>
+      </div>
+    );
+  }
+
+  // auth.me itself failed (infrastructure error - never a logout mutation
+  // error, see adminAccess.ts's authMeError docstring). Never show the
+  // login form here - with no confirmed session state, we cannot tell
+  // whether this visitor is unauthenticated, forbidden, or already an
+  // admin, so accepting credentials would be premature. Never show the raw
+  // error either, since it may carry database/infra details.
+  if (authMeError) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 flex items-center justify-center px-4 py-8">
+        <Card className="w-full max-w-md shadow-lg">
+          <CardHeader className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white">
+            <CardTitle className="text-2xl font-bold">Admin Login</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-8 space-y-6 text-center">
+            <AlertTriangle className="w-10 h-10 mx-auto text-amber-500" aria-hidden="true" />
+            <p className="text-slate-700">
+              Unable to verify your session right now. Please try again.
+            </p>
+            <Button onClick={() => refresh()}>
+              <RefreshCw className="w-4 h-4 mr-2" aria-hidden="true" />
+              Retry
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     );
   }

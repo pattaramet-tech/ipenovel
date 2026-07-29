@@ -31,8 +31,19 @@ describe("AdminDashboard source shape", () => {
     expect(source).not.toMatch(/isAdminLoggedIn\s*\|\|/);
   });
 
-  it("derives shouldFetchAdminData from resolveAdminAccessState, not a hand-rolled boolean", () => {
-    expect(source).toMatch(/resolveAdminAccessState\(\{ loading: authLoading, user \}\) === "allowed"/);
+  it("derives shouldFetchAdminData from resolveAdminAccessState (including auth.me's error), not a hand-rolled boolean", () => {
+    expect(source).toMatch(
+      /resolveAdminAccessState\(\{ loading: authLoading, user, authMeError \}\) === "allowed"/
+    );
+  });
+
+  it("an auth.me infrastructure error disables admin queries too (accessState 'error' !== 'allowed')", () => {
+    // shouldFetchAdminData is strictly `=== "allowed"`, so this holds by
+    // construction as long as resolveAdminAccessState's "error" branch
+    // (verified in adminAccess.test.ts) never returns "allowed" - this
+    // pins that AdminDashboard actually feeds authMeError into that call
+    // (checked above) rather than only checking `loading`/`user`.
+    expect(source).toMatch(/authMeError\s*}\s*=\s*useAuth\(\)/);
   });
 
   it("does not render its own competing loading/Access Denied screen - AdminLayout is the sole gate", () => {

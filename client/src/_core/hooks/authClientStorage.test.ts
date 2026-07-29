@@ -110,10 +110,13 @@ describe("clearLegacyAuthLocalStorageFromWindow", () => {
 });
 
 describe("useAuth.ts source shape (static regression guard - no DOM harness in this repo)", () => {
+  // Normalized to \n regardless of the checkout's line-ending style (this
+  // repo's working tree uses CRLF) so literal multi-line substring searches
+  // below don't have to account for \r.
   const useAuthSource = readFileSync(
     path.resolve(path.dirname(fileURLToPath(import.meta.url)), "useAuth.ts"),
     "utf8"
-  );
+  ).replace(/\r\n/g, "\n");
 
   it("never calls localStorage.setItem to persist the auth.me result", () => {
     expect(useAuthSource).not.toMatch(/localStorage\.setItem/);
@@ -138,6 +141,40 @@ describe("useAuth.ts source shape (static regression guard - no DOM harness in t
 
   it("exposes an isLoggingOut flag driven by the logout mutation's pending state", () => {
     expect(useAuthSource).toMatch(/isLoggingOut:\s*logoutMutation\.isPending/);
+  });
+
+  it("exposes authMeError as specifically auth.me's own error, never the logout mutation's", () => {
+    expect(useAuthSource).toMatch(/authMeError:\s*meQuery\.error\s*\?\?\s*null/);
+  });
+
+  it("logout() classifies a failed mutation via classifyLogoutFailure and rethrows on 'unexpected_error', instead of swallowing every failure", () => {
+    expect(useAuthSource).toMatch(/import \{ classifyLogoutFailure \} from ".\/logoutOutcome"/);
+    const logoutStart = useAuthSource.indexOf("const logout = useCallback(async () => {");
+    const logoutEnd = useAuthSource.indexOf("}, [logoutMutation, utils]);");
+    const logoutBlock = useAuthSource.slice(logoutStart, logoutEnd);
+
+    expect(logoutBlock).toMatch(/classifyLogoutFailure\(error\) === "unexpected_error"/);
+    expect(logoutBlock).toMatch(/throw error;/);
+  });
+
+  it("logout() clears the auth.me cache only after the try/catch settles without rethrowing (success or already-logged-out) - never in a finally that would run even on an unexpected failure", () => {
+    const logoutStart = useAuthSource.indexOf("const logout = useCallback(async () => {");
+    const logoutEnd = useAuthSource.indexOf("}, [logoutMutation, utils]);");
+    const logoutBlock = useAuthSource.slice(logoutStart, logoutEnd);
+
+    expect(logoutBlock).not.toMatch(/finally/);
+    const catchEnd = logoutBlock.indexOf("}\n\n    utils.auth.me.setData");
+    expect(catchEnd).toBeGreaterThan(-1);
+    const afterCatch = logoutBlock.slice(catchEnd);
+    expect(afterCatch).toMatch(/utils\.auth\.me\.setData\(undefined, null\)/);
+    expect(afterCatch).toMatch(/await utils\.auth\.me\.invalidate\(\)/);
+  });
+
+  it("the unauthenticated-redirect effect resolves its target via the shared, narrow resolveUnauthorizedRedirectPath helper", () => {
+    expect(useAuthSource).toMatch(/import \{ resolveUnauthorizedRedirectPath \} from ".\/unauthorizedRedirect"/);
+    expect(useAuthSource).toMatch(
+      /resolveUnauthorizedRedirectPath\(window\.location\.pathname, redirectPath\)/
+    );
   });
 });
 

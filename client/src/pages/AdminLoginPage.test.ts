@@ -72,13 +72,43 @@ describe("AdminLoginPage source shape", () => {
     expect(onErrorBlock).not.toMatch(/error\.message/);
   });
 
-  it("renders the login form only after the loading/non-admin/admin-redirect branches", () => {
+  it("reads authMeError and refresh from useAuth", () => {
+    expect(source).toMatch(
+      /const \{ user, loading: authLoading, authMeError, logout, isLoggingOut, refresh \} = useAuth\(\)/
+    );
+  });
+
+  it("an auth.me infrastructure error shows a safe message and a Retry that calls refresh(), never the raw error", () => {
+    const errorBranchStart = source.indexOf("if (authMeError)");
+    expect(errorBranchStart).toBeGreaterThan(-1);
+    const nonAdminBranchStart = source.indexOf('if (user && user.role !== "admin")');
+    const errorBranch = source.slice(errorBranchStart, nonAdminBranchStart);
+
+    expect(errorBranch).toMatch(/refresh\(\)/);
+    expect(errorBranch).not.toMatch(/\{authMeError/);
+    expect(errorBranch).not.toMatch(/authMeError\.message/);
+    // Must not render the login form in this branch.
+    expect(errorBranch).not.toMatch(/<form/);
+  });
+
+  it("the auth.me-error branch is checked before the non-admin/admin/form branches, so an infra error never falls through to the login form", () => {
+    const loadingBranchIndex = source.indexOf("if (authLoading)");
+    const errorBranchIndex = source.indexOf("if (authMeError)");
+    const nonAdminBranchIndex = source.indexOf('if (user && user.role !== "admin")');
+
+    expect(errorBranchIndex).toBeGreaterThan(loadingBranchIndex);
+    expect(errorBranchIndex).toBeLessThan(nonAdminBranchIndex);
+  });
+
+  it("renders the login form only after the loading/error/non-admin/admin-redirect branches", () => {
     const formIndex = source.indexOf("<form onSubmit={handleLogin}");
     const loadingBranchIndex = source.indexOf("if (authLoading)");
+    const errorBranchIndex = source.indexOf("if (authMeError)");
     const nonAdminBranchIndex = source.indexOf('if (user && user.role !== "admin")');
     const adminBranchIndex = source.indexOf('if (user && user.role === "admin")');
 
     expect(formIndex).toBeGreaterThan(loadingBranchIndex);
+    expect(formIndex).toBeGreaterThan(errorBranchIndex);
     expect(formIndex).toBeGreaterThan(nonAdminBranchIndex);
     expect(formIndex).toBeGreaterThan(adminBranchIndex);
   });

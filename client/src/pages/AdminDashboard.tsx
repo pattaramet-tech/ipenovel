@@ -17,7 +17,7 @@ import { resolveAdminAccessState } from "@/_core/hooks/adminAccess";
 
 export default function AdminDashboard() {
   // All hooks must be called at the top level, before any conditional returns
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, authMeError } = useAuth();
   const [, navigate] = useLocation();
     const [rejectingPaymentId, setRejectingPaymentId] = useState<number | null>(null);
   const [rejectionReason, setRejectionReason] = useState("");
@@ -29,7 +29,7 @@ export default function AdminDashboard() {
   // AdminLayout is the sole place that renders a loading/login/access-denied
   // screen; this page must not run a second, competing check that could
   // disagree with it.
-  const shouldFetchAdminData = resolveAdminAccessState({ loading: authLoading, user }) === "allowed";
+  const shouldFetchAdminData = resolveAdminAccessState({ loading: authLoading, user, authMeError }) === "allowed";
 
   // Query hooks with enabled flag - they won't fetch until auth is resolved and user is admin
   const { data: dashboardSummary, isLoading: summaryLoading } = trpc.admin.dashboard.summary.useQuery(
