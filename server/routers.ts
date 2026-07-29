@@ -1858,6 +1858,13 @@ export const appRouter = router({
     // content vs. only having a legacy file. Every query is DB-aggregated
     // and lightweight - never loads episodes.content/fileUrl as a raw value.
     // No mutations anywhere - purely diagnostic.
+    // Hotfix (TiDB errno=8176, "query cancelled because the TiDB server
+    // memory limit was exceeded"): overview and summary are now separate
+    // procedures with independent failure boundaries - overview never waits
+    // on or fails because of summary. Sort-by-aggregate-count is temporarily
+    // suspended (see hybridHealthQueries.ts's OverviewSortBy docstring) -
+    // only "title"/"novelId" remain, since those don't require computing
+    // every novel's counts before picking a page.
     hybridHealth: router({
       overview: adminProcedure
         .input(
@@ -1870,15 +1877,7 @@ export const appRouter = router({
               publicationStatus: z.enum(["all", "published", "archived"]).optional(),
               saleMode: z.enum(["all", "chapter", "package"]).optional(),
               purchasedOnly: z.boolean().optional(),
-              sortBy: z
-                .enum([
-                  "missingPlaintextCount",
-                  "publishedMissingPlaintextCount",
-                  "purchasedMissingPlaintextCount",
-                  "coverage",
-                  "title",
-                ])
-                .optional(),
+              sortBy: z.enum(["title", "novelId"]).optional(),
               sortOrder: z.enum(["asc", "desc"]).optional(),
             })
             .optional()
@@ -1888,12 +1887,21 @@ export const appRouter = router({
           return getHybridHealthOverview(input ?? {});
         }),
 
+      // Global KPI totals for the summary cards - its own request, loaded
+      // independently of (and never blocking) the novel table above. Bounded
+      // sequential batch scan, cached 5 minutes, single-flight - see
+      // hybridHealthService.ts's getHybridHealthSummary().
+      summary: adminProcedure.query(async () => {
+        const { getHybridHealthSummary } = await import("./services/hybridHealthService");
+        return getHybridHealthSummary();
+      }),
+
       detail: adminProcedure
         .input(
           z.object({
             novelId: z.number(),
             page: z.number().int().min(1).optional(),
-            pageSize: z.number().int().min(1).max(100).optional(),
+            pageSize: z.number().int().min(1).max(50).optional(),
             search: z.string().optional(),
             status: z.enum(["all", "missing_plaintext", "legacy_only", "missing_both", "has_plaintext"]).optional(),
             isPublished: z.boolean().optional(),

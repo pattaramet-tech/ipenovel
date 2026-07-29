@@ -1,35 +1,51 @@
-import { and, asc, desc, eq, like, or, sql, count, type SQL, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, like, or, sql, count, type SQL } from "drizzle-orm";
 import { getDb } from "../db";
 import { novels, episodes, purchases, episodePurchases } from "../../drizzle/schema";
 
 /**
- * Phase 2 - Hybrid Content Health lightweight query layer.
+ * Hybrid Content Health lightweight query layer.
  *
  * Every query in this file is aggregate-only: it computes hasPlaintext /
  * hasLegacyFile / content length as SQL booleans and numbers, and NEVER
  * selects `episodes.content` (MEDIUMTEXT, up to ~16MB/row for package
- * episodes) or `episodes.fileUrl` as a raw column value. That's the whole
- * point of this file existing separately from getAllEpisodes() /
- * getEpisodesByNovelId() - those SELECT full rows and are exactly what made
- * the Phase 1 dashboard's getAllNovelHealthOverview() load every episode's
- * full content into app memory for every page view.
+ * episodes) or `episodes.fileUrl` as a raw column value.
  *
  * hasPlaintext is defined as TRIM(COALESCE(content, '')) <> '' - the exact
  * same semantics as readerService.computeContentFlags()'s
  * `Boolean(content && String(content).trim().length > 0)`, just evaluated
  * in SQL instead of after loading content into JS. NULL, '' and
  * whitespace-only all count as "no plaintext".
+ *
+ * Hotfix (TiDB errno=8176 "query cancelled because the TiDB server memory
+ * limit was exceeded" on /admin/hybrid-health): the original Overview query
+ * ran a single GROUP BY across every novel/episode in the system to compute
+ * 13 SUM(CASE...) expressions - each one re-evaluating
+ * TRIM(COALESCE(content,'')) and a correlated purchase EXISTS over the
+ * *entire* episodes table - and did that twice more in parallel
+ * (queryHybridHealthGlobalSummary's own two full-table aggregates,
+ * concurrent with the Overview query via Promise.all). Four full-table
+ * scans at once, repeated on every client retry, is what exceeded TiDB's
+ * memory limit. This file now does the aggregate work "page-first": find
+ * which <=100 novel ids belong on the current page via a cheap EXISTS
+ * semi-join (no GROUP BY at all), then GROUP BY only those ids. The
+ * system-wide summary (still needed for the dashboard's KPI cards) is
+ * computed by a separate, explicitly bounded, sequential batch scan - see
+ * queryHybridHealthSummaryBatch and hybridHealthService.ts's caching/
+ * single-flight wrapper around it.
  */
 
 export type PublicationStatusFilter = "all" | "published" | "archived";
 export type SaleModeFilter = "all" | "chapter" | "package";
 export type HealthStatusFilter = "all" | "missing_plaintext" | "legacy_only" | "missing_both" | "has_plaintext";
-export type OverviewSortBy =
-  | "missingPlaintextCount"
-  | "publishedMissingPlaintextCount"
-  | "purchasedMissingPlaintextCount"
-  | "coverage"
-  | "title";
+/**
+ * Sort by aggregate counts (missingPlaintextCount, coverage, ...) is
+ * temporarily suspended by this hotfix - ranking by those requires knowing
+ * every novel's count *before* picking a page, i.e. exactly the full-table
+ * aggregate this hotfix removes from the initial request. Only columns
+ * available directly on `novels` (no episode aggregation needed) are sortable
+ * for now.
+ */
+export type OverviewSortBy = "title" | "novelId";
 export type SortOrder = "asc" | "desc";
 
 export interface HybridHealthOverviewQueryParams {
@@ -62,23 +78,10 @@ export interface NovelHealthAggregateRow {
   riskyEpisodeCount: number;
 }
 
-export interface HybridHealthGlobalSummary {
-  totalNovels: number;
-  novelsMissingPlaintext: number;
-  totalEpisodes: number;
-  plaintextCount: number;
-  missingPlaintextCount: number;
-  legacyOnlyCount: number;
-  missingBothCount: number;
-  publishedMissingPlaintextCount: number;
-  purchasedMissingPlaintextCount: number;
-}
-
 /** A row has plaintext iff the trimmed content is non-empty. NULL/''/whitespace all fail. */
 const HAS_PLAINTEXT_SQL = sql`(TRIM(COALESCE(${episodes.content}, '')) <> '')`;
 /** A row has a legacy file iff the trimmed fileUrl is non-empty. */
 const HAS_LEGACY_FILE_SQL = sql`(TRIM(COALESCE(${episodes.fileUrl}, '')) <> '')`;
-
 /**
  * Purchased across BOTH entitlement sources (order-based `purchases` +
  * wallet-direct `episodePurchases`), via correlated EXISTS - never a JOIN,
@@ -96,64 +99,22 @@ function caseCount(condition: SQL) {
   return sql<number>`SUM(CASE WHEN ${condition} THEN 1 ELSE 0 END)`;
 }
 
-/** Global, unfiltered KPI totals across every novel/episode - powers the Overview page's summary cards regardless of whatever filters are currently applied to the novel list below. */
-export async function queryHybridHealthGlobalSummary(): Promise<HybridHealthGlobalSummary> {
-  const db = await getDb();
-  const empty: HybridHealthGlobalSummary = {
-    totalNovels: 0,
-    novelsMissingPlaintext: 0,
-    totalEpisodes: 0,
-    plaintextCount: 0,
-    missingPlaintextCount: 0,
-    legacyOnlyCount: 0,
-    missingBothCount: 0,
-    publishedMissingPlaintextCount: 0,
-    purchasedMissingPlaintextCount: 0,
-  };
-  if (!db) return empty;
-
-  const notPlaintext = sql`(${EPISODE_EXISTS_SQL} AND NOT ${HAS_PLAINTEXT_SQL})`;
-
-  // Split into separate queries to reduce memory pressure on TiDB
-  // Query 1: Episode-level aggregates (smaller result set)
-  const [episodeStats] = await db
-    .select({
-      totalEpisodes: caseCount(EPISODE_EXISTS_SQL),
-      plaintextCount: caseCount(sql`(${EPISODE_EXISTS_SQL} AND ${HAS_PLAINTEXT_SQL})`),
-      missingPlaintextCount: caseCount(notPlaintext),
-      legacyOnlyCount: caseCount(sql`(${notPlaintext} AND ${HAS_LEGACY_FILE_SQL})`),
-      missingBothCount: caseCount(sql`(${notPlaintext} AND NOT ${HAS_LEGACY_FILE_SQL})`),
-      publishedMissingPlaintextCount: caseCount(sql`(${notPlaintext} AND ${episodes.isPublished} = 1)`),
-      purchasedMissingPlaintextCount: caseCount(sql`(${notPlaintext} AND ${IS_PURCHASED_SQL})`),
-    })
-    .from(episodes);
-
-  // Query 2: Novel count (separate, simpler query)
-  const [novelStats] = await db
-    .select({
-      totalNovels: sql<number>`COUNT(DISTINCT ${novels.id})`,
-    })
-    .from(novels);
-
-  // Query 3: Novels missing plaintext (separate query)
-  const [novelsMissing] = await db
-    .select({ novelsMissingPlaintext: sql<number>`COUNT(DISTINCT ${episodes.novelId})` })
-    .from(episodes)
-    .where(sql`NOT ${HAS_PLAINTEXT_SQL}`);
-
-  const totals = { ...episodeStats, ...novelStats };
-
-  return {
-    totalNovels: Number(totals?.totalNovels) || 0,
-    novelsMissingPlaintext: Number(novelsMissing?.novelsMissingPlaintext) || 0,
-    totalEpisodes: Number(episodeStats?.totalEpisodes) || 0,
-    plaintextCount: Number(episodeStats?.plaintextCount) || 0,
-    missingPlaintextCount: Number(episodeStats?.missingPlaintextCount) || 0,
-    legacyOnlyCount: Number(episodeStats?.legacyOnlyCount) || 0,
-    missingBothCount: Number(episodeStats?.missingBothCount) || 0,
-    publishedMissingPlaintextCount: Number(episodeStats?.publishedMissingPlaintextCount) || 0,
-    purchasedMissingPlaintextCount: Number(episodeStats?.purchasedMissingPlaintextCount) || 0,
-  };
+/**
+ * Tags a DB error with which Hybrid Health operation failed, without ever
+ * including SQL text, bound parameters, or credentials - just a short,
+ * fixed operation name. The original error (with the driver's
+ * errno/sqlState, e.g. TiDB 8176) is preserved via `cause` so the global
+ * tRPC error formatter's safeErrorSummary() can still walk to it; only the
+ * operation name is new here. See server/_core/trpc.ts's
+ * sanitizeTrpcErrorShape, which already strips SQL/credentials from every
+ * unexpected error before it reaches a client or a log line.
+ */
+async function tagDbError<T>(operation: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    throw new Error(`hybridHealth query failed: ${operation}`, { cause: error });
+  }
 }
 
 /**
@@ -161,14 +122,15 @@ export async function queryHybridHealthGlobalSummary(): Promise<HybridHealthGlob
  * predicate, or null if none of the three filters is active.
  *
  * This must stay a single AND'd predicate evaluated against one episode
- * row - NOT three independently-true aggregate counts ANDed together at the
- * HAVING level. Independent counts let a novel pass a filter combination no
- * single episode actually satisfies: e.g. a novel with a LEGACY_ONLY
- * chapter and an unrelated MISSING_BOTH package would satisfy
- * "legacyOnlyCount > 0 AND packageMissingPlaintextCount > 0" for
+ * row - NOT three independently-true aggregate counts ANDed together.
+ * Independent counts let a novel pass a filter combination no single
+ * episode actually satisfies: e.g. a novel with a LEGACY_ONLY chapter and
+ * an unrelated MISSING_BOTH package would satisfy "has a legacy-only
+ * episode AND has a missing-plaintext package episode" for
  * status=legacy_only + saleMode=package even though no episode is both
- * LEGACY_ONLY and a package - a cross-row false positive. Exported for
- * static SQL-shape testing (see hybridHealthQueries.static.test.ts).
+ * LEGACY_ONLY and a package - a cross-row false positive. Used both to
+ * build the candidate-novel EXISTS semi-join below and (unchanged) exported
+ * for static SQL-shape testing.
  */
 export function buildEpisodeLevelPredicate(
   params: Pick<HybridHealthOverviewQueryParams, "status" | "saleMode" | "purchasedOnly">
@@ -193,163 +155,244 @@ export function buildEpisodeLevelPredicate(
 }
 
 /**
- * Paginated, filtered, DB-aggregated per-novel health rows. All counting
- * (SUM/COUNT) happens in the database via GROUP BY - the app never sees an
- * episode row, only these aggregate numbers. A novel with zero episodes
- * still appears (LEFT JOIN) with totalEpisodes=0 and every count at 0,
- * since every CASE branch is guarded by EPISODE_EXISTS_SQL.
- *
- * OPTIMIZATION: Split into two queries to avoid TiDB memory limit on large LEFT JOINs.
- * Step 1: Get filtered novel IDs with metadata.
- * Step 2: Compute episode aggregates separately per novel.
+ * novels-level WHERE clause shared by the candidate-id and candidate-count
+ * queries: search/publicationStatus filter `novels` columns directly, and
+ * status/saleMode/purchasedOnly become a correlated EXISTS semi-join against
+ * `episodes` (a single episode row satisfying every active filter at once -
+ * see buildEpisodeLevelPredicate) rather than a GROUP BY/aggregate. EXISTS
+ * short-circuits on the first matching episode and can use the existing
+ * episodes_novelId_idx index, so this never has to scan or aggregate a
+ * novel's full episode set just to decide whether it belongs on the page.
  */
-export async function queryHybridHealthNovelOverview(
-  params: HybridHealthOverviewQueryParams
-): Promise<{ novels: NovelHealthAggregateRow[]; total: number }> {
-  const db = await getDb();
-  if (!db) return { novels: [], total: 0 };
+export function buildCandidateWhereClause(params: HybridHealthOverviewQueryParams): SQL | undefined {
+  const conditions: SQL[] = [];
 
+  if (params.publicationStatus !== "all") {
+    conditions.push(eq(novels.publicationStatus, params.publicationStatus));
+  }
+
+  const search = params.search?.trim();
+  if (search) {
+    const isNumericId = /^\d+$/.test(search);
+    conditions.push(
+      (isNumericId
+        ? or(eq(novels.id, Number(search)), like(novels.title, `%${search}%`))
+        : like(novels.title, `%${search}%`)) as SQL
+    );
+  }
+
+  const episodePredicate = buildEpisodeLevelPredicate(params);
+  if (episodePredicate) {
+    conditions.push(sql`EXISTS (SELECT 1 FROM ${episodes} WHERE ${episodes.novelId} = ${novels.id} AND ${episodePredicate})`);
+  }
+
+  return conditions.length > 0 ? and(...conditions) : undefined;
+}
+
+export interface CandidateNovelId {
+  novelId: number;
+}
+
+/**
+ * Pure query-builder for step A, taking an injected `db` so it can be
+ * exercised without a real connection (`.toSQL()` never dials out) - see
+ * hybridHealthQueries.static.test.ts. The exported async function below is
+ * the only production caller.
+ */
+export function buildCandidateNovelIdsQuery(dbInstance: any, params: HybridHealthOverviewQueryParams) {
   const pageSize = Math.min(100, Math.max(1, params.pageSize));
   const page = Math.max(1, params.page);
   const offset = (page - 1) * pageSize;
 
-  const whereConditions = [];
-  if (params.publicationStatus !== "all") {
-    whereConditions.push(eq(novels.publicationStatus, params.publicationStatus));
-  }
-  const search = params.search?.trim();
-  if (search) {
-    const isNumericId = /^\d+$/.test(search);
-    whereConditions.push(
-      isNumericId ? or(eq(novels.id, Number(search)), like(novels.title, `%${search}%`)) : like(novels.title, `%${search}%`)
-    );
-  }
-  const whereClause = whereConditions.length > 0 ? and(...whereConditions) : undefined;
+  const whereClause = buildCandidateWhereClause(params);
+  const sortColumn = params.sortBy === "title" ? novels.title : novels.id;
+  const orderFn = params.sortOrder === "asc" ? asc : desc;
 
-  // Step 1: Get all matching novels (metadata only, no episode data)
-  let novelQuery: any = db.select({ id: novels.id, title: novels.title, publicationStatus: novels.publicationStatus }).from(novels);
-  if (whereClause) novelQuery = novelQuery.where(whereClause);
-  const allNovelRows = await novelQuery;
+  let listQuery: any = dbInstance.select({ novelId: novels.id }).from(novels);
+  if (whereClause) listQuery = listQuery.where(whereClause);
+  return listQuery.orderBy(orderFn(sortColumn), asc(novels.id)).limit(pageSize).offset(offset);
+}
 
-  if (allNovelRows.length === 0) {
-    return { novels: [], total: 0 };
-  }
+/**
+ * Step A of the page-first Overview: which novel ids belong on this page,
+ * with NO episode-level GROUP BY anywhere. Sort is intentionally limited to
+ * `novels` columns (title/novelId) - see OverviewSortBy's docstring.
+ */
+export async function queryHybridHealthCandidateNovelIds(
+  params: HybridHealthOverviewQueryParams
+): Promise<CandidateNovelId[]> {
+  const db = await getDb();
+  if (!db) return [];
 
-  // Step 2: Get episode aggregates in BATCHES to avoid TiDB memory limit
+  return tagDbError("candidateNovelIds", async () => {
+    const rows = await buildCandidateNovelIdsQuery(db, params);
+    return (rows as any[]).map((r) => ({ novelId: Number(r.novelId) }));
+  });
+}
+
+/**
+ * Step B: total count of novels matching the SAME filter as step A - run
+ * strictly after it (never Promise.all'd with it), and itself a plain COUNT
+ * with no GROUP BY/aggregate-derived table.
+ */
+export async function queryHybridHealthCandidateNovelCount(params: HybridHealthOverviewQueryParams): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+
+  const whereClause = buildCandidateWhereClause(params);
+
+  return tagDbError("candidateNovelCount", async () => {
+    let countQuery: any = db.select({ total: count() }).from(novels);
+    if (whereClause) countQuery = countQuery.where(whereClause);
+    const rows = await countQuery;
+    return Number(rows[0]?.total) || 0;
+  });
+}
+
+/**
+ * Step C: the same 13 count fields as before, but the GROUP BY is scoped to
+ * `WHERE novels.id IN (<=100 ids from step A)` - the aggregate work is now
+ * bounded to one page's worth of novels' episodes, never the whole table.
+ * Returns [] immediately (no query at all) when novelIds is empty. Result
+ * order matches the input `novelIds` order (step A's sort), not whatever
+ * order MySQL/TiDB happens to return IN(...) rows in.
+ */
+export function buildAggregatesForNovelIdsQuery(dbInstance: any, novelIds: number[]) {
   const notPlaintext = sql`(${EPISODE_EXISTS_SQL} AND NOT ${HAS_PLAINTEXT_SQL})`;
   const isPlaintext = sql`(${EPISODE_EXISTS_SQL} AND ${HAS_PLAINTEXT_SQL})`;
 
-  const BATCH_SIZE = 30; // Process 30 novels at a time
-  const statsMap = new Map();
+  return dbInstance
+    .select({
+      novelId: novels.id,
+      title: novels.title,
+      publicationStatus: novels.publicationStatus,
+      totalEpisodes: caseCount(EPISODE_EXISTS_SQL),
+      plaintextCount: caseCount(isPlaintext),
+      missingPlaintextCount: caseCount(notPlaintext),
+      plaintextOnlyCount: caseCount(sql`(${isPlaintext} AND NOT ${HAS_LEGACY_FILE_SQL})`),
+      hybridCount: caseCount(sql`(${isPlaintext} AND ${HAS_LEGACY_FILE_SQL})`),
+      legacyOnlyCount: caseCount(sql`(${notPlaintext} AND ${HAS_LEGACY_FILE_SQL})`),
+      missingBothCount: caseCount(sql`(${notPlaintext} AND NOT ${HAS_LEGACY_FILE_SQL})`),
+      publishedMissingPlaintextCount: caseCount(sql`(${notPlaintext} AND ${episodes.isPublished} = 1)`),
+      purchasedMissingPlaintextCount: caseCount(sql`(${notPlaintext} AND ${IS_PURCHASED_SQL})`),
+      packageMissingPlaintextCount: caseCount(sql`(${notPlaintext} AND ${episodes.saleMode} = 'package')`),
+      chapterMissingPlaintextCount: caseCount(sql`(${notPlaintext} AND ${episodes.saleMode} = 'chapter')`),
+      // "Risky" = missing plaintext AND already exposed to a reader
+      // (published) or a paying customer (purchased) - a missing-plaintext
+      // draft nobody can see yet is not yet operationally risky.
+      riskyEpisodeCount: caseCount(sql`(${notPlaintext} AND (${episodes.isPublished} = 1 OR ${IS_PURCHASED_SQL}))`),
+    })
+    .from(novels)
+    .leftJoin(episodes, eq(episodes.novelId, novels.id))
+    .where(inArray(novels.id, novelIds))
+    .groupBy(novels.id, novels.title, novels.publicationStatus);
+}
 
-  for (let i = 0; i < allNovelRows.length; i += BATCH_SIZE) {
-    const batch = allNovelRows.slice(i, i + BATCH_SIZE);
-    const batchIds = batch.map((r: any) => r.id);
+export async function queryHybridHealthAggregatesForNovelIds(novelIds: number[]): Promise<NovelHealthAggregateRow[]> {
+  if (novelIds.length === 0) return [];
+  const db = await getDb();
+  if (!db) return [];
 
-    const batchStats = await db
-      .select({
-        novelId: episodes.novelId,
-        totalEpisodes: caseCount(EPISODE_EXISTS_SQL),
-        plaintextCount: caseCount(isPlaintext),
-        missingPlaintextCount: caseCount(notPlaintext),
-        legacyOnlyCount: caseCount(sql`(${notPlaintext} AND ${HAS_LEGACY_FILE_SQL})`),
-        missingBothCount: caseCount(sql`(${notPlaintext} AND NOT ${HAS_LEGACY_FILE_SQL})`),
-        publishedMissingPlaintextCount: caseCount(sql`(${notPlaintext} AND ${episodes.isPublished} = 1)`),
-        purchasedMissingPlaintextCount: caseCount(sql`(${notPlaintext} AND ${IS_PURCHASED_SQL})`),
-      })
-      .from(episodes)
-      .where(inArray(episodes.novelId, batchIds))
-      .groupBy(episodes.novelId);
+  return tagDbError("pageAggregates", async () => {
+    const rows = await buildAggregatesForNovelIdsQuery(db, novelIds);
 
-    for (const stat of batchStats) {
-      statsMap.set(stat.novelId, stat);
-    }
-  }
-
-  // Step 3: Merge novel metadata with episode stats
-  let mergedNovels = allNovelRows.map((n: any) => {
-    const stats = statsMap.get(n.id) || {
-      totalEpisodes: 0,
-      plaintextCount: 0,
-      missingPlaintextCount: 0,
-      legacyOnlyCount: 0,
-      missingBothCount: 0,
-      publishedMissingPlaintextCount: 0,
-      purchasedMissingPlaintextCount: 0,
-    };
-    return { novelId: n.id, title: n.title, publicationStatus: n.publicationStatus, ...stats };
-  });
-
-  // Step 4: Apply episode-level predicate filter
-  const combinedPredicate = buildEpisodeLevelPredicate(params);
-  if (combinedPredicate) {
-    // For now, filter in memory (simplified - ideally would be in SQL)
-    // This is acceptable because we've already reduced the dataset significantly
-    mergedNovels = mergedNovels.filter((novel: any) => {
-      const hasMatch =
-        (params.status === "missing_plaintext" && Number(novel.missingPlaintextCount) > 0) ||
-        (params.status === "legacy_only" && Number(novel.legacyOnlyCount) > 0) ||
-        (params.status === "missing_both" && Number(novel.missingBothCount) > 0) ||
-        (params.status === "has_plaintext" && Number(novel.plaintextCount) > 0) ||
-        params.status === "all";
-      return hasMatch;
-    });
-  }
-
-  // Step 5: Apply sorting
-  const sortFn = (n: any): number => {
-    switch (params.sortBy) {
-      case "missingPlaintextCount":
-        return Number(n.missingPlaintextCount) || 0;
-      case "publishedMissingPlaintextCount":
-        return Number(n.publishedMissingPlaintextCount) || 0;
-      case "purchasedMissingPlaintextCount":
-        return Number(n.purchasedMissingPlaintextCount) || 0;
-      case "coverage":
-        return (Number(n.plaintextCount) || 0) / Math.max(1, Number(n.totalEpisodes) || 1);
-      case "title":
-        return n.title.localeCompare("");
-      default:
-        return Number(n.missingPlaintextCount) || 0;
-    }
-  };
-
-  const orderMultiplier = params.sortOrder === "asc" ? 1 : -1;
-  mergedNovels.sort((a: any, b: any) => (sortFn(a) - sortFn(b)) * orderMultiplier || (a.novelId - b.novelId) * -1);
-
-  const total = mergedNovels.length;
-  const rows = mergedNovels.slice(offset, offset + pageSize);
-
-  return {
-    novels: rows.map((r: any) => {
-      const plaintextCount = Number(r.plaintextCount) || 0;
-      const legacyOnlyCount = Number(r.legacyOnlyCount) || 0;
-      const missingPlaintextCount = Number(r.missingPlaintextCount) || 0;
-      const plaintextOnlyCount = plaintextCount - legacyOnlyCount;
-      const hybridCount = legacyOnlyCount > 0 ? plaintextCount - plaintextOnlyCount : 0;
-      const publishedMissing = Number(r.publishedMissingPlaintextCount) || 0;
-      const purchasedMissing = Number(r.purchasedMissingPlaintextCount) || 0;
-      const risky = Math.max(publishedMissing, purchasedMissing);
-      return {
-        novelId: r.novelId,
+    const byId = new Map<number, NovelHealthAggregateRow>();
+    for (const r of rows as any[]) {
+      byId.set(Number(r.novelId), {
+        novelId: Number(r.novelId),
         title: r.title,
         publicationStatus: r.publicationStatus,
         totalEpisodes: Number(r.totalEpisodes) || 0,
-        plaintextCount,
-        missingPlaintextCount,
-        plaintextOnlyCount: Math.max(0, plaintextOnlyCount),
-        hybridCount: Math.max(0, hybridCount),
-        legacyOnlyCount,
+        plaintextCount: Number(r.plaintextCount) || 0,
+        missingPlaintextCount: Number(r.missingPlaintextCount) || 0,
+        plaintextOnlyCount: Number(r.plaintextOnlyCount) || 0,
+        hybridCount: Number(r.hybridCount) || 0,
+        legacyOnlyCount: Number(r.legacyOnlyCount) || 0,
         missingBothCount: Number(r.missingBothCount) || 0,
-        publishedMissingPlaintextCount: publishedMissing,
-        purchasedMissingPlaintextCount: purchasedMissing,
-        packageMissingPlaintextCount: Math.round(missingPlaintextCount * 0.5),
-        chapterMissingPlaintextCount: Math.round(missingPlaintextCount * 0.5),
-        riskyEpisodeCount: risky,
-      };
-    }),
-    total,
-  };
+        publishedMissingPlaintextCount: Number(r.publishedMissingPlaintextCount) || 0,
+        purchasedMissingPlaintextCount: Number(r.purchasedMissingPlaintextCount) || 0,
+        packageMissingPlaintextCount: Number(r.packageMissingPlaintextCount) || 0,
+        chapterMissingPlaintextCount: Number(r.chapterMissingPlaintextCount) || 0,
+        riskyEpisodeCount: Number(r.riskyEpisodeCount) || 0,
+      });
+    }
+
+    return novelIds.map((id) => byId.get(id)).filter((row): row is NovelHealthAggregateRow => Boolean(row));
+  });
+}
+
+// ============ SUMMARY (bounded sequential batch scan) ============
+
+export const HYBRID_HEALTH_SUMMARY_DEFAULT_BATCH_SIZE = 250;
+export const HYBRID_HEALTH_SUMMARY_MAX_BATCH_SIZE = 500;
+
+export interface SummaryBatchRow {
+  episodeId: number;
+  novelId: number;
+  hasPlaintext: boolean;
+  hasLegacyFile: boolean;
+  isPublished: boolean;
+  saleMode: "chapter" | "package";
+  isPurchased: boolean;
+}
+
+/**
+ * One bounded page of episodes, keyset-paginated by `episodes.id` (never
+ * OFFSET, which gets slower - not cheaper - the further into a large table
+ * it scans). No JOIN to `novels` - the summary only ever needs episode-level
+ * columns, so joining novels in here would be pure overhead. Never selects
+ * `content`/`fileUrl` raw. The caller (hybridHealthService's bounded batch
+ * loop) is responsible for calling this repeatedly and sequentially.
+ */
+export function buildSummaryBatchQuery(dbInstance: any, cursor: number, batchSize: number) {
+  const clampedSize = Math.min(HYBRID_HEALTH_SUMMARY_MAX_BATCH_SIZE, Math.max(1, batchSize));
+  return dbInstance
+    .select({
+      episodeId: episodes.id,
+      novelId: episodes.novelId,
+      hasPlaintext: sql<number>`(CASE WHEN ${HAS_PLAINTEXT_SQL} THEN 1 ELSE 0 END)`,
+      hasLegacyFile: sql<number>`(CASE WHEN ${HAS_LEGACY_FILE_SQL} THEN 1 ELSE 0 END)`,
+      isPublished: episodes.isPublished,
+      saleMode: episodes.saleMode,
+      isPurchased: sql<number>`(CASE WHEN ${IS_PURCHASED_SQL} THEN 1 ELSE 0 END)`,
+    })
+    .from(episodes)
+    .where(gt(episodes.id, cursor))
+    .orderBy(asc(episodes.id))
+    .limit(clampedSize);
+}
+
+export async function queryHybridHealthSummaryBatch(
+  cursor: number,
+  batchSize: number = HYBRID_HEALTH_SUMMARY_DEFAULT_BATCH_SIZE
+): Promise<SummaryBatchRow[]> {
+  const db = await getDb();
+  if (!db) return [];
+
+  return tagDbError("summaryBatch", async () => {
+    const rows = await buildSummaryBatchQuery(db, cursor, batchSize);
+
+    return (rows as any[]).map((r) => ({
+      episodeId: Number(r.episodeId),
+      novelId: Number(r.novelId),
+      hasPlaintext: Boolean(Number(r.hasPlaintext)),
+      hasLegacyFile: Boolean(Number(r.hasLegacyFile)),
+      isPublished: Boolean(r.isPublished),
+      saleMode: r.saleMode,
+      isPurchased: Boolean(Number(r.isPurchased)),
+    }));
+  });
+}
+
+/** Total novel count for the summary's `totalNovels` field - deliberately never JOINed to episodes. */
+export async function queryHybridHealthTotalNovelCount(): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+
+  return tagDbError("totalNovelCount", async () => {
+    const rows = await db.select({ total: count() }).from(novels);
+    return Number(rows[0]?.total) || 0;
+  });
 }
 
 export interface EpisodeHealthRow {
@@ -368,31 +411,52 @@ export interface EpisodeHealthRow {
   isPurchased: boolean;
 }
 
+/**
+ * Every episode row for one novel, lightweight columns only - never
+ * `content`/`fileUrl` raw. Used by the Detail view, which needs the whole
+ * novel's episode set (not just the current filtered/paginated page) to
+ * correctly detect duplicate normalized ranges across the novel. Always
+ * scoped by novelId first (WHERE, not a post-filter) - no full-system scan.
+ */
 export async function queryEpisodeHealthRowsForNovel(novelId: number): Promise<EpisodeHealthRow[]> {
   const db = await getDb();
   if (!db) return [];
 
-  const rows = await db
-    .select({
-      episodeId: episodes.id,
-      novelId: episodes.novelId,
-      episodeNumber: episodes.episodeNumber,
-      episodeTitle: episodes.title,
-      saleMode: episodes.saleMode,
-      isPublished: episodes.isPublished,
-      price: episodes.price,
-      sortOrder: episodes.sortOrder,
-      contentFormat: episodes.contentFormat,
-      hasPlaintext: sql<boolean>`(TRIM(COALESCE(${episodes.content}, '')) <> '')`,
-      hasLegacyFile: sql<boolean>`(TRIM(COALESCE(${episodes.fileUrl}, '')) <> '')`,
-      trimmedContentLength: sql<number>`CHAR_LENGTH(TRIM(COALESCE(${episodes.content}, '')))`,
-      isPurchased: sql<boolean>`(EXISTS (SELECT 1 FROM ${purchases} WHERE ${purchases.episodeId} = ${episodes.id}) OR EXISTS (SELECT 1 FROM ${episodePurchases} WHERE ${episodePurchases.episodeId} = ${episodes.id}))`,
-    })
-    .from(episodes)
-    .where(eq(episodes.novelId, novelId));
+  return tagDbError("episodeRowsForNovel", async () => {
+    const rows = await db
+      .select({
+        episodeId: episodes.id,
+        novelId: episodes.novelId,
+        episodeNumber: episodes.episodeNumber,
+        episodeTitle: episodes.title,
+        saleMode: episodes.saleMode,
+        isPublished: episodes.isPublished,
+        price: episodes.price,
+        sortOrder: episodes.sortOrder,
+        contentFormat: episodes.contentFormat,
+        hasPlaintext: sql<number>`(CASE WHEN ${HAS_PLAINTEXT_SQL} THEN 1 ELSE 0 END)`,
+        hasLegacyFile: sql<number>`(CASE WHEN ${HAS_LEGACY_FILE_SQL} THEN 1 ELSE 0 END)`,
+        trimmedContentLength: sql<number>`CHAR_LENGTH(TRIM(COALESCE(${episodes.content}, '')))`,
+        isPurchased: sql<number>`(CASE WHEN ${IS_PURCHASED_SQL} THEN 1 ELSE 0 END)`,
+      })
+      .from(episodes)
+      .where(eq(episodes.novelId, novelId))
+      .orderBy(asc(episodes.sortOrder), asc(episodes.episodeNumber));
 
-  return rows as EpisodeHealthRow[];
+    return (rows as any[]).map((r) => ({
+      episodeId: Number(r.episodeId),
+      novelId: Number(r.novelId),
+      episodeNumber: String(r.episodeNumber ?? ""),
+      episodeTitle: r.episodeTitle,
+      saleMode: r.saleMode,
+      isPublished: Boolean(r.isPublished),
+      price: r.price,
+      sortOrder: r.sortOrder ?? null,
+      contentFormat: r.contentFormat ?? null,
+      hasPlaintext: Boolean(Number(r.hasPlaintext)),
+      hasLegacyFile: Boolean(Number(r.hasLegacyFile)),
+      trimmedContentLength: Number(r.trimmedContentLength) || 0,
+      isPurchased: Boolean(Number(r.isPurchased)),
+    }));
+  });
 }
-
-export { computeContentFlags };
-import { computeContentFlags } from "./readerService";

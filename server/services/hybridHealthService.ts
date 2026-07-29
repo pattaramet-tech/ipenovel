@@ -1,19 +1,24 @@
 import * as db from "../db";
 import { computeContentFlags, resolveSaleMode, normalizeEpisodeRange, type EpisodeSaleMode } from "./readerService";
 import {
-  queryHybridHealthGlobalSummary,
-  queryHybridHealthNovelOverview,
+  queryHybridHealthCandidateNovelIds,
+  queryHybridHealthCandidateNovelCount,
+  queryHybridHealthAggregatesForNovelIds,
+  queryHybridHealthSummaryBatch,
+  queryHybridHealthTotalNovelCount,
   queryEpisodeHealthRowsForNovel,
+  HYBRID_HEALTH_SUMMARY_DEFAULT_BATCH_SIZE,
   type EpisodeHealthRow,
   type HealthStatusFilter,
   type PublicationStatusFilter,
   type SaleModeFilter,
   type OverviewSortBy,
   type SortOrder,
+  type HybridHealthOverviewQueryParams,
 } from "./hybridHealthQueries";
 
 /**
- * Phase 2 - Hybrid Content Health Dashboard (read-only).
+ * Hybrid Content Health Dashboard (read-only).
  *
  * Surfaces exactly which novels/episodes are missing plaintext content for
  * the web reader, split from which ones only have a legacy file. See
@@ -35,6 +40,12 @@ import {
  * "two different implementations disagree" bug this dashboard exists to
  * catch. Range/duplicate detection only needs episodeNumber/saleMode
  * (small varchar columns), never content/fileUrl, so this stays cheap.
+ *
+ * Overview and Summary are two independent tRPC procedures/queries with
+ * separate failure boundaries by construction - Overview never calls
+ * getHybridHealthSummary() (or vice versa), so a Summary failure can never
+ * take Overview down with it, and each is retried/cached independently by
+ * the client. See getHybridHealthOverview()/getHybridHealthSummary() below.
  */
 
 export type EpisodeContentStatus = "PLAINTEXT_ONLY" | "HYBRID" | "LEGACY_ONLY" | "MISSING_BOTH";
@@ -273,18 +284,6 @@ export interface HybridHealthOverviewInput {
   sortOrder?: SortOrder;
 }
 
-export interface HybridHealthOverviewSummary {
-  totalNovels: number;
-  novelsMissingPlaintext: number;
-  totalEpisodes: number;
-  plaintextCount: number;
-  missingPlaintextCount: number;
-  legacyOnlyCount: number;
-  missingBothCount: number;
-  publishedMissingPlaintextCount: number;
-  purchasedMissingPlaintextCount: number;
-}
-
 export interface NovelHealthOverviewRow {
   novelId: number;
   title: string;
@@ -305,7 +304,6 @@ export interface NovelHealthOverviewRow {
 }
 
 export interface HybridHealthOverviewResponse {
-  summary: HybridHealthOverviewSummary;
   novels: NovelHealthOverviewRow[];
   total: number;
   page: number;
@@ -313,29 +311,39 @@ export interface HybridHealthOverviewResponse {
   totalPages: number;
 }
 
-/** Overview - read-only, DB-aggregated, paginated. No mutation anywhere in this module. */
+/**
+ * Overview - read-only, page-first (never full-table) aggregation,
+ * paginated. No mutation anywhere in this module.
+ *
+ * Deliberately sequential (A: candidate ids -> B: candidate count -> C:
+ * page aggregates), never Promise.all - see hybridHealthQueries.ts's module
+ * docstring for the TiDB errno=8176 incident this replaced. Also
+ * deliberately does NOT call getHybridHealthSummary(): the summary card
+ * scan is a separate, independently-loaded/cached/retried request so a slow
+ * or failed summary can never block or fail the novel table.
+ */
 export async function getHybridHealthOverview(input: HybridHealthOverviewInput = {}): Promise<HybridHealthOverviewResponse> {
   const page = Math.max(1, input.page ?? 1);
   const pageSize = Math.min(100, Math.max(1, input.pageSize ?? 50));
+  const params: HybridHealthOverviewQueryParams = {
+    page,
+    pageSize,
+    search: input.search,
+    status: input.status ?? "missing_plaintext",
+    publicationStatus: input.publicationStatus ?? "all",
+    saleMode: input.saleMode ?? "all",
+    purchasedOnly: input.purchasedOnly ?? false,
+    sortBy: input.sortBy ?? "novelId",
+    sortOrder: input.sortOrder ?? "desc",
+  };
 
-  const [{ novels, total }, summary] = await Promise.all([
-    queryHybridHealthNovelOverview({
-      page,
-      pageSize,
-      search: input.search,
-      status: input.status ?? "missing_plaintext",
-      publicationStatus: input.publicationStatus ?? "all",
-      saleMode: input.saleMode ?? "all",
-      purchasedOnly: input.purchasedOnly ?? false,
-      sortBy: input.sortBy ?? "missingPlaintextCount",
-      sortOrder: input.sortOrder ?? "desc",
-    }),
-    queryHybridHealthGlobalSummary(),
-  ]);
+  const candidateIds = await queryHybridHealthCandidateNovelIds(params);
+  const total = await queryHybridHealthCandidateNovelCount(params);
+  const aggregates =
+    candidateIds.length > 0 ? await queryHybridHealthAggregatesForNovelIds(candidateIds.map((c) => c.novelId)) : [];
 
   return {
-    summary,
-    novels: novels.map((n) => ({
+    novels: aggregates.map((n) => ({
       ...n,
       plaintextCoveragePercent: coveragePercent(n.plaintextCount, n.totalEpisodes),
     })),
@@ -344,6 +352,139 @@ export async function getHybridHealthOverview(input: HybridHealthOverviewInput =
     pageSize,
     totalPages: Math.max(1, Math.ceil(total / pageSize)),
   };
+}
+
+// ============ SUMMARY (bounded, cached, single-flight) ============
+
+export interface HybridHealthSummaryResponse {
+  totalNovels: number;
+  novelsMissingPlaintext: number;
+  totalEpisodes: number;
+  plaintextCount: number;
+  missingPlaintextCount: number;
+  legacyOnlyCount: number;
+  missingBothCount: number;
+  publishedMissingPlaintextCount: number;
+  purchasedMissingPlaintextCount: number;
+  /** ISO timestamp of when this result was actually computed (not when this particular response was served). */
+  generatedAt: string;
+  /** True when served from the 5-minute in-process cache rather than a fresh scan. */
+  cached: boolean;
+  /** False when the bounded batch scan hit a safety limit before reaching the end of `episodes` - counts are a lower bound, not exact. */
+  isComplete: boolean;
+}
+
+/** ~100,000 episodes at the default batch size - generous for this catalog's realistic scale, but still bounded. */
+const SUMMARY_MAX_BATCHES = 400;
+/** Independent of batch count: also bail out if a scan is simply taking too long, well under typical gateway/tRPC request timeouts. */
+const SUMMARY_MAX_DURATION_MS = 10_000;
+const SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000;
+
+async function computeHybridHealthSummaryUncached(): Promise<HybridHealthSummaryResponse> {
+  const startedAt = Date.now();
+
+  // Sequential, deliberately not Promise.all'd with the batch loop below.
+  const totalNovels = await queryHybridHealthTotalNovelCount();
+
+  let cursor = 0;
+  let totalEpisodes = 0;
+  let plaintextCount = 0;
+  let missingPlaintextCount = 0;
+  let legacyOnlyCount = 0;
+  let missingBothCount = 0;
+  let publishedMissingPlaintextCount = 0;
+  let purchasedMissingPlaintextCount = 0;
+  const novelsMissingPlaintext = new Set<number>();
+
+  let batches = 0;
+  let isComplete = true;
+
+  // Sequential batch loop by design - each batch awaits the previous one's
+  // result before starting the next, so at most one Hybrid Health summary
+  // query is ever in flight against the database at a time.
+  while (true) {
+    const rows = await queryHybridHealthSummaryBatch(cursor, HYBRID_HEALTH_SUMMARY_DEFAULT_BATCH_SIZE);
+    if (rows.length === 0) break;
+    batches += 1;
+
+    for (const row of rows) {
+      totalEpisodes += 1;
+      if (row.hasPlaintext) {
+        plaintextCount += 1;
+      } else {
+        missingPlaintextCount += 1;
+        if (row.hasLegacyFile) legacyOnlyCount += 1;
+        else missingBothCount += 1;
+        if (row.isPublished) publishedMissingPlaintextCount += 1;
+        if (row.isPurchased) purchasedMissingPlaintextCount += 1;
+        novelsMissingPlaintext.add(row.novelId);
+      }
+    }
+
+    cursor = rows[rows.length - 1].episodeId;
+
+    if (rows.length < HYBRID_HEALTH_SUMMARY_DEFAULT_BATCH_SIZE) break; // reached the end naturally
+
+    if (batches >= SUMMARY_MAX_BATCHES || Date.now() - startedAt > SUMMARY_MAX_DURATION_MS) {
+      isComplete = false;
+      break;
+    }
+  }
+
+  return {
+    totalNovels,
+    novelsMissingPlaintext: novelsMissingPlaintext.size,
+    totalEpisodes,
+    plaintextCount,
+    missingPlaintextCount,
+    legacyOnlyCount,
+    missingBothCount,
+    publishedMissingPlaintextCount,
+    purchasedMissingPlaintextCount,
+    generatedAt: new Date().toISOString(),
+    cached: false,
+    isComplete,
+  };
+}
+
+let summaryCache: { result: HybridHealthSummaryResponse; expiresAt: number } | null = null;
+let summaryInFlight: Promise<HybridHealthSummaryResponse> | null = null;
+
+/**
+ * Global KPI totals for the Overview page's summary cards - loaded as its
+ * own request, independent of (and never blocking) the novel table above.
+ *
+ * Cached in process memory for 5 minutes, and single-flight: if a scan is
+ * already running when another request comes in, that request awaits the
+ * SAME in-flight promise rather than starting a second full scan - the
+ * synchronous check-then-set below (no `await` between checking
+ * `summaryInFlight` and assigning it) makes this race-safe without a lock.
+ */
+export async function getHybridHealthSummary(): Promise<HybridHealthSummaryResponse> {
+  const now = Date.now();
+  if (summaryCache && summaryCache.expiresAt > now) {
+    return { ...summaryCache.result, cached: true };
+  }
+  if (summaryInFlight) {
+    return summaryInFlight;
+  }
+
+  summaryInFlight = computeHybridHealthSummaryUncached()
+    .then((result) => {
+      summaryCache = { result, expiresAt: Date.now() + SUMMARY_CACHE_TTL_MS };
+      return result;
+    })
+    .finally(() => {
+      summaryInFlight = null;
+    });
+
+  return summaryInFlight;
+}
+
+/** Test-only: clears cached/in-flight summary state so each test starts from a clean slate. Mirrors server/db.ts's __setDbForTests. */
+export function __resetHybridHealthSummaryStateForTests(): void {
+  summaryCache = null;
+  summaryInFlight = null;
 }
 
 // ============ DETAIL ============
@@ -389,11 +530,16 @@ export class NovelNotFoundError extends Error {
   }
 }
 
+/** Detail page size cap is tighter than Overview's (50, not 100) - see review requirement. */
+const DETAIL_MAX_PAGE_SIZE = 50;
+
 /**
  * Episode-level detail for one novel - read-only, DB-aggregated at the
  * query layer for the flags, filtered/paginated here in JS since a single
  * novel's episode set (lightweight columns only) is always small - no
- * content/fileUrl ever loaded either way.
+ * content/fileUrl ever loaded either way. queryEpisodeHealthRowsForNovel is
+ * scoped by novelId in its WHERE clause before any flag is evaluated -
+ * never a full-system scan.
  */
 export async function getHybridHealthDetail(input: HybridHealthDetailInput): Promise<HybridHealthDetailResponse> {
   const novel: any = await db.getNovelById(input.novelId, false);
@@ -449,7 +595,7 @@ export async function getHybridHealthDetail(input: HybridHealthDetailInput): Pro
   }
 
   const page = Math.max(1, input.page ?? 1);
-  const pageSize = Math.min(100, Math.max(1, input.pageSize ?? 50));
+  const pageSize = Math.min(DETAIL_MAX_PAGE_SIZE, Math.max(1, input.pageSize ?? DETAIL_MAX_PAGE_SIZE));
   const total = filtered.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const offset = (page - 1) * pageSize;

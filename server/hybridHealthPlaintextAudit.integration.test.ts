@@ -1,10 +1,11 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { beforeEach, describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 import { getTestDb } from "./test-helpers/testDb";
 import { createTestUser, createTestNovel, createTestOrder, uniqueTestTag, deleteFixtures } from "./test-helpers/fixtures";
 import { episodes, purchases, episodePurchases } from "../drizzle/schema";
+import { __resetHybridHealthSummaryStateForTests } from "./services/hybridHealthService";
 
 /**
  * feat/hybrid-content-health-plaintext-audit - Phase 2 coverage for the
@@ -19,6 +20,16 @@ import { episodes, purchases, episodePurchases } from "../drizzle/schema";
  * Not run in this session (no TEST_DATABASE_URL configured in this
  * sandbox) - written for `pnpm test:integration` on a Coolify preview or any
  * environment with a real disposable ipenovel_test database.
+ *
+ * Hybrid Health Summary cache note: getHybridHealthSummary() caches its
+ * result in process memory for 5 minutes - deliberate, intended production
+ * behavior (see hybridHealthService.ts), NOT something this test file
+ * changes or works around by altering. Because these integration tests run
+ * in the same process/module registry across the whole file,
+ * __resetHybridHealthSummaryStateForTests() (test-only, exported purely for
+ * this purpose) is used to give each test a clean cache/single-flight
+ * state - this is test isolation, not a change to how the cache behaves for
+ * real requests.
  */
 
 function adminContext(userId: number): TrpcContext {
@@ -94,7 +105,20 @@ let cleanup: {
   orderIds: number[];
 } = { userIds: [], novelIds: [], episodeIds: [], orderIds: [] };
 
+// Each test starts with no Summary cache and no in-flight scan carried over
+// from whatever the previous test did - without this, a test that happens
+// to call summary() first "warms" the 5-minute cache for every test that
+// runs after it within this file, which is exactly what caused "summary
+// counts increase by exactly the delta..." below to observe a stale,
+// pre-insert result. This resets test-only module state; it never touches
+// the production cache TTL or single-flight behavior itself.
+beforeEach(() => {
+  __resetHybridHealthSummaryStateForTests();
+});
+
 afterEach(async () => {
+  __resetHybridHealthSummaryStateForTests();
+
   const testDb = getTestDb();
   // purchases/episodePurchases have no dedicated fixture cleanup helper -
   // delete by episodeId before deleteFixtures() removes the episodes/novels
@@ -498,5 +522,199 @@ describe("hybridHealth overview/detail - integration (TEST_DATABASE_URL only)", 
       saleMode: "package",
     });
     expect(overview.novels.find((n) => n.novelId === novel.id)).toBeDefined();
+  });
+
+  // ---- Hotfix (TiDB errno=8176 memory-limit incident): page-first
+  // aggregation. These prove the page-scoped aggregate query
+  // (queryHybridHealthAggregatesForNovelIds, WHERE novels.id IN (...)) never
+  // mixes one novel's episode counts into another's, and that the bounded
+  // summary batch scan is correct and cached.
+
+  it("page aggregates are scoped to exactly the current page's novel ids - a novel's counts never leak into another novel's row", async () => {
+    const admin = await createTestUser({ role: "admin" });
+    const tag = uniqueTestTag("hh-page-scope");
+    const novelA = await createTestNovel({ title: `${tag} Alpha` });
+    const novelB = await createTestNovel({ title: `${tag} Beta` });
+    cleanup.userIds.push(admin.id);
+    cleanup.novelIds.push(novelA.id, novelB.id);
+
+    // Novel A: 1 missing-plaintext episode. Novel B: 3 missing-plaintext episodes.
+    const epA1 = await insertEpisode(novelA.id, { content: null });
+    const epB1 = await insertEpisode(novelB.id, { content: null });
+    const epB2 = await insertEpisode(novelB.id, { content: null });
+    const epB3 = await insertEpisode(novelB.id, { content: null });
+    cleanup.episodeIds.push(epA1, epB1, epB2, epB3);
+
+    const caller = appRouter.createCaller(adminContext(admin.id));
+    // pageSize=1 forces novelA and novelB onto separate pages when sorted by title asc.
+    const page1 = await caller.admin.hybridHealth.overview({
+      search: tag,
+      status: "all",
+      pageSize: 1,
+      page: 1,
+      sortBy: "title",
+      sortOrder: "asc",
+    });
+    expect(page1.novels).toHaveLength(1);
+    expect(page1.novels[0].novelId).toBe(novelA.id);
+    expect(page1.novels[0].totalEpisodes).toBe(1);
+    expect(page1.novels[0].missingPlaintextCount).toBe(1);
+
+    const page2 = await caller.admin.hybridHealth.overview({
+      search: tag,
+      status: "all",
+      pageSize: 1,
+      page: 2,
+      sortBy: "title",
+      sortOrder: "asc",
+    });
+    expect(page2.novels).toHaveLength(1);
+    expect(page2.novels[0].novelId).toBe(novelB.id);
+    expect(page2.novels[0].totalEpisodes).toBe(3);
+    expect(page2.novels[0].missingPlaintextCount).toBe(3);
+  });
+
+  it("overview response never includes content or fileUrl keys", async () => {
+    const admin = await createTestUser({ role: "admin" });
+    const novel = await createTestNovel();
+    cleanup.userIds.push(admin.id);
+    cleanup.novelIds.push(novel.id);
+
+    const ep = await insertEpisode(novel.id, { content: null, fileUrl: "https://private-r2/overview-should-not-leak.pdf" });
+    cleanup.episodeIds.push(ep);
+
+    const caller = appRouter.createCaller(adminContext(admin.id));
+    const overview = await caller.admin.hybridHealth.overview({ search: novel.title, status: "all" });
+    for (const row of overview.novels) {
+      expect(row).not.toHaveProperty("content");
+      expect(row).not.toHaveProperty("fileUrl");
+    }
+    expect(JSON.stringify(overview)).not.toContain("private-r2");
+  });
+
+  it("summary counts increase by exactly the delta of newly inserted fixture episodes (correct regardless of batch boundaries)", async () => {
+    const admin = await createTestUser({ role: "admin" });
+    const novel = await createTestNovel();
+    cleanup.userIds.push(admin.id);
+    cleanup.novelIds.push(novel.id);
+
+    const caller = appRouter.createCaller(adminContext(admin.id));
+    const before = await caller.admin.hybridHealth.summary();
+
+    const plaintextEp = await insertEpisode(novel.id, { content: "text" });
+    const legacyOnlyEp = await insertEpisode(novel.id, { content: null, fileUrl: "https://legacy/x.pdf" });
+    const missingBothEp = await insertEpisode(novel.id, { content: null, isPublished: true });
+    cleanup.episodeIds.push(plaintextEp, legacyOnlyEp, missingBothEp);
+
+    // The first summary() call above is intentionally cached in production
+    // (see hybridHealthService.ts's 5-minute cache) - without resetting
+    // here, this second call would just replay that cached `before` result
+    // and see a delta of 0 regardless of what was inserted. Reset test-only
+    // state so this call performs a fresh scan and actually observes the
+    // database delta. The batch scan itself is keyset-paginated over the
+    // WHOLE episodes table, so these three new rows are correctly picked up
+    // regardless of exactly which batch boundary they land on - that's the
+    // property this test verifies (delta correctness), since the shared
+    // ipenovel_test database's total row count isn't controlled by this test.
+    __resetHybridHealthSummaryStateForTests();
+    const after = await caller.admin.hybridHealth.summary();
+
+    expect(after.totalEpisodes - before.totalEpisodes).toBe(3);
+    expect(after.plaintextCount - before.plaintextCount).toBe(1);
+    expect(after.missingPlaintextCount - before.missingPlaintextCount).toBe(2);
+    expect(after.legacyOnlyCount - before.legacyOnlyCount).toBe(1);
+    expect(after.missingBothCount - before.missingBothCount).toBe(1);
+    expect(after.publishedMissingPlaintextCount - before.publishedMissingPlaintextCount).toBe(1);
+  });
+
+  it("summary is cached - a second call shortly after the first does not re-scan (same generatedAt, cached:true)", async () => {
+    const admin = await createTestUser({ role: "admin" });
+    const caller = appRouter.createCaller(adminContext(admin.id));
+
+    // Deliberately NO __resetHybridHealthSummaryStateForTests() between
+    // these two calls - beforeEach/afterEach reset the state around this
+    // test as a whole, but resetting mid-test here would defeat the exact
+    // thing being proven: that the second call is served from the
+    // production 5-minute cache (cached:true, identical generatedAt)
+    // instead of performing a second scan.
+    const first = await caller.admin.hybridHealth.summary();
+    const second = await caller.admin.hybridHealth.summary();
+
+    expect(second.cached).toBe(true);
+    expect(second.generatedAt).toBe(first.generatedAt);
+  });
+
+  it("summary response never includes content or fileUrl keys", async () => {
+    const admin = await createTestUser({ role: "admin" });
+    const caller = appRouter.createCaller(adminContext(admin.id));
+    const summary = await caller.admin.hybridHealth.summary();
+    expect(summary).not.toHaveProperty("content");
+    expect(summary).not.toHaveProperty("fileUrl");
+  });
+
+  it("overview and summary are independently callable and both succeed", async () => {
+    const admin = await createTestUser({ role: "admin" });
+    const caller = appRouter.createCaller(adminContext(admin.id));
+
+    const [overview, summary] = await Promise.all([caller.admin.hybridHealth.overview({}), caller.admin.hybridHealth.summary()]);
+
+    expect(overview.novels).toBeInstanceOf(Array);
+    expect(typeof summary.totalNovels).toBe("number");
+  });
+
+  it("detail still works end-to-end after the hotfix (scoped by novelId, unaffected by the Overview redesign)", async () => {
+    const admin = await createTestUser({ role: "admin" });
+    const novel = await createTestNovel();
+    cleanup.userIds.push(admin.id);
+    cleanup.novelIds.push(novel.id);
+
+    const missingEp = await insertEpisode(novel.id, { content: null, isPublished: true });
+    cleanup.episodeIds.push(missingEp);
+
+    const caller = appRouter.createCaller(adminContext(admin.id));
+    const detail = await caller.admin.hybridHealth.detail({ novelId: novel.id });
+    expect(detail.episodes.map((e) => e.episodeId)).toEqual([missingEp]);
+    expect(detail.novel.novelId).toBe(novel.id);
+  });
+
+  // ---- Regression guard: a direct Manus push to main (independent of this
+  // PR) reintroduced the pre-hotfix architecture with an in-memory status
+  // filter that silently ignored saleMode/purchasedOnly entirely. These
+  // prove both filters are still enforced after merging that push away.
+
+  it("status=all + saleMode=package does not show a chapter-only novel", async () => {
+    const admin = await createTestUser({ role: "admin" });
+    const novel = await createTestNovel();
+    cleanup.userIds.push(admin.id);
+    cleanup.novelIds.push(novel.id);
+
+    const chapterEp = await insertEpisode(novel.id, { content: "text", saleMode: "chapter" });
+    cleanup.episodeIds.push(chapterEp);
+
+    const caller = appRouter.createCaller(adminContext(admin.id));
+    const overview = await caller.admin.hybridHealth.overview({
+      search: novel.title,
+      status: "all",
+      saleMode: "package",
+    });
+    expect(overview.novels.find((n) => n.novelId === novel.id)).toBeUndefined();
+  });
+
+  it("status=all + purchasedOnly=true does not show a novel with no purchased episode", async () => {
+    const admin = await createTestUser({ role: "admin" });
+    const novel = await createTestNovel();
+    cleanup.userIds.push(admin.id);
+    cleanup.novelIds.push(novel.id);
+
+    const unpurchasedEp = await insertEpisode(novel.id, { content: "text" });
+    cleanup.episodeIds.push(unpurchasedEp);
+
+    const caller = appRouter.createCaller(adminContext(admin.id));
+    const overview = await caller.admin.hybridHealth.overview({
+      search: novel.title,
+      status: "all",
+      purchasedOnly: true,
+    });
+    expect(overview.novels.find((n) => n.novelId === novel.id)).toBeUndefined();
   });
 });
