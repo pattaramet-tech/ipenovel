@@ -102,6 +102,11 @@ export const adminNavSections: NavSection[] = [
         icon: FileSpreadsheet,
       },
       {
+        label: "Hybrid Content Health",
+        href: "/admin/hybrid-health",
+        icon: Activity,
+      },
+      {
         label: "Categories",
         href: "/admin/categories",
         icon: Tag,
@@ -140,11 +145,6 @@ export const adminNavSections: NavSection[] = [
         label: "Entitlements",
         href: "/admin/entitlements",
         icon: Gift,
-      },
-      {
-        label: "Hybrid Content Health",
-        href: "/admin/hybrid-health",
-        icon: Activity,
       },
       {
         label: "Entitlement Lookup",
