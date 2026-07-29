@@ -640,4 +640,45 @@ describe("hybridHealth overview/detail - integration (TEST_DATABASE_URL only)", 
     expect(detail.episodes.map((e) => e.episodeId)).toEqual([missingEp]);
     expect(detail.novel.novelId).toBe(novel.id);
   });
+
+  // ---- Regression guard: a direct Manus push to main (independent of this
+  // PR) reintroduced the pre-hotfix architecture with an in-memory status
+  // filter that silently ignored saleMode/purchasedOnly entirely. These
+  // prove both filters are still enforced after merging that push away.
+
+  it("status=all + saleMode=package does not show a chapter-only novel", async () => {
+    const admin = await createTestUser({ role: "admin" });
+    const novel = await createTestNovel();
+    cleanup.userIds.push(admin.id);
+    cleanup.novelIds.push(novel.id);
+
+    const chapterEp = await insertEpisode(novel.id, { content: "text", saleMode: "chapter" });
+    cleanup.episodeIds.push(chapterEp);
+
+    const caller = appRouter.createCaller(adminContext(admin.id));
+    const overview = await caller.admin.hybridHealth.overview({
+      search: novel.title,
+      status: "all",
+      saleMode: "package",
+    });
+    expect(overview.novels.find((n) => n.novelId === novel.id)).toBeUndefined();
+  });
+
+  it("status=all + purchasedOnly=true does not show a novel with no purchased episode", async () => {
+    const admin = await createTestUser({ role: "admin" });
+    const novel = await createTestNovel();
+    cleanup.userIds.push(admin.id);
+    cleanup.novelIds.push(novel.id);
+
+    const unpurchasedEp = await insertEpisode(novel.id, { content: "text" });
+    cleanup.episodeIds.push(unpurchasedEp);
+
+    const caller = appRouter.createCaller(adminContext(admin.id));
+    const overview = await caller.admin.hybridHealth.overview({
+      search: novel.title,
+      status: "all",
+      purchasedOnly: true,
+    });
+    expect(overview.novels.find((n) => n.novelId === novel.id)).toBeUndefined();
+  });
 });

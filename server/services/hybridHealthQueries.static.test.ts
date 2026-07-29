@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { drizzle } from "drizzle-orm/mysql2";
 import { sql } from "drizzle-orm";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import { episodes } from "../../drizzle/schema";
 import {
   buildEpisodeLevelPredicate,
@@ -188,5 +191,57 @@ describe("buildSummaryBatchQuery", () => {
     const { sql: text } = buildSummaryBatchQuery(db, 0, 250).toSQL();
     expect(text).not.toMatch(/select `content`|`episodes`\.`content`(?!.*trim)/i);
     expect(text).not.toMatch(/select .*`fileUrl`[^)]*from/i);
+  });
+});
+
+/**
+ * Regression guard against the exact anti-pattern a direct Manus push to
+ * `main` reintroduced (independent of this PR, based on the pre-hotfix
+ * PR #21 code): a `queryHybridHealthNovelOverview()` that loaded EVERY
+ * matching novel's row (`allNovelRows`) regardless of page, ran episode
+ * aggregation in `BATCH_SIZE = 30` chunks across the WHOLE filtered
+ * catalog (not just the current page), filtered by `status` only - in
+ * JavaScript, after the fact, silently ignoring `saleMode`/`purchasedOnly` -
+ * and only paginated at the very end. Merging that branch into this one
+ * discarded it entirely in favor of this file's page-first design, but a
+ * future edit could plausibly reintroduce a similar shape without anyone
+ * noticing purely from behavioral tests, since JS-side batching still
+ * "works" - it's just unbounded. These assertions make that regression
+ * fail immediately and loudly.
+ */
+describe("regression guard: no full-catalog aggregation, no in-memory filtering", () => {
+  const querySource = readFileSync(
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "hybridHealthQueries.ts"),
+    "utf8"
+  );
+
+  it("has no allNovelRows-style full-catalog load", () => {
+    expect(querySource).not.toMatch(/allNovelRows/);
+  });
+
+  it("has no BATCH_SIZE constant looping over the whole filtered catalog", () => {
+    expect(querySource).not.toMatch(/BATCH_SIZE\s*=\s*30/);
+    expect(querySource).not.toMatch(/for\s*\(.*i\s*\+=\s*BATCH_SIZE/);
+  });
+
+  it("does not filter by status/saleMode/purchasedOnly in memory (Array.prototype.filter over merged novel rows)", () => {
+    expect(querySource).not.toMatch(/mergedNovels/);
+    expect(querySource).not.toMatch(/\.filter\(\(novel/i);
+  });
+
+  it("does not sort in memory by an aggregate count (JS Array.sort over novel rows)", () => {
+    expect(querySource).not.toMatch(/mergedNovels\.sort/);
+  });
+
+  it("the old queryHybridHealthNovelOverview()/queryHybridHealthGlobalSummary() functions are gone - not just renamed", () => {
+    expect(querySource).not.toMatch(/export\s+(async\s+)?function\s+queryHybridHealthNovelOverview/);
+    expect(querySource).not.toMatch(/export\s+(async\s+)?function\s+queryHybridHealthGlobalSummary/);
+  });
+
+  it("pagination is applied by the database (LIMIT/OFFSET on the candidate query), never by Array.slice after aggregating everything", () => {
+    // .slice( still appears legitimately (e.g. episodeNumber trimming
+    // elsewhere in the codebase's other files), but not in THIS file, where
+    // pagination must come from SQL LIMIT/OFFSET only.
+    expect(querySource).not.toMatch(/\.slice\(offset/);
   });
 });
