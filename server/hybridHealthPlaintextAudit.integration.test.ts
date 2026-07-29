@@ -317,4 +317,186 @@ describe("hybridHealth overview/detail - integration (TEST_DATABASE_URL only)", 
     expect(paged.total).toBe(2);
     expect(paged.totalPages).toBe(2);
   });
+
+  // ---- Review fix: status/saleMode/purchasedOnly must combine on the SAME
+  // episode row, never as independently-true aggregate counts (a
+  // cross-row false positive). See buildEpisodeLevelPredicate() in
+  // hybridHealthQueries.ts and its static SQL-shape tests.
+
+  it("legacy_only + package does NOT false-positive on a novel with a LEGACY_ONLY chapter and an unrelated MISSING_BOTH package", async () => {
+    const admin = await createTestUser({ role: "admin" });
+    const novel = await createTestNovel();
+    cleanup.userIds.push(admin.id);
+    cleanup.novelIds.push(novel.id);
+
+    // Neither episode is LEGACY_ONLY + package at once.
+    const legacyOnlyChapter = await insertEpisode(novel.id, {
+      content: null,
+      fileUrl: "https://legacy/x.pdf",
+      saleMode: "chapter",
+    });
+    const missingBothPackage = await insertEpisode(novel.id, {
+      content: null,
+      fileUrl: null,
+      saleMode: "package",
+    });
+    cleanup.episodeIds.push(legacyOnlyChapter, missingBothPackage);
+
+    const caller = appRouter.createCaller(adminContext(admin.id));
+    const overview = await caller.admin.hybridHealth.overview({
+      search: novel.title,
+      status: "legacy_only",
+      saleMode: "package",
+    });
+    expect(overview.novels.find((n) => n.novelId === novel.id)).toBeUndefined();
+
+    const detail = await caller.admin.hybridHealth.detail({
+      novelId: novel.id,
+      status: "legacy_only",
+      saleMode: "package",
+    });
+    expect(detail.episodes).toHaveLength(0);
+  });
+
+  it("legacy_only + package DOES show the novel when one episode is actually both", async () => {
+    const admin = await createTestUser({ role: "admin" });
+    const novel = await createTestNovel();
+    cleanup.userIds.push(admin.id);
+    cleanup.novelIds.push(novel.id);
+
+    const legacyOnlyPackage = await insertEpisode(novel.id, {
+      content: null,
+      fileUrl: "https://legacy/x.pdf",
+      saleMode: "package",
+    });
+    cleanup.episodeIds.push(legacyOnlyPackage);
+
+    const caller = appRouter.createCaller(adminContext(admin.id));
+    const overview = await caller.admin.hybridHealth.overview({
+      search: novel.title,
+      status: "legacy_only",
+      saleMode: "package",
+    });
+    expect(overview.novels.find((n) => n.novelId === novel.id)).toBeDefined();
+
+    const detail = await caller.admin.hybridHealth.detail({
+      novelId: novel.id,
+      status: "legacy_only",
+      saleMode: "package",
+    });
+    expect(detail.episodes.map((e) => e.episodeId)).toEqual([legacyOnlyPackage]);
+  });
+
+  it("has_plaintext + package shows a novel that has a package episode WITH plaintext", async () => {
+    const admin = await createTestUser({ role: "admin" });
+    const novel = await createTestNovel();
+    cleanup.userIds.push(admin.id);
+    cleanup.novelIds.push(novel.id);
+
+    const plaintextPackage = await insertEpisode(novel.id, { content: "chapter text", saleMode: "package" });
+    cleanup.episodeIds.push(plaintextPackage);
+
+    const caller = appRouter.createCaller(adminContext(admin.id));
+    const overview = await caller.admin.hybridHealth.overview({
+      search: novel.title,
+      status: "has_plaintext",
+      saleMode: "package",
+    });
+    const row = overview.novels.find((n) => n.novelId === novel.id);
+    expect(row).toBeDefined();
+  });
+
+  it("has_plaintext + package does NOT require packageMissingPlaintextCount > 0 (that field means the opposite)", async () => {
+    const admin = await createTestUser({ role: "admin" });
+    const novel = await createTestNovel();
+    cleanup.userIds.push(admin.id);
+    cleanup.novelIds.push(novel.id);
+
+    // Only a plaintext package episode - packageMissingPlaintextCount is 0
+    // for this novel, but it must still show under has_plaintext+package.
+    const plaintextPackage = await insertEpisode(novel.id, { content: "chapter text", saleMode: "package" });
+    cleanup.episodeIds.push(plaintextPackage);
+
+    const caller = appRouter.createCaller(adminContext(admin.id));
+    const overview = await caller.admin.hybridHealth.overview({
+      search: novel.title,
+      status: "has_plaintext",
+      saleMode: "package",
+    });
+    const row = overview.novels.find((n) => n.novelId === novel.id);
+    expect(row).toBeDefined();
+    expect(row?.packageMissingPlaintextCount).toBe(0);
+  });
+
+  it("purchasedOnly is scoped to the same episode as status/saleMode, not any purchased episode in the novel", async () => {
+    const admin = await createTestUser({ role: "admin" });
+    const buyer = await createTestUser();
+    const novel = await createTestNovel();
+    const order = await createTestOrder(buyer.id);
+    cleanup.userIds.push(admin.id, buyer.id);
+    cleanup.novelIds.push(novel.id);
+    cleanup.orderIds.push(order.id);
+
+    // Purchased episode is a healthy plaintext chapter (not missing, not package).
+    const purchasedHealthy = await insertEpisode(novel.id, { content: "text", saleMode: "chapter" });
+    // Missing-plaintext package episode exists, but nobody purchased it.
+    const unpurchasedMissingPackage = await insertEpisode(novel.id, { content: null, saleMode: "package" });
+    cleanup.episodeIds.push(purchasedHealthy, unpurchasedMissingPackage);
+    await insertOrderPurchase(buyer.id, novel.id, purchasedHealthy, order.id);
+
+    const caller = appRouter.createCaller(adminContext(admin.id));
+    const overview = await caller.admin.hybridHealth.overview({
+      search: novel.title,
+      status: "missing_plaintext",
+      saleMode: "package",
+      purchasedOnly: true,
+    });
+    expect(overview.novels.find((n) => n.novelId === novel.id)).toBeUndefined();
+
+    // Now purchase the actually-matching episode too - the novel should appear.
+    await insertOrderPurchase(buyer.id, novel.id, unpurchasedMissingPackage, order.id);
+    const overviewAfter = await caller.admin.hybridHealth.overview({
+      search: novel.title,
+      status: "missing_plaintext",
+      saleMode: "package",
+      purchasedOnly: true,
+    });
+    expect(overviewAfter.novels.find((n) => n.novelId === novel.id)).toBeDefined();
+  });
+
+  it("status=all + saleMode=all + purchasedOnly=false still shows a novel with zero episodes", async () => {
+    const admin = await createTestUser({ role: "admin" });
+    const novel = await createTestNovel();
+    cleanup.userIds.push(admin.id);
+    cleanup.novelIds.push(novel.id);
+
+    const caller = appRouter.createCaller(adminContext(admin.id));
+    const overview = await caller.admin.hybridHealth.overview({
+      search: novel.title,
+      status: "all",
+      saleMode: "all",
+      purchasedOnly: false,
+    });
+    const row = overview.novels.find((n) => n.novelId === novel.id);
+    expect(row).toBeDefined();
+    expect(row?.totalEpisodes).toBe(0);
+  });
+
+  it("status=all + saleMode=package shows a novel with a package episode regardless of plaintext status", async () => {
+    const admin = await createTestUser({ role: "admin" });
+    const novel = await createTestNovel();
+    cleanup.userIds.push(admin.id);
+    cleanup.novelIds.push(novel.id);
+
+    const healthyPackage = await insertEpisode(novel.id, { content: "chapter text", saleMode: "package" });
+    cleanup.episodeIds.push(healthyPackage);
+
+    const caller = appRouter.createCaller(adminContext(admin.id));
+    const overview = await caller.admin.hybridHealth.overview({
+      search: novel.title,
+      status: "all",
+      saleMode: "package",
+    });
+    expect(overview.novels.find((n) => n.novelId === novel.id)).toBeDefined();
+  });
 });

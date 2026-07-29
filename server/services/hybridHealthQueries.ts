@@ -147,6 +147,42 @@ export async function queryHybridHealthGlobalSummary(): Promise<HybridHealthGlob
 }
 
 /**
+ * Combines status/saleMode/purchasedOnly into ONE per-episode boolean
+ * predicate, or null if none of the three filters is active.
+ *
+ * This must stay a single AND'd predicate evaluated against one episode
+ * row - NOT three independently-true aggregate counts ANDed together at the
+ * HAVING level. Independent counts let a novel pass a filter combination no
+ * single episode actually satisfies: e.g. a novel with a LEGACY_ONLY
+ * chapter and an unrelated MISSING_BOTH package would satisfy
+ * "legacyOnlyCount > 0 AND packageMissingPlaintextCount > 0" for
+ * status=legacy_only + saleMode=package even though no episode is both
+ * LEGACY_ONLY and a package - a cross-row false positive. Exported for
+ * static SQL-shape testing (see hybridHealthQueries.static.test.ts).
+ */
+export function buildEpisodeLevelPredicate(
+  params: Pick<HybridHealthOverviewQueryParams, "status" | "saleMode" | "purchasedOnly">
+): SQL | null {
+  const predicates: SQL[] = [];
+
+  if (params.status === "missing_plaintext") predicates.push(sql`NOT ${HAS_PLAINTEXT_SQL}`);
+  else if (params.status === "legacy_only") predicates.push(sql`(NOT ${HAS_PLAINTEXT_SQL} AND ${HAS_LEGACY_FILE_SQL})`);
+  else if (params.status === "missing_both") predicates.push(sql`(NOT ${HAS_PLAINTEXT_SQL} AND NOT ${HAS_LEGACY_FILE_SQL})`);
+  else if (params.status === "has_plaintext") predicates.push(HAS_PLAINTEXT_SQL);
+  // "all" adds no status constraint.
+
+  if (params.saleMode !== "all") {
+    predicates.push(sql`${episodes.saleMode} = ${params.saleMode}`);
+  }
+  // "all" adds no saleMode constraint.
+
+  if (params.purchasedOnly) predicates.push(IS_PURCHASED_SQL);
+
+  if (predicates.length === 0) return null;
+  return and(...predicates) as SQL;
+}
+
+/**
  * Paginated, filtered, DB-aggregated per-novel health rows. All counting
  * (SUM/COUNT) happens in the database via GROUP BY - the app never sees an
  * episode row, only these aggregate numbers. A novel with zero episodes
@@ -218,16 +254,10 @@ export async function queryHybridHealthNovelOverview(
   if (whereClause) aggQuery = aggQuery.where(whereClause);
   aggQuery = aggQuery.groupBy(novels.id, novels.title, novels.publicationStatus);
 
-  const havingConditions = [];
-  if (params.status === "missing_plaintext") havingConditions.push(sql`${missingPlaintextCountExpr} > 0`);
-  else if (params.status === "legacy_only") havingConditions.push(sql`${legacyOnlyCountExpr} > 0`);
-  else if (params.status === "missing_both") havingConditions.push(sql`${missingBothCountExpr} > 0`);
-  else if (params.status === "has_plaintext") havingConditions.push(sql`${plaintextCountExpr} > 0`);
-  if (params.saleMode === "package") havingConditions.push(sql`${packageMissingPlaintextCountExpr} > 0`);
-  else if (params.saleMode === "chapter") havingConditions.push(sql`${chapterMissingPlaintextCountExpr} > 0`);
-  if (params.purchasedOnly) havingConditions.push(sql`${purchasedMissingPlaintextCountExpr} > 0`);
-  if (havingConditions.length > 0) {
-    aggQuery = aggQuery.having(and(...havingConditions));
+  const combinedPredicate = buildEpisodeLevelPredicate(params);
+  if (combinedPredicate) {
+    const matchedEpisodeCountExpr = caseCount(sql`(${EPISODE_EXISTS_SQL} AND ${combinedPredicate})`);
+    aggQuery = aggQuery.having(sql`${matchedEpisodeCountExpr} > 0`);
   }
 
   const filtered = aggQuery.as("filtered");
