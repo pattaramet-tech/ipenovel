@@ -13,20 +13,23 @@ import { toast } from "sonner";
 import { useState } from "react";
 import { StatCard, SectionHeader, StatusBadge, EmptyState } from "@/components/AdminComponents";
 import AdminLayout from "@/components/AdminLayout";
+import { resolveAdminAccessState } from "@/_core/hooks/adminAccess";
 
 export default function AdminDashboard() {
   // All hooks must be called at the top level, before any conditional returns
-  const { user, isAuthenticated, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, authMeError } = useAuth();
   const [, navigate] = useLocation();
     const [rejectingPaymentId, setRejectingPaymentId] = useState<number | null>(null);
   const [rejectionReason, setRejectionReason] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
 
-  // Check for admin session (local admin login)
-  const adminSession = typeof window !== 'undefined' ? localStorage.getItem('admin-session') : null;
-  const isAdminLoggedIn = adminSession !== null;
-  const isAdmin = isAdminLoggedIn || (user && user.role === 'admin');
-  const shouldFetchAdminData = isAdmin === true; // Ensure it's a boolean for enabled flag
+  // Same rule AdminLayout (which wraps this page's content below) uses to
+  // decide whether to render admin content at all - this only controls
+  // whether these queries are ALLOWED to fire, never what gets displayed.
+  // AdminLayout is the sole place that renders a loading/login/access-denied
+  // screen; this page must not run a second, competing check that could
+  // disagree with it.
+  const shouldFetchAdminData = resolveAdminAccessState({ loading: authLoading, user, authMeError }) === "allowed";
 
   // Query hooks with enabled flag - they won't fetch until auth is resolved and user is admin
   const { data: dashboardSummary, isLoading: summaryLoading } = trpc.admin.dashboard.summary.useQuery(
@@ -72,33 +75,11 @@ export default function AdminDashboard() {
     },
   });
 
-  // Now perform auth checks after all hooks are declared
-  // Show loading state while auth is being resolved
-  if (authLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Card className="w-full max-w-md">
-          <CardContent className="pt-6 text-center">
-            <Skeleton className="h-8 w-32 mx-auto mb-4" />
-            <p className="text-slate-600 mb-4">Loading...</p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  // Show access denied if not admin
-  if (!isAdmin) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Card className="w-full max-w-md">
-          <CardContent className="pt-6 text-center">
-            <p className="text-slate-600 mb-4">Access Denied - You do not have permission to access the admin panel</p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+  // No loading/"access denied" screen here - AdminLayout (wrapping this
+  // page's JSX below) is the single place that decides what to show for
+  // loading/unauthenticated/forbidden/admin, using the same
+  // resolveAdminAccessState rule as shouldFetchAdminData above. A second,
+  // separate gate here could disagree with it.
 
   // Calculate stats from dashboard summary (source of truth)
   const totalOrders = dashboardSummary?.totalOrders || 0;

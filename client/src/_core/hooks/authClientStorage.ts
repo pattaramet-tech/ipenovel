@@ -6,27 +6,48 @@
  *
  * The signed-in user's source of truth is the HttpOnly session cookie plus
  * the `auth.me` query (and React Query's in-memory cache) - never
- * localStorage. This app used to write the full `auth.me` result to this
- * key on every render; that write is gone, but a browser that visited
- * before this change may still have the key sitting in storage, so it is
- * actively cleared instead of just left alone.
+ * localStorage. This app used to write two things to localStorage that
+ * granted or implied access on their own:
+ *   - "manus-runtime-user-info": the full `auth.me` result, on every render.
+ *   - "admin-session": an `{ adminId, timestamp }` flag written by
+ *     AdminLoginPage on admin login success, which AdminDashboard then
+ *     OR'd into its own admin check (`isAdminLoggedIn || user.role ===
+ *     "admin"`) - so a stale/forged value here alone could make the client
+ *     believe it was an admin even when `auth.me` said otherwise. Both
+ *     writes are gone (Auth Phase 2A), but a browser that visited before
+ *     this change may still have either key sitting in storage, so both are
+ *     actively cleared (never read) instead of just left alone.
+ *
+ * This module is a cleanup mechanism, NOT a source of truth: it only ever
+ * calls `removeItem`, never `getItem`, and never feeds a value back into any
+ * auth decision.
  */
 export const LEGACY_AUTH_LOCALSTORAGE_KEY = "manus-runtime-user-info";
+/** Auth Phase 2A: the old client-side "am I an admin" flag - see the module docstring above. */
+export const LEGACY_ADMIN_SESSION_LOCALSTORAGE_KEY = "admin-session";
+export const LEGACY_AUTH_LOCALSTORAGE_KEYS = [
+  LEGACY_AUTH_LOCALSTORAGE_KEY,
+  LEGACY_ADMIN_SESSION_LOCALSTORAGE_KEY,
+] as const;
 
 type RemovableStorage = Pick<Storage, "removeItem">;
 
 /**
- * Removes the legacy full-user-object cache. Safe to call when storage is
- * unavailable/undefined (SSR, or a browser with localStorage disabled) or
- * when it throws (Safari private-mode quota, disabled storage) - clearing a
- * legacy key is best-effort and must never be fatal.
+ * Removes every legacy auth-adjacent key (see LEGACY_AUTH_LOCALSTORAGE_KEYS).
+ * Safe to call when storage is unavailable/undefined (SSR, or a browser with
+ * localStorage disabled). Each key is removed in its own try/catch so one
+ * throwing (Safari private-mode quota, disabled storage) never stops the
+ * others from being attempted - clearing a legacy key is best-effort and
+ * must never be fatal, for any key.
  */
 export function clearLegacyAuthLocalStorage(storage: RemovableStorage | null | undefined): void {
   if (!storage) return;
-  try {
-    storage.removeItem(LEGACY_AUTH_LOCALSTORAGE_KEY);
-  } catch {
-    // Best-effort only.
+  for (const key of LEGACY_AUTH_LOCALSTORAGE_KEYS) {
+    try {
+      storage.removeItem(key);
+    } catch {
+      // Best-effort only.
+    }
   }
 }
 

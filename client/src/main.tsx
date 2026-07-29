@@ -1,31 +1,39 @@
 import { trpc } from "@/lib/trpc";
-import { UNAUTHED_ERR_MSG } from '@shared/const';
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { httpBatchLink, TRPCClientError } from "@trpc/client";
+import { httpBatchLink } from "@trpc/client";
 import { createRoot } from "react-dom/client";
 import superjson from "superjson";
 import App from "./App";
 import { getLoginUrl } from "./const";
+import { redirectToLoginIfUnauthorized } from "@/_core/hooks/globalUnauthorizedRedirect";
 import { LanguageProvider } from "@/contexts/LanguageContext";
 import "./index.css";
 
 const queryClient = new QueryClient();
 
-const redirectToLoginIfUnauthorized = (error: unknown) => {
-  if (!(error instanceof TRPCClientError)) return;
+// Path-aware - see globalUnauthorizedRedirect.ts / unauthorizedRedirect.ts's
+// docstrings, the same rule useAuth.ts's redirectOnUnauthenticated effect
+// and AdminLayout.tsx use. A UNAUTHORIZED admin API call (expired/missing
+// local admin session) must return to /admin/login, not the OAuth flow;
+// every other route keeps going to OAuth, unchanged. FORBIDDEN and any
+// other error never redirect at all. getLoginUrl() is only ever invoked for
+// the "oauth" target - never unconditionally.
+const handleQueryOrMutationError = (error: unknown) => {
   if (typeof window === "undefined") return;
-
-  const isUnauthorized = error.message === UNAUTHED_ERR_MSG;
-
-  if (!isUnauthorized) return;
-
-  window.location.href = getLoginUrl();
+  redirectToLoginIfUnauthorized(
+    error,
+    window.location.pathname,
+    (url) => {
+      window.location.href = url;
+    },
+    getLoginUrl
+  );
 };
 
 queryClient.getQueryCache().subscribe(event => {
   if (event.type === "updated" && event.action.type === "error") {
     const error = event.query.state.error;
-    redirectToLoginIfUnauthorized(error);
+    handleQueryOrMutationError(error);
     console.error("[API Query Error]", error);
   }
 });
@@ -33,7 +41,7 @@ queryClient.getQueryCache().subscribe(event => {
 queryClient.getMutationCache().subscribe(event => {
   if (event.type === "updated" && event.action.type === "error") {
     const error = event.mutation.state.error;
-    redirectToLoginIfUnauthorized(error);
+    handleQueryOrMutationError(error);
     console.error("[API Mutation Error]", error);
   }
 });
