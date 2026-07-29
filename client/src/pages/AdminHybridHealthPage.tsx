@@ -9,6 +9,7 @@ import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { AlertTriangle, ArrowLeft, Info, Loader2, RefreshCw, Search } from "lucide-react";
+import { shouldEnableHybridHealthSummary } from "./hybridHealthSummaryGate";
 
 /**
  * Hybrid Content Health Dashboard. Strictly read-only: no mutation buttons
@@ -18,12 +19,18 @@ import { AlertTriangle, ArrowLeft, Info, Loader2, RefreshCw, Search } from "luci
  * content vs. only having a legacy file.
  *
  * Hotfix (TiDB errno=8176 memory-limit incident): the Overview table and the
- * KPI summary cards are two independent queries now, loaded and retried
+ * KPI summary cards are two independent queries, loaded and retried
  * separately - a slow/failed summary scan can never block or break the
  * novel table. Both (plus Detail) disable react-query's default retry and
  * window-focus refetch, since a hung/erroring query retrying itself against
  * an already-overloaded database is exactly the "client retry storm" half
  * of the incident.
+ *
+ * Follow-up: Summary is additionally gated to only start once Overview has
+ * already succeeded (shouldEnableHybridHealthSummary) - enabling both on the
+ * same `selectedNovelId === null` condition let the browser fire them in the
+ * same render, so Overview's and Summary's DB-heavy queries could still
+ * overlap on initial page load even though each is sequential internally.
  */
 
 type HealthStatus = "all" | "missing_plaintext" | "legacy_only" | "missing_both" | "has_plaintext";
@@ -35,6 +42,8 @@ type OverviewSortBy = "title" | "novelId";
 const PAGE_SIZE = 50;
 const DETAIL_PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 400;
+/** Matches the server's 5-minute in-process Summary cache - remounting this page within that window should never re-request. */
+const SUMMARY_STALE_TIME_MS = 5 * 60 * 1000;
 
 /** Applied to every Hybrid Health query: no automatic retry (avoids piling more load on an already-struggling DB) and no refetch just because the browser tab regained focus. */
 const NO_RETRY_QUERY_OPTIONS = { retry: false as const, refetchOnWindowFocus: false as const };
@@ -171,8 +180,20 @@ export default function AdminHybridHealthPage() {
     ...NO_RETRY_QUERY_OPTIONS,
   });
 
-  // Summary cards - a separate, independently loading/failing/retryable
-  // request. Never awaited by the overview query above, and never blocks it.
+  // Summary cards - only starts once Overview has already succeeded (see
+  // hybridHealthSummaryGate.ts). Both procedures are internally sequential
+  // on the backend, but enabling them on the same condition let the browser
+  // fire them in the same render, letting Overview's candidate-id/count
+  // queries overlap with Summary's total-novel-count/batch queries on
+  // initial load - exactly the concurrent-DB-heavy-query shape this hotfix
+  // exists to eliminate. staleTime matches the server's 5-minute summary
+  // cache, so remounting this page within that window never re-requests.
+  const shouldLoadSummary = shouldEnableHybridHealthSummary({
+    selectedNovelId,
+    hasOverviewData: overview !== undefined,
+    isOverviewLoading,
+    isOverviewError,
+  });
   const {
     data: summary,
     isLoading: isSummaryLoading,
@@ -180,7 +201,8 @@ export default function AdminHybridHealthPage() {
     refetch: refetchSummary,
     isRefetching: isSummaryRefetching,
   } = trpc.admin.hybridHealth.summary.useQuery(undefined, {
-    enabled: selectedNovelId === null,
+    enabled: shouldLoadSummary,
+    staleTime: SUMMARY_STALE_TIME_MS,
     ...NO_RETRY_QUERY_OPTIONS,
   });
 
@@ -430,30 +452,40 @@ export default function AdminHybridHealthPage() {
           </p>
         </Card>
 
-        {/* Summary Cards - independent request from the table below; a
-            failure here never breaks the table. */}
+        {/* Summary Cards - a separate request from the table below, gated to
+            only start once Overview has succeeded (shouldEnableHybridHealthSummary) -
+            never runs concurrently with Overview, and a Summary failure
+            never breaks the table. */}
         <div className="space-y-2">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
-            <SummaryCard label="ตอนทั้งหมด" value={summary?.totalEpisodes} isLoading={isSummaryLoading} />
-            <SummaryCard label="มี Plaintext" value={summary?.plaintextCount} isLoading={isSummaryLoading} />
-            <SummaryCard label="ไม่มี Plaintext" value={summary?.missingPlaintextCount} tone="warning" isLoading={isSummaryLoading} />
-            <SummaryCard label="Legacy Only" value={summary?.legacyOnlyCount} tone="warning" isLoading={isSummaryLoading} />
-            <SummaryCard label="Missing Both" value={summary?.missingBothCount} tone="danger" isLoading={isSummaryLoading} />
-            <SummaryCard
-              label="Published Missing"
-              value={summary?.publishedMissingPlaintextCount}
-              tone="danger"
-              isLoading={isSummaryLoading}
-            />
-            <SummaryCard
-              label="Purchased Missing"
-              value={summary?.purchasedMissingPlaintextCount}
-              tone="danger"
-              isLoading={isSummaryLoading}
-            />
-          </div>
+          {isOverviewError ? (
+            <Card className="p-4">
+              <p className="text-xs text-muted-foreground">
+                ภาพรวม (Summary) จะเริ่มคำนวณหลังจากตารางนิยายด้านล่างโหลดสำเร็จ - กรุณาลองโหลดตารางใหม่ก่อน
+              </p>
+            </Card>
+          ) : (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
+              <SummaryCard label="ตอนทั้งหมด" value={summary?.totalEpisodes} isLoading={isSummaryLoading} />
+              <SummaryCard label="มี Plaintext" value={summary?.plaintextCount} isLoading={isSummaryLoading} />
+              <SummaryCard label="ไม่มี Plaintext" value={summary?.missingPlaintextCount} tone="warning" isLoading={isSummaryLoading} />
+              <SummaryCard label="Legacy Only" value={summary?.legacyOnlyCount} tone="warning" isLoading={isSummaryLoading} />
+              <SummaryCard label="Missing Both" value={summary?.missingBothCount} tone="danger" isLoading={isSummaryLoading} />
+              <SummaryCard
+                label="Published Missing"
+                value={summary?.publishedMissingPlaintextCount}
+                tone="danger"
+                isLoading={isSummaryLoading}
+              />
+              <SummaryCard
+                label="Purchased Missing"
+                value={summary?.purchasedMissingPlaintextCount}
+                tone="danger"
+                isLoading={isSummaryLoading}
+              />
+            </div>
+          )}
 
-          {isSummaryError && (
+          {!isOverviewError && isSummaryError && (
             <div className="flex flex-wrap items-center gap-2 text-xs text-amber-700">
               <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
               <span>คำนวณภาพรวม (Summary) ไม่สำเร็จ - ตารางนิยายด้านล่างยังใช้งานได้ตามปกติ</span>
@@ -468,7 +500,7 @@ export default function AdminHybridHealthPage() {
             </div>
           )}
 
-          {!isSummaryError && summary && (
+          {!isOverviewError && !isSummaryError && summary && (
             <p className="text-xs text-muted-foreground">
               นิยายทั้งหมด {summary.totalNovels.toLocaleString()} เรื่อง · ขาด Plaintext {summary.novelsMissingPlaintext.toLocaleString()} เรื่อง
               {summary.cached ? " · จากแคช" : ""}
