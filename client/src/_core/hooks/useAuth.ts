@@ -60,6 +60,13 @@ export function useAuth(options?: UseAuthOptions) {
       loading: meQuery.isLoading || logoutMutation.isPending,
       error: meQuery.error ?? logoutMutation.error ?? null,
       isAuthenticated: Boolean(meQuery.data),
+      // Distinct from `loading` (which also covers the initial auth.me
+      // fetch) so a caller that only cares about "is a logout in flight
+      // right now" - e.g. to disable a Logout button and prevent a
+      // double-click double-submit - doesn't have to reason about whether
+      // `loading` is true for that reason or because auth.me just hasn't
+      // resolved yet.
+      isLoggingOut: logoutMutation.isPending,
     };
   }, [
     meQuery.data,

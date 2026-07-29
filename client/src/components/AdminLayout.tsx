@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { resolveAdminAccessState } from "@/_core/hooks/adminAccess";
 import { useLocation } from "wouter";
 import { Menu, LogOut, ChevronRight, Home, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
@@ -22,52 +24,70 @@ interface AdminLayoutProps {
   children: React.ReactNode;
 }
 
+/** A small, centered, non-alarming placeholder shown while auth is resolving or a redirect is about to happen - never "Access Denied", which would otherwise flash for every legitimately logged-in admin on every fresh page load. */
+function CenteredStatus({ text }: { text: string }) {
+  return (
+    <div className="flex items-center justify-center min-h-screen bg-slate-50">
+      <div className="flex flex-col items-center gap-3 text-slate-600">
+        <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+        <p>{text}</p>
+      </div>
+    </div>
+  );
+}
+
 export default function AdminLayout({ children }: AdminLayoutProps) {
   // Every admin page renders through this one layout, so setting
   // noindex,nofollow here covers the entire /admin/* section in one place
   // instead of touching each of the 20+ individual admin page components.
   useDocumentHead({ robots: "noindex,nofollow" });
-  const { user, loading } = useAuth();
+  const { user, loading, logout, isLoggingOut } = useAuth();
   const [location, navigate] = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // While auth.me is still resolving (e.g. a hard refresh on /admin/*, before
-  // the session cookie has round-tripped), `user` is still null - render a
-  // loading state instead of "Access Denied", which would otherwise flash
-  // for every legitimately logged-in admin on every fresh page load.
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-slate-50">
-        <div className="flex flex-col items-center gap-3 text-slate-600">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
-          <p>กำลังตรวจสอบสิทธิ์ผู้ดูแล...</p>
-        </div>
-      </div>
-    );
+  // The single rule for admin access - see adminAccess.ts. Also used by
+  // AdminDashboard (to gate its own queries) so the two can never disagree.
+  const accessState = resolveAdminAccessState({ loading, user });
+
+  // Redirecting is a side effect, not something to trigger during render -
+  // doing it here (not inline in the render body below) avoids a
+  // "Cannot update a component while rendering a different component"
+  // warning/render-time navigation, and re-runs cleanly if accessState
+  // flips back and forth (e.g. a query refetch). AdminLoginPage is never
+  // itself wrapped in AdminLayout (see App.tsx's route table), so this can
+  // never redirect-loop back into itself.
+  useEffect(() => {
+    if (accessState === "unauthenticated") {
+      navigate("/admin/login");
+    }
+  }, [accessState, navigate]);
+
+  async function handleLogout() {
+    if (isLoggingOut) return;
+    try {
+      await logout();
+    } catch {
+      toast.error("Logout failed. Please try again.");
+    } finally {
+      // useAuth's logout() already clears the local auth.me cache to null
+      // in its own finally block regardless of success/failure, so
+      // AdminLayout would redirect here anyway on the next render - this
+      // just makes it immediate instead of waiting for that effect.
+      navigate("/admin/login");
+    }
   }
 
-  // Not logged in at all - offer a way to log in, distinct from "logged in
-  // but not an admin" below.
-  if (!user) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-slate-50">
-        <Card className="p-8 text-center max-w-md">
-          <h1 className="text-2xl font-bold mb-4 text-slate-900">
-            Login Required
-          </h1>
-          <p className="text-slate-600 mb-6">
-            กรุณาเข้าสู่ระบบเพื่อเข้าใช้งานส่วนผู้ดูแลระบบ
-          </p>
-          <Button asChild>
-            <a href="/admin/login">เข้าสู่ระบบ</a>
-          </Button>
-        </Card>
-      </div>
-    );
+  if (accessState === "loading") {
+    return <CenteredStatus text="กำลังตรวจสอบสิทธิ์ผู้ดูแล..." />;
   }
 
-  // Logged in, but not an admin - this is the real "Access Denied" case.
-  if (user.role !== "admin") {
+  if (accessState === "unauthenticated") {
+    // The redirect effect above handles navigation; this is only the brief
+    // placeholder shown while that happens.
+    return <CenteredStatus text="กำลังนำไปยังหน้าเข้าสู่ระบบ..." />;
+  }
+
+  if (accessState === "forbidden") {
     return (
       <div className="flex items-center justify-center min-h-screen bg-slate-50">
         <Card className="p-8 text-center max-w-md">
@@ -77,9 +97,19 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
           <p className="text-slate-600 mb-6">
             You do not have permission to access the admin panel.
           </p>
-          <Button asChild>
-            <a href="/">Return to Home</a>
-          </Button>
+          <div className="flex flex-col gap-3 sm:flex-row sm:justify-center">
+            <Button variant="outline" asChild>
+              <a href="/">Return to Home</a>
+            </Button>
+            <Button onClick={handleLogout} disabled={isLoggingOut}>
+              {isLoggingOut ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <LogOut className="w-4 h-4 mr-2" />
+              )}
+              {isLoggingOut ? "Logging out..." : "Log out / switch account"}
+            </Button>
+          </div>
         </Card>
       </div>
     );
@@ -156,15 +186,22 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
           </div>
         </div>
         <Button
+          type="button"
           variant="outline"
           size="sm"
           className="min-h-11 w-full border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white"
-          asChild
+          onClick={() => {
+            setMobileMenuOpen(false);
+            void handleLogout();
+          }}
+          disabled={isLoggingOut}
         >
-          <a href="/api/auth/logout">
+          {isLoggingOut ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
             <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />
-            Logout
-          </a>
+          )}
+          {isLoggingOut ? "Logging out..." : "Logout"}
         </Button>
       </div>
     </>

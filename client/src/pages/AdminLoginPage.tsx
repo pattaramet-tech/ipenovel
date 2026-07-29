@@ -1,35 +1,76 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
-import { AlertCircle, LogIn } from "lucide-react";
+import { AlertCircle, LogIn, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
+import { useAuth } from "@/_core/hooks/useAuth";
 
+/**
+ * Auth Phase 2A: this page no longer writes an "admin-session" localStorage
+ * flag. The HttpOnly session cookie + `auth.me` (server-verified against the
+ * database on every request - see server/_core/sdk.ts's authenticateRequest)
+ * are the only source of truth for admin access, for this page and every
+ * other /admin/* page.
+ */
 export default function AdminLoginPage() {
   useDocumentHead({ robots: "noindex,nofollow" });
   const [, navigate] = useLocation();
+  const { user, loading: authLoading, logout, isLoggingOut } = useAuth();
+  const utils = trpc.useUtils();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
-  const utils = trpc.useUtils();
+
+  // Already signed in as an admin - leave this page. A useEffect (not a
+  // call during render) so this is a side effect the browser/React can
+  // schedule normally, not something that runs while React is still
+  // rendering the component tree.
+  useEffect(() => {
+    if (!authLoading && user?.role === "admin") {
+      navigate("/admin");
+    }
+  }, [authLoading, user, navigate]);
 
   const adminLoginMutation = trpc.admin.login.useMutation({
-    onSuccess: async (data) => {
+    onSuccess: async () => {
+      // Never trust this mutation's own `adminId` for client-side
+      // authorization - it only proves the password matched, not that the
+      // session cookie the server just set will actually resolve to an
+      // admin. `auth.me` (fetched fresh here, not read from any stale
+      // cache) is the only thing allowed to decide that.
+      let freshUser: { role?: string | null } | null = null;
+      try {
+        freshUser = await utils.auth.me.fetch();
+      } catch {
+        freshUser = null;
+      }
+
+      if (freshUser?.role === "admin") {
+        setIsLoading(false);
+        toast.success("Admin login successful");
+        navigate("/admin");
+        return;
+      }
+
+      // The cookie may or may not have been set, but auth.me does not
+      // confirm admin access - never navigate into /admin on this path, and
+      // never leave the browser holding a session that looks half
+      // logged-in. Best-effort clear it.
       setIsLoading(false);
-      // Set admin session flag in localStorage
-      localStorage.setItem('admin-session', JSON.stringify({ adminId: data.adminId, timestamp: Date.now() }));
-      
-      // Invalidate and refetch auth query to pick up the new session cookie
-      await utils.auth.me.invalidate();
-      
-      toast.success("Admin login successful");
-      navigate("/admin");
+      setError("Unable to verify admin access. Please try again.");
+      try {
+        await logout();
+      } catch {
+        // Best-effort only - a safe error is already shown either way.
+      }
     },
-    onError: (error: any) => {
+    onError: () => {
       setIsLoading(false);
       setError("Invalid email or password");
       toast.error("Admin login failed");
@@ -52,6 +93,74 @@ export default function AdminLoginPage() {
     });
   };
 
+  const handleLogoutAndSwitchAccount = async () => {
+    if (isLoggingOut) return;
+    try {
+      await logout();
+    } catch {
+      toast.error("Logout failed. Please try again.");
+    }
+  };
+
+  // auth.me is still resolving - don't show the form or the "wrong account"
+  // screen yet, and don't decide anything about redirecting.
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 flex items-center justify-center px-4 py-8">
+        <div className="flex flex-col items-center gap-3 text-slate-600">
+          <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+          <p>Checking your session...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Signed in, but confirmed NOT an admin - never redirect into /admin.
+  if (user && user.role !== "admin") {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 flex items-center justify-center px-4 py-8">
+        <Card className="w-full max-w-md shadow-lg">
+          <CardHeader className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white">
+            <CardTitle className="text-2xl font-bold">Admin Login</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-8 space-y-6 text-center">
+            <p className="text-slate-700">
+              This account (<span className="font-medium">{user.email}</span>) does not have admin access.
+            </p>
+            <div className="flex flex-col gap-3 sm:flex-row sm:justify-center">
+              <Button variant="outline" asChild>
+                <a href="/">Return to Home</a>
+              </Button>
+              <Button onClick={handleLogoutAndSwitchAccount} disabled={isLoggingOut}>
+                {isLoggingOut ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <LogIn className="w-4 h-4 mr-2" />
+                )}
+                {isLoggingOut ? "Logging out..." : "Log out and use another account"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  // Signed in as an admin: the redirect effect above handles navigation.
+  // Render a neutral transitional state instead of the form to avoid a
+  // flash of the login screen for someone who is already authenticated.
+  if (user && user.role === "admin") {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 flex items-center justify-center px-4 py-8">
+        <div className="flex flex-col items-center gap-3 text-slate-600">
+          <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+          <p>Redirecting to admin panel...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Unauthenticated - show the normal admin login form.
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 flex items-center justify-center px-4 py-8">
       <Card className="w-full max-w-md shadow-lg">

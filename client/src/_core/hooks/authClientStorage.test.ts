@@ -3,19 +3,29 @@ import {
   clearLegacyAuthLocalStorage,
   clearLegacyAuthLocalStorageFromWindow,
   LEGACY_AUTH_LOCALSTORAGE_KEY,
+  LEGACY_ADMIN_SESSION_LOCALSTORAGE_KEY,
+  LEGACY_AUTH_LOCALSTORAGE_KEYS,
 } from "./authClientStorage";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
+describe("legacy key constants", () => {
+  it("covers exactly the two known legacy auth keys", () => {
+    expect(LEGACY_AUTH_LOCALSTORAGE_KEY).toBe("manus-runtime-user-info");
+    expect(LEGACY_ADMIN_SESSION_LOCALSTORAGE_KEY).toBe("admin-session");
+    expect(LEGACY_AUTH_LOCALSTORAGE_KEYS).toEqual(["manus-runtime-user-info", "admin-session"]);
+  });
+});
+
 describe("clearLegacyAuthLocalStorage", () => {
-  it("removes the legacy key and only the legacy key", () => {
+  it("removes every legacy key (manus-runtime-user-info and admin-session), nothing else", () => {
     const removeItem = vi.fn();
     clearLegacyAuthLocalStorage({ removeItem });
 
-    expect(removeItem).toHaveBeenCalledTimes(1);
+    expect(removeItem).toHaveBeenCalledTimes(LEGACY_AUTH_LOCALSTORAGE_KEYS.length);
     expect(removeItem).toHaveBeenCalledWith(LEGACY_AUTH_LOCALSTORAGE_KEY);
-    expect(LEGACY_AUTH_LOCALSTORAGE_KEY).toBe("manus-runtime-user-info");
+    expect(removeItem).toHaveBeenCalledWith(LEGACY_ADMIN_SESSION_LOCALSTORAGE_KEY);
   });
 
   it("does nothing (no throw) when storage is null or undefined", () => {
@@ -23,13 +33,32 @@ describe("clearLegacyAuthLocalStorage", () => {
     expect(() => clearLegacyAuthLocalStorage(undefined)).not.toThrow();
   });
 
-  it("does not throw when storage.removeItem itself throws (private-mode/quota/disabled storage)", () => {
+  it("a missing key is a no-op, not an error (real localStorage.removeItem never throws for an absent key)", () => {
+    const removeItem = vi.fn(); // never throws - mirrors a real Storage whose key was never set
+    expect(() => clearLegacyAuthLocalStorage({ removeItem })).not.toThrow();
+    expect(removeItem).toHaveBeenCalledTimes(2);
+  });
+
+  it("one key's removeItem throwing does not stop the other key from being removed", () => {
+    const removeItem = vi.fn((key: string) => {
+      if (key === LEGACY_AUTH_LOCALSTORAGE_KEY) {
+        throw new Error("SecurityError: localStorage is disabled");
+      }
+    });
+
+    expect(() => clearLegacyAuthLocalStorage({ removeItem })).not.toThrow();
+    expect(removeItem).toHaveBeenCalledTimes(2);
+    expect(removeItem).toHaveBeenCalledWith(LEGACY_AUTH_LOCALSTORAGE_KEY);
+    expect(removeItem).toHaveBeenCalledWith(LEGACY_ADMIN_SESSION_LOCALSTORAGE_KEY);
+  });
+
+  it("does not throw when every removeItem call throws", () => {
     const removeItem = vi.fn(() => {
       throw new Error("SecurityError: localStorage is disabled");
     });
 
     expect(() => clearLegacyAuthLocalStorage({ removeItem })).not.toThrow();
-    expect(removeItem).toHaveBeenCalledTimes(1);
+    expect(removeItem).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -64,16 +93,19 @@ describe("clearLegacyAuthLocalStorageFromWindow", () => {
     });
 
     expect(() => clearLegacyAuthLocalStorageFromWindow({ localStorage: { removeItem } })).not.toThrow();
-    expect(removeItem).toHaveBeenCalledTimes(1);
+    expect(removeItem).toHaveBeenCalledTimes(2);
   });
 
-  it("removes exactly the legacy key, and only the legacy key, on a normal window", () => {
+  it("removes exactly the two legacy keys, and only those, on a normal window", () => {
     const removeItem = vi.fn();
 
     clearLegacyAuthLocalStorageFromWindow({ localStorage: { removeItem } });
 
-    expect(removeItem).toHaveBeenCalledTimes(1);
+    expect(removeItem).toHaveBeenCalledTimes(2);
     expect(removeItem).toHaveBeenCalledWith(LEGACY_AUTH_LOCALSTORAGE_KEY);
+    expect(removeItem).toHaveBeenCalledWith(LEGACY_ADMIN_SESSION_LOCALSTORAGE_KEY);
+    const calledKeys = removeItem.mock.calls.map((call) => call[0]);
+    expect(new Set(calledKeys)).toEqual(new Set(LEGACY_AUTH_LOCALSTORAGE_KEYS));
   });
 });
 
@@ -91,7 +123,7 @@ describe("useAuth.ts source shape (static regression guard - no DOM harness in t
     expect(useAuthSource).not.toMatch(/JSON\.stringify\(\s*meQuery\.data\s*\)/);
   });
 
-  it("clears the legacy localStorage key via clearLegacyAuthLocalStorageFromWindow", () => {
+  it("clears the legacy localStorage keys via clearLegacyAuthLocalStorageFromWindow", () => {
     expect(useAuthSource).toMatch(/clearLegacyAuthLocalStorageFromWindow/);
   });
 
@@ -102,5 +134,103 @@ describe("useAuth.ts source shape (static regression guard - no DOM harness in t
   it("still sources the signed-in user from trpc.auth.me", () => {
     expect(useAuthSource).toMatch(/trpc\.auth\.me\.useQuery/);
     expect(useAuthSource).toMatch(/user:\s*meQuery\.data/);
+  });
+
+  it("exposes an isLoggingOut flag driven by the logout mutation's pending state", () => {
+    expect(useAuthSource).toMatch(/isLoggingOut:\s*logoutMutation\.isPending/);
+  });
+});
+
+/**
+ * Auth Phase 2A repository-wide regression guard: after removing the
+ * "admin-session" localStorage flag (AdminLoginPage used to write it,
+ * AdminDashboard used to OR it into `isAdmin`), production client source
+ * must never reintroduce it as a runtime authorization signal. Comments
+ * documenting the migration, and this legacy-cleanup helper itself, are the
+ * only allowed places the literal string may still appear - see
+ * docs/AUTH_PHASE2A or the module docstring in authClientStorage.ts.
+ *
+ * Walks the real filesystem (no DOM harness needed for this - it's a text
+ * scan), matching the pattern already used above for reading useAuth.ts's
+ * own source.
+ */
+describe("repository regression: no runtime admin-session authorization in production client source", () => {
+  const clientSrcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../");
+  const legacyHelperPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "authClientStorage.ts");
+
+  function walk(dir: string, out: string[] = []): string[] {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "node_modules") continue;
+        walk(full, out);
+      } else if (/\.(ts|tsx)$/.test(entry.name) && !/\.test\.(ts|tsx)$/.test(entry.name)) {
+        out.push(full);
+      }
+    }
+    return out;
+  }
+
+  /** `//` line comments and `/* ... *\/` block comments (including JSDoc `*`-prefixed continuation lines) - not a full parser, just enough to tell "this line is prose" from "this line is code". */
+  function isCommentLine(line: string): boolean {
+    const trimmed = line.trim();
+    return trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*");
+  }
+
+  const productionFiles = walk(clientSrcRoot);
+
+  it("scanned at least the files this suite depends on (sanity check that the walk isn't accidentally empty)", () => {
+    expect(productionFiles.length).toBeGreaterThan(50);
+    expect(productionFiles).toContain(legacyHelperPath);
+  });
+
+  it('the string "admin-session" only appears in authClientStorage.ts (the legacy cleanup helper) or comments elsewhere', () => {
+    const violations: string[] = [];
+    for (const file of productionFiles) {
+      if (file === legacyHelperPath) continue;
+      const content = readFileSync(file, "utf8");
+      if (!content.includes("admin-session")) continue;
+      content.split("\n").forEach((line, idx) => {
+        if (!line.includes("admin-session")) return;
+        if (isCommentLine(line)) return;
+        violations.push(`${path.relative(clientSrcRoot, file)}:${idx + 1}: ${line.trim()}`);
+      });
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("no production file reads or writes localStorage under the admin-session key directly", () => {
+    const pattern = /localStorage\.(getItem|setItem|removeItem)\(\s*["'`]admin-session["'`]/;
+    const violations: string[] = [];
+    for (const file of productionFiles) {
+      const content = readFileSync(file, "utf8");
+      if (pattern.test(content)) violations.push(path.relative(clientSrcRoot, file));
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("no boolean flag named isAdminLoggedIn is used as real code anywhere in production source (superseded by resolveAdminAccessState) - mentions inside comments documenting the migration are fine", () => {
+    const violations: string[] = [];
+    for (const file of productionFiles) {
+      const content = readFileSync(file, "utf8");
+      if (!/\bisAdminLoggedIn\b/.test(content)) continue;
+      content.split("\n").forEach((line, idx) => {
+        if (!/\bisAdminLoggedIn\b/.test(line)) return;
+        if (isCommentLine(line)) return;
+        violations.push(`${path.relative(clientSrcRoot, file)}:${idx + 1}: ${line.trim()}`);
+      });
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it('no production file ORs a client-only flag into an "isAdmin"-style variable (e.g. "isAdminLoggedIn || ...", "... || user.role")', () => {
+    const violations: string[] = [];
+    for (const file of productionFiles) {
+      const content = readFileSync(file, "utf8");
+      if (/\bisAdmin\s*=\s*[a-zA-Z0-9_.]+\s*\|\|/.test(content)) {
+        violations.push(path.relative(clientSrcRoot, file));
+      }
+    }
+    expect(violations).toEqual([]);
   });
 });
