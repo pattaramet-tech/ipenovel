@@ -4,31 +4,40 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
-import { AlertTriangle, ArrowLeft, Info, Loader2, Search } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Info, Loader2, RefreshCw, Search } from "lucide-react";
 
 /**
- * Phase 2 - Hybrid Content Health Dashboard. Strictly read-only: no mutation
- * buttons anywhere on this page - only navigation to the Episodes/Import
- * Episodes pages where an admin can actually fix a gap. Lets an admin see,
- * per novel and per episode, exactly which ones are missing plaintext web
- * reader content vs. only having a legacy file.
+ * Hybrid Content Health Dashboard. Strictly read-only: no mutation buttons
+ * anywhere on this page - only navigation to the Episodes/Import Episodes
+ * pages where an admin can actually fix a gap. Lets an admin see, per novel
+ * and per episode, exactly which ones are missing plaintext web reader
+ * content vs. only having a legacy file.
+ *
+ * Hotfix (TiDB errno=8176 memory-limit incident): the Overview table and the
+ * KPI summary cards are two independent queries now, loaded and retried
+ * separately - a slow/failed summary scan can never block or break the
+ * novel table. Both (plus Detail) disable react-query's default retry and
+ * window-focus refetch, since a hung/erroring query retrying itself against
+ * an already-overloaded database is exactly the "client retry storm" half
+ * of the incident.
  */
 
 type HealthStatus = "all" | "missing_plaintext" | "legacy_only" | "missing_both" | "has_plaintext";
 type PublicationStatusFilter = "all" | "published" | "archived";
 type SaleModeFilter = "all" | "chapter" | "package";
-type OverviewSortBy =
-  | "missingPlaintextCount"
-  | "publishedMissingPlaintextCount"
-  | "purchasedMissingPlaintextCount"
-  | "coverage"
-  | "title";
+/** Sort by aggregate counts is temporarily suspended - see server/services/hybridHealthQueries.ts's OverviewSortBy docstring. */
+type OverviewSortBy = "title" | "novelId";
 
 const PAGE_SIZE = 50;
+const DETAIL_PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 400;
+
+/** Applied to every Hybrid Health query: no automatic retry (avoids piling more load on an already-struggling DB) and no refetch just because the browser tab regained focus. */
+const NO_RETRY_QUERY_OPTIONS = { retry: false as const, refetchOnWindowFocus: false as const };
 
 const STATUS_LABELS: Record<HealthStatus, string> = {
   all: "ทั้งหมด",
@@ -57,13 +66,26 @@ function ContentStatusBadge({ status }: { status: string }) {
   return <Badge className={cfg.className}>{cfg.label}</Badge>;
 }
 
-function SummaryCard({ label, value, tone }: { label: string; value: number; tone?: "default" | "warning" | "danger" }) {
-  const toneClass =
-    tone === "danger" ? "text-red-700" : tone === "warning" ? "text-amber-700" : "text-slate-900";
+function SummaryCard({
+  label,
+  value,
+  tone,
+  isLoading,
+}: {
+  label: string;
+  value: number | undefined;
+  tone?: "default" | "warning" | "danger";
+  isLoading: boolean;
+}) {
+  const toneClass = tone === "danger" ? "text-red-700" : tone === "warning" ? "text-amber-700" : "text-slate-900";
   return (
     <Card className="p-4">
       <p className="text-xs text-muted-foreground">{label}</p>
-      <p className={`mt-1 text-2xl font-bold ${toneClass}`}>{value.toLocaleString()}</p>
+      {isLoading || value === undefined ? (
+        <Skeleton className="mt-2 h-7 w-16" />
+      ) : (
+        <p className={`mt-1 text-2xl font-bold ${toneClass}`}>{value.toLocaleString()}</p>
+      )}
     </Card>
   );
 }
@@ -110,7 +132,7 @@ export default function AdminHybridHealthPage() {
   const [publicationStatus, setPublicationStatus] = useState<PublicationStatusFilter>("all");
   const [saleMode, setSaleMode] = useState<SaleModeFilter>("all");
   const [purchasedOnly, setPurchasedOnly] = useState(false);
-  const [sortBy, setSortBy] = useState<OverviewSortBy>("missingPlaintextCount");
+  const [sortBy, setSortBy] = useState<OverviewSortBy>("novelId");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [page, setPage] = useState(1);
 
@@ -138,8 +160,28 @@ export default function AdminHybridHealthPage() {
     [page, debouncedSearch, status, publicationStatus, saleMode, purchasedOnly, sortBy, sortOrder]
   );
 
-  const { data: overview, isLoading: isOverviewLoading } = trpc.admin.hybridHealth.overview.useQuery(overviewInput, {
+  // Novel table - its own query, independent of the summary cards below.
+  const {
+    data: overview,
+    isLoading: isOverviewLoading,
+    isError: isOverviewError,
+    refetch: refetchOverview,
+  } = trpc.admin.hybridHealth.overview.useQuery(overviewInput, {
     enabled: selectedNovelId === null,
+    ...NO_RETRY_QUERY_OPTIONS,
+  });
+
+  // Summary cards - a separate, independently loading/failing/retryable
+  // request. Never awaited by the overview query above, and never blocks it.
+  const {
+    data: summary,
+    isLoading: isSummaryLoading,
+    isError: isSummaryError,
+    refetch: refetchSummary,
+    isRefetching: isSummaryRefetching,
+  } = trpc.admin.hybridHealth.summary.useQuery(undefined, {
+    enabled: selectedNovelId === null,
+    ...NO_RETRY_QUERY_OPTIONS,
   });
 
   // ---- Detail filter state (scoped to the currently open novel) ----
@@ -165,7 +207,7 @@ export default function AdminHybridHealthPage() {
     return {
       novelId: selectedNovelId,
       page: detailPage,
-      pageSize: PAGE_SIZE,
+      pageSize: DETAIL_PAGE_SIZE,
       search: debouncedDetailSearch.trim() || undefined,
       status: detailStatus,
       isPublished: detailPublished === "all" ? undefined : detailPublished === "published",
@@ -176,6 +218,7 @@ export default function AdminHybridHealthPage() {
 
   const { data: detail, isLoading: isDetailLoading } = trpc.admin.hybridHealth.detail.useQuery(detailInput as any, {
     enabled: detailInput !== null,
+    ...NO_RETRY_QUERY_OPTIONS,
   });
 
   function openDetail(novelId: number) {
@@ -377,8 +420,6 @@ export default function AdminHybridHealthPage() {
   }
 
   // ============ OVERVIEW VIEW ============
-  const summary = overview?.summary;
-
   return (
     <AdminLayout>
       <div className="space-y-4">
@@ -387,25 +428,54 @@ export default function AdminHybridHealthPage() {
           <p className="text-xs text-muted-foreground mt-1">
             ตรวจว่านิยายเรื่องใดและตอนไหนยังไม่มี Plaintext/Web Reader Content - read-only ไม่มีการแก้ไขข้อมูล
           </p>
-          {summary && (
-            <p className="text-xs text-muted-foreground mt-1">
-              นิยายทั้งหมด {summary.totalNovels.toLocaleString()} เรื่อง · ขาด Plaintext {summary.novelsMissingPlaintext.toLocaleString()} เรื่อง
-            </p>
-          )}
         </Card>
 
-        {/* Summary Cards */}
-        {summary && (
+        {/* Summary Cards - independent request from the table below; a
+            failure here never breaks the table. */}
+        <div className="space-y-2">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
-            <SummaryCard label="ตอนทั้งหมด" value={summary.totalEpisodes} />
-            <SummaryCard label="มี Plaintext" value={summary.plaintextCount} />
-            <SummaryCard label="ไม่มี Plaintext" value={summary.missingPlaintextCount} tone="warning" />
-            <SummaryCard label="Legacy Only" value={summary.legacyOnlyCount} tone="warning" />
-            <SummaryCard label="Missing Both" value={summary.missingBothCount} tone="danger" />
-            <SummaryCard label="Published Missing" value={summary.publishedMissingPlaintextCount} tone="danger" />
-            <SummaryCard label="Purchased Missing" value={summary.purchasedMissingPlaintextCount} tone="danger" />
+            <SummaryCard label="ตอนทั้งหมด" value={summary?.totalEpisodes} isLoading={isSummaryLoading} />
+            <SummaryCard label="มี Plaintext" value={summary?.plaintextCount} isLoading={isSummaryLoading} />
+            <SummaryCard label="ไม่มี Plaintext" value={summary?.missingPlaintextCount} tone="warning" isLoading={isSummaryLoading} />
+            <SummaryCard label="Legacy Only" value={summary?.legacyOnlyCount} tone="warning" isLoading={isSummaryLoading} />
+            <SummaryCard label="Missing Both" value={summary?.missingBothCount} tone="danger" isLoading={isSummaryLoading} />
+            <SummaryCard
+              label="Published Missing"
+              value={summary?.publishedMissingPlaintextCount}
+              tone="danger"
+              isLoading={isSummaryLoading}
+            />
+            <SummaryCard
+              label="Purchased Missing"
+              value={summary?.purchasedMissingPlaintextCount}
+              tone="danger"
+              isLoading={isSummaryLoading}
+            />
           </div>
-        )}
+
+          {isSummaryError && (
+            <div className="flex flex-wrap items-center gap-2 text-xs text-amber-700">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              <span>คำนวณภาพรวม (Summary) ไม่สำเร็จ - ตารางนิยายด้านล่างยังใช้งานได้ตามปกติ</span>
+              <Button variant="outline" size="sm" onClick={() => refetchSummary()} disabled={isSummaryRefetching}>
+                {isSummaryRefetching ? (
+                  <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+                )}
+                ลองคำนวณภาพรวมอีกครั้ง
+              </Button>
+            </div>
+          )}
+
+          {!isSummaryError && summary && (
+            <p className="text-xs text-muted-foreground">
+              นิยายทั้งหมด {summary.totalNovels.toLocaleString()} เรื่อง · ขาด Plaintext {summary.novelsMissingPlaintext.toLocaleString()} เรื่อง
+              {summary.cached ? " · จากแคช" : ""}
+              {!summary.isComplete && " · ผลบางส่วน (ยังสแกนไม่ครบ)"}
+            </p>
+          )}
+        </div>
 
         {/* Filters */}
         <Card className="p-4">
@@ -474,10 +544,7 @@ export default function AdminHybridHealthPage() {
                   onChange={(e) => setSortBy(e.target.value as OverviewSortBy)}
                   className="min-h-9 rounded-md border px-3 py-1.5 text-sm"
                 >
-                  <option value="missingPlaintextCount">Missing Plaintext</option>
-                  <option value="publishedMissingPlaintextCount">Published Missing</option>
-                  <option value="purchasedMissingPlaintextCount">Purchased Missing</option>
-                  <option value="coverage">Coverage</option>
+                  <option value="novelId">Novel ID</option>
                   <option value="title">ชื่อเรื่อง</option>
                 </select>
                 <select
@@ -485,15 +552,26 @@ export default function AdminHybridHealthPage() {
                   onChange={(e) => setSortOrder(e.target.value as "asc" | "desc")}
                   className="min-h-9 rounded-md border px-3 py-1.5 text-sm"
                 >
-                  <option value="desc">มาก → น้อย</option>
-                  <option value="asc">น้อย → มาก</option>
+                  <option value="desc">มาก → น้อย / Z → A</option>
+                  <option value="asc">น้อย → มาก / A → Z</option>
                 </select>
               </div>
+              <p className="mt-1 text-xs text-muted-foreground max-w-64">
+                การเรียงตามจำนวนตอนจะเปิดใช้อีกครั้งหลังเพิ่ม Content Health Metadata
+              </p>
             </div>
           </div>
         </Card>
 
-        {isOverviewLoading ? (
+        {isOverviewError ? (
+          <Card className="p-8 text-center space-y-3">
+            <p className="text-sm text-amber-700">โหลดรายการนิยายไม่สำเร็จ กรุณาลองใหม่อีกครั้ง</p>
+            <Button variant="outline" size="sm" onClick={() => refetchOverview()}>
+              <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+              ลองอีกครั้ง
+            </Button>
+          </Card>
+        ) : isOverviewLoading ? (
           <div className="flex items-center justify-center py-12">
             <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
           </div>

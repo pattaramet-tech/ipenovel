@@ -7,8 +7,14 @@ vi.mock("../db", () => dbMock);
 
 const queriesMock = vi.hoisted(() => ({
   queryEpisodeHealthRowsForNovel: vi.fn(),
-  queryHybridHealthGlobalSummary: vi.fn(),
-  queryHybridHealthNovelOverview: vi.fn(),
+  queryHybridHealthCandidateNovelIds: vi.fn(),
+  queryHybridHealthCandidateNovelCount: vi.fn(),
+  queryHybridHealthAggregatesForNovelIds: vi.fn(),
+  queryHybridHealthSummaryBatch: vi.fn(),
+  queryHybridHealthTotalNovelCount: vi.fn(),
+  // A plain value, not a spy - tests are free to shrink this (e.g. to 2) so a
+  // "multiple batches" scenario doesn't require constructing hundreds of rows.
+  HYBRID_HEALTH_SUMMARY_DEFAULT_BATCH_SIZE: 250,
 }));
 vi.mock("./hybridHealthQueries", () => queriesMock);
 
@@ -18,6 +24,8 @@ import {
   classifyPriority,
   getHybridHealthDetail,
   getHybridHealthOverview,
+  getHybridHealthSummary,
+  __resetHybridHealthSummaryStateForTests,
   NovelNotFoundError,
   type EpisodeHealthDetail,
 } from "./hybridHealthService";
@@ -111,7 +119,7 @@ describe("getHybridHealthDetail - classification via the full episode set", () =
 
   async function detailFor(rows: EpisodeHealthRow[]): Promise<EpisodeHealthDetail[]> {
     queriesMock.queryEpisodeHealthRowsForNovel.mockResolvedValue(rows);
-    const result = await getHybridHealthDetail({ novelId: 1, status: "all", pageSize: 100 });
+    const result = await getHybridHealthDetail({ novelId: 1, status: "all", pageSize: 50 });
     return result.episodes;
   }
 
@@ -215,80 +223,256 @@ describe("getHybridHealthDetail - classification via the full episode set", () =
       expect(ep).not.toHaveProperty("fileUrl");
     }
   });
+
+  it("clamps pageSize to 50 even if a larger value is requested", async () => {
+    const rows = Array.from({ length: 60 }, (_, i) =>
+      makeRow({ episodeId: i + 1, hasPlaintext: false, hasLegacyFile: false })
+    );
+    queriesMock.queryEpisodeHealthRowsForNovel.mockResolvedValue(rows);
+    const result = await getHybridHealthDetail({ novelId: 1, status: "all", pageSize: 500 });
+    expect(result.pageSize).toBe(50);
+    expect(result.episodes).toHaveLength(50);
+  });
 });
 
-describe("getHybridHealthOverview - defaults", () => {
+describe("getHybridHealthOverview - page-first, sequential (no full-table aggregate, no Promise.all)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    queriesMock.queryHybridHealthNovelOverview.mockResolvedValue({ novels: [], total: 0 });
-    queriesMock.queryHybridHealthGlobalSummary.mockResolvedValue({
-      totalNovels: 0,
-      novelsMissingPlaintext: 0,
-      totalEpisodes: 0,
-      plaintextCount: 0,
-      missingPlaintextCount: 0,
-      legacyOnlyCount: 0,
-      missingBothCount: 0,
-      publishedMissingPlaintextCount: 0,
-      purchasedMissingPlaintextCount: 0,
-    });
+    queriesMock.queryHybridHealthCandidateNovelIds.mockResolvedValue([]);
+    queriesMock.queryHybridHealthCandidateNovelCount.mockResolvedValue(0);
+    queriesMock.queryHybridHealthAggregatesForNovelIds.mockResolvedValue([]);
   });
 
   it("applies documented defaults when called with no input", async () => {
     await getHybridHealthOverview();
-    expect(queriesMock.queryHybridHealthNovelOverview).toHaveBeenCalledWith(
+    expect(queriesMock.queryHybridHealthCandidateNovelIds).toHaveBeenCalledWith(
       expect.objectContaining({
         page: 1,
         pageSize: 50,
         status: "missing_plaintext",
-        sortBy: "missingPlaintextCount",
+        sortBy: "novelId",
         sortOrder: "desc",
       })
     );
   });
 
-  it("computes plaintextCoveragePercent per novel, 0% for a novel with zero episodes", async () => {
-    queriesMock.queryHybridHealthNovelOverview.mockResolvedValue({
-      novels: [
-        {
-          novelId: 1,
-          title: "Empty Novel",
-          publicationStatus: "published",
-          totalEpisodes: 0,
-          plaintextCount: 0,
-          missingPlaintextCount: 0,
-          plaintextOnlyCount: 0,
-          hybridCount: 0,
-          legacyOnlyCount: 0,
-          missingBothCount: 0,
-          publishedMissingPlaintextCount: 0,
-          purchasedMissingPlaintextCount: 0,
-          packageMissingPlaintextCount: 0,
-          chapterMissingPlaintextCount: 0,
-          riskyEpisodeCount: 0,
-        },
-        {
-          novelId: 2,
-          title: "Half Done",
-          publicationStatus: "published",
-          totalEpisodes: 4,
-          plaintextCount: 3,
-          missingPlaintextCount: 1,
-          plaintextOnlyCount: 3,
-          hybridCount: 0,
-          legacyOnlyCount: 1,
-          missingBothCount: 0,
-          publishedMissingPlaintextCount: 0,
-          purchasedMissingPlaintextCount: 0,
-          packageMissingPlaintextCount: 0,
-          chapterMissingPlaintextCount: 1,
-          riskyEpisodeCount: 0,
-        },
-      ],
-      total: 2,
+  it("never calls queryHybridHealthGlobalSummary-shaped work - overview does not compute the summary", async () => {
+    await getHybridHealthOverview();
+    // The mock module has no such export anymore; asserting the response
+    // shape has no `summary` field is the behavioral proof.
+    const result = await getHybridHealthOverview();
+    expect(result).not.toHaveProperty("summary");
+  });
+
+  it("succeeds even when the Summary scan's own queries are broken - separate failure boundaries by construction", async () => {
+    queriesMock.queryHybridHealthTotalNovelCount.mockRejectedValue(new Error("summary scan is down"));
+    queriesMock.queryHybridHealthSummaryBatch.mockRejectedValue(new Error("summary scan is down"));
+    // Overview never imports/calls either of the above - this resolves fine.
+    await expect(getHybridHealthOverview()).resolves.toMatchObject({ novels: [], total: 0 });
+  });
+
+  it("calls candidate ids -> candidate count -> aggregates strictly in that order (sequential, not Promise.all)", async () => {
+    const callOrder: string[] = [];
+    queriesMock.queryHybridHealthCandidateNovelIds.mockImplementation(async () => {
+      callOrder.push("candidateIds");
+      return [{ novelId: 1 }];
     });
+    queriesMock.queryHybridHealthCandidateNovelCount.mockImplementation(async () => {
+      callOrder.push("candidateCount");
+      return 1;
+    });
+    queriesMock.queryHybridHealthAggregatesForNovelIds.mockImplementation(async () => {
+      callOrder.push("aggregates");
+      return [];
+    });
+
+    await getHybridHealthOverview();
+    expect(callOrder).toEqual(["candidateIds", "candidateCount", "aggregates"]);
+  });
+
+  it("skips the aggregates query entirely when there are no candidate ids", async () => {
+    queriesMock.queryHybridHealthCandidateNovelIds.mockResolvedValue([]);
+    queriesMock.queryHybridHealthCandidateNovelCount.mockResolvedValue(0);
+    await getHybridHealthOverview();
+    expect(queriesMock.queryHybridHealthAggregatesForNovelIds).not.toHaveBeenCalled();
+  });
+
+  it("passes exactly the candidate ids (in order) to the aggregates query", async () => {
+    queriesMock.queryHybridHealthCandidateNovelIds.mockResolvedValue([{ novelId: 5 }, { novelId: 2 }, { novelId: 9 }]);
+    queriesMock.queryHybridHealthCandidateNovelCount.mockResolvedValue(3);
+    await getHybridHealthOverview();
+    expect(queriesMock.queryHybridHealthAggregatesForNovelIds).toHaveBeenCalledWith([5, 2, 9]);
+  });
+
+  it("computes plaintextCoveragePercent per novel, 0% for a novel with zero episodes", async () => {
+    queriesMock.queryHybridHealthCandidateNovelIds.mockResolvedValue([{ novelId: 1 }, { novelId: 2 }]);
+    queriesMock.queryHybridHealthCandidateNovelCount.mockResolvedValue(2);
+    queriesMock.queryHybridHealthAggregatesForNovelIds.mockResolvedValue([
+      {
+        novelId: 1,
+        title: "Empty Novel",
+        publicationStatus: "published",
+        totalEpisodes: 0,
+        plaintextCount: 0,
+        missingPlaintextCount: 0,
+        plaintextOnlyCount: 0,
+        hybridCount: 0,
+        legacyOnlyCount: 0,
+        missingBothCount: 0,
+        publishedMissingPlaintextCount: 0,
+        purchasedMissingPlaintextCount: 0,
+        packageMissingPlaintextCount: 0,
+        chapterMissingPlaintextCount: 0,
+        riskyEpisodeCount: 0,
+      },
+      {
+        novelId: 2,
+        title: "Half Done",
+        publicationStatus: "published",
+        totalEpisodes: 4,
+        plaintextCount: 3,
+        missingPlaintextCount: 1,
+        plaintextOnlyCount: 3,
+        hybridCount: 0,
+        legacyOnlyCount: 1,
+        missingBothCount: 0,
+        publishedMissingPlaintextCount: 0,
+        purchasedMissingPlaintextCount: 0,
+        packageMissingPlaintextCount: 0,
+        chapterMissingPlaintextCount: 1,
+        riskyEpisodeCount: 0,
+      },
+    ]);
     const result = await getHybridHealthOverview();
     expect(result.novels[0].plaintextCoveragePercent).toBe(0);
     expect(result.novels[1].plaintextCoveragePercent).toBe(75);
+  });
+});
+
+describe("getHybridHealthSummary - bounded batch, cache, single-flight", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetHybridHealthSummaryStateForTests();
+    queriesMock.queryHybridHealthTotalNovelCount.mockResolvedValue(5);
+    queriesMock.HYBRID_HEALTH_SUMMARY_DEFAULT_BATCH_SIZE = 2;
+  });
+
+  function batchRow(overrides: Partial<{ episodeId: number; novelId: number; hasPlaintext: boolean; hasLegacyFile: boolean; isPublished: boolean; saleMode: "chapter" | "package"; isPurchased: boolean }> = {}) {
+    return {
+      episodeId: 1,
+      novelId: 1,
+      hasPlaintext: true,
+      hasLegacyFile: false,
+      isPublished: false,
+      saleMode: "chapter" as const,
+      isPurchased: false,
+      ...overrides,
+    };
+  }
+
+  it("never uses Promise.all - queryHybridHealthTotalNovelCount and the batch loop run sequentially, and each batch awaits the previous one via the cursor", async () => {
+    const calls: Array<{ fn: string; cursor?: number }> = [];
+    queriesMock.queryHybridHealthTotalNovelCount.mockImplementation(async () => {
+      calls.push({ fn: "totalNovelCount" });
+      return 1;
+    });
+    queriesMock.queryHybridHealthSummaryBatch.mockImplementation(async (cursor: number) => {
+      calls.push({ fn: "batch", cursor });
+      if (cursor === 0) return [batchRow({ episodeId: 1 }), batchRow({ episodeId: 2 })];
+      if (cursor === 2) return [batchRow({ episodeId: 3 })];
+      throw new Error(`unexpected cursor ${cursor}`);
+    });
+
+    await getHybridHealthSummary();
+    expect(calls).toEqual([
+      { fn: "totalNovelCount" },
+      { fn: "batch", cursor: 0 },
+      { fn: "batch", cursor: 2 },
+    ]);
+  });
+
+  it("aggregates counts correctly across multiple sequential batches", async () => {
+    queriesMock.queryHybridHealthSummaryBatch.mockImplementation(async (cursor: number) => {
+      if (cursor === 0) {
+        return [
+          batchRow({ episodeId: 1, novelId: 1, hasPlaintext: true }),
+          batchRow({ episodeId: 2, novelId: 1, hasPlaintext: false, hasLegacyFile: true, isPublished: true }),
+        ];
+      }
+      if (cursor === 2) {
+        return [batchRow({ episodeId: 3, novelId: 2, hasPlaintext: false, hasLegacyFile: false, isPurchased: true })];
+      }
+      return [];
+    });
+
+    const result = await getHybridHealthSummary();
+    expect(result.totalEpisodes).toBe(3);
+    expect(result.plaintextCount).toBe(1);
+    expect(result.missingPlaintextCount).toBe(2);
+    expect(result.legacyOnlyCount).toBe(1);
+    expect(result.missingBothCount).toBe(1);
+    expect(result.publishedMissingPlaintextCount).toBe(1);
+    expect(result.purchasedMissingPlaintextCount).toBe(1);
+    expect(result.novelsMissingPlaintext).toBe(2); // novels 1 and 2 both have >=1 missing-plaintext episode
+    expect(result.totalNovels).toBe(5);
+    expect(result.isComplete).toBe(true);
+    expect(result.cached).toBe(false);
+    expect(typeof result.generatedAt).toBe("string");
+  });
+
+  it("caches the result for 5 minutes - a second call within the TTL does not re-scan and reports cached:true", async () => {
+    queriesMock.queryHybridHealthSummaryBatch.mockResolvedValue([]);
+    const first = await getHybridHealthSummary();
+    expect(first.cached).toBe(false);
+    expect(queriesMock.queryHybridHealthSummaryBatch).toHaveBeenCalledTimes(1);
+
+    const second = await getHybridHealthSummary();
+    expect(second.cached).toBe(true);
+    expect(queriesMock.queryHybridHealthSummaryBatch).toHaveBeenCalledTimes(1); // no additional scan
+  });
+
+  it("single-flight: concurrent callers while a scan is in flight all await the SAME scan, not one each", async () => {
+    let resolveBatch: (rows: unknown[]) => void = () => {};
+    const firstBatch = new Promise<unknown[]>((resolve) => {
+      resolveBatch = resolve;
+    });
+    queriesMock.queryHybridHealthSummaryBatch.mockImplementationOnce(() => firstBatch).mockResolvedValue([]);
+
+    const callers = [
+      getHybridHealthSummary(),
+      getHybridHealthSummary(),
+      getHybridHealthSummary(),
+      getHybridHealthSummary(),
+      getHybridHealthSummary(),
+    ];
+
+    resolveBatch([]);
+    const results = await Promise.all(callers);
+
+    expect(queriesMock.queryHybridHealthSummaryBatch).toHaveBeenCalledTimes(1);
+    expect(queriesMock.queryHybridHealthTotalNovelCount).toHaveBeenCalledTimes(1);
+    expect(results.every((r) => r.totalEpisodes === 0)).toBe(true);
+  });
+
+  it("hits the safety batch limit without throwing, and reports isComplete:false (a partial result, never a failed Overview)", async () => {
+    queriesMock.queryHybridHealthSummaryBatch.mockImplementation(async (cursor: number) => [
+      batchRow({ episodeId: cursor + 1 }),
+      batchRow({ episodeId: cursor + 2 }),
+    ]);
+
+    await expect(getHybridHealthSummary()).resolves.toMatchObject({ isComplete: false });
+  });
+
+  it("a genuine query failure propagates (is not silently swallowed as a partial result)", async () => {
+    queriesMock.queryHybridHealthSummaryBatch.mockRejectedValue(new Error("hybridHealth query failed: summaryBatch"));
+    await expect(getHybridHealthSummary()).rejects.toThrow();
+  });
+
+  it("does not cache a failed scan - the next call retries", async () => {
+    queriesMock.queryHybridHealthSummaryBatch.mockRejectedValueOnce(new Error("boom"));
+    await expect(getHybridHealthSummary()).rejects.toThrow();
+
+    queriesMock.queryHybridHealthSummaryBatch.mockResolvedValue([]);
+    await expect(getHybridHealthSummary()).resolves.toMatchObject({ cached: false, isComplete: true });
   });
 });
