@@ -235,27 +235,38 @@ export async function queryHybridHealthNovelOverview(
     return { novels: [], total: 0 };
   }
 
-  // Step 2: Get episode aggregates for all novels in a single query
+  // Step 2: Get episode aggregates in BATCHES to avoid TiDB memory limit
   const notPlaintext = sql`(${EPISODE_EXISTS_SQL} AND NOT ${HAS_PLAINTEXT_SQL})`;
   const isPlaintext = sql`(${EPISODE_EXISTS_SQL} AND ${HAS_PLAINTEXT_SQL})`;
 
-  const episodeStats = await db
-    .select({
-      novelId: episodes.novelId,
-      totalEpisodes: caseCount(EPISODE_EXISTS_SQL),
-      plaintextCount: caseCount(isPlaintext),
-      missingPlaintextCount: caseCount(notPlaintext),
-      legacyOnlyCount: caseCount(sql`(${notPlaintext} AND ${HAS_LEGACY_FILE_SQL})`),
-      missingBothCount: caseCount(sql`(${notPlaintext} AND NOT ${HAS_LEGACY_FILE_SQL})`),
-      publishedMissingPlaintextCount: caseCount(sql`(${notPlaintext} AND ${episodes.isPublished} = 1)`),
-      purchasedMissingPlaintextCount: caseCount(sql`(${notPlaintext} AND ${IS_PURCHASED_SQL})`),
-    })
-    .from(episodes)
-    .where(inArray(episodes.novelId, allNovelRows.map((r: any) => r.id)))
-    .groupBy(episodes.novelId);
+  const BATCH_SIZE = 30; // Process 30 novels at a time
+  const statsMap = new Map();
+
+  for (let i = 0; i < allNovelRows.length; i += BATCH_SIZE) {
+    const batch = allNovelRows.slice(i, i + BATCH_SIZE);
+    const batchIds = batch.map((r: any) => r.id);
+
+    const batchStats = await db
+      .select({
+        novelId: episodes.novelId,
+        totalEpisodes: caseCount(EPISODE_EXISTS_SQL),
+        plaintextCount: caseCount(isPlaintext),
+        missingPlaintextCount: caseCount(notPlaintext),
+        legacyOnlyCount: caseCount(sql`(${notPlaintext} AND ${HAS_LEGACY_FILE_SQL})`),
+        missingBothCount: caseCount(sql`(${notPlaintext} AND NOT ${HAS_LEGACY_FILE_SQL})`),
+        publishedMissingPlaintextCount: caseCount(sql`(${notPlaintext} AND ${episodes.isPublished} = 1)`),
+        purchasedMissingPlaintextCount: caseCount(sql`(${notPlaintext} AND ${IS_PURCHASED_SQL})`),
+      })
+      .from(episodes)
+      .where(inArray(episodes.novelId, batchIds))
+      .groupBy(episodes.novelId);
+
+    for (const stat of batchStats) {
+      statsMap.set(stat.novelId, stat);
+    }
+  }
 
   // Step 3: Merge novel metadata with episode stats
-  const statsMap = new Map(episodeStats.map((s: any) => [s.novelId, s]));
   let mergedNovels = allNovelRows.map((n: any) => {
     const stats = statsMap.get(n.id) || {
       totalEpisodes: 0,
