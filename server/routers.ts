@@ -1853,22 +1853,64 @@ export const appRouter = router({
         }),
     }),
 
-    // ============ HYBRID CONTENT HEALTH DASHBOARD (Phase 1, read-only) ============
-    // Surfaces episodes at risk from the hybrid fileUrl/content model: rows
-    // with neither content nor fileUrl (unreadable even if purchased),
-    // packages whose episodeNumber can't be normalized, and duplicate
-    // normalized ranges within a novel. No mutations - purely diagnostic.
+    // ============ HYBRID CONTENT HEALTH DASHBOARD (Phase 2, read-only) ============
+    // Surfaces exactly which novels/episodes are missing plaintext web-reader
+    // content vs. only having a legacy file. Every query is DB-aggregated
+    // and lightweight - never loads episodes.content/fileUrl as a raw value.
+    // No mutations anywhere - purely diagnostic.
     hybridHealth: router({
-      overview: adminProcedure.query(async () => {
-        const { getAllNovelHealthOverview } = await import("./services/hybridHealthService");
-        return getAllNovelHealthOverview();
-      }),
+      overview: adminProcedure
+        .input(
+          z
+            .object({
+              page: z.number().int().min(1).optional(),
+              pageSize: z.number().int().min(1).max(100).optional(),
+              search: z.string().optional(),
+              status: z.enum(["all", "missing_plaintext", "legacy_only", "missing_both", "has_plaintext"]).optional(),
+              publicationStatus: z.enum(["all", "published", "archived"]).optional(),
+              saleMode: z.enum(["all", "chapter", "package"]).optional(),
+              purchasedOnly: z.boolean().optional(),
+              sortBy: z
+                .enum([
+                  "missingPlaintextCount",
+                  "publishedMissingPlaintextCount",
+                  "purchasedMissingPlaintextCount",
+                  "coverage",
+                  "title",
+                ])
+                .optional(),
+              sortOrder: z.enum(["asc", "desc"]).optional(),
+            })
+            .optional()
+        )
+        .query(async ({ input }) => {
+          const { getHybridHealthOverview } = await import("./services/hybridHealthService");
+          return getHybridHealthOverview(input ?? {});
+        }),
 
       detail: adminProcedure
-        .input(z.object({ novelId: z.number() }))
+        .input(
+          z.object({
+            novelId: z.number(),
+            page: z.number().int().min(1).optional(),
+            pageSize: z.number().int().min(1).max(100).optional(),
+            search: z.string().optional(),
+            status: z.enum(["all", "missing_plaintext", "legacy_only", "missing_both", "has_plaintext"]).optional(),
+            isPublished: z.boolean().optional(),
+            saleMode: z.enum(["chapter", "package"]).optional(),
+            purchasedOnly: z.boolean().optional(),
+          })
+        )
         .query(async ({ input }) => {
-          const { getNovelHealthDetail } = await import("./services/hybridHealthService");
-          return getNovelHealthDetail(input.novelId);
+          const { getHybridHealthDetail, NovelNotFoundError } = await import("./services/hybridHealthService");
+          try {
+            return await getHybridHealthDetail(input);
+          } catch (error) {
+            if (error instanceof NovelNotFoundError) {
+              throw new TRPCError({ code: "NOT_FOUND", message: error.message });
+            }
+            throw error;
+          }
         }),
     }),
 
