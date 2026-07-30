@@ -15,6 +15,37 @@ function readSource(relativePath: string): string {
   return readFileSync(path.join(repoRoot, relativePath), "utf8").replace(/\r\n/g, "\n");
 }
 
+describe("error_description is never read, logged, or forwarded anywhere in the Google callback", () => {
+  const source = readSource("server/_core/googleOAuth.ts");
+
+  it("googleOAuth.ts never reads req.query.error_description at all - no getQueryParam(req, \"error_description\") call, no req.query.error_description access, anywhere in the file (the word may still appear in comments explaining why)", () => {
+    expect(source).not.toMatch(/getQueryParam\(req,\s*["']error_description["']\)/);
+    expect(source).not.toMatch(/req\.query\.error_description/);
+    expect(source).not.toMatch(/req\.query\[["']error_description["']\]/);
+  });
+
+  it("the only value ever passed to console.warn/console.error in the provider-error branch is the fixed OAuth error CODE, length-capped", () => {
+    const errorBranchStart = source.indexOf('const providerError = getQueryParam(req, "error");');
+    const errorBranchEnd = source.indexOf("const code = getQueryParam", errorBranchStart);
+    expect(errorBranchStart).toBeGreaterThan(-1);
+    expect(errorBranchEnd).toBeGreaterThan(errorBranchStart);
+    const errorBranch = source.slice(errorBranchStart, errorBranchEnd);
+
+    expect(errorBranch).toMatch(/console\.warn\(`\[GoogleOAuth\] Google returned an authorization error: \$\{providerError\.slice\(0, 64\)\}`\)/);
+    // Never a second console call, never string-concatenates anything
+    // else (like a description) into this warning.
+    const consoleCallsInBranch = [...errorBranch.matchAll(/console\.(warn|error)\(/g)];
+    expect(consoleCallsInBranch.length).toBe(1);
+  });
+
+  it("the browser response for a provider error is always the fixed generic string, never providerError or anything derived from the query string", () => {
+    const errorBranchStart = source.indexOf('const providerError = getQueryParam(req, "error");');
+    const errorBranchEnd = source.indexOf("const code = getQueryParam", errorBranchStart);
+    const errorBranch = source.slice(errorBranchStart, errorBranchEnd);
+    expect(errorBranch).toMatch(/fail\(400, "Google sign-in was not completed"\)/);
+  });
+});
+
 describe("GOOGLE_OAUTH_REDIRECT_URI is read verbatim from the environment, never derived from a request header", () => {
   const envSource = readSource("server/_core/env.ts");
   const googleOAuthSource = readSource("server/_core/googleOAuth.ts");
@@ -200,14 +231,17 @@ describe("drizzle migration 0033 is purely additive", () => {
     expect(migrationSource).not.toMatch(/RENAME/i);
   });
 
-  it("only CREATE TABLE / CREATE INDEX statements", () => {
+  it("only CREATE TABLE / CREATE INDEX / ALTER TABLE ADD CONSTRAINT (the FK) statements - never a DROP/MODIFY/RENAME variant of ALTER", () => {
     const statements = migrationSource
       .split("--> statement-breakpoint")
       .map((s) => s.trim())
       .filter(Boolean);
     expect(statements.length).toBeGreaterThan(0);
     for (const statement of statements) {
-      expect(statement.toUpperCase()).toMatch(/^CREATE (TABLE|INDEX)/);
+      const upper = statement.toUpperCase();
+      const isCreate = /^CREATE (TABLE|INDEX)/.test(upper);
+      const isAddConstraint = /^ALTER TABLE `authIdentities` ADD CONSTRAINT/i.test(statement);
+      expect(isCreate || isAddConstraint).toBe(true);
     }
   });
 
@@ -239,5 +273,41 @@ describe("authIdentities unique constraint / index names are specific, not gener
     expect(migrationSource).toMatch(/authIdentities_provider_providerSubject_unique/);
     expect(migrationSource).toMatch(/authIdentities_userId_provider_unique/);
     expect(migrationSource).toMatch(/authIdentities_userId_idx/);
+  });
+});
+
+describe("authIdentities.userId has a real, specifically-named foreign key to users.id", () => {
+  const migrationSource = readSource("drizzle/0033_add_auth_identities.sql");
+  const schemaSource = readSource("drizzle/schema.ts");
+
+  it("the migration adds a FOREIGN KEY constraint named authIdentities_userId_users_id_fk, referencing users(id) - standard MySQL/MariaDB/TiDB syntax, no engine-specific extension", () => {
+    expect(migrationSource).toMatch(
+      /ALTER TABLE `authIdentities` ADD CONSTRAINT `authIdentities_userId_users_id_fk` FOREIGN KEY \(`userId`\) REFERENCES `users`\(`id`\)/
+    );
+  });
+
+  it("the constraint name is specific and unique in the migration - never a generic fk_1/fk_2 form", () => {
+    expect(migrationSource).not.toMatch(/CONSTRAINT `fk_\d+`/i);
+    const fkConstraintNames = [...migrationSource.matchAll(/ADD CONSTRAINT `([^`]+)` FOREIGN KEY/g)].map((m) => m[1]);
+    expect(fkConstraintNames).toEqual(["authIdentities_userId_users_id_fk"]);
+  });
+
+  it("uses ON DELETE CASCADE - an identity row has no meaning once its user is gone", () => {
+    expect(migrationSource).toMatch(/FOREIGN KEY \(`userId`\) REFERENCES `users`\(`id`\) ON DELETE cascade/i);
+  });
+
+  it("drizzle/schema.ts declares the same foreignKey() with the same explicit name and onDelete('cascade'), referencing users.id", () => {
+    const authIdentitiesStart = schemaSource.indexOf("export const authIdentities");
+    const authIdentitiesEnd = schemaSource.indexOf("export type AuthIdentity", authIdentitiesStart);
+    const authIdentitiesBlock = schemaSource.slice(authIdentitiesStart, authIdentitiesEnd);
+
+    expect(authIdentitiesBlock).toMatch(/name:\s*"authIdentities_userId_users_id_fk"/);
+    expect(authIdentitiesBlock).toMatch(/foreignColumns:\s*\[users\.id\]/);
+    expect(authIdentitiesBlock).toMatch(/\.onDelete\("cascade"\)/);
+  });
+
+  it("this is the only foreign key in the entire migration - no other table gained one as a side effect", () => {
+    const fkConstraints = [...migrationSource.matchAll(/FOREIGN KEY/g)];
+    expect(fkConstraints.length).toBe(1);
   });
 });

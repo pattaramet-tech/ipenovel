@@ -1,7 +1,7 @@
 {
   "version": "5",
   "dialect": "mysql",
-  "id": "8ce0cccf-719f-4da2-9ef4-0de2968bc1ad",
+  "id": "ce434292-f78e-482e-94e4-742e84097698",
   "prevId": "1ede90e6-a54c-4815-b6a3-be529bda2a7e",
   "tables": {
     "authIdentities": {
@@ -85,7 +85,21 @@
           "isUnique": true
         }
       },
-      "foreignKeys": {},
+      "foreignKeys": {
+        "authIdentities_userId_users_id_fk": {
+          "name": "authIdentities_userId_users_id_fk",
+          "tableFrom": "authIdentities",
+          "tableTo": "users",
+          "columnsFrom": [
+            "userId"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {
         "authIdentities_id": {
           "name": "authIdentities_id",

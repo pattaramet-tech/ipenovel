@@ -11,6 +11,7 @@ import {
   uniqueIndex,
   index,
   unique,
+  foreignKey,
 } from "drizzle-orm/mysql-core";
 
 /**
@@ -58,11 +59,16 @@ export type InsertUser = typeof users.$inferInsert;
  * is linked; more than one match fails closed (never auto-links, never
  * picks the first row); no match creates a new user.
  *
- * No `.references()` foreign key constraint, matching every other
- * relationship in this schema (see e.g. couponUsages.orderId,
- * purchases.userId) - joins are resolved in application code, not
- * enforced by MySQL/MariaDB FK constraints, for consistency with the rest
- * of this file.
+ * Unlike every other relationship in this schema (see e.g.
+ * couponUsages.orderId, purchases.userId, which are plain unenforced int
+ * columns), userId below IS a real, named foreign key constraint
+ * (authIdentities_userId_users_id_fk) to users.id, ON DELETE CASCADE -
+ * deliberately different from this schema's usual convention because an
+ * authIdentities row is meaningless once its user is gone (it exists
+ * purely to let that user log in), so letting it silently reference a
+ * deleted user (or requiring a separate manual cleanup step every place a
+ * user might ever be deleted) is strictly worse than the database
+ * enforcing it directly.
  */
 export const authIdentities = mysqlTable(
   "authIdentities",
@@ -110,6 +116,16 @@ export const authIdentities = mysqlTable(
       table.userId,
       table.provider
     ),
+    // ON DELETE CASCADE: an authIdentities row has no meaning independent
+    // of the user it lets sign in as - if that user is ever deleted, the
+    // identity row should go with it rather than being left behind as an
+    // orphan or blocking the delete. Standard MySQL/MariaDB/TiDB
+    // REFERENCES syntax - no engine-specific extension.
+    userIdFk: foreignKey({
+      name: "authIdentities_userId_users_id_fk",
+      columns: [table.userId],
+      foreignColumns: [users.id],
+    }).onDelete("cascade"),
   })
 );
 

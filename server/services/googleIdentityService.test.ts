@@ -202,6 +202,70 @@ describe("resolveGoogleIdentity - new user (scenario 21)", () => {
       tx
     );
   });
+
+  it("uses the REAL computeGoogleOpenId (not mocked) so createGoogleUserWithIdentity's caller-visible contract matches production - a 255-char sub still resolves to a <=64-char openId end to end", async () => {
+    const { tx } = fakeTx();
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDbWithTransaction(tx) as any);
+    vi.spyOn(db, "getAuthIdentity").mockResolvedValue(undefined);
+    vi.spyOn(db, "findUsersByNormalizedEmail").mockResolvedValue([]);
+
+    const longSub = "8".repeat(255);
+    const expectedOpenId = db.computeGoogleOpenId(longSub);
+    expect(expectedOpenId.length).toBeLessThanOrEqual(64);
+
+    // createGoogleUserWithIdentity itself is still mocked here (no real DB
+    // insert), but it's asserted to have been called with the exact
+    // providerSubject - the openId computation this test cares about
+    // happens for real, unmocked, inside computeGoogleOpenId above.
+    const createdUser = { id: 101, openId: expectedOpenId, name: null, email: "user@example.com", loginMethod: "google" } as any;
+    const createSpy = vi.spyOn(db, "createGoogleUserWithIdentity").mockResolvedValue(createdUser);
+
+    const result = await resolveGoogleIdentity({ ...GOOGLE_INPUT, sub: longSub });
+
+    expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({ providerSubject: longSub }), tx);
+    expect(result.outcome === "created" && result.user.openId).toBe(expectedOpenId);
+    expect((result.outcome === "created" && result.user.openId.length) || 0).toBeLessThanOrEqual(64);
+  });
+});
+
+describe("resolveGoogleIdentity - repeat login with the same sub (scenario 22: same openId, no duplicate user)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("first login creates a user with a computeGoogleOpenId-derived openId; a second login with the SAME sub finds the existing identity and returns the SAME openId, never calling createGoogleUserWithIdentity again", async () => {
+    const sub = "repeat-login-sub-123";
+    const expectedOpenId = db.computeGoogleOpenId(sub);
+
+    // --- First login: no identity, no matching user -> creates one.
+    const { tx: tx1 } = fakeTx();
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDbWithTransaction(tx1) as any);
+    vi.spyOn(db, "getAuthIdentity").mockResolvedValueOnce(undefined);
+    vi.spyOn(db, "findUsersByNormalizedEmail").mockResolvedValueOnce([]);
+    const createdUser = { id: 202, openId: expectedOpenId, name: "Somchai", email: "user@example.com", loginMethod: "google" } as any;
+    const createSpy = vi.spyOn(db, "createGoogleUserWithIdentity").mockResolvedValueOnce(createdUser);
+
+    const firstResult = await resolveGoogleIdentity({ ...GOOGLE_INPUT, sub });
+    expect(firstResult).toEqual({ outcome: "created", user: createdUser });
+    expect(createSpy).toHaveBeenCalledTimes(1);
+
+    // --- Second login, same sub: an authIdentities row now exists -> must
+    // reuse the SAME user/openId, never create a second user.
+    const { tx: tx2 } = fakeTx();
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDbWithTransaction(tx2) as any);
+    vi.spyOn(db, "getAuthIdentity").mockResolvedValueOnce({ id: 5, userId: 202, provider: "google", providerSubject: sub } as any);
+    vi.spyOn(db, "getUserById").mockResolvedValue(createdUser);
+
+    const secondResult = await resolveGoogleIdentity({ ...GOOGLE_INPUT, sub });
+
+    expect(secondResult.outcome).toBe("linked_existing_identity");
+    expect(secondResult.outcome === "linked_existing_identity" && secondResult.user.openId).toBe(expectedOpenId);
+    expect(secondResult.outcome === "linked_existing_identity" && secondResult.user.id).toBe(202);
+    // Still only ever called once, across both logins.
+    expect(createSpy).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("resolveGoogleIdentity - concurrent insert race (scenario 23)", () => {

@@ -3,6 +3,7 @@ import type { Express, Request, Response } from "express";
 import * as db from "../db";
 import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
 import { getSessionCookieOptions } from "./cookies";
+import { ENV } from "./env";
 import { normalizeProviderName } from "./providerName";
 import { sdk } from "./sdk";
 
@@ -13,6 +14,23 @@ function getQueryParam(req: Request, key: string): string | undefined {
 
 export function registerOAuthRoutes(app: Express) {
   app.get("/api/oauth/callback", async (req: Request, res: Response) => {
+    // Feature-flag guard, added for the Google OpenID Connect direct-login
+    // flag (AUTH_PROVIDER=google) - see server/_core/googleOAuth.ts. Only
+    // one login provider is ever "active" server-side at a time.
+    // ENV.authProvider defaults to "manus" for any unset/unrecognized
+    // value, so this route behaves exactly as before (fully open, no
+    // change at all) unless AUTH_PROVIDER is explicitly set to the exact
+    // literal "google" - at which point it responds 404 and returns
+    // immediately, before reading code/state, before any token exchange,
+    // before any database access, before any session is ever minted.
+    // Every line of the original Manus logic below this guard is
+    // otherwise completely unchanged, kept in place for instant rollback
+    // (set AUTH_PROVIDER back to "manus", or unset it).
+    if (ENV.authProvider === "google") {
+      res.status(404).end();
+      return;
+    }
+
     const code = getQueryParam(req, "code");
     const state = getQueryParam(req, "state");
 

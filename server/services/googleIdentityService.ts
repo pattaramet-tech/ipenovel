@@ -68,7 +68,9 @@ async function touchExistingUser(
  *     -> FAIL CLOSED. Never auto-links, never picks a row, never creates a
  *     new account (a third option that would make the ambiguity worse).
  *  4. No identity, no existing user by email -> create a new user (openId
- *     `google:<sub>`) and its identity row, atomically.
+ *     derived from the sub via db.ts's computeGoogleOpenId - never the
+ *     raw sub directly, which can be up to 255 chars against a 64-char
+ *     openId column) and its identity row, atomically.
  *
  * Concurrent logins for the same Google account (two tabs, a double
  * click, a network retry) are handled by catching a unique-constraint

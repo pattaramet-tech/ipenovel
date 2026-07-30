@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql, gt, lt, ne, like } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { getTableColumns } from "drizzle-orm";
@@ -284,12 +285,43 @@ export async function linkGoogleIdentity(
   });
 }
 
+const GOOGLE_OPENID_PREFIX = "google:";
+
+/**
+ * Deterministically derives a `users.openId` value for a brand-new Google
+ * user from the provider's `sub` claim alone (never the email - an
+ * account's email can change, and openId must not).
+ *
+ * `users.openId` is `varchar(64)` (see drizzle/schema.ts) and this
+ * migration round deliberately does NOT widen it. Google's `sub` claim can
+ * be up to 255 characters, so `google:<raw-sub>` (up to 262 chars) would
+ * silently truncate or fail to insert for some real Google accounts.
+ * Instead this hashes the sub with SHA-256 and base64url-encodes the
+ * digest (43 characters for any input, fixed-length regardless of the raw
+ * sub's length) - `"google:"` (7 chars) + 43 chars = 50 chars, always
+ * comfortably under the 64-char column limit, and deterministic (the same
+ * sub always hashes to the same openId, so a repeat login for the same
+ * Google account resolves to the same user via
+ * getUserByOpenId/authenticateRequest - but note the actual repeat-login
+ * path in resolveGoogleIdentity never recomputes this at all; it finds
+ * the existing authIdentities row by raw providerSubject first and reuses
+ * that row's stored userId, so this function is only ever called once per
+ * real person, the moment their account is first created). The raw,
+ * un-hashed sub is still stored in full in authIdentities.providerSubject
+ * - this hash is only ever used for the openId/session-identity value,
+ * never as a substitute for the real provider subject anywhere else.
+ */
+export function computeGoogleOpenId(providerSubject: string): string {
+  const digest = createHash("sha256").update(providerSubject, "utf8").digest("base64url");
+  return `${GOOGLE_OPENID_PREFIX}${digest}`;
+}
+
 /**
  * Creates a brand-new user for a Google identity that matched no existing
  * account by identity OR by email, plus its authIdentities row, as two
  * inserts on the SAME executor (so both are visible to each other and to
  * the rest of the caller's transaction before anything commits). Mints a
- * stable, app-owned `openId` of the form `google:<sub>` - distinct by
+ * stable, app-owned `openId` via computeGoogleOpenId above - distinct by
  * construction from every Manus-issued openId (which are never prefixed
  * this way) and from the `admin-<id>` synthetic form local admin sessions
  * use (see server/_core/sdk.ts's authenticateRequest) - so a Google user's
@@ -303,7 +335,7 @@ export async function createGoogleUserWithIdentity(
   const db = tx ?? (await getDb());
   if (!db) throw new Error("Database not available");
 
-  const openId = `google:${params.providerSubject}`;
+  const openId = computeGoogleOpenId(params.providerSubject);
   const now = new Date();
   const values: InsertUser = {
     openId,

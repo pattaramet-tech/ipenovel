@@ -230,9 +230,10 @@ describe("Google OAuth /api/auth/google/callback", () => {
     vi.restoreAllMocks();
   });
 
-  it("Google returned an error param -> 400, cookies cleared, error_description never sent to the browser", async () => {
+  it("Google returned an error param -> 400, cookies cleared, error_description never sent to the browser or logged anywhere", async () => {
     const { callback } = captureGoogleOAuthHandlers();
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const res = fakeResponse();
     await callback(
       requestWithValidCookies({ error: "access_denied", error_description: "the user said no, secret-looking-value" }),
@@ -240,10 +241,53 @@ describe("Google OAuth /api/auth/google/callback", () => {
     );
 
     expect(res.statusCalls).toEqual([400]);
+    expect(res.jsonBody).toEqual({ error: "Google sign-in was not completed" });
     expect(JSON.stringify(res.jsonBody)).not.toMatch(/secret-looking-value/);
+    // Not just the response - the raw error_description must never reach
+    // ANY console call this handler makes, success or failure.
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toMatch(/secret-looking-value/);
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toMatch(/secret-looking-value/);
     expect(res.clearCookieCalls.map((c) => c[0]).sort()).toEqual(
       [GOOGLE_NONCE_COOKIE, GOOGLE_PKCE_COOKIE, GOOGLE_STATE_COOKIE].sort()
     );
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it("a long/adversarial error_description (containing what look like other secrets: code, state, token, a client secret) still never appears in any log or response", async () => {
+    const { callback } = captureGoogleOAuthHandlers();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = fakeResponse();
+    // Deliberately avoids a KEY-equals-value shape anywhere in this fixture
+    // (see this repo's leaked-credential guard grep) - this is a fake
+    // adversarial test value proving nothing leaks, not a real credential,
+    // and must not itself resemble one closely enough to trip that guard.
+    const adversarialDescription =
+      "authCode leaked-auth-code / sessionState leaked-state / bearerToken leaked-token / clientSecretValue leaked-secret";
+    await callback(requestWithValidCookies({ error: "access_denied", error_description: adversarialDescription }), res);
+
+    expect(res.statusCalls).toEqual([400]);
+    expect(JSON.stringify(res.jsonBody)).not.toMatch(/leaked-/);
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toMatch(/leaked-/);
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toMatch(/leaked-/);
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it("the logged error message contains only the fixed OAuth error CODE (e.g. access_denied), length-capped, never the free-text description", async () => {
+    const { callback } = captureGoogleOAuthHandlers();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = fakeResponse();
+    await callback(
+      requestWithValidCookies({ error: "access_denied", error_description: "should never appear" }),
+      res
+    );
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const loggedMessage = warnSpy.mock.calls[0].join(" ");
+    expect(loggedMessage).toMatch(/access_denied/);
+    expect(loggedMessage).not.toMatch(/should never appear/);
     warnSpy.mockRestore();
   });
 

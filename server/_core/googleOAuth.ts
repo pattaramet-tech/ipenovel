@@ -107,16 +107,21 @@ export function registerGoogleOAuthRoutes(app: Express) {
       res.status(status).json({ error });
     };
 
+    // Google's `error` param is a short, fixed OAuth error CODE from a
+    // known enum (RFC 6749 §4.1.2.1 - e.g. "access_denied",
+    // "invalid_request", "unsupported_response_type") - safe to log as-is
+    // (still length-capped below as a structural guard, never trusted to
+    // stay short just because the spec says so). `error_description`,
+    // by contrast, is free text Google (or, since this is an unauthenticated
+    // GET query string, anyone crafting the redirect URL) can populate
+    // with anything - this handler never reads it at all (not even into a
+    // local variable) specifically so it can never end up in a log line,
+    // a browser response, or anywhere else, now or after a future edit.
+    // The browser only ever receives the fixed, generic message below -
+    // never the provider's own error code or description.
     const providerError = getQueryParam(req, "error");
     if (providerError) {
-      // error_description can (rarely) echo back request details from
-      // Google - truncated and never sent to the browser, only logged
-      // server-side, and only the first 200 chars at that.
-      const description = getQueryParam(req, "error_description");
-      console.warn(
-        `[GoogleOAuth] Google returned an authorization error: ${providerError}` +
-          (description ? ` (${description.slice(0, 200)})` : "")
-      );
+      console.warn(`[GoogleOAuth] Google returned an authorization error: ${providerError.slice(0, 64)}`);
       fail(400, "Google sign-in was not completed");
       return;
     }
