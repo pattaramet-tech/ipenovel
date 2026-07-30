@@ -39,16 +39,33 @@ export const ENV = {
   // domain verification has actually gone through.
   canonicalHost: process.env.CANONICAL_HOST ?? "ipenovel.com",
   legacyRedirectHosts: process.env.LEGACY_REDIRECT_HOSTS ?? "ipenovelz.manus.space",
-  // Feature flag selecting which login provider server-side auth routes
+  // Feature flag selecting which login provider(s) server-side auth routes
   // are active for (server/_core/googleOAuth.ts, server/_core/oauth.ts).
-  // Defaults to "manus" - the ONLY two recognized values are "manus" and
-  // "google"; anything else (unset, typo, empty string) also resolves to
-  // "manus" so existing production behavior can never change just because
-  // this variable is missing or misconfigured. The client has its own,
-  // independently-set VITE_AUTH_PROVIDER (see client/src/const.ts) - the
-  // two are never derived from each other, so a deploy that forgets to set
-  // one of them fails closed to Manus rather than silently mixing flows.
-  authProvider: (process.env.AUTH_PROVIDER ?? "").trim().toLowerCase() === "google" ? "google" : "manus",
+  // Defaults to "manus" - the ONLY three recognized values are "manus",
+  // "google", and "transition"; anything else (unset, typo, empty string)
+  // also resolves to "manus" so existing production behavior can never
+  // change just because this variable is missing or misconfigured.
+  // "transition" is NOT a fourth, separate mode with its own routes - it
+  // deliberately runs BOTH the Manus and Google server-side flows
+  // simultaneously (see isManusAuthActive/isGoogleAuthActive below), for
+  // the migration window where existing Manus users need to keep signing
+  // in the old way while new/converting users can use Google, including
+  // linking a Google identity onto an existing Manus-created account (see
+  // server/services/googleIdentityService.ts's connectGoogleIdentityToUser
+  // and /api/auth/google/connect/start). This is an intentional,
+  // explicitly-requested exception to "the server only ever runs one
+  // provider" - it does NOT mean an accidental/unintended mixed mode: the
+  // three-way exact-literal match below is the only way to reach it. The
+  // client has its own, independently-set VITE_AUTH_PROVIDER (see
+  // client/src/const.ts) - the two are never derived from each other, so a
+  // deploy that forgets to set one of them fails closed to Manus rather
+  // than silently mixing flows.
+  authProvider: (() => {
+    const raw = (process.env.AUTH_PROVIDER ?? "").trim().toLowerCase();
+    if (raw === "google") return "google";
+    if (raw === "transition") return "transition";
+    return "manus";
+  })(),
   // Google OpenID Connect (direct, feature-flagged) - see
   // server/_core/googleOAuth.ts and server/_core/googleOidc.ts. Deliberately
   // NOT eagerly validated here (same lazy-checked-only-on-use discipline as
@@ -67,5 +84,29 @@ export const ENV = {
   // surface at the OAuth layer.
   googleRedirectUri: process.env.GOOGLE_OAUTH_REDIRECT_URI ?? "",
 };
+
+export type AuthProviderMode = "manus" | "google" | "transition";
+
+/**
+ * Whether the Manus OAuth callback (server/_core/oauth.ts's
+ * /api/oauth/callback) should be reachable. Active in "manus" (the whole
+ * point) and "transition" (existing Manus users must keep being able to
+ * sign in the old way during the migration window) - only "google" turns
+ * it off, since that mode is a full cutover.
+ */
+export function isManusAuthActive(): boolean {
+  return ENV.authProvider === "manus" || ENV.authProvider === "transition";
+}
+
+/**
+ * Whether the Google OpenID Connect routes (server/_core/googleOAuth.ts's
+ * /api/auth/google/start, /callback, and /connect/start) should be
+ * reachable. Active in "google" (the whole point) and "transition" (new
+ * logins and existing-account linking both need Google available
+ * alongside Manus) - only "manus" turns it off.
+ */
+export function isGoogleAuthActive(): boolean {
+  return ENV.authProvider === "google" || ENV.authProvider === "transition";
+}
 
 export const OCR_SETTINGS_KEY = "ocr_enabled";

@@ -6,11 +6,13 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useLocation } from "wouter";
-import { Loader2, BookOpen, ChevronDown, ChevronUp, Wallet, Clock, Mail, User } from "lucide-react";
-import { useState, useMemo } from "react";
+import { Loader2, BookOpen, ChevronDown, ChevronUp, Wallet, Clock, Mail, User, Link2, CheckCircle2 } from "lucide-react";
+import { useEffect, useState, useMemo } from "react";
+import { toast } from "sonner";
 import { formatEpisodeLabel, compareEpisodes } from "@/utils/episodeUtils";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
 import DailyCheckinCard from "@/components/DailyCheckinCard";
+import { shouldShowGoogleConnectSection, parseGoogleConnectStatus } from "./profileGoogleConnectStatus";
 
 export default function ProfilePage() {
   useDocumentHead({ robots: "noindex,nofollow" });
@@ -39,6 +41,28 @@ export default function ProfilePage() {
     {},
     { enabled: !!user }
   );
+
+  // Connected Accounts (Google) - only meaningful in google/transition mode;
+  // manus mode never renders this section, so the query stays disabled there.
+  const showGoogleConnectSection = shouldShowGoogleConnectSection(import.meta.env.VITE_AUTH_PROVIDER);
+  const { data: googleConnectData, isLoading: googleConnectLoading } = trpc.auth.googleConnected.useQuery(
+    undefined,
+    { enabled: !!user && showGoogleConnectSection }
+  );
+
+  // One-shot toast for the ?googleConnect=success|error redirect coming back
+  // from server/_core/googleOAuth.ts's connect-intent callback, then strip
+  // the query param so a refresh doesn't re-show the toast.
+  useEffect(() => {
+    const status = parseGoogleConnectStatus(window.location.search);
+    if (!status) return;
+    if (status === "success") {
+      toast.success("เชื่อมบัญชี Google สำเร็จ");
+    } else {
+      toast.error("ไม่สามารถเชื่อมบัญชี Google ได้");
+    }
+    navigate("/profile", { replace: true });
+  }, [navigate]);
 
   // Group by novel
   const groupedByNovel = useMemo(() => {
@@ -169,6 +193,31 @@ export default function ProfilePage() {
             )}
           </div>
         </Card>
+
+        {/* Connected Accounts (Google) - hidden entirely in manus mode */}
+        {showGoogleConnectSection && (
+          <Card className="p-6 mb-8">
+            <h3 className="text-xl font-bold text-slate-900 mb-4">บัญชีที่เชื่อมต่อ</h3>
+            {googleConnectLoading ? (
+              <Skeleton className="h-12 w-full" />
+            ) : googleConnectData?.googleConnected ? (
+              <div className="flex items-center gap-3 text-emerald-700">
+                <CheckCircle2 className="w-5 h-5" />
+                <span className="text-base font-medium">เชื่อมบัญชี Google แล้ว</span>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3 text-slate-600">
+                  <Link2 className="w-5 h-5" />
+                  <span className="text-base">ยังไม่ได้เชื่อมบัญชี Google</span>
+                </div>
+                <Button asChild>
+                  <a href="/api/auth/google/connect/start">เชื่อมบัญชี Google</a>
+                </Button>
+              </div>
+            )}
+          </Card>
+        )}
 
         {/* Wallet & Points Section */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">

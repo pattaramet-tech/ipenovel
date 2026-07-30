@@ -242,6 +242,17 @@ export const appRouter = router({
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
       return { success: true } as const;
     }),
+    // Backs ProfilePage's "Connected Accounts" section (AUTH_PROVIDER
+    // google/transition only - see client-side shouldShowGoogleConnectSection).
+    // protectedProcedure (not publicProcedure like me/logout above) -
+    // requires a real, already-verified session; an anonymous caller gets
+    // UNAUTHORIZED rather than a false "not connected" answer. Returns
+    // only a boolean - never providerSubject/sub, never emailAtLink, never
+    // any other authIdentities column the UI has no need for.
+    googleConnected: protectedProcedure.query(async ({ ctx }) => {
+      const identity = await db.getAuthIdentityByUserAndProvider(ctx.user.id, "google");
+      return { googleConnected: Boolean(identity) };
+    }),
   }),
 
   // ============ NOVELS & EPISODES ============

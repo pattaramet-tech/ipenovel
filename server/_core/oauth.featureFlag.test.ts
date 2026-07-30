@@ -149,6 +149,19 @@ describe("GET /api/oauth/callback (Manus) - AUTH_PROVIDER gating", () => {
     expect(createSessionSpy).not.toHaveBeenCalled();
   });
 
+  it('AUTH_PROVIDER="transition" -> the Manus callback still works exactly as before - transition runs Manus AND Google simultaneously, never just Google', async () => {
+    ENV.authProvider = "transition";
+    mockHappyPathManusFlow();
+
+    const handler = captureOAuthCallbackHandler();
+    const res = fakeResponse();
+    await handler(fakeRequest(), res);
+
+    expect(res.statusCalls).toEqual([]);
+    expect(res.cookie).toHaveBeenCalledTimes(1);
+    expect(res.redirect).toHaveBeenCalledWith(302, "/");
+  });
+
   it("rollback: AUTH_PROVIDER flipped from \"google\" back to \"manus\" -> the Manus callback works again immediately (the flag is read fresh per request, never cached/latched)", async () => {
     ENV.authProvider = "google";
     const blockedHandler = captureOAuthCallbackHandler();

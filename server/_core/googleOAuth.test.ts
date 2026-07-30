@@ -4,9 +4,11 @@ import { serialize as serializeCookie } from "cookie";
 import * as db from "../db";
 import * as googleOidc from "./googleOidc";
 import * as googleIdentityService from "../services/googleIdentityService";
+import { AnonymousCredentialError } from "./authErrors";
 import { ENV } from "./env";
 import { sdk } from "./sdk";
 import {
+  GOOGLE_INTENT_COOKIE,
   GOOGLE_NONCE_COOKIE,
   GOOGLE_PKCE_COOKIE,
   GOOGLE_STATE_COOKIE,
@@ -20,19 +22,21 @@ vi.mock("../db", async () => {
 
 type CapturedHandler = (req: Request, res: Response) => void | Promise<void>;
 
-function captureGoogleOAuthHandlers(): { start: CapturedHandler; callback: CapturedHandler } {
+function captureGoogleOAuthHandlers(): { start: CapturedHandler; connectStart: CapturedHandler; callback: CapturedHandler } {
   let start: CapturedHandler | undefined;
+  let connectStart: CapturedHandler | undefined;
   let callback: CapturedHandler | undefined;
   const fakeApp = {
     get: (path: string, fn: CapturedHandler) => {
       if (path === "/api/auth/google/start") start = fn;
+      if (path === "/api/auth/google/connect/start") connectStart = fn;
       if (path === "/api/auth/google/callback") callback = fn;
     },
   } as unknown as Express;
 
   registerGoogleOAuthRoutes(fakeApp);
-  if (!start || !callback) throw new Error("test setup failed: routes were not registered");
-  return { start, callback };
+  if (!start || !connectStart || !callback) throw new Error("test setup failed: routes were not registered");
+  return { start, connectStart, callback };
 }
 
 function fakeRequest(opts: { query?: Record<string, string>; cookies?: Record<string, string> } = {}): Request {
@@ -96,6 +100,18 @@ describe("Google OAuth routes - feature flag gating", () => {
     expect(res.redirect).not.toHaveBeenCalled();
   });
 
+  it("AUTH_PROVIDER=manus -> /api/auth/google/connect/start responds 404 without ever checking the session", async () => {
+    ENV.authProvider = "manus";
+    const authSpy = vi.spyOn(sdk, "authenticateRequest");
+    const { connectStart } = captureGoogleOAuthHandlers();
+    const res = fakeResponse();
+    await connectStart(fakeRequest(), res);
+    expect(res.statusCalls).toEqual([404]);
+    expect(res.cookieCalls).toEqual([]);
+    expect(authSpy).not.toHaveBeenCalled();
+    authSpy.mockRestore();
+  });
+
   it("AUTH_PROVIDER=manus -> /api/auth/google/callback responds 404, does nothing else", async () => {
     ENV.authProvider = "manus";
     const { callback } = captureGoogleOAuthHandlers();
@@ -104,6 +120,26 @@ describe("Google OAuth routes - feature flag gating", () => {
     expect(res.statusCalls).toEqual([404]);
     expect(res.redirect).not.toHaveBeenCalled();
   });
+
+  it.each(["google", "transition"] as const)(
+    "AUTH_PROVIDER=%s -> /api/auth/google/start and /connect/start are both reachable (not 404)",
+    async (mode) => {
+      ENV.authProvider = mode;
+      ENV.googleClientId = "test-client-id";
+      ENV.googleClientSecret = "test-client-secret";
+      ENV.googleRedirectUri = "https://staging.ipenovel.com/api/auth/google/callback";
+      vi.spyOn(sdk, "authenticateRequest").mockResolvedValue({ id: 1 } as any);
+
+      const { start, connectStart } = captureGoogleOAuthHandlers();
+      const startRes = fakeResponse();
+      start(fakeRequest(), startRes);
+      expect(startRes.statusCalls).not.toContain(404);
+
+      const connectRes = fakeResponse();
+      await connectStart(fakeRequest(), connectRes);
+      expect(connectRes.statusCalls).not.toContain(404);
+    }
+  );
 });
 
 describe("Google OAuth /api/auth/google/start", () => {
@@ -136,13 +172,17 @@ describe("Google OAuth /api/auth/google/start", () => {
     expect(res.redirect).not.toHaveBeenCalled();
   });
 
-  it("fully configured -> sets state/nonce/PKCE cookies and redirects to Google's authorization endpoint with the required query params", () => {
+  it("fully configured -> sets state/nonce/PKCE/intent cookies and redirects to Google's authorization endpoint with the required query params", () => {
     const { start } = captureGoogleOAuthHandlers();
     const res = fakeResponse();
     start(fakeRequest(), res);
 
     expect(res.statusCalls).toEqual([]);
-    expect(res.cookieCalls.map((c) => c[0]).sort()).toEqual([GOOGLE_NONCE_COOKIE, GOOGLE_PKCE_COOKIE, GOOGLE_STATE_COOKIE].sort());
+    expect(res.cookieCalls.map((c) => c[0]).sort()).toEqual(
+      [GOOGLE_NONCE_COOKIE, GOOGLE_PKCE_COOKIE, GOOGLE_STATE_COOKIE, GOOGLE_INTENT_COOKIE].sort()
+    );
+    const intentCookieCall = res.cookieCalls.find((c) => c[0] === GOOGLE_INTENT_COOKIE)!;
+    expect(intentCookieCall[1]).toBe("login");
 
     expect(res.redirect).toHaveBeenCalledTimes(1);
     const [status, location] = (res.redirect as any).mock.calls[0];
@@ -204,13 +244,23 @@ describe("Google OAuth /api/auth/google/callback", () => {
   const VALID_NONCE = "valid-nonce-value";
   const VALID_VERIFIER = "valid-code-verifier";
 
-  function requestWithValidCookies(query: Record<string, string> = {}) {
+  function requestWithValidCookies(
+    query: Record<string, string> = {},
+    extraCookies: Record<string, string> = {}
+  ) {
     return fakeRequest({
       query: { code: "auth-code-123", state: VALID_STATE, ...query },
       cookies: {
         [GOOGLE_STATE_COOKIE]: VALID_STATE,
         [GOOGLE_NONCE_COOKIE]: VALID_NONCE,
         [GOOGLE_PKCE_COOKIE]: VALID_VERIFIER,
+        // Every existing (pre-transition-mode) test in this describe block
+        // exercises the ORIGINAL login flow - intent=login is the default
+        // here so none of them need updating just to keep passing; tests
+        // that care about the connect flow pass their own intent cookie
+        // via extraCookies.
+        [GOOGLE_INTENT_COOKIE]: "login",
+        ...extraCookies,
       },
     });
   }
@@ -248,7 +298,7 @@ describe("Google OAuth /api/auth/google/callback", () => {
     expect(JSON.stringify(warnSpy.mock.calls)).not.toMatch(/secret-looking-value/);
     expect(JSON.stringify(errorSpy.mock.calls)).not.toMatch(/secret-looking-value/);
     expect(res.clearCookieCalls.map((c) => c[0]).sort()).toEqual(
-      [GOOGLE_NONCE_COOKIE, GOOGLE_PKCE_COOKIE, GOOGLE_STATE_COOKIE].sort()
+      [GOOGLE_NONCE_COOKIE, GOOGLE_PKCE_COOKIE, GOOGLE_STATE_COOKIE, GOOGLE_INTENT_COOKIE].sort()
     );
     warnSpy.mockRestore();
     errorSpy.mockRestore();
@@ -508,9 +558,289 @@ describe("Google OAuth /api/auth/google/callback", () => {
     expect(sessionCookieCall).toBeTruthy();
     expect(sessionCookieCall![1]).toBe("fake-session-jwt");
     expect(res.clearCookieCalls.map((c) => c[0]).sort()).toEqual(
-      [GOOGLE_NONCE_COOKIE, GOOGLE_PKCE_COOKIE, GOOGLE_STATE_COOKIE].sort()
+      [GOOGLE_NONCE_COOKIE, GOOGLE_PKCE_COOKIE, GOOGLE_STATE_COOKIE, GOOGLE_INTENT_COOKIE].sort()
     );
     expect(res.redirect).toHaveBeenCalledWith(302, "/");
     expect(res.statusCalls).toEqual([]);
+  });
+});
+
+describe("Google OAuth /api/auth/google/connect/start", () => {
+  const originalAuthProvider = ENV.authProvider;
+  const originalClientId = ENV.googleClientId;
+  const originalClientSecret = ENV.googleClientSecret;
+  const originalRedirectUri = ENV.googleRedirectUri;
+
+  beforeEach(() => {
+    ENV.authProvider = "transition";
+    ENV.googleClientId = "test-client-id";
+    ENV.googleClientSecret = "test-client-secret";
+    ENV.googleRedirectUri = "https://staging.ipenovel.com/api/auth/google/callback";
+  });
+
+  afterEach(() => {
+    ENV.authProvider = originalAuthProvider;
+    ENV.googleClientId = originalClientId;
+    ENV.googleClientSecret = originalClientSecret;
+    ENV.googleRedirectUri = originalRedirectUri;
+    vi.restoreAllMocks();
+  });
+
+  it("no session at all -> 401, no state/nonce/PKCE/intent cookies set, never redirects to Google", async () => {
+    vi.spyOn(sdk, "authenticateRequest").mockRejectedValue(
+      new AnonymousCredentialError("no session cookie", "no_cookie")
+    );
+    const { connectStart } = captureGoogleOAuthHandlers();
+    const res = fakeResponse();
+    await connectStart(fakeRequest(), res);
+
+    expect(res.statusCalls).toEqual([401]);
+    expect(res.cookieCalls).toEqual([]);
+    expect(res.redirect).not.toHaveBeenCalled();
+  });
+
+  it("an expired/invalid session cookie (AnonymousCredentialError, any reason) -> 401, same as no session at all", async () => {
+    vi.spyOn(sdk, "authenticateRequest").mockRejectedValue(
+      new AnonymousCredentialError("bad token", "invalid_session_token")
+    );
+    const { connectStart } = captureGoogleOAuthHandlers();
+    const res = fakeResponse();
+    await connectStart(fakeRequest(), res);
+
+    expect(res.statusCalls).toEqual([401]);
+    expect(res.redirect).not.toHaveBeenCalled();
+  });
+
+  it("a non-anonymous failure (e.g. the database is down) -> 500, never silently treated as 'not logged in'", async () => {
+    vi.spyOn(sdk, "authenticateRequest").mockRejectedValue(new Error("[Database] Database connection is not available"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { connectStart } = captureGoogleOAuthHandlers();
+    const res = fakeResponse();
+    await connectStart(fakeRequest(), res);
+
+    expect(res.statusCalls).toEqual([500]);
+    expect(res.redirect).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it("a valid session -> sets state/nonce/PKCE/intent=connect cookies and redirects to Google, exactly like /start", async () => {
+    vi.spyOn(sdk, "authenticateRequest").mockResolvedValue({ id: 7 } as any);
+    const { connectStart } = captureGoogleOAuthHandlers();
+    const res = fakeResponse();
+    await connectStart(fakeRequest(), res);
+
+    expect(res.statusCalls).toEqual([]);
+    const intentCookieCall = res.cookieCalls.find((c) => c[0] === GOOGLE_INTENT_COOKIE)!;
+    expect(intentCookieCall[1]).toBe("connect");
+    expect(res.redirect).toHaveBeenCalledTimes(1);
+    const [status, location] = (res.redirect as any).mock.calls[0];
+    expect(status).toBe(302);
+    expect(new URL(location).origin).toBe("https://accounts.google.com");
+  });
+
+  it("Google env vars not configured -> 500 before ever checking the session", async () => {
+    ENV.googleClientSecret = "";
+    const authSpy = vi.spyOn(sdk, "authenticateRequest");
+    const { connectStart } = captureGoogleOAuthHandlers();
+    const res = fakeResponse();
+    await connectStart(fakeRequest(), res);
+
+    expect(res.statusCalls).toEqual([500]);
+    expect(authSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("Google OAuth /api/auth/google/callback - intent branching (login vs connect)", () => {
+  const originalAuthProvider = ENV.authProvider;
+  const originalClientId = ENV.googleClientId;
+  const originalClientSecret = ENV.googleClientSecret;
+  const originalRedirectUri = ENV.googleRedirectUri;
+
+  const VALID_STATE = "valid-state-value";
+  const VALID_NONCE = "valid-nonce-value";
+  const VALID_VERIFIER = "valid-code-verifier";
+
+  function requestWithIntent(intent: string | undefined, query: Record<string, string> = {}) {
+    const cookies: Record<string, string> = {
+      [GOOGLE_STATE_COOKIE]: VALID_STATE,
+      [GOOGLE_NONCE_COOKIE]: VALID_NONCE,
+      [GOOGLE_PKCE_COOKIE]: VALID_VERIFIER,
+    };
+    if (intent !== undefined) cookies[GOOGLE_INTENT_COOKIE] = intent;
+    return fakeRequest({ query: { code: "auth-code-123", state: VALID_STATE, ...query }, cookies });
+  }
+
+  function mockValidGoogleClaims() {
+    vi.spyOn(googleOidc, "exchangeCodeForTokens").mockResolvedValue({ idToken: "fake-id-token" });
+    vi.spyOn(googleOidc, "verifyGoogleIdToken").mockResolvedValue({
+      sub: "google-sub-connect-1",
+      email: "connect-user@example.com",
+      emailVerified: true,
+      name: "Connect User",
+      picture: null,
+    });
+  }
+
+  beforeEach(() => {
+    ENV.authProvider = "transition";
+    ENV.googleClientId = "test-client-id";
+    ENV.googleClientSecret = "test-client-secret";
+    ENV.googleRedirectUri = "https://staging.ipenovel.com/api/auth/google/callback";
+  });
+
+  afterEach(() => {
+    ENV.authProvider = originalAuthProvider;
+    ENV.googleClientId = originalClientId;
+    ENV.googleClientSecret = originalClientSecret;
+    ENV.googleRedirectUri = originalRedirectUri;
+    vi.restoreAllMocks();
+  });
+
+  it("intent cookie missing entirely -> fails closed as an expired login attempt (400), never guesses login or connect", async () => {
+    const { callback } = captureGoogleOAuthHandlers();
+    const res = fakeResponse();
+    await callback(requestWithIntent(undefined), res);
+
+    expect(res.statusCalls).toEqual([400]);
+    expect(res.redirect).not.toHaveBeenCalled();
+  });
+
+  it("intent cookie has an unrecognized value (tampered) -> fails closed (400), never treated as login or connect", async () => {
+    const { callback } = captureGoogleOAuthHandlers();
+    const res = fakeResponse();
+    await callback(requestWithIntent("something-else"), res);
+
+    expect(res.statusCalls).toEqual([400]);
+    expect(res.redirect).not.toHaveBeenCalled();
+  });
+
+  it("intent=connect, provider returned an error param -> redirects to the account page with an error status, never a JSON 400 (unlike intent=login)", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { callback } = captureGoogleOAuthHandlers();
+    const res = fakeResponse();
+    await callback(requestWithIntent("connect", { error: "access_denied" }), res);
+
+    expect(res.statusCalls).toEqual([]);
+    expect(res.redirect).toHaveBeenCalledWith(302, "/profile?googleConnect=error");
+    warnSpy.mockRestore();
+  });
+
+  it("intent=connect, session expired between /connect/start and the callback -> redirects to account page with an error status, connectGoogleIdentityToUser is never called, no session cookie is ever minted", async () => {
+    mockValidGoogleClaims();
+    vi.spyOn(sdk, "authenticateRequest").mockRejectedValue(
+      new AnonymousCredentialError("session expired", "invalid_session_token")
+    );
+    const connectSpy = vi.spyOn(googleIdentityService, "connectGoogleIdentityToUser");
+    const createSessionSpy = vi.spyOn(sdk, "createSessionToken");
+
+    const { callback } = captureGoogleOAuthHandlers();
+    const res = fakeResponse();
+    await callback(requestWithIntent("connect"), res);
+
+    expect(connectSpy).not.toHaveBeenCalled();
+    expect(createSessionSpy).not.toHaveBeenCalled();
+    expect(res.cookieCalls.length).toBe(0);
+    expect(res.redirect).toHaveBeenCalledWith(302, "/profile?googleConnect=error");
+  });
+
+  it("intent=connect, successful connect (outcome: connected) -> redirects to the account page with a success status, mints NO new session cookie, clears the transient cookies", async () => {
+    mockValidGoogleClaims();
+    vi.spyOn(sdk, "authenticateRequest").mockResolvedValue({ id: 55 } as any);
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getDb").mockResolvedValue({} as any);
+    const connectSpy = vi.spyOn(googleIdentityService, "connectGoogleIdentityToUser").mockResolvedValue({ outcome: "connected" });
+    const createSessionSpy = vi.spyOn(sdk, "createSessionToken");
+
+    const { callback } = captureGoogleOAuthHandlers();
+    const res = fakeResponse();
+    await callback(requestWithIntent("connect"), res);
+
+    expect(connectSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ userId: 55, sub: "google-sub-connect-1", email: "connect-user@example.com", emailVerified: true })
+    );
+    expect(createSessionSpy).not.toHaveBeenCalled();
+    expect(res.cookieCalls.length).toBe(0);
+    expect(res.redirect).toHaveBeenCalledWith(302, "/profile?googleConnect=success");
+    expect(res.clearCookieCalls.map((c) => c[0]).sort()).toEqual(
+      [GOOGLE_NONCE_COOKIE, GOOGLE_PKCE_COOKIE, GOOGLE_STATE_COOKIE, GOOGLE_INTENT_COOKIE].sort()
+    );
+  });
+
+  it("intent=connect, idempotent re-connect (outcome: already_connected) -> also redirects with a success status, no new session", async () => {
+    mockValidGoogleClaims();
+    vi.spyOn(sdk, "authenticateRequest").mockResolvedValue({ id: 55 } as any);
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getDb").mockResolvedValue({} as any);
+    vi.spyOn(googleIdentityService, "connectGoogleIdentityToUser").mockResolvedValue({ outcome: "already_connected" });
+    const createSessionSpy = vi.spyOn(sdk, "createSessionToken");
+
+    const { callback } = captureGoogleOAuthHandlers();
+    const res = fakeResponse();
+    await callback(requestWithIntent("connect"), res);
+
+    expect(createSessionSpy).not.toHaveBeenCalled();
+    expect(res.redirect).toHaveBeenCalledWith(302, "/profile?googleConnect=success");
+  });
+
+  it.each(["conflict_sub_linked_to_different_user", "conflict_user_has_different_google_identity"] as const)(
+    "intent=connect, conflict outcome (%s) -> redirects with a generic error status, never leaks which conflict occurred, mints no session",
+    async (outcome) => {
+      mockValidGoogleClaims();
+      vi.spyOn(sdk, "authenticateRequest").mockResolvedValue({ id: 55 } as any);
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue({} as any);
+      vi.spyOn(googleIdentityService, "connectGoogleIdentityToUser").mockResolvedValue({ outcome });
+      const createSessionSpy = vi.spyOn(sdk, "createSessionToken");
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const { callback } = captureGoogleOAuthHandlers();
+      const res = fakeResponse();
+      await callback(requestWithIntent("connect"), res);
+
+      expect(createSessionSpy).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith(302, "/profile?googleConnect=error");
+      expect(JSON.stringify((res.redirect as any).mock.calls)).not.toMatch(/different|conflict/);
+      warnSpy.mockRestore();
+    }
+  );
+
+  it("intent=connect, connectGoogleIdentityToUser throws (e.g. duplicate-key retry exhausted) -> redirects with an error status, sanitized log, no session minted", async () => {
+    mockValidGoogleClaims();
+    vi.spyOn(sdk, "authenticateRequest").mockResolvedValue({ id: 55 } as any);
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getDb").mockResolvedValue({} as any);
+    vi.spyOn(googleIdentityService, "connectGoogleIdentityToUser").mockRejectedValue(
+      Object.assign(new Error("Duplicate entry"), { cause: { errno: 1062, code: "ER_DUP_ENTRY" } })
+    );
+    const createSessionSpy = vi.spyOn(sdk, "createSessionToken");
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { callback } = captureGoogleOAuthHandlers();
+    const res = fakeResponse();
+    await callback(requestWithIntent("connect"), res);
+
+    expect(createSessionSpy).not.toHaveBeenCalled();
+    expect(res.redirect).toHaveBeenCalledWith(302, "/profile?googleConnect=error");
+    errorSpy.mockRestore();
+  });
+
+  it("intent=login is completely unaffected by the connect flow's existence - resolveGoogleIdentity is called, connectGoogleIdentityToUser never is", async () => {
+    mockValidGoogleClaims();
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    const resolvedUser = { id: 1, openId: "google:google-sub-connect-1", name: "Connect User" } as any;
+    const resolveSpy = vi.spyOn(googleIdentityService, "resolveGoogleIdentity").mockResolvedValue({ outcome: "created", user: resolvedUser });
+    const connectSpy = vi.spyOn(googleIdentityService, "connectGoogleIdentityToUser");
+    vi.spyOn(sdk, "createSessionToken").mockResolvedValue("fake-session-jwt");
+    const authenticateSpy = vi.spyOn(sdk, "authenticateRequest");
+
+    const { callback } = captureGoogleOAuthHandlers();
+    const res = fakeResponse();
+    await callback(requestWithIntent("login"), res);
+
+    expect(resolveSpy).toHaveBeenCalledTimes(1);
+    expect(connectSpy).not.toHaveBeenCalled();
+    expect(authenticateSpy).not.toHaveBeenCalled();
+    expect(res.redirect).toHaveBeenCalledWith(302, "/");
   });
 });

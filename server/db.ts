@@ -235,6 +235,28 @@ export async function getAuthIdentity(provider: string, providerSubject: string,
 }
 
 /**
+ * Looks up whatever identity a GIVEN user already has for a provider - the
+ * `authIdentities_userId_provider_unique` index (one identity per provider
+ * per user) backs this query. Used by the explicit Google-connect flow
+ * (server/services/googleIdentityService.ts's connectGoogleIdentityToUser)
+ * to detect "this account already has a DIFFERENT Google identity linked"
+ * (conflict case D) before attempting to insert a second one - a case the
+ * unique index would also catch at INSERT time, but pre-checking lets the
+ * caller return a precise, distinguishable outcome instead of an opaque
+ * duplicate-key error.
+ */
+export async function getAuthIdentityByUserAndProvider(userId: number, provider: string, tx?: any) {
+  const db = tx ?? (await getDb());
+  if (!db) return undefined;
+  const result = await db
+    .select()
+    .from(authIdentities)
+    .where(and(eq(authIdentities.userId, userId), eq(authIdentities.provider, provider)))
+    .limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+/**
  * Finds every existing user whose stored email matches `normalizedEmail`
  * case-insensitively, regardless of how that email happens to be cased in
  * the database today. `normalizedEmail` must already be trim()med and

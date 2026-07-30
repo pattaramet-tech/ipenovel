@@ -1,34 +1,25 @@
 export { COOKIE_NAME } from "@shared/const";
 
-const GOOGLE_LOGIN_START_PATH = "/api/auth/google/start";
+// Exported (not module-private) so the in-app /login page (LoginPage.tsx)
+// can point its own "sign in with Google" button/link at the exact same
+// path resolveLoginUrl's "google" branch resolves to - one source of
+// truth for the literal string.
+export const GOOGLE_LOGIN_START_PATH = "/api/auth/google/start";
+const IN_APP_LOGIN_PAGE_PATH = "/login";
+
+export type ManusLoginUrlParams = { oauthPortalUrl: string; appId: string; redirectUri: string };
 
 /**
- * Pure decision: which literal path/URL getLoginUrl() should return for a
- * given VITE_AUTH_PROVIDER value, given the pieces needed to build the
- * Manus URL. Exported and independently testable (no `import.meta.env`,
- * no `window`) - see const.test.ts - so "flag unset -> Manus",
- * "flag=manus -> Manus", and "flag=google -> Google start path" are all
- * assertable without needing to stub Vite's `import.meta.env` in a test.
- *
- * Any value other than the exact literal "google" (unset, "manus", a
- * typo, empty string) resolves to Manus - the ONLY way to opt into the
- * Google flow is an exact match, so a deploy that forgets to set this
- * variable, or sets it to something unexpected, can never silently change
- * existing production login behavior.
+ * Pure function building the Manus OAuth authorization URL - unchanged
+ * byte-for-byte from before this file supported multiple providers
+ * (appId, redirectUri, state, type=signIn all built exactly as before).
+ * Extracted into its own named function (rather than left inline in
+ * resolveLoginUrl) so it's independently referenceable - the in-app
+ * /login page's "เข้าสู่ระบบด้วยวิธีเดิม" (sign in the old way) button
+ * calls this directly to build its own `href`, the exact same URL
+ * resolveLoginUrl's "manus" branch returns.
  */
-export function resolveLoginUrl(
-  authProvider: string | undefined,
-  manus: { oauthPortalUrl: string; appId: string; redirectUri: string }
-): string {
-  if (authProvider === "google") {
-    // An in-app path, not a fully-formed external authorization URL like
-    // the Manus branch returns - the server route itself
-    // (server/_core/googleOAuth.ts's /api/auth/google/start) builds the
-    // real Google authorization URL, including state/nonce/PKCE, which
-    // must never be generated or exposed in client code.
-    return GOOGLE_LOGIN_START_PATH;
-  }
-
+export function buildManusLoginUrl(manus: ManusLoginUrlParams): string {
   const state = btoa(manus.redirectUri);
   const url = new URL(`${manus.oauthPortalUrl}/app-auth`);
   url.searchParams.set("appId", manus.appId);
@@ -36,6 +27,38 @@ export function resolveLoginUrl(
   url.searchParams.set("state", state);
   url.searchParams.set("type", "signIn");
   return url.toString();
+}
+
+/**
+ * Pure decision: which literal path/URL getLoginUrl() should return for a
+ * given VITE_AUTH_PROVIDER value, given the pieces needed to build the
+ * Manus URL. Exported and independently testable (no `import.meta.env`,
+ * no `window`) - see const.test.ts - so every flag value (unset, "manus",
+ * "google", "transition", a typo, empty, wrong case) is assertable
+ * without needing to stub Vite's `import.meta.env` in a test.
+ *
+ * Three recognized values, each an exact-literal match:
+ *  - "google"     -> the in-app Google start path (server builds the real
+ *                    Google authorization URL - state/nonce/PKCE must
+ *                    never be generated or exposed in client code).
+ *  - "transition" -> the in-app /login page, which itself offers BOTH a
+ *                    "Sign in with Google" button (-> the same Google
+ *                    start path) and a "Sign in the old way" button
+ *                    (-> buildManusLoginUrl, unchanged) - see LoginPage.tsx.
+ *  - anything else (unset, "manus", a typo, empty string, wrong case)
+ *                 -> the Manus URL, exactly as before this flag existed.
+ * This is the ONLY way to opt into a non-Manus flow - a deploy that
+ * forgets to set this variable, or sets it to something unexpected, can
+ * never silently change existing production login behavior.
+ */
+export function resolveLoginUrl(authProvider: string | undefined, manus: ManusLoginUrlParams): string {
+  if (authProvider === "google") {
+    return GOOGLE_LOGIN_START_PATH;
+  }
+  if (authProvider === "transition") {
+    return IN_APP_LOGIN_PAGE_PATH;
+  }
+  return buildManusLoginUrl(manus);
 }
 
 // Generate login URL at runtime so the Manus redirect URI reflects the
