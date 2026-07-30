@@ -24,16 +24,19 @@ describe("error_description is never read, logged, or forwarded anywhere in the 
     expect(source).not.toMatch(/req\.query\[["']error_description["']\]/);
   });
 
-  it("the only value ever passed to console.warn/console.error in the provider-error branch is the fixed OAuth error CODE, length-capped", () => {
+  it("the provider-error branch logs a FIXED, constant string - never providerError itself, not even sliced/capped - since the query string is unauthenticated user input that can contain newlines/control characters", () => {
     const errorBranchStart = source.indexOf('const providerError = getQueryParam(req, "error");');
     const errorBranchEnd = source.indexOf("const code = getQueryParam", errorBranchStart);
     expect(errorBranchStart).toBeGreaterThan(-1);
     expect(errorBranchEnd).toBeGreaterThan(errorBranchStart);
     const errorBranch = source.slice(errorBranchStart, errorBranchEnd);
 
-    expect(errorBranch).toMatch(/console\.warn\(`\[GoogleOAuth\] Google returned an authorization error: \$\{providerError\.slice\(0, 64\)\}`\)/);
-    // Never a second console call, never string-concatenates anything
-    // else (like a description) into this warning.
+    expect(errorBranch).toMatch(/console\.warn\("\[GoogleOAuth\] Google authorization was not completed"\)/);
+    // Never interpolates providerError (or anything else query-derived)
+    // into the log line - no template literal, no string concatenation
+    // with the variable.
+    expect(errorBranch).not.toMatch(/console\.(warn|error)\([^)]*providerError/);
+    // Never a second console call in this branch.
     const consoleCallsInBranch = [...errorBranch.matchAll(/console\.(warn|error)\(/g)];
     expect(consoleCallsInBranch.length).toBe(1);
   });

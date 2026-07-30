@@ -275,7 +275,7 @@ describe("Google OAuth /api/auth/google/callback", () => {
     errorSpy.mockRestore();
   });
 
-  it("the logged error message contains only the fixed OAuth error CODE (e.g. access_denied), length-capped, never the free-text description", async () => {
+  it("the logged message is a fixed, constant string - never interpolates the query string's own error CODE either, not just error_description", async () => {
     const { callback } = captureGoogleOAuthHandlers();
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const res = fakeResponse();
@@ -285,10 +285,37 @@ describe("Google OAuth /api/auth/google/callback", () => {
     );
 
     expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith("[GoogleOAuth] Google authorization was not completed");
     const loggedMessage = warnSpy.mock.calls[0].join(" ");
-    expect(loggedMessage).toMatch(/access_denied/);
+    expect(loggedMessage).not.toMatch(/access_denied/);
     expect(loggedMessage).not.toMatch(/should never appear/);
     warnSpy.mockRestore();
+  });
+
+  describe.each([
+    ["a newline", "access_denied\nINJECTED: fake log line"],
+    ["a carriage return", "access_denied\rINJECTED"],
+    ["a tab character", "access_denied\tINJECTED"],
+    ["a very long value (10,000 chars)", "a".repeat(10000)],
+    ["a secret-looking value", "secret-looking-value-AKIAFAKEEXAMPLE12345"],
+  ])("query param 'error' containing %s", (_label, adversarialErrorValue) => {
+    it("never appears in console.warn or console.error, and the fixed message is logged instead", async () => {
+      const { callback } = captureGoogleOAuthHandlers();
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const res = fakeResponse();
+
+      await callback(requestWithValidCookies({ error: adversarialErrorValue }), res);
+
+      expect(res.statusCalls).toEqual([400]);
+      expect(res.jsonBody).toEqual({ error: "Google sign-in was not completed" });
+      expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(adversarialErrorValue);
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(adversarialErrorValue);
+      expect(JSON.stringify(res.jsonBody)).not.toContain(adversarialErrorValue);
+      expect(warnSpy).toHaveBeenCalledWith("[GoogleOAuth] Google authorization was not completed");
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    });
   });
 
   it("state cookie missing -> rejects, 400, cookies cleared", async () => {
@@ -430,6 +457,32 @@ describe("Google OAuth /api/auth/google/callback", () => {
     expect(res.cookieCalls.length).toBe(0);
     expect(res.statusCalls).toEqual([409]);
     warnSpy.mockRestore();
+  });
+
+  it("[required test 8] resolveGoogleIdentity rejects (e.g. the concurrent-login retry exhausted both attempts and failed closed) -> no session cookie is ever set, sdk.createSessionToken is never called", async () => {
+    vi.spyOn(googleOidc, "exchangeCodeForTokens").mockResolvedValue({ idToken: "fake-id-token" });
+    vi.spyOn(googleOidc, "verifyGoogleIdToken").mockResolvedValue({
+      sub: "google-sub-1",
+      email: "user@example.com",
+      emailVerified: true,
+      name: "Test User",
+      picture: null,
+    });
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(googleIdentityService, "resolveGoogleIdentity").mockRejectedValue(
+      Object.assign(new Error("Duplicate entry"), { cause: { errno: 1062, code: "ER_DUP_ENTRY" } })
+    );
+    const createSessionSpy = vi.spyOn(sdk, "createSessionToken");
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { callback } = captureGoogleOAuthHandlers();
+    const res = fakeResponse();
+    await callback(requestWithValidCookies(), res);
+
+    expect(createSessionSpy).not.toHaveBeenCalled();
+    expect(res.cookieCalls.length).toBe(0);
+    expect(res.statusCalls).toEqual([500]);
+    errorSpy.mockRestore();
   });
 
   it("full success -> mints a session via sdk.createSessionToken using the resolved user's openId, sets the SAME COOKIE_NAME cookie, clears the Google transient cookies, and redirects to /", async () => {

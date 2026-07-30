@@ -107,21 +107,20 @@ export function registerGoogleOAuthRoutes(app: Express) {
       res.status(status).json({ error });
     };
 
-    // Google's `error` param is a short, fixed OAuth error CODE from a
-    // known enum (RFC 6749 §4.1.2.1 - e.g. "access_denied",
-    // "invalid_request", "unsupported_response_type") - safe to log as-is
-    // (still length-capped below as a structural guard, never trusted to
-    // stay short just because the spec says so). `error_description`,
-    // by contrast, is free text Google (or, since this is an unauthenticated
-    // GET query string, anyone crafting the redirect URL) can populate
-    // with anything - this handler never reads it at all (not even into a
-    // local variable) specifically so it can never end up in a log line,
-    // a browser response, or anywhere else, now or after a future edit.
-    // The browser only ever receives the fixed, generic message below -
-    // never the provider's own error code or description.
+    // Both `error` and `error_description` are attacker/user-influenced
+    // input - this is an unauthenticated GET query string, so anyone can
+    // craft a redirect URL with arbitrary content in either param
+    // (including newlines/control characters, not just "unexpectedly long
+    // text"). Neither is ever interpolated into a log line or read into a
+    // variable here (error_description isn't read at all - the literal
+    // string "error_description" does not appear anywhere in this file).
+    // The log line and the browser response are both fixed, constant
+    // strings - never a substring, a slice, or any other derivative of
+    // the query string, so there is no length/content of that input that
+    // can ever change what gets logged or returned.
     const providerError = getQueryParam(req, "error");
     if (providerError) {
-      console.warn(`[GoogleOAuth] Google returned an authorization error: ${providerError.slice(0, 64)}`);
+      console.warn("[GoogleOAuth] Google authorization was not completed");
       fail(400, "Google sign-in was not completed");
       return;
     }
