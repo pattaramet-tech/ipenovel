@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -109,5 +109,55 @@ describe("no production credentials or real secret values appear anywhere in scr
     // Every env var name it references should be the well-known public
     // constant list, not a literal value substituted in.
     expect(preflight).not.toMatch(/process\.env\.\w+\s*=/); // never assigns into process.env
+  });
+});
+
+// Regression guard for the leaked admin credential found in
+// drizzle/0003_admin_seed.sql / drizzle/LOCAL_ADMIN_BOOTSTRAP.sql (see
+// docs/VPS_MIGRATION_RUNBOOK.md §0/§9/§14). This test deliberately never
+// TYPES the password or hash literally anywhere in this file - it extracts
+// them at runtime from the already-committed seed file (which is the
+// exposure this test is guarding against, not adding to) and asserts they
+// never additionally appear in any of THIS PR's own docs or scripts, where
+// they'd be even easier to stumble across.
+describe("this PR's own docs/scripts never reproduce the leaked admin-seed credential", () => {
+  const repoRoot = path.resolve(scriptsDir, "..", "..");
+
+  function extractSeedCredentialFragments(): string[] {
+    const seedFile = readFileSync(path.join(repoRoot, "drizzle", "0003_admin_seed.sql"), "utf8");
+    const passwordMatch = seedFile.match(/Password:\s*(\S+)/);
+    const hashMatch = seedFile.match(/\$2[aby]\$\d{2}\$[A-Za-z0-9./]{53}/);
+    const fragments: string[] = [];
+    if (passwordMatch) fragments.push(passwordMatch[1]);
+    if (hashMatch) fragments.push(hashMatch[0]);
+    return fragments;
+  }
+
+  const fragments = extractSeedCredentialFragments();
+
+  it("sanity check: the seed file actually contains extractable password/hash fragments (so this test isn't accidentally a no-op)", () => {
+    expect(fragments.length).toBe(2);
+  });
+
+  it("no file under docs/VPS_*.md contains the leaked plaintext password or bcrypt hash", () => {
+    const docsDir = path.join(repoRoot, "docs");
+    const vpsDocFiles = readdirSync(docsDir).filter((name) => name.startsWith("VPS_") && name.endsWith(".md"));
+    expect(vpsDocFiles.length).toBeGreaterThan(0);
+    for (const fileName of vpsDocFiles) {
+      const content = readFileSync(path.join(docsDir, fileName), "utf8");
+      for (const fragment of fragments) {
+        expect(content).not.toContain(fragment);
+      }
+    }
+  });
+
+  it("no file under scripts/vps-migration/ contains the leaked plaintext password or bcrypt hash", () => {
+    const scriptFiles = readdirSync(scriptsDir);
+    for (const fileName of scriptFiles) {
+      const content = readFileSync(path.join(scriptsDir, fileName), "utf8");
+      for (const fragment of fragments) {
+        expect(content).not.toContain(fragment);
+      }
+    }
   });
 });

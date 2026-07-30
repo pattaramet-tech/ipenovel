@@ -4,6 +4,17 @@ Companion to `docs/VPS_MIGRATION_RUNBOOK.md`. Work through phases in order — d
 
 Priority reminder: data recoverability > financial/entitlement correctness > deploy > rollback, ahead of any new feature work.
 
+## SECURITY (do this now, independent of migration timing) — leaked admin credential
+
+Found during this audit: `drizzle/0003_admin_seed.sql` and `drizzle/LOCAL_ADMIN_BOOTSTRAP.sql` both contain a hardcoded plaintext admin password (in a comment) and its bcrypt hash, committed to git. Full classification in `docs/VPS_MIGRATION_RUNBOOK.md` §0 and §9. **Neither file may be modified or deleted in this PR** (docs/read-only-tooling scope) — the items below are operator actions outside this PR, and the file deletion itself is explicitly deferred to a separate Security/Deployment follow-up PR. **Do not paste the actual password or hash into this checklist, a PR, a chat, or a log while working through these items** — read the two files directly in the repository if you need the exact values.
+
+- [ ] Rotate the Production admin password for any account that could plausibly match this credential — now, not gated on the VPS migration.
+- [ ] Rotate the VPS/staging admin password similarly if it was ever set up using either file as a reference.
+- [ ] Consider rotating `JWT_SECRET` during a planned maintenance window (invalidates all existing sessions — weigh the operational cost, but make it a deliberate decision, not a default skip).
+- [ ] Verify no current admin account still uses the leaked seed credential (compare stored password hashes against the hash in the two files directly — never log or paste the hash itself).
+- [ ] Confirm the team's policy going forward: never seed a fixed Production admin password from a file committed to git again (random-per-provision, handed to the operator once, is the safe pattern).
+- [ ] File/schedule the separate Security/Deployment follow-up PR that deletes `drizzle/0003_admin_seed.sql` and `drizzle/LOCAL_ADMIN_BOOTSTRAP.sql` — remember deleting the file does not remove it from git history; the rotation steps above are the actual mitigation.
+
 ## P0 — Backup
 
 - [ ] Take a full production database export (TiDB) using the team's normal export tooling — **not** from this sandbox (this PR/environment must never export production data, see repo-wide constraints).
@@ -33,6 +44,7 @@ Priority reminder: data recoverability > financial/entitlement correctness > dep
 - [ ] Deploy this app to the (still-staging) Coolify instance from `main` and confirm it builds and starts.
 - [ ] Restore the P0 test-restore database (or a fresh export) into the staging MariaDB.
 - [ ] Run `pnpm db:migrate` against the staging MariaDB and confirm it completes with no errors and no missing-schema-object failures (`scripts/migrate.mjs`'s own post-migration verification).
+- [ ] **Fresh MariaDB acceptance criterion (Runbook §9)**: after `pnpm db:migrate` completes, explicitly confirm `episodePurchases` and `readingProgress` exist, the six `episodes` reader columns (`content`, `contentFormat`, `isPublished`, `publishedAt`, `wordCount`, `sortOrder`) exist, and all associated indexes exist — via `docs/VPS_DATA_VALIDATION.md` §14's table-inventory query or a direct `DESCRIBE`/`SHOW COLUMNS`. Do **not** rely on `pnpm db:migrate`'s exit code alone for this specific check — `scripts/migrate.mjs`'s automated startup schema verifier does not currently check these particular objects (see Runbook §9 for the gap this audit found).
 - [ ] Run every "Needs live MariaDB verification" item from the Runbook's Database Compatibility Audit (§9) against this staging database and record the outcome of each (confirmed OK / found an issue → file a separate follow-up issue, do not fix inline during rehearsal).
 - [ ] Run all read-only queries in `docs/VPS_DATA_VALIDATION.md` against both the still-live production database and the staging MariaDB; save both result sets as JSON snapshots (format: see `scripts/vps-migration/README.md`).
 - [ ] Run `node scripts/vps-migration/compare-snapshots.mjs <source.json> <target.json>` on the two snapshots and confirm it exits 0 (or triages every reported mismatch as explained/expected, e.g. natural time-of-day drift between when each snapshot was taken).

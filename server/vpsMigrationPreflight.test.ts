@@ -173,4 +173,16 @@ describe("preflight.mjs CLI", () => {
     expect(result.stdout).not.toMatch(/should-never-be-printed/);
     expect(result.stdout).toMatch(/database: ipenovel_test/);
   });
+
+  it("reports the real repo's known/classified orphan files (0023_gifted_juggernaut, 0003_admin_seed, LOCAL_ADMIN_BOOTSTRAP) as expected, not as a new/unexpected discrepancy - and never prints any file's contents", () => {
+    const result = spawnSync(process.execPath, [preflightPath, "--ack-read-only"], {
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_URL: "x", JWT_SECRET: "x", VITE_APP_ID: "x", OAUTH_SERVER_URL: "x" },
+    });
+    expect(result.stdout).toMatch(/known\/classified orphan/);
+    expect(result.stdout).not.toMatch(/UNEXPECTED/);
+    // Never leaks the seed file's committed credential material into a
+    // report - only file/tag names ever appear.
+    expect(result.stdout).not.toMatch(/bcrypt|passwordHash|\$2a\$/i);
+  });
 });

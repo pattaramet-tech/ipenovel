@@ -99,11 +99,19 @@ export function checkBuildArtifacts(existsFn, distDir) {
 
 /**
  * Cross-checks the migration SQL files actually on disk against the
- * migration journal's tracked tags - mirrors the exact discrepancy class
- * documented in docs/VPS_MIGRATION_RUNBOOK.md's Database Compatibility
- * Audit (files present but not journal-tracked, e.g. a manually-invoked
- * bootstrap script). Reports it; does not judge whether it's a problem -
- * that's a human decision documented in the runbook.
+ * migration journal's tracked tags. On this repo, two orphan files are
+ * EXPECTED and already classified (not an open question) in
+ * docs/VPS_MIGRATION_RUNBOOK.md's Database Compatibility Audit:
+ * drizzle/0023_gifted_juggernaut.sql (legacy orphan; its schema is fully,
+ * idempotently repaired by journal-tracked drizzle/0028_repair_episode_reader_schema.sql
+ * - not a fresh-MariaDB blocker) and drizzle/0003_admin_seed.sql (an orphan
+ * SEED file, not a schema migration - see the Runbook's Critical Security
+ * Finding: it and drizzle/LOCAL_ADMIN_BOOTSTRAP.sql contain a hardcoded
+ * admin credential that must be rotated, never re-added to the journal).
+ * This function still reports every discrepancy it finds (it doesn't
+ * special-case those two names) - a NEW, unexpected discrepancy is what
+ * this check exists to catch. Never prints file contents, only file/tag
+ * names, so it can never leak the credential from 0003_admin_seed.sql.
  */
 export function checkMigrationJournalConsistency(sqlFileNames, journalEntries) {
   const journalTags = new Set(journalEntries.map((entry) => entry.tag));
@@ -190,6 +198,28 @@ function buildReport({ env, nodeVersion, packageJson, distExists, drizzleDir, dr
   });
 
   const journalCheck = checkMigrationJournalConsistency(drizzleFiles, journalEntries);
+  // The only orphan files this repo is known/expected to have - see
+  // docs/VPS_MIGRATION_RUNBOOK.md's dedicated classification for each. Used
+  // below purely to make the report's wording accurate (expected vs. a
+  // genuinely new, uninvestigated discrepancy) - never changes the
+  // underlying pure check's result. LOCAL_ADMIN_BOOTSTRAP is not numbered
+  // like a migration (never meant to be journal-tracked at all - its own
+  // header says "LOCAL/DEV-ONLY") but duplicates the same leaked credential
+  // as 0003_admin_seed and is classified alongside it in the Runbook.
+  const KNOWN_CLASSIFIED_ORPHANS = new Set(["0023_gifted_juggernaut", "0003_admin_seed", "LOCAL_ADMIN_BOOTSTRAP"]);
+  const unexpectedOrphans = journalCheck.filesNotInJournal.filter((tag) => !KNOWN_CLASSIFIED_ORPHANS.has(tag));
+  let consistencyLine;
+  if (journalCheck.consistent) {
+    consistencyLine = "consistent: yes";
+  } else if (unexpectedOrphans.length === 0 && journalCheck.journalTagsWithNoFile.length === 0) {
+    consistencyLine =
+      "consistent: NO, but exactly matches the known/classified orphan files - see docs/VPS_MIGRATION_RUNBOOK.md §9 (0023_gifted_juggernaut.sql: legacy orphan, repaired by 0028, not a blocker; 0003_admin_seed.sql and LOCAL_ADMIN_BOOTSTRAP.sql: CRITICAL SECURITY FINDING, see Runbook §0/§9/§14 for required operator action). This is expected, not a new issue.";
+  } else {
+    consistencyLine =
+      `consistent: NO - includes UNEXPECTED discrepancies beyond the known/classified orphans: ` +
+      `${unexpectedOrphans.join(", ") || "(none)"}${journalCheck.journalTagsWithNoFile.length > 0 ? `, journal tags with no file: ${journalCheck.journalTagsWithNoFile.join(", ")}` : ""}. ` +
+      `Investigate before trusting a fresh MariaDB migration run.`;
+  }
   sections.push({
     title: `Migration files vs journal (${drizzleDir})`,
     lines: [
@@ -197,9 +227,7 @@ function buildReport({ env, nodeVersion, packageJson, distExists, drizzleDir, dr
       `.sql files on disk: ${journalCheck.sqlFileCount}`,
       `files not tracked by journal: ${journalCheck.filesNotInJournal.join(", ") || "(none)"}`,
       `journal tags with no matching file: ${journalCheck.journalTagsWithNoFile.join(", ") || "(none)"}`,
-      journalCheck.consistent
-        ? "consistent: yes"
-        : "consistent: NO - see docs/VPS_MIGRATION_RUNBOOK.md Database Compatibility Audit for the known, already-documented discrepancy",
+      consistencyLine,
     ],
   });
 
