@@ -232,6 +232,13 @@
       "when": 1785141686362,
       "tag": "0032_add_coupon_ownership_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "5",
+      "when": 1785425957838,
+      "tag": "0033_add_auth_identities",
+      "breakpoints": true
     }
   ]
 }

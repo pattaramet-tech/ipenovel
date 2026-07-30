@@ -17,21 +17,104 @@ import {
  * Core user table backing auth flow.
  * Extended with role-based access control for admin/user distinction.
  */
-export const users = mysqlTable("users", {
-  id: int("id").autoincrement().primaryKey(),
-  openId: varchar("openId", { length: 64 }).notNull().unique(),
-  name: text("name"),
-  email: varchar("email", { length: 320 }),
-  loginMethod: varchar("loginMethod", { length: 64 }),
-  passwordHash: varchar("passwordHash", { length: 255 }),
-  role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-  lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
-});
+export const users = mysqlTable(
+  "users",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    openId: varchar("openId", { length: 64 }).notNull().unique(),
+    name: text("name"),
+    email: varchar("email", { length: 320 }),
+    loginMethod: varchar("loginMethod", { length: 64 }),
+    passwordHash: varchar("passwordHash", { length: 255 }),
+    role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+    lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
+  },
+  (table) => ({
+    // Added for Google OpenID Connect direct-login account linking (see
+    // server/services/googleIdentityService.ts's findUsersByNormalizedEmail)
+    // - every Google sign-in with no existing authIdentities row looks up
+    // users by email to decide link-vs-create-vs-fail-closed; without this
+    // index that lookup is an unindexed full table scan on every such
+    // login. Purely additive - does not change users.id, users.openId, or
+    // any existing constraint/behavior.
+    emailIdx: index("users_email_idx").on(table.email),
+  })
+);
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
+
+/**
+ * Links a third-party identity provider's subject (e.g. Google's `sub`
+ * claim) to an existing ipenovel `users.id`, without ever changing that
+ * user's `id` or `openId`. Added for the Google OpenID Connect
+ * direct-login feature flag (VITE_AUTH_PROVIDER=google /
+ * AUTH_PROVIDER=google) - see server/services/googleIdentityService.ts for
+ * the account-linking policy this table backs: an existing authIdentities
+ * row is used as-is; if none exists but exactly one users.email matches
+ * (case-insensitive, trimmed) the provider's verified email, that account
+ * is linked; more than one match fails closed (never auto-links, never
+ * picks the first row); no match creates a new user.
+ *
+ * No `.references()` foreign key constraint, matching every other
+ * relationship in this schema (see e.g. couponUsages.orderId,
+ * purchases.userId) - joins are resolved in application code, not
+ * enforced by MySQL/MariaDB FK constraints, for consistency with the rest
+ * of this file.
+ */
+export const authIdentities = mysqlTable(
+  "authIdentities",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    // "google" today; deliberately a plain varchar (not a mysqlEnum) so a
+    // future second provider never requires an ALTER TABLE MODIFY COLUMN
+    // on this table - an unconditional MODIFY COLUMN has already caused a
+    // real production incident once on this schema (see server/db.ts's
+    // ocrConfidence column comment / migration 0022).
+    provider: varchar("provider", { length: 32 }).notNull(),
+    // The provider's stable, opaque subject identifier (Google's `sub`
+    // claim). Never the email (which can change) and never looked up on
+    // its own - always queried together with `provider` via the unique
+    // index below.
+    providerSubject: varchar("providerSubject", { length: 255 }).notNull(),
+    // The email address the provider reported - already verified
+    // (email_verified === true is required before this row is ever
+    // written, see googleIdentityService.ts) - at the moment this identity
+    // was linked or created. An audit/record field, never re-validated on
+    // every login; the account's current email of record is always
+    // users.email, not this column.
+    emailAtLink: varchar("emailAtLink", { length: 320 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    userIdIdx: index("authIdentities_userId_idx").on(table.userId),
+    // One row per (provider, providerSubject) - the same external account
+    // can never be linked to two different ipenovel users. This is the
+    // exact lookup resolveGoogleIdentity performs first, before any
+    // email-based linking decision.
+    providerSubjectUnique: uniqueIndex("authIdentities_provider_providerSubject_unique").on(
+      table.provider,
+      table.providerSubject
+    ),
+    // One identity per provider per user - a single ipenovel account can't
+    // link two different Google accounts. Also what a concurrent
+    // second-tab/double-click login race is caught by (see
+    // isDuplicateKeyError usage in googleIdentityService.ts) - the loser
+    // of the race re-reads this row instead of erroring or creating a
+    // duplicate.
+    userProviderUnique: uniqueIndex("authIdentities_userId_provider_unique").on(
+      table.userId,
+      table.provider
+    ),
+  })
+);
+
+export type AuthIdentity = typeof authIdentities.$inferSelect;
+export type InsertAuthIdentity = typeof authIdentities.$inferInsert;
 
 /**
  * Categories for novels (e.g., Romance, Fantasy, Sci-Fi)

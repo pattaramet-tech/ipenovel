@@ -4,6 +4,7 @@ import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
+import { registerGoogleOAuthRoutes } from "./googleOAuth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
@@ -84,8 +85,14 @@ async function startServer() {
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
-  // OAuth callback under /api/oauth/callback
+  // OAuth callback under /api/oauth/callback (Manus - always registered,
+  // unchanged, kept for rollback)
   registerOAuthRoutes(app);
+  // Direct Google OpenID Connect login under /api/auth/google/{start,callback}
+  // - always registered, but every route inside fails closed to a plain
+  // 404 unless AUTH_PROVIDER=google (see server/_core/googleOAuth.ts), so
+  // this is a no-op for any deployment still on the default "manus" flag.
+  registerGoogleOAuthRoutes(app);
 
   // Dynamic sitemap (published novels only) - must be registered before the
   // Vite/static-file fallback below, otherwise /sitemap.xml would 404 and
