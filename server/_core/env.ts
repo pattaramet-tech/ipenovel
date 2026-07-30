@@ -39,6 +39,33 @@ export const ENV = {
   // domain verification has actually gone through.
   canonicalHost: process.env.CANONICAL_HOST ?? "ipenovel.com",
   legacyRedirectHosts: process.env.LEGACY_REDIRECT_HOSTS ?? "ipenovelz.manus.space",
+  // Feature flag selecting which login provider server-side auth routes
+  // are active for (server/_core/googleOAuth.ts, server/_core/oauth.ts).
+  // Defaults to "manus" - the ONLY two recognized values are "manus" and
+  // "google"; anything else (unset, typo, empty string) also resolves to
+  // "manus" so existing production behavior can never change just because
+  // this variable is missing or misconfigured. The client has its own,
+  // independently-set VITE_AUTH_PROVIDER (see client/src/const.ts) - the
+  // two are never derived from each other, so a deploy that forgets to set
+  // one of them fails closed to Manus rather than silently mixing flows.
+  authProvider: (process.env.AUTH_PROVIDER ?? "").trim().toLowerCase() === "google" ? "google" : "manus",
+  // Google OpenID Connect (direct, feature-flagged) - see
+  // server/_core/googleOAuth.ts and server/_core/googleOidc.ts. Deliberately
+  // NOT eagerly validated here (same lazy-checked-only-on-use discipline as
+  // the R2_PRIVATE_* vars above) - googleOAuth.ts's routes check these are
+  // all present before doing anything, so an unconfigured/partially
+  // configured Google login fails closed with a clear error instead of a
+  // confusing crash, and never affects any other route.
+  googleClientId: process.env.GOOGLE_OAUTH_CLIENT_ID ?? "",
+  googleClientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET ?? "",
+  // Must be read verbatim from the environment, never derived from the
+  // request's Host or X-Forwarded-Host header - those are client-influenced
+  // and Google's token endpoint requires the redirect_uri sent at token
+  // exchange to exactly match what was registered in Google Cloud Console,
+  // so deriving it from a spoofable header would both break real requests
+  // behind a proxy that alters the header and open an open-redirect-style
+  // surface at the OAuth layer.
+  googleRedirectUri: process.env.GOOGLE_OAUTH_REDIRECT_URI ?? "",
 };
 
 export const OCR_SETTINGS_KEY = "ocr_enabled";

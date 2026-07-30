@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql, gt, lt, ne, like } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { getTableColumns } from "drizzle-orm";
@@ -5,6 +6,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
   users,
+  authIdentities,
   novels,
   episodes,
   episodePurchases,
@@ -180,8 +182,16 @@ export async function getUserByOpenId(openId: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
-export async function getUserById(userId: number) {
-  const db = await getDb();
+/**
+ * `tx` is an optional in-flight transaction executor (see
+ * server/services/googleIdentityService.ts's resolveGoogleIdentity) - when
+ * provided, the read runs on that SAME connection/transaction instead of a
+ * fresh pooled one, so it can see rows the transaction itself has written
+ * but not yet committed. Every existing call site passes only `userId`, so
+ * this is fully backward compatible.
+ */
+export async function getUserById(userId: number, tx?: any) {
+  const db = tx ?? (await getDb());
   if (!db) return undefined;
   const result = await db.select().from(users).where(eq(users.id, userId)).limit(1);
   return result.length > 0 ? result[0] : undefined;
@@ -196,6 +206,173 @@ export async function getUserByEmail(email: string) {
   if (!db) return undefined;
   const result = await db.select().from(users).where(eq(users.email, email)).limit(1);
   return result.length > 0 ? result[0] : undefined;
+}
+
+// ============ GOOGLE OAUTH / AUTH IDENTITIES ============
+// Backs the Google OpenID Connect direct-login feature flag
+// (AUTH_PROVIDER=google) - see server/services/googleIdentityService.ts for
+// the account-linking policy these are composed into, and
+// drizzle/schema.ts's authIdentities table doc comment for the schema
+// rationale. Every function below accepts an optional `tx` (an in-flight
+// transaction executor) so resolveGoogleIdentity can run its entire
+// find-or-link-or-create decision as one atomic transaction - matching the
+// `const db = tx || await getDb();` composability pattern already used
+// throughout this file (see e.g. approveWalletTopup and its callees).
+
+/** Looks up a linked identity by (provider, providerSubject) - the unique
+ *  index authIdentities_provider_providerSubject_unique backs this query
+ *  and is resolveGoogleIdentity's first, authoritative check ("has this
+ *  exact external account already been linked to someone"). */
+export async function getAuthIdentity(provider: string, providerSubject: string, tx?: any) {
+  const db = tx ?? (await getDb());
+  if (!db) return undefined;
+  const result = await db
+    .select()
+    .from(authIdentities)
+    .where(and(eq(authIdentities.provider, provider), eq(authIdentities.providerSubject, providerSubject)))
+    .limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+/**
+ * Finds every existing user whose stored email matches `normalizedEmail`
+ * case-insensitively, regardless of how that email happens to be cased in
+ * the database today. `normalizedEmail` must already be trim()med and
+ * lowercased by the caller (see googleIdentityService.ts) - this function
+ * does not re-normalize its input, only the stored column, via an explicit
+ * `LOWER(TRIM(...))` on the SQL side rather than trusting the table's
+ * collation to already be case-insensitive (never verified against a real
+ * MariaDB/MySQL instance for this schema - see
+ * docs/VPS_MIGRATION_RUNBOOK.md's Database Compatibility Audit).
+ *
+ * This is the ONE lookup the fail-closed multiple-accounts-per-email check
+ * in resolveGoogleIdentity depends on - it must never silently miss a
+ * match (which risks creating a duplicate account for the same real
+ * person) or silently return a partial result. Deliberately defeats
+ * users_email_idx (a function-wrapped predicate can't use a plain btree
+ * index) - an accepted, documented trade-off at this table's current size;
+ * users_email_idx still serves getUserByEmail's plain exact-match lookup.
+ */
+export async function findUsersByNormalizedEmail(normalizedEmail: string, tx?: any) {
+  const db = tx ?? (await getDb());
+  if (!db) return [];
+  return await db
+    .select()
+    .from(users)
+    .where(sql`LOWER(TRIM(${users.email})) = ${normalizedEmail}`);
+}
+
+/**
+ * Links a Google identity to an EXISTING user - never creates or modifies
+ * a `users` row itself (callers update `lastSignedIn`/`name`/`loginMethod`
+ * separately - see touchExistingUser in googleIdentityService.ts). Throws
+ * (never silently no-ops) on a unique-constraint violation - callers
+ * distinguish "a genuine conflict" from "lost a concurrent race for the
+ * exact same link" via isDuplicateKeyError and re-read instead of
+ * retrying the insert.
+ */
+export async function linkGoogleIdentity(
+  params: { userId: number; providerSubject: string; email: string },
+  tx?: any
+): Promise<void> {
+  const db = tx ?? (await getDb());
+  if (!db) throw new Error("Database not available");
+  await db.insert(authIdentities).values({
+    userId: params.userId,
+    provider: "google",
+    providerSubject: params.providerSubject,
+    emailAtLink: params.email,
+  });
+}
+
+const GOOGLE_OPENID_PREFIX = "google:";
+
+/**
+ * Deterministically derives a `users.openId` value for a brand-new Google
+ * user from the provider's `sub` claim alone (never the email - an
+ * account's email can change, and openId must not).
+ *
+ * `users.openId` is `varchar(64)` (see drizzle/schema.ts) and this
+ * migration round deliberately does NOT widen it. Google's `sub` claim can
+ * be up to 255 characters, so `google:<raw-sub>` (up to 262 chars) would
+ * silently truncate or fail to insert for some real Google accounts.
+ * Instead this hashes the sub with SHA-256 and base64url-encodes the
+ * digest (43 characters for any input, fixed-length regardless of the raw
+ * sub's length) - `"google:"` (7 chars) + 43 chars = 50 chars, always
+ * comfortably under the 64-char column limit, and deterministic (the same
+ * sub always hashes to the same openId, so a repeat login for the same
+ * Google account resolves to the same user via
+ * getUserByOpenId/authenticateRequest - but note the actual repeat-login
+ * path in resolveGoogleIdentity never recomputes this at all; it finds
+ * the existing authIdentities row by raw providerSubject first and reuses
+ * that row's stored userId, so this function is only ever called once per
+ * real person, the moment their account is first created). The raw,
+ * un-hashed sub is still stored in full in authIdentities.providerSubject
+ * - this hash is only ever used for the openId/session-identity value,
+ * never as a substitute for the real provider subject anywhere else.
+ */
+export function computeGoogleOpenId(providerSubject: string): string {
+  const digest = createHash("sha256").update(providerSubject, "utf8").digest("base64url");
+  return `${GOOGLE_OPENID_PREFIX}${digest}`;
+}
+
+/**
+ * Creates a brand-new user for a Google identity that matched no existing
+ * account by identity OR by email, plus its authIdentities row, as two
+ * inserts on the SAME executor (so both are visible to each other and to
+ * the rest of the caller's transaction before anything commits). Mints a
+ * stable, app-owned `openId` via computeGoogleOpenId above - distinct by
+ * construction from every Manus-issued openId (which are never prefixed
+ * this way) and from the `admin-<id>` synthetic form local admin sessions
+ * use (see server/_core/sdk.ts's authenticateRequest) - so a Google user's
+ * session verifies through the exact same, unmodified authenticateRequest
+ * code path as any other non-admin user.
+ */
+export async function createGoogleUserWithIdentity(
+  params: { providerSubject: string; email: string; name: string | null },
+  tx?: any
+) {
+  const db = tx ?? (await getDb());
+  if (!db) throw new Error("Database not available");
+
+  const openId = computeGoogleOpenId(params.providerSubject);
+  const now = new Date();
+  const values: InsertUser = {
+    openId,
+    name: params.name,
+    email: params.email,
+    loginMethod: "google",
+    lastSignedIn: now,
+  };
+  // Same owner-auto-admin rule upsertUser already applies for every other
+  // provider - preserved here so OWNER_OPEN_ID keeps working regardless of
+  // which login path the owner's account was created/re-created through.
+  if (openId === ENV.ownerOpenId) {
+    values.role = "admin";
+  }
+
+  const insertResult = await db.insert(users).values(values);
+  const insertedId = extractInsertId(insertResult);
+  if (!insertedId) {
+    throw new Error("Failed to extract inserted user ID from database result");
+  }
+
+  // Read back on the SAME executor - a fresh getDb() connection would not
+  // see this row until the enclosing transaction commits.
+  const createdRows = await db.select().from(users).where(eq(users.id, insertedId)).limit(1);
+  const createdUser = createdRows.length > 0 ? createdRows[0] : undefined;
+  if (!createdUser) {
+    throw new Error("Failed to load newly created Google user");
+  }
+
+  await db.insert(authIdentities).values({
+    userId: createdUser.id,
+    provider: "google",
+    providerSubject: params.providerSubject,
+    emailAtLink: params.email,
+  });
+
+  return createdUser;
 }
 
 // ============ NOVELS & EPISODES ============
