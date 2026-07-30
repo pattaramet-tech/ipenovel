@@ -296,4 +296,71 @@ describe("sdk.authenticateRequest", () => {
       expect(upsertSpy).toHaveBeenCalled();
     });
   });
+
+  describe("AUTH_FORCE_RELOGIN_AFTER", () => {
+    const originalCutoff = ENV.forceReloginAfterSeconds;
+
+    afterEach(() => {
+      ENV.forceReloginAfterSeconds = originalCutoff;
+    });
+
+    it("no cutoff configured (null) -> an old session still authenticates normally", async () => {
+      ENV.forceReloginAfterSeconds = null;
+      const user = fakeUser();
+      vi.spyOn(db, "getUserByOpenId").mockResolvedValue(user);
+      vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
+
+      const token = await sdk.createSessionToken("user-123", {});
+      const result = await sdk.authenticateRequest(requestWithCookie(token));
+
+      expect(result).toBe(user);
+    });
+
+    it("a regular user's session issued BEFORE the cutoff -> rejected with AnonymousCredentialError reason forced_relogin, never logs the JWT/cookie value", async () => {
+      const token = await sdk.createSessionToken("user-123", {});
+      // Cutoff strictly in the future relative to the token's own iat (now).
+      ENV.forceReloginAfterSeconds = Math.floor(Date.now() / 1000) + 3600;
+
+      const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(token)));
+      expect(error).toBeInstanceOf(AnonymousCredentialError);
+      expect((error as AnonymousCredentialError).reason).toBe("forced_relogin");
+      expect((error as Error).message).not.toContain(token);
+    });
+
+    it("a regular user's session issued AFTER the cutoff -> authenticates normally, exactly as if the cutoff didn't exist", async () => {
+      const token = await sdk.createSessionToken("user-123", {});
+      // Cutoff strictly in the past relative to the token's own iat (now).
+      ENV.forceReloginAfterSeconds = Math.floor(Date.now() / 1000) - 3600;
+      const user = fakeUser();
+      vi.spyOn(db, "getUserByOpenId").mockResolvedValue(user);
+      vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
+
+      const result = await sdk.authenticateRequest(requestWithCookie(token));
+      expect(result).toBe(user);
+    });
+
+    it("a LOCAL ADMIN session (openId \"admin-*\") issued BEFORE the cutoff is NEVER rejected for forced_relogin - the admin-openId branch returns/throws before the cutoff check is ever reached", async () => {
+      const adminUser = fakeUser({ id: 7, openId: "admin-7", role: "admin" });
+      vi.spyOn(db, "getUserById").mockResolvedValue(adminUser);
+
+      const token = await sdk.createSessionToken("admin-7", {});
+      ENV.forceReloginAfterSeconds = Math.floor(Date.now() / 1000) + 3600;
+
+      const result = await sdk.authenticateRequest(requestWithCookie(token));
+      expect(result).toBe(adminUser);
+    });
+
+    it("does not touch JWT_SECRET/session signing at all - a session issued after the flag is later disabled again still just works", async () => {
+      const originalSecret = ENV.cookieSecret;
+      const token = await sdk.createSessionToken("user-123", {});
+      ENV.forceReloginAfterSeconds = Math.floor(Date.now() / 1000) - 3600;
+      const user = fakeUser();
+      vi.spyOn(db, "getUserByOpenId").mockResolvedValue(user);
+      vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
+
+      await sdk.authenticateRequest(requestWithCookie(token));
+
+      expect(ENV.cookieSecret).toBe(originalSecret);
+    });
+  });
 });

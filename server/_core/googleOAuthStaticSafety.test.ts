@@ -225,18 +225,25 @@ describe("Manus OAuth compatibility is fully preserved", () => {
 });
 
 describe("AUTH_PROVIDER / VITE_AUTH_PROVIDER default to manus", () => {
-  it("server/_core/env.ts's authProvider only ever resolves to \"google\" or \"transition\" for those exact literals (case/whitespace-insensitive to typos, but never permissive) - anything else, including a genuinely empty/unset value, falls through to \"manus\"", () => {
+  it("server/_core/env.ts's resolveAuthProviderMode is EXACT LITERAL - no .trim()/.toLowerCase()/.toUpperCase() anywhere in the function, so it can never normalize a near-miss (e.g. \" GOOGLE \") into an accepted value", () => {
     const source = readSource("server/_core/env.ts");
-    const authProviderBlockStart = source.indexOf("authProvider: (() => {");
-    const authProviderBlockEnd = source.indexOf("})()", authProviderBlockStart);
-    expect(authProviderBlockStart).toBeGreaterThan(-1);
-    const block = source.slice(authProviderBlockStart, authProviderBlockEnd);
+    const fnStart = source.indexOf("export function resolveAuthProviderMode(");
+    const fnEnd = source.indexOf("\n}", fnStart);
+    expect(fnStart).toBeGreaterThan(-1);
+    const fnBody = source.slice(fnStart, fnEnd);
 
-    expect(block).toMatch(/\(process\.env\.AUTH_PROVIDER\s*\?\?\s*""\)\.trim\(\)\.toLowerCase\(\)/);
-    expect(block).toMatch(/raw === "google"/);
-    expect(block).toMatch(/raw === "transition"/);
+    expect(fnBody).not.toMatch(/\.trim\(\)/);
+    expect(fnBody).not.toMatch(/\.toLowerCase\(\)/);
+    expect(fnBody).not.toMatch(/\.toUpperCase\(\)/);
+    expect(fnBody).toMatch(/raw === "google"/);
+    expect(fnBody).toMatch(/raw === "transition"/);
     // The final fallthrough is unconditional - the exact literal "manus".
-    expect(block.trim().endsWith('return "manus";')).toBe(true);
+    expect(fnBody.trim().endsWith('return "manus";')).toBe(true);
+  });
+
+  it("ENV.authProvider is assigned directly from resolveAuthProviderMode(process.env.AUTH_PROVIDER) - the raw environment value is never trimmed/cased before being handed to it", () => {
+    const source = readSource("server/_core/env.ts");
+    expect(source).toMatch(/authProvider:\s*resolveAuthProviderMode\(process\.env\.AUTH_PROVIDER\)/);
   });
 
   it("isManusAuthActive()/isGoogleAuthActive() are the single source of truth other route handlers gate on - both are exact three-way comparisons against ENV.authProvider, never a generic truthy check", () => {

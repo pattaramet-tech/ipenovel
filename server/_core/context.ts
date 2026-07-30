@@ -36,8 +36,12 @@ export async function createContext(
       // (nothing to clear, and would be an unnecessary Set-Cookie on every
       // anonymous request) or for the "verified fine, but no matching
       // account" cases (a legitimately-signed credential, not a broken
-      // one - see authErrors.ts).
-      if (error.reason === "invalid_session_token") {
+      // one - see authErrors.ts). Also cleared for "forced_relogin" - a
+      // session predating AUTH_FORCE_RELOGIN_AFTER's cutoff is, by policy,
+      // exactly as dead as a structurally invalid one; clearing it the same
+      // way makes the browser stop resending it after one round trip
+      // instead of hitting this rejection on every subsequent request.
+      if (error.reason === "invalid_session_token" || error.reason === "forced_relogin") {
         const cookieOptions = getSessionCookieOptions(opts.req);
         opts.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
       }

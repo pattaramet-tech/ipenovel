@@ -3,6 +3,11 @@ import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
 import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
+import {
+  GOOGLE_CONNECTION_REQUIRED_CODE,
+  GOOGLE_CONNECTION_REQUIRED_MESSAGE,
+  isBlockedByGoogleMigrationGate,
+} from "./googleMigrationGate";
 
 /** Shown to the client for any error that was not deliberately raised by application code. */
 export const GENERIC_INTERNAL_ERROR_MESSAGE = "Unable to process this request at this time. Please try again.";
@@ -105,9 +110,15 @@ export function sanitizeTrpcErrorShape(shape: any, error: { code: string }, logg
     causeCode === "CHECKOUT_MAINTENANCE" || causeCode === "SLIP_PAYMENT_MAINTENANCE"
       ? causeCode
       : undefined;
+  // Lets the client distinguish "you must connect Google" from any other
+  // FORBIDDEN (e.g. NOT_ADMIN_ERR_MSG) without parsing the human-readable
+  // (Thai, UI-owned) message text - see googleMigrationGate.ts. Never
+  // carries anything beyond this one fixed literal - no userId, email, or
+  // Google sub is ever attached to this error's cause.
+  const safeAuthGateCode = causeCode === GOOGLE_CONNECTION_REQUIRED_CODE ? causeCode : undefined;
   const safeShape = {
     ...shape,
-    data: { ...shape?.data, stack: undefined, maintenanceCode: safeCauseCode },
+    data: { ...shape?.data, stack: undefined, maintenanceCode: safeCauseCode, authGateCode: safeAuthGateCode },
   };
 
   const rawMessage = shape?.message ?? (error as any)?.message;
@@ -165,7 +176,66 @@ const requireUser = t.middleware(async opts => {
   });
 });
 
-export const protectedProcedure = t.procedure.use(requireUser);
+/**
+ * Requires only that a real session is attached (ctx.user is non-null) -
+ * NOT the mandatory Google-migration gate below. This is the procedure
+ * type for the small, explicit allowlist of things a signed-in-but-not-yet-
+ * Google-connected user must still be able to call: auth.googleConnected
+ * (the query the gate itself depends on - it would be a deadlock if this
+ * were gated), auth.logout, auth.me, and any admin-only procedure (see
+ * routers.ts's local adminProcedure, which is now built on THIS, not on
+ * protectedProcedure below, specifically so an admin action is never
+ * blocked by a customer-facing migration gate).
+ */
+export const authenticatedProcedure = t.procedure.use(requireUser);
+
+const requireGoogleMigrationComplete = t.middleware(async opts => {
+  const { ctx, next } = opts;
+
+  // Unreachable in practice - this middleware is only ever chained after
+  // authenticatedProcedure's requireUser (see protectedProcedure below),
+  // which already guarantees ctx.user is non-null. Kept as an explicit
+  // check (rather than a non-null assertion) purely so TypeScript can
+  // prove it below without one - t.middleware is defined standalone, so
+  // its own inferred ctx type doesn't know about whatever it's later
+  // chained onto.
+  if (!ctx.user) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  }
+
+  // isBlockedByGoogleMigrationGate itself no-ops (returns false, no
+  // database read) whenever the gate isn't active, so this is a zero-cost
+  // no-op in manus/google mode.
+  if (await isBlockedByGoogleMigrationGate(ctx.user)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: GOOGLE_CONNECTION_REQUIRED_MESSAGE,
+      cause: { code: GOOGLE_CONNECTION_REQUIRED_CODE },
+    });
+  }
+
+  // Re-asserts ctx.user (already non-null here, narrowed by
+  // authenticatedProcedure's requireUser) the same way requireUser itself
+  // does - without this, TypeScript's inference for this middleware's
+  // output context widens ctx.user back to nullable for every downstream
+  // protectedProcedure, which is exactly the class of error this narrowing
+  // trick exists to prevent (a compile-time guarantee, not just a runtime
+  // check, that a protectedProcedure handler can use ctx.user.id directly).
+  return next({ ctx: { ...ctx, user: ctx.user } });
+});
+
+/**
+ * The procedure type for ordinary signed-in "business actions" (bookshelf,
+ * wallet, points, orders, payments, purchases, wishlist, reading a
+ * member-only episode, editing profile data, ...). Built on
+ * authenticatedProcedure (auth already required) plus the mandatory
+ * Google-migration gate - so EVERY router that already used
+ * protectedProcedure is covered by this central middleware automatically,
+ * with no per-router edits needed. Anything that must remain reachable
+ * even while a user is gated (see authenticatedProcedure's docstring) must
+ * use authenticatedProcedure instead, never this one.
+ */
+export const protectedProcedure = authenticatedProcedure.use(requireGoogleMigrationComplete);
 
 export const adminProcedure = t.procedure.use(
   t.middleware(async opts => {

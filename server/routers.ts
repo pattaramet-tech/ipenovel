@@ -2,7 +2,7 @@ import { COOKIE_NAME, SESSION_TTL_MS } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { sdk } from "./_core/sdk";
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
+import { publicProcedure, protectedProcedure, authenticatedProcedure, router } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import * as db from "./db";
@@ -48,7 +48,13 @@ import { isValidStoredFileRef } from "@shared/privateFileRef";
 
 // ============ HELPER PROCEDURES ============
 
-const adminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
+// Built on authenticatedProcedure (auth only), deliberately NOT
+// protectedProcedure - an admin action must never be blocked by the
+// mandatory Google-migration gate (see server/_core/trpc.ts's docstrings
+// on both procedure types). This is what makes "AdminProcedure must never
+// go through the mandatory user gate" true by construction rather than by
+// convention.
+const adminProcedure = authenticatedProcedure.use(async ({ ctx, next }) => {
   if (ctx.user.role !== "admin") {
     throw new TRPCError({ code: "FORBIDDEN" });
   }
@@ -242,14 +248,21 @@ export const appRouter = router({
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
       return { success: true } as const;
     }),
-    // Backs ProfilePage's "Connected Accounts" section (AUTH_PROVIDER
-    // google/transition only - see client-side shouldShowGoogleConnectSection).
-    // protectedProcedure (not publicProcedure like me/logout above) -
-    // requires a real, already-verified session; an anonymous caller gets
-    // UNAUTHORIZED rather than a false "not connected" answer. Returns
-    // only a boolean - never providerSubject/sub, never emailAtLink, never
-    // any other authIdentities column the UI has no need for.
-    googleConnected: protectedProcedure.query(async ({ ctx }) => {
+    // Backs ProfilePage's "Connected Accounts" section AND the mandatory
+    // migration gate (both client- and server-side) - AUTH_PROVIDER
+    // google/transition only, see client-side shouldShowGoogleConnectSection.
+    // authenticatedProcedure (not publicProcedure like me/logout above, and
+    // deliberately NOT protectedProcedure) - requires a real,
+    // already-verified session (an anonymous caller gets UNAUTHORIZED
+    // rather than a false "not connected" answer), but must never itself be
+    // blocked by the mandatory Google-migration gate: that gate's whole
+    // purpose is to force a user toward connecting Google, and this is the
+    // exact query the gate (both server/_core/googleMigrationGate.ts and
+    // the client route gate) reads to decide whether they already have -
+    // gating this query would be a deadlock. Returns only a boolean - never
+    // providerSubject/sub, never emailAtLink, never any other authIdentities
+    // column the UI has no need for.
+    googleConnected: authenticatedProcedure.query(async ({ ctx }) => {
       const identity = await db.getAuthIdentityByUserAndProvider(ctx.user.id, "google");
       return { googleConnected: Boolean(identity) };
     }),

@@ -1,7 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
 import { eq } from "drizzle-orm";
 import { authIdentities, users } from "../drizzle/schema";
 import { connectGoogleIdentityToUser } from "./services/googleIdentityService";
+import { isBlockedByGoogleMigrationGate } from "./_core/googleMigrationGate";
+import { ENV } from "./_core/env";
 import { getTestDb } from "./test-helpers/testDb";
 import { assertSafeTestDatabaseUrl } from "./test-helpers/testDatabaseGuard";
 import { uniqueTestTag, deleteFixtures, createTestUser } from "./test-helpers/fixtures";
@@ -107,6 +109,75 @@ describe.sequential("connectGoogleIdentityToUser - concurrent explicit connect (
       expect(identityRows[0].userId).toBe(ownerUser.id);
     } finally {
       await deleteFixtures({ userIds: [ownerUser.id, otherUser.id] });
+    }
+  }, 30000);
+});
+
+// Mandatory-migration gate (server/_core/googleMigrationGate.ts) coverage
+// against a REAL database read - the mocked unit tests
+// (server/_core/googleMigrationGate.test.ts) already cover the decision
+// logic itself; what they cannot prove is that
+// db.getAuthIdentityByUserAndProvider (the same db.ts function, via its own
+// getDb(), NOT getTestDb() directly - see fixtures.ts's docstring on why
+// that's safe only inside an *.integration.test.ts file, where
+// vitest.integration.globalsetup.ts points DATABASE_URL at the same
+// TEST_DATABASE_URL) actually reflects a real, just-inserted authIdentities
+// row. No new migration, no schema change - reuses the exact same
+// connectGoogleIdentityToUser fixture pattern as the tests above.
+describe.sequential("isBlockedByGoogleMigrationGate (real database)", () => {
+  const originalAuthProvider = ENV.authProvider;
+  const originalRequire = ENV.requireGoogleConnection;
+
+  afterEach(() => {
+    ENV.authProvider = originalAuthProvider;
+    ENV.requireGoogleConnection = originalRequire;
+  });
+
+  it("a real user with NO connected Google identity is blocked; after a real connectGoogleIdentityToUser call, the SAME user is no longer blocked", async () => {
+    if (!process.env.TEST_DATABASE_URL) return;
+    assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
+
+    ENV.authProvider = "transition";
+    ENV.requireGoogleConnection = true;
+
+    const testDb = getTestDb();
+    const tag = uniqueTestTag("gate");
+    const fixtureUser = await createTestUser({ name: "Migration Gate Integration User" });
+    const sub = `gate-sub-${tag}`;
+    const email = `gate-${tag}@example.test`;
+
+    try {
+      const blockedBefore = await isBlockedByGoogleMigrationGate({ id: fixtureUser.id });
+      expect(blockedBefore).toBe(true);
+
+      const connectResult = await connectGoogleIdentityToUser(testDb, {
+        userId: fixtureUser.id,
+        sub,
+        email,
+        emailVerified: true,
+      });
+      expect(connectResult).toEqual({ outcome: "connected" });
+
+      const blockedAfter = await isBlockedByGoogleMigrationGate({ id: fixtureUser.id });
+      expect(blockedAfter).toBe(false);
+    } finally {
+      await deleteFixtures({ userIds: [fixtureUser.id] });
+    }
+  }, 30000);
+
+  it("the gate never queries the database at all when AUTH_REQUIRE_GOOGLE_CONNECTION is not active - real db.getAuthIdentityByUserAndProvider is never invoked", async () => {
+    if (!process.env.TEST_DATABASE_URL) return;
+    assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
+
+    ENV.authProvider = "manus";
+    ENV.requireGoogleConnection = false;
+
+    const fixtureUser = await createTestUser({ name: "Migration Gate Inactive User" });
+    try {
+      const blocked = await isBlockedByGoogleMigrationGate({ id: fixtureUser.id });
+      expect(blocked).toBe(false);
+    } finally {
+      await deleteFixtures({ userIds: [fixtureUser.id] });
     }
   }, 30000);
 });

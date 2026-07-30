@@ -135,6 +135,20 @@ describe("createContext", () => {
       }
     );
 
+    it("DOES clear the cookie for reason=forced_relogin (AUTH_FORCE_RELOGIN_AFTER) - a session predating the cutoff can never become valid again, exactly like invalid_session_token", async () => {
+      vi.spyOn(sdk, "authenticateRequest").mockRejectedValue(
+        new AnonymousCredentialError("Session predates the forced re-login cutoff", "forced_relogin")
+      );
+
+      const { opts, clearedCookies } = fakeOpts();
+      await createContext(opts);
+
+      expect(clearedCookies).toHaveLength(1);
+      expect(clearedCookies[0].name).toBe(COOKIE_NAME);
+      const expectedOptions = getSessionCookieOptions(opts.req as any);
+      expect(clearedCookies[0].options).toMatchObject({ ...expectedOptions, maxAge: -1 });
+    });
+
     it("does NOT clear the cookie for an infrastructure failure", async () => {
       vi.spyOn(sdk, "authenticateRequest").mockRejectedValue(new Error("connection refused"));
       vi.spyOn(console, "error").mockImplementation(() => {});

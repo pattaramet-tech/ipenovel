@@ -32,7 +32,30 @@ export type VerifiedSession = {
   openId: string;
   appId: string;
   name: string | null;
+  // Epoch seconds from the JWT's own `iat` claim (always present - every
+  // token this codebase issues is signed via signSession's .setIssuedAt()).
+  // Used by isSessionIssuedBeforeCutoff/authenticateRequest to enforce
+  // AUTH_FORCE_RELOGIN_AFTER - never trusted from anywhere except this
+  // already-signature-verified claim.
+  issuedAtSeconds: number;
 };
+
+/**
+ * Pure decision: has this session's own `iat` (in epoch seconds) been
+ * issued strictly BEFORE the AUTH_FORCE_RELOGIN_AFTER cutoff (also epoch
+ * seconds, or `null` when the cutoff is disabled - see
+ * server/_core/env.ts's resolveForceReloginCutoffSeconds)? A `null` cutoff
+ * always resolves to false (never forces a re-login) - this is the single
+ * choke point that guarantees an unset/invalid AUTH_FORCE_RELOGIN_AFTER can
+ * never reject any session, matching resolveForceReloginCutoffSeconds's own
+ * fail-closed-to-disabled contract. Exported as a standalone pure function
+ * (rather than inlined in authenticateRequest) so it's directly testable
+ * with plain numbers, no JWT signing/module reload required.
+ */
+export function isSessionIssuedBeforeCutoff(issuedAtSeconds: number, cutoffSeconds: number | null): boolean {
+  if (cutoffSeconds === null) return false;
+  return issuedAtSeconds < cutoffSeconds;
+}
 
 const EXCHANGE_TOKEN_PATH = `/webdev.v1.WebDevAuthPublicService/ExchangeToken`;
 const GET_USER_INFO_PATH = `/webdev.v1.WebDevAuthPublicService/GetUserInfo`;
@@ -263,9 +286,15 @@ class SDKServer {
         issuer: SESSION_JWT_ISSUER,
         audience: expectedAppId,
       });
-      const { openId, appId, name } = payload as Record<string, unknown>;
+      const { openId, appId, name, iat } = payload as Record<string, unknown>;
 
-      if (!isNonEmptyString(openId) || !isNonEmptyString(appId) || appId !== expectedAppId) {
+      if (
+        !isNonEmptyString(openId) ||
+        !isNonEmptyString(appId) ||
+        appId !== expectedAppId ||
+        typeof iat !== "number" ||
+        !Number.isFinite(iat)
+      ) {
         // No log here (deliberately): once this PR ships, EVERY session
         // token issued beforehand fails this exact check (old tokens carry
         // no iss/aud/matching-appId at all) - every browser with an old
@@ -273,7 +302,11 @@ class SDKServer {
         // signs in again. This is an expected, high-volume rejection, not
         // a security event worth logging. See authenticateRequest, which
         // reports this case to createContext as "invalid_session_token" so
-        // the stale cookie gets cleared instead.
+        // the stale cookie gets cleared instead. A missing/non-numeric
+        // `iat` is treated exactly the same way - jose's own jwtVerify
+        // always includes a real one from .setIssuedAt() for every token
+        // this codebase has ever signed, so a token missing one is
+        // exactly as structurally suspect as a missing openId/appId.
         return null;
       }
 
@@ -281,6 +314,7 @@ class SDKServer {
         openId,
         appId,
         name: typeof name === "string" && name.length > 0 ? name : null,
+        issuedAtSeconds: iat,
       };
     } catch {
       // Malformed JWT, bad signature, expired, wrong issuer/audience, or an
@@ -363,6 +397,21 @@ class SDKServer {
       // cleared: this is a validly-signed token, not a structurally
       // invalid one - see authErrors.ts.
       throw new AnonymousCredentialError("Admin session no longer valid", "admin_session_invalid");
+    }
+
+    // AUTH_FORCE_RELOGIN_AFTER - only ever applies to a regular (non-admin)
+    // user session, which is exactly why this check sits AFTER the
+    // admin-openId branch above (which already returned or threw): a local
+    // admin session can never reach this line. When
+    // ENV.forceReloginAfterSeconds is null (unset/invalid), this always
+    // resolves to false - see isSessionIssuedBeforeCutoff/
+    // resolveForceReloginCutoffSeconds. Never logs the JWT or the session
+    // cookie value - the thrown message is a fixed, constant string.
+    if (isSessionIssuedBeforeCutoff(session.issuedAtSeconds, ENV.forceReloginAfterSeconds)) {
+      throw new AnonymousCredentialError(
+        "Session predates the forced re-login cutoff",
+        "forced_relogin"
+      );
     }
 
     const sessionUserId = session.openId;
