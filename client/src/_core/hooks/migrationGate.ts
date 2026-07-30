@@ -42,7 +42,7 @@ export function isMigrationGateExemptPath(pathname: string): boolean {
   return false;
 }
 
-export type MigrationGateAction = "allow" | "block_loading" | "redirect_upgrade";
+export type MigrationGateAction = "allow" | "block_loading" | "block_error" | "redirect_upgrade";
 
 export type MigrationGateInput = {
   mandatoryEnabled: boolean;
@@ -55,8 +55,11 @@ export type MigrationGateInput = {
   /**
    * True when the auth.googleConnected query itself failed (an
    * infrastructure error, not "not connected"). Must NEVER be treated as
-   * "connected" (that would silently let a gated user through) - resolves
-   * to the same "block_loading" action as still-loading, never "allow".
+   * "connected" (fail open) NOR silently redirected to the upgrade page as
+   * if it were confirmed "not connected" (that would tell a possibly-already
+   * -connected user they need to upgrade, based on a guess) - resolves to
+   * its own distinct "block_error" action, never "allow" and never
+   * "redirect_upgrade".
    */
   googleConnectedError: boolean;
 };
@@ -78,7 +81,7 @@ export function resolveMigrationGateAction(input: MigrationGateInput): Migration
   if (input.authLoading) return "allow";
   if (!input.isAuthenticated) return "allow";
   if (input.googleConnectedLoading) return "block_loading";
-  if (input.googleConnectedError) return "block_loading";
+  if (input.googleConnectedError) return "block_error";
   if (input.googleConnected === true) return "allow";
   return "redirect_upgrade";
 }

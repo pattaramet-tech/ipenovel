@@ -97,10 +97,16 @@ describe("resolveMigrationGateAction", () => {
     );
   });
 
-  it("authenticated, googleConnected query errored (infrastructure failure) -> block_loading, NEVER 'allow' (must not silently treat error as connected)", () => {
+  it("authenticated, googleConnected query errored (infrastructure failure) -> block_error, NEVER 'allow' (fail open) and NEVER 'redirect_upgrade' (a guess)", () => {
     expect(
       resolveMigrationGateAction(baseInput({ googleConnectedError: true, googleConnected: undefined }))
-    ).toBe("block_loading");
+    ).toBe("block_error");
+  });
+
+  it("googleConnectedError takes priority over a stale googleConnected: false value from a previous successful fetch - still block_error, never redirect_upgrade", () => {
+    expect(
+      resolveMigrationGateAction(baseInput({ googleConnectedError: true, googleConnected: false }))
+    ).toBe("block_error");
   });
 
   it("authenticated, googleConnected: true -> allow", () => {
@@ -116,6 +122,12 @@ describe("resolveMigrationGateAction", () => {
       resolveMigrationGateAction(
         baseInput({ pathname: "/account/upgrade-login", googleConnected: false, googleConnectedError: false })
       )
+    ).toBe("allow");
+  });
+
+  it("block_error is never returned for an exempt path either", () => {
+    expect(
+      resolveMigrationGateAction(baseInput({ pathname: "/admin/orders", googleConnectedError: true }))
     ).toBe("allow");
   });
 });

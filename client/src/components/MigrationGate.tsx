@@ -2,12 +2,15 @@ import { useEffect, type ReactNode } from "react";
 import { useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
-import { Loader2 } from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import {
   isMandatoryGoogleConnectionEnabled,
   isMigrationGateExemptPath,
   resolveMigrationGateAction,
 } from "@/_core/hooks/migrationGate";
+import { resolveSupportUrl } from "@/pages/upgradeLoginPresentation";
 
 /**
  * Global, App/Router-level UX gate for the mandatory Google-connection
@@ -25,7 +28,7 @@ import {
  */
 export default function MigrationGate({ children }: { children: ReactNode }) {
   const [pathname, navigate] = useLocation();
-  const { isAuthenticated, loading: authLoading } = useAuth();
+  const { isAuthenticated, loading: authLoading, logout } = useAuth();
 
   const mandatoryEnabled = isMandatoryGoogleConnectionEnabled(
     import.meta.env.VITE_AUTH_PROVIDER,
@@ -58,6 +61,42 @@ export default function MigrationGate({ children }: { children: ReactNode }) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <Loader2 className="w-8 h-8 animate-spin text-blue-600" aria-hidden="true" />
+      </div>
+    );
+  }
+
+  if (action === "block_error") {
+    // An infrastructure failure while checking Google-connection status -
+    // must never fail open (silently let the visitor through), never guess
+    // "not connected" and redirect to the upgrade page (that could be
+    // wrong), and never show the raw error/database/API detail to the
+    // browser. A fixed message plus a manual retry (refetch) and a logout
+    // escape hatch are the only ways out of this screen.
+    const supportUrl = resolveSupportUrl(import.meta.env.VITE_SUPPORT_URL);
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 px-4 py-12">
+        <Card className="w-full max-w-md p-8 text-center">
+          <AlertTriangle className="w-10 h-10 text-amber-500 mx-auto mb-4" aria-hidden="true" />
+          <h1 className="text-xl font-bold text-slate-900 mb-2">ไม่สามารถตรวจสอบสถานะบัญชีได้</h1>
+          <p className="text-sm text-slate-600 leading-relaxed mb-6">
+            เกิดข้อผิดพลาดชั่วคราว กรุณาลองใหม่อีกครั้ง หากยังไม่สำเร็จ กรุณาติดต่อฝ่ายช่วยเหลือ
+          </p>
+          <div className="flex flex-col gap-3">
+            <Button size="lg" className="w-full" onClick={() => googleConnectedQuery.refetch()}>
+              ลองใหม่
+            </Button>
+            <Button variant="outline" size="lg" className="w-full" onClick={() => logout()}>
+              ออกจากระบบ
+            </Button>
+            {supportUrl && (
+              <Button asChild variant="ghost" size="sm" className="w-full">
+                <a href={supportUrl} target="_blank" rel="noopener noreferrer">
+                  ติดต่อฝ่ายช่วยเหลือ
+                </a>
+              </Button>
+            )}
+          </div>
+        </Card>
       </div>
     );
   }

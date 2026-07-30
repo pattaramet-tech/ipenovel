@@ -93,6 +93,48 @@ describe("resolveForceReloginCutoffSeconds - strict ISO-8601 UTC, null on anythi
   ])("invalid/malformed value %j -> null (disabled) - NEVER epoch 0 or 'now', which would force a mass logout", (raw) => {
     expect(resolveForceReloginCutoffSeconds(raw)).toBeNull();
   });
+
+  describe("strict calendar-date validation (Date.UTC round-trip, never Date.parse's silent normalization)", () => {
+    it.each([
+      "2026-02-30T00:00:00Z", // February never has 30 days
+      "2025-02-29T00:00:00Z", // 2025 is not a leap year
+      "2026-04-31T00:00:00Z", // April has 30 days
+      "2026-13-01T00:00:00Z", // month 13 does not exist
+      "2026-00-01T00:00:00Z", // month 0 does not exist
+      "2026-01-00T00:00:00Z", // day 0 does not exist
+      "2026-01-01T24:00:00Z", // hour 24 does not exist (00-23 only)
+      "2026-01-01T00:60:00Z", // minute 60 does not exist (00-59 only)
+      "2026-01-01T00:00:60Z", // second 60 does not exist (00-59 only, no leap-second support)
+    ])("rejects the nonexistent calendar date/time %j -> null, never silently normalized to a nearby real date", (raw) => {
+      expect(resolveForceReloginCutoffSeconds(raw)).toBeNull();
+    });
+
+    it("accepts 2024-02-29 (2024 IS a leap year)", () => {
+      const result = resolveForceReloginCutoffSeconds("2024-02-29T00:00:00Z");
+      expect(result).not.toBeNull();
+      expect(result).toBe(Math.floor(Date.UTC(2024, 1, 29, 0, 0, 0) / 1000));
+    });
+
+    it("a year expressed as 4 digits in the 0-99 range (an edge case only, never realistic for this feature) still validates correctly - the +400 round-trip shift never itself causes a false rejection or a false acceptance", () => {
+      // Year 99 is NOT divisible by 4, so it is not a leap year under any
+      // version of the rule - Feb 29 must still correctly reject.
+      expect(resolveForceReloginCutoffSeconds("0099-02-29T00:00:00Z")).toBeNull();
+      // 0099-02-28 is a real date and must be accepted.
+      expect(resolveForceReloginCutoffSeconds("0099-02-28T00:00:00Z")).not.toBeNull();
+      // Year 100 IS divisible by 4, but is a century year not divisible by
+      // 400, so it is NOT a leap year (the century exception) - proves the
+      // round-trip shift didn't collapse the full three-part leap-year rule
+      // into a simpler "divisible by 4" check.
+      expect(resolveForceReloginCutoffSeconds("0100-02-29T00:00:00Z")).toBeNull();
+      expect(resolveForceReloginCutoffSeconds("0100-02-28T00:00:00Z")).not.toBeNull();
+    });
+
+    it("accepts a timestamp with fractional seconds representing a real date/time", () => {
+      const result = resolveForceReloginCutoffSeconds("2026-08-01T12:30:45.500Z");
+      expect(result).not.toBeNull();
+      expect(result).toBe(Math.floor(Date.UTC(2026, 7, 1, 12, 30, 45, 500) / 1000));
+    });
+  });
 });
 
 describe("isGoogleConnectionMandatory", () => {

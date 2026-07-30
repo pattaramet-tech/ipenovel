@@ -4,8 +4,8 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { BookOpen, Wallet, Clock, Heart, Loader2 } from "lucide-react";
-import { resolveSupportUrl } from "./upgradeLoginPresentation";
+import { AlertTriangle, BookOpen, Wallet, Clock, Heart, Loader2 } from "lucide-react";
+import { resolveSupportUrl, resolveUpgradeLoginPageAction } from "./upgradeLoginPresentation";
 
 // The mandatory-migration counterpart to /login's optional Google-connect
 // flow (see App.tsx's <MigrationGate>, which is what actually routes a
@@ -18,12 +18,33 @@ import { resolveSupportUrl } from "./upgradeLoginPresentation";
 // three sanctioned ways out: connect Google, log out, or reach support -
 // never a "skip for now" escape hatch.
 export default function UpgradeLoginPage() {
-  const { user, loading, logout } = useAuth();
+  const { user, loading: authLoading, logout } = useAuth();
   const [, navigate] = useLocation();
+  const isAuthenticated = Boolean(user);
 
+  // Never fires at all while anonymous - there is no Google-connection
+  // status to ask about without a session, and firing it anyway would just
+  // produce a confusing UNAUTHORIZED error masquerading as "not connected".
   const googleConnectedQuery = trpc.auth.googleConnected.useQuery(undefined, {
-    enabled: !!user,
+    enabled: isAuthenticated,
   });
+
+  const action = resolveUpgradeLoginPageAction({
+    authLoading,
+    isAuthenticated,
+    googleConnectedLoading: isAuthenticated && googleConnectedQuery.isLoading,
+    googleConnectedError: isAuthenticated && googleConnectedQuery.isError,
+    googleConnected: googleConnectedQuery.data?.googleConnected,
+  });
+
+  // Anonymous visitor (no session at all, or it expired while this page was
+  // open) -> back to /login, never an infinite spinner. replace: true so
+  // the browser's back button doesn't return here and loop.
+  useEffect(() => {
+    if (action === "redirect_login") {
+      navigate("/login", { replace: true });
+    }
+  }, [action, navigate]);
 
   // Self-correcting: if this user turns out to already be connected (a
   // stale bookmark, browser back button, another tab having just
@@ -34,15 +55,45 @@ export default function UpgradeLoginPage() {
   // server/_core/googleOAuth.ts's ACCOUNT_PAGE_PATH - reused unmodified),
   // a page this same self-correction logic keeps unlocked.
   useEffect(() => {
-    if (googleConnectedQuery.data?.googleConnected) {
+    if (action === "redirect_home") {
       navigate("/", { replace: true });
     }
-  }, [googleConnectedQuery.data?.googleConnected, navigate]);
+  }, [action, navigate]);
 
-  if (loading || !user || googleConnectedQuery.data?.googleConnected) {
+  if (action === "loading" || action === "redirect_login" || action === "redirect_home") {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <Loader2 className="w-8 h-8 animate-spin text-blue-600" aria-hidden="true" />
+      </div>
+    );
+  }
+
+  if (action === "render_error") {
+    const supportUrl = resolveSupportUrl(import.meta.env.VITE_SUPPORT_URL);
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
+        <Card className="w-full max-w-md p-8 text-center">
+          <AlertTriangle className="w-10 h-10 text-amber-500 mx-auto mb-4" aria-hidden="true" />
+          <h1 className="text-xl font-bold text-slate-900 mb-2">ไม่สามารถตรวจสอบสถานะบัญชีได้</h1>
+          <p className="text-sm text-slate-600 leading-relaxed mb-6">
+            เกิดข้อผิดพลาดชั่วคราว กรุณาลองใหม่อีกครั้ง หากยังไม่สำเร็จ กรุณาติดต่อฝ่ายช่วยเหลือ
+          </p>
+          <div className="flex flex-col gap-3">
+            <Button size="lg" className="w-full" onClick={() => googleConnectedQuery.refetch()}>
+              ลองใหม่
+            </Button>
+            <Button variant="outline" size="lg" className="w-full" onClick={() => logout()}>
+              ออกจากระบบ
+            </Button>
+            {supportUrl && (
+              <Button asChild variant="ghost" size="sm" className="w-full">
+                <a href={supportUrl} target="_blank" rel="noopener noreferrer">
+                  ติดต่อฝ่ายช่วยเหลือ
+                </a>
+              </Button>
+            )}
+          </div>
+        </Card>
       </div>
     );
   }

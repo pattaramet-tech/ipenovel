@@ -38,28 +38,76 @@ export function resolveRequireGoogleConnection(raw: string | undefined): boolean
   return raw === "true";
 }
 
+const STRICT_ISO_8601_UTC_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?Z$/;
+
 /**
  * Strict ISO-8601 UTC timestamp only (e.g. "2026-08-01T00:00:00Z", with an
  * optional fractional-seconds component) - matches the exact example format
  * given for AUTH_FORCE_RELOGIN_AFTER. Returns the cutoff as whole epoch
  * seconds (matching a JWT `iat` claim's units), or `null` if the value is
- * empty/unset OR fails to parse as a valid date OR doesn't match the
- * required strict format.
+ * empty/unset OR doesn't match the required strict format OR names a
+ * calendar date/time that does not actually exist.
+ *
+ * Deliberately does NOT rely on `Date.parse()`/`new Date(string)` alone to
+ * decide validity - both silently NORMALIZE an out-of-range component
+ * instead of rejecting it (e.g. "2026-02-30T00:00:00Z" quietly becomes
+ * March 2, "...T24:00:00Z" quietly becomes the next day at midnight), which
+ * would make a fat-fingered date resolve to a DIFFERENT real cutoff instead
+ * of failing closed to disabled. Instead: the regex only constrains the
+ * SHAPE (digit counts), each component is parsed as a plain integer, a
+ * candidate UTC instant is built with `Date.UTC`, and every component is
+ * then read back and compared against the input - if `Date.UTC` had to
+ * normalize anything (a nonexistent date, `hour: 24`, `minute`/`second: 60`,
+ * ...), at least one read-back component will not match what was typed, and
+ * this returns `null`. (The year is shifted by +400 purely for this
+ * round-trip comparison, then discarded - `Date.UTC`/`new Date(y, ...)`
+ * special-case a bare 0-99 year as 1900+y, which would otherwise make this
+ * check itself misfire for an unusual but literally-4-digit year like
+ * "0099"; +400 is a full Gregorian leap-year cycle, so it never changes
+ * which dates are valid.)
  *
  * `null` means "the forced-relogin cutoff is DISABLED" - this is the ONLY
- * safe behavior for an invalid/malformed value. This function must never
- * resolve an invalid value to a cutoff that would force EVERY existing
- * session to re-login (e.g. epoch 0, or "now") - that would turn a typo in
- * an environment variable into an accidental mass-logout of the entire user
- * base, which is exactly the failure mode this deliberately fails closed
- * (to "disabled"), not open, against.
+ * safe behavior for an invalid/malformed/nonexistent value. This function
+ * must never resolve an invalid value to a cutoff that would force EVERY
+ * existing session to re-login (e.g. epoch 0, or "now") - that would turn a
+ * typo in an environment variable into an accidental mass-logout of the
+ * entire user base, which is exactly the failure mode this deliberately
+ * fails closed (to "disabled"), not open, against.
  */
 export function resolveForceReloginCutoffSeconds(raw: string | undefined): number | null {
   if (!raw) return null;
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/.test(raw)) return null;
-  const parsedMs = Date.parse(raw);
-  if (Number.isNaN(parsedMs)) return null;
-  return Math.floor(parsedMs / 1000);
+
+  const match = STRICT_ISO_8601_UTC_PATTERN.exec(raw);
+  if (!match) return null;
+
+  const [, yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr, fractionStr] = match;
+  const year = Number(yearStr);
+  const month = Number(monthStr);
+  const day = Number(dayStr);
+  const hour = Number(hourStr);
+  const minute = Number(minuteStr);
+  const second = Number(secondStr);
+  // Date.UTC's ms parameter is whole milliseconds only - pad/truncate any
+  // fractional-seconds digits to exactly 3 (e.g. ".5" -> 500ms, ".123456"
+  // -> 123ms, sub-millisecond precision is simply not representable).
+  const milliseconds = fractionStr ? Number(fractionStr.padEnd(3, "0").slice(0, 3)) : 0;
+
+  const yearForRoundTrip = year + 400;
+  const candidateMs = Date.UTC(yearForRoundTrip, month - 1, day, hour, minute, second, milliseconds);
+  const roundTrip = new Date(candidateMs);
+  const roundTripMatches =
+    roundTrip.getUTCFullYear() === yearForRoundTrip &&
+    roundTrip.getUTCMonth() === month - 1 &&
+    roundTrip.getUTCDate() === day &&
+    roundTrip.getUTCHours() === hour &&
+    roundTrip.getUTCMinutes() === minute &&
+    roundTrip.getUTCSeconds() === second &&
+    roundTrip.getUTCMilliseconds() === milliseconds;
+  if (!roundTripMatches) return null;
+
+  const realMs = Date.UTC(year, month - 1, day, hour, minute, second, milliseconds);
+  return Math.floor(realMs / 1000);
 }
 
 export const ENV = {

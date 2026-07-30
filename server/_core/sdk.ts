@@ -41,19 +41,37 @@ export type VerifiedSession = {
 };
 
 /**
- * Pure decision: has this session's own `iat` (in epoch seconds) been
- * issued strictly BEFORE the AUTH_FORCE_RELOGIN_AFTER cutoff (also epoch
- * seconds, or `null` when the cutoff is disabled - see
- * server/_core/env.ts's resolveForceReloginCutoffSeconds)? A `null` cutoff
- * always resolves to false (never forces a re-login) - this is the single
- * choke point that guarantees an unset/invalid AUTH_FORCE_RELOGIN_AFTER can
- * never reject any session, matching resolveForceReloginCutoffSeconds's own
- * fail-closed-to-disabled contract. Exported as a standalone pure function
- * (rather than inlined in authenticateRequest) so it's directly testable
- * with plain numbers, no JWT signing/module reload required.
+ * Pure decision: should this session be rejected right now because it was
+ * issued before the AUTH_FORCE_RELOGIN_AFTER cutoff?
+ *
+ * A cutoff in the FUTURE is a scheduled activation, not an immediate one -
+ * it must never reject anything until the clock actually reaches it. An
+ * earlier version of this function compared `issuedAtSeconds < cutoffSeconds`
+ * with no reference to the current time at all, which meant setting a
+ * future cutoff (the natural way to schedule a re-login requirement ahead
+ * of time, e.g. "at midnight UTC tomorrow") rejected every session
+ * IMMEDIATELY, including a brand-new session minted seconds ago by a user
+ * who had just re-logged-in to satisfy it - a login loop with no way out
+ * before the cutoff itself arrived. Semantics now:
+ *
+ *  - cutoffSeconds === null                        -> false (disabled)
+ *  - nowSeconds < cutoffSeconds                     -> false (not yet active - scheduled, not enforced)
+ *  - nowSeconds >= cutoffSeconds && issuedAtSeconds < cutoffSeconds -> true (active, and this session predates it)
+ *  - issuedAtSeconds >= cutoffSeconds               -> false (issued at/after the cutoff - always fine, even before nowSeconds reaches it, since a session can never be issued in the future)
+ *
+ * `nowSeconds` is an explicit parameter (defaulting to the server's own
+ * `Date.now()`, NEVER any client-supplied value) specifically so this stays
+ * directly testable with plain numbers - no fake timers, no JWT signing, no
+ * module reload required. authenticateRequest never passes its own
+ * override - it always uses the real server clock via the default.
  */
-export function isSessionIssuedBeforeCutoff(issuedAtSeconds: number, cutoffSeconds: number | null): boolean {
+export function isSessionIssuedBeforeCutoff(
+  issuedAtSeconds: number,
+  cutoffSeconds: number | null,
+  nowSeconds: number = Math.floor(Date.now() / 1000)
+): boolean {
   if (cutoffSeconds === null) return false;
+  if (nowSeconds < cutoffSeconds) return false;
   return issuedAtSeconds < cutoffSeconds;
 }
 
@@ -405,8 +423,15 @@ class SDKServer {
     // admin session can never reach this line. When
     // ENV.forceReloginAfterSeconds is null (unset/invalid), this always
     // resolves to false - see isSessionIssuedBeforeCutoff/
-    // resolveForceReloginCutoffSeconds. Never logs the JWT or the session
-    // cookie value - the thrown message is a fixed, constant string.
+    // resolveForceReloginCutoffSeconds. A cutoff set in the FUTURE is a
+    // SCHEDULED activation - it stays completely inert (every session keeps
+    // working, including a brand-new one minted seconds ago) until the
+    // server's own clock actually reaches it; only once "now" has reached
+    // the cutoff does a session issued before it start getting rejected.
+    // Deliberately does not pass a `now` override here - always the real
+    // server clock (isSessionIssuedBeforeCutoff's own default), never
+    // anything client-supplied. Never logs the JWT or the session cookie
+    // value - the thrown message is a fixed, constant string.
     if (isSessionIssuedBeforeCutoff(session.issuedAtSeconds, ENV.forceReloginAfterSeconds)) {
       throw new AnonymousCredentialError(
         "Session predates the forced re-login cutoff",

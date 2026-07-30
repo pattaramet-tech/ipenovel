@@ -209,13 +209,17 @@ export async function getUserByEmail(email: string) {
 }
 
 // ============ GOOGLE OAUTH / AUTH IDENTITIES ============
-// Backs the Google OpenID Connect direct-login feature flag
-// (AUTH_PROVIDER=google) - see server/services/googleIdentityService.ts for
-// the account-linking policy these are composed into, and
-// drizzle/schema.ts's authIdentities table doc comment for the schema
-// rationale. Every function below accepts an optional `tx` (an in-flight
-// transaction executor) so resolveGoogleIdentity can run its entire
-// find-or-link-or-create decision as one atomic transaction - matching the
+// Backs the Google OpenID Connect login/connect feature flag - active
+// whenever AUTH_PROVIDER is exactly "google" (full cutover) or "transition"
+// (both Manus and Google active together, plus explicit account-connect -
+// see server/_core/env.ts's isGoogleAuthActive()). See
+// server/services/googleIdentityService.ts for the account-linking policy
+// these are composed into (both the login flow's resolveGoogleIdentity and
+// the connect flow's connectGoogleIdentityToUser), and drizzle/schema.ts's
+// authIdentities table doc comment for the schema rationale. Every function
+// below accepts an optional `tx` (an in-flight transaction executor) so
+// resolveGoogleIdentity/connectGoogleIdentityToUser can each run their
+// entire decision as one atomic transaction - matching the
 // `const db = tx || await getDb();` composability pattern already used
 // throughout this file (see e.g. approveWalletTopup and its callees).
 

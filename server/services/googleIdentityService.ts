@@ -4,11 +4,14 @@ import * as db from "../db";
 import { isDuplicateKeyError } from "../helpers/databaseErrorClassifier";
 import { normalizeProviderName } from "../_core/providerName";
 
-// Google OpenID Connect account-linking policy (AUTH_PROVIDER=google). Kept
-// as its own service, separate from server/_core/googleOAuth.ts's route
-// handlers, so the linking decision itself (identity found / link by email
-// / fail closed on ambiguity / create new) is independently testable
-// without any Express req/res or real HTTP.
+// Google OpenID Connect account-linking policy - active whenever
+// AUTH_PROVIDER is exactly "google" (full cutover) or "transition" (Manus
+// and Google active together - see server/_core/env.ts's
+// isGoogleAuthActive()). Kept as its own service, separate from
+// server/_core/googleOAuth.ts's route handlers, so the linking decision
+// itself (identity found / link by email / fail closed on ambiguity /
+// create new) is independently testable without any Express req/res or
+// real HTTP.
 //
 // Each resolution attempt runs inside ONE database transaction (see
 // resolveGoogleIdentityAttempt below) so a crash partway through can never

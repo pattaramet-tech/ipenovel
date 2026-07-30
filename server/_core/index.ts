@@ -88,10 +88,12 @@ async function startServer() {
   // OAuth callback under /api/oauth/callback (Manus - always registered,
   // unchanged, kept for rollback)
   registerOAuthRoutes(app);
-  // Direct Google OpenID Connect login under /api/auth/google/{start,callback}
-  // - always registered, but every route inside fails closed to a plain
-  // 404 unless AUTH_PROVIDER=google (see server/_core/googleOAuth.ts), so
-  // this is a no-op for any deployment still on the default "manus" flag.
+  // Direct Google OpenID Connect login + explicit account-connect under
+  // /api/auth/google/{start,callback,connect/start} - always registered,
+  // but every route inside fails closed to a plain 404 unless AUTH_PROVIDER
+  // is exactly "google" OR "transition" (see server/_core/googleOAuth.ts's
+  // isGoogleAuthActive(), server/_core/env.ts), so this is a no-op for any
+  // deployment still on the default "manus" flag.
   registerGoogleOAuthRoutes(app);
 
   // Dynamic sitemap (published novels only) - must be registered before the
