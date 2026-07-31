@@ -3176,11 +3176,17 @@ export const appRouter = router({
         .query(async ({ input }) => {
           const request = await db.getAccountRecoveryRequestById(input.requestId);
           if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "Recovery request not found" });
-          return accountRecoveryService.assessAccountRecoverySafety({
+          const assessment = await accountRecoveryService.assessAccountRecoverySafety({
             requestId: input.requestId,
             sourceUserId: request.requesterUserId,
             targetUserId: input.targetUserId,
           });
+          // NEVER return the internal assessment as-is - it carries
+          // sourceGoogleIdentity.providerSubject (the Google `sub`) and
+          // .emailAtLink (a full email address), neither of which the
+          // admin UI needs or may see. toSafeAdminAssessmentDto strips
+          // this down to the allowlisted, boolean-only-for-identity shape.
+          return accountRecoveryService.toSafeAdminAssessmentDto(assessment);
         }),
 
       approve: adminProcedure

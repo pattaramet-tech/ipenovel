@@ -206,12 +206,80 @@ describe("assessAccountRecoverySafety", () => {
     expect(result.canApprove).toBe(false);
   });
 
-  it("[user-owned data only] cart/wishlist present -> NOT blocked, but never reported as fully automatable either (fail closed for admin review)", async () => {
+  // ---- Empty-source-account invariant: user-owned data is now an
+  // unconditional block, exactly like economic data - "Automated Recovery
+  // ต้องอนุมัติได้เฉพาะ Source Account ที่ว่างจริงเท่านั้น". Every one of
+  // these used to be warnings-only/still-approvable before this fix.
+
+  it("[source with cart] user-owned data present -> hard blocked, never just a warning", async () => {
     mockCleanScenario({ userOwnedFindings: [{ table: "carts", count: 1 }] });
     const result = await assessAccountRecoverySafety({ requestId: 1, sourceUserId: 1, targetUserId: 2 });
-    expect(result.canApprove).toBe(true);
+    expect(result.canApprove).toBe(false);
     expect(result.isFullyAutomatable).toBe(false);
+    expect(result.blockReasons.join(" ")).toMatch(/user-owned data/i);
+  });
+
+  it("[source with wishlist/library] user-owned data present -> hard blocked", async () => {
+    mockCleanScenario({ userOwnedFindings: [{ table: "wishlists", count: 1 }] });
+    const result = await assessAccountRecoverySafety({ requestId: 1, sourceUserId: 1, targetUserId: 2 });
+    expect(result.canApprove).toBe(false);
+  });
+
+  it("[source with reading progress] user-owned data present -> hard blocked", async () => {
+    mockCleanScenario({ userOwnedFindings: [{ table: "readingProgress", count: 1 }] });
+    const result = await assessAccountRecoverySafety({ requestId: 1, sourceUserId: 1, targetUserId: 2 });
+    expect(result.canApprove).toBe(false);
+  });
+
+  it("[source with a check-in] user-owned data present -> hard blocked", async () => {
+    mockCleanScenario({ userOwnedFindings: [{ table: "dailyCheckins", count: 1 }] });
+    const result = await assessAccountRecoverySafety({ requestId: 1, sourceUserId: 1, targetUserId: 2 });
+    expect(result.canApprove).toBe(false);
+  });
+
+  it("[source with an unrelated other user-owned table finding] still hard blocked - the gate is 'any finding at all', not a table allowlist", async () => {
+    mockCleanScenario({ userOwnedFindings: [{ table: "someFutureUserOwnedTable", count: 5 }] });
+    const result = await assessAccountRecoverySafety({ requestId: 1, sourceUserId: 1, targetUserId: 2 });
+    expect(result.canApprove).toBe(false);
+  });
+
+  it("warnings are still populated for admin-UI detail display, but never as the sole gate - canApprove is authoritative and false whenever warnings are non-empty for a data-finding reason", async () => {
+    mockCleanScenario({ userOwnedFindings: [{ table: "carts", count: 1 }] });
+    const result = await assessAccountRecoverySafety({ requestId: 1, sourceUserId: 1, targetUserId: 2 });
     expect(result.warnings.length).toBeGreaterThan(0);
+    expect(result.canApprove).toBe(false);
+  });
+
+  it("[admin cannot override] executeAccountRecovery has no override parameter at all - a non-empty source is UNSAFE inside the transaction regardless of what the admin submits", async () => {
+    mockCleanScenario({ userOwnedFindings: [{ table: "carts", count: 1 }] });
+    // executeAccountRecovery's params type is { requestId, targetUserId,
+    // adminId, reason } - there is no `force`/`override`/`skipSafetyCheck`
+    // field an admin could set even if they wanted to; this is enforced by
+    // TypeScript at the call site and, at runtime, by
+    // assessAccountRecoverySafety being re-run unconditionally inside the
+    // transaction (see the executeAccountRecovery describe block below for
+    // the full transactional proof).
+    const result = await assessAccountRecoverySafety({ requestId: 1, sourceUserId: 1, targetUserId: 2 });
+    expect(result.canApprove).toBe(false);
+  });
+
+  it("[only a genuinely empty source can be approved] zero economic AND zero user-owned findings -> canApprove true, isFullyAutomatable true", async () => {
+    mockCleanScenario({ economicFindings: [], userOwnedFindings: [] });
+    const result = await assessAccountRecoverySafety({ requestId: 1, sourceUserId: 1, targetUserId: 2 });
+    expect(result.canApprove).toBe(true);
+    expect(result.isFullyAutomatable).toBe(true);
+  });
+
+  it("[not empty in either category] a source with BOTH an economic finding AND a user-owned finding -> still just one blocked outcome, both reasons reported", async () => {
+    mockCleanScenario({
+      economicFindings: [{ table: "orders", count: 1 }],
+      userOwnedFindings: [{ table: "carts", count: 1 }],
+    });
+    const result = await assessAccountRecoverySafety({ requestId: 1, sourceUserId: 1, targetUserId: 2 });
+    expect(result.canApprove).toBe(false);
+    expect(result.blockReasons.length).toBeGreaterThanOrEqual(2);
+    expect(result.blockReasons.some((r) => /economic/i.test(r))).toBe(true);
+    expect(result.blockReasons.some((r) => /user-owned/i.test(r))).toBe(true);
   });
 
   it("never reads the recovery request's own claimed fields (email/openId/legacyUserId) as evidence - only real DB rows via getUserById/getAuthIdentityByUserAndProvider", async () => {
@@ -346,6 +414,28 @@ describe("executeAccountRecovery", () => {
     ).rejects.toMatchObject({ code: "UNSAFE" });
     expect(moveSpy).not.toHaveBeenCalled();
     expect(finalizeSpy).not.toHaveBeenCalled();
+  });
+
+  it("[empty-source-account invariant, re-checked inside the transaction] source has user-owned data (cart) -> UNSAFE, never moves the identity, never finalizes the target, and no reason/force parameter exists to override it", async () => {
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    const identity = mockSafeAssessment();
+    vi.spyOn(db, "findAccountRecoveryUserOwnedData").mockResolvedValue([{ table: "carts", count: 1 }]);
+    vi.spyOn(db, "getDb").mockResolvedValue(
+      fakeDatabase({ requestRow: { id: 1, status: "pending", requesterUserId: 1 }, identityRow: identity }) as any
+    );
+    const moveSpy = vi.spyOn(db, "moveAuthIdentityOwner");
+    const finalizeSpy = vi.spyOn(db, "finalizeAccountRecoveryTargetUser");
+    const transitionSpy = vi.spyOn(db, "transitionAccountRecoveryRequestStatus");
+
+    await expect(
+      // Note: no override/force field exists on this input type at all -
+      // TypeScript itself would reject one; this call uses every field the
+      // API actually accepts.
+      executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "admin insists it's fine" })
+    ).rejects.toMatchObject({ code: "UNSAFE" });
+    expect(moveSpy).not.toHaveBeenCalled();
+    expect(finalizeSpy).not.toHaveBeenCalled();
+    expect(transitionSpy).not.toHaveBeenCalled();
   });
 
   it("[source identity belongs to another user / changed mid-flight] the locked identity row disagrees with the assessment's own read -> UNSAFE, never moves anything", async () => {

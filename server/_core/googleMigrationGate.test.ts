@@ -74,4 +74,23 @@ describe("isBlockedByGoogleMigrationGate", () => {
 
     expect(lookupSpy).toHaveBeenCalledWith(999, "google");
   });
+
+  it("[post-account-recovery session UX] a source account whose Google identity was just moved away by an approved recovery request is blocked by this SAME gate, exactly like any other unconnected user - the gate is agnostic to WHY a user lacks an identity, which is what makes the 'old session can never impersonate the target' invariant hold without any account-recovery-specific code here at all", async () => {
+    ENV.authProvider = "transition";
+    ENV.requireGoogleConnection = true;
+    // executeAccountRecovery's moveAuthIdentityOwner (server/db.ts) changes
+    // authIdentities.userId from source to target - it never creates a new
+    // row for the source. From this gate's point of view, the source
+    // account (still authenticated via its OWN, untouched session cookie -
+    // see server/services/accountRecoveryService.ts's
+    // finalizeAccountRecoveryTargetUser docstring, which never touches
+    // users.id/openId) now simply has no linked google identity, the exact
+    // same lookup result as any never-connected user.
+    vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue(undefined);
+
+    const sourceStillLoggedIn = { id: 55 };
+    const blocked = await isBlockedByGoogleMigrationGate(sourceStillLoggedIn);
+
+    expect(blocked).toBe(true);
+  });
 });

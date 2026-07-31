@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { getTestDb } from "./test-helpers/testDb";
+import { assertSafeTestDatabaseUrl } from "./test-helpers/testDatabaseGuard";
+import { assertLiveTestDatabaseName } from "./test-helpers/liveTestDatabaseCheck";
 import { createTestUser, createTestOrder, uniqueTestTag, deleteFixtures } from "./test-helpers/fixtures";
-import { authIdentities, accountRecoveryRequests, accountRecoveryAuditLogs, users } from "../drizzle/schema";
+import { authIdentities, accountRecoveryRequests, accountRecoveryAuditLogs, users, carts } from "../drizzle/schema";
 import * as db from "./db";
 import {
   AccountRecoveryError,
@@ -23,6 +25,22 @@ import {
  * *.integration.test.ts file (vitest.integration.globalsetup.ts /
  * vitest.integration.setupfile.ts point both at the same TEST_DATABASE_URL
  * connection for the duration of this project's run).
+ *
+ * This file deliberately does NOT use `describe.skipIf(!process.env.
+ * TEST_DATABASE_URL)` - that pattern makes every test in the file report
+ * as SKIPPED (not failed) when misconfigured, which reads as "nothing to
+ * see here" instead of "this suite could not run". The beforeAll guard
+ * below re-validates TEST_DATABASE_URL itself, independently of
+ * vitest.integration.globalsetup.ts, and THROWS (never skips) on every
+ * unsafe case: missing entirely, unparseable, a database name that isn't
+ * exactly "ipenovel_test", or a name that merely LOOKS test-like but is
+ * actually production-shaped - and separately re-runs the live "SELECT
+ * DATABASE()" check (never trusts the URL string alone). This is
+ * deliberate defense-in-depth, not a substitute for the project-level
+ * guards - even if this file is ever collected by a differently-configured
+ * vitest invocation that bypasses globalSetup entirely, it still fails
+ * loudly on its own rather than silently skipping or, worse, silently
+ * running against whatever `getDb()` happens to resolve to.
  */
 
 /** No fixtures.ts factory exists for authIdentities - a small local raw
@@ -55,16 +73,55 @@ async function cleanupAuthIdentities(identityIds: number[]) {
   await Promise.all(identityIds.map((id) => testDb.delete(authIdentities).where(eq(authIdentities.id, id))));
 }
 
-describe.skipIf(!process.env.TEST_DATABASE_URL)("Admin Account Recovery - real database", () => {
+async function cleanupCarts(cartIds: number[]) {
+  if (cartIds.length === 0) return;
+  const testDb = getTestDb();
+  await Promise.all(cartIds.map((id) => testDb.delete(carts).where(eq(carts.id, id))));
+}
+
+describe("Admin Account Recovery - real database", () => {
+  // Fails loudly - never skips - the moment this describe block runs, well
+  // before any fixture/test body executes. See this file's top-of-file
+  // docstring for why this exists in addition to (not instead of)
+  // vitest.integration.globalsetup.ts's own, earlier-running guard.
+  beforeAll(async () => {
+    assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
+    await assertLiveTestDatabaseName(getTestDb());
+  });
+
   const createdRequestIds: number[] = [];
   const createdIdentityIds: number[] = [];
   const createdUserIds: number[] = [];
   const createdOrderIds: number[] = [];
+  const createdCartIds: number[] = [];
 
   afterEach(async () => {
     await cleanupRecoveryRequests(createdRequestIds.splice(0));
     await cleanupAuthIdentities(createdIdentityIds.splice(0));
+    await cleanupCarts(createdCartIds.splice(0));
     await deleteFixtures({ orderIds: createdOrderIds.splice(0), userIds: createdUserIds.splice(0) });
+  });
+
+  it("[migration 0034 applied] accountRecoveryRequests/accountRecoveryAuditLogs exist and are queryable, and the generated column (pendingRequesterMarker) actually computes a real value - proves the migration ran on this real MariaDB/MySQL instance, not just that the app code compiles", async () => {
+    const requester = await createTestUser();
+    createdUserIds.push(requester.id);
+    const identity = await linkTestGoogleIdentity(requester.id, "legacy@example.test");
+    createdIdentityIds.push(identity.id);
+
+    const request = await db.createAccountRecoveryRequest({ requesterUserId: requester.id });
+    createdRequestIds.push(request.id);
+
+    const rawRows: any = await getTestDb()
+      .select()
+      .from(accountRecoveryRequests)
+      .where(eq(accountRecoveryRequests.id, request.id));
+    const row = rawRows[0];
+    expect(row.status).toBe("pending");
+    // The generated column is computed server-side by MySQL/MariaDB itself
+    // (case-when-status-is-pending expression) - if migration 0034 hadn't
+    // actually applied, this column wouldn't exist at all and the SELECT
+    // itself would already have failed above.
+    expect((row as any).pendingRequesterMarker).toBe(requester.id);
   });
 
   it("[create request] requires a REAL authIdentities row - never accepted from a manually-typed claim", async () => {
@@ -240,5 +297,111 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("Admin Account Recovery - real d
 
     const finalRequest = await db.getAccountRecoveryRequestById(request.id);
     expect(finalRequest!.status).toBe("approved");
+  });
+
+  it("[foreign key / cascade] deleting an accountRecoveryRequests row cascades to its accountRecoveryAuditLogs rows via the real FK - not just application-level cleanup logic", async () => {
+    const requester = await createTestUser();
+    createdUserIds.push(requester.id);
+    const identity = await linkTestGoogleIdentity(requester.id, "legacy@example.test");
+    createdIdentityIds.push(identity.id);
+
+    const request = await db.createAccountRecoveryRequest({ requesterUserId: requester.id });
+    // Intentionally NOT pushed to createdRequestIds - this test deletes it
+    // itself, to prove the FK cascade rather than relying on afterEach.
+
+    await db.insertAccountRecoveryAuditLog({
+      recoveryRequestId: request.id,
+      action: "created",
+      safeMetadata: { note: "fk cascade test" },
+    });
+
+    const beforeDelete = await getTestDb()
+      .select()
+      .from(accountRecoveryAuditLogs)
+      .where(eq(accountRecoveryAuditLogs.recoveryRequestId, request.id));
+    expect(beforeDelete.length).toBe(1);
+
+    // Delete the PARENT row directly - never touches accountRecoveryAuditLogs.
+    await getTestDb().delete(accountRecoveryRequests).where(eq(accountRecoveryRequests.id, request.id));
+
+    const afterDelete = await getTestDb()
+      .select()
+      .from(accountRecoveryAuditLogs)
+      .where(eq(accountRecoveryAuditLogs.recoveryRequestId, request.id));
+    expect(afterDelete.length).toBe(0);
+  });
+
+  it("[source with real user-owned data] a real cart row on the source account blocks approval - never auto-moved, and the cart itself is left completely untouched", async () => {
+    const requester = await createTestUser();
+    const target = await createTestUser();
+    createdUserIds.push(requester.id, target.id);
+
+    const identity = await linkTestGoogleIdentity(requester.id, "legacy@example.test");
+    createdIdentityIds.push(identity.id);
+
+    const cartResult: any = await getTestDb().insert(carts).values({ userId: requester.id });
+    const cartId = cartResult?.[0]?.insertId ?? cartResult?.insertId;
+    createdCartIds.push(cartId);
+
+    const request = await submitAccountRecoveryRequest({ requesterUserId: requester.id });
+    createdRequestIds.push(request.id);
+
+    const assessment = await assessAccountRecoverySafety({
+      requestId: request.id,
+      sourceUserId: requester.id,
+      targetUserId: target.id,
+    });
+    expect(assessment.canApprove).toBe(false);
+    expect(assessment.userOwnedDataFindings.some((f) => f.table === "carts")).toBe(true);
+
+    await expect(
+      executeAccountRecovery({ requestId: request.id, targetUserId: target.id, adminId: 1, reason: "test" })
+    ).rejects.toMatchObject({ code: "UNSAFE" });
+
+    // Never moved - the source still owns its own identity - and the cart
+    // itself was never touched (this tool never moves/merges/deletes
+    // user-owned data or the source account).
+    const stillOnSource = await db.getAuthIdentityByUserAndProvider(requester.id, "google");
+    expect(stillOnSource!.id).toBe(identity.id);
+    const cartStillExists = await getTestDb().select().from(carts).where(eq(carts.id, cartId));
+    expect(cartStillExists.length).toBe(1);
+    expect(cartStillExists[0].userId).toBe(requester.id);
+  });
+
+  it("[transaction rollback] approving a request whose target became invalid (deleted) between preview and approval leaves ZERO partial writes - identity stays on source, request stays pending, no audit log is written", async () => {
+    const requester = await createTestUser();
+    const target = await createTestUser();
+    createdUserIds.push(requester.id);
+
+    const identity = await linkTestGoogleIdentity(requester.id, "legacy@example.test");
+    createdIdentityIds.push(identity.id);
+
+    const request = await submitAccountRecoveryRequest({ requesterUserId: requester.id });
+    createdRequestIds.push(request.id);
+
+    // Simulates a real "changed out from under the transaction" scenario:
+    // the target account is gone by the time approval actually runs
+    // (assessAccountRecoverySafety's targetExists check fails inside the
+    // locked transaction) - never cleaned up via createdUserIds since it's
+    // deleted here, deliberately, as part of the test itself.
+    await deleteFixtures({ userIds: [target.id] });
+
+    await expect(
+      executeAccountRecovery({ requestId: request.id, targetUserId: target.id, adminId: 1, reason: "test" })
+    ).rejects.toMatchObject({ code: "UNSAFE" });
+
+    // Nothing partially happened - real ROLLBACK, not a partial commit.
+    const stillOnSource = await db.getAuthIdentityByUserAndProvider(requester.id, "google");
+    expect(stillOnSource!.id).toBe(identity.id);
+
+    const requestAfter = await db.getAccountRecoveryRequestById(request.id);
+    expect(requestAfter!.status).toBe("pending");
+    expect(requestAfter!.reviewedAt).toBeNull();
+
+    const auditRows = await getTestDb()
+      .select()
+      .from(accountRecoveryAuditLogs)
+      .where(eq(accountRecoveryAuditLogs.recoveryRequestId, request.id));
+    expect(auditRows.length).toBe(0);
   });
 });

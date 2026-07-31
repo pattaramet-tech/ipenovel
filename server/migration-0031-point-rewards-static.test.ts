@@ -163,7 +163,7 @@ describe("migration 0031 - earlier migrations remain untouched", () => {
     expect(isUnchangedSinceBase("drizzle/meta/0030_snapshot.json")).toBe(true);
   });
 
-  it("0032 (fix/coupon-owner-enforcement) is a separate, later, intentional migration - not something 0031 itself introduced", () => {
+  it("0032 (fix/coupon-owner-enforcement) is a separate, later, intentional migration - not something 0031 itself introduced (later migrations - e.g. 0033 auth identities, 0034 account recovery - may legitimately follow 0032; this no longer asserts idx 33 is undefined)", () => {
     // Same reasoning as the "no migration may ever be added again" note
     // above this describe block: 0031's job is proven by the assertions in
     // this file, and a later, unrelated migration adding coupons.scope/
@@ -171,7 +171,6 @@ describe("migration 0031 - earlier migrations remain untouched", () => {
     // here (like 0031 is in migration-0024-content-downgrade-static.test.ts)
     // rather than silently ignored.
     expect(journal.entries.find((e: any) => e.idx === 32)?.tag).toBe("0032_add_coupon_ownership_scope");
-    expect(journal.entries.find((e: any) => e.idx === 33)).toBeUndefined();
   });
 
   it("every 0000-0030 journal entry kept its original timestamp", () => {

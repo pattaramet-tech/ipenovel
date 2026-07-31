@@ -86,11 +86,9 @@ describe("migration 0032 - journal integrity", () => {
     expect(fs.existsSync(path.join(repoRoot, "drizzle/meta/0032_snapshot.json"))).toBe(true);
   });
 
-  it("is the last entry in the journal - no migration 0033 exists", () => {
-    expect(journal.entries.find((e: any) => e.idx === 33)).toBeUndefined();
+  it("0032 is recorded at its own fixed position (idx 32) in the journal - no longer asserts it's the LAST entry, since later, unrelated migrations (0033 auth identities, 0034 account recovery) legitimately follow it; a stray, unversioned '0033_placeholder.sql' is still never allowed", () => {
+    expect(journal.entries.find((e: any) => e.idx === 32)?.tag).toBe("0032_add_coupon_ownership_scope");
     expect(fs.existsSync(path.join(repoRoot, "drizzle", "0033_placeholder.sql"))).toBe(false);
-    const sqlFiles = fs.readdirSync(path.join(repoRoot, "drizzle")).filter((f) => /^0033[_.]/.test(f));
-    expect(sqlFiles).toEqual([]);
   });
 });
 
@@ -213,7 +211,7 @@ describe("migration 0032 - earlier migrations remain untouched", () => {
     expect(isUnchangedSinceBase("drizzle/meta/0031_snapshot.json")).toBe(true);
   });
 
-  it("every 0000-0031 journal entry kept its original idx/tag/timestamp", () => {
+  it("every 0000-0031 journal entry kept its original idx/tag/timestamp, and 0032 itself is still present unmodified - no longer asserts the journal's TOTAL length, since later, unrelated migrations (0033, 0034, ...) legitimately grow it further", () => {
     const baseJournal = JSON.parse(gitBlob(BASE_SHA, "drizzle/meta/_journal.json").toString("utf8"));
     for (const baseEntry of baseJournal.entries) {
       const current = journal.entries.find((e: any) => e.idx === baseEntry.idx);
@@ -222,9 +220,10 @@ describe("migration 0032 - earlier migrations remain untouched", () => {
       expect(current.tag).toBe(baseEntry.tag);
     }
     // The base journal (origin/main, pre-0032) had exactly 32 entries
-    // (idx 0-31) - 0032 is the only entry this migration adds.
+    // (idx 0-31) - 0032 is the only entry THIS migration adds.
     expect(baseJournal.entries).toHaveLength(32);
-    expect(journal.entries).toHaveLength(33);
+    expect(journal.entries.find((e: any) => e.idx === 32)?.tag).toBe("0032_add_coupon_ownership_scope");
+    expect(journal.entries.length).toBeGreaterThanOrEqual(33);
   });
 });
 

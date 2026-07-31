@@ -6168,17 +6168,28 @@ const ACCOUNT_RECOVERY_ECONOMIC_DATA_CHECKS: Array<{
   { table: "sportsMatchVotes", check: async (userId, db) => (await db.select({ id: sportsMatchVotes.id }).from(sportsMatchVotes).where(eq(sportsMatchVotes.userId, userId)).limit(1)).length },
   { table: "sportsMatchRewards", check: async (userId, db) => (await db.select({ id: sportsMatchRewards.id }).from(sportsMatchRewards).where(eq(sportsMatchRewards.userId, userId)).limit(1)).length },
   { table: "dailyCheckinRewardGrants", check: async (userId, db) => (await db.select({ id: dailyCheckinRewardGrants.id }).from(dailyCheckinRewardGrants).where(eq(dailyCheckinRewardGrants.userId, userId)).limit(1)).length },
+  { table: "topupLogs", check: async (userId, db) => (await db.select({ id: topupLogs.id }).from(topupLogs).where(eq(topupLogs.userId, userId)).limit(1)).length },
+  // A personal coupon (scope="user") is itself an unredeemed financial
+  // right, distinct from couponUsages (a coupon already spent on an
+  // order) - gap found and closed by the exhaustive user-data audit (see
+  // server/services/accountRecoveryDataClassification.ts).
+  { table: "coupons", check: async (userId, db) => (await db.select({ id: coupons.id }).from(coupons).where(eq(coupons.ownerUserId, userId)).limit(1)).length },
 ];
 
 /** Category A ("Economic/Entitlement data") from the recovery-safety spec -
  *  wallet/balance/points, purchases, orders, payments (via orders),
- *  transactions, purchased episodes, coupons/financial rights. ANY hit here
+ *  transactions, purchased episodes, coupons/financial rights (including
+ *  an unredeemed personal coupon via coupons.ownerUserId). ANY hit here
  *  means the source account can never be auto-recovered - see
  *  accountRecoveryService.assessAccountRecoverySafety, which turns a
- *  non-empty result into a hard BLOCK (never overridable by an admin,
- *  unlike Category B below). Runs each check independently rather than one
- *  big UNION query so a single slow/locked table never masks the others,
- *  and so the returned finding list stays precise for the admin UI. */
+ *  non-empty result into a hard BLOCK, never overridable by an admin - the
+ *  SAME no-override treatment Category B (findAccountRecoveryUserOwnedData
+ *  below) now also gets under the empty-source-account invariant. See
+ *  server/services/accountRecoveryDataClassification.ts for the
+ *  exhaustive, test-verified inventory this check list is derived from.
+ *  Runs each check independently rather than one big UNION query so a
+ *  single slow/locked table never masks the others, and so the returned
+ *  finding list stays precise for the admin UI. */
 export async function findAccountRecoveryEconomicData(
   userId: number,
   tx?: any
@@ -6205,11 +6216,34 @@ const ACCOUNT_RECOVERY_USER_OWNED_DATA_CHECKS: Array<{
 
 /** Category B ("User-owned data") from the recovery-safety spec - cart,
  *  library/wishlist, reading progress, check-ins, and other recovery
- *  requests by the same user. Never auto-blocks (unlike Category A) but
- *  must never be silently discarded either - accountRecoveryService surfaces
- *  these as warnings the admin sees BEFORE approving, "fail closed for
- *  admin review" rather than a hard stop. `excludeRequestId` leaves the
- *  CURRENT request itself out of the "other recovery requests" count. */
+ *  requests by the same user. As of the empty-source-account invariant,
+ *  ANY hit here is ALSO an unconditional, no-admin-override block -
+ *  identical in effect to Category A above (see
+ *  accountRecoveryService.assessAccountRecoverySafety). This tool never
+ *  moves, merges, or deletes this data, and never deletes the source
+ *  user - automated recovery is only permitted when the source account is
+ *  genuinely, completely empty; anything else routes to "blocked"
+ *  (Advanced Account Merge, handled outside this tool). See
+ *  server/services/accountRecoveryDataClassification.ts for the
+ *  exhaustive, test-verified inventory this check list is derived from.
+ *  `excludeRequestId` leaves the CURRENT request itself out of the "other
+ *  recovery requests" count. */
+/** Purely for cross-verification by
+ *  server/services/accountRecoveryDataClassification.test.ts - the actual
+ *  table names findAccountRecoveryEconomicData queries, kept in one place
+ *  so the static-safety test can assert they match
+ *  ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION's economic_hard_block
+ *  entries exactly, with no manual re-typing (and thus no drift risk). */
+export const ACCOUNT_RECOVERY_ECONOMIC_TABLE_NAMES: string[] = ACCOUNT_RECOVERY_ECONOMIC_DATA_CHECKS.map(
+  (c) => c.table
+);
+
+/** Same purpose as ACCOUNT_RECOVERY_ECONOMIC_TABLE_NAMES, for
+ *  findAccountRecoveryUserOwnedData/user_owned_hard_block. */
+export const ACCOUNT_RECOVERY_USER_OWNED_TABLE_NAMES: string[] = ACCOUNT_RECOVERY_USER_OWNED_DATA_CHECKS.map(
+  (c) => c.table
+);
+
 export async function findAccountRecoveryUserOwnedData(
   userId: number,
   excludeRequestId: number,

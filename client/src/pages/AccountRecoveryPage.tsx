@@ -8,8 +8,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, AlertTriangle } from "lucide-react";
+import { Loader2, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
+import { deriveAccountRecoveryViewState } from "./accountRecoveryPresentation";
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "รอตรวจสอบ",
@@ -46,8 +47,29 @@ function formatDate(date: Date | string | undefined | null): string {
  * treated as proof of anything.
  */
 export default function AccountRecoveryPage() {
-  const { isAuthenticated, loading: authLoading } = useAuth();
+  const { isAuthenticated, loading: authLoading, logout } = useAuth();
   const [, navigate] = useLocation();
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  // After an admin approves a recovery request, the Google identity has
+  // moved to the TARGET account - but this browser's CURRENT session
+  // cookie still authenticates as the SOURCE user (sessions are tied to
+  // users.openId, which recovery never touches - see
+  // server/services/accountRecoveryService.ts's finalizeAccountRecoveryTargetUser
+  // docstring). The old session must never be silently upgraded/switched
+  // to the target account - the only sanctioned way to reach the target
+  // account is a fresh Google login, which now resolves to the target
+  // because the identity moved. This handler does exactly that and
+  // nothing more: end the current (source) session, then send the user to
+  // /login to start a brand-new one.
+  const handleLogoutAfterApproval = async () => {
+    setLoggingOut(true);
+    try {
+      await logout();
+    } finally {
+      navigate("/login", { replace: true });
+    }
+  };
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -100,7 +122,9 @@ export default function AccountRecoveryPage() {
   }
 
   const requests = requestsQuery.data ?? [];
-  const pendingRequest = requests.find((r: any) => r.status === "pending");
+  const { pendingRequest, mostRecentRequest, justApproved, showForm } = deriveAccountRecoveryViewState(
+    requests as any
+  );
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -130,7 +154,27 @@ export default function AccountRecoveryPage() {
             </div>
           )}
 
-          {!requestsQuery.isLoading && pendingRequest && (
+          {!requestsQuery.isLoading && justApproved && (
+            <div className="border border-green-200 bg-green-50 rounded-lg p-5 space-y-3">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-5 h-5 text-green-600" aria-hidden="true" />
+                <p className="font-medium text-green-900">คำขอกู้คืนบัญชีของคุณได้รับการอนุมัติแล้ว</p>
+              </div>
+              <p className="text-sm text-green-800 leading-relaxed">
+                ทีมงานได้ย้ายการเชื่อมต่อ Google ไปยังบัญชีเดิมของคุณเรียบร้อยแล้ว บัญชีที่คุณกำลังใช้งานอยู่ตอนนี้
+                <strong> จะไม่เปลี่ยนเป็นบัญชีเดิมโดยอัตโนมัติ</strong> กรุณา
+                <strong>ออกจากระบบ แล้วเข้าสู่ระบบใหม่ด้วย Google</strong> อีกครั้งเพื่อเข้าถึงบัญชีเดิมของคุณ
+              </p>
+              {mostRecentRequest?.reviewReason && (
+                <p className="text-xs text-green-700">หมายเหตุจากทีมงาน: {mostRecentRequest.reviewReason}</p>
+              )}
+              <Button size="lg" className="w-full" disabled={loggingOut} onClick={handleLogoutAfterApproval}>
+                {loggingOut ? "กำลังออกจากระบบ..." : "ออกจากระบบ แล้วเข้าสู่ระบบใหม่ด้วย Google"}
+              </Button>
+            </div>
+          )}
+
+          {!requestsQuery.isLoading && !justApproved && pendingRequest && (
             <div className="border border-amber-200 bg-amber-50 rounded-lg p-4 space-y-3">
               <div className="flex items-center gap-2">
                 <AlertTriangle className="w-5 h-5 text-amber-600" aria-hidden="true" />
@@ -150,7 +194,7 @@ export default function AccountRecoveryPage() {
             </div>
           )}
 
-          {!requestsQuery.isLoading && !pendingRequest && (
+          {!requestsQuery.isLoading && showForm && (
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
                 <Label htmlFor="requestedLegacyUserId">User ID บัญชีเดิม (ถ้าทราบ)</Label>

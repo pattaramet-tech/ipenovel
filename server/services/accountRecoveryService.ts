@@ -59,23 +59,93 @@ export type AccountRecoverySafetyAssessment = {
   targetHasGoogleIdentity: boolean;
   /** Category A ("Economic/Entitlement data") - wallet/points/purchases/
    *  orders/payments/transactions/coupons. ANY finding here is an
-   *  unconditional block; see blockReasons. */
+   *  unconditional, no-override block; see blockReasons. */
   economicDataFindings: AccountRecoveryEconomicDataFinding[];
-  /** Category B ("User-owned data") - cart/wishlist/reading progress/
-   *  check-ins/other recovery requests. Never blocks by itself, but is
-   *  never silently ignored either - see warnings. */
+  /**
+   * Category B ("User-owned data") - cart/cartItems, wishlist/library,
+   * reading progress, check-ins, and any other user-linked table not
+   * itself economic (see server/services/accountRecoveryDataClassification.ts's
+   * ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION for the full, exhaustively
+   * audited list). As of the empty-source-account invariant, this is ALSO
+   * an unconditional, no-override block, exactly like Category A - never
+   * merged/migrated by this tool, never left for the admin to "accept the
+   * risk" on. Automated recovery is only ever permitted when the source
+   * account is genuinely, completely empty. Still surfaced separately from
+   * economicDataFindings (rather than merged into one list) so the admin
+   * UI and the audit trail can distinguish "financial risk" from "user
+   * convenience data at risk" even though both now block identically.
+   */
   userOwnedDataFindings: AccountRecoveryEconomicDataFinding[];
   /** Non-empty means approval MUST be refused, with no admin override -
    *  the request can only become "blocked" (Advanced Account Merge
-   *  required outside this tool), never "approved". */
+   *  required outside this tool), never "approved". Populated from BOTH
+   *  economicDataFindings and userOwnedDataFindings (plus every other
+   *  hard-block rule) - there is no longer a class of finding that can
+   *  produce a non-empty warnings-only, still-approvable result. */
   blockReasons: string[];
-  /** Non-empty means data could be lost/orphaned by the move - approval is
-   *  still POSSIBLE (an admin can proceed after reviewing), but this
-   *  assessment deliberately never reports the request as fully safe. */
+  /** Human-readable elaboration of blockReasons for the admin UI (what
+   *  specifically was found) - NOT a separate, lower-severity channel
+   *  anymore. A non-empty warnings array always corresponds to a non-empty
+   *  blockReasons array; canApprove must be checked, never warnings alone. */
+  warnings: string[];
+  /** True only when EVERY check passes: no block reasons, no economic
+   *  data, no user-owned data. */
+  canApprove: boolean;
+  /** As of the empty-source-account invariant, identical to canApprove -
+   *  kept as a separate field for API stability and because it documents
+   *  intent (this specific request qualifies for the fully-automated path)
+   *  rather than being a synonym maintained by convention alone. */
+  isFullyAutomatable: boolean;
+};
+
+/**
+ * The ONLY shape of an assessment that may ever cross the tRPC boundary to
+ * an admin's browser - see toSafeAdminAssessmentDto below. Deliberately
+ * excludes AccountRecoverySafetyAssessment's `sourceGoogleIdentity` object
+ * entirely (which carries the Google `sub`/providerSubject and a full
+ * email address - neither is ever needed by the admin UI, which only ever
+ * needs to know THAT a real identity exists, not what it is) in favor of
+ * a single boolean. No token, cookie, or Authorization-header data is ever
+ * part of an assessment in the first place (assessAccountRecoverySafety
+ * never reads any of those), so there is nothing further to strip there.
+ */
+export type AccountRecoverySafetyAssessmentDto = {
+  requestId: number;
+  sourceUserId: number;
+  targetUserId: number;
+  sourceExists: boolean;
+  targetExists: boolean;
+  sourceIsAdmin: boolean;
+  targetIsAdmin: boolean;
+  /** Replaces the internal assessment's sourceGoogleIdentity object -
+   *  never the identity's id, providerSubject, or emailAtLink. */
+  sourceHasGoogleIdentity: boolean;
+  targetHasGoogleIdentity: boolean;
+  economicDataFindings: AccountRecoveryEconomicDataFinding[];
+  userOwnedDataFindings: AccountRecoveryEconomicDataFinding[];
+  blockReasons: string[];
   warnings: string[];
   canApprove: boolean;
   isFullyAutomatable: boolean;
 };
+
+/**
+ * Converts an internal, service-layer-only AccountRecoverySafetyAssessment
+ * into the safe DTO above - the router MUST call this before returning an
+ * assessment from any procedure (see server/routers.ts's
+ * accountRecovery.admin.previewApproval). Never call this on the client
+ * side or export it to anywhere outside the server process - it exists
+ * purely to define the router/service boundary within the server.
+ */
+export function toSafeAdminAssessmentDto(
+  assessment: AccountRecoverySafetyAssessment
+): AccountRecoverySafetyAssessmentDto {
+  const { sourceGoogleIdentity, ...rest } = assessment;
+  return {
+    ...rest,
+    sourceHasGoogleIdentity: Boolean(sourceGoogleIdentity),
+  };
+}
 
 /**
  * Runs every recovery safety rule against the CURRENT database state (or,
@@ -143,8 +213,18 @@ export async function assessAccountRecoverySafety(
     ? await db.findAccountRecoveryUserOwnedData(sourceUserId, requestId, dbOrTx)
     : [];
   if (userOwnedDataFindings.length > 0) {
+    // Empty-source-account invariant: user-owned data is now an
+    // unconditional block, identical in effect to economic data - this PR
+    // never moves or merges user-owned data, and never deletes the source
+    // user, so approval simply cannot proceed while any exists. Also
+    // recorded in `warnings` so the admin UI keeps a human-readable
+    // breakdown of *why* (never rely on warnings alone for the gate -
+    // canApprove is authoritative).
+    blockReasons.push(
+      `Source account has user-owned data (${userOwnedDataFindings.map((f) => f.table).join(", ")}) that would be left behind - automated recovery requires a genuinely empty source account; use Advanced Account Merge instead`
+    );
     warnings.push(
-      `Source account has data that would be left behind (${userOwnedDataFindings.map((f) => f.table).join(", ")}) - review before approving`
+      `Source account has data that would be left behind (${userOwnedDataFindings.map((f) => f.table).join(", ")}) - never auto-moved or merged by this tool`
     );
   }
 
@@ -167,7 +247,14 @@ export async function assessAccountRecoverySafety(
     blockReasons,
     warnings,
     canApprove,
-    isFullyAutomatable: canApprove && warnings.length === 0,
+    // Equivalent to canApprove under the empty-source-account invariant -
+    // every finding that used to be warnings-only now also blocks, so
+    // there is no remaining state where canApprove is true but the
+    // request isn't fully automatable. Computed independently (not just
+    // aliased) so a future finding category that intentionally warns
+    // without blocking cannot silently make this drift from canApprove
+    // without a test catching it.
+    isFullyAutomatable: blockReasons.length === 0 && economicDataFindings.length === 0 && userOwnedDataFindings.length === 0,
   };
 }
 
