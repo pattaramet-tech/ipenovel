@@ -1,11 +1,12 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { AlertTriangle, BookOpen, Wallet, Clock, Heart, Loader2 } from "lucide-react";
+import { AlertTriangle, BookOpen, Wallet, Clock, Heart, Loader2, XCircle } from "lucide-react";
 import { resolveSupportUrl, resolveUpgradeLoginPageAction } from "./upgradeLoginPresentation";
+import { parseGoogleConnectStatus } from "./profileGoogleConnectStatus";
 
 // The mandatory-migration counterpart to /login's optional Google-connect
 // flow (see App.tsx's <MigrationGate>, which is what actually routes a
@@ -22,6 +23,28 @@ export default function UpgradeLoginPage() {
   const [, navigate] = useLocation();
   const isAuthenticated = Boolean(user);
 
+  // Captured ONCE at mount (lazy initializer, never re-derived from a
+  // later URL read) - this is the server's one-shot signal
+  // (server/_core/googleOAuth.ts's resolveConnectCallbackDestination) that
+  // a just-attempted Google connect failed while the mandatory gate was
+  // active. Kept in state (not re-read from window.location on every
+  // render) specifically so the query-param cleanup effect below can strip
+  // it from the URL without also making the error banner disappear -
+  // "ต้องไม่ลบก่อนที่ Error UI จะถูกแสดง".
+  const [connectErrorRequested] = useState(
+    () => typeof window !== "undefined" && parseGoogleConnectStatus(window.location.search) === "error"
+  );
+
+  useEffect(() => {
+    if (connectErrorRequested) {
+      navigate("/account/upgrade-login", { replace: true });
+    }
+    // Deliberately empty deps beyond the captured-at-mount value itself -
+    // this must run at most once, right after the error banner has already
+    // rendered from the state above, never before.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectErrorRequested]);
+
   // Never fires at all while anonymous - there is no Google-connection
   // status to ask about without a session, and firing it anyway would just
   // produce a confusing UNAUTHORIZED error masquerading as "not connected".
@@ -32,6 +55,7 @@ export default function UpgradeLoginPage() {
   const action = resolveUpgradeLoginPageAction({
     authLoading,
     isAuthenticated,
+    connectErrorRequested,
     googleConnectedLoading: isAuthenticated && googleConnectedQuery.isLoading,
     googleConnectedError: isAuthenticated && googleConnectedQuery.isError,
     googleConnected: googleConnectedQuery.data?.googleConnected,
@@ -64,6 +88,43 @@ export default function UpgradeLoginPage() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <Loader2 className="w-8 h-8 animate-spin text-blue-600" aria-hidden="true" />
+      </div>
+    );
+  }
+
+  if (action === "render_connect_error") {
+    // The connect ATTEMPT itself failed (server redirect with
+    // ?googleConnect=error) - distinct from render_error below, which is
+    // about the auth.googleConnected STATUS QUERY failing. Never shows the
+    // internal conflict outcome, Google sub, user id, another account's
+    // email, a raw error, an OAuth code/token, or a database error - the
+    // server never sent any of that in the redirect, and this page has no
+    // other source to leak it from.
+    const supportUrl = resolveSupportUrl(import.meta.env.VITE_SUPPORT_URL);
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
+        <Card className="w-full max-w-md p-8 text-center">
+          <XCircle className="w-10 h-10 text-red-500 mx-auto mb-4" aria-hidden="true" />
+          <h1 className="text-xl font-bold text-slate-900 mb-2">เชื่อมบัญชี Google ไม่สำเร็จ</h1>
+          <p className="text-sm text-slate-600 leading-relaxed mb-6">
+            ไม่สามารถเชื่อมบัญชี Google ได้ กรุณาลองใหม่อีกครั้ง หรือติดต่อฝ่ายช่วยเหลือ
+          </p>
+          <div className="flex flex-col gap-3">
+            <Button asChild size="lg" className="w-full">
+              <a href="/api/auth/google/connect/start">ลองเชื่อมบัญชี Google อีกครั้ง</a>
+            </Button>
+            <Button variant="outline" size="lg" className="w-full" onClick={() => logout()}>
+              ออกจากระบบ
+            </Button>
+            {supportUrl && (
+              <Button asChild variant="ghost" size="sm" className="w-full">
+                <a href={supportUrl} target="_blank" rel="noopener noreferrer">
+                  ติดต่อฝ่ายช่วยเหลือ
+                </a>
+              </Button>
+            )}
+          </div>
+        </Card>
       </div>
     );
   }

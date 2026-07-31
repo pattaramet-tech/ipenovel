@@ -44,6 +44,7 @@ function baseInput(overrides: Partial<UpgradeLoginPageInput> = {}): UpgradeLogin
   return {
     authLoading: false,
     isAuthenticated: true,
+    connectErrorRequested: false,
     googleConnectedLoading: false,
     googleConnectedError: false,
     googleConnected: false,
@@ -86,5 +87,36 @@ describe("resolveUpgradeLoginPageAction", () => {
     expect(
       resolveUpgradeLoginPageAction(baseInput({ googleConnectedError: true, googleConnected: true }))
     ).toBe("render_error");
+  });
+
+  it("[required test 8] connectErrorRequested: true -> render_connect_error", () => {
+    expect(resolveUpgradeLoginPageAction(baseInput({ connectErrorRequested: true }))).toBe("render_connect_error");
+  });
+
+  it("connectErrorRequested is checked before auth is settled or confirmed - loading and anonymous still take priority (never overridden by a stale query param)", () => {
+    expect(
+      resolveUpgradeLoginPageAction(baseInput({ connectErrorRequested: true, authLoading: true }))
+    ).toBe("loading");
+    expect(
+      resolveUpgradeLoginPageAction(baseInput({ connectErrorRequested: true, isAuthenticated: false, googleConnected: undefined }))
+    ).toBe("redirect_login");
+  });
+
+  it("connectErrorRequested takes priority over the googleConnected query's own loading/error/value state - never waits on or is second-guessed by that query", () => {
+    expect(
+      resolveUpgradeLoginPageAction(baseInput({ connectErrorRequested: true, googleConnectedLoading: true, googleConnected: undefined }))
+    ).toBe("render_connect_error");
+    expect(
+      resolveUpgradeLoginPageAction(baseInput({ connectErrorRequested: true, googleConnectedError: true, googleConnected: undefined }))
+    ).toBe("render_connect_error");
+    expect(
+      resolveUpgradeLoginPageAction(baseInput({ connectErrorRequested: true, googleConnected: true }))
+    ).toBe("render_connect_error");
+  });
+
+  it("connectErrorRequested: false (success/unknown/missing query value) -> never render_connect_error", () => {
+    expect(resolveUpgradeLoginPageAction(baseInput({ connectErrorRequested: false, googleConnected: false }))).toBe(
+      "render_upgrade"
+    );
   });
 });

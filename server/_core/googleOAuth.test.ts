@@ -13,6 +13,7 @@ import {
   GOOGLE_PKCE_COOKIE,
   GOOGLE_STATE_COOKIE,
   registerGoogleOAuthRoutes,
+  resolveConnectCallbackDestination,
 } from "./googleOAuth";
 
 vi.mock("../db", async () => {
@@ -83,6 +84,30 @@ function fakeResponse(): Response & {
   };
   return res;
 }
+
+describe("resolveConnectCallbackDestination - pure, no Express/mocks needed", () => {
+  it('"success" -> /profile?googleConnect=success, regardless of mandatoryConnectionRequired', () => {
+    expect(resolveConnectCallbackDestination("success", false)).toBe("/profile?googleConnect=success");
+    expect(resolveConnectCallbackDestination("success", true)).toBe("/profile?googleConnect=success");
+  });
+
+  it('"error" + mandatoryConnectionRequired=false -> /profile?googleConnect=error', () => {
+    expect(resolveConnectCallbackDestination("error", false)).toBe("/profile?googleConnect=error");
+  });
+
+  it('"error" + mandatoryConnectionRequired=true -> /account/upgrade-login?googleConnect=error', () => {
+    expect(resolveConnectCallbackDestination("error", true)).toBe("/account/upgrade-login?googleConnect=error");
+  });
+
+  it('"session_expired" -> /login?googleConnect=session_expired, regardless of mandatoryConnectionRequired', () => {
+    expect(resolveConnectCallbackDestination("session_expired", false)).toBe("/login?googleConnect=session_expired");
+    expect(resolveConnectCallbackDestination("session_expired", true)).toBe("/login?googleConnect=session_expired");
+  });
+
+  it("takes exactly two parameters - no path/returnTo override is structurally possible", () => {
+    expect(resolveConnectCallbackDestination.length).toBe(2);
+  });
+});
 
 describe("Google OAuth routes - feature flag gating", () => {
   const originalAuthProvider = ENV.authProvider;
@@ -655,6 +680,7 @@ describe("Google OAuth /api/auth/google/callback - intent branching (login vs co
   const originalClientId = ENV.googleClientId;
   const originalClientSecret = ENV.googleClientSecret;
   const originalRedirectUri = ENV.googleRedirectUri;
+  const originalRequireGoogleConnection = ENV.requireGoogleConnection;
 
   const VALID_STATE = "valid-state-value";
   const VALID_NONCE = "valid-nonce-value";
@@ -686,6 +712,7 @@ describe("Google OAuth /api/auth/google/callback - intent branching (login vs co
     ENV.googleClientId = "test-client-id";
     ENV.googleClientSecret = "test-client-secret";
     ENV.googleRedirectUri = "https://staging.ipenovel.com/api/auth/google/callback";
+    ENV.requireGoogleConnection = false;
   });
 
   afterEach(() => {
@@ -693,6 +720,7 @@ describe("Google OAuth /api/auth/google/callback - intent branching (login vs co
     ENV.googleClientId = originalClientId;
     ENV.googleClientSecret = originalClientSecret;
     ENV.googleRedirectUri = originalRedirectUri;
+    ENV.requireGoogleConnection = originalRequireGoogleConnection;
     vi.restoreAllMocks();
   });
 
@@ -725,7 +753,7 @@ describe("Google OAuth /api/auth/google/callback - intent branching (login vs co
     warnSpy.mockRestore();
   });
 
-  it("intent=connect, session expired between /connect/start and the callback -> redirects to account page with an error status, connectGoogleIdentityToUser is never called, no session cookie is ever minted", async () => {
+  it("[required test 6] intent=connect, session expired between /connect/start and the callback -> redirects to /login?googleConnect=session_expired (NOT /profile or /account/upgrade-login), connectGoogleIdentityToUser is never called, no session cookie is ever minted, transient cookies are cleared", async () => {
     mockValidGoogleClaims();
     vi.spyOn(sdk, "authenticateRequest").mockRejectedValue(
       new AnonymousCredentialError("session expired", "invalid_session_token")
@@ -740,7 +768,24 @@ describe("Google OAuth /api/auth/google/callback - intent branching (login vs co
     expect(connectSpy).not.toHaveBeenCalled();
     expect(createSessionSpy).not.toHaveBeenCalled();
     expect(res.cookieCalls.length).toBe(0);
-    expect(res.redirect).toHaveBeenCalledWith(302, "/profile?googleConnect=error");
+    expect(res.redirect).toHaveBeenCalledWith(302, "/login?googleConnect=session_expired");
+    expect(res.clearCookieCalls.map((c) => c[0]).sort()).toEqual(
+      [GOOGLE_NONCE_COOKIE, GOOGLE_PKCE_COOKIE, GOOGLE_STATE_COOKIE, GOOGLE_INTENT_COOKIE].sort()
+    );
+  });
+
+  it("[required test 6b] session-expired destination is the SAME (/login?googleConnect=session_expired) regardless of whether the mandatory gate is active - it is never gated by isGoogleConnectionMandatory()", async () => {
+    ENV.requireGoogleConnection = true; // AUTH_PROVIDER is already "transition" from beforeEach
+    mockValidGoogleClaims();
+    vi.spyOn(sdk, "authenticateRequest").mockRejectedValue(
+      new AnonymousCredentialError("session expired", "invalid_session_token")
+    );
+
+    const { callback } = captureGoogleOAuthHandlers();
+    const res = fakeResponse();
+    await callback(requestWithIntent("connect"), res);
+
+    expect(res.redirect).toHaveBeenCalledWith(302, "/login?googleConnect=session_expired");
   });
 
   it("intent=connect, successful connect (outcome: connected) -> redirects to the account page with a success status, mints NO new session cookie, clears the transient cookies", async () => {
@@ -842,5 +887,157 @@ describe("Google OAuth /api/auth/google/callback - intent branching (login vs co
     expect(connectSpy).not.toHaveBeenCalled();
     expect(authenticateSpy).not.toHaveBeenCalled();
     expect(res.redirect).toHaveBeenCalledWith(302, "/");
+  });
+
+  describe("mandatory Google-migration gate - error destination routing (AUTH_REQUIRE_GOOGLE_CONNECTION)", () => {
+    beforeEach(() => {
+      ENV.requireGoogleConnection = true; // AUTH_PROVIDER is already "transition" from the outer beforeEach
+    });
+
+    it("[required test 1] mandatory=true + connect conflict (sub already linked to a different user) -> /account/upgrade-login?googleConnect=error", async () => {
+      mockValidGoogleClaims();
+      vi.spyOn(sdk, "authenticateRequest").mockResolvedValue({ id: 55 } as any);
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue({} as any);
+      vi.spyOn(googleIdentityService, "connectGoogleIdentityToUser").mockResolvedValue({
+        outcome: "conflict_sub_linked_to_different_user",
+      });
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const { callback } = captureGoogleOAuthHandlers();
+      const res = fakeResponse();
+      await callback(requestWithIntent("connect"), res);
+
+      expect(res.redirect).toHaveBeenCalledWith(302, "/account/upgrade-login?googleConnect=error");
+      warnSpy.mockRestore();
+    });
+
+    it("[required test 2] mandatory=true + provider cancel/error param -> /account/upgrade-login?googleConnect=error", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { callback } = captureGoogleOAuthHandlers();
+      const res = fakeResponse();
+      await callback(requestWithIntent("connect", { error: "access_denied" }), res);
+
+      expect(res.redirect).toHaveBeenCalledWith(302, "/account/upgrade-login?googleConnect=error");
+      warnSpy.mockRestore();
+    });
+
+    it("[required test 3] mandatory=true + token verification/database/connect failure -> /account/upgrade-login?googleConnect=error", async () => {
+      mockValidGoogleClaims();
+      vi.spyOn(sdk, "authenticateRequest").mockResolvedValue({ id: 55 } as any);
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue({} as any);
+      vi.spyOn(googleIdentityService, "connectGoogleIdentityToUser").mockRejectedValue(
+        Object.assign(new Error("Duplicate entry"), { cause: { errno: 1062, code: "ER_DUP_ENTRY" } })
+      );
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const { callback } = captureGoogleOAuthHandlers();
+      const res = fakeResponse();
+      await callback(requestWithIntent("connect"), res);
+
+      expect(res.redirect).toHaveBeenCalledWith(302, "/account/upgrade-login?googleConnect=error");
+      errorSpy.mockRestore();
+    });
+
+    it("[required test 5] connect success (mandatory=true) -> still /profile?googleConnect=success, never /account/upgrade-login - the identity is now connected, so the gate already allows /profile", async () => {
+      mockValidGoogleClaims();
+      vi.spyOn(sdk, "authenticateRequest").mockResolvedValue({ id: 55 } as any);
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue({} as any);
+      vi.spyOn(googleIdentityService, "connectGoogleIdentityToUser").mockResolvedValue({ outcome: "connected" });
+
+      const { callback } = captureGoogleOAuthHandlers();
+      const res = fakeResponse();
+      await callback(requestWithIntent("connect"), res);
+
+      expect(res.redirect).toHaveBeenCalledWith(302, "/profile?googleConnect=success");
+    });
+
+    it("[required test 4] mandatory=false (explicit) + connect error -> /profile?googleConnect=error, unchanged optional-connect behavior", async () => {
+      ENV.requireGoogleConnection = false;
+      mockValidGoogleClaims();
+      vi.spyOn(sdk, "authenticateRequest").mockResolvedValue({ id: 55 } as any);
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue({} as any);
+      vi.spyOn(googleIdentityService, "connectGoogleIdentityToUser").mockResolvedValue({
+        outcome: "conflict_user_has_different_google_identity",
+      });
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const { callback } = captureGoogleOAuthHandlers();
+      const res = fakeResponse();
+      await callback(requestWithIntent("connect"), res);
+
+      expect(res.redirect).toHaveBeenCalledWith(302, "/profile?googleConnect=error");
+      warnSpy.mockRestore();
+    });
+
+    it("mandatory=true, AUTH_PROVIDER flipped to 'google' (not 'transition') -> the gate flag alone never activates it, error still goes to /profile", async () => {
+      ENV.authProvider = "google"; // requireGoogleConnection stays true from this describe's beforeEach
+      mockValidGoogleClaims();
+      vi.spyOn(sdk, "authenticateRequest").mockResolvedValue({ id: 55 } as any);
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue({} as any);
+      vi.spyOn(googleIdentityService, "connectGoogleIdentityToUser").mockResolvedValue({
+        outcome: "conflict_sub_linked_to_different_user",
+      });
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const { callback } = captureGoogleOAuthHandlers();
+      const res = fakeResponse();
+      await callback(requestWithIntent("connect"), res);
+
+      expect(res.redirect).toHaveBeenCalledWith(302, "/profile?googleConnect=error");
+      warnSpy.mockRestore();
+    });
+  });
+
+  describe("[required test 7] destination is never derivable from query string, cookie, header, or the client - only from server environment (isGoogleConnectionMandatory()) and the handler's own internal control flow", () => {
+    it("an attacker-supplied ?destination=/admin or ?returnTo=... query param has zero effect on the redirect target", async () => {
+      mockValidGoogleClaims();
+      vi.spyOn(sdk, "authenticateRequest").mockResolvedValue({ id: 55 } as any);
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue({} as any);
+      vi.spyOn(googleIdentityService, "connectGoogleIdentityToUser").mockResolvedValue({ outcome: "connected" });
+
+      const { callback } = captureGoogleOAuthHandlers();
+      const res = fakeResponse();
+      await callback(
+        requestWithIntent("connect", { destination: "/admin", returnTo: "https://evil.example.com" }),
+        res
+      );
+
+      expect(res.redirect).toHaveBeenCalledWith(302, "/profile?googleConnect=success");
+    });
+
+    it("an attacker-supplied 'destination'/'returnTo' COOKIE also has zero effect", async () => {
+      mockValidGoogleClaims();
+      vi.spyOn(sdk, "authenticateRequest").mockResolvedValue({ id: 55 } as any);
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue({} as any);
+      vi.spyOn(googleIdentityService, "connectGoogleIdentityToUser").mockResolvedValue({ outcome: "connected" });
+
+      const req = fakeRequest({
+        query: { code: "auth-code-123", state: VALID_STATE },
+        cookies: {
+          [GOOGLE_STATE_COOKIE]: VALID_STATE,
+          [GOOGLE_NONCE_COOKIE]: VALID_NONCE,
+          [GOOGLE_PKCE_COOKIE]: VALID_VERIFIER,
+          [GOOGLE_INTENT_COOKIE]: "connect",
+          destination: "/admin",
+          returnTo: "https://evil.example.com",
+        },
+      });
+      const { callback } = captureGoogleOAuthHandlers();
+      const res = fakeResponse();
+      await callback(req, res);
+
+      expect(res.redirect).toHaveBeenCalledWith(302, "/profile?googleConnect=success");
+    });
+
+    it("resolveConnectCallbackDestination itself has exactly two parameters (status, mandatoryConnectionRequired) - structurally cannot accept a path/returnTo override even if a future caller tried to pass one", () => {
+      expect(resolveConnectCallbackDestination.length).toBe(2);
+    });
   });
 });

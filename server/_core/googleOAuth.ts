@@ -6,7 +6,7 @@ import { isAnonymousCredentialError } from "./authErrors";
 import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
 import { connectGoogleIdentityToUser, resolveGoogleIdentity } from "../services/googleIdentityService";
 import { getGoogleOAuthTransientCookieOptions, getSessionCookieOptions, readCookie } from "./cookies";
-import { ENV, isGoogleAuthActive } from "./env";
+import { ENV, isGoogleAuthActive, isGoogleConnectionMandatory } from "./env";
 import * as googleOidc from "./googleOidc";
 import { sdk } from "./sdk";
 
@@ -47,11 +47,64 @@ export const GOOGLE_PKCE_COOKIE = "google_oauth_code_verifier";
 export const GOOGLE_INTENT_COOKIE = "google_oauth_intent";
 const GOOGLE_TRANSIENT_COOKIES = [GOOGLE_STATE_COOKIE, GOOGLE_NONCE_COOKIE, GOOGLE_PKCE_COOKIE, GOOGLE_INTENT_COOKIE];
 
-/** Where the connect flow sends the browser back to, success or failure - a fixed, non-configurable path, never derived from any request input. See ACCOUNT_PAGE_STATUS_PARAM below for the (deliberately minimal) status signal. */
+/**
+ * Where the connect flow sends the browser back to - always one of exactly
+ * three FIXED, non-configurable internal paths, never derived from any
+ * request input (query string, cookie, header, client, or Google's own
+ * response). See resolveConnectCallbackDestination below for the full
+ * decision.
+ */
 const ACCOUNT_PAGE_PATH = "/profile";
+const UPGRADE_LOGIN_PAGE_PATH = "/account/upgrade-login";
+const LOGIN_PAGE_PATH = "/login";
 const ACCOUNT_PAGE_STATUS_PARAM = "googleConnect";
 
 type OAuthIntent = "login" | "connect";
+
+export type ConnectCallbackStatus = "success" | "error" | "session_expired";
+
+/**
+ * Pure: decides the ONE fixed internal path (+ status query param) the
+ * browser is redirected to at the end of the connect flow. The ONLY two
+ * inputs are:
+ *  - `status`, which the caller derives entirely from its own internal
+ *    control flow (never from Google's response query string, never from
+ *    anything the browser sent);
+ *  - `mandatoryConnectionRequired`, which the caller must derive from
+ *    isGoogleConnectionMandatory() (server environment only - AUTH_PROVIDER
+ *    + AUTH_REQUIRE_GOOGLE_CONNECTION).
+ * Never reads req.query/cookies/headers itself, and never accepts a
+ * caller-supplied path/returnTo/destination override of any kind - this is
+ * the single source of truth for all three possible destinations:
+ *
+ *  - "success"        -> always /profile?googleConnect=success (identity is
+ *    now connected, so the mandatory gate - if active - already allows
+ *    /profile; no need to route through the upgrade page).
+ *  - "error", mandatory gate ACTIVE  -> /account/upgrade-login?googleConnect=error
+ *    (redirecting to /profile here would immediately be bounced right back
+ *    to /account/upgrade-login by <MigrationGate>, silently swallowing the
+ *    error status before the user ever sees it).
+ *  - "error", mandatory gate INACTIVE -> /profile?googleConnect=error
+ *    (unchanged, original optional-connect behavior).
+ *  - "session_expired" -> always /login?googleConnect=session_expired,
+ *    regardless of the mandatory gate - there is no valid session to show
+ *    /profile or /account/upgrade-login for in the first place.
+ */
+export function resolveConnectCallbackDestination(
+  status: ConnectCallbackStatus,
+  mandatoryConnectionRequired: boolean
+): string {
+  const path =
+    status === "session_expired"
+      ? LOGIN_PAGE_PATH
+      : status === "error" && mandatoryConnectionRequired
+        ? UPGRADE_LOGIN_PAGE_PATH
+        : ACCOUNT_PAGE_PATH;
+
+  const url = new URL(path, "http://internal.invalid");
+  url.searchParams.set(ACCOUNT_PAGE_STATUS_PARAM, status);
+  return url.pathname + url.search;
+}
 
 function isGoogleProviderConfigured(): boolean {
   return Boolean(ENV.googleClientId && ENV.googleClientSecret && ENV.googleRedirectUri);
@@ -188,11 +241,16 @@ export function registerGoogleOAuthRoutes(app: Express) {
       res.status(status).json({ error });
     };
 
-    const redirectToAccountPage = (status: "success" | "error") => {
+    // Redirects the connect flow to exactly one of the three fixed
+    // destinations resolveConnectCallbackDestination decides - never a
+    // caller-supplied path. `mandatoryConnectionRequired` is read fresh
+    // from server environment on every call (never cached/latched), so a
+    // flag flip takes effect immediately, same as every other ENV-derived
+    // gate in this codebase.
+    const redirectFromConnectCallback = (status: ConnectCallbackStatus) => {
       clearGoogleOAuthCookies(req, res);
-      const url = new URL(ACCOUNT_PAGE_PATH, "http://internal.invalid");
-      url.searchParams.set(ACCOUNT_PAGE_STATUS_PARAM, status);
-      res.redirect(302, url.pathname + url.search);
+      const destination = resolveConnectCallbackDestination(status, isGoogleConnectionMandatory());
+      res.redirect(302, destination);
     };
 
     // Both `error` and `error_description` are attacker/user-influenced
@@ -210,7 +268,7 @@ export function registerGoogleOAuthRoutes(app: Express) {
     if (providerError) {
       console.warn("[GoogleOAuth] Google authorization was not completed");
       if (intentCookie === "connect") {
-        redirectToAccountPage("error");
+        redirectFromConnectCallback("error");
       } else {
         failLogin(400, "Google sign-in was not completed");
       }
@@ -252,7 +310,7 @@ export function registerGoogleOAuthRoutes(app: Express) {
         "[GoogleOAuth] ERROR: GOOGLE_OAUTH_CLIENT_ID/GOOGLE_OAUTH_CLIENT_SECRET/GOOGLE_OAUTH_REDIRECT_URI must all be set to complete a Google sign-in."
       );
       if (intent === "connect") {
-        redirectToAccountPage("error");
+        redirectFromConnectCallback("error");
       } else {
         failLogin(500, "Google login is not configured");
       }
@@ -260,7 +318,7 @@ export function registerGoogleOAuthRoutes(app: Express) {
     }
 
     if (intent === "connect") {
-      await handleConnectCallback(req, res, { code, verifierCookie, nonceCookie, redirectToAccountPage });
+      await handleConnectCallback(req, res, { code, verifierCookie, nonceCookie, redirectFromConnectCallback });
       return;
     }
 
@@ -334,11 +392,11 @@ type ConnectCallbackDeps = {
   code: string;
   verifierCookie: string;
   nonceCookie: string;
-  redirectToAccountPage: (status: "success" | "error") => void;
+  redirectFromConnectCallback: (status: ConnectCallbackStatus) => void;
 };
 
 async function handleConnectCallback(req: Request, res: Response, deps: ConnectCallbackDeps): Promise<void> {
-  const { code, verifierCookie, nonceCookie, redirectToAccountPage } = deps;
+  const { code, verifierCookie, nonceCookie, redirectFromConnectCallback } = deps;
   try {
     // Re-verify the session from scratch - the one from /connect/start
     // may have expired, been logged out elsewhere, or simply be a
@@ -367,7 +425,7 @@ async function handleConnectCallback(req: Request, res: Response, deps: ConnectC
     if (result.outcome === "connected" || result.outcome === "already_connected") {
       // No new session is minted - the current session was already valid
       // and is left completely untouched.
-      redirectToAccountPage("success");
+      redirectFromConnectCallback("success");
       return;
     }
 
@@ -375,16 +433,22 @@ async function handleConnectCallback(req: Request, res: Response, deps: ConnectC
     // a different Google identity) - fail closed, no details leaked to
     // the browser beyond a generic error status.
     console.warn(`[GoogleOAuth] Google account connect refused: ${result.outcome}`);
-    redirectToAccountPage("error");
+    redirectFromConnectCallback("error");
   } catch (error) {
     if (isAnonymousCredentialError(error)) {
       // Session expired/invalidated between /connect/start and this
-      // callback - fail closed, no session is minted (there was never a
-      // login flow here to mint one from), just report the failure.
-      redirectToAccountPage("error");
+      // callback (the ONLY thing in this try block that can throw
+      // AnonymousCredentialError is the sdk.authenticateRequest call
+      // above, which runs BEFORE the token exchange and BEFORE
+      // connectGoogleIdentityToUser - so reaching this branch already
+      // guarantees neither ever ran: no session is minted, no identity is
+      // connected). Distinct destination from a generic connect failure -
+      // /login, never /profile or /account/upgrade-login, since there is
+      // no valid session to show either of those pages for.
+      redirectFromConnectCallback("session_expired");
       return;
     }
     console.error("[GoogleOAuth] Connect callback failed:", safeErrorSummary(error));
-    redirectToAccountPage("error");
+    redirectFromConnectCallback("error");
   }
 }

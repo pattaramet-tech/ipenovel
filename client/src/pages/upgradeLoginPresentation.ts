@@ -38,11 +38,21 @@ export type UpgradeLoginPageAction =
   | "redirect_login"
   | "redirect_home"
   | "render_upgrade"
-  | "render_error";
+  | "render_error"
+  | "render_connect_error";
 
 export type UpgradeLoginPageInput = {
   authLoading: boolean;
   isAuthenticated: boolean;
+  /**
+   * True only for the EXACT query value ?googleConnect=error, captured
+   * once at mount (see parseGoogleConnectStatus/isConnectErrorStatus) -
+   * this is the server's own one-shot signal (server/_core/googleOAuth.ts's
+   * resolveConnectCallbackDestination) that a just-attempted Google connect
+   * failed. ?googleConnect=success, any other value, or a missing param
+   * must never be treated as this.
+   */
+  connectErrorRequested: boolean;
   googleConnectedLoading: boolean;
   /**
    * True when the auth.googleConnected query itself failed (an
@@ -61,10 +71,17 @@ export type UpgradeLoginPageInput = {
  * spinner, and never queried for a Google-connection status they cannot
  * have without a session in the first place - see the `enabled` guard at
  * this function's only call site).
+ *
+ * `connectErrorRequested` is checked BEFORE the auth.googleConnected
+ * query's own loading/error/value state - the server redirect that set
+ * ?googleConnect=error already tells us deterministically that the just-
+ * attempted connect failed, so there is no reason to wait on (or be
+ * second-guessed by) a separate query for the same underlying fact.
  */
 export function resolveUpgradeLoginPageAction(input: UpgradeLoginPageInput): UpgradeLoginPageAction {
   if (input.authLoading) return "loading";
   if (!input.isAuthenticated) return "redirect_login";
+  if (input.connectErrorRequested) return "render_connect_error";
   if (input.googleConnectedLoading) return "loading";
   if (input.googleConnectedError) return "render_error";
   if (input.googleConnected === true) return "redirect_home";

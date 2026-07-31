@@ -1,11 +1,12 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Loader2 } from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 import { buildManusLoginUrl, GOOGLE_LOGIN_START_PATH } from "@/const";
 import { isMandatoryGoogleConnectionEnabled } from "@/_core/hooks/migrationGate";
+import { isSessionExpiredStatus } from "./loginPagePresentation";
 
 // In-app login page for AUTH_PROVIDER=transition (VITE_AUTH_PROVIDER=
 // "transition" - see client/src/const.ts's resolveLoginUrl, which is the
@@ -32,6 +33,16 @@ import { isMandatoryGoogleConnectionEnabled } from "@/_core/hooks/migrationGate"
 export default function LoginPage() {
   const { user, loading } = useAuth();
   const [, navigate] = useLocation();
+
+  // Captured ONCE at mount (lazy initializer) - the server's one-shot
+  // signal (server/_core/googleOAuth.ts's resolveConnectCallbackDestination)
+  // that the user's session expired/became invalid between starting a
+  // Google-connect attempt and Google redirecting back. Kept in state
+  // (never re-read from window.location on every render) so a later
+  // history change never makes this banner flicker.
+  const [sessionExpired] = useState(
+    () => typeof window !== "undefined" && isSessionExpiredStatus(window.location.search)
+  );
 
   // A visitor who is already signed in has no reason to see a login page -
   // send them home instead. Never redirects an UNAUTHENTICATED visitor
@@ -77,6 +88,13 @@ export default function LoginPage() {
     <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
       <Card className="w-full max-w-md p-8">
         <h1 className="text-2xl font-bold text-slate-900 text-center mb-8">เข้าสู่ระบบ</h1>
+
+        {sessionExpired && (
+          <div className="mb-6 flex items-start gap-3 rounded-lg bg-amber-50 p-4 text-sm text-amber-800">
+            <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" aria-hidden="true" />
+            <p>เซสชันหมดอายุ กรุณาเข้าสู่ระบบบัญชีเดิมอีกครั้ง แล้วเชื่อม Google ใหม่</p>
+          </div>
+        )}
 
         {mandatoryConnection ? (
           <>
