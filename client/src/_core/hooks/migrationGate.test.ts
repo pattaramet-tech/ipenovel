@@ -3,7 +3,9 @@ import {
   isMandatoryGoogleConnectionEnabled,
   isMigrationGateExemptPath,
   resolveMigrationGateAction,
+  shouldShowUpcomingCutoffBanner,
   type MigrationGateInput,
+  type UpcomingCutoffBannerInput,
 } from "./migrationGate";
 
 describe("isMandatoryGoogleConnectionEnabled", () => {
@@ -51,24 +53,19 @@ describe("isMigrationGateExemptPath", () => {
 
 function baseInput(overrides: Partial<MigrationGateInput> = {}): MigrationGateInput {
   return {
-    mandatoryEnabled: true,
     pathname: "/profile",
     isAuthenticated: true,
     authLoading: false,
-    googleConnected: false,
-    googleConnectedLoading: false,
-    googleConnectedError: false,
+    statusLoading: false,
+    statusError: false,
+    needsConnection: false,
     ...overrides,
   };
 }
 
 describe("resolveMigrationGateAction", () => {
-  it("mandatory disabled -> always allow, regardless of everything else", () => {
-    expect(
-      resolveMigrationGateAction(
-        baseInput({ mandatoryEnabled: false, isAuthenticated: true, googleConnected: false })
-      )
-    ).toBe("allow");
+  it("server says needsConnection: false -> allow, regardless of everything else about the feature being on/off (that's the server's call, baked into needsConnection already)", () => {
+    expect(resolveMigrationGateAction(baseInput({ needsConnection: false }))).toBe("allow");
   });
 
   it("exempt path (/account/upgrade-login) -> allow even for an unconnected, authenticated user", () => {
@@ -91,43 +88,76 @@ describe("resolveMigrationGateAction", () => {
     expect(resolveMigrationGateAction(baseInput({ isAuthenticated: false }))).toBe("allow");
   });
 
-  it("authenticated, googleConnected query still loading -> block_loading", () => {
-    expect(resolveMigrationGateAction(baseInput({ googleConnectedLoading: true, googleConnected: undefined }))).toBe(
+  it("authenticated, status query still loading -> block_loading", () => {
+    expect(resolveMigrationGateAction(baseInput({ statusLoading: true, needsConnection: undefined }))).toBe(
       "block_loading"
     );
   });
 
-  it("authenticated, googleConnected query errored (infrastructure failure) -> block_error, NEVER 'allow' (fail open) and NEVER 'redirect_upgrade' (a guess)", () => {
-    expect(
-      resolveMigrationGateAction(baseInput({ googleConnectedError: true, googleConnected: undefined }))
-    ).toBe("block_error");
+  it("authenticated, status query errored (infrastructure failure) -> block_error, NEVER 'allow' (fail open) and NEVER 'redirect_upgrade' (a guess)", () => {
+    expect(resolveMigrationGateAction(baseInput({ statusError: true, needsConnection: undefined }))).toBe(
+      "block_error"
+    );
   });
 
-  it("googleConnectedError takes priority over a stale googleConnected: false value from a previous successful fetch - still block_error, never redirect_upgrade", () => {
-    expect(
-      resolveMigrationGateAction(baseInput({ googleConnectedError: true, googleConnected: false }))
-    ).toBe("block_error");
+  it("statusError takes priority over a stale needsConnection: false value from a previous successful fetch - still block_error, never redirect_upgrade", () => {
+    expect(resolveMigrationGateAction(baseInput({ statusError: true, needsConnection: false }))).toBe("block_error");
   });
 
-  it("authenticated, googleConnected: true -> allow", () => {
-    expect(resolveMigrationGateAction(baseInput({ googleConnected: true }))).toBe("allow");
+  it("authenticated, needsConnection: true -> redirect_upgrade", () => {
+    expect(resolveMigrationGateAction(baseInput({ needsConnection: true }))).toBe("redirect_upgrade");
   });
 
-  it("authenticated, googleConnected: false (settled, no error) -> redirect_upgrade", () => {
-    expect(resolveMigrationGateAction(baseInput({ googleConnected: false }))).toBe("redirect_upgrade");
+  it("needsConnection: undefined (not yet resolved, no loading/error flag set either) -> allow, never guesses redirect_upgrade", () => {
+    expect(resolveMigrationGateAction(baseInput({ needsConnection: undefined }))).toBe("allow");
   });
 
   it("redirect_upgrade is never returned for an exempt path, even if every other condition would otherwise trigger it (no redirect loop)", () => {
     expect(
       resolveMigrationGateAction(
-        baseInput({ pathname: "/account/upgrade-login", googleConnected: false, googleConnectedError: false })
+        baseInput({ pathname: "/account/upgrade-login", needsConnection: true, statusError: false })
       )
     ).toBe("allow");
   });
 
   it("block_error is never returned for an exempt path either", () => {
-    expect(
-      resolveMigrationGateAction(baseInput({ pathname: "/admin/orders", googleConnectedError: true }))
-    ).toBe("allow");
+    expect(resolveMigrationGateAction(baseInput({ pathname: "/admin/orders", statusError: true }))).toBe("allow");
+  });
+});
+
+function baseBannerInput(overrides: Partial<UpcomingCutoffBannerInput> = {}): UpcomingCutoffBannerInput {
+  return {
+    enabled: true,
+    activeNow: false,
+    googleConnected: false,
+    exempt: false,
+    ...overrides,
+  };
+}
+
+describe("shouldShowUpcomingCutoffBanner", () => {
+  it("feature disabled -> never shown", () => {
+    expect(shouldShowUpcomingCutoffBanner(baseBannerInput({ enabled: false }))).toBe(false);
+  });
+
+  it("feature enabled, not yet active, not connected, not exempt -> shown", () => {
+    expect(shouldShowUpcomingCutoffBanner(baseBannerInput())).toBe(true);
+  });
+
+  it("cutoff already active -> never shown (MigrationGate's redirect_upgrade takes over instead)", () => {
+    expect(shouldShowUpcomingCutoffBanner(baseBannerInput({ activeNow: true }))).toBe(false);
+  });
+
+  it("already connected -> never shown", () => {
+    expect(shouldShowUpcomingCutoffBanner(baseBannerInput({ googleConnected: true }))).toBe(false);
+  });
+
+  it("exempt (admin) -> never shown", () => {
+    expect(shouldShowUpcomingCutoffBanner(baseBannerInput({ exempt: true }))).toBe(false);
+  });
+
+  it("googleConnected/exempt still undefined (status not yet resolved) -> never shown, not a guess", () => {
+    expect(shouldShowUpcomingCutoffBanner(baseBannerInput({ googleConnected: undefined }))).toBe(false);
+    expect(shouldShowUpcomingCutoffBanner(baseBannerInput({ exempt: undefined }))).toBe(false);
   });
 });

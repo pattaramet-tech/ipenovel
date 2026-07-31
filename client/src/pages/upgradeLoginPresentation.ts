@@ -55,14 +55,21 @@ export type UpgradeLoginPageInput = {
   connectErrorRequested: boolean;
   googleConnectedLoading: boolean;
   /**
-   * True when the auth.googleConnected query itself failed (an
-   * infrastructure error, not "not connected"). Must NEVER be treated as
-   * "connected" (redirect_home) or "not connected" (render_upgrade) - both
-   * would be a guess about a status this page does not actually know.
+   * True when the status query itself failed (an infrastructure error,
+   * not "not connected"). Must NEVER be treated as "connected"
+   * (redirect_home) or "not connected" (render_upgrade) - both would be a
+   * guess about a status this page does not actually know.
    */
   googleConnectedError: boolean;
   /** undefined = not yet resolved either way - distinct from a real `false`. */
   googleConnected: boolean | undefined;
+  /**
+   * server/_core/env.ts's evaluateGoogleConnectionCutoff-derived exemption
+   * (admin) - an admin who lands here directly (never server-forced, but
+   * nothing stops manual navigation) is sent home immediately, same as an
+   * already-connected user. `undefined` = not yet resolved.
+   */
+  exempt: boolean | undefined;
 };
 
 /**
@@ -72,8 +79,8 @@ export type UpgradeLoginPageInput = {
  * have without a session in the first place - see the `enabled` guard at
  * this function's only call site).
  *
- * `connectErrorRequested` is checked BEFORE the auth.googleConnected
- * query's own loading/error/value state - the server redirect that set
+ * `connectErrorRequested` is checked BEFORE the status query's own
+ * loading/error/value state - the server redirect that set
  * ?googleConnect=error already tells us deterministically that the just-
  * attempted connect failed, so there is no reason to wait on (or be
  * second-guessed by) a separate query for the same underlying fact.
@@ -84,6 +91,6 @@ export function resolveUpgradeLoginPageAction(input: UpgradeLoginPageInput): Upg
   if (input.connectErrorRequested) return "render_connect_error";
   if (input.googleConnectedLoading) return "loading";
   if (input.googleConnectedError) return "render_error";
-  if (input.googleConnected === true) return "redirect_home";
+  if (input.googleConnected === true || input.exempt === true) return "redirect_home";
   return "render_upgrade";
 }

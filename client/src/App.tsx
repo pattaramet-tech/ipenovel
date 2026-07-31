@@ -11,6 +11,9 @@ import MyLibraryPage from "@/pages/MyLibraryPage";
 import ProfilePage from "@/pages/ProfilePage";
 import LoginPage from "@/pages/LoginPage";
 import UpgradeLoginPage from "@/pages/UpgradeLoginPage";
+import AccountRecoveryPage from "@/pages/AccountRecoveryPage";
+import AdminAccountRecoveryPage from "@/pages/AdminAccountRecoveryPage";
+import AdminAccountRecoveryDetailPage from "@/pages/AdminAccountRecoveryDetailPage";
 import AdminDashboard from "@/pages/AdminDashboard";
 import AdminBannersPage from "@/pages/AdminBannersPage";
 import AdminCouponsPage from "@/pages/AdminCouponsPage";
@@ -65,6 +68,7 @@ function Router() {
         <Route path={"/profile"} component={ProfilePage} />
         <Route path={"/login"} component={LoginPage} />
         <Route path={"/account/upgrade-login"} component={UpgradeLoginPage} />
+        <Route path={"/account/recovery"} component={AccountRecoveryPage} />
         <Route path={"/points"} component={PointsPage} />
         <Route path={"/wallet"} component={WalletPage} />
         <Route path={"/payment/:orderId"} component={PaymentPage} />
@@ -94,6 +98,8 @@ function Router() {
         <Route path="/admin/bulk-upload" component={AdminBulkUploadPage} />
         <Route path="/admin/analytics" component={AdminAnalyticsPage} />
         <Route path="/admin/sports-votes" component={AdminSportsVotesPage} />
+        <Route path="/admin/account-recovery/:requestId" component={AdminAccountRecoveryDetailPage} />
+        <Route path="/admin/account-recovery" component={AdminAccountRecoveryPage} />
         <Route path="/404" component={NotFound} />
         {/* Final fallback route */}
         <Route component={NotFound} />

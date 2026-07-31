@@ -48,6 +48,7 @@ function baseInput(overrides: Partial<UpgradeLoginPageInput> = {}): UpgradeLogin
     googleConnectedLoading: false,
     googleConnectedError: false,
     googleConnected: false,
+    exempt: false,
     ...overrides,
   };
 }
@@ -118,5 +119,27 @@ describe("resolveUpgradeLoginPageAction", () => {
     expect(resolveUpgradeLoginPageAction(baseInput({ connectErrorRequested: false, googleConnected: false }))).toBe(
       "render_upgrade"
     );
+  });
+
+  it("[rule 5] exempt: true (admin) -> redirect_home, even when not connected - an admin who navigates here directly is never shown the upgrade card", () => {
+    expect(resolveUpgradeLoginPageAction(baseInput({ exempt: true, googleConnected: false }))).toBe("redirect_home");
+  });
+
+  it("exempt: false, not connected -> render_upgrade (exempt alone never triggers render_upgrade early)", () => {
+    expect(resolveUpgradeLoginPageAction(baseInput({ exempt: false, googleConnected: false }))).toBe(
+      "render_upgrade"
+    );
+  });
+
+  it("exempt: undefined (status not yet resolved either way) is never treated as true - stays render_upgrade once connected/loading/error are all settled-false", () => {
+    expect(resolveUpgradeLoginPageAction(baseInput({ exempt: undefined, googleConnected: false }))).toBe(
+      "render_upgrade"
+    );
+  });
+
+  it("googleConnectedError takes priority over exempt: true too - still render_error, never redirect_home", () => {
+    expect(
+      resolveUpgradeLoginPageAction(baseInput({ googleConnectedError: true, exempt: true, googleConnected: undefined }))
+    ).toBe("render_error");
   });
 });

@@ -973,7 +973,7 @@ describe("Google OAuth /api/auth/google/callback - intent branching (login vs co
       warnSpy.mockRestore();
     });
 
-    it("mandatory=true, AUTH_PROVIDER flipped to 'google' (not 'transition') -> the gate flag alone never activates it, error still goes to /profile", async () => {
+    it("[rule 7] mandatory=true, AUTH_PROVIDER flipped to 'google' (not 'transition') -> the gate ALSO activates under 'google' mode, error goes to /account/upgrade-login", async () => {
       ENV.authProvider = "google"; // requireGoogleConnection stays true from this describe's beforeEach
       mockValidGoogleClaims();
       vi.spyOn(sdk, "authenticateRequest").mockResolvedValue({ id: 55 } as any);
@@ -988,8 +988,17 @@ describe("Google OAuth /api/auth/google/callback - intent branching (login vs co
       const res = fakeResponse();
       await callback(requestWithIntent("connect"), res);
 
-      expect(res.redirect).toHaveBeenCalledWith(302, "/profile?googleConnect=error");
+      expect(res.redirect).toHaveBeenCalledWith(302, "/account/upgrade-login?googleConnect=error");
       warnSpy.mockRestore();
+    });
+
+    it("[rule 8] mandatory=true, AUTH_PROVIDER='manus' -> the whole route is 404 regardless of requireGoogleConnection (no Google flow exists there for the gate to act on)", async () => {
+      ENV.authProvider = "manus"; // requireGoogleConnection stays true from this describe's beforeEach
+      const { callback } = captureGoogleOAuthHandlers();
+      const res = fakeResponse();
+      await callback(fakeRequest({ query: { code: "x", state: "y" } }), res);
+      expect(res.statusCalls).toEqual([404]);
+      expect(res.redirect).not.toHaveBeenCalled();
     });
   });
 

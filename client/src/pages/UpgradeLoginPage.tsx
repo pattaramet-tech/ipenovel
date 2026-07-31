@@ -48,7 +48,12 @@ export default function UpgradeLoginPage() {
   // Never fires at all while anonymous - there is no Google-connection
   // status to ask about without a session, and firing it anyway would just
   // produce a confusing UNAUTHORIZED error masquerading as "not connected".
-  const googleConnectedQuery = trpc.auth.googleConnected.useQuery(undefined, {
+  // Same server-authoritative status query <MigrationGate> uses (see
+  // client/src/_core/hooks/migrationGate.ts's top-of-file docstring) - this
+  // page additionally reads `exempt` so an admin who navigates here
+  // directly (never server-forced, but nothing stops manual navigation) is
+  // sent home immediately too, same as an already-connected user.
+  const statusQuery = trpc.auth.googleConnectionCutoffStatus.useQuery(undefined, {
     enabled: isAuthenticated,
   });
 
@@ -56,9 +61,10 @@ export default function UpgradeLoginPage() {
     authLoading,
     isAuthenticated,
     connectErrorRequested,
-    googleConnectedLoading: isAuthenticated && googleConnectedQuery.isLoading,
-    googleConnectedError: isAuthenticated && googleConnectedQuery.isError,
-    googleConnected: googleConnectedQuery.data?.googleConnected,
+    googleConnectedLoading: isAuthenticated && statusQuery.isLoading,
+    googleConnectedError: isAuthenticated && statusQuery.isError,
+    googleConnected: statusQuery.data?.googleConnected,
+    exempt: statusQuery.data?.exempt,
   });
 
   // Anonymous visitor (no session at all, or it expired while this page was
@@ -140,7 +146,7 @@ export default function UpgradeLoginPage() {
             เกิดข้อผิดพลาดชั่วคราว กรุณาลองใหม่อีกครั้ง หากยังไม่สำเร็จ กรุณาติดต่อฝ่ายช่วยเหลือ
           </p>
           <div className="flex flex-col gap-3">
-            <Button size="lg" className="w-full" onClick={() => googleConnectedQuery.refetch()}>
+            <Button size="lg" className="w-full" onClick={() => statusQuery.refetch()}>
               ลองใหม่
             </Button>
             <Button variant="outline" size="lg" className="w-full" onClick={() => logout()}>

@@ -6,7 +6,7 @@ import { isAnonymousCredentialError } from "./authErrors";
 import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
 import { connectGoogleIdentityToUser, resolveGoogleIdentity } from "../services/googleIdentityService";
 import { getGoogleOAuthTransientCookieOptions, getSessionCookieOptions, readCookie } from "./cookies";
-import { ENV, isGoogleAuthActive, isGoogleConnectionMandatory } from "./env";
+import { ENV, evaluateGoogleConnectionCutoff, isGoogleAuthActive } from "./env";
 import * as googleOidc from "./googleOidc";
 import { sdk } from "./sdk";
 
@@ -71,8 +71,8 @@ export type ConnectCallbackStatus = "success" | "error" | "session_expired";
  *    control flow (never from Google's response query string, never from
  *    anything the browser sent);
  *  - `mandatoryConnectionRequired`, which the caller must derive from
- *    isGoogleConnectionMandatory() (server environment only - AUTH_PROVIDER
- *    + AUTH_REQUIRE_GOOGLE_CONNECTION).
+ *    evaluateGoogleConnectionCutoff().activeNow (server environment only -
+ *    AUTH_PROVIDER + AUTH_REQUIRE_GOOGLE_CONNECTION[_AFTER]).
  * Never reads req.query/cookies/headers itself, and never accepts a
  * caller-supplied path/returnTo/destination override of any kind - this is
  * the single source of truth for all three possible destinations:
@@ -249,7 +249,7 @@ export function registerGoogleOAuthRoutes(app: Express) {
     // gate in this codebase.
     const redirectFromConnectCallback = (status: ConnectCallbackStatus) => {
       clearGoogleOAuthCookies(req, res);
-      const destination = resolveConnectCallbackDestination(status, isGoogleConnectionMandatory());
+      const destination = resolveConnectCallbackDestination(status, evaluateGoogleConnectionCutoff().activeNow);
       res.redirect(302, destination);
     };
 

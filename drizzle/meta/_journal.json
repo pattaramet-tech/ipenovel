@@ -239,6 +239,13 @@
       "when": 1785428476790,
       "tag": "0033_add_auth_identities",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "5",
+      "when": 1785524336060,
+      "tag": "0034_add_account_recovery_workflow",
+      "breakpoints": true
     }
   ]
 }
