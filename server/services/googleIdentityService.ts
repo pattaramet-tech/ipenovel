@@ -4,11 +4,14 @@ import * as db from "../db";
 import { isDuplicateKeyError } from "../helpers/databaseErrorClassifier";
 import { normalizeProviderName } from "../_core/providerName";
 
-// Google OpenID Connect account-linking policy (AUTH_PROVIDER=google). Kept
-// as its own service, separate from server/_core/googleOAuth.ts's route
-// handlers, so the linking decision itself (identity found / link by email
-// / fail closed on ambiguity / create new) is independently testable
-// without any Express req/res or real HTTP.
+// Google OpenID Connect account-linking policy - active whenever
+// AUTH_PROVIDER is exactly "google" (full cutover) or "transition" (Manus
+// and Google active together - see server/_core/env.ts's
+// isGoogleAuthActive()). Kept as its own service, separate from
+// server/_core/googleOAuth.ts's route handlers, so the linking decision
+// itself (identity found / link by email / fail closed on ambiguity /
+// create new) is independently testable without any Express req/res or
+// real HTTP.
 //
 // Each resolution attempt runs inside ONE database transaction (see
 // resolveGoogleIdentityAttempt below) so a crash partway through can never
@@ -231,4 +234,162 @@ export async function resolveGoogleIdentity(input: GoogleIdentityInput): Promise
   // only so this function's return type is provably total to the
   // compiler without a non-null assertion.
   throw new Error("[GoogleIdentity] Exhausted resolution attempts without a result");
+}
+
+// ============================================================================
+// Explicit connect: linking a Google identity onto an ALREADY-authenticated
+// user (AUTH_PROVIDER=transition/google's "connect" flow -
+// server/_core/googleOAuth.ts's /api/auth/google/connect/start +
+// callback's intent=connect branch). Deliberately a SEPARATE function from
+// resolveGoogleIdentity above, not a shared code path with extra flags -
+// this one:
+//   - never looks up a user by email (the caller already knows exactly
+//     which user - the one from their own current, re-verified session)
+//   - never has an "ambiguous_email"/ownerless-create branch at all
+//   - NEVER creates a new user under any circumstance
+// Keeping them fully separate means a bug in one can't leak into the
+// other's very different safety requirements.
+// ============================================================================
+
+export type ConnectGoogleIdentityInput = {
+  /** From the caller's own re-verified session (server/_core/sdk.ts's authenticateRequest) - never from a query string, a cookie value, or any other client-supplied source. */
+  userId: number;
+  /** Google's `sub` claim - required, must already be a non-empty string (see server/_core/googleOidc.ts's verifyGoogleIdToken). */
+  sub: string;
+  /** Google's `email` claim - required, must already be a non-empty, `email_verified: true` value. Recorded only as authIdentities.emailAtLink's audit value - never used to search for a DIFFERENT user to link onto (unlike resolveGoogleIdentity's login flow, connect always targets `userId` and nothing else). */
+  email: string;
+  emailVerified: boolean;
+};
+
+export type ConnectGoogleIdentityResult =
+  /** Case A: this sub was unlinked and this user had no Google identity - a new authIdentities row was inserted. */
+  | { outcome: "connected" }
+  /** Case B: this exact (userId, sub) pair was already linked - idempotent, no row was written. */
+  | { outcome: "already_connected" }
+  /** Case C: this sub is already linked to a DIFFERENT user - fails closed, never reveals which user, never moves the identity, never logs anyone in, never creates a user. */
+  | { outcome: "conflict_sub_linked_to_different_user" }
+  /** Case D: this user already has a DIFFERENT Google identity linked - fails closed, never replaces/unlinks it automatically. */
+  | { outcome: "conflict_user_has_different_google_identity" };
+
+type ConnectAttemptInput = {
+  userId: number;
+  sub: string;
+  email: string;
+};
+
+/**
+ * ONE connect attempt, entirely inside its own fresh transaction - the
+ * exact same "never catch a duplicate-key error and re-read inside this
+ * same transaction" discipline as resolveGoogleIdentityAttempt above (see
+ * its docstring for why that's unsafe under REPEATABLE READ). Exported for
+ * direct testing of a single attempt's logic in isolation from the outer
+ * retry loop in connectGoogleIdentityToUser.
+ *
+ * Pre-checks (cases B/C/D) run as plain reads before ever attempting the
+ * INSERT, so the common cases return a precise, distinguishable outcome
+ * without needing to touch the database's error object at all. A
+ * duplicate-key error can still reach the INSERT itself if a concurrent
+ * writer raced between this attempt's pre-checks and its own INSERT
+ * (case F) - that error is left to propagate, exactly like
+ * resolveGoogleIdentityAttempt, so the caller's fresh-transaction retry
+ * re-runs these same pre-checks against a NEW snapshot rather than
+ * re-reading this one.
+ */
+export async function connectGoogleIdentityToUserAttempt(
+  database: any,
+  input: ConnectAttemptInput
+): Promise<ConnectGoogleIdentityResult> {
+  return await database.transaction(async (tx: any) => {
+    // Case B/C: has this exact Google sub already been linked to anyone?
+    const existingBySub = await db.getAuthIdentity("google", input.sub, tx);
+    if (existingBySub) {
+      if (existingBySub.userId === input.userId) {
+        return { outcome: "already_connected" };
+      }
+      // Never reveal which other user, never move the identity, never log
+      // in, never create a user - just report the conflict.
+      return { outcome: "conflict_sub_linked_to_different_user" };
+    }
+
+    // Case D: does this user already have a DIFFERENT Google identity?
+    // (We already know above it isn't THIS sub, or we'd have returned
+    // already_connected.)
+    const existingForUser = await db.getAuthIdentityByUserAndProvider(input.userId, "google", tx);
+    if (existingForUser) {
+      return { outcome: "conflict_user_has_different_google_identity" };
+    }
+
+    // Case A: genuinely new link. A duplicate-key error here means a
+    // concurrent writer won a race between the reads above and this
+    // insert - propagates uncaught, see this function's docstring.
+    await db.linkGoogleIdentity({ userId: input.userId, providerSubject: input.sub, email: input.email }, tx);
+    return { outcome: "connected" };
+  });
+}
+
+const MAX_CONNECT_ATTEMPTS = 2;
+
+/**
+ * Explicitly links a verified Google identity onto an ALREADY-AUTHENTICATED
+ * user - the "connect existing account to Google" flow, as opposed to
+ * resolveGoogleIdentity's "log in with Google" flow above. Every input
+ * must already come from the server's own trusted sources (see
+ * ConnectGoogleIdentityInput's field docs) - this function does not
+ * re-verify the session or the ID token itself, that is the caller's job
+ * (server/_core/googleOAuth.ts's callback, intent=connect branch).
+ *
+ * Never creates a user. Never changes users.id or users.openId - the only
+ * write this function (or its attempt helper) ever makes is a single
+ * INSERT into authIdentities, or no write at all (idempotent/conflict
+ * cases). Fails closed on every conflict (cases C/D) and on unverified
+ * email (case E) - returns a specific outcome for the former, throws for
+ * the latter (matching resolveGoogleIdentity's validation style).
+ *
+ * Concurrent connect attempts (case F - e.g. a double click, two tabs)
+ * are handled by retrying the WHOLE attempt (never a same-transaction
+ * re-read) on a brand-new transaction/snapshot, at most once
+ * (MAX_CONNECT_ATTEMPTS = 2 total). A duplicate key still hit on the
+ * second, fresh-snapshot attempt is a persistent condition, not a
+ * transient race, and fails closed by throwing - never a successful
+ * outcome, never a duplicate row.
+ */
+export async function connectGoogleIdentityToUser(
+  database: any,
+  input: ConnectGoogleIdentityInput
+): Promise<ConnectGoogleIdentityResult> {
+  if (!Number.isInteger(input.userId) || input.userId <= 0) {
+    throw new Error("[GoogleIdentity] A valid, authenticated userId is required to connect a Google identity");
+  }
+  if (!input.sub || input.sub.trim().length === 0) {
+    throw new Error("[GoogleIdentity] Google sub claim is required to connect an identity");
+  }
+  if (!input.emailVerified) {
+    throw new Error("[GoogleIdentity] Google email is not verified - refusing to connect this identity");
+  }
+  const trimmedEmail = input.email.trim();
+  if (!trimmedEmail) {
+    throw new Error("[GoogleIdentity] Google email claim is required to connect an identity");
+  }
+
+  await db.assertDatabaseAvailable();
+  const attemptInput: ConnectAttemptInput = { userId: input.userId, sub: input.sub, email: trimmedEmail };
+
+  for (let attempt = 1; attempt <= MAX_CONNECT_ATTEMPTS; attempt++) {
+    try {
+      return await connectGoogleIdentityToUserAttempt(database, attemptInput);
+    } catch (error) {
+      if (!isDuplicateKeyError(error)) throw error;
+      if (attempt >= MAX_CONNECT_ATTEMPTS) {
+        // Fail closed - see this function's docstring. Never a successful
+        // outcome, never mints anything, never creates a duplicate row
+        // (the failing INSERT's own transaction was rolled back).
+        throw error;
+      }
+      // Fall through and retry on a brand-new transaction - attempt 1's
+      // transaction has already been rolled back by database.transaction()
+      // itself before this catch block ever runs.
+    }
+  }
+
+  throw new Error("[GoogleIdentity] Exhausted connect attempts without a result");
 }

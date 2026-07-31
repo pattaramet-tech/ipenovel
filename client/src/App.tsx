@@ -9,6 +9,8 @@ import OrderDetailPage from "./pages/OrderDetailPage";
 import MyNovelsPage from "@/pages/MyNovelsPage";
 import MyLibraryPage from "@/pages/MyLibraryPage";
 import ProfilePage from "@/pages/ProfilePage";
+import LoginPage from "@/pages/LoginPage";
+import UpgradeLoginPage from "@/pages/UpgradeLoginPage";
 import AdminDashboard from "@/pages/AdminDashboard";
 import AdminBannersPage from "@/pages/AdminBannersPage";
 import AdminCouponsPage from "@/pages/AdminCouponsPage";
@@ -43,11 +45,13 @@ import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Navbar from "./components/Navbar";
+import MigrationGate from "./components/MigrationGate";
 
 function Router() {
   return (
     <>
       <Navbar />
+      <MigrationGate>
       <Switch>
         <Route path={"/"} component={Home} />
         <Route path={"/novels"} component={NovelsPage} />
@@ -59,6 +63,8 @@ function Router() {
         <Route path={"/my-novels"} component={MyNovelsPage} />
         <Route path={"/my-library"} component={MyLibraryPage} />
         <Route path={"/profile"} component={ProfilePage} />
+        <Route path={"/login"} component={LoginPage} />
+        <Route path={"/account/upgrade-login"} component={UpgradeLoginPage} />
         <Route path={"/points"} component={PointsPage} />
         <Route path={"/wallet"} component={WalletPage} />
         <Route path={"/payment/:orderId"} component={PaymentPage} />
@@ -92,6 +98,7 @@ function Router() {
         {/* Final fallback route */}
         <Route component={NotFound} />
       </Switch>
+      </MigrationGate>
     </>
   );
 }

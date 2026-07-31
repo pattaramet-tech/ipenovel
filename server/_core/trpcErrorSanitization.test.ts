@@ -213,6 +213,30 @@ describe("SERVICE_UNAVAILABLE is allowlisted, INTERNAL_SERVER_ERROR is deliberat
   });
 });
 
+describe("authGateCode - lets the client distinguish the mandatory Google-migration gate from any other FORBIDDEN", () => {
+  it("a FORBIDDEN error with cause.code GOOGLE_CONNECTION_REQUIRED exposes it as data.authGateCode", () => {
+    const message = "กรุณาเชื่อมบัญชี Google กับบัญชีเดิมของคุณก่อนใช้งานส่วนนี้";
+    const error: any = { code: "FORBIDDEN", cause: { code: "GOOGLE_CONNECTION_REQUIRED" } };
+    const result = sanitizeTrpcErrorShape(shapeFor(message), error);
+
+    expect(result.data.authGateCode).toBe("GOOGLE_CONNECTION_REQUIRED");
+    expect(result.message).toBe(message);
+  });
+
+  it("an ordinary FORBIDDEN (e.g. NOT_ADMIN_ERR_MSG, no cause at all) never gets an authGateCode", () => {
+    const message = "Admin access required";
+    const result = sanitizeTrpcErrorShape(shapeFor(message), { code: "FORBIDDEN" });
+
+    expect(result.data.authGateCode).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain("authGateCode");
+  });
+
+  it("a FORBIDDEN with an unrelated cause.code never gets an authGateCode either (only the exact literal is allowlisted)", () => {
+    const result = sanitizeTrpcErrorShape(shapeFor("x"), { code: "FORBIDDEN", cause: { code: "SOMETHING_ELSE" } } as any);
+    expect(result.data.authGateCode).toBeUndefined();
+  });
+});
+
 describe("regression: payment.uploadSlipFile's customer-facing message must survive tRPC sanitization", () => {
   // Reproduces the exact defect: uploadPaymentSlipFile (slipFileUploadService.ts)
   // threw TRPCError({ code: "SERVICE_UNAVAILABLE" | "INTERNAL_SERVER_ERROR", message: <Thai> }),

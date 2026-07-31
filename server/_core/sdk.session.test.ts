@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SignJWT, decodeJwt } from "jose";
 import { SESSION_JWT_ISSUER, SESSION_TTL_SECONDS } from "@shared/const";
 import { ENV } from "./env";
-import { sdk } from "./sdk";
+import { isSessionIssuedBeforeCutoff, sdk } from "./sdk";
 
 // jose requires an HS256 key of a reasonable length - anything works for a
 // test as long as sign and verify use the exact same value.
@@ -253,5 +253,42 @@ describe("session JWT signing and verification", () => {
       expect(warnSpy).not.toHaveBeenCalled();
       expect(errorSpy).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("isSessionIssuedBeforeCutoff - pure, plain-number tests (no JWT/fake timers needed)", () => {
+  it("cutoff is null -> always false, regardless of iat/now", () => {
+    expect(isSessionIssuedBeforeCutoff(100, null, 200)).toBe(false);
+    expect(isSessionIssuedBeforeCutoff(100, null, 50)).toBe(false);
+  });
+
+  it("cutoff is in the future relative to now (now < cutoff) -> false, EVEN IF iat is before the cutoff - a future cutoff is a scheduled activation, not immediate", () => {
+    expect(isSessionIssuedBeforeCutoff(/* iat */ 100, /* cutoff */ 1000, /* now */ 500)).toBe(false);
+  });
+
+  it("now has reached the cutoff (now >= cutoff) and iat < cutoff -> true", () => {
+    expect(isSessionIssuedBeforeCutoff(/* iat */ 100, /* cutoff */ 1000, /* now */ 1000)).toBe(true);
+    expect(isSessionIssuedBeforeCutoff(/* iat */ 100, /* cutoff */ 1000, /* now */ 5000)).toBe(true);
+  });
+
+  it("iat === cutoff exactly -> false (the boundary is inclusive on the safe/valid side)", () => {
+    expect(isSessionIssuedBeforeCutoff(/* iat */ 1000, /* cutoff */ 1000, /* now */ 1000)).toBe(false);
+  });
+
+  it("iat > cutoff (issued after the cutoff) -> false, regardless of now", () => {
+    expect(isSessionIssuedBeforeCutoff(/* iat */ 2000, /* cutoff */ 1000, /* now */ 5000)).toBe(false);
+  });
+
+  it("now === cutoff exactly -> the cutoff counts as active (matches the authenticateRequest boundary test using a real cutoff-instant session)", () => {
+    expect(isSessionIssuedBeforeCutoff(/* iat */ 100, /* cutoff */ 1000, /* now */ 1000)).toBe(true);
+  });
+
+  it("defaults `now` to the real server clock (Date.now()) when omitted - never undefined/NaN behavior", () => {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    // A cutoff far in the past relative to the real current time, with an
+    // iat also far in the past but before the cutoff - proves the default
+    // parameter actually evaluates to a real, current epoch-seconds value.
+    expect(isSessionIssuedBeforeCutoff(nowSeconds - 10_000, nowSeconds - 5_000)).toBe(true);
+    expect(isSessionIssuedBeforeCutoff(nowSeconds - 1_000, nowSeconds + 10_000)).toBe(false);
   });
 });

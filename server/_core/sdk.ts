@@ -32,7 +32,48 @@ export type VerifiedSession = {
   openId: string;
   appId: string;
   name: string | null;
+  // Epoch seconds from the JWT's own `iat` claim (always present - every
+  // token this codebase issues is signed via signSession's .setIssuedAt()).
+  // Used by isSessionIssuedBeforeCutoff/authenticateRequest to enforce
+  // AUTH_FORCE_RELOGIN_AFTER - never trusted from anywhere except this
+  // already-signature-verified claim.
+  issuedAtSeconds: number;
 };
+
+/**
+ * Pure decision: should this session be rejected right now because it was
+ * issued before the AUTH_FORCE_RELOGIN_AFTER cutoff?
+ *
+ * A cutoff in the FUTURE is a scheduled activation, not an immediate one -
+ * it must never reject anything until the clock actually reaches it. An
+ * earlier version of this function compared `issuedAtSeconds < cutoffSeconds`
+ * with no reference to the current time at all, which meant setting a
+ * future cutoff (the natural way to schedule a re-login requirement ahead
+ * of time, e.g. "at midnight UTC tomorrow") rejected every session
+ * IMMEDIATELY, including a brand-new session minted seconds ago by a user
+ * who had just re-logged-in to satisfy it - a login loop with no way out
+ * before the cutoff itself arrived. Semantics now:
+ *
+ *  - cutoffSeconds === null                        -> false (disabled)
+ *  - nowSeconds < cutoffSeconds                     -> false (not yet active - scheduled, not enforced)
+ *  - nowSeconds >= cutoffSeconds && issuedAtSeconds < cutoffSeconds -> true (active, and this session predates it)
+ *  - issuedAtSeconds >= cutoffSeconds               -> false (issued at/after the cutoff - always fine, even before nowSeconds reaches it, since a session can never be issued in the future)
+ *
+ * `nowSeconds` is an explicit parameter (defaulting to the server's own
+ * `Date.now()`, NEVER any client-supplied value) specifically so this stays
+ * directly testable with plain numbers - no fake timers, no JWT signing, no
+ * module reload required. authenticateRequest never passes its own
+ * override - it always uses the real server clock via the default.
+ */
+export function isSessionIssuedBeforeCutoff(
+  issuedAtSeconds: number,
+  cutoffSeconds: number | null,
+  nowSeconds: number = Math.floor(Date.now() / 1000)
+): boolean {
+  if (cutoffSeconds === null) return false;
+  if (nowSeconds < cutoffSeconds) return false;
+  return issuedAtSeconds < cutoffSeconds;
+}
 
 const EXCHANGE_TOKEN_PATH = `/webdev.v1.WebDevAuthPublicService/ExchangeToken`;
 const GET_USER_INFO_PATH = `/webdev.v1.WebDevAuthPublicService/GetUserInfo`;
@@ -263,9 +304,15 @@ class SDKServer {
         issuer: SESSION_JWT_ISSUER,
         audience: expectedAppId,
       });
-      const { openId, appId, name } = payload as Record<string, unknown>;
+      const { openId, appId, name, iat } = payload as Record<string, unknown>;
 
-      if (!isNonEmptyString(openId) || !isNonEmptyString(appId) || appId !== expectedAppId) {
+      if (
+        !isNonEmptyString(openId) ||
+        !isNonEmptyString(appId) ||
+        appId !== expectedAppId ||
+        typeof iat !== "number" ||
+        !Number.isFinite(iat)
+      ) {
         // No log here (deliberately): once this PR ships, EVERY session
         // token issued beforehand fails this exact check (old tokens carry
         // no iss/aud/matching-appId at all) - every browser with an old
@@ -273,7 +320,11 @@ class SDKServer {
         // signs in again. This is an expected, high-volume rejection, not
         // a security event worth logging. See authenticateRequest, which
         // reports this case to createContext as "invalid_session_token" so
-        // the stale cookie gets cleared instead.
+        // the stale cookie gets cleared instead. A missing/non-numeric
+        // `iat` is treated exactly the same way - jose's own jwtVerify
+        // always includes a real one from .setIssuedAt() for every token
+        // this codebase has ever signed, so a token missing one is
+        // exactly as structurally suspect as a missing openId/appId.
         return null;
       }
 
@@ -281,6 +332,7 @@ class SDKServer {
         openId,
         appId,
         name: typeof name === "string" && name.length > 0 ? name : null,
+        issuedAtSeconds: iat,
       };
     } catch {
       // Malformed JWT, bad signature, expired, wrong issuer/audience, or an
@@ -363,6 +415,28 @@ class SDKServer {
       // cleared: this is a validly-signed token, not a structurally
       // invalid one - see authErrors.ts.
       throw new AnonymousCredentialError("Admin session no longer valid", "admin_session_invalid");
+    }
+
+    // AUTH_FORCE_RELOGIN_AFTER - only ever applies to a regular (non-admin)
+    // user session, which is exactly why this check sits AFTER the
+    // admin-openId branch above (which already returned or threw): a local
+    // admin session can never reach this line. When
+    // ENV.forceReloginAfterSeconds is null (unset/invalid), this always
+    // resolves to false - see isSessionIssuedBeforeCutoff/
+    // resolveForceReloginCutoffSeconds. A cutoff set in the FUTURE is a
+    // SCHEDULED activation - it stays completely inert (every session keeps
+    // working, including a brand-new one minted seconds ago) until the
+    // server's own clock actually reaches it; only once "now" has reached
+    // the cutoff does a session issued before it start getting rejected.
+    // Deliberately does not pass a `now` override here - always the real
+    // server clock (isSessionIssuedBeforeCutoff's own default), never
+    // anything client-supplied. Never logs the JWT or the session cookie
+    // value - the thrown message is a fixed, constant string.
+    if (isSessionIssuedBeforeCutoff(session.issuedAtSeconds, ENV.forceReloginAfterSeconds)) {
+      throw new AnonymousCredentialError(
+        "Session predates the forced re-login cutoff",
+        "forced_relogin"
+      );
     }
 
     const sessionUserId = session.openId;

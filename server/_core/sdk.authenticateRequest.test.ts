@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Request } from "express";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { COOKIE_NAME } from "@shared/const";
 import * as db from "../db";
 import { AnonymousCredentialError } from "./authErrors";
@@ -294,6 +297,138 @@ describe("sdk.authenticateRequest", () => {
 
       expect(getUserInfoWithJwtSpy).toHaveBeenCalledTimes(1);
       expect(upsertSpy).toHaveBeenCalled();
+    });
+  });
+
+  describe("AUTH_FORCE_RELOGIN_AFTER", () => {
+    const originalCutoff = ENV.forceReloginAfterSeconds;
+
+    afterEach(() => {
+      ENV.forceReloginAfterSeconds = originalCutoff;
+      vi.useRealTimers();
+    });
+
+    it("[required test 6] no cutoff configured (null) -> an old session still authenticates normally", async () => {
+      ENV.forceReloginAfterSeconds = null;
+      const user = fakeUser();
+      vi.spyOn(db, "getUserByOpenId").mockResolvedValue(user);
+      vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
+
+      const token = await sdk.createSessionToken("user-123", {});
+      const result = await sdk.authenticateRequest(requestWithCookie(token));
+
+      expect(result).toBe(user);
+    });
+
+    it("[required test 1] cutoff set in the FUTURE -> a session issued right now still authenticates normally (scheduled activation, not immediate - no login loop)", async () => {
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      ENV.forceReloginAfterSeconds = nowSeconds + 3600;
+      const user = fakeUser();
+      vi.spyOn(db, "getUserByOpenId").mockResolvedValue(user);
+      vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
+
+      const token = await sdk.createSessionToken("user-123", {});
+      const result = await sdk.authenticateRequest(requestWithCookie(token));
+
+      expect(result).toBe(user);
+    });
+
+    it("[required test 2] once the server clock reaches the cutoff, a session issued BEFORE it is rejected (forced_relogin), never logs the JWT/cookie value, no console call at all", async () => {
+      vi.useFakeTimers();
+      const t0 = new Date("2026-01-01T00:00:00Z");
+      vi.setSystemTime(t0);
+      const token = await sdk.createSessionToken("user-123", {}); // iat = t0
+
+      const cutoff = new Date(t0.getTime() + 60_000); // 1 minute after t0
+      ENV.forceReloginAfterSeconds = Math.floor(cutoff.getTime() / 1000);
+      // Advance the server's own clock to exactly the cutoff.
+      vi.setSystemTime(cutoff);
+
+      const logSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(token)));
+      expect(error).toBeInstanceOf(AnonymousCredentialError);
+      expect((error as AnonymousCredentialError).reason).toBe("forced_relogin");
+      expect((error as Error).message).not.toContain(token);
+      expect(logSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it("[required test 3] a session issued AFTER an already-active cutoff authenticates normally", async () => {
+      vi.useFakeTimers();
+      const cutoff = new Date("2026-01-01T00:00:00Z");
+      ENV.forceReloginAfterSeconds = Math.floor(cutoff.getTime() / 1000);
+
+      vi.setSystemTime(new Date(cutoff.getTime() + 60_000)); // mint AFTER the cutoff
+      const token = await sdk.createSessionToken("user-123", {});
+      const user = fakeUser();
+      vi.spyOn(db, "getUserByOpenId").mockResolvedValue(user);
+      vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
+
+      const result = await sdk.authenticateRequest(requestWithCookie(token));
+      expect(result).toBe(user);
+    });
+
+    it("[required test 4] a session issued EXACTLY at the cutoff (iat === cutoffSeconds) authenticates normally - the boundary is inclusive on the safe side", async () => {
+      vi.useFakeTimers();
+      const cutoff = new Date("2026-01-01T00:00:00Z");
+      vi.setSystemTime(cutoff);
+      const token = await sdk.createSessionToken("user-123", {}); // iat === cutoffSeconds exactly
+      ENV.forceReloginAfterSeconds = Math.floor(cutoff.getTime() / 1000);
+      const user = fakeUser();
+      vi.spyOn(db, "getUserByOpenId").mockResolvedValue(user);
+      vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
+
+      const result = await sdk.authenticateRequest(requestWithCookie(token));
+      expect(result).toBe(user);
+    });
+
+    it("[required test 5] a LOCAL ADMIN session issued before an already-ACTIVE cutoff (one that WOULD reject a regular user) is never rejected for forced_relogin - the admin-openId branch returns/throws before the cutoff check is ever reached", async () => {
+      vi.useFakeTimers();
+      const t0 = new Date("2026-01-01T00:00:00Z");
+      vi.setSystemTime(t0);
+      const adminUser = fakeUser({ id: 7, openId: "admin-7", role: "admin" });
+      vi.spyOn(db, "getUserById").mockResolvedValue(adminUser);
+      const token = await sdk.createSessionToken("admin-7", {}); // iat = t0
+
+      const cutoff = new Date(t0.getTime() + 60_000);
+      ENV.forceReloginAfterSeconds = Math.floor(cutoff.getTime() / 1000);
+      vi.setSystemTime(new Date(cutoff.getTime() + 1000)); // now is past the cutoff - genuinely active
+
+      const result = await sdk.authenticateRequest(requestWithCookie(token));
+      expect(result).toBe(adminUser);
+    });
+
+    it("[required test 7] the only call site (authenticateRequest) never passes a third 'now' argument - the real server clock (the function's own default) is the only source, never anything client-supplied", () => {
+      const source = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "sdk.ts"), "utf8");
+      // Anchored specifically to the CALL site (inside authenticateRequest,
+      // using the real session/ENV values) - never the function's own
+      // declaration line, which also contains the substring
+      // "isSessionIssuedBeforeCutoff(" followed by its parameter list
+      // (including a nested `Date.now()` call that would confuse a naive
+      // "up to the next close-paren" match).
+      const callSiteMatch = source.match(/isSessionIssuedBeforeCutoff\(session\.issuedAtSeconds,\s*ENV\.forceReloginAfterSeconds\)/);
+      expect(callSiteMatch).toBeTruthy();
+
+      // And there is exactly ONE call site total (the declaration doesn't
+      // count as a call) - so this is provably the only place the function
+      // is ever invoked in this file.
+      const allCallSites = [...source.matchAll(/(?<!function )isSessionIssuedBeforeCutoff\(/g)];
+      expect(allCallSites.length).toBe(1);
+    });
+
+    it("does not touch JWT_SECRET/session signing at all - a session issued after the flag is later disabled again still just works", async () => {
+      const originalSecret = ENV.cookieSecret;
+      const token = await sdk.createSessionToken("user-123", {});
+      ENV.forceReloginAfterSeconds = Math.floor(Date.now() / 1000) - 3600;
+      const user = fakeUser();
+      vi.spyOn(db, "getUserByOpenId").mockResolvedValue(user);
+      vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
+
+      await sdk.authenticateRequest(requestWithCookie(token));
+
+      expect(ENV.cookieSecret).toBe(originalSecret);
     });
   });
 });

@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as db from "../db";
-import { resolveGoogleIdentity, resolveGoogleIdentityAttempt } from "./googleIdentityService";
+import {
+  connectGoogleIdentityToUser,
+  connectGoogleIdentityToUserAttempt,
+  resolveGoogleIdentity,
+  resolveGoogleIdentityAttempt,
+} from "./googleIdentityService";
 
 vi.mock("../db", async () => {
   const actual = await vi.importActual<typeof db>("../db");
@@ -520,5 +525,249 @@ describe("resolveGoogleIdentity - name preservation", () => {
     await resolveGoogleIdentity({ ...GOOGLE_INPUT, name: "New Name From Google" });
 
     expect(updateCallsFor(txObjects[0])[0].set).toHaveProperty("name", "New Name From Google");
+  });
+});
+
+// ============================================================================
+// connectGoogleIdentityToUser / connectGoogleIdentityToUserAttempt - the
+// "connect Google to an already-signed-in existing account" flow (cases
+// A-F from the task spec). Uses the SAME fakeDbWithFreshTransactions/
+// duplicateKeyError helpers as resolveGoogleIdentity's tests above, since
+// this function follows the identical fresh-transaction-per-attempt retry
+// discipline.
+// ============================================================================
+
+const CONNECT_INPUT = {
+  userId: 55,
+  sub: "google-sub-connect-1",
+  email: "connect-user@example.com",
+  emailVerified: true,
+};
+
+describe("connectGoogleIdentityToUser - input validation", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("[case E] emailVerified=false -> throws, never touches the database at all", async () => {
+    const assertSpy = vi.spyOn(db, "assertDatabaseAvailable");
+    await expect(connectGoogleIdentityToUser({} as any, { ...CONNECT_INPUT, emailVerified: false })).rejects.toThrow(/verif/i);
+    expect(assertSpy).not.toHaveBeenCalled();
+  });
+
+  it("invalid userId (0, negative, non-integer) -> throws before touching the database", async () => {
+    const assertSpy = vi.spyOn(db, "assertDatabaseAvailable");
+    for (const badUserId of [0, -1, 1.5, Number.NaN]) {
+      await expect(connectGoogleIdentityToUser({} as any, { ...CONNECT_INPUT, userId: badUserId })).rejects.toThrow(/userId/i);
+    }
+    expect(assertSpy).not.toHaveBeenCalled();
+  });
+
+  it("empty sub -> throws before touching the database", async () => {
+    const assertSpy = vi.spyOn(db, "assertDatabaseAvailable");
+    await expect(connectGoogleIdentityToUser({} as any, { ...CONNECT_INPUT, sub: "" })).rejects.toThrow(/sub/i);
+    expect(assertSpy).not.toHaveBeenCalled();
+  });
+
+  it("empty email -> throws before touching the database", async () => {
+    const assertSpy = vi.spyOn(db, "assertDatabaseAvailable");
+    await expect(connectGoogleIdentityToUser({} as any, { ...CONNECT_INPUT, email: "   " })).rejects.toThrow(/email/i);
+    expect(assertSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("connectGoogleIdentityToUser - case A: fresh connect", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("sub not linked to anyone, user has no Google identity -> inserts authIdentities, outcome 'connected', exactly one transaction attempt", async () => {
+    const { fakeDb, txObjects } = fakeDbWithFreshTransactions();
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getAuthIdentity").mockResolvedValue(undefined);
+    vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue(undefined);
+    const linkSpy = vi.spyOn(db, "linkGoogleIdentity").mockResolvedValue(undefined);
+
+    const result = await connectGoogleIdentityToUser(fakeDb, CONNECT_INPUT);
+
+    expect(result).toEqual({ outcome: "connected" });
+    expect(linkSpy).toHaveBeenCalledWith(
+      { userId: CONNECT_INPUT.userId, providerSubject: CONNECT_INPUT.sub, email: CONNECT_INPUT.email },
+      txObjects[0]
+    );
+    expect(txObjects.length).toBe(1);
+  });
+
+  it("never calls createGoogleUserWithIdentity (or anything else that could create a user) for the connect flow", async () => {
+    const { fakeDb } = fakeDbWithFreshTransactions();
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getAuthIdentity").mockResolvedValue(undefined);
+    vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue(undefined);
+    vi.spyOn(db, "linkGoogleIdentity").mockResolvedValue(undefined);
+    const createSpy = vi.spyOn(db, "createGoogleUserWithIdentity");
+
+    await connectGoogleIdentityToUser(fakeDb, CONNECT_INPUT);
+
+    expect(createSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("connectGoogleIdentityToUser - case B: idempotent re-connect", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("sub already linked to the SAME user -> outcome 'already_connected', never inserts a duplicate row", async () => {
+    const { fakeDb } = fakeDbWithFreshTransactions();
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getAuthIdentity").mockResolvedValue({
+      id: 1,
+      userId: CONNECT_INPUT.userId,
+      provider: "google",
+      providerSubject: CONNECT_INPUT.sub,
+    } as any);
+    const linkSpy = vi.spyOn(db, "linkGoogleIdentity");
+
+    const result = await connectGoogleIdentityToUser(fakeDb, CONNECT_INPUT);
+
+    expect(result).toEqual({ outcome: "already_connected" });
+    expect(linkSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("connectGoogleIdentityToUser - case C: sub belongs to a different user", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("sub already linked to a DIFFERENT user -> outcome 'conflict_sub_linked_to_different_user', never moves the identity, never logs anyone in, never creates a user", async () => {
+    const { fakeDb } = fakeDbWithFreshTransactions();
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getAuthIdentity").mockResolvedValue({
+      id: 1,
+      userId: 999,
+      provider: "google",
+      providerSubject: CONNECT_INPUT.sub,
+    } as any);
+    const linkSpy = vi.spyOn(db, "linkGoogleIdentity");
+    const createSpy = vi.spyOn(db, "createGoogleUserWithIdentity");
+
+    const result = await connectGoogleIdentityToUser(fakeDb, CONNECT_INPUT);
+
+    expect(result).toEqual({ outcome: "conflict_sub_linked_to_different_user" });
+    expect(linkSpy).not.toHaveBeenCalled();
+    expect(createSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("connectGoogleIdentityToUser - case D: current user already has a different Google identity", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("current user already has a DIFFERENT google identity linked -> outcome 'conflict_user_has_different_google_identity', never replaces or auto-unlinks it", async () => {
+    const { fakeDb } = fakeDbWithFreshTransactions();
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getAuthIdentity").mockResolvedValue(undefined);
+    vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue({
+      id: 2,
+      userId: CONNECT_INPUT.userId,
+      provider: "google",
+      providerSubject: "a-different-sub-already-linked",
+    } as any);
+    const linkSpy = vi.spyOn(db, "linkGoogleIdentity");
+
+    const result = await connectGoogleIdentityToUser(fakeDb, CONNECT_INPUT);
+
+    expect(result).toEqual({ outcome: "conflict_user_has_different_google_identity" });
+    expect(linkSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("connectGoogleIdentityToUserAttempt - single attempt never catches a duplicate key itself", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("a duplicate-key error from linkGoogleIdentity propagates OUT of connectGoogleIdentityToUserAttempt rather than being caught and re-read in the same transaction", async () => {
+    const { fakeDb, txObjects } = fakeDbWithFreshTransactions();
+    vi.spyOn(db, "getAuthIdentity").mockResolvedValue(undefined);
+    vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue(undefined);
+    const linkSpy = vi.spyOn(db, "linkGoogleIdentity").mockRejectedValue(duplicateKeyError());
+
+    await expect(
+      connectGoogleIdentityToUserAttempt(fakeDb, {
+        userId: CONNECT_INPUT.userId,
+        sub: CONNECT_INPUT.sub,
+        email: CONNECT_INPUT.email,
+      })
+    ).rejects.toThrow(/duplicate/i);
+
+    expect(linkSpy).toHaveBeenCalledTimes(1);
+    expect(txObjects.length).toBe(1);
+  });
+});
+
+describe("connectGoogleIdentityToUser - case F: concurrent connect retry (fresh-transaction-per-attempt, no same-snapshot re-read)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("a duplicate key on attempt 1's INSERT (a concurrent writer won the race) -> attempt 2 runs on a brand-new transaction whose fresh read now sees the row, and returns 'already_connected'", async () => {
+    const { fakeDb, txObjects } = fakeDbWithFreshTransactions();
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue(undefined);
+    const linkSpy = vi.spyOn(db, "linkGoogleIdentity").mockRejectedValueOnce(duplicateKeyError());
+    vi.spyOn(db, "getAuthIdentity")
+      .mockResolvedValueOnce(undefined) // attempt 1: not linked yet
+      .mockResolvedValueOnce({ id: 3, userId: CONNECT_INPUT.userId, provider: "google", providerSubject: CONNECT_INPUT.sub } as any); // attempt 2: fresh snapshot sees the concurrent winner's row
+
+    const result = await connectGoogleIdentityToUser(fakeDb, CONNECT_INPUT);
+
+    expect(result).toEqual({ outcome: "already_connected" });
+    expect(txObjects.length).toBe(2);
+    expect(txObjects[0]).not.toBe(txObjects[1]);
+    expect(linkSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("never retries more than once - a duplicate key on attempt 2 as well fails closed (throws), no successful outcome, no duplicate row", async () => {
+    const { fakeDb, txObjects } = fakeDbWithFreshTransactions();
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getAuthIdentity").mockResolvedValue(undefined);
+    vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue(undefined);
+    const linkSpy = vi.spyOn(db, "linkGoogleIdentity").mockRejectedValue(duplicateKeyError());
+
+    await expect(connectGoogleIdentityToUser(fakeDb, CONNECT_INPUT)).rejects.toThrow(/duplicate/i);
+    expect(txObjects.length).toBe(2);
+    expect(linkSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("a non-duplicate-key error is never retried - propagates immediately after exactly one attempt", async () => {
+    const { fakeDb, txObjects } = fakeDbWithFreshTransactions();
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getAuthIdentity").mockResolvedValue(undefined);
+    vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue(undefined);
+    vi.spyOn(db, "linkGoogleIdentity").mockRejectedValue(new Error("connection reset"));
+
+    await expect(connectGoogleIdentityToUser(fakeDb, CONNECT_INPUT)).rejects.toThrow(/connection reset/);
+    expect(txObjects.length).toBe(1);
+  });
+});
+
+describe("connectGoogleIdentityToUser - never mutates users.id/users.openId, never creates a user", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("successful connect performs no update on the users table at all - the only write is the authIdentities INSERT via linkGoogleIdentity", async () => {
+    const { fakeDb, updateCallsFor, txObjects } = fakeDbWithFreshTransactions();
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getAuthIdentity").mockResolvedValue(undefined);
+    vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue(undefined);
+    vi.spyOn(db, "linkGoogleIdentity").mockResolvedValue(undefined);
+
+    await connectGoogleIdentityToUser(fakeDb, CONNECT_INPUT);
+
+    expect(updateCallsFor(txObjects[0])).toEqual([]);
   });
 });

@@ -30,12 +30,22 @@
  *    credential whose backing account state changed; clearing it isn't
  *    required to stop any log-flooding or retry loop, and is out of this
  *    fix's scope.
+ *  - "forced_relogin": the token verified fine (real signature, correct
+ *    issuer/audience/appId) but was issued (JWT `iat`) before
+ *    AUTH_FORCE_RELOGIN_AFTER's cutoff - see server/_core/sdk.ts's
+ *    isSessionIssuedBeforeCutoff. Unlike "no_user_record"/
+ *    "admin_session_invalid", this IS cleared (same as
+ *    "invalid_session_token") - the whole point is to force the browser to
+ *    go through a fresh login rather than keep silently resending a session
+ *    that will never become valid again post-cutoff. Never applies to a
+ *    local admin session (openId "admin-*") - see authenticateRequest.
  */
 export type AnonymousCredentialReason =
   | "no_cookie"
   | "invalid_session_token"
   | "no_user_record"
-  | "admin_session_invalid";
+  | "admin_session_invalid"
+  | "forced_relogin";
 
 export class AnonymousCredentialError extends Error {
   readonly reason: AnonymousCredentialReason;

@@ -52,12 +52,16 @@ export type InsertUser = typeof users.$inferInsert;
  * claim) to an existing ipenovel `users.id`, without ever changing that
  * user's `id` or `openId`. Added for the Google OpenID Connect
  * direct-login feature flag (VITE_AUTH_PROVIDER=google /
- * AUTH_PROVIDER=google) - see server/services/googleIdentityService.ts for
- * the account-linking policy this table backs: an existing authIdentities
- * row is used as-is; if none exists but exactly one users.email matches
- * (case-insensitive, trimmed) the provider's verified email, that account
- * is linked; more than one match fails closed (never auto-links, never
- * picks the first row); no match creates a new user.
+ * AUTH_PROVIDER=google), later extended to also back "transition" mode
+ * (both Manus and Google active together, including explicitly connecting
+ * a Google identity onto an existing Manus-created account - see
+ * server/_core/env.ts's isGoogleAuthActive()) - see
+ * server/services/googleIdentityService.ts for the account-linking policy
+ * this table backs: an existing authIdentities row is used as-is; if none
+ * exists but exactly one users.email matches (case-insensitive, trimmed)
+ * the provider's verified email, that account is linked; more than one
+ * match fails closed (never auto-links, never picks the first row); no
+ * match creates a new user.
  *
  * Unlike every other relationship in this schema (see e.g.
  * couponUsages.orderId, purchases.userId, which are plain unenforced int

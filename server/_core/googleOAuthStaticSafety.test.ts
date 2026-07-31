@@ -45,7 +45,11 @@ describe("error_description is never read, logged, or forwarded anywhere in the 
     const errorBranchStart = source.indexOf('const providerError = getQueryParam(req, "error");');
     const errorBranchEnd = source.indexOf("const code = getQueryParam", errorBranchStart);
     const errorBranch = source.slice(errorBranchStart, errorBranchEnd);
-    expect(errorBranch).toMatch(/fail\(400, "Google sign-in was not completed"\)/);
+    // intent=connect never gets a JSON response at all (it redirects to the
+    // account page instead - see the intent-branching tests in
+    // googleOAuth.test.ts) - only the intent=login/default path uses this
+    // fixed string via failLogin.
+    expect(errorBranch).toMatch(/failLogin\(400, "Google sign-in was not completed"\)/);
   });
 });
 
@@ -73,10 +77,17 @@ describe("GOOGLE_OAUTH_REDIRECT_URI is read verbatim from the environment, never
 });
 
 describe("Google client secret is never exposed to the browser", () => {
-  it("GOOGLE_OAUTH_CLIENT_SECRET is never read via import.meta.env or given a VITE_ prefix anywhere in client/ or shared/", () => {
-    const clientConst = readSource("client/src/const.ts");
-    expect(clientConst).not.toMatch(/GOOGLE_OAUTH_CLIENT_SECRET/);
-    expect(clientConst).not.toMatch(/VITE_GOOGLE/i);
+  it("GOOGLE_OAUTH_CLIENT_SECRET is never read via import.meta.env or given a VITE_ prefix anywhere in client/ or shared/, including the new transition-mode files (LoginPage.tsx, ProfilePage.tsx, profileGoogleConnectStatus.ts, const.ts)", () => {
+    for (const file of [
+      "client/src/const.ts",
+      "client/src/pages/LoginPage.tsx",
+      "client/src/pages/ProfilePage.tsx",
+      "client/src/pages/profileGoogleConnectStatus.ts",
+    ]) {
+      const content = readSource(file);
+      expect(content).not.toMatch(/GOOGLE_OAUTH_CLIENT_SECRET/);
+      expect(content).not.toMatch(/VITE_GOOGLE/i);
+    }
   });
 
   it("server/_core/env.ts reads GOOGLE_OAUTH_CLIENT_SECRET only via process.env, never import.meta.env", () => {
@@ -119,6 +130,10 @@ describe("no real Google credential material is committed anywhere in this featu
     "server/services/googleIdentityService.ts",
     "server/db.ts",
     "client/src/const.ts",
+    "client/src/pages/LoginPage.tsx",
+    "client/src/pages/ProfilePage.tsx",
+    "client/src/pages/profileGoogleConnectStatus.ts",
+    "server/routers.ts",
     "drizzle/schema.ts",
     "drizzle/0033_add_auth_identities.sql",
   ];
@@ -210,16 +225,41 @@ describe("Manus OAuth compatibility is fully preserved", () => {
 });
 
 describe("AUTH_PROVIDER / VITE_AUTH_PROVIDER default to manus", () => {
-  it("server/_core/env.ts's authProvider only ever resolves to \"google\" for the exact literal \"google\" (case/whitespace-insensitive to typos, but never permissive)", () => {
+  it("server/_core/env.ts's resolveAuthProviderMode is EXACT LITERAL - no .trim()/.toLowerCase()/.toUpperCase() anywhere in the function, so it can never normalize a near-miss (e.g. \" GOOGLE \") into an accepted value", () => {
+    const source = readSource("server/_core/env.ts");
+    const fnStart = source.indexOf("export function resolveAuthProviderMode(");
+    const fnEnd = source.indexOf("\n}", fnStart);
+    expect(fnStart).toBeGreaterThan(-1);
+    const fnBody = source.slice(fnStart, fnEnd);
+
+    expect(fnBody).not.toMatch(/\.trim\(\)/);
+    expect(fnBody).not.toMatch(/\.toLowerCase\(\)/);
+    expect(fnBody).not.toMatch(/\.toUpperCase\(\)/);
+    expect(fnBody).toMatch(/raw === "google"/);
+    expect(fnBody).toMatch(/raw === "transition"/);
+    // The final fallthrough is unconditional - the exact literal "manus".
+    expect(fnBody.trim().endsWith('return "manus";')).toBe(true);
+  });
+
+  it("ENV.authProvider is assigned directly from resolveAuthProviderMode(process.env.AUTH_PROVIDER) - the raw environment value is never trimmed/cased before being handed to it", () => {
+    const source = readSource("server/_core/env.ts");
+    expect(source).toMatch(/authProvider:\s*resolveAuthProviderMode\(process\.env\.AUTH_PROVIDER\)/);
+  });
+
+  it("isManusAuthActive()/isGoogleAuthActive() are the single source of truth other route handlers gate on - both are exact three-way comparisons against ENV.authProvider, never a generic truthy check", () => {
     const source = readSource("server/_core/env.ts");
     expect(source).toMatch(
-      /authProvider:\s*\(process\.env\.AUTH_PROVIDER\s*\?\?\s*""\)\.trim\(\)\.toLowerCase\(\)\s*===\s*"google"\s*\?\s*"google"\s*:\s*"manus"/
+      /export function isManusAuthActive\(\): boolean \{\s*return ENV\.authProvider === "manus" \|\| ENV\.authProvider === "transition";\s*\}/
+    );
+    expect(source).toMatch(
+      /export function isGoogleAuthActive\(\): boolean \{\s*return ENV\.authProvider === "google" \|\| ENV\.authProvider === "transition";\s*\}/
     );
   });
 
-  it("client/src/const.ts's resolveLoginUrl only branches to Google for the exact literal \"google\"", () => {
+  it("client/src/const.ts's resolveLoginUrl branches on the exact literals \"google\" and \"transition\" only - everything else (including \"manus\" itself) falls through to the Manus URL", () => {
     const source = readSource("client/src/const.ts");
     expect(source).toMatch(/authProvider === "google"/);
+    expect(source).toMatch(/authProvider === "transition"/);
   });
 });
 
@@ -312,5 +352,48 @@ describe("authIdentities.userId has a real, specifically-named foreign key to us
   it("this is the only foreign key in the entire migration - no other table gained one as a side effect", () => {
     const fkConstraints = [...migrationSource.matchAll(/FOREIGN KEY/g)];
     expect(fkConstraints.length).toBe(1);
+  });
+});
+
+describe("connect flow never trusts client-supplied identity - static regression guards", () => {
+  const googleOAuthSource = readSource("server/_core/googleOAuth.ts");
+  const serviceSource = readSource("server/services/googleIdentityService.ts");
+
+  it("the connect callback's userId comes only from sdk.authenticateRequest(req)'s return value (currentUser.id) - req.query.userId/req.body.userId/req.params.userId never appear anywhere in this file", () => {
+    expect(googleOAuthSource).not.toMatch(/req\.query\.userId/);
+    expect(googleOAuthSource).not.toMatch(/req\.query\[["']userId["']\]/);
+    expect(googleOAuthSource).not.toMatch(/req\.body\.userId/);
+    expect(googleOAuthSource).not.toMatch(/req\.params\.userId/);
+    expect(googleOAuthSource).toMatch(/currentUser\.id/);
+  });
+
+  it("connectGoogleIdentityToUser's own input type documents that userId must come from an authenticated session, never a query string/cookie/other client-supplied source", () => {
+    expect(serviceSource).toMatch(/userId: number;/);
+    const inputTypeStart = serviceSource.indexOf("export type ConnectGoogleIdentityInput");
+    const inputTypeEnd = serviceSource.indexOf("};", inputTypeStart);
+    const inputTypeBlock = serviceSource.slice(inputTypeStart, inputTypeEnd);
+    expect(inputTypeBlock).toMatch(/never from a query string/);
+  });
+
+  it("handleConnectCallback logs failures through safeErrorSummary, the same sanitizing helper the login callback uses - never a raw error/token/code/cookie header logged directly", () => {
+    const connectFnStart = googleOAuthSource.indexOf("async function handleConnectCallback");
+    expect(connectFnStart).toBeGreaterThan(-1);
+    const connectFnBlock = googleOAuthSource.slice(connectFnStart);
+    const consoleErrorCalls = [...connectFnBlock.matchAll(/console\.error\([^)]*\)/g)];
+    expect(consoleErrorCalls.length).toBeGreaterThan(0);
+    for (const call of consoleErrorCalls) {
+      expect(call[0]).toMatch(/safeErrorSummary\(/);
+    }
+    // Never logs the raw code/token/cookie values themselves.
+    expect(connectFnBlock).not.toMatch(/console\.(error|warn|log)\([^)]*\bcode\b[^)]*\)/);
+  });
+
+  it("the conflict-outcome log in the connect callback logs only result.outcome (a fixed enum literal), never the current user's email/id or the other conflicting user's identity", () => {
+    const connectFnStart = googleOAuthSource.indexOf("async function handleConnectCallback");
+    const connectFnBlock = googleOAuthSource.slice(connectFnStart);
+    const warnMatch = connectFnBlock.match(/console\.warn\(`[^`]*`\)/);
+    expect(warnMatch).toBeTruthy();
+    expect(warnMatch![0]).toMatch(/result\.outcome/);
+    expect(warnMatch![0]).not.toMatch(/currentUser|claims\.email|claims\.sub/);
   });
 });

@@ -209,13 +209,17 @@ export async function getUserByEmail(email: string) {
 }
 
 // ============ GOOGLE OAUTH / AUTH IDENTITIES ============
-// Backs the Google OpenID Connect direct-login feature flag
-// (AUTH_PROVIDER=google) - see server/services/googleIdentityService.ts for
-// the account-linking policy these are composed into, and
-// drizzle/schema.ts's authIdentities table doc comment for the schema
-// rationale. Every function below accepts an optional `tx` (an in-flight
-// transaction executor) so resolveGoogleIdentity can run its entire
-// find-or-link-or-create decision as one atomic transaction - matching the
+// Backs the Google OpenID Connect login/connect feature flag - active
+// whenever AUTH_PROVIDER is exactly "google" (full cutover) or "transition"
+// (both Manus and Google active together, plus explicit account-connect -
+// see server/_core/env.ts's isGoogleAuthActive()). See
+// server/services/googleIdentityService.ts for the account-linking policy
+// these are composed into (both the login flow's resolveGoogleIdentity and
+// the connect flow's connectGoogleIdentityToUser), and drizzle/schema.ts's
+// authIdentities table doc comment for the schema rationale. Every function
+// below accepts an optional `tx` (an in-flight transaction executor) so
+// resolveGoogleIdentity/connectGoogleIdentityToUser can each run their
+// entire decision as one atomic transaction - matching the
 // `const db = tx || await getDb();` composability pattern already used
 // throughout this file (see e.g. approveWalletTopup and its callees).
 
@@ -230,6 +234,28 @@ export async function getAuthIdentity(provider: string, providerSubject: string,
     .select()
     .from(authIdentities)
     .where(and(eq(authIdentities.provider, provider), eq(authIdentities.providerSubject, providerSubject)))
+    .limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+/**
+ * Looks up whatever identity a GIVEN user already has for a provider - the
+ * `authIdentities_userId_provider_unique` index (one identity per provider
+ * per user) backs this query. Used by the explicit Google-connect flow
+ * (server/services/googleIdentityService.ts's connectGoogleIdentityToUser)
+ * to detect "this account already has a DIFFERENT Google identity linked"
+ * (conflict case D) before attempting to insert a second one - a case the
+ * unique index would also catch at INSERT time, but pre-checking lets the
+ * caller return a precise, distinguishable outcome instead of an opaque
+ * duplicate-key error.
+ */
+export async function getAuthIdentityByUserAndProvider(userId: number, provider: string, tx?: any) {
+  const db = tx ?? (await getDb());
+  if (!db) return undefined;
+  const result = await db
+    .select()
+    .from(authIdentities)
+    .where(and(eq(authIdentities.userId, userId), eq(authIdentities.provider, provider)))
     .limit(1);
   return result.length > 0 ? result[0] : undefined;
 }
