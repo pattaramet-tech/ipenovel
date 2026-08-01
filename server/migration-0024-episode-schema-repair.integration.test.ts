@@ -8,6 +8,7 @@ import { runMigrationsWithLogging, consoleMigrationLogger, readMigrationJournal 
 import { EXPECTED_TEST_DATABASE_NAME } from "./test-helpers/testDatabaseGuard";
 import { restoreToFullyMigratedWithRetry } from "./test-helpers/restoreWithEmergencyRetry";
 import { closeMysqlConnectionSafely } from "./test-helpers/closeMysqlConnectionSafely";
+import { resetToEmptySchema } from "./test-helpers/resetToEmptySchema";
 
 /**
  * Real-database coverage for the migration 0024 repair - see
@@ -57,6 +58,26 @@ import { closeMysqlConnectionSafely } from "./test-helpers/closeMysqlConnectionS
  * cleanup into an immediate, clearly-attributed failure in the scenario
  * that actually inherited the bad state, instead of a confusing failure
  * surfacing later in a different, seemingly-unrelated scenario.
+ *
+ * Observed on a real MariaDB instance: scenario 1's own "start from a
+ * completely empty database" step used to enumerate
+ * information_schema.tables and issue a bare `DROP TABLE IF EXISTS` for
+ * every row, with FOREIGN_KEY_CHECKS left at its default (1) and no
+ * distinction between base tables and views. That could leave the schema
+ * NOT actually empty (a DROP hitting a live foreign key, or a view - which
+ * DROP TABLE cannot remove even with IF EXISTS - throws and can leave
+ * later objects, including `users`, undropped) while runFullChain() below
+ * still ran and failed on migration 0000's `CREATE TABLE users` with
+ * ER_TABLE_EXISTS_ERROR. Worse, the scenario's own cleanup
+ * (restoreToFullyMigrated -> restoreToFullyMigratedWithRetry) and even its
+ * "emergency" retry on a brand-new connection both called the exact same
+ * runFullChainAndVerify() - which only ever RUNS the chain, never resets
+ * anything - so both cleanup attempts failed identically against the same
+ * still-dirty schema. See test-helpers/resetToEmptySchema.ts (used both at
+ * the start of scenario 1 and, via emergencyResetAndRestore() below, as the
+ * genuine emergency-reset path) for the fix: a single, independently
+ * unit-tested, FK-checks-safe, views-before-tables, post-verified schema
+ * reset - never a second ad-hoc drop loop.
  */
 
 const migrationsFolder = path.resolve(__dirname, "..", "drizzle");
@@ -213,6 +234,32 @@ async function runFullChainAndVerify(conn: mysql.Connection): Promise<void> {
 }
 
 /**
+ * The GENUINE emergency-reset path: verified empty-schema reset -> run the
+ * full migration chain from nothing -> verify the result - matching
+ * `resetToEmptySchema()` at the START of scenario 1 below, and never just
+ * "run the chain again" against whatever state the connection happens to
+ * already be in. This is the fix for the exact failure this file's
+ * docstring documents: the emergency retry used to call the SAME
+ * runFullChainAndVerify() as the primary attempt, so a schema left dirty
+ * by an incomplete drop pass made BOTH the primary cleanup and the
+ * "emergency" retry fail identically (ER_TABLE_EXISTS_ERROR on `users`),
+ * since neither ever actually reset anything.
+ *
+ * Deliberately NOT used for the PRIMARY cleanup attempt
+ * (restoreToFullyMigratedWithRetry's `primaryCleanup` argument stays
+ * `runFullChainAndVerify`, unchanged) - a destructive full-schema wipe is
+ * reserved for the genuine emergency path, only after the live
+ * database-name guard (see restoreToFullyMigratedWithRetry's own
+ * queryLiveDatabaseName + expectedDatabaseName check, which runs BEFORE
+ * this function is ever called) has passed on a freshly-opened connection.
+ */
+async function emergencyResetAndRestore(conn: mysql.Connection): Promise<void> {
+  await resetToEmptySchema(conn, process.env.TEST_DATABASE_URL);
+  await runFullChain(conn);
+  await verifyFullyMigratedBaseline(conn);
+}
+
+/**
  * Fully restores episodes/episodePurchases/readingProgress to the complete,
  * correct end state - always run in a finally block regardless of what a
  * test intentionally broke.
@@ -228,6 +275,15 @@ async function runFullChainAndVerify(conn: mysql.Connection): Promise<void> {
  * verifyFullyMigratedBaseline()) or throws - preserving the primary failure
  * - so this test is correctly reported as failed instead of silently
  * leaving the shared database dirty for later tests.
+ *
+ * The PRIMARY attempt (`runFullChainAndVerify` on the SAME connection) is
+ * the existing, non-destructive recovery - "just run whatever's pending and
+ * verify" - left exactly as it was. Only the EMERGENCY retry (a brand-new,
+ * live-database-name-reverified connection - see restoreToFullyMigratedWithRetry's
+ * own guard, which runs before `runCleanup` below is ever invoked) performs
+ * a genuine destructive reset via `emergencyResetAndRestore`, so it can
+ * actually recover from a schema a previous scenario left dirty, instead of
+ * repeating the same operation that already failed.
  */
 async function restoreToFullyMigrated(conn: mysql.Connection): Promise<void> {
   await restoreToFullyMigratedWithRetry(
@@ -238,7 +294,7 @@ async function restoreToFullyMigrated(conn: mysql.Connection): Promise<void> {
         const [rows]: any = await emergencyConn.query("SELECT DATABASE() AS name");
         return rows?.[0]?.name ?? null;
       },
-      runCleanup: runFullChainAndVerify,
+      runCleanup: emergencyResetAndRestore,
       closeConnection: (emergencyConn) => closeMysqlConnectionSafely(emergencyConn),
       expectedDatabaseName: EXPECTED_TEST_DATABASE_NAME,
     }
@@ -312,19 +368,29 @@ describe.sequential("migration 0024/0025/0028 repair - real disposable test data
     const conn = await connect();
     if (!conn) return;
     try {
-      // Drop every table in this database and every migration record -
-      // this IS "completely empty" with respect to this migration chain's
-      // own bookkeeping (__drizzle_migrations), which is what determines
+      // Drop every view and every base table in this database (which also
+      // removes every migration record along with __drizzle_migrations
+      // itself) - this IS "completely empty" with respect to this
+      // migration chain's own bookkeeping, which is what determines
       // whether migrations 0000-0022's non-idempotent CREATE TABLE
       // statements are even attempted. (Deliberately does NOT call
       // runFullChainAndVerify() first - the whole point of this scenario
       // is to start from nothing, not from a verified baseline.)
-      const [tables]: any = await conn.query(
-        `SELECT table_name as name FROM information_schema.tables WHERE table_schema = DATABASE()`
-      );
-      for (const { name } of tables) {
-        await conn.query(`DROP TABLE IF EXISTS \`${name}\``);
-      }
+      //
+      // Uses the shared, independently unit-tested resetToEmptySchema() -
+      // NOT an ad-hoc DROP TABLE loop. The previous ad-hoc loop enumerated
+      // information_schema.tables (which can include VIEWs, which DROP
+      // TABLE cannot remove even with IF EXISTS) with FOREIGN_KEY_CHECKS
+      // left at its default (1), so a single DROP hitting either case could
+      // throw and leave later objects - observed on a real MariaDB
+      // instance to include `users` itself - still present; runFullChain()
+      // below would then fail immediately on migration 0000's `CREATE
+      // TABLE users` with ER_TABLE_EXISTS_ERROR. resetToEmptySchema()
+      // disables foreign key checks for the drop pass, drops views before
+      // tables via DROP VIEW, and independently VERIFIES via
+      // information_schema that zero base tables and zero views remain
+      // before returning - never a silent partial reset.
+      await resetToEmptySchema(conn, process.env.TEST_DATABASE_URL);
 
       await expect(runFullChain(conn)).resolves.not.toThrow();
 
