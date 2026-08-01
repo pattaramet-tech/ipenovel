@@ -4,9 +4,10 @@ import fs from "node:fs";
 import path from "node:path";
 import mysql from "mysql2/promise";
 import { buildTestDbConnectionOptions, parseTestDbTransportMode } from "../test-helpers/testDbConnectionOptions";
-import { EXPECTED_TEST_DATABASE_NAME } from "../test-helpers/testDatabaseGuard";
+import { EXPECTED_TEST_DATABASE_NAME, redactDatabaseUrl } from "../test-helpers/testDatabaseGuard";
 import { closeMysqlConnectionSafely } from "../test-helpers/closeMysqlConnectionSafely";
 import { readMigrationJournal } from "../test-helpers/migrateTestDbWithLogging";
+import { resetToMigrationCutoff } from "../test-helpers/resetToMigrationCutoff";
 
 /**
  * Tests 1 and 2 - the built executable, started exactly the way the hosting
@@ -29,6 +30,7 @@ const migrationsFolder = path.join(repoRoot, "drizzle");
 
 /** Production's confirmed high-water mark: migration 0023. */
 const MIGRATION_0023_WHEN = 1783506394802;
+const MIGRATION_0023_TAG = "0023_add_episode_sale_mode";
 
 const REQUIRED_TABLES = [
   "dailyCheckins",
@@ -75,17 +77,30 @@ async function latestRecordedMigration(conn: mysql.Connection): Promise<number |
   return rows[0] ? Number(rows[0].createdAt) : null;
 }
 
-/** Rewinds the disposable database to the confirmed production state: history at 0023, none of 0024-0029's objects present. */
+/**
+ * Establishes the confirmed production state exactly, via
+ * resetToMigrationCutoff(): history AND physical schema both genuinely stop
+ * at 0023 - nothing from any later migration exists yet, proven rather than
+ * assumed. Was previously a selective DELETE FROM __drizzle_migrations +
+ * DROP of only REQUIRED_TABLES/coupons.maxDiscountAmount, applied on top of
+ * whatever state the shared test database happened to already be in
+ * (typically fully migrated through today's newest migration by every other
+ * integration test file's own cleanup) - safe only as long as every
+ * migration past 0023 happened to be guarded; once 0033/0034 (plain,
+ * unguarded CREATE TABLE) existed, rewinding the journal to 0023 while their
+ * tables remained physically present made the built server's own startup
+ * migration run hit ER_TABLE_EXISTS_ERROR the moment it reached them.
+ */
 async function rewindToMigration0023(conn: mysql.Connection): Promise<void> {
   await assertLiveTestDatabase(conn);
+  await resetToMigrationCutoff(conn, process.env.TEST_DATABASE_URL, migrationsFolder, MIGRATION_0023_TAG);
+}
 
-  await conn.query("DELETE FROM `__drizzle_migrations` WHERE created_at > ?", [MIGRATION_0023_WHEN]);
-  for (const table of [...REQUIRED_TABLES].reverse()) {
-    await conn.query(`DROP TABLE IF EXISTS \`${table}\``);
-  }
-  if (await columnExists(conn, "coupons", "maxDiscountAmount")) {
-    await conn.query("ALTER TABLE `coupons` DROP COLUMN `maxDiscountAmount`");
-  }
+/** Redacts the live TEST_DATABASE_URL value out of captured child-process output before it's ever shown in a test failure message - never the raw output, but never silently hidden either. */
+function sanitizeChildOutput(output: string): string {
+  const rawUrl = process.env.TEST_DATABASE_URL;
+  if (!rawUrl) return output;
+  return output.split(rawUrl).join(redactDatabaseUrl(rawUrl));
 }
 
 interface ServerRun {
@@ -212,7 +227,13 @@ describe.skipIf(!hasTestDb || !hasBuild).sequential(
         // this test's own connection (or the next test) touches it.
         await waitForMigrationLockReleased(conn);
 
-        expect(run.started).toBe(true);
+        // Never hide the child's own output on failure - if the server
+        // didn't start, the sanitized (connection-string-redacted) captured
+        // stdout/stderr is the only way to tell why from CI.
+        expect(
+          run.started,
+          `built server did not report "Server running" within timeout (exit code ${run.exitCode}). Captured output:\n${sanitizeChildOutput(run.output)}`
+        ).toBe(true);
         // Migration output must precede the listening announcement.
         const migrateIndex = run.output.indexOf("[startup] Running database migrations");
         const doneIndex = run.output.indexOf("[migrate] Done - schema is up to date");
@@ -245,13 +266,21 @@ describe.skipIf(!hasTestDb || !hasBuild).sequential(
         const run = await startBuiltServer(41732);
         await waitForMigrationLockReleased(conn);
 
-        expect(run.started).toBe(true);
-        expect(run.output).toContain("[migrate] Done - schema is up to date");
+        // Never hide the child's own output on failure - see Test 1's
+        // identical rationale. Assertions run against the already-sanitized
+        // string (not the raw run.output) so a failure diff can never echo
+        // an unredacted connection string either.
+        const sanitizedOutput = sanitizeChildOutput(run.output);
+        const failureContext = `Captured output:\n${sanitizedOutput}`;
+        expect(run.started, `built server did not report "Server running" within timeout (exit code ${run.exitCode}). ${failureContext}`).toBe(
+          true
+        );
+        expect(sanitizedOutput, failureContext).toContain("[migrate] Done - schema is up to date");
         // No duplicate-object failures of any kind.
-        expect(run.output).not.toMatch(/already exists/i);
-        expect(run.output).not.toMatch(/Duplicate (column|key|entry)/i);
-        expect(run.output).not.toContain("[migrate] Migration failed");
-        expect(run.output).not.toContain("[startup] FATAL");
+        expect(sanitizedOutput, failureContext).not.toMatch(/already exists/i);
+        expect(sanitizedOutput, failureContext).not.toMatch(/Duplicate (column|key|entry)/i);
+        expect(sanitizedOutput, failureContext).not.toContain("[migrate] Migration failed");
+        expect(sanitizedOutput, failureContext).not.toContain("[startup] FATAL");
 
         // History unchanged - nothing was re-applied.
         expect(await latestRecordedMigration(conn)).toBe(before);

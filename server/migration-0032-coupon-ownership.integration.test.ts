@@ -9,6 +9,8 @@ import {
   readMigrationJournal,
 } from "./test-helpers/migrateTestDbWithLogging";
 import { closeMysqlConnectionSafely } from "./test-helpers/closeMysqlConnectionSafely";
+import { resetToEmptySchema } from "./test-helpers/resetToEmptySchema";
+import { resetToMigrationCutoff } from "./test-helpers/resetToMigrationCutoff";
 
 /**
  * Live coverage for migration 0032 (coupons.scope / coupons.ownerUserId /
@@ -88,22 +90,6 @@ async function recordedMigrationCount(conn: mysql.Connection): Promise<number> {
   return Number(rows[0].n);
 }
 
-/** Drops every application table so the next run is a genuine 0000-start. */
-async function wipeToEmpty(conn: mysql.Connection): Promise<void> {
-  await conn.query("SET FOREIGN_KEY_CHECKS = 0");
-  const [tables]: any = await conn.query(
-    "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE()"
-  );
-  for (const { name } of tables) await conn.query(`DROP TABLE IF EXISTS \`${name}\``);
-  await conn.query("SET FOREIGN_KEY_CHECKS = 1");
-}
-
-/** Rewinds recorded history to just before 0032, without altering the schema. */
-async function rewindHistoryBefore0032(conn: mysql.Connection): Promise<void> {
-  const when = readMigrationJournal(migrationsFolder).find((e) => e.tag === MIGRATION_0032_TAG)!.when;
-  await conn.query("DELETE FROM `__drizzle_migrations` WHERE created_at >= ?", [when]);
-}
-
 /** Reverts the schema to exactly its pre-0032 shape (drops the index first - it
  *  depends on ownerUserId - then both columns). Safe to call when already reverted. */
 async function revertTo0031Shape(conn: mysql.Connection): Promise<void> {
@@ -124,7 +110,7 @@ describe.sequential("migration 0032 (real disposable test database)", () => {
     async () => {
       const conn = await connect();
       try {
-        await wipeToEmpty(conn);
+        await resetToEmptySchema(conn, requireTestUrl());
         await runFullChain(conn);
 
         expect(await columnExists(conn, "coupons", "scope")).toBe(true);
@@ -145,11 +131,18 @@ describe.sequential("migration 0032 (real disposable test database)", () => {
     async () => {
       const conn = await connect();
       try {
-        await wipeToEmpty(conn);
-        await runFullChain(conn); // establish a fully-migrated baseline (0000-0032)
-
-        // Revert coupons to its genuine pre-0032 (0031-era) shape.
-        await revertTo0031Shape(conn);
+        // Exact, verified 0000-0031 baseline via resetToMigrationCutoff() -
+        // genuinely a "0031-era database" where scope/ownerUserId/index
+        // never existed yet, so this scenario never needs to rewind
+        // __drizzle_migrations at all (see the removed
+        // wipeToEmpty()+runFullChain()+revertTo0031Shape()+
+        // rewindHistoryBefore0032() sequence this replaced, which
+        // established a FULL baseline through whatever the newest
+        // migration is, e.g. 0034, then rewound only the journal to
+        // before 0032 - leaving 0033's `authIdentities` and other later
+        // migrations' unguarded CREATE TABLE statements to collide once
+        // treated as pending again).
+        await resetToMigrationCutoff(conn, requireTestUrl(), migrationsFolder, "0031_enable_daily_checkin_point_rewards");
         expect(await columnExists(conn, "coupons", "scope")).toBe(false);
         expect(await columnExists(conn, "coupons", "ownerUserId")).toBe(false);
         expect(await indexExists(conn, "coupons", "coupons_ownerUserId_idx")).toBe(false);
@@ -203,11 +196,9 @@ describe.sequential("migration 0032 (real disposable test database)", () => {
           [sportsCouponId]
         );
 
-        // Rewind recorded history and re-apply the real chain - this
-        // genuinely re-executes 0032's ADD COLUMN/CREATE INDEX statements
-        // (the schema was actually reverted above), not just a
-        // history-only replay.
-        await rewindHistoryBefore0032(conn);
+        // Advance through 0032 (and everything else) for real - this
+        // genuinely executes 0032's ADD COLUMN/CREATE INDEX statements for
+        // the first time, since the reset above proved they never ran yet.
         await runFullChain(conn);
 
         expect(await columnExists(conn, "coupons", "scope")).toBe(true);

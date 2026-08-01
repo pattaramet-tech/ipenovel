@@ -7,6 +7,9 @@ import { runMigrationsWithLogging, consoleMigrationLogger, readMigrationJournal 
 import { restoreToFullyMigratedWithRetry } from "./test-helpers/restoreWithEmergencyRetry";
 import { EXPECTED_TEST_DATABASE_NAME } from "./test-helpers/testDatabaseGuard";
 import { closeMysqlConnectionSafely } from "./test-helpers/closeMysqlConnectionSafely";
+import { resetToMigrationCutoff } from "./test-helpers/resetToMigrationCutoff";
+import { resetToEmptySchema } from "./test-helpers/resetToEmptySchema";
+import { verifyMigrationJournalAtLatest } from "./test-helpers/verifyMigrationJournalAtLatest";
 
 /**
  * Real-database coverage for migration 0030 - the forward-only repair for
@@ -124,12 +127,29 @@ async function restoreSchemaOnly(conn: mysql.Connection): Promise<void> {
   });
 }
 
+/**
+ * Real emergency path for the regression test (9): if the primary
+ * `runFullChain(conn)` attempt fails, simply re-running `runFullChain`
+ * again on a fresh connection is not safe by itself - the journal may
+ * still be desynced from the physical schema in exactly the way this test
+ * intentionally creates, and later migrations' unguarded CREATE TABLE
+ * statements (e.g. 0033's `authIdentities`) would collide. So the
+ * emergency path always wipes to a genuinely empty schema first, then runs
+ * the full chain from scratch, then verifies the journal high-water mark
+ * actually lands on the newest migration.
+ */
+async function emergencyResetAndRestoreFullChain(conn: mysql.Connection): Promise<void> {
+  await resetToEmptySchema(conn, process.env.TEST_DATABASE_URL);
+  await runFullChain(conn);
+  await verifyMigrationJournalAtLatest(conn, migrationsFolder);
+}
+
 /** Restores the full migration chain, including __drizzle_migrations bookkeeping. Needed only by the regression test, which is the only test in this file that rewrites that table's history. */
 async function restoreFullChain(conn: mysql.Connection): Promise<void> {
   await restoreToFullyMigratedWithRetry(() => runFullChain(conn), {
     connect,
     queryLiveDatabaseName,
-    runCleanup: runFullChain,
+    runCleanup: emergencyResetAndRestoreFullChain,
     closeConnection: (emergencyConn) => closeMysqlConnectionSafely(emergencyConn),
     expectedDatabaseName: EXPECTED_TEST_DATABASE_NAME,
   });
@@ -391,19 +411,26 @@ describe.sequential("migration 0030 - repair missing dailyCheckins (real disposa
     const conn = await connect();
     if (!conn) return;
     try {
-      await runFullChain(conn); // real chain run - __drizzle_migrations genuinely recorded through 0030
+      // Exact, verified 0000-0029 baseline via resetToMigrationCutoff() -
+      // was previously a FULL baseline (through whatever the newest
+      // migration currently is, e.g. 0034) followed by a journal-only
+      // rewind to just after 0029, which left later migrations' physical
+      // objects (e.g. 0033's `authIdentities`, an unguarded plain CREATE
+      // TABLE) behind while making them "pending" again too -
+      // ER_TABLE_EXISTS_ERROR. resetToMigrationCutoff() lands the journal
+      // exactly on 0029 directly, so no separate DELETE FROM
+      // __drizzle_migrations rewind is needed at all here.
+      await resetToMigrationCutoff(conn, process.env.TEST_DATABASE_URL, migrationsFolder, "0029_add_dynamic_daily_checkin_reward_schema");
       expect(await tableExists(conn, "dailyCheckins")).toBe(true);
 
       // Reproduce the confirmed production state: recorded migration
-      // history already past 0027 (and, in this rewind, past 0029 too),
+      // history already past 0027 (and, at this cutoff, past 0029 too),
       // but dailyCheckins physically absent - "the journal says it ran,
       // the schema disagrees" (see docs/DAILY_CHECKIN_DEPLOYMENT_FIX.md).
-      // The table is dropped WITHOUT touching __drizzle_migrations, and the
-      // high-water mark is rewound to exactly 0029 (simulating a database
-      // that has never seen migration 0030 at all yet, matching real
-      // production before this fix ships).
+      // The table is dropped WITHOUT touching __drizzle_migrations - the
+      // journal is already exactly at 0029 from the reset above, matching
+      // real production before this fix ships.
       await conn.query("DROP TABLE IF EXISTS `dailyCheckins`");
-      await conn.query(`DELETE FROM \`__drizzle_migrations\` WHERE created_at > ?`, [idx29When]);
       expect(await tableExists(conn, "dailyCheckins")).toBe(false);
       const highWaterMarkBefore = await latestRecordedMigrationTimestamp(conn);
       expect(highWaterMarkBefore).toBe(idx29When);

@@ -6,6 +6,9 @@ import { buildTestDbConnectionOptions, parseTestDbTransportMode } from "./test-h
 import { runMigrationsWithLogging, consoleMigrationLogger, readMigrationJournal } from "./test-helpers/migrateTestDbWithLogging";
 import { restoreToFullyMigratedWithRetry } from "./test-helpers/restoreWithEmergencyRetry";
 import { EXPECTED_TEST_DATABASE_NAME } from "./test-helpers/testDatabaseGuard";
+import { resetToMigrationCutoff } from "./test-helpers/resetToMigrationCutoff";
+import { resetToEmptySchema } from "./test-helpers/resetToEmptySchema";
+import { verifyMigrationJournalAtLatest } from "./test-helpers/verifyMigrationJournalAtLatest";
 
 /**
  * Real-database coverage for migration 0029 (Stage 1A of the configurable
@@ -149,12 +152,29 @@ async function restoreSchemaOnly(conn: mysql.Connection): Promise<void> {
   });
 }
 
+/**
+ * Real emergency path for the history-rewind test (6): if the primary
+ * `runFullChain(conn)` attempt fails, re-running `runFullChain` again on a
+ * fresh connection is not safe by itself - the journal may be desynced from
+ * the physical schema in exactly the way this test intentionally created,
+ * and 0033/0034's unguarded CREATE TABLE statements would collide. So the
+ * emergency path always wipes to a genuinely empty schema first, then runs
+ * the full chain from scratch, then verifies the journal high-water mark
+ * actually lands on the newest migration - never inferred from
+ * runFullChain() merely resolving.
+ */
+async function emergencyResetAndRestoreFullChain(conn: mysql.Connection): Promise<void> {
+  await resetToEmptySchema(conn, process.env.TEST_DATABASE_URL);
+  await runFullChain(conn);
+  await verifyMigrationJournalAtLatest(conn, migrationsFolder);
+}
+
 /** Restores the full migration chain, including __drizzle_migrations bookkeeping. Only needed by the history-rewind test (6), which is the only test in this file that touches that table. */
 async function restoreFullChain(conn: mysql.Connection): Promise<void> {
   await restoreToFullyMigratedWithRetry(() => runFullChain(conn), {
     connect,
     queryLiveDatabaseName,
-    runCleanup: runFullChain,
+    runCleanup: emergencyResetAndRestoreFullChain,
     closeConnection: (emergencyConn) => emergencyConn.end(),
     expectedDatabaseName: EXPECTED_TEST_DATABASE_NAME,
   });
@@ -342,7 +362,19 @@ describe("migration 0029 - dynamic daily check-in reward schema (real disposable
     const conn = await connect();
     if (!conn) return;
     try {
-      await runFullChain(conn); // full history recorded, including 0029, for real
+      // Exact, verified 0000-0029 baseline via resetToMigrationCutoff() -
+      // was previously a FULL baseline (through whatever the newest
+      // migration currently is, e.g. 0034) before rewinding only the
+      // journal, which left later migrations' physical objects (e.g.
+      // 0033's `authIdentities`, an unguarded plain CREATE TABLE) behind
+      // while making them "pending" again too - ER_TABLE_EXISTS_ERROR.
+      // Resetting to this precise cutoff first means nothing past 0029
+      // physically exists yet, so the deliberate journal-only rewind
+      // immediately below is safe: the one permitted case, an exact
+      // cutoff established first, proven nothing from a later migration
+      // exists, specifically to test this single migration's own
+      // idempotency guard.
+      await resetToMigrationCutoff(conn, process.env.TEST_DATABASE_URL, migrationsFolder, "0029_add_dynamic_daily_checkin_reward_schema");
       for (const t of NEW_TABLES) {
         expect(await tableExists(conn, t)).toBe(true);
       }
@@ -352,7 +384,9 @@ describe("migration 0029 - dynamic daily check-in reward schema (real disposable
       // reproducing the exact "history says earlier, schema says later"
       // state this migration's guarded design exists to survive (the same
       // duplicate-object failure mode migration 0026 was fixed for
-      // earlier in this repo's history).
+      // earlier in this repo's history). Safe here specifically because
+      // the reset immediately above already proved nothing past 0029
+      // exists physically.
       await conn.query(`DELETE FROM \`__drizzle_migrations\` WHERE created_at >= ?`, [idx29When]);
 
       await expect(runFullChain(conn)).resolves.not.toThrow();
