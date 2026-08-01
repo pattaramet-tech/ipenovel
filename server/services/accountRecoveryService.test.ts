@@ -57,6 +57,23 @@ describe("submitAccountRecoveryRequest", () => {
     expect(createSpy).not.toHaveBeenCalled();
   });
 
+  it("[post-approval resubmission] a source account whose Google identity was already moved away by an approved recovery request -> throws NOT_GOOGLE_LINKED on any further attempt, never creates a second row - the SAME check that requires a real Google identity to begin with also structurally prevents an already-recovered source from submitting again, with no separate 'already approved' bookkeeping needed", async () => {
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    // executeAccountRecovery's moveAuthIdentityOwner already ran for this
+    // user in an earlier approval - getAuthIdentityByUserAndProvider now
+    // correctly returns undefined for the (former) source, exactly as it
+    // would for any other never-connected user.
+    vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue(undefined);
+    const pendingSpy = vi.spyOn(db, "getPendingAccountRecoveryRequestForUser");
+    const createSpy = vi.spyOn(db, "createAccountRecoveryRequest");
+
+    await expect(submitAccountRecoveryRequest({ requesterUserId: 1 })).rejects.toMatchObject({
+      code: "NOT_GOOGLE_LINKED",
+    });
+    expect(pendingSpy).not.toHaveBeenCalled();
+    expect(createSpy).not.toHaveBeenCalled();
+  });
+
   it("requester already has a pending request -> throws ALREADY_PENDING, never creates a second row", async () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
     vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue(fakeGoogleIdentity() as any);

@@ -34,7 +34,7 @@ describe("isMandatoryGoogleConnectionEnabled", () => {
 });
 
 describe("isMigrationGateExemptPath", () => {
-  it.each(["/account/upgrade-login", "/login"])("%s -> exempt", (path) => {
+  it.each(["/account/upgrade-login", "/login", "/account/recovery"])("%s -> exempt", (path) => {
     expect(isMigrationGateExemptPath(path)).toBe(true);
   });
 
@@ -48,6 +48,17 @@ describe("isMigrationGateExemptPath", () => {
 
   it("a path merely starting with /admin as a substring but not a real segment boundary is still exempt only via the startsWith('/admin/') check - /adminfoo must NOT be exempt", () => {
     expect(isMigrationGateExemptPath("/adminfoo")).toBe(false);
+  });
+
+  it("/account/recovery is an EXACT match only - a path merely sharing that prefix is NOT exempt (never a startsWith('/account/recovery') rule, unlike /admin)", () => {
+    expect(isMigrationGateExemptPath("/account/recovery-other")).toBe(false);
+    expect(isMigrationGateExemptPath("/account/recovery/")).toBe(false);
+    expect(isMigrationGateExemptPath("/account/recovery/sub")).toBe(false);
+  });
+
+  it("other /account/* pages remain fully gated - the exemption is scoped to /account/recovery specifically, never the whole /account surface", () => {
+    expect(isMigrationGateExemptPath("/account/profile")).toBe(false);
+    expect(isMigrationGateExemptPath("/account")).toBe(false);
   });
 });
 
@@ -122,6 +133,42 @@ describe("resolveMigrationGateAction", () => {
 
   it("block_error is never returned for an exempt path either", () => {
     expect(resolveMigrationGateAction(baseInput({ pathname: "/admin/orders", statusError: true }))).toBe("allow");
+  });
+
+  // ---- /account/recovery: a user whose Google identity was just moved
+  // away by an approved account-recovery request must be able to reach
+  // this page (see AccountRecoveryPage.tsx's "log out and log back in
+  // with Google" instruction) even though, by definition, they now have
+  // no linked Google identity and needsConnection would otherwise be true.
+
+  it("[FIX] pathname=/account/recovery, needsConnection=true -> allow, never redirect_upgrade - the post-approval source session must reach its own explanation page", () => {
+    expect(resolveMigrationGateAction(baseInput({ pathname: "/account/recovery", needsConnection: true }))).toBe(
+      "allow"
+    );
+  });
+
+  it("[FIX] pathname=/account/recovery, statusError=true -> allow, never block_error - the exempt-path check runs before the status query is even consulted (MigrationGate.tsx never issues the query at all on an exempt path)", () => {
+    expect(resolveMigrationGateAction(baseInput({ pathname: "/account/recovery", statusError: true }))).toBe(
+      "allow"
+    );
+  });
+
+  it("[FIX] pathname=/account/recovery, statusLoading=true -> allow, never block_loading", () => {
+    expect(resolveMigrationGateAction(baseInput({ pathname: "/account/recovery", statusLoading: true }))).toBe(
+      "allow"
+    );
+  });
+
+  it("[FIX] a path merely resembling /account/recovery (/account/recovery-other) with needsConnection=true -> redirect_upgrade, NOT exempt - the exemption is exact-match only", () => {
+    expect(
+      resolveMigrationGateAction(baseInput({ pathname: "/account/recovery-other", needsConnection: true }))
+    ).toBe("redirect_upgrade");
+  });
+
+  it("[FIX] other, non-exempt /account/* pages (e.g. /account/profile) are still fully gated - needsConnection=true -> redirect_upgrade", () => {
+    expect(resolveMigrationGateAction(baseInput({ pathname: "/account/profile", needsConnection: true }))).toBe(
+      "redirect_upgrade"
+    );
   });
 });
 

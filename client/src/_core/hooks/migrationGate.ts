@@ -39,7 +39,7 @@ export function isMandatoryGoogleConnectionEnabled(
   return viteAuthProvider === "transition" && viteRequireGoogleConnection === "true";
 }
 
-const GATE_EXEMPT_EXACT_PATHS = new Set(["/account/upgrade-login", "/login"]);
+const GATE_EXEMPT_EXACT_PATHS = new Set(["/account/upgrade-login", "/login", "/account/recovery"]);
 
 /**
  * Paths the gate must never redirect away from, regardless of connection
@@ -49,6 +49,27 @@ const GATE_EXEMPT_EXACT_PATHS = new Set(["/account/upgrade-login", "/login"]);
  * migration gate - see server/_core/trpc.ts's adminProcedure, which is
  * built on authenticatedProcedure, never protectedProcedure, for the exact
  * same reason on the server side).
+ *
+ * /account/recovery is exempt for the SAME reason as /account/upgrade-login
+ * - a user whose Google identity was just moved AWAY from their current
+ * session by an approved recovery request (see
+ * server/services/accountRecoveryService.ts's executeAccountRecovery) has,
+ * by definition, no linked Google identity anymore. Once a targeted cutoff
+ * is active, that would otherwise make needsConnection=true and bounce
+ * them to /account/upgrade-login before they ever see the "your request
+ * was approved - log out and log back in with Google" message and button
+ * on /account/recovery (client/src/pages/AccountRecoveryPage.tsx) - a
+ * redirect loop away from the one page that explains what to do next.
+ *
+ * Deliberately an EXACT match, not a startsWith("/account/recovery")
+ * prefix - only the one real route (see client/src/App.tsx) is exempt;
+ * there is no other page in this codebase that route prefix would
+ * currently match, and none should become exempt by accident just by
+ * sharing that prefix in the future without its own deliberate decision.
+ * Every other /account/* page (e.g. /account/upgrade-login is separately
+ * listed above; a future /account/profile or similar) remains fully
+ * gated - this exemption is scoped to this one page's specific job, not a
+ * blanket "the whole /account surface is exempt" rule.
  */
 export function isMigrationGateExemptPath(pathname: string): boolean {
   if (GATE_EXEMPT_EXACT_PATHS.has(pathname)) return true;
