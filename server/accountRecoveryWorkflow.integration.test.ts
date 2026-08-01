@@ -1,11 +1,12 @@
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getTestDb } from "./test-helpers/testDb";
 import { assertSafeTestDatabaseUrl } from "./test-helpers/testDatabaseGuard";
 import { assertLiveTestDatabaseName } from "./test-helpers/liveTestDatabaseCheck";
 import { createTestUser, createTestOrder, uniqueTestTag, deleteFixtures } from "./test-helpers/fixtures";
 import { authIdentities, accountRecoveryRequests, accountRecoveryAuditLogs, users, carts } from "../drizzle/schema";
 import * as db from "./db";
+import { isDuplicateKeyError } from "./helpers/databaseErrorClassifier";
 import {
   AccountRecoveryError,
   assessAccountRecoverySafety,
@@ -147,9 +148,48 @@ describe("Admin Account Recovery - real database", () => {
     // app) enforces "at most one pending request per requester" - the
     // accountRecoveryRequests_one_pending_per_requester_unique generated-
     // column index from drizzle/schema.ts.
-    await expect(db.createAccountRecoveryRequest({ requesterUserId: requester.id })).rejects.toMatchObject({
-      code: "ER_DUP_ENTRY",
-    });
+    //
+    // drizzle-orm wraps the real mysql2/MariaDB driver error rather than
+    // exposing errno/code on the top-level thrown Error - see
+    // server/helpers/databaseErrorClassifier.ts's own docstring for the
+    // exact observed shape (top-level errno/code are undefined; the real
+    // 1062/ER_DUP_ENTRY is one or more `cause` links down). Asserting
+    // `.rejects.toMatchObject({ code: "ER_DUP_ENTRY" })` against the
+    // WRAPPING error therefore always fails even when the constraint
+    // correctly rejected the insert - against a real MariaDB instance this
+    // was observed to reject the insert exactly as designed while the
+    // assertion itself failed. This walks the real cause chain instead, via
+    // the SAME shared, cycle-safe, depth-capped, message-blind helper
+    // production code already relies on for the identical reason (see
+    // server/db.ts's concurrent-write recovery branches) - never a second,
+    // parallel implementation of "is this a duplicate key error" that could
+    // drift from the real one.
+    let caughtError: unknown;
+    try {
+      await db.createAccountRecoveryRequest({ requesterUserId: requester.id });
+    } catch (error) {
+      caughtError = error;
+    }
+    expect(caughtError, "expected the second insert to throw - the unique constraint did not reject it").toBeDefined();
+    expect(
+      isDuplicateKeyError(caughtError),
+      "expected the thrown error's cause chain to contain a real ER_DUP_ENTRY/1062 duplicate-key error - " +
+        "isDuplicateKeyError is cycle-safe and depth-capped, so this also fails closed (false) on a cyclic or " +
+        "unexpectedly deep cause chain rather than hanging or false-accepting one"
+    ).toBe(true);
+
+    // Proves both rejection AND preserved state - not just "an error was
+    // thrown for some reason": exactly the original pending request must
+    // still be the only pending row for this requester, never a second
+    // partial row left behind by the rejected insert.
+    const pendingRows = await getTestDb()
+      .select()
+      .from(accountRecoveryRequests)
+      .where(
+        and(eq(accountRecoveryRequests.requesterUserId, requester.id), eq(accountRecoveryRequests.status, "pending"))
+      );
+    expect(pendingRows.length).toBe(1);
+    expect(pendingRows[0].id).toBe(first.id);
   });
 
   it("[safe empty source approved end-to-end] moves the Google identity, sets target.loginMethod='google', backfills target.email only because it was empty, marks the request approved, and writes an audit log - all against the real database", async () => {
