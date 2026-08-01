@@ -66,17 +66,43 @@ export interface MigrationLogger {
 
 const MIGRATIONS_TABLE = "__drizzle_migrations";
 
+export interface RunMigrationsOptions {
+  /**
+   * When set, only journal entries UP TO AND INCLUDING the entry whose
+   * `tag` exactly matches this value are considered - every entry after it
+   * is never even attempted, regardless of whether it's "pending" by the
+   * usual created_at comparison. Throws immediately (before running
+   * anything) if no entry in the journal has this exact tag - a cutoff
+   * that doesn't exist is a test-fixture bug, never silently ignored or
+   * silently treated as "run everything".
+   *
+   * This is what makes a genuine "exact migration cutoff" baseline
+   * possible - see server/test-helpers/resetToMigrationCutoff.ts, the only
+   * intended caller. Without this, a test that wants "as if only
+   * migrations 0000..0023 had ever run" has no way to stop the resume loop
+   * early, and previously had to rewind ONLY the __drizzle_migrations
+   * bookkeeping (see server/migration-0024-episode-schema-repair.integration
+   * .test.ts's now-removed rewindMigrationHistoryAfter()) while every
+   * LATER migration's physical schema objects stayed behind - exactly the
+   * journal/schema mismatch that produced ER_TABLE_EXISTS_ERROR when the
+   * full chain was re-run against them.
+   */
+  untilTag?: string;
+}
+
 /**
  * Applies every pending migration from `migrationsFolder`'s journal against
  * `conn`, in journal order, logging each attempt/completion/failure via
  * `logger`. Stops and rethrows on the first failure (matching drizzle's own
  * fail-fast behavior) - it does not attempt to continue past a broken
- * migration.
+ * migration. `options.untilTag`, when given, additionally caps which
+ * journal entries are even considered pending - see RunMigrationsOptions.
  */
 export async function runMigrationsWithLogging(
   conn: QueryableConnection,
   migrationsFolder: string,
-  logger: MigrationLogger
+  logger: MigrationLogger,
+  options: RunMigrationsOptions = {}
 ): Promise<void> {
   await conn.query(
     `create table if not exists \`${MIGRATIONS_TABLE}\` (id serial primary key, hash text not null, created_at bigint)`
@@ -88,7 +114,17 @@ export async function runMigrationsWithLogging(
   const resultRows = rows?.[0] ?? rows;
   const lastMigration = resultRows?.[0];
 
-  const entries = readMigrationJournal(migrationsFolder);
+  const fullJournal = readMigrationJournal(migrationsFolder);
+  let entries = fullJournal;
+  if (options.untilTag !== undefined) {
+    const cutoffIndex = fullJournal.findIndex((entry) => entry.tag === options.untilTag);
+    if (cutoffIndex === -1) {
+      throw new Error(
+        `runMigrationsWithLogging: untilTag "${options.untilTag}" was not found in the migration journal at "${migrationsFolder}" - refusing to run anything rather than silently running the full chain.`
+      );
+    }
+    entries = fullJournal.slice(0, cutoffIndex + 1);
+  }
 
   for (const entry of entries) {
     const isPending = !lastMigration || Number(lastMigration.created_at) < entry.when;
