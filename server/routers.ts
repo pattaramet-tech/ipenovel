@@ -3,6 +3,7 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { sdk } from "./_core/sdk";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, authenticatedProcedure, router } from "./_core/trpc";
+import { evaluateGoogleConnectionCutoff } from "./_core/env";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import * as db from "./db";
@@ -45,6 +46,8 @@ import {
   R2PrivateStorageError,
 } from "./services/r2PrivateStorage";
 import { isValidStoredFileRef } from "@shared/privateFileRef";
+import * as accountRecoveryService from "./services/accountRecoveryService";
+import { AccountRecoveryError } from "./services/accountRecoveryService";
 
 // ============ HELPER PROCEDURES ============
 
@@ -60,6 +63,74 @@ const adminProcedure = authenticatedProcedure.use(async ({ ctx, next }) => {
   }
   return next({ ctx });
 });
+
+// ============ ACCOUNT RECOVERY HELPERS ============
+
+/** Maps an AccountRecoveryError's semantic code to a real TRPCError code -
+ *  never lets an unexpected/unmapped error leak its raw message to the
+ *  client (falls back to a generic, sanitized INTERNAL_SERVER_ERROR). */
+function mapAccountRecoveryError(error: unknown): TRPCError {
+  if (error instanceof AccountRecoveryError) {
+    const codeMap: Record<AccountRecoveryError["code"], "BAD_REQUEST" | "CONFLICT" | "NOT_FOUND"> = {
+      NOT_GOOGLE_LINKED: "BAD_REQUEST",
+      ALREADY_PENDING: "CONFLICT",
+      NOT_FOUND: "NOT_FOUND",
+      ALREADY_PROCESSED: "CONFLICT",
+      UNSAFE: "BAD_REQUEST",
+      CONFLICT: "CONFLICT",
+      FORBIDDEN: "BAD_REQUEST",
+    };
+    return new TRPCError({ code: codeMap[error.code] ?? "BAD_REQUEST", message: error.message });
+  }
+  console.error("[AccountRecovery] Unexpected error", safeErrorSummary(error));
+  return new TRPCError({
+    code: "INTERNAL_SERVER_ERROR",
+    message: "ไม่สามารถดำเนินการได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง",
+  });
+}
+
+/** "jo***@example.com" - never the full address. Used only in admin-facing
+ *  responses (search results, request detail) - the requester's OWN status
+ *  view never needs this, it already knows its own claims verbatim. */
+function maskEmail(email: string | null | undefined): string | null {
+  if (!email) return null;
+  const atIndex = email.indexOf("@");
+  if (atIndex <= 0) return "***";
+  const localPart = email.slice(0, atIndex);
+  const domain = email.slice(atIndex + 1);
+  const visible = localPart.slice(0, Math.min(2, localPart.length));
+  return `${visible}${"*".repeat(Math.max(localPart.length - visible.length, 1))}@${domain}`;
+}
+
+/** "abc123...ef" - openId can be a stable external identifier; masked the
+ *  same "show a little, hide the rest" way as maskEmail rather than shown
+ *  in full to an admin who is only trying to CONFIRM a match, not read it
+ *  back verbatim. */
+function maskOpenId(openId: string | null | undefined): string | null {
+  if (!openId) return null;
+  if (openId.length <= 8) return "***";
+  return `${openId.slice(0, 6)}...${openId.slice(-2)}`;
+}
+
+function maskUserForAdmin(user: {
+  id: number;
+  email: string | null;
+  name: string | null;
+  role: string;
+  loginMethod: string | null;
+  openId: string;
+  createdAt: Date;
+}) {
+  return {
+    id: user.id,
+    maskedEmail: maskEmail(user.email),
+    name: user.name,
+    role: user.role,
+    loginMethod: user.loginMethod,
+    maskedOpenId: maskOpenId(user.openId),
+    createdAt: user.createdAt,
+  };
+}
 
 // A slipImageUrl/fileUrl input must be either a legacy absolute http(s) URL
 // or a private object reference (r2p:...) - never anything else (e.g.
@@ -265,6 +336,31 @@ export const appRouter = router({
     googleConnected: authenticatedProcedure.query(async ({ ctx }) => {
       const identity = await db.getAuthIdentityByUserAndProvider(ctx.user.id, "google");
       return { googleConnected: Boolean(identity) };
+    }),
+    // The single server-authoritative status client/src/components/
+    // MigrationGate.tsx and its pre-cutoff banner poll to decide whether to
+    // redirect/show a warning - never derives anything from the client's
+    // own clock (see server/_core/env.ts's evaluateGoogleConnectionCutoff,
+    // the one function this procedure is a thin wrapper around).
+    // authenticatedProcedure (not protectedProcedure) for the same
+    // deadlock-avoidance reason as googleConnected above - a user who
+    // needsConnection must still be able to ask this question.
+    googleConnectionCutoffStatus: authenticatedProcedure.query(async ({ ctx }) => {
+      const cutoff = evaluateGoogleConnectionCutoff();
+      const exempt = ctx.user.role === "admin";
+      const identity = await db.getAuthIdentityByUserAndProvider(ctx.user.id, "google");
+      const googleConnected = Boolean(identity);
+      return {
+        ...cutoff,
+        googleConnected,
+        exempt,
+        // Only true once the gate is genuinely active, this specific user
+        // isn't exempt, and they haven't already connected - the ONE field
+        // every caller (client redirect decision, banner visibility) should
+        // actually branch on instead of re-deriving the same combination
+        // from the other fields themselves.
+        needsConnection: cutoff.activeNow && !exempt && !googleConnected,
+      };
     }),
   }),
 
@@ -2959,6 +3055,192 @@ export const appRouter = router({
           };
         });
       }),
+  }),
+
+  // ============ ACCOUNT RECOVERY (post-VPS-migration Google identity moves) ============
+  // See server/services/accountRecoveryService.ts for the safety-rule and
+  // transactional-approval logic every mutation below defers to - this
+  // router is deliberately thin: input validation, ownership/authorization
+  // checks the service layer itself cannot know (e.g. "is this MY pending
+  // request"), and mapping AccountRecoveryError -> TRPCError.
+  accountRecovery: router({
+    myRequests: authenticatedProcedure.query(async ({ ctx }) => {
+      return db.listAccountRecoveryRequestsForUser(ctx.user.id);
+    }),
+
+    create: authenticatedProcedure
+      .input(
+        z.object({
+          requestedLegacyUserId: z.number().int().positive().optional(),
+          claimedLegacyEmail: z.string().trim().email().optional(),
+          claimedLegacyOpenId: z.string().trim().min(1).max(64).optional(),
+          claimedDisplayName: z.string().trim().min(1).max(255).optional(),
+          evidenceNote: z.string().trim().max(2000).optional(),
+          referenceOrderNumber: z.string().trim().min(1).max(50).optional(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        try {
+          return await accountRecoveryService.submitAccountRecoveryRequest({
+            requesterUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          throw mapAccountRecoveryError(error);
+        }
+      }),
+
+    // requestId ownership is verified here, never inside the service layer
+    // (which has no concept of "the caller's own session") - same request
+    // id + status combination is used for both "not found" and "belongs to
+    // someone else", so this never confirms/denies whether a given id
+    // exists for another user.
+    cancel: authenticatedProcedure
+      .input(z.object({ requestId: z.number().int().positive(), reason: z.string().trim().max(500).optional() }))
+      .mutation(async ({ input, ctx }) => {
+        const request = await db.getAccountRecoveryRequestById(input.requestId);
+        if (!request || request.requesterUserId !== ctx.user.id) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Recovery request not found" });
+        }
+        try {
+          return await accountRecoveryService.reviewAccountRecoveryRequest({
+            requestId: input.requestId,
+            action: "cancel",
+            actorAdminId: null,
+            reason: input.reason || "ยกเลิกโดยผู้ใช้",
+          });
+        } catch (error) {
+          throw mapAccountRecoveryError(error);
+        }
+      }),
+
+    admin: router({
+      list: adminProcedure
+        .input(
+          z.object({
+            page: z.number().int().positive().default(1),
+            pageSize: z.number().int().positive().max(100).default(20),
+          })
+        )
+        .query(async ({ input }) => {
+          return db.listPendingAccountRecoveryRequests(input);
+        }),
+
+      detail: adminProcedure.input(z.object({ requestId: z.number().int().positive() })).query(async ({ input }) => {
+        const request = await db.getAccountRecoveryRequestById(input.requestId);
+        if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "Recovery request not found" });
+
+        const [requesterIdentity, economicDataFindings, userOwnedDataFindings, requesterUser] = await Promise.all([
+          db.getAuthIdentityByUserAndProvider(request.requesterUserId, "google"),
+          db.findAccountRecoveryEconomicData(request.requesterUserId),
+          db.findAccountRecoveryUserOwnedData(request.requesterUserId, request.id),
+          db.getUserById(request.requesterUserId),
+        ]);
+
+        return {
+          request,
+          requester: requesterUser ? maskUserForAdmin(requesterUser) : null,
+          requesterHasGoogleIdentity: Boolean(requesterIdentity),
+          economicDataFindings,
+          userOwnedDataFindings,
+        };
+      }),
+
+      // EXACT match only, by design - never a fuzzy/partial/LIKE search.
+      // Anti-enumeration: at most one row can ever match a given exact key,
+      // and the caller must already be an authenticated admin.
+      searchLegacyAccount: adminProcedure
+        .input(z.object({ mode: z.enum(["id", "email", "openId"]), value: z.string().trim().min(1).max(320) }))
+        .query(async ({ input }) => {
+          let user: Awaited<ReturnType<typeof db.getUserById>>;
+          if (input.mode === "id") {
+            const id = Number(input.value);
+            if (!Number.isInteger(id) || id <= 0) return { user: null, hasGoogleIdentity: false };
+            user = await db.getUserById(id);
+          } else if (input.mode === "email") {
+            user = await db.getUserByEmail(input.value);
+          } else {
+            user = await db.getUserByOpenId(input.value);
+          }
+          if (!user) return { user: null, hasGoogleIdentity: false };
+
+          const googleIdentity = await db.getAuthIdentityByUserAndProvider(user.id, "google");
+          return { user: maskUserForAdmin(user), hasGoogleIdentity: Boolean(googleIdentity) };
+        }),
+
+      // Backs the approve confirmation modal's safety assessment display -
+      // read-only, safe to call repeatedly as the admin picks different
+      // candidate targets before committing to one.
+      previewApproval: adminProcedure
+        .input(z.object({ requestId: z.number().int().positive(), targetUserId: z.number().int().positive() }))
+        .query(async ({ input }) => {
+          const request = await db.getAccountRecoveryRequestById(input.requestId);
+          if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "Recovery request not found" });
+          const assessment = await accountRecoveryService.assessAccountRecoverySafety({
+            requestId: input.requestId,
+            sourceUserId: request.requesterUserId,
+            targetUserId: input.targetUserId,
+          });
+          // NEVER return the internal assessment as-is - it carries
+          // sourceGoogleIdentity.providerSubject (the Google `sub`) and
+          // .emailAtLink (a full email address), neither of which the
+          // admin UI needs or may see. toSafeAdminAssessmentDto strips
+          // this down to the allowlisted, boolean-only-for-identity shape.
+          return accountRecoveryService.toSafeAdminAssessmentDto(assessment);
+        }),
+
+      approve: adminProcedure
+        .input(
+          z.object({
+            requestId: z.number().int().positive(),
+            targetUserId: z.number().int().positive(),
+            reason: z.string().trim().min(1).max(1000),
+          })
+        )
+        .mutation(async ({ input, ctx }) => {
+          try {
+            const result = await accountRecoveryService.executeAccountRecovery({
+              requestId: input.requestId,
+              targetUserId: input.targetUserId,
+              adminId: ctx.user.id,
+              reason: input.reason,
+            });
+            return { success: true, request: result.request };
+          } catch (error) {
+            throw mapAccountRecoveryError(error);
+          }
+        }),
+
+      reject: adminProcedure
+        .input(z.object({ requestId: z.number().int().positive(), reason: z.string().trim().min(1).max(1000) }))
+        .mutation(async ({ input, ctx }) => {
+          try {
+            return await accountRecoveryService.reviewAccountRecoveryRequest({
+              requestId: input.requestId,
+              action: "reject",
+              actorAdminId: ctx.user.id,
+              reason: input.reason,
+            });
+          } catch (error) {
+            throw mapAccountRecoveryError(error);
+          }
+        }),
+
+      block: adminProcedure
+        .input(z.object({ requestId: z.number().int().positive(), reason: z.string().trim().min(1).max(1000) }))
+        .mutation(async ({ input, ctx }) => {
+          try {
+            return await accountRecoveryService.reviewAccountRecoveryRequest({
+              requestId: input.requestId,
+              action: "block",
+              actorAdminId: ctx.user.id,
+              reason: input.reason,
+            });
+          } catch (error) {
+            throw mapAccountRecoveryError(error);
+          }
+        }),
+    }),
   }),
 
 });

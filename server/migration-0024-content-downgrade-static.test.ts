@@ -135,7 +135,7 @@ describe("migration 0024 - safety invariants unchanged", () => {
     expect(isByteIdenticalToBase("drizzle/0027_add_daily_checkin_and_coupon_cap.sql")).toBe(true);
   });
 
-  it("the 0024 fix itself added no migration - the only entries past 0030 are the known, unrelated 0031 and 0032", () => {
+  it("the 0024 fix itself added no migration - 0031 and 0032 remain at their own fixed positions, exactly as this file originally recorded (later, unrelated migrations - e.g. 0033 auth identities, 0034 account recovery - may legitimately follow them; this test no longer asserts idx 33 is undefined)", () => {
     // This assertion's job is "repairing migration 0024 did not require a new
     // migration", not "no migration may ever be added again". Migration 0031
     // (dailyCheckins.couponId -> nullable, for the 1-point Daily Check-in
@@ -145,20 +145,25 @@ describe("migration 0024 - safety invariants unchanged", () => {
     const journal = JSON.parse(fs.readFileSync(path.join(repoRoot, "drizzle/meta/_journal.json"), "utf8"));
     expect(journal.entries.find((e: any) => e.idx === 31)?.tag).toBe("0031_enable_daily_checkin_point_rewards");
     expect(journal.entries.find((e: any) => e.idx === 32)?.tag).toBe("0032_add_coupon_ownership_scope");
-    expect(journal.entries.find((e: any) => e.idx === 33)).toBeUndefined();
 
+    // Narrowed to 0031/0032 specifically (was `/^003[123]/`, which also
+    // matched 0033 - back when this test was written, 0033 didn't exist
+    // yet, so matching it too was harmless; now that 0033_add_auth_identities
+    // is a real, legitimate, later migration, it must not be flagged as
+    // "stray" by a check whose actual job is only "did the 0024 fix or
+    // 0031/0032 themselves leave behind an extra file").
     const strayFiles = fs
       .readdirSync(path.join(repoRoot, "drizzle"))
       .filter(
         (f) =>
-          /^003[123]/.test(f) &&
+          /^003[12]/.test(f) &&
           f !== "0031_enable_daily_checkin_point_rewards.sql" &&
           f !== "0032_add_coupon_ownership_scope.sql"
       );
     expect(strayFiles).toHaveLength(0);
   });
 
-  it("migration 0030 is still recorded at idx 30, immediately before 0031 and 0032", () => {
+  it("migration 0030 is still recorded at idx 30, immediately before 0031 and 0032, which remain at idx 31/32 - this no longer asserts 0032 is the journal's last entry (see FIX 5 note above: migrations 0033/0034 legitimately follow it)", () => {
     const journal = JSON.parse(fs.readFileSync(path.join(repoRoot, "drizzle/meta/_journal.json"), "utf8"));
     const entry0030 = journal.entries.find((e: any) => e.idx === 30);
     expect(entry0030.tag).toBe("0030_repair_missing_daily_checkins");
@@ -166,10 +171,8 @@ describe("migration 0024 - safety invariants unchanged", () => {
     const entry0031 = journal.entries.find((e: any) => e.idx === 31);
     expect(entry0031.tag).toBe("0031_enable_daily_checkin_point_rewards");
 
-    const last = journal.entries[journal.entries.length - 1];
-    expect(last.tag).toBe("0032_add_coupon_ownership_scope");
-    expect(last.idx).toBe(32);
-    expect(journal.entries).toHaveLength(33);
+    const entry0032 = journal.entries.find((e: any) => e.idx === 32);
+    expect(entry0032.tag).toBe("0032_add_coupon_ownership_scope");
   });
 
   it("no destructive statement (DROP/TRUNCATE/RENAME/DELETE) was introduced anywhere in migration 0024", () => {

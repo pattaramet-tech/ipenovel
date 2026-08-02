@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ENV,
-  isGoogleConnectionMandatory,
+  evaluateGoogleConnectionCutoff,
   resolveAuthProviderMode,
   resolveForceReloginCutoffSeconds,
+  resolveGoogleConnectionCutoffAfterMs,
   resolveRequireGoogleConnection,
 } from "./env";
 
@@ -137,36 +138,131 @@ describe("resolveForceReloginCutoffSeconds - strict ISO-8601 UTC, null on anythi
   });
 });
 
-describe("isGoogleConnectionMandatory", () => {
+describe("resolveGoogleConnectionCutoffAfterMs", () => {
+  it("unset/empty -> null (disabled), never throws", () => {
+    expect(resolveGoogleConnectionCutoffAfterMs(undefined)).toBeNull();
+    expect(resolveGoogleConnectionCutoffAfterMs("")).toBeNull();
+    expect(resolveGoogleConnectionCutoffAfterMs("   ")).toBeNull();
+  });
+
+  it("a valid strict ISO-8601 UTC timestamp resolves to the correct epoch milliseconds", () => {
+    const result = resolveGoogleConnectionCutoffAfterMs("2026-08-15T18:00:00Z");
+    expect(result).toBe(Date.UTC(2026, 7, 15, 18, 0, 0));
+  });
+
+  it.each([
+    "not-a-date",
+    "2026-08-15",
+    "2026-08-15T18:00:00+07:00",
+    "2026-02-30T00:00:00Z",
+    "2026-01-01T24:00:00Z",
+  ])("a SET but malformed/nonexistent value %j -> throws (never silently null, never silently 'now')", (raw) => {
+    expect(() => resolveGoogleConnectionCutoffAfterMs(raw)).toThrow();
+  });
+
+  it("the thrown error message names the offending value, for operator debugging, but is a plain config error (not a secret)", () => {
+    expect(() => resolveGoogleConnectionCutoffAfterMs("garbage")).toThrow(/AUTH_REQUIRE_GOOGLE_CONNECTION_AFTER/);
+    expect(() => resolveGoogleConnectionCutoffAfterMs("garbage")).toThrow(/garbage/);
+  });
+});
+
+describe("evaluateGoogleConnectionCutoff - single source of truth for the targeted Google-connection gate", () => {
   const originalAuthProvider = ENV.authProvider;
   const originalRequire = ENV.requireGoogleConnection;
+  const originalCutoff = ENV.googleConnectionCutoffAfterMs;
 
   afterEach(() => {
     ENV.authProvider = originalAuthProvider;
     ENV.requireGoogleConnection = originalRequire;
+    ENV.googleConnectionCutoffAfterMs = originalCutoff;
   });
 
-  it("transition + true -> true", () => {
-    ENV.authProvider = "transition";
-    ENV.requireGoogleConnection = true;
-    expect(isGoogleConnectionMandatory()).toBe(true);
-  });
-
-  it("transition + false -> false", () => {
+  it("[rule 1] requireGoogleConnection=false -> enabled=false, activeNow=false, regardless of provider/cutoff", () => {
     ENV.authProvider = "transition";
     ENV.requireGoogleConnection = false;
-    expect(isGoogleConnectionMandatory()).toBe(false);
+    ENV.googleConnectionCutoffAfterMs = null;
+    const result = evaluateGoogleConnectionCutoff(1_000_000);
+    expect(result.enabled).toBe(false);
+    expect(result.activeNow).toBe(false);
   });
 
-  it("google + true -> false (the flag alone, without transition, never activates the gate)", () => {
+  it("[rule 2] requireGoogleConnection=true, no cutoff configured -> enabled=true, activeNow=true immediately (backward compatible)", () => {
+    ENV.authProvider = "transition";
+    ENV.requireGoogleConnection = true;
+    ENV.googleConnectionCutoffAfterMs = null;
+    const result = evaluateGoogleConnectionCutoff(1_000_000);
+    expect(result.enabled).toBe(true);
+    expect(result.activeNow).toBe(true);
+    expect(result.cutoffAt).toBeNull();
+  });
+
+  it("[rule 3] requireGoogleConnection=true, cutoff in the future -> enabled=true, activeNow=false until reached", () => {
+    ENV.authProvider = "transition";
+    ENV.requireGoogleConnection = true;
+    ENV.googleConnectionCutoffAfterMs = 2_000_000;
+    const before = evaluateGoogleConnectionCutoff(1_000_000);
+    expect(before.enabled).toBe(true);
+    expect(before.activeNow).toBe(false);
+  });
+
+  it("exact cutoff time (now === cutoff) -> active", () => {
+    ENV.authProvider = "transition";
+    ENV.requireGoogleConnection = true;
+    ENV.googleConnectionCutoffAfterMs = 2_000_000;
+    expect(evaluateGoogleConnectionCutoff(2_000_000).activeNow).toBe(true);
+  });
+
+  it("past cutoff (now > cutoff) -> active", () => {
+    ENV.authProvider = "transition";
+    ENV.requireGoogleConnection = true;
+    ENV.googleConnectionCutoffAfterMs = 2_000_000;
+    expect(evaluateGoogleConnectionCutoff(3_000_000).activeNow).toBe(true);
+  });
+
+  it("[rule 7] AUTH_PROVIDER=transition -> can be enabled", () => {
+    ENV.authProvider = "transition";
+    ENV.requireGoogleConnection = true;
+    ENV.googleConnectionCutoffAfterMs = null;
+    expect(evaluateGoogleConnectionCutoff().enabled).toBe(true);
+  });
+
+  it("[rule 7] AUTH_PROVIDER=google -> can ALSO be enabled (broadened from the old transition-only isGoogleConnectionMandatory)", () => {
     ENV.authProvider = "google";
     ENV.requireGoogleConnection = true;
-    expect(isGoogleConnectionMandatory()).toBe(false);
+    ENV.googleConnectionCutoffAfterMs = null;
+    expect(evaluateGoogleConnectionCutoff().enabled).toBe(true);
+    expect(evaluateGoogleConnectionCutoff().activeNow).toBe(true);
   });
 
-  it("manus + true -> false", () => {
+  it("[rule 8] AUTH_PROVIDER=manus -> NEVER enabled, even with requireGoogleConnection=true and no cutoff (no Google flow exists for a user to satisfy this gate)", () => {
     ENV.authProvider = "manus";
     ENV.requireGoogleConnection = true;
-    expect(isGoogleConnectionMandatory()).toBe(false);
+    ENV.googleConnectionCutoffAfterMs = null;
+    const result = evaluateGoogleConnectionCutoff();
+    expect(result.enabled).toBe(false);
+    expect(result.activeNow).toBe(false);
+  });
+
+  it("serverNow reflects the passed-in nowMs, never the real wall clock when overridden - proves the server-time contract this whole feature depends on", () => {
+    const result = evaluateGoogleConnectionCutoff(0);
+    expect(result.serverNow).toBe(new Date(0).toISOString());
+  });
+
+  it("cutoffAt round-trips the configured cutoff as an ISO string", () => {
+    ENV.authProvider = "transition";
+    ENV.requireGoogleConnection = true;
+    ENV.googleConnectionCutoffAfterMs = Date.UTC(2026, 7, 15, 18, 0, 0);
+    const result = evaluateGoogleConnectionCutoff();
+    expect(result.cutoffAt).toBe("2026-08-15T18:00:00.000Z");
+  });
+
+  it("defaults nowMs to the real server clock (Date.now()) when omitted", () => {
+    ENV.authProvider = "manus"; // enabled=false regardless, isolates this to just checking serverNow is "real"
+    const before = Date.now();
+    const result = evaluateGoogleConnectionCutoff();
+    const after = Date.now();
+    const resultMs = new Date(result.serverNow).getTime();
+    expect(resultMs).toBeGreaterThanOrEqual(before);
+    expect(resultMs).toBeLessThanOrEqual(after);
   });
 });

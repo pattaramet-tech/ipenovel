@@ -11,16 +11,26 @@ import {
 import { restoreToFullyMigratedWithRetry } from "./test-helpers/restoreWithEmergencyRetry";
 import { EXPECTED_TEST_DATABASE_NAME } from "./test-helpers/testDatabaseGuard";
 import { closeMysqlConnectionSafely } from "./test-helpers/closeMysqlConnectionSafely";
+import { resetToMigrationCutoff } from "./test-helpers/resetToMigrationCutoff";
+import { resetToEmptySchema } from "./test-helpers/resetToEmptySchema";
+import { verifyMigrationJournalAtLatest } from "./test-helpers/verifyMigrationJournalAtLatest";
 
 /**
  * Real-database coverage for the legacy pending migration chain repair
  * (migrations 0017-0020, 0022, 0023 made idempotent). Reproduces the
  * confirmed production drift state - recorded migration high-water mark
  * before 0017, with a specific mix of complete/partial/missing objects
- * through 0030 - from a fully migrated disposable test baseline, then runs
- * the real chain (drizzle-compatible resume-by-timestamp semantics via
- * runMigrationsWithLogging) and proves it converges end-to-end without any
- * duplicate-object error, all the way through migration 0030.
+ * through 0030 - from an exact, verified 0000-0030 baseline (via
+ * resetToMigrationCutoff(), never a full baseline through whatever the
+ * newest migration happens to be today), then runs the real chain
+ * (drizzle-compatible resume-by-timestamp semantics via
+ * runMigrationsWithLogging, capped at 0030 via its `untilTag` option) and
+ * proves it converges end-to-end without any duplicate-object error, all
+ * the way through migration 0030 - the documented, confirmed scope of this
+ * incident. The test then separately advances the rest of the way to
+ * today's newest migration via an ordinary, uncapped chain run (ordinary
+ * forward application, not a repair of anything) before its final no-op
+ * check and cleanup.
  *
  * Uses `describe.sequential()` and a single dedicated mysql2 connection
  * (never a pool), built via buildTestDbConnectionOptions - which itself
@@ -34,9 +44,9 @@ import { closeMysqlConnectionSafely } from "./test-helpers/closeMysqlConnectionS
 
 const migrationsFolder = path.resolve(__dirname, "..", "drizzle");
 
-const migration0030Entry = readMigrationJournal(migrationsFolder).find(
-  (entry) => entry.tag === "0030_repair_missing_daily_checkins"
-);
+const MIGRATION_0030_TAG = "0030_repair_missing_daily_checkins";
+
+const migration0030Entry = readMigrationJournal(migrationsFolder).find((entry) => entry.tag === MIGRATION_0030_TAG);
 
 if (!migration0030Entry) {
   throw new Error(
@@ -44,16 +54,25 @@ if (!migration0030Entry) {
   );
 }
 
-/** The last journal entry's timestamp (whatever migration is currently newest,
- *  e.g. 0032 as of the coupon-ownership feature) - the expected final
- *  high-water mark after the full repair chain runs, since
- *  runMigrationsWithLogging() has no "stop at" point and always applies
- *  every migration present in the folder. Resolved once at file scope (the
- *  main test body has no `journal` variable of its own). Deliberately NOT
- *  named after whatever migration happens to be last today - see the
- *  `expectedTags` computation below for the same "derive from the journal,
- *  never hardcode a specific migration number" principle. */
-const MIGRATION_0030_WHEN = readMigrationJournal(migrationsFolder).slice(-1)[0].when;
+/**
+ * The exact 0030 journal entry's own timestamp - the confirmed production
+ * drift repair this test reproduces is documented and bounded through
+ * migration 0030 specifically (see docs/DAILY_CHECKIN_DEPLOYMENT_FIX.md's
+ * follow-up section), so the repair run itself is capped there via
+ * runMigrationsWithLogging's `untilTag` option rather than being left
+ * open-ended. This is what keeps this test safe as later migrations are
+ * added: migrations 0033/0034 use plain, unguarded CREATE TABLE statements
+ * (drizzle-kit generated, unlike the hand-written information_schema-guarded
+ * migrations this scenario actually exercises), so if the repair run were
+ * ever allowed to reach them while their physical objects already exist
+ * (planted by the earlier resetToMigrationCutoff() baseline - see below),
+ * it would hit ER_TABLE_EXISTS_ERROR exactly like the bug this whole file
+ * was rewritten to avoid.
+ */
+const MIGRATION_0030_WHEN = migration0030Entry.when;
+
+/** The last journal entry's timestamp (whatever migration is currently newest) - what the database reaches once cleanup/advancement runs the real, uncapped chain the rest of the way. */
+const MIGRATION_LATEST_WHEN = readMigrationJournal(migrationsFolder).slice(-1)[0].when;
 
 /** The confirmed production migration high-water mark - strictly before migration 0017's own journal timestamp. */
 const PRODUCTION_HIGH_WATER_MARK = 1778343285119;
@@ -179,12 +198,26 @@ async function createProductionEquivalentDriftState(conn: mysql.Connection): Pro
   // (and therefore nothing for 0030) is recorded.
 }
 
+/**
+ * Real emergency path: if the primary `runFullChain(conn)` attempt fails,
+ * simply re-running `runFullChain` again on a fresh connection is not safe
+ * by itself - this test deliberately puts the database into a journal/
+ * schema-desynced state, so the emergency path always wipes to a genuinely
+ * empty schema first, then runs the full chain from scratch, then verifies
+ * the journal high-water mark actually lands on the newest migration.
+ */
+async function emergencyResetAndRestoreFullChain(conn: mysql.Connection): Promise<void> {
+  await resetToEmptySchema(conn, process.env.TEST_DATABASE_URL);
+  await runFullChain(conn);
+  await verifyMigrationJournalAtLatest(conn, migrationsFolder);
+}
+
 /** Restores the full migration chain, including __drizzle_migrations bookkeeping. */
 async function restoreFullChain(conn: mysql.Connection): Promise<void> {
   await restoreToFullyMigratedWithRetry(() => runFullChain(conn), {
     connect,
     queryLiveDatabaseName,
-    runCleanup: runFullChain,
+    runCleanup: emergencyResetAndRestoreFullChain,
     closeConnection: (emergencyConn) => closeMysqlConnectionSafely(emergencyConn),
     expectedDatabaseName: EXPECTED_TEST_DATABASE_NAME,
   });
@@ -207,10 +240,20 @@ describe.sequential("legacy pending migration chain repair (real disposable test
       let couponId: number | undefined;
 
       try {
-        // Fully migrated baseline first - establishes every table/column/
-        // index this scenario needs to selectively revert, and gives us a
-        // known-good state to insert pre-existing application rows into.
-        await runFullChain(conn);
+        // Exact, verified 0000-0030 baseline via resetToMigrationCutoff() -
+        // establishes every table/column/index this scenario needs to
+        // selectively revert, and gives us a known-good state to insert
+        // pre-existing application rows into, while proving nothing from a
+        // later migration (e.g. 0033's `authIdentities`) physically exists
+        // yet. Was previously a FULL baseline (through whatever the newest
+        // migration currently is) via runFullChain(conn) - safe only as
+        // long as every migration past 0030 happened to be guarded; once
+        // 0033/0034 (plain, unguarded CREATE TABLE) existed, rewinding the
+        // journal below 0017 while their tables remained physically present
+        // made the repair run hit ER_TABLE_EXISTS_ERROR the moment it
+        // reached them. See MIGRATION_0030_WHEN's own comment for how the
+        // repair run below stays capped at 0030 to match.
+        await resetToMigrationCutoff(conn, process.env.TEST_DATABASE_URL, migrationsFolder, MIGRATION_0030_TAG);
 
         // payments.ocrConfidence is INT NOT NULL with no default in the
         // final migrated schema (migration 0021 tightens it), so the
@@ -256,21 +299,22 @@ describe.sequential("legacy pending migration chain repair (real disposable test
         expect(await latestRecordedMigrationTimestamp(conn)).toBe(PRODUCTION_HIGH_WATER_MARK);
 
         // The actual repair: run the real, drizzle-compatible migration
-        // chain against this reproduced production drift state.
+        // chain against this reproduced production drift state, capped at
+        // migration 0030 - the documented, confirmed scope of this incident
+        // (see MIGRATION_0030_WHEN's own comment for why capping here
+        // matters, not just historical accuracy).
         const firstRun = createTrackingLogger("[legacy-chain-test:repair]");
-        await expect(runMigrationsWithLogging(conn, migrationsFolder, firstRun.logger)).resolves.not.toThrow();
+        await expect(
+          runMigrationsWithLogging(conn, migrationsFolder, firstRun.logger, { untilTag: MIGRATION_0030_TAG })
+        ).resolves.not.toThrow();
 
-        // Every historically pending migration (0017 through the current
-        // last migration in the journal) was individually attempted and
-        // completed - none were silently skipped due to an earlier failure,
-        // and none threw a duplicate-column/duplicate-index/duplicate-
-        // constraint error. Built from the journal itself (not hardcoded)
-        // so this stays correct as later migrations (e.g. 0032's coupon-
-        // ownership columns) are added - runMigrationsWithLogging() applies
-        // every migration present in the folder, with no "stop at" point.
+        // Every historically pending migration (0017 through 0030) was
+        // individually attempted and completed - none were silently skipped
+        // due to an earlier failure, and none threw a duplicate-column/
+        // duplicate-index/duplicate-constraint error.
         const expectedTags = readMigrationJournal(migrationsFolder)
           .map((entry) => entry.tag)
-          .filter((tag) => tag >= "0017");
+          .filter((tag) => tag >= "0017" && tag <= MIGRATION_0030_TAG);
         expect(firstRun.completedTags).toEqual(expectedTags);
 
         // Migration 0017: payments OCR columns/indexes fully repaired.
@@ -326,16 +370,28 @@ describe.sequential("legacy pending migration chain repair (real disposable test
         expect(await indexExists(conn, "dailyCheckinCampaigns", "dailyCheckinCampaigns_campaignKey_unique")).toBe(true);
         expect(await indexExists(conn, "dailyCheckinRewardGrants", "dailyCheckinRewardGrants_checkin_rule_unique")).toBe(true);
 
-        // Final migration high-water mark reaches exactly the last migration
-        // currently in the journal (see MIGRATION_0030_WHEN's own comment).
+        // The capped repair run's own high-water mark reaches exactly 0030 -
+        // nothing past it was attempted (or needed to be, for this
+        // documented incident's scope).
         expect(await latestRecordedMigrationTimestamp(conn)).toBe(MIGRATION_0030_WHEN);
 
-        // A second full-chain run is a clean no-op: nothing is pending
-        // anymore, so nothing is (re-)attempted.
+        // A second, still-capped run against the same cutoff is then a
+        // clean no-op: nothing is pending anymore, so nothing is
+        // (re-)attempted.
         const secondRun = createTrackingLogger("[legacy-chain-test:second-pass]");
-        await expect(runMigrationsWithLogging(conn, migrationsFolder, secondRun.logger)).resolves.not.toThrow();
+        await expect(
+          runMigrationsWithLogging(conn, migrationsFolder, secondRun.logger, { untilTag: MIGRATION_0030_TAG })
+        ).resolves.not.toThrow();
         expect(secondRun.completedTags).toEqual([]);
         expect(await latestRecordedMigrationTimestamp(conn)).toBe(MIGRATION_0030_WHEN);
+
+        // Ordinary forward advancement the rest of the way to today's
+        // newest migration - unlike everything above, this is a normal
+        // "apply migrations that have genuinely never run yet" chain run,
+        // not a repair of any rewind-induced desync, so it is always safe
+        // regardless of which later migrations are guarded or not.
+        await expect(runFullChain(conn)).resolves.not.toThrow();
+        expect(await latestRecordedMigrationTimestamp(conn)).toBe(MIGRATION_LATEST_WHEN);
 
         // No existing application row was deleted or rewritten by any of
         // the six repaired migrations' guarded ADD COLUMN/CREATE

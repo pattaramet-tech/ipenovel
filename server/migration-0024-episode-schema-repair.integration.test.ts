@@ -8,6 +8,8 @@ import { runMigrationsWithLogging, consoleMigrationLogger, readMigrationJournal 
 import { EXPECTED_TEST_DATABASE_NAME } from "./test-helpers/testDatabaseGuard";
 import { restoreToFullyMigratedWithRetry } from "./test-helpers/restoreWithEmergencyRetry";
 import { closeMysqlConnectionSafely } from "./test-helpers/closeMysqlConnectionSafely";
+import { resetToEmptySchema } from "./test-helpers/resetToEmptySchema";
+import { resetToMigrationCutoff } from "./test-helpers/resetToMigrationCutoff";
 
 /**
  * Real-database coverage for the migration 0024 repair - see
@@ -57,6 +59,26 @@ import { closeMysqlConnectionSafely } from "./test-helpers/closeMysqlConnectionS
  * cleanup into an immediate, clearly-attributed failure in the scenario
  * that actually inherited the bad state, instead of a confusing failure
  * surfacing later in a different, seemingly-unrelated scenario.
+ *
+ * Observed on a real MariaDB instance: scenario 1's own "start from a
+ * completely empty database" step used to enumerate
+ * information_schema.tables and issue a bare `DROP TABLE IF EXISTS` for
+ * every row, with FOREIGN_KEY_CHECKS left at its default (1) and no
+ * distinction between base tables and views. That could leave the schema
+ * NOT actually empty (a DROP hitting a live foreign key, or a view - which
+ * DROP TABLE cannot remove even with IF EXISTS - throws and can leave
+ * later objects, including `users`, undropped) while runFullChain() below
+ * still ran and failed on migration 0000's `CREATE TABLE users` with
+ * ER_TABLE_EXISTS_ERROR. Worse, the scenario's own cleanup
+ * (restoreToFullyMigrated -> restoreToFullyMigratedWithRetry) and even its
+ * "emergency" retry on a brand-new connection both called the exact same
+ * runFullChainAndVerify() - which only ever RUNS the chain, never resets
+ * anything - so both cleanup attempts failed identically against the same
+ * still-dirty schema. See test-helpers/resetToEmptySchema.ts (used both at
+ * the start of scenario 1 and, via emergencyResetAndRestore() below, as the
+ * genuine emergency-reset path) for the fix: a single, independently
+ * unit-tested, FK-checks-safe, views-before-tables, post-verified schema
+ * reset - never a second ad-hoc drop loop.
  */
 
 const migrationsFolder = path.resolve(__dirname, "..", "drizzle");
@@ -109,12 +131,6 @@ async function columnType(conn: mysql.Connection, tableName: string, columnName:
   return rows[0]?.dataType ?? null;
 }
 
-async function dropColumnIfExists(conn: mysql.Connection, tableName: string, columnName: string): Promise<void> {
-  if (await columnExists(conn, tableName, columnName)) {
-    await conn.query(`ALTER TABLE \`${tableName}\` DROP COLUMN \`${columnName}\``);
-  }
-}
-
 async function dropTableIfExists(conn: mysql.Connection, tableName: string): Promise<void> {
   await conn.query(`DROP TABLE IF EXISTS \`${tableName}\``);
 }
@@ -131,44 +147,31 @@ async function indexExists(conn: mysql.Connection, tableName: string, indexName:
  * `episodes.isPublished` and `episodes.sortOrder` are each covered by a
  * secondary index (episodes_isPublished_idx/episodes_isPublished_
  * createdAt_idx and episodes_sortOrder_idx, from migrations 0024/0026) -
- * TiDB (like MySQL) refuses to DROP COLUMN a column a secondary index still
- * covers. The scenarios below that simulate a partial legacy schema by
- * dropping those columns via dropColumnIfExists() must drop these
- * dependent indexes first. The migration chain re-run afterward recreates
- * all three naturally, so this never edits drizzle/schema.ts or the
- * migrations themselves - purely test-fixture ordering.
+ * used below purely to VERIFY the migration chain recreates them naturally
+ * after a resetToCutoff() baseline, never to drop them - dropping is no
+ * longer needed at all (see resetToCutoff()'s own docstring: at an exact
+ * migration cutoff, these indexes - like the columns they cover - simply
+ * never existed in the first place, rather than having to be created then
+ * torn back down by this test file).
  */
 const EPISODES_DEPENDENT_INDEXES = ["episodes_isPublished_idx", "episodes_isPublished_createdAt_idx", "episodes_sortOrder_idx"] as const;
-
-/**
- * Drops `indexName` on `tableName` only if it currently exists, and only if
- * it is one of the specific, explicitly allowlisted dependent-index names
- * this test file is permitted to touch (EPISODES_DEPENDENT_INDEXES) -
- * never PRIMARY, never anything else, regardless of what's passed in.
- */
-async function dropIndexIfExists(conn: mysql.Connection, tableName: string, indexName: string): Promise<void> {
-  if ((EPISODES_DEPENDENT_INDEXES as readonly string[]).indexOf(indexName) === -1) {
-    throw new Error(`dropIndexIfExists: refusing to drop "${indexName}" - it is not in the explicit test index allowlist.`);
-  }
-  if (await indexExists(conn, tableName, indexName)) {
-    await conn.query(`ALTER TABLE \`${tableName}\` DROP INDEX \`${indexName}\``);
-  }
-}
-
-/** Removes only the __drizzle_migrations rows recorded strictly after `afterWhen` - rewinds the resume high-water-mark without touching earlier, unrelated history. */
-async function rewindMigrationHistoryAfter(conn: mysql.Connection, afterWhen: number): Promise<void> {
-  await conn.query(`DELETE FROM \`__drizzle_migrations\` WHERE created_at > ?`, [afterWhen]);
-}
 
 async function runFullChain(conn: mysql.Connection) {
   await runMigrationsWithLogging(conn, migrationsFolder, consoleMigrationLogger("[integration-test]"));
 }
 
 const journal = readMigrationJournal(migrationsFolder);
-const idx23When = journal.find((e) => e.tag === "0023_add_episode_sale_mode")!.when;
-const idx24When = journal.find((e) => e.tag === "0024_widen_episode_content_mediumtext")!.when;
-const idx27When = journal.find((e) => e.tag === "0027_add_daily_checkin_and_coupon_cap")!.when;
+const IDX23_TAG = "0023_add_episode_sale_mode";
+const IDX24_TAG = "0024_widen_episode_content_mediumtext";
+const IDX27_TAG = "0027_add_daily_checkin_and_coupon_cap";
+/** Only still needed directly (rather than via resetToCutoff()) by scenario 5's own deliberate, scoped journal-only rewind - see its comments for why that one case is safe. */
+const idx23When = journal.find((e) => e.tag === IDX23_TAG)!.when;
 const latestJournalWhen = journal[journal.length - 1].when;
+
+/** Convenience wrapper binding resetToMigrationCutoff to this file's own migrationsFolder/TEST_DATABASE_URL - every scenario below that needs an EXACT "as if only 0000..cutoff had ever run" baseline (both schema and journal genuinely in that state, never just the journal) uses this instead of the removed rewindMigrationHistoryAfter() + manual per-object dropping pattern. See test-helpers/resetToMigrationCutoff.ts for why: rewinding only __drizzle_migrations left later migrations' physical objects (e.g. migration 0033's `authIdentities` table) behind, which made runFullChain() fail with ER_TABLE_EXISTS_ERROR once the chain grew past whichever migration a scenario happened to manually account for. */
+async function resetToCutoff(conn: mysql.Connection, cutoffTag: string): Promise<void> {
+  await resetToMigrationCutoff(conn, process.env.TEST_DATABASE_URL, migrationsFolder, cutoffTag);
+}
 
 /**
  * Explicitly verifies the database is at the fully-migrated baseline -
@@ -213,6 +216,32 @@ async function runFullChainAndVerify(conn: mysql.Connection): Promise<void> {
 }
 
 /**
+ * The GENUINE emergency-reset path: verified empty-schema reset -> run the
+ * full migration chain from nothing -> verify the result - matching
+ * `resetToEmptySchema()` at the START of scenario 1 below, and never just
+ * "run the chain again" against whatever state the connection happens to
+ * already be in. This is the fix for the exact failure this file's
+ * docstring documents: the emergency retry used to call the SAME
+ * runFullChainAndVerify() as the primary attempt, so a schema left dirty
+ * by an incomplete drop pass made BOTH the primary cleanup and the
+ * "emergency" retry fail identically (ER_TABLE_EXISTS_ERROR on `users`),
+ * since neither ever actually reset anything.
+ *
+ * Deliberately NOT used for the PRIMARY cleanup attempt
+ * (restoreToFullyMigratedWithRetry's `primaryCleanup` argument stays
+ * `runFullChainAndVerify`, unchanged) - a destructive full-schema wipe is
+ * reserved for the genuine emergency path, only after the live
+ * database-name guard (see restoreToFullyMigratedWithRetry's own
+ * queryLiveDatabaseName + expectedDatabaseName check, which runs BEFORE
+ * this function is ever called) has passed on a freshly-opened connection.
+ */
+async function emergencyResetAndRestore(conn: mysql.Connection): Promise<void> {
+  await resetToEmptySchema(conn, process.env.TEST_DATABASE_URL);
+  await runFullChain(conn);
+  await verifyFullyMigratedBaseline(conn);
+}
+
+/**
  * Fully restores episodes/episodePurchases/readingProgress to the complete,
  * correct end state - always run in a finally block regardless of what a
  * test intentionally broke.
@@ -228,6 +257,15 @@ async function runFullChainAndVerify(conn: mysql.Connection): Promise<void> {
  * verifyFullyMigratedBaseline()) or throws - preserving the primary failure
  * - so this test is correctly reported as failed instead of silently
  * leaving the shared database dirty for later tests.
+ *
+ * The PRIMARY attempt (`runFullChainAndVerify` on the SAME connection) is
+ * the existing, non-destructive recovery - "just run whatever's pending and
+ * verify" - left exactly as it was. Only the EMERGENCY retry (a brand-new,
+ * live-database-name-reverified connection - see restoreToFullyMigratedWithRetry's
+ * own guard, which runs before `runCleanup` below is ever invoked) performs
+ * a genuine destructive reset via `emergencyResetAndRestore`, so it can
+ * actually recover from a schema a previous scenario left dirty, instead of
+ * repeating the same operation that already failed.
  */
 async function restoreToFullyMigrated(conn: mysql.Connection): Promise<void> {
   await restoreToFullyMigratedWithRetry(
@@ -238,7 +276,7 @@ async function restoreToFullyMigrated(conn: mysql.Connection): Promise<void> {
         const [rows]: any = await emergencyConn.query("SELECT DATABASE() AS name");
         return rows?.[0]?.name ?? null;
       },
-      runCleanup: runFullChainAndVerify,
+      runCleanup: emergencyResetAndRestore,
       closeConnection: (emergencyConn) => closeMysqlConnectionSafely(emergencyConn),
       expectedDatabaseName: EXPECTED_TEST_DATABASE_NAME,
     }
@@ -312,19 +350,29 @@ describe.sequential("migration 0024/0025/0028 repair - real disposable test data
     const conn = await connect();
     if (!conn) return;
     try {
-      // Drop every table in this database and every migration record -
-      // this IS "completely empty" with respect to this migration chain's
-      // own bookkeeping (__drizzle_migrations), which is what determines
+      // Drop every view and every base table in this database (which also
+      // removes every migration record along with __drizzle_migrations
+      // itself) - this IS "completely empty" with respect to this
+      // migration chain's own bookkeeping, which is what determines
       // whether migrations 0000-0022's non-idempotent CREATE TABLE
       // statements are even attempted. (Deliberately does NOT call
       // runFullChainAndVerify() first - the whole point of this scenario
       // is to start from nothing, not from a verified baseline.)
-      const [tables]: any = await conn.query(
-        `SELECT table_name as name FROM information_schema.tables WHERE table_schema = DATABASE()`
-      );
-      for (const { name } of tables) {
-        await conn.query(`DROP TABLE IF EXISTS \`${name}\``);
-      }
+      //
+      // Uses the shared, independently unit-tested resetToEmptySchema() -
+      // NOT an ad-hoc DROP TABLE loop. The previous ad-hoc loop enumerated
+      // information_schema.tables (which can include VIEWs, which DROP
+      // TABLE cannot remove even with IF EXISTS) with FOREIGN_KEY_CHECKS
+      // left at its default (1), so a single DROP hitting either case could
+      // throw and leave later objects - observed on a real MariaDB
+      // instance to include `users` itself - still present; runFullChain()
+      // below would then fail immediately on migration 0000's `CREATE
+      // TABLE users` with ER_TABLE_EXISTS_ERROR. resetToEmptySchema()
+      // disables foreign key checks for the drop pass, drops views before
+      // tables via DROP VIEW, and independently VERIFIES via
+      // information_schema that zero base tables and zero views remain
+      // before returning - never a silent partial reset.
+      await resetToEmptySchema(conn, process.env.TEST_DATABASE_URL);
 
       await expect(runFullChain(conn)).resolves.not.toThrow();
 
@@ -343,19 +391,17 @@ describe.sequential("migration 0024/0025/0028 repair - real disposable test data
     const conn = await connect();
     if (!conn) return;
     try {
-      await runFullChainAndVerify(conn); // verified fully-migrated baseline
-      await rewindMigrationHistoryAfter(conn, idx23When); // pretend only 0000-0023 ever ran
-      // isPublished/sortOrder are covered by secondary indexes (see
-      // EPISODES_DEPENDENT_INDEXES) - TiDB refuses to drop those columns
-      // while the indexes still cover them, so drop the indexes first.
-      for (const idx of EPISODES_DEPENDENT_INDEXES) {
-        await dropIndexIfExists(conn, "episodes", idx);
-      }
-      for (const col of ["content", "contentFormat", "isPublished", "publishedAt", "wordCount", "sortOrder"]) {
-        await dropColumnIfExists(conn, "episodes", col);
-      }
-      await dropTableIfExists(conn, "episodePurchases");
-      await dropTableIfExists(conn, "readingProgress");
+      // Genuinely "as if only 0000-0023 had ever run" - schema AND journal
+      // both, via resetToCutoff() (see test-helpers/resetToMigrationCutoff.ts).
+      // No manual column/table/index dropping needed at all: at this exact
+      // cutoff, episodes.content/contentFormat/isPublished/publishedAt/
+      // wordCount/sortOrder, episodePurchases, readingProgress, and their
+      // dependent indexes simply never existed in the first place - never
+      // "created then dropped", which is what previously left later
+      // migrations' OWN objects (e.g. migration 0033's `authIdentities`)
+      // behind and caused ER_TABLE_EXISTS_ERROR once the chain grew past
+      // this scenario's original, narrower manual cleanup list.
+      await resetToCutoff(conn, IDX23_TAG);
 
       expect(await columnExists(conn, "episodes", "content")).toBe(false);
 
@@ -379,18 +425,15 @@ describe.sequential("migration 0024/0025/0028 repair - real disposable test data
     const conn = await connect();
     if (!conn) return;
     try {
-      await runFullChainAndVerify(conn);
-      await rewindMigrationHistoryAfter(conn, idx23When);
-      await dropColumnIfExists(conn, "episodes", "content");
-      await dropTableIfExists(conn, "episodePurchases");
-      await dropTableIfExists(conn, "readingProgress");
+      await resetToCutoff(conn, IDX23_TAG);
 
-      // Precondition: 0023 (saleMode) is still recorded/present, proving
-      // this is specifically "history passed 0023, prerequisites for 0024
-      // missing" - not a fully fresh database.
+      // Precondition: 0023 (saleMode) is present, proving this is
+      // specifically "history passed 0023, prerequisites for 0024 missing" -
+      // not a fully fresh database. The journal high-water mark itself is
+      // already guaranteed to be exactly idx23When by resetToCutoff() -
+      // see resetToMigrationCutoff()'s own post-run verification - so this
+      // scenario no longer needs to separately re-prove that fact.
       expect(await columnExists(conn, "episodes", "saleMode")).toBe(true);
-      const [rows]: any = await conn.query(`SELECT MAX(created_at) as latest FROM \`__drizzle_migrations\``);
-      expect(Number(rows[0].latest)).toBe(idx23When);
       expect(await columnExists(conn, "episodes", "content")).toBe(false);
 
       await expect(runFullChain(conn)).resolves.not.toThrow();
@@ -404,20 +447,12 @@ describe.sequential("migration 0024/0025/0028 repair - real disposable test data
     const conn = await connect();
     if (!conn) return;
     try {
-      await runFullChainAndVerify(conn);
-      await rewindMigrationHistoryAfter(conn, idx23When);
-      // isPublished/sortOrder are covered by secondary indexes (see
-      // EPISODES_DEPENDENT_INDEXES) - TiDB refuses to drop those columns
-      // while the indexes still cover them, so drop the indexes first.
-      for (const idx of EPISODES_DEPENDENT_INDEXES) {
-        await dropIndexIfExists(conn, "episodes", idx);
-      }
-      for (const col of ["content", "contentFormat", "isPublished", "publishedAt", "wordCount", "sortOrder"]) {
-        await dropColumnIfExists(conn, "episodes", col);
-      }
-      await dropTableIfExists(conn, "episodePurchases");
-      await dropTableIfExists(conn, "readingProgress");
-      // Manually pre-create HALF the columns, as if a partial run happened before.
+      await resetToCutoff(conn, IDX23_TAG);
+      // Manually pre-create HALF the columns, as if a partial run happened
+      // before - this part is a deliberate, intentional anomaly (a
+      // migration-history-inconsistent state no real cutoff can produce on
+      // its own), so it stays as direct DDL, layered on top of the now
+      // precisely-known 0000-0023 baseline.
       await conn.query("ALTER TABLE `episodes` ADD `content` text");
       await conn.query("ALTER TABLE `episodes` ADD `contentFormat` varchar(50) DEFAULT 'plain_text'");
       await conn.query("ALTER TABLE `episodes` ADD `isPublished` boolean DEFAULT true NOT NULL");
@@ -441,14 +476,46 @@ describe.sequential("migration 0024/0025/0028 repair - real disposable test data
     const conn = await connect();
     if (!conn) return;
     try {
-      await runFullChainAndVerify(conn);
-      await rewindMigrationHistoryAfter(conn, idx23When);
-      // Everything already present (it never was dropped) - this is the
-      // "already fully correct, migration must not error" case.
+      // This scenario's actual intent is narrower than "the entire current
+      // schema, however far migrations have grown, is present while the
+      // journal only shows 0023" - it's specifically "migration 0024's OWN
+      // target objects already physically exist (e.g. via a manual
+      // drizzle-kit push) despite the journal not yet recording 0024 - does
+      // 0024's own guard handle that gracefully". Establishing that exactly
+      // (rather than the previous "full chain through whatever the newest
+      // migration currently is, then rewind only to 0023") is what keeps
+      // this scenario meaningful as the migration chain keeps growing:
+      // reaching all the way to the newest migration would now also
+      // require every migration after 0024 (including unguarded, plain
+      // CREATE TABLE ones like 0033/0034) to independently be idempotent
+      // no-ops too, which is not what this scenario is actually about, and
+      // is never something a test fixture may paper over by making
+      // production migrations idempotent (see this file's task
+      // constraints) - that is a real, separate migration-robustness
+      // property, not a test-fixture bug.
+      //
+      // 1. Reset to a PRECISELY known baseline: schema and journal both
+      //    genuinely reflect "only 0000-0024 ran" - migration 0024's own
+      //    target objects (episodes.content & friends, episodePurchases,
+      //    readingProgress) exist; nothing from 0025 onward exists at all.
+      await resetToCutoff(conn, IDX24_TAG);
       expect(await columnExists(conn, "episodes", "content")).toBe(true);
       expect(await tableExists(conn, "episodePurchases")).toBe(true);
       expect(await tableExists(conn, "readingProgress")).toBe(true);
 
+      // 2. NOW it is safe to rewind ONLY the journal back to 0023 - unlike
+      //    the removed general-purpose rewindMigrationHistoryAfter() this
+      //    file used to rely on everywhere, this is deliberate and scoped:
+      //    the physical state above is precisely known and verified to
+      //    contain NOTHING from any migration after 0024, so making 0024
+      //    "look pending again" cannot cause any OTHER migration to
+      //    collide with an object it doesn't expect.
+      await conn.query("DELETE FROM `__drizzle_migrations` WHERE created_at > ?", [idx23When]);
+
+      // 3. 0024 must detect its targets already exist and gracefully
+      //    no-op (its own guard, not this test, is what's being proven);
+      //    0025 onward genuinely run for real, since nothing about them
+      //    exists yet in this constructed state.
       await expect(runFullChain(conn)).resolves.not.toThrow();
 
       expect(await columnExists(conn, "episodes", "content")).toBe(true);
@@ -457,21 +524,21 @@ describe.sequential("migration 0024/0025/0028 repair - real disposable test data
     }
   }, MIGRATION_0024_TEST_TIMEOUT_MS);
 
-  it("6. readingProgress is missing entirely despite the journal already being fully recorded - migration 0028 recreates it", async () => {
+  it("6. readingProgress is missing entirely despite the journal already being fully recorded through 0027 - migration 0028 recreates it", async () => {
     const conn = await connect();
     if (!conn) return;
     try {
-      await runFullChainAndVerify(conn); // full history recorded, including 0028
+      // "Fully recorded" is scoped to exactly 0000-0027 (not the newest
+      // migration overall) for the same reason as scenario 5 above:
+      // reaching further would require every later migration to already
+      // be present too, which this scenario was never actually testing
+      // and would fail once an unguarded migration (0033/0034) is added
+      // past the point this scenario's manual cleanup accounted for.
+      await resetToCutoff(conn, IDX27_TAG);
+      // readingProgress already exists at this cutoff (migration 0024
+      // creates it) - drop it to simulate the incident this repair targets.
       await dropTableIfExists(conn, "readingProgress");
       expect(await tableExists(conn, "readingProgress")).toBe(false);
-
-      // History is already past 0024/0025 - only a migration newer than
-      // everything before it (0028) can possibly run now.
-      const [rows]: any = await conn.query(`SELECT COUNT(*) as cnt FROM \`__drizzle_migrations\` WHERE created_at > ?`, [idx27When]);
-      expect(Number(rows[0].cnt)).toBeGreaterThan(0); // 0028 already recorded from runFullChainAndVerify() above
-
-      // Rewind ONLY 0028's own record so it can run again and prove the repair.
-      await conn.query(`DELETE FROM \`__drizzle_migrations\` WHERE created_at > ?`, [idx27When]);
 
       await expect(runFullChain(conn)).resolves.not.toThrow();
       expect(await tableExists(conn, "readingProgress")).toBe(true);
@@ -485,11 +552,10 @@ describe.sequential("migration 0024/0025/0028 repair - real disposable test data
     const conn = await connect();
     if (!conn) return;
     try {
-      await runFullChainAndVerify(conn);
-      await rewindMigrationHistoryAfter(conn, idx24When); // 0024 recorded, 0025 not yet
-      for (const col of ["currentChapterNumber", "currentChapterTitle", "anchorKey"]) {
-        await dropColumnIfExists(conn, "readingProgress", col);
-      }
+      // Genuinely "as if only 0000-0024 had ever run" - readingProgress
+      // exists (created by 0024) but its 0025 TOC columns do not, with no
+      // manual column-dropping needed at all.
+      await resetToCutoff(conn, IDX24_TAG);
       expect(await tableExists(conn, "readingProgress")).toBe(true);
       expect(await columnExists(conn, "readingProgress", "currentChapterNumber")).toBe(false);
 

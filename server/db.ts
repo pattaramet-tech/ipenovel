@@ -35,6 +35,8 @@ import {
   sportsMatchRewards,
   dailyCheckins,
   dailyCheckinRewardGrants,
+  accountRecoveryRequests,
+  accountRecoveryAuditLogs,
   Novel,
   couponUsages as couponUsagesTable,
 } from "../drizzle/schema";
@@ -5898,4 +5900,410 @@ export async function approveWalletTopupWithOCR(
     const updated = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
     return updated[0];
   });
+}
+
+// ============ ACCOUNT RECOVERY WORKFLOW ============
+// Backs the post-VPS-migration admin account recovery feature - see
+// server/services/accountRecoveryService.ts for the safety-assessment and
+// transactional-approval logic these are composed into, and
+// drizzle/schema.ts's accountRecoveryRequests/accountRecoveryAuditLogs doc
+// comments for the schema rationale. Every function accepts an optional
+// `tx` for the same in-flight-transaction composability reasons as the
+// Google-identity helpers above.
+
+export type AccountRecoveryEconomicDataFinding = {
+  table: string;
+  count: number;
+};
+
+/** One pending request per requester - the check createAccountRecoveryRequest's
+ *  caller (accountRecoveryService.submitAccountRecoveryRequest) uses before
+ *  inserting a new row. */
+export async function getPendingAccountRecoveryRequestForUser(requesterUserId: number, tx?: any) {
+  const db = tx ?? (await getDb());
+  if (!db) return undefined;
+  const result = await db
+    .select()
+    .from(accountRecoveryRequests)
+    .where(
+      and(
+        eq(accountRecoveryRequests.requesterUserId, requesterUserId),
+        eq(accountRecoveryRequests.status, "pending" as any)
+      )
+    )
+    .limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function createAccountRecoveryRequest(
+  input: {
+    requesterUserId: number;
+    requestedLegacyUserId?: number | null;
+    claimedLegacyEmail?: string | null;
+    claimedLegacyOpenId?: string | null;
+    claimedDisplayName?: string | null;
+    evidenceNote?: string | null;
+    referenceOrderNumber?: string | null;
+  },
+  tx?: any
+) {
+  const db = tx ?? (await getDb());
+  if (!db) throw new Error("Database not available");
+
+  const result = await db.insert(accountRecoveryRequests).values({
+    requesterUserId: input.requesterUserId,
+    requestedLegacyUserId: input.requestedLegacyUserId ?? null,
+    claimedLegacyEmail: input.claimedLegacyEmail ?? null,
+    claimedLegacyOpenId: input.claimedLegacyOpenId ?? null,
+    claimedDisplayName: input.claimedDisplayName ?? null,
+    evidenceNote: input.evidenceNote ?? null,
+    referenceOrderNumber: input.referenceOrderNumber ?? null,
+    status: "pending" as any,
+  });
+
+  // Extract insertId from Drizzle MySQL result (same extraction pattern as
+  // createNovel/createEpisode elsewhere in this file).
+  let insertedId: number | undefined;
+  if (typeof result === "object" && result !== null) {
+    insertedId = (result as any).insertId;
+    if (!insertedId && Array.isArray(result) && result[0]) {
+      insertedId = (result[0] as any).insertId;
+    }
+    if (!insertedId && (result as any).meta) {
+      insertedId = (result as any).meta.insertId;
+    }
+  }
+  if (!insertedId) {
+    throw new Error("Failed to extract inserted account recovery request ID from database result");
+  }
+
+  const created = await db
+    .select()
+    .from(accountRecoveryRequests)
+    .where(eq(accountRecoveryRequests.id, insertedId))
+    .limit(1);
+  return created[0];
+}
+
+export async function getAccountRecoveryRequestById(id: number, tx?: any) {
+  const db = tx ?? (await getDb());
+  if (!db) return undefined;
+  const result = await db.select().from(accountRecoveryRequests).where(eq(accountRecoveryRequests.id, id)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+/** Every request the given user has ever made, most recent first - backs
+ *  /account/recovery's own status view. Never accepts anyone else's id from
+ *  the client - the caller (accountRecovery.myRequests) always passes
+ *  ctx.user.id. */
+export async function listAccountRecoveryRequestsForUser(requesterUserId: number, tx?: any) {
+  const db = tx ?? (await getDb());
+  if (!db) return [];
+  return db
+    .select()
+    .from(accountRecoveryRequests)
+    .where(eq(accountRecoveryRequests.requesterUserId, requesterUserId))
+    .orderBy(desc(accountRecoveryRequests.createdAt));
+}
+
+/** Paginated admin pending queue - anti-enumeration by construction (no
+ *  free-text/user-supplied filter beyond page/pageSize; searching a
+ *  SPECIFIC legacy account is a separate, exact-match-only lookup, never
+ *  this list). */
+export async function listPendingAccountRecoveryRequests(
+  options: { page?: number; pageSize?: number } = {},
+  tx?: any
+) {
+  const db = tx ?? (await getDb());
+  if (!db) return { requests: [], total: 0, page: 1, pageSize: 20, totalPages: 0 };
+
+  const pageSize = Math.min(Math.max(options.pageSize || 20, 1), 100);
+  const page = Math.max(1, options.page || 1);
+  const offset = (page - 1) * pageSize;
+
+  const [rows, totalResult] = await Promise.all([
+    db
+      .select()
+      .from(accountRecoveryRequests)
+      .where(eq(accountRecoveryRequests.status, "pending" as any))
+      .orderBy(asc(accountRecoveryRequests.createdAt))
+      .limit(pageSize)
+      .offset(offset),
+    db
+      .select({ value: count() })
+      .from(accountRecoveryRequests)
+      .where(eq(accountRecoveryRequests.status, "pending" as any)),
+  ]);
+
+  const total = totalResult[0]?.value ?? 0;
+  return {
+    requests: rows,
+    total,
+    page,
+    pageSize,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
+  };
+}
+
+/** Conditional status transition - ONLY succeeds while the row is still in
+ *  `fromStatuses`, exactly the same "conditional UPDATE, inspect
+ *  affectedRows" concurrency-safety pattern as approveWalletTopup/
+ *  rejectWalletTopup above. Returns true iff THIS call won the race; a
+ *  caller seeing false must report a safe "already processed" outcome,
+ *  never retry the same transition as if it were still pending. */
+export async function transitionAccountRecoveryRequestStatus(
+  params: {
+    id: number;
+    fromStatuses: Array<"pending">;
+    toStatus: "approved" | "rejected" | "cancelled" | "blocked";
+    reviewedByAdminId?: number | null;
+    reviewReason?: string | null;
+    sourceUserId?: number | null;
+    targetUserId?: number | null;
+  },
+  tx: any
+): Promise<boolean> {
+  const statusConditions = params.fromStatuses.map((s) => eq(accountRecoveryRequests.status, s as any));
+  const updateResult = await tx
+    .update(accountRecoveryRequests)
+    .set({
+      status: params.toStatus as any,
+      reviewedByAdminId: params.reviewedByAdminId ?? null,
+      reviewedAt: new Date(),
+      reviewReason: params.reviewReason ?? null,
+      ...(params.sourceUserId !== undefined ? { sourceUserId: params.sourceUserId } : {}),
+      ...(params.targetUserId !== undefined ? { targetUserId: params.targetUserId } : {}),
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(accountRecoveryRequests.id, params.id),
+        statusConditions.length === 1 ? statusConditions[0] : or(...statusConditions)
+      )
+    );
+
+  const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
+  const affectedRows = (resultHeader as any)?.affectedRows || 0;
+  return affectedRows > 0;
+}
+
+export async function insertAccountRecoveryAuditLog(
+  input: {
+    recoveryRequestId: number;
+    actorAdminId?: number | null;
+    action: string;
+    sourceUserId?: number | null;
+    targetUserId?: number | null;
+    authIdentityId?: number | null;
+    safeMetadata?: Record<string, unknown> | null;
+  },
+  tx?: any
+) {
+  const db = tx ?? (await getDb());
+  if (!db) throw new Error("Database not available");
+  await db.insert(accountRecoveryAuditLogs).values({
+    recoveryRequestId: input.recoveryRequestId,
+    actorAdminId: input.actorAdminId ?? null,
+    action: input.action,
+    sourceUserId: input.sourceUserId ?? null,
+    targetUserId: input.targetUserId ?? null,
+    authIdentityId: input.authIdentityId ?? null,
+    safeMetadata: input.safeMetadata ? JSON.stringify(input.safeMetadata) : null,
+  });
+}
+
+/** Moves ONE authIdentities row from its current owner to `targetUserId` -
+ *  conditional on it STILL belonging to `expectedCurrentUserId` (re-checked
+ *  inside the same transaction as every other recovery safety rule - see
+ *  executeAccountRecovery), so a concurrent change between the assessment
+ *  read and this write cannot silently move the wrong row. Never touches
+ *  users.id or users.openId - only authIdentities.userId. Relies on the
+ *  pre-existing UNIQUE(userId, provider) constraint as the final backstop
+ *  against the target somehow already having a google identity by the time
+ *  this runs. */
+export async function moveAuthIdentityOwner(
+  params: { authIdentityId: number; expectedCurrentUserId: number; targetUserId: number },
+  tx: any
+): Promise<boolean> {
+  const updateResult = await tx
+    .update(authIdentities)
+    .set({ userId: params.targetUserId, updatedAt: new Date() })
+    .where(and(eq(authIdentities.id, params.authIdentityId), eq(authIdentities.userId, params.expectedCurrentUserId)));
+
+  const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
+  const affectedRows = (resultHeader as any)?.affectedRows || 0;
+  return affectedRows > 0;
+}
+
+/** Finalizes the target account after a successful identity move -
+ *  loginMethod becomes "google" unconditionally; email is backfilled ONLY
+ *  when the target currently has none (never overwrites an existing
+ *  address - rule 11). Never touches id/openId. */
+export async function finalizeAccountRecoveryTargetUser(
+  params: { targetUserId: number; fallbackEmail: string | null },
+  tx: any
+): Promise<void> {
+  const target = await getUserById(params.targetUserId, tx);
+  if (!target) throw new Error("[AccountRecovery] Target user disappeared mid-transaction");
+
+  const updates: Record<string, unknown> = { loginMethod: "google", updatedAt: new Date() };
+  if (!target.email && params.fallbackEmail) {
+    updates.email = params.fallbackEmail;
+  }
+  await tx.update(users).set(updates).where(eq(users.id, params.targetUserId));
+}
+
+const ACCOUNT_RECOVERY_ECONOMIC_DATA_CHECKS: Array<{
+  table: string;
+  check: (userId: number, db: any) => Promise<number>;
+}> = [
+  { table: "orders", check: async (userId, db) => (await db.select({ id: orders.id }).from(orders).where(eq(orders.userId, userId)).limit(1)).length },
+  { table: "purchases", check: async (userId, db) => (await db.select({ id: purchases.id }).from(purchases).where(eq(purchases.userId, userId)).limit(1)).length },
+  { table: "episodePurchases", check: async (userId, db) => (await db.select({ id: episodePurchases.id }).from(episodePurchases).where(eq(episodePurchases.userId, userId)).limit(1)).length },
+  { table: "walletAccounts", check: async (userId, db) => (await db.select({ id: walletAccounts.id }).from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1)).length },
+  { table: "walletTransactions", check: async (userId, db) => (await db.select({ id: walletTransactions.id }).from(walletTransactions).where(eq(walletTransactions.userId, userId)).limit(1)).length },
+  { table: "walletTopups", check: async (userId, db) => (await db.select({ id: walletTopups.id }).from(walletTopups).where(eq(walletTopups.userId, userId)).limit(1)).length },
+  { table: "pointsTransactions", check: async (userId, db) => (await db.select({ id: pointsTransactions.id }).from(pointsTransactions).where(eq(pointsTransactions.userId, userId)).limit(1)).length },
+  { table: "couponUsages", check: async (userId, db) => (await db.select({ id: couponUsagesTable.id }).from(couponUsagesTable).where(eq(couponUsagesTable.userId, userId)).limit(1)).length },
+  { table: "sportsMatchVotes", check: async (userId, db) => (await db.select({ id: sportsMatchVotes.id }).from(sportsMatchVotes).where(eq(sportsMatchVotes.userId, userId)).limit(1)).length },
+  { table: "sportsMatchRewards", check: async (userId, db) => (await db.select({ id: sportsMatchRewards.id }).from(sportsMatchRewards).where(eq(sportsMatchRewards.userId, userId)).limit(1)).length },
+  { table: "dailyCheckinRewardGrants", check: async (userId, db) => (await db.select({ id: dailyCheckinRewardGrants.id }).from(dailyCheckinRewardGrants).where(eq(dailyCheckinRewardGrants.userId, userId)).limit(1)).length },
+  { table: "topupLogs", check: async (userId, db) => (await db.select({ id: topupLogs.id }).from(topupLogs).where(eq(topupLogs.userId, userId)).limit(1)).length },
+  // A personal coupon (scope="user") is itself an unredeemed financial
+  // right, distinct from couponUsages (a coupon already spent on an
+  // order) - gap found and closed by the exhaustive user-data audit (see
+  // server/services/accountRecoveryDataClassification.ts).
+  { table: "coupons", check: async (userId, db) => (await db.select({ id: coupons.id }).from(coupons).where(eq(coupons.ownerUserId, userId)).limit(1)).length },
+];
+
+/** Category A ("Economic/Entitlement data") from the recovery-safety spec -
+ *  wallet/balance/points, purchases, orders, payments (via orders),
+ *  transactions, purchased episodes, coupons/financial rights (including
+ *  an unredeemed personal coupon via coupons.ownerUserId). ANY hit here
+ *  means the source account can never be auto-recovered - see
+ *  accountRecoveryService.assessAccountRecoverySafety, which turns a
+ *  non-empty result into a hard BLOCK, never overridable by an admin - the
+ *  SAME no-override treatment Category B (findAccountRecoveryUserOwnedData
+ *  below) now also gets under the empty-source-account invariant. See
+ *  server/services/accountRecoveryDataClassification.ts for the
+ *  exhaustive, test-verified inventory this check list is derived from.
+ *  Runs each check independently rather than one big UNION query so a
+ *  single slow/locked table never masks the others, and so the returned
+ *  finding list stays precise for the admin UI. */
+export async function findAccountRecoveryEconomicData(
+  userId: number,
+  tx?: any
+): Promise<AccountRecoveryEconomicDataFinding[]> {
+  const db = tx ?? (await getDb());
+  if (!db) return [];
+  const findings: AccountRecoveryEconomicDataFinding[] = [];
+  for (const { table, check } of ACCOUNT_RECOVERY_ECONOMIC_DATA_CHECKS) {
+    const hitCount = await check(userId, db);
+    if (hitCount > 0) findings.push({ table, count: hitCount });
+  }
+  return findings;
+}
+
+const ACCOUNT_RECOVERY_USER_OWNED_DATA_CHECKS: Array<{
+  table: string;
+  check: (userId: number, db: any) => Promise<number>;
+}> = [
+  { table: "carts", check: async (userId, db) => (await db.select({ id: carts.id }).from(carts).where(eq(carts.userId, userId)).limit(1)).length },
+  { table: "wishlists", check: async (userId, db) => (await db.select({ id: wishlists.id }).from(wishlists).where(eq(wishlists.userId, userId)).limit(1)).length },
+  { table: "readingProgress", check: async (userId, db) => (await db.select({ id: readingProgress.id }).from(readingProgress).where(eq(readingProgress.userId, userId)).limit(1)).length },
+  { table: "dailyCheckins", check: async (userId, db) => (await db.select({ id: dailyCheckins.id }).from(dailyCheckins).where(eq(dailyCheckins.userId, userId)).limit(1)).length },
+];
+
+/** Category B ("User-owned data") from the recovery-safety spec - cart,
+ *  library/wishlist, reading progress, check-ins, and other recovery
+ *  requests by the same user. As of the empty-source-account invariant,
+ *  ANY hit here is ALSO an unconditional, no-admin-override block -
+ *  identical in effect to Category A above (see
+ *  accountRecoveryService.assessAccountRecoverySafety). This tool never
+ *  moves, merges, or deletes this data, and never deletes the source
+ *  user - automated recovery is only permitted when the source account is
+ *  genuinely, completely empty; anything else routes to "blocked"
+ *  (Advanced Account Merge, handled outside this tool). See
+ *  server/services/accountRecoveryDataClassification.ts for the
+ *  exhaustive, test-verified inventory this check list is derived from.
+ *  `excludeRequestId` leaves the CURRENT request itself out of the "other
+ *  recovery requests" count. */
+/** Purely for cross-verification by
+ *  server/services/accountRecoveryDataClassification.test.ts - the actual
+ *  table names findAccountRecoveryEconomicData queries, kept in one place
+ *  so the static-safety test can assert they match
+ *  ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION's economic_hard_block
+ *  entries exactly, with no manual re-typing (and thus no drift risk). */
+export const ACCOUNT_RECOVERY_ECONOMIC_TABLE_NAMES: string[] = ACCOUNT_RECOVERY_ECONOMIC_DATA_CHECKS.map(
+  (c) => c.table
+);
+
+/** Same purpose as ACCOUNT_RECOVERY_ECONOMIC_TABLE_NAMES, for
+ *  findAccountRecoveryUserOwnedData/user_owned_hard_block. */
+export const ACCOUNT_RECOVERY_USER_OWNED_TABLE_NAMES: string[] = ACCOUNT_RECOVERY_USER_OWNED_DATA_CHECKS.map(
+  (c) => c.table
+);
+
+export async function findAccountRecoveryUserOwnedData(
+  userId: number,
+  excludeRequestId: number,
+  tx?: any
+): Promise<AccountRecoveryEconomicDataFinding[]> {
+  const db = tx ?? (await getDb());
+  if (!db) return [];
+  const findings: AccountRecoveryEconomicDataFinding[] = [];
+  for (const { table, check } of ACCOUNT_RECOVERY_USER_OWNED_DATA_CHECKS) {
+    const hitCount = await check(userId, db);
+    if (hitCount > 0) findings.push({ table, count: hitCount });
+  }
+
+  const otherRequests = await db
+    .select({ id: accountRecoveryRequests.id })
+    .from(accountRecoveryRequests)
+    .where(buildOtherBlockingAccountRecoveryRequestsCondition(userId, excludeRequestId))
+    .limit(1);
+  if (otherRequests.length > 0) findings.push({ table: "accountRecoveryRequests", count: otherRequests.length });
+
+  return findings;
+}
+
+/**
+ * The "does this requester have another request that must still block
+ * approval" condition used by findAccountRecoveryUserOwnedData above -
+ * pulled into its own exported, pure function so its exact generated SQL
+ * shape can be unit-tested directly via a connection-free `.toSQL()` render
+ * (see server/findAccountRecoveryUserOwnedData.test.ts, same pattern as
+ * server/services/hybridHealthQueries.ts's buildEpisodeLevelPredicate/
+ * buildCandidateWhereClause), without needing a live database.
+ *
+ * Only an OTHER request still in "pending" or "approved" blocks - a
+ * terminal-but-unsuccessful outcome (rejected/cancelled/blocked) is a
+ * resolved history record, not user-owned data or an entitlement left
+ * behind, and must never permanently prevent a legitimate resubmission
+ * (see client/src/pages/AccountRecoveryPage.tsx's own resubmit flow, which
+ * re-enables the form after exactly these terminal-unsuccessful statuses -
+ * previously, ANY other request row of any status blocked forever, which
+ * is exactly the bug this function's status filter fixes). "pending" is
+ * fail-closed defense-in-depth on top of the one-pending-per-requester DB
+ * constraint (accountRecoveryRequests' generated-column unique index),
+ * never relied on as the only guard. "approved" is fail-closed because it
+ * means this source account's identity already moved once before - that
+ * requires Advanced Account Merge review, never a second automated move.
+ */
+type AccountRecoveryRequestStatus = (typeof accountRecoveryRequests.$inferSelect)["status"];
+
+/** The only two statuses buildOtherBlockingAccountRecoveryRequestsCondition
+ *  treats as still blocking - see that function's own docstring for why.
+ *  Typed directly off the schema's own inferred `status` column (never a
+ *  hand-written union) so a typo or a status renamed/removed in
+ *  drizzle/schema.ts fails to compile here instead of silently matching
+ *  nothing (or, worse, everything). */
+const BLOCKING_ACCOUNT_RECOVERY_REQUEST_STATUSES: AccountRecoveryRequestStatus[] = ["pending", "approved"];
+
+export function buildOtherBlockingAccountRecoveryRequestsCondition(userId: number, excludeRequestId: number) {
+  return and(
+    eq(accountRecoveryRequests.requesterUserId, userId),
+    ne(accountRecoveryRequests.id, excludeRequestId),
+    inArray(accountRecoveryRequests.status, BLOCKING_ACCOUNT_RECOVERY_REQUEST_STATUSES)
+  );
 }

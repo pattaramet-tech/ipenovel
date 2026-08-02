@@ -6,17 +6,21 @@ import { AlertTriangle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
-  isMandatoryGoogleConnectionEnabled,
   isMigrationGateExemptPath,
   resolveMigrationGateAction,
+  shouldShowUpcomingCutoffBanner,
 } from "@/_core/hooks/migrationGate";
 import { resolveSupportUrl } from "@/pages/upgradeLoginPresentation";
+import GoogleConnectionCutoffBanner from "./GoogleConnectionCutoffBanner";
 
 /**
- * Global, App/Router-level UX gate for the mandatory Google-connection
- * migration (AUTH_PROVIDER=transition + VITE_AUTH_REQUIRE_GOOGLE_CONNECTION
- * ="true" - see client/src/_core/hooks/migrationGate.ts for the pure
- * decision logic this component only wires up to real hooks/routing).
+ * Global, App/Router-level UX gate for the Google-connection migration
+ * (AUTH_REQUIRE_GOOGLE_CONNECTION[_AFTER] - see
+ * client/src/_core/hooks/migrationGate.ts for the pure decision logic this
+ * component only wires up to real hooks/routing, and
+ * server/_core/env.ts's evaluateGoogleConnectionCutoff for the
+ * server-authoritative status this entirely defers to - this component
+ * never decides "is the cutoff active" from anything client-side).
  *
  * This is UX convenience only, never the security boundary - a client
  * redirect can always be bypassed by calling the API directly. The real
@@ -30,25 +34,17 @@ export default function MigrationGate({ children }: { children: ReactNode }) {
   const [pathname, navigate] = useLocation();
   const { isAuthenticated, loading: authLoading, logout } = useAuth();
 
-  const mandatoryEnabled = isMandatoryGoogleConnectionEnabled(
-    import.meta.env.VITE_AUTH_PROVIDER,
-    import.meta.env.VITE_AUTH_REQUIRE_GOOGLE_CONNECTION
-  );
-
-  // Never fires at all (zero extra network traffic) unless the gate is
-  // actually active for this route - exempt paths (admin, /login,
-  // /account/upgrade-login) and anonymous visitors never need this query.
-  const shouldQuery = mandatoryEnabled && isAuthenticated && !isMigrationGateExemptPath(pathname);
-  const googleConnectedQuery = trpc.auth.googleConnected.useQuery(undefined, { enabled: shouldQuery });
+  const exempt = isMigrationGateExemptPath(pathname);
+  const shouldQuery = isAuthenticated && !exempt;
+  const statusQuery = trpc.auth.googleConnectionCutoffStatus.useQuery(undefined, { enabled: shouldQuery });
 
   const action = resolveMigrationGateAction({
-    mandatoryEnabled,
     pathname,
     isAuthenticated,
     authLoading,
-    googleConnected: googleConnectedQuery.data?.googleConnected,
-    googleConnectedLoading: shouldQuery && googleConnectedQuery.isLoading,
-    googleConnectedError: shouldQuery && googleConnectedQuery.isError,
+    statusLoading: shouldQuery && statusQuery.isLoading,
+    statusError: shouldQuery && statusQuery.isError,
+    needsConnection: statusQuery.data?.needsConnection,
   });
 
   useEffect(() => {
@@ -82,7 +78,7 @@ export default function MigrationGate({ children }: { children: ReactNode }) {
             เกิดข้อผิดพลาดชั่วคราว กรุณาลองใหม่อีกครั้ง หากยังไม่สำเร็จ กรุณาติดต่อฝ่ายช่วยเหลือ
           </p>
           <div className="flex flex-col gap-3">
-            <Button size="lg" className="w-full" onClick={() => googleConnectedQuery.refetch()}>
+            <Button size="lg" className="w-full" onClick={() => statusQuery.refetch()}>
               ลองใหม่
             </Button>
             <Button variant="outline" size="lg" className="w-full" onClick={() => logout()}>
@@ -101,5 +97,23 @@ export default function MigrationGate({ children }: { children: ReactNode }) {
     );
   }
 
-  return <>{children}</>;
+  // "allow" - render normally, plus the visible-but-non-disruptive upcoming
+  // -cutoff banner (rule 13) when the feature is on, not yet active, and
+  // this user hasn't connected yet. Never shown on an exempt path (no
+  // status query ran there at all - data stays undefined, so
+  // shouldShowUpcomingCutoffBanner's exempt===false/googleConnected===false
+  // checks correctly never both hold).
+  const showBanner = shouldShowUpcomingCutoffBanner({
+    enabled: statusQuery.data?.enabled ?? false,
+    activeNow: statusQuery.data?.activeNow ?? false,
+    googleConnected: statusQuery.data?.googleConnected,
+    exempt: statusQuery.data?.exempt,
+  });
+
+  return (
+    <>
+      {showBanner && <GoogleConnectionCutoffBanner cutoffAt={statusQuery.data?.cutoffAt ?? null} />}
+      {children}
+    </>
+  );
 }

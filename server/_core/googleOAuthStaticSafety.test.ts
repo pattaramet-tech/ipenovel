@@ -292,10 +292,11 @@ describe("drizzle migration 0033 is purely additive", () => {
     expect(migrationSource).not.toMatch(/ALTER TABLE `users`.*(DROP|MODIFY)\s+(COLUMN\s+)?`(id|openId)`/is);
   });
 
-  it("the migration journal's newest entry is exactly 0033_add_auth_identities, and drizzle/0023_gifted_juggernaut.sql / the admin seed files were never added to it", () => {
+  it("0033_add_auth_identities is present at its own fixed position (idx 33) in the migration journal, and drizzle/0023_gifted_juggernaut.sql / the admin seed files were never added to it - later migrations (e.g. 0034+) may legitimately follow it, so this no longer asserts it is the newest entry", () => {
     const journal = JSON.parse(readSource("drizzle/meta/_journal.json"));
     const tags = journal.entries.map((e: { tag: string }) => e.tag);
-    expect(tags[tags.length - 1]).toBe("0033_add_auth_identities");
+    const entry33 = journal.entries.find((e: { idx: number }) => e.idx === 33);
+    expect(entry33?.tag).toBe("0033_add_auth_identities");
     expect(tags).not.toContain("0023_gifted_juggernaut");
     expect(tags).not.toContain("0003_admin_seed");
     expect(tags).not.toContain("LOCAL_ADMIN_BOOTSTRAP");

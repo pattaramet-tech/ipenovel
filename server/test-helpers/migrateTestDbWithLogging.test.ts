@@ -123,6 +123,90 @@ describe("runMigrationsWithLogging - resume/skip semantics (matches drizzle-orm'
   });
 });
 
+describe("runMigrationsWithLogging - untilTag cutoff option", () => {
+  it("attempts only journal entries up to and including untilTag - nothing after it, even though they'd otherwise be pending", async () => {
+    const { conn } = fakeConnection();
+    const { attempted, logger } = recordingLogger();
+    const cutoffTag = "0023_add_episode_sale_mode";
+
+    await runMigrationsWithLogging(conn, migrationsFolder, logger, { untilTag: cutoffTag });
+
+    const journal = readMigrationJournal(migrationsFolder);
+    const cutoffIdx = journal.findIndex((e) => e.tag === cutoffTag);
+    const expectedTags = journal.slice(0, cutoffIdx + 1).map((e) => e.tag);
+    const laterTags = journal.slice(cutoffIdx + 1).map((e) => e.tag);
+
+    expect(attempted).toEqual(expectedTags);
+    expect(attempted).toContain(cutoffTag); // the cutoff itself IS included
+    for (const laterTag of laterTags) {
+      expect(attempted).not.toContain(laterTag);
+    }
+  });
+
+  it("combines with resume: only entries strictly after the last recorded timestamp AND at or before untilTag are attempted", async () => {
+    const journal = readMigrationJournal(migrationsFolder);
+    const idx21When = journal.find((e) => e.tag === "0021_skinny_slayback")?.when ?? journal[15].when;
+    const cutoffTag = "0024_widen_episode_content_mediumtext";
+    const cutoffIdx = journal.findIndex((e) => e.tag === cutoffTag);
+
+    const { conn } = fakeConnection({ existingMigrations: [{ hash: "prior", created_at: idx21When }] });
+    const { attempted, logger } = recordingLogger();
+
+    await runMigrationsWithLogging(conn, migrationsFolder, logger, { untilTag: cutoffTag });
+
+    const expectedTags = journal.slice(0, cutoffIdx + 1).filter((e) => e.when > idx21When).map((e) => e.tag);
+    expect(attempted).toEqual(expectedTags);
+    expect(attempted).toContain(cutoffTag);
+  });
+
+  it("rejects an untilTag that does not exist in the journal - never silently falls back to running the full chain", async () => {
+    const { conn } = fakeConnection();
+    const { attempted, logger } = recordingLogger();
+
+    await expect(
+      runMigrationsWithLogging(conn, migrationsFolder, logger, { untilTag: "9999_this_tag_does_not_exist" })
+    ).rejects.toThrow(/9999_this_tag_does_not_exist/);
+
+    expect(attempted).toEqual([]); // nothing was attempted before the rejection
+  });
+
+  it("untilTag pointing at the very first migration attempts exactly that one entry", async () => {
+    const journal = readMigrationJournal(migrationsFolder);
+    const firstTag = journal[0].tag;
+    const { conn } = fakeConnection();
+    const { attempted, logger } = recordingLogger();
+
+    await runMigrationsWithLogging(conn, migrationsFolder, logger, { untilTag: firstTag });
+
+    expect(attempted).toEqual([firstTag]);
+  });
+
+  it("untilTag pointing at the newest migration behaves identically to omitting the option entirely", async () => {
+    const journal = readMigrationJournal(migrationsFolder);
+    const newestTag = journal[journal.length - 1].tag;
+
+    const { conn: connWithCutoff } = fakeConnection();
+    const { attempted: attemptedWithCutoff, logger: loggerWithCutoff } = recordingLogger();
+    await runMigrationsWithLogging(connWithCutoff, migrationsFolder, loggerWithCutoff, { untilTag: newestTag });
+
+    const { conn: connWithoutCutoff } = fakeConnection();
+    const { attempted: attemptedWithoutCutoff, logger: loggerWithoutCutoff } = recordingLogger();
+    await runMigrationsWithLogging(connWithoutCutoff, migrationsFolder, loggerWithoutCutoff);
+
+    expect(attemptedWithCutoff).toEqual(attemptedWithoutCutoff);
+  });
+
+  it("omitting options entirely still runs the full chain, unaffected by the new parameter's existence", async () => {
+    const { conn } = fakeConnection();
+    const { attempted, logger } = recordingLogger();
+
+    await runMigrationsWithLogging(conn, migrationsFolder, logger);
+
+    const journalTags = readMigrationJournal(migrationsFolder).map((e) => e.tag);
+    expect(attempted).toEqual(journalTags);
+  });
+});
+
 describe("runMigrationsWithLogging - failure reporting", () => {
   it("logs the failing tag, does not mark it completed, and never attempts later migrations", async () => {
     // Fails on the first statement containing "ADD" - 0000/0001 contain no

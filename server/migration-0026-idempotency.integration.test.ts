@@ -4,6 +4,7 @@ import path from "node:path";
 import mysql from "mysql2/promise";
 import { buildTestDbConnectionOptions, parseTestDbTransportMode } from "./test-helpers/testDbConnectionOptions";
 import { runMigrationsWithLogging, consoleMigrationLogger, readMigrationJournal } from "./test-helpers/migrateTestDbWithLogging";
+import { resetToMigrationCutoff } from "./test-helpers/resetToMigrationCutoff";
 
 /**
  * Real-database coverage for the migration 0026 repair. See
@@ -191,19 +192,35 @@ describe("migration 0026 idempotency (real disposable test database)", () => {
     const conn = await connect();
     if (!conn) return;
     try {
-      await runFullChain(conn); // full chain, including 0026, recorded for real
+      // Exact, verified 0000-0026 baseline via resetToMigrationCutoff() -
+      // was previously a FULL baseline (every migration that currently
+      // exists, e.g. through migration 0034) before rewinding only the
+      // journal, which left every later migration's physical objects
+      // (e.g. 0033's `authIdentities`, an unguarded plain CREATE TABLE)
+      // behind while making them "pending" again too -
+      // ER_TABLE_EXISTS_ERROR. Starting from this precise cutoff instead
+      // means nothing past 0026 physically exists yet, so it is now safe
+      // to rewind the journal by itself immediately below - the ONE
+      // permitted case: an exact cutoff established first, proven nothing
+      // from a later migration exists, specifically to test a SINGLE
+      // migration's (0026's) own idempotency guard.
+      await resetToMigrationCutoff(conn, process.env.TEST_DATABASE_URL, migrationsFolder, "0026_add_homepage_performance_indexes");
       for (const idx of INDEXES) {
         expect(await indexExists(conn, idx.table, idx.name)).toBe(true);
       }
 
       // Rewind ONLY the resume high-water mark back to just before 0026 -
       // the indexes themselves are intentionally left in place, reproducing
-      // exactly the state the integration test suite's history-rewinding
-      // scenarios (e.g. migration-0024's tests) put a shared database in.
+      // the real duplicate-index failure mode this test targets. Safe here
+      // specifically because the reset immediately above already proved
+      // nothing past 0026 exists physically - unlike the removed
+      // full-baseline-then-rewind pattern, there is nothing left for any
+      // later migration to collide with.
       await conn.query(`DELETE FROM \`__drizzle_migrations\` WHERE created_at >= ?`, [idx0026When]);
 
-      // drizzle's migrator will now see 0026 (and everything after it) as
-      // pending again - this must not throw a duplicate-key-name error.
+      // drizzle's migrator will now see 0026 (and everything after it,
+      // genuinely for the first time) as pending again - this must not
+      // throw a duplicate-key-name error.
       await expect(runFullChain(conn)).resolves.not.toThrow();
 
       for (const idx of INDEXES) {

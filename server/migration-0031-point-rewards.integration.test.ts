@@ -8,6 +8,8 @@ import {
   readMigrationJournal,
 } from "./test-helpers/migrateTestDbWithLogging";
 import { closeMysqlConnectionSafely } from "./test-helpers/closeMysqlConnectionSafely";
+import { resetToEmptySchema } from "./test-helpers/resetToEmptySchema";
+import { resetToMigrationCutoff } from "./test-helpers/resetToMigrationCutoff";
 
 /**
  * Live coverage for migration 0031 (dailyCheckins.couponId -> nullable)
@@ -59,17 +61,7 @@ async function highWater(conn: mysql.Connection): Promise<number> {
   return Number(rows[0].hw);
 }
 
-/** Drops every application table so the next run is a genuine 0000-start. */
-async function wipeToEmpty(conn: mysql.Connection): Promise<void> {
-  await conn.query("SET FOREIGN_KEY_CHECKS = 0");
-  const [tables]: any = await conn.query(
-    "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE()"
-  );
-  for (const { name } of tables) await conn.query(`DROP TABLE IF EXISTS \`${name}\``);
-  await conn.query("SET FOREIGN_KEY_CHECKS = 1");
-}
-
-/** Rewinds recorded history to just before 0031 without altering the schema. */
+/** Rewinds recorded history to just before 0031 without altering the schema. Only ever safe to call immediately after an exact resetToMigrationCutoff(..., MIGRATION_0031_TAG) - see its call sites. */
 async function rewindHistoryBefore0031(conn: mysql.Connection): Promise<void> {
   const when = readMigrationJournal(migrationsFolder).find((e) => e.tag === MIGRATION_0031_TAG)!.when;
   await conn.query("DELETE FROM `__drizzle_migrations` WHERE created_at >= ?", [when]);
@@ -81,7 +73,7 @@ describe.sequential("migration 0031 (real disposable test database)", () => {
     async () => {
       const conn = await connect();
       try {
-        await wipeToEmpty(conn);
+        await resetToEmptySchema(conn, requireTestUrl());
         await runChain(conn);
 
         expect(await couponIdNullability(conn)).toBe("YES");
@@ -118,11 +110,24 @@ describe.sequential("migration 0031 (real disposable test database)", () => {
     async () => {
       const conn = await connect();
       try {
-        await wipeToEmpty(conn);
-        await runChain(conn);
+        // Exact, verified 0000-0030 baseline via resetToMigrationCutoff() -
+        // genuinely a "0030-era database", nothing from 0031 onward
+        // physically exists yet, so this scenario never needs to touch
+        // __drizzle_migrations at all (see the removed
+        // wipeToEmpty()+runChain()+rewindHistoryBefore0031() sequence this
+        // replaced, which established a FULL baseline through whatever the
+        // newest migration is, e.g. 0034, then rewound only the journal -
+        // leaving 0033's `authIdentities` and other later migrations'
+        // unguarded CREATE TABLE statements to collide once treated as
+        // pending again).
+        await resetToMigrationCutoff(conn, requireTestUrl(), migrationsFolder, "0030_repair_missing_daily_checkins");
 
         // Simulate a pre-0031 production row: a coupon-linked check-in, with
         // couponId forced back to NOT NULL so the migration has real work.
+        // (At this exact cutoff it should already be NOT NULL - the migration
+        // that makes it nullable, 0031, hasn't run yet - but the explicit
+        // MODIFY COLUMN + assertion below states that precondition directly
+        // rather than assuming it.)
         await conn.query("DELETE FROM `dailyCheckins`");
         await conn.query("ALTER TABLE `dailyCheckins` MODIFY COLUMN `couponId` int NOT NULL");
         expect(await couponIdNullability(conn)).toBe("NO");
@@ -185,7 +190,13 @@ describe.sequential("migration 0031 (real disposable test database)", () => {
         expect(await recordedMigrationCount(conn)).toBe(countBefore);
 
         // Partially-applied state: the DDL is already in place but history
-        // says 0031 is pending. The guard must make it a safe no-op.
+        // says 0031 is pending. Reset to an exact, verified cutoff AT 0031
+        // first - proving nothing later than 0031 physically exists - before
+        // rewinding ONLY the 0031 journal row, so this reproduces "DDL
+        // applied, journal pending" without risking any later migration's
+        // unguarded CREATE TABLE colliding once the chain treats it as
+        // pending again too. The guard must make it a safe no-op.
+        await resetToMigrationCutoff(conn, requireTestUrl(), migrationsFolder, MIGRATION_0031_TAG);
         expect(await couponIdNullability(conn)).toBe("YES");
         await rewindHistoryBefore0031(conn);
         await expect(runChain(conn)).resolves.not.toThrow();

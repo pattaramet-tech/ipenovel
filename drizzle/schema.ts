@@ -13,6 +13,7 @@ import {
   unique,
   foreignKey,
 } from "drizzle-orm/mysql-core";
+import { sql } from "drizzle-orm";
 
 /**
  * Core user table backing auth flow.
@@ -1167,3 +1168,143 @@ export const dailyCheckinRewardGrants = mysqlTable(
 
 export type DailyCheckinRewardGrant = typeof dailyCheckinRewardGrants.$inferSelect;
 export type InsertDailyCheckinRewardGrant = typeof dailyCheckinRewardGrants.$inferInsert;
+
+/**
+ * Admin Account Recovery Workflow - post-VPS-migration Google-email
+ * mismatch case: a legacy Manus/Google account's owner logs in with Google
+ * using an email that doesn't match their old account, so a NEW,
+ * empty-ish `users` row gets created (or an existing-but-wrong account gets
+ * used) instead of resuming their real one. `requesterUserId` is always the
+ * CURRENTLY signed-in, Google-linked account making the claim - the
+ * requester must have a real `authIdentities` row (see
+ * server/services/accountRecoveryService.ts's assessAccountRecoverySafety,
+ * which never trusts a claimed email/openId/legacy-user-id alone as
+ * approval evidence - every field below except `requesterUserId` is
+ * user-asserted context for an admin to review, never itself sufficient to
+ * approve anything).
+ *
+ * `sourceUserId`/`targetUserId` are populated only once an admin has
+ * identified (via exact-match search, never fuzzy) which legacy account
+ * this recovery is really for, and are set together with a transition to
+ * `approved` - see executeAccountRecovery's single transaction. Before
+ * that point they stay NULL; the admin UI's "confirm target" step is what
+ * fills them in, not this table alone.
+ */
+export const accountRecoveryRequests = mysqlTable(
+  "accountRecoveryRequests",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    // The account making the claim - MUST be the caller's own session user
+    // id (server/routers.ts's accountRecovery.create derives this from
+    // ctx.user.id, never from client input). No FK - matches this schema's
+    // majority convention (orders.userId, purchases.userId, etc. are also
+    // plain unenforced ints); see authIdentities.userId's doc comment for
+    // the one deliberate exception in this schema.
+    requesterUserId: int("requesterUserId").notNull(),
+    // Everything below this point is USER-ASSERTED CONTEXT ONLY - entered
+    // on the /account/recovery form, shown to the admin for review, and
+    // NEVER treated as proof of ownership by
+    // assessAccountRecoverySafety/executeAccountRecovery. A manually-typed
+    // email/openId/user id is exactly the kind of unverifiable claim this
+    // whole workflow exists to NOT trust.
+    requestedLegacyUserId: int("requestedLegacyUserId"),
+    claimedLegacyEmail: varchar("claimedLegacyEmail", { length: 320 }),
+    claimedLegacyOpenId: varchar("claimedLegacyOpenId", { length: 64 }),
+    claimedDisplayName: varchar("claimedDisplayName", { length: 255 }),
+    evidenceNote: text("evidenceNote"),
+    referenceOrderNumber: varchar("referenceOrderNumber", { length: 50 }),
+    status: mysqlEnum("status", ["pending", "approved", "rejected", "cancelled", "blocked"])
+      .default("pending")
+      .notNull(),
+    reviewedByAdminId: int("reviewedByAdminId"),
+    reviewedAt: timestamp("reviewedAt"),
+    // The admin's (or the requester's own, for a self-cancel) reason -
+    // required by the tRPC layer for every status transition, never
+    // optional at the API boundary even though the column itself is
+    // nullable (stays NULL only for the initial "pending" row).
+    reviewReason: text("reviewReason"),
+    // Set together with status -> "approved" only, inside
+    // executeAccountRecovery's transaction - sourceUserId is always exactly
+    // requesterUserId (never a second, independently-settable value; kept
+    // as its own column rather than reusing requesterUserId purely so the
+    // audit trail/admin UI can show "source -> target" without a second
+    // join back to this same row).
+    sourceUserId: int("sourceUserId"),
+    targetUserId: int("targetUserId"),
+    // DB-ENFORCED "at most one pending request per requester" - NULL
+    // whenever status isn't "pending", equal to requesterUserId while it
+    // is. MySQL/MariaDB both allow unlimited NULLs through a UNIQUE index
+    // (the exact same technique already used by
+    // dailyCheckins.couponId/dailyCheckinRewardGrants.couponId in this
+    // schema), so this rejects a genuine double-submit (two concurrent
+    // requests from the same user racing past the application-level
+    // pre-check in accountRecoveryService.submitAccountRecoveryRequest) at
+    // the database layer, without constraining anything once a request
+    // leaves "pending". Never read/written directly by application code -
+    // purely a constraint-enforcement column.
+    pendingRequesterMarker: int("pendingRequesterMarker").generatedAlwaysAs(
+      sql`(case when \`status\` = 'pending' then \`requesterUserId\` else NULL end)`,
+      { mode: "stored" }
+    ),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    requesterUserIdIdx: index("accountRecoveryRequests_requesterUserId_idx").on(table.requesterUserId),
+    statusIdx: index("accountRecoveryRequests_status_idx").on(table.status),
+    createdAtIdx: index("accountRecoveryRequests_createdAt_idx").on(table.createdAt),
+    onePendingPerRequesterUnique: uniqueIndex("accountRecoveryRequests_one_pending_per_requester_unique").on(
+      table.pendingRequesterMarker
+    ),
+  })
+);
+
+export type AccountRecoveryRequest = typeof accountRecoveryRequests.$inferSelect;
+export type InsertAccountRecoveryRequest = typeof accountRecoveryRequests.$inferInsert;
+
+/**
+ * Append-only audit trail for every account-recovery state transition
+ * (created/approved/rejected/blocked/cancelled) - server/routers.ts's
+ * accountRecovery procedures write exactly one row per transition, inside
+ * the SAME transaction as the state change itself for approve (see
+ * executeAccountRecovery). `safeMetadata` follows this schema's existing
+ * "text column + manual JSON serialization" convention (see
+ * walletTopups.extractedData/duplicateStatus) - deliberately never a raw
+ * OAuth token, ID token, client secret, or unnecessary Google `sub` (see
+ * this table's callers for exactly what is/isn't included).
+ */
+export const accountRecoveryAuditLogs = mysqlTable(
+  "accountRecoveryAuditLogs",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    recoveryRequestId: int("recoveryRequestId").notNull(),
+    // Null for the requester's own "created"/"cancelled" actions - only
+    // populated for an admin-performed transition.
+    actorAdminId: int("actorAdminId"),
+    action: varchar("action", { length: 32 }).notNull(),
+    sourceUserId: int("sourceUserId"),
+    targetUserId: int("targetUserId"),
+    authIdentityId: int("authIdentityId"),
+    safeMetadata: text("safeMetadata"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    recoveryRequestIdIdx: index("accountRecoveryAuditLogs_recoveryRequestId_idx").on(table.recoveryRequestId),
+    createdAtIdx: index("accountRecoveryAuditLogs_createdAt_idx").on(table.createdAt),
+    // A fresh, dedicated audit trail for a brand-new feature - unlike
+    // authIdentities.userId (whose FK exists because that table is
+    // meaningless once its user is gone), this row's meaning is tied to the
+    // recovery REQUEST, not directly to any user row, so only this FK is
+    // added ("FK only where safe with the current schema"). ON DELETE
+    // CASCADE mirrors authIdentities' own choice for the same reason: an
+    // audit row for a deleted request has nothing left to audit.
+    recoveryRequestFk: foreignKey({
+      name: "accountRecoveryAuditLogs_recoveryRequestId_fk",
+      columns: [table.recoveryRequestId],
+      foreignColumns: [accountRecoveryRequests.id],
+    }).onDelete("cascade"),
+  })
+);
+
+export type AccountRecoveryAuditLog = typeof accountRecoveryAuditLogs.$inferSelect;
+export type InsertAccountRecoveryAuditLog = typeof accountRecoveryAuditLogs.$inferInsert;

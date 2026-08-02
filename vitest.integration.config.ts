@@ -33,6 +33,17 @@ export default defineConfig({
     // to true for the integration project. Every test file that exercises
     // this path mocks @aws-sdk/client-s3 / @aws-sdk/s3-request-presigner
     // itself - no real network call is ever made using these values.
+    //
+    // OCR_ENABLED: "false" - several integration test files (see
+    // server/checkout-after-slip-upload-diagnosis.integration.test.ts,
+    // server/couponOwnership.integration.test.ts,
+    // server/paymentSlipPrivateR2.integration.test.ts) explicitly assert
+    // `process.env.OCR_ENABLED === "false"` as a precondition, so their
+    // slip-based checkout paths deterministically fall to manual review
+    // instead of depending on a real OCR/LLM call. This is TEST config
+    // only, scoped to the integration vitest project - it has no effect on
+    // Production or Preview, and this project deliberately never relies on
+    // Coolify (or any other external source) to set it for tests to pass.
     env: {
       R2_PRIVATE_ACCOUNT_ID: "test-account",
       R2_PRIVATE_ACCESS_KEY_ID: "test-access-key-id",
@@ -40,6 +51,7 @@ export default defineConfig({
       R2_PRIVATE_ENDPOINT: "https://test-account.r2.cloudflarestorage.com",
       R2_PRIVATE_BUCKET_NAME: "test-private-bucket",
       R2_PRIVATE_SIGNED_URL_EXPIRES_SECONDS: "900",
+      OCR_ENABLED: "false",
     },
     globalSetup: ["./vitest.integration.globalsetup.ts"],
     // Runs inside each worker's own module registry, unlike globalSetup -
