@@ -44,16 +44,21 @@ function formatDate(date: Date | string | undefined | null): string {
  * spec). Reachable by any signed-in user, connected to Google or not - the
  * SUBMISSION form is still only ever offered once this session's own
  * `auth.googleConnectionCutoffStatus.googleConnected` reads true (see
- * accountRecoveryPresentation.ts's deriveAccountRecoveryViewState/
- * showForm), and the server independently re-enforces the same rule itself
- * regardless of what this page decided to show (accountRecovery.create
- * throws NOT_GOOGLE_LINKED otherwise - this page is a UX affordance, never
- * the security boundary). A signed-in visitor who is NOT yet connected and
- * has no existing request instead sees a guidance state pointing at
- * connecting Google / the upgrade-login page - never a broken form they
- * can't actually submit. This page never lets someone type an arbitrary
- * Google email and have that alone treated as proof of anything, and this
- * page's own docstring is never a substitute for the server's own checks.
+ * accountRecoveryPresentation.ts's deriveAccountRecoveryViewState/`view`),
+ * and the server independently re-enforces the same rule itself regardless
+ * of what this page decided to show (accountRecovery.create throws
+ * NOT_GOOGLE_LINKED otherwise - this page is a UX affordance, never the
+ * security boundary). A signed-in visitor who is NOT yet connected and has
+ * no existing request instead sees a guidance state pointing at connecting
+ * Google / the upgrade-login page - never a broken form they can't
+ * actually submit. If the connection-status check itself fails (a real
+ * infrastructure error, not "not connected"), a dedicated error state
+ * offers retry/back-to-profile - it can never silently hide an existing
+ * approved or pending request, both of which are checked first regardless
+ * of connection status (see deriveAccountRecoveryViewState's priority
+ * order). This page never lets someone type an arbitrary Google email and
+ * have that alone treated as proof of anything, and this page's own
+ * docstring is never a substitute for the server's own checks.
  */
 export default function AccountRecoveryPage() {
   const { isAuthenticated, loading: authLoading, logout } = useAuth();
@@ -141,16 +146,11 @@ export default function AccountRecoveryPage() {
   }
 
   const requests = requestsQuery.data ?? [];
-  const { pendingRequest, mostRecentRequest, justApproved, showForm, showGuidance } = deriveAccountRecoveryViewState(
-    requests as any,
-    statusQuery.data?.googleConnected
-  );
-  // Only meaningful once neither the approved-banner nor the pending-status
-  // block already claimed the space (see the priority order in this file's
-  // render below) - true while the connection status itself hasn't
-  // resolved yet, so neither showForm nor showGuidance can be decided.
-  const isCheckingGoogleConnection =
-    !justApproved && !pendingRequest && !requestsQuery.isLoading && statusQuery.isLoading;
+  const { pendingRequest, mostRecentRequest, view } = deriveAccountRecoveryViewState(requests as any, {
+    loading: statusQuery.isLoading,
+    error: statusQuery.isError,
+    connected: statusQuery.data?.googleConnected,
+  });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -180,7 +180,7 @@ export default function AccountRecoveryPage() {
             </div>
           )}
 
-          {!requestsQuery.isLoading && justApproved && (
+          {!requestsQuery.isLoading && view === "approved" && (
             <div className="border border-green-200 bg-green-50 rounded-lg p-5 space-y-3">
               <div className="flex items-center gap-2">
                 <CheckCircle2 className="w-5 h-5 text-green-600" aria-hidden="true" />
@@ -200,7 +200,7 @@ export default function AccountRecoveryPage() {
             </div>
           )}
 
-          {!requestsQuery.isLoading && !justApproved && pendingRequest && (
+          {!requestsQuery.isLoading && view === "pending" && pendingRequest && (
             <div className="border border-amber-200 bg-amber-50 rounded-lg p-4 space-y-3">
               <div className="flex items-center gap-2">
                 <AlertTriangle className="w-5 h-5 text-amber-600" aria-hidden="true" />
@@ -220,7 +220,7 @@ export default function AccountRecoveryPage() {
             </div>
           )}
 
-          {!requestsQuery.isLoading && showForm && (
+          {!requestsQuery.isLoading && view === "form" && (
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
                 <Label htmlFor="requestedLegacyUserId">User ID บัญชีเดิม (ถ้าทราบ)</Label>
@@ -275,13 +275,31 @@ export default function AccountRecoveryPage() {
             </form>
           )}
 
-          {isCheckingGoogleConnection && (
+          {!requestsQuery.isLoading && view === "connection_loading" && (
             <div className="flex justify-center py-8">
               <Loader2 className="w-6 h-6 animate-spin text-blue-600" aria-hidden="true" />
             </div>
           )}
 
-          {!requestsQuery.isLoading && !isCheckingGoogleConnection && showGuidance && (
+          {!requestsQuery.isLoading && view === "connection_error" && (
+            <div className="border border-red-200 bg-red-50 rounded-lg p-5 space-y-3">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-red-600" aria-hidden="true" />
+                <p className="font-medium text-red-900">ไม่สามารถตรวจสอบสถานะบัญชีได้</p>
+              </div>
+              <p className="text-sm text-red-800 leading-relaxed">เกิดข้อผิดพลาดชั่วคราว กรุณาลองใหม่อีกครั้ง</p>
+              <div className="flex flex-col gap-3">
+                <Button size="lg" className="w-full" onClick={() => statusQuery.refetch()}>
+                  ลองใหม่
+                </Button>
+                <Button variant="outline" size="lg" className="w-full" onClick={() => navigate("/profile")}>
+                  กลับหน้าโปรไฟล์
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {!requestsQuery.isLoading && view === "guidance" && (
             <div className="border border-slate-200 bg-slate-50 rounded-lg p-5 space-y-3">
               <div className="flex items-center gap-2">
                 <LifeBuoy className="w-5 h-5 text-slate-500" aria-hidden="true" />
