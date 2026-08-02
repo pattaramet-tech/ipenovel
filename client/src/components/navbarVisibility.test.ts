@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shouldHideGlobalNavbar } from "./navbarVisibility";
+import { ACCOUNT_RECOVERY_NAV_HREF, shouldHideGlobalNavbar, shouldShowAccountRecoveryNavItem } from "./navbarVisibility";
 
 describe("shouldHideGlobalNavbar", () => {
   it.each([
@@ -36,5 +36,21 @@ describe("shouldHideGlobalNavbar", () => {
 
   it("does not treat a route that merely starts with 'read' as a Reader route", () => {
     expect(shouldHideGlobalNavbar("/readme")).toBe(false);
+  });
+});
+
+describe("shouldShowAccountRecoveryNavItem", () => {
+  it("shows the Account Recovery nav item for a signed-in user", () => {
+    expect(shouldShowAccountRecoveryNavItem(true)).toBe(true);
+  });
+
+  it("hides the Account Recovery nav item for an anonymous visitor", () => {
+    expect(shouldShowAccountRecoveryNavItem(false)).toBe(false);
+  });
+});
+
+describe("ACCOUNT_RECOVERY_NAV_HREF", () => {
+  it("points at the lowercase /account/recovery route", () => {
+    expect(ACCOUNT_RECOVERY_NAV_HREF).toBe("/account/recovery");
   });
 });

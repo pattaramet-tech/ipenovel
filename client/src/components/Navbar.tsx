@@ -1,13 +1,13 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { useLocation } from "wouter";
-import { BookOpen, ShoppingCart, LogOut, Menu, X, Settings, Heart, Trophy, User as UserIcon } from "lucide-react";
+import { BookOpen, ShoppingCart, LogOut, Menu, X, Settings, Heart, Trophy, User as UserIcon, LifeBuoy } from "lucide-react";
 import { useState } from "react";
 import { getLoginUrl } from "@/const";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { trpc } from "@/lib/trpc";
-import { shouldHideGlobalNavbar } from "./navbarVisibility";
+import { ACCOUNT_RECOVERY_NAV_HREF, shouldHideGlobalNavbar, shouldShowAccountRecoveryNavItem } from "./navbarVisibility";
 
 export default function Navbar() {
   const { user, logout, isAuthenticated } = useAuth();
@@ -20,6 +20,7 @@ export default function Navbar() {
   // before the early return below so the hidden-navbar branch never fires
   // a cart query it doesn't render, without skipping any hook call.
   const navbarHidden = shouldHideGlobalNavbar(location);
+  const showAccountRecoveryNavItem = shouldShowAccountRecoveryNavItem(isAuthenticated);
 
   // Get cart count - not needed at all when the navbar itself won't render.
   const { data: cartData } = trpc.cart.get.useQuery(undefined, {
@@ -126,6 +127,15 @@ export default function Navbar() {
                   <UserIcon className="w-4 h-4" />
                   {t("nav.profile")}
                 </button>
+                {showAccountRecoveryNavItem && (
+                  <button
+                    onClick={() => navigate(ACCOUNT_RECOVERY_NAV_HREF)}
+                    className="flex items-center gap-2 px-4 py-2 rounded-full text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium transition text-sm"
+                  >
+                    <LifeBuoy className="w-4 h-4" />
+                    {t("nav.accountRecovery")}
+                  </button>
+                )}
                 <button
                   onClick={handleLogout}
                   className="flex items-center gap-2 px-4 py-2 rounded-full text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium transition text-sm"
@@ -227,6 +237,18 @@ export default function Navbar() {
                     <UserIcon className="w-4 h-4" />
                     {t("nav.profile")}
                   </button>
+                  {showAccountRecoveryNavItem && (
+                    <button
+                      onClick={() => {
+                        navigate(ACCOUNT_RECOVERY_NAV_HREF);
+                        setMobileMenuOpen(false);
+                      }}
+                      className="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium transition text-sm"
+                    >
+                      <LifeBuoy className="w-4 h-4" />
+                      {t("nav.accountRecovery")}
+                    </button>
+                  )}
                   <button
                     onClick={handleLogout}
                     className="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium transition text-sm"
