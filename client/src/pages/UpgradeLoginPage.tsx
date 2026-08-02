@@ -203,6 +203,23 @@ export default function UpgradeLoginPage() {
           <Button asChild size="lg" className="w-full">
             <a href="/api/auth/google/connect/start">เชื่อมบัญชี Google</a>
           </Button>
+          {/* Small, secondary hint only - never a primary action here. A
+              visitor on THIS page has not connected Google yet, so
+              /account/recovery would only show its own not-connected
+              guidance state (see accountRecoveryPresentation.ts's
+              showGuidance) rather than a usable form - connecting Google
+              first, via the button above, is always the actual next step. */}
+          <p className="text-xs text-slate-500 text-center leading-relaxed">
+            หลังเข้าสู่ระบบด้วย Google หากพบว่าชั้นหนังสือ ยอดเงิน หรือประวัติการซื้อเดิมไม่แสดง ให้ใช้เมนู{" "}
+            <button
+              type="button"
+              onClick={() => navigate("/account/recovery")}
+              className="underline underline-offset-2 hover:text-slate-700"
+            >
+              "กู้คืนบัญชีเดิม"
+            </button>{" "}
+            เพื่อส่งคำขอให้ทีมงานตรวจสอบ
+          </p>
           <Button variant="outline" size="lg" className="w-full" onClick={() => logout()}>
             ออกจากระบบ
           </Button>

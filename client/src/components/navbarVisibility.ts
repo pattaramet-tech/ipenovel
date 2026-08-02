@@ -20,3 +20,30 @@ export function shouldHideGlobalNavbar(location: string): boolean {
   if (location === "/admin" || location.startsWith("/admin/")) return true;
   return false;
 }
+
+/** The single route the Navbar's "กู้คืนบัญชีเดิม" (Account Recovery) item
+ *  links to - kept as one exported constant so Navbar.tsx and this file's
+ *  own test never risk drifting into two different literal path strings. */
+export const ACCOUNT_RECOVERY_NAV_HREF = "/account/recovery";
+
+/**
+ * Whether the Navbar's "กู้คืนบัญชีเดิม" (Account Recovery) menu item
+ * should render - signed-in users only (anonymous visitors have no account
+ * to recover, and the server itself would reject a request from an
+ * unauthenticated caller anyway - this is a discoverability affordance,
+ * never the security boundary). Pure and DOM-free for the same reason as
+ * shouldHideGlobalNavbar above - this repo has no component/DOM test
+ * harness, so Navbar.tsx wires its conditional render to this function
+ * rather than an inline `isAuthenticated` check that couldn't be
+ * unit-tested on its own.
+ *
+ * Intentionally does NOT depend on the user's role - the storefront
+ * Navbar itself never renders on any /admin/* route (see
+ * shouldHideGlobalNavbar above), so "not shown in the Admin menu" is
+ * already true by construction; an admin who is simply browsing the
+ * storefront while signed in sees the same authenticated-user items
+ * (profile/logout) as anyone else, and this item is no different.
+ */
+export function shouldShowAccountRecoveryNavItem(isAuthenticated: boolean): boolean {
+  return isAuthenticated;
+}

@@ -30,6 +30,7 @@ export const translations: Record<Language, Record<string, string>> = {
     "nav.viewOrders": "ดูคำสั่งซื้อ",
     "nav.backToCart": "กลับไปยังตะกร้า",
     "nav.profile": "โปรไฟล์",
+    "nav.accountRecovery": "กู้คืนบัญชีเดิม",
 
     // Daily check-in
     "checkin.title": "เช็กอินรายวัน รับคูปองส่วนลด",
@@ -574,6 +575,7 @@ export const translations: Record<Language, Record<string, string>> = {
     "nav.viewOrders": "View Orders",
     "nav.backToCart": "Back to Cart",
     "nav.profile": "Profile",
+    "nav.accountRecovery": "Recover Old Account",
 
     // Daily check-in
     "checkin.title": "Daily Check-in: Get a Discount Coupon",

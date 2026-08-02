@@ -6,13 +6,17 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useLocation } from "wouter";
-import { Loader2, BookOpen, ChevronDown, ChevronUp, Wallet, Clock, Mail, User, Link2, CheckCircle2 } from "lucide-react";
+import { Loader2, BookOpen, ChevronDown, ChevronUp, Wallet, Clock, Mail, User, Link2, CheckCircle2, LifeBuoy } from "lucide-react";
 import { useEffect, useState, useMemo } from "react";
 import { toast } from "sonner";
 import { formatEpisodeLabel, compareEpisodes } from "@/utils/episodeUtils";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
 import DailyCheckinCard from "@/components/DailyCheckinCard";
-import { shouldShowGoogleConnectSection, parseGoogleConnectStatus } from "./profileGoogleConnectStatus";
+import {
+  shouldShowGoogleConnectSection,
+  parseGoogleConnectStatus,
+  shouldShowAccountRecoveryCallout,
+} from "./profileGoogleConnectStatus";
 
 export default function ProfilePage() {
   useDocumentHead({ robots: "noindex,nofollow" });
@@ -214,6 +218,28 @@ export default function ProfilePage() {
                 <Button asChild>
                   <a href="/api/auth/google/connect/start">เชื่อมบัญชี Google</a>
                 </Button>
+              </div>
+            )}
+
+            {/* Account Recovery discoverability CTA - only once
+                googleConnected is confirmed true (see
+                shouldShowAccountRecoveryCallout's own docstring for why).
+                Never renders any account-internal identifier (no Google
+                subject/OpenID/user id) - static guidance copy plus a plain
+                link to /account/recovery only. */}
+            {shouldShowAccountRecoveryCallout(googleConnectData?.googleConnected) && (
+              <div className="mt-4 pt-4 border-t border-slate-100 flex items-start gap-3">
+                <LifeBuoy className="w-5 h-5 text-slate-400 mt-0.5 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-slate-900">เข้าสู่ระบบแล้วพบว่าเป็นบัญชีใหม่?</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    หากชั้นหนังสือ ยอดเงิน หรือประวัติการซื้อเดิมไม่แสดง คุณสามารถส่งคำขอให้ทีมงานตรวจสอบและย้ายการเชื่อมต่อ Google
+                    กลับไปยังบัญชีเดิมได้
+                  </p>
+                  <Button variant="outline" size="sm" className="mt-3" onClick={() => navigate("/account/recovery")}>
+                    กู้คืนบัญชีเดิม
+                  </Button>
+                </div>
               </div>
             )}
           </Card>

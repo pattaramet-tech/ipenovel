@@ -8,9 +8,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Loader2, AlertTriangle, CheckCircle2, LifeBuoy } from "lucide-react";
 import { toast } from "sonner";
 import { deriveAccountRecoveryViewState } from "./accountRecoveryPresentation";
+import { shouldShowGoogleConnectSection } from "./profileGoogleConnectStatus";
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "รอตรวจสอบ",
@@ -40,11 +41,19 @@ function formatDate(date: Date | string | undefined | null): string {
 /**
  * /account/recovery - the user-facing side of the Admin Account Recovery
  * workflow (see server/services/accountRecoveryService.ts for the full
- * spec). Only reachable by a signed-in user whose CURRENT session already
- * has a real, connected Google identity - the server enforces this itself
- * (accountRecovery.create throws NOT_GOOGLE_LINKED otherwise); this page
- * never lets someone type an arbitrary Google email and have that alone
- * treated as proof of anything.
+ * spec). Reachable by any signed-in user, connected to Google or not - the
+ * SUBMISSION form is still only ever offered once this session's own
+ * `auth.googleConnectionCutoffStatus.googleConnected` reads true (see
+ * accountRecoveryPresentation.ts's deriveAccountRecoveryViewState/
+ * showForm), and the server independently re-enforces the same rule itself
+ * regardless of what this page decided to show (accountRecovery.create
+ * throws NOT_GOOGLE_LINKED otherwise - this page is a UX affordance, never
+ * the security boundary). A signed-in visitor who is NOT yet connected and
+ * has no existing request instead sees a guidance state pointing at
+ * connecting Google / the upgrade-login page - never a broken form they
+ * can't actually submit. This page never lets someone type an arbitrary
+ * Google email and have that alone treated as proof of anything, and this
+ * page's own docstring is never a substitute for the server's own checks.
  */
 export default function AccountRecoveryPage() {
   const { isAuthenticated, loading: authLoading, logout } = useAuth();
@@ -78,6 +87,16 @@ export default function AccountRecoveryPage() {
   }, [authLoading, isAuthenticated, navigate]);
 
   const requestsQuery = trpc.accountRecovery.myRequests.useQuery(undefined, { enabled: isAuthenticated });
+  // The existing server-authoritative status query (see server/routers.ts's
+  // auth.googleConnectionCutoffStatus, and client/src/components/
+  // MigrationGate.tsx's identical use) - reused as-is rather than a new
+  // endpoint, purely to read `googleConnected` for THIS page's own
+  // form-vs-guidance decision (see accountRecoveryPresentation.ts's
+  // deriveAccountRecoveryViewState). The server remains the final
+  // authority either way - accountRecovery.create still independently
+  // rejects a submission from a not-really-connected session with
+  // NOT_GOOGLE_LINKED regardless of what this client-side read says.
+  const statusQuery = trpc.auth.googleConnectionCutoffStatus.useQuery(undefined, { enabled: isAuthenticated });
   const utils = trpc.useUtils();
 
   const [requestedLegacyUserId, setRequestedLegacyUserId] = useState("");
@@ -122,9 +141,16 @@ export default function AccountRecoveryPage() {
   }
 
   const requests = requestsQuery.data ?? [];
-  const { pendingRequest, mostRecentRequest, justApproved, showForm } = deriveAccountRecoveryViewState(
-    requests as any
+  const { pendingRequest, mostRecentRequest, justApproved, showForm, showGuidance } = deriveAccountRecoveryViewState(
+    requests as any,
+    statusQuery.data?.googleConnected
   );
+  // Only meaningful once neither the approved-banner nor the pending-status
+  // block already claimed the space (see the priority order in this file's
+  // render below) - true while the connection status itself hasn't
+  // resolved yet, so neither showForm nor showGuidance can be decided.
+  const isCheckingGoogleConnection =
+    !justApproved && !pendingRequest && !requestsQuery.isLoading && statusQuery.isLoading;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -247,6 +273,35 @@ export default function AccountRecoveryPage() {
                 {createMutation.isPending ? "กำลังส่งคำขอ..." : "ส่งคำขอกู้คืนบัญชี"}
               </Button>
             </form>
+          )}
+
+          {isCheckingGoogleConnection && (
+            <div className="flex justify-center py-8">
+              <Loader2 className="w-6 h-6 animate-spin text-blue-600" aria-hidden="true" />
+            </div>
+          )}
+
+          {!requestsQuery.isLoading && !isCheckingGoogleConnection && showGuidance && (
+            <div className="border border-slate-200 bg-slate-50 rounded-lg p-5 space-y-3">
+              <div className="flex items-center gap-2">
+                <LifeBuoy className="w-5 h-5 text-slate-500" aria-hidden="true" />
+                <p className="font-medium text-slate-900">ยังไม่สามารถส่งคำขอกู้คืนบัญชีได้</p>
+              </div>
+              <p className="text-sm text-slate-600 leading-relaxed">
+                ฟังก์ชันนี้ใช้สำหรับกรณีที่คุณเข้าสู่ระบบด้วย Google แล้วระบบพาเข้าสู่บัญชีใหม่ที่ไม่มีข้อมูลเดิม
+                กรุณาเชื่อมบัญชี Google หรือเข้าสู่ระบบด้วย Google ก่อน
+              </p>
+              <div className="flex flex-col gap-3 pt-1">
+                {shouldShowGoogleConnectSection(import.meta.env.VITE_AUTH_PROVIDER) && (
+                  <Button asChild size="lg" className="w-full">
+                    <a href="/api/auth/google/connect/start">เชื่อมบัญชี Google</a>
+                  </Button>
+                )}
+                <Button variant="outline" size="lg" className="w-full" onClick={() => navigate("/account/upgrade-login")}>
+                  กลับไปหน้าอัปเกรดวิธีเข้าสู่ระบบ
+                </Button>
+              </div>
+            </div>
           )}
         </Card>
 

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseGoogleConnectStatus, shouldShowGoogleConnectSection } from "./profileGoogleConnectStatus";
+import {
+  parseGoogleConnectStatus,
+  shouldShowAccountRecoveryCallout,
+  shouldShowGoogleConnectSection,
+} from "./profileGoogleConnectStatus";
 
 describe("shouldShowGoogleConnectSection", () => {
   it('"google" -> true', () => {
@@ -44,5 +48,19 @@ describe("parseGoogleConnectStatus", () => {
 
   it("extra unrelated params alongside a valid one still parse correctly", () => {
     expect(parseGoogleConnectStatus("?foo=bar&googleConnect=success&baz=qux")).toBe("success");
+  });
+});
+
+describe("shouldShowAccountRecoveryCallout", () => {
+  it("googleConnected === true -> shows the callout", () => {
+    expect(shouldShowAccountRecoveryCallout(true)).toBe(true);
+  });
+
+  it("googleConnected === false -> hides the callout (would 404-equivalent reject the request server-side)", () => {
+    expect(shouldShowAccountRecoveryCallout(false)).toBe(false);
+  });
+
+  it("googleConnected === undefined (still loading) -> hides the callout, never assumed connected", () => {
+    expect(shouldShowAccountRecoveryCallout(undefined)).toBe(false);
   });
 });
