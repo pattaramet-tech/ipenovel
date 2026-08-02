@@ -6290,10 +6290,20 @@ export async function findAccountRecoveryUserOwnedData(
  * means this source account's identity already moved once before - that
  * requires Advanced Account Merge review, never a second automated move.
  */
+type AccountRecoveryRequestStatus = (typeof accountRecoveryRequests.$inferSelect)["status"];
+
+/** The only two statuses buildOtherBlockingAccountRecoveryRequestsCondition
+ *  treats as still blocking - see that function's own docstring for why.
+ *  Typed directly off the schema's own inferred `status` column (never a
+ *  hand-written union) so a typo or a status renamed/removed in
+ *  drizzle/schema.ts fails to compile here instead of silently matching
+ *  nothing (or, worse, everything). */
+const BLOCKING_ACCOUNT_RECOVERY_REQUEST_STATUSES: AccountRecoveryRequestStatus[] = ["pending", "approved"];
+
 export function buildOtherBlockingAccountRecoveryRequestsCondition(userId: number, excludeRequestId: number) {
   return and(
     eq(accountRecoveryRequests.requesterUserId, userId),
     ne(accountRecoveryRequests.id, excludeRequestId),
-    inArray(accountRecoveryRequests.status, ["pending", "approved"] as any)
+    inArray(accountRecoveryRequests.status, BLOCKING_ACCOUNT_RECOVERY_REQUEST_STATUSES)
   );
 }
