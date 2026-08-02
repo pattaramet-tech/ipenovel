@@ -6260,9 +6260,40 @@ export async function findAccountRecoveryUserOwnedData(
   const otherRequests = await db
     .select({ id: accountRecoveryRequests.id })
     .from(accountRecoveryRequests)
-    .where(and(eq(accountRecoveryRequests.requesterUserId, userId), ne(accountRecoveryRequests.id, excludeRequestId)))
+    .where(buildOtherBlockingAccountRecoveryRequestsCondition(userId, excludeRequestId))
     .limit(1);
   if (otherRequests.length > 0) findings.push({ table: "accountRecoveryRequests", count: otherRequests.length });
 
   return findings;
+}
+
+/**
+ * The "does this requester have another request that must still block
+ * approval" condition used by findAccountRecoveryUserOwnedData above -
+ * pulled into its own exported, pure function so its exact generated SQL
+ * shape can be unit-tested directly via a connection-free `.toSQL()` render
+ * (see server/findAccountRecoveryUserOwnedData.test.ts, same pattern as
+ * server/services/hybridHealthQueries.ts's buildEpisodeLevelPredicate/
+ * buildCandidateWhereClause), without needing a live database.
+ *
+ * Only an OTHER request still in "pending" or "approved" blocks - a
+ * terminal-but-unsuccessful outcome (rejected/cancelled/blocked) is a
+ * resolved history record, not user-owned data or an entitlement left
+ * behind, and must never permanently prevent a legitimate resubmission
+ * (see client/src/pages/AccountRecoveryPage.tsx's own resubmit flow, which
+ * re-enables the form after exactly these terminal-unsuccessful statuses -
+ * previously, ANY other request row of any status blocked forever, which
+ * is exactly the bug this function's status filter fixes). "pending" is
+ * fail-closed defense-in-depth on top of the one-pending-per-requester DB
+ * constraint (accountRecoveryRequests' generated-column unique index),
+ * never relied on as the only guard. "approved" is fail-closed because it
+ * means this source account's identity already moved once before - that
+ * requires Advanced Account Merge review, never a second automated move.
+ */
+export function buildOtherBlockingAccountRecoveryRequestsCondition(userId: number, excludeRequestId: number) {
+  return and(
+    eq(accountRecoveryRequests.requesterUserId, userId),
+    ne(accountRecoveryRequests.id, excludeRequestId),
+    inArray(accountRecoveryRequests.status, ["pending", "approved"] as any)
+  );
 }

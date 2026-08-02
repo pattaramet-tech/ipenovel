@@ -305,6 +305,69 @@ describe("assessAccountRecoverySafety", () => {
     await assessAccountRecoverySafety({ requestId: 1, sourceUserId: 1, targetUserId: 2 });
     expect(requestLookupSpy).not.toHaveBeenCalled();
   });
+
+  // ---- M1 fix: findAccountRecoveryUserOwnedData's "other request by this
+  // same requester" check now only blocks on a "pending" or "approved"
+  // other request - a terminal-but-unsuccessful one (rejected/cancelled/
+  // blocked) is resolved history, not user-owned data, and must never
+  // permanently prevent a legitimate resubmission. The exact SQL-level
+  // status filter itself is proven directly (connection-free) by
+  // server/findAccountRecoveryUserOwnedData.test.ts; these tests prove the
+  // CONSUMER (assessAccountRecoverySafety/canApprove) correctly reacts to
+  // an empty vs non-empty findAccountRecoveryUserOwnedData result for each
+  // of the five terminal/non-terminal statuses, plus the excludeRequestId
+  // behavior - db.findAccountRecoveryUserOwnedData is mocked here exactly
+  // as every other test in this describe block already mocks it (via
+  // mockCleanScenario's userOwnedFindings override), reflecting what the
+  // real, now-fixed query returns for each scenario.
+  describe("[M1] other accountRecoveryRequests by the same requester - status-filtered blocking", () => {
+    it("1. [other rejected request] does not count as user-owned data - canApprove true when nothing else blocks", async () => {
+      // A rejected sibling request is excluded by the query's status
+      // filter, so findAccountRecoveryUserOwnedData correctly returns no
+      // finding for it at all - simulated here as an empty result.
+      mockCleanScenario({ userOwnedFindings: [] });
+      const result = await assessAccountRecoverySafety({ requestId: 2, sourceUserId: 1, targetUserId: 2 });
+      expect(result.userOwnedDataFindings).toEqual([]);
+      expect(result.canApprove).toBe(true);
+      expect(result.isFullyAutomatable).toBe(true);
+    });
+
+    it("2. [other cancelled request] does not count as user-owned data", async () => {
+      mockCleanScenario({ userOwnedFindings: [] });
+      const result = await assessAccountRecoverySafety({ requestId: 2, sourceUserId: 1, targetUserId: 2 });
+      expect(result.userOwnedDataFindings).toEqual([]);
+      expect(result.canApprove).toBe(true);
+    });
+
+    it("3. [other blocked request] does not count as user-owned data", async () => {
+      mockCleanScenario({ userOwnedFindings: [] });
+      const result = await assessAccountRecoverySafety({ requestId: 2, sourceUserId: 1, targetUserId: 2 });
+      expect(result.userOwnedDataFindings).toEqual([]);
+      expect(result.canApprove).toBe(true);
+    });
+
+    it("4. [other pending request] still counts as a finding and still blocks - fail-closed defense-in-depth on top of the DB unique-pending constraint", async () => {
+      mockCleanScenario({ userOwnedFindings: [{ table: "accountRecoveryRequests", count: 1 }] });
+      const result = await assessAccountRecoverySafety({ requestId: 2, sourceUserId: 1, targetUserId: 2 });
+      expect(result.userOwnedDataFindings).toEqual([{ table: "accountRecoveryRequests", count: 1 }]);
+      expect(result.canApprove).toBe(false);
+      expect(result.blockReasons.join(" ")).toMatch(/user-owned data/i);
+    });
+
+    it("5. [other approved request] still counts as a finding and still blocks - this source's identity already moved once before, requires Advanced Account Merge review, never a second automated move", async () => {
+      mockCleanScenario({ userOwnedFindings: [{ table: "accountRecoveryRequests", count: 1 }] });
+      const result = await assessAccountRecoverySafety({ requestId: 2, sourceUserId: 1, targetUserId: 2 });
+      expect(result.userOwnedDataFindings).toEqual([{ table: "accountRecoveryRequests", count: 1 }]);
+      expect(result.canApprove).toBe(false);
+    });
+
+    it("6. [current request excluded] findAccountRecoveryUserOwnedData is called with the CURRENT request's own id as excludeRequestId, never a different/omitted value", async () => {
+      mockCleanScenario({ userOwnedFindings: [] });
+      const findSpy = vi.spyOn(db, "findAccountRecoveryUserOwnedData");
+      await assessAccountRecoverySafety({ requestId: 42, sourceUserId: 1, targetUserId: 2 });
+      expect(findSpy).toHaveBeenCalledWith(1, 42, undefined);
+    });
+  });
 });
 
 describe("reviewAccountRecoveryRequest (reject/block/cancel)", () => {

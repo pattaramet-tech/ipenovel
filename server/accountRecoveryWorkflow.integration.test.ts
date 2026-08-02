@@ -11,6 +11,7 @@ import {
   AccountRecoveryError,
   assessAccountRecoverySafety,
   executeAccountRecovery,
+  reviewAccountRecoveryRequest,
   submitAccountRecoveryRequest,
 } from "./services/accountRecoveryService";
 
@@ -251,6 +252,110 @@ describe("Admin Account Recovery - real database", () => {
     expect(auditRows.length).toBe(1);
     expect(auditRows[0].action).toBe("approved");
     expect(JSON.stringify(auditRows[0].safeMetadata)).not.toMatch(new RegExp(identity.providerSubject));
+  });
+
+  it("[M1 regression: reject then resubmit] a source account's FIRST request being rejected must never permanently block a SECOND, later request from the same source - the second one still approves end-to-end", async () => {
+    const requester = await createTestUser();
+    const target = await createTestUser();
+    createdUserIds.push(requester.id, target.id);
+
+    // Step 1: source user with a real Google identity and genuinely no
+    // other data/entitlements (no order, no cart, nothing) - the same
+    // "empty source account" precondition as the already-covered
+    // [safe empty source approved end-to-end] test.
+    const identity = await linkTestGoogleIdentity(requester.id, "legacy-resubmit@example.test");
+    createdIdentityIds.push(identity.id);
+
+    // Step 2: submit the FIRST recovery request.
+    const firstRequest = await submitAccountRecoveryRequest({ requesterUserId: requester.id });
+    createdRequestIds.push(firstRequest.id);
+
+    // Step 3: admin rejects the first request (a real reason is required -
+    // matches the reviewAccountRecoveryRequest/router contract).
+    const rejected = await reviewAccountRecoveryRequest({
+      requestId: firstRequest.id,
+      action: "reject",
+      actorAdminId: 1,
+      reason: "insufficient evidence - please provide an order number",
+    });
+    expect(rejected.status).toBe("rejected");
+
+    // Before the M1 fix, findAccountRecoveryUserOwnedData counted ANY
+    // other accountRecoveryRequests row for this requester - including the
+    // just-rejected one above - as "user-owned data left behind",
+    // permanently blocking every future request from this same source.
+    // getAuthIdentityByUserAndProvider still finds the source's real
+    // Google identity here (rejecting a REQUEST never touches
+    // authIdentities at all), so the requester genuinely can submit again.
+
+    // Step 4: user submits a SECOND recovery request.
+    const secondRequest = await submitAccountRecoveryRequest({ requesterUserId: requester.id });
+    createdRequestIds.push(secondRequest.id);
+    expect(secondRequest.id).not.toBe(firstRequest.id);
+
+    // Step 5: admin previews the second request - this is exactly where
+    // the bug manifested: canApprove must be true (the rejected sibling
+    // must not appear in userOwnedDataFindings at all).
+    const assessment = await assessAccountRecoverySafety({
+      requestId: secondRequest.id,
+      sourceUserId: requester.id,
+      targetUserId: target.id,
+    });
+    expect(assessment.userOwnedDataFindings).toEqual([]);
+    expect(assessment.canApprove, `expected no block reasons, got: ${assessment.blockReasons.join("; ")}`).toBe(true);
+    expect(assessment.isFullyAutomatable).toBe(true);
+
+    // Step 6: approval must succeed - the full transactional flow, same
+    // locking/re-verification as every other approval in this file, never
+    // weakened for this scenario.
+    const { request: approved } = await executeAccountRecovery({
+      requestId: secondRequest.id,
+      targetUserId: target.id,
+      adminId: 2,
+      reason: "resubmission verified - order number confirmed",
+    });
+    expect(approved.status).toBe("approved");
+    expect(approved.sourceUserId).toBe(requester.id);
+    expect(approved.targetUserId).toBe(target.id);
+
+    // Step 7: the Google identity genuinely moved to the target, and no
+    // longer belongs to the source.
+    const movedIdentity = await db.getAuthIdentityByUserAndProvider(target.id, "google");
+    expect(movedIdentity).toBeDefined();
+    expect(movedIdentity!.id).toBe(identity.id);
+    expect(movedIdentity!.providerSubject).toBe(identity.providerSubject);
+    const sourceStillLinked = await db.getAuthIdentityByUserAndProvider(requester.id, "google");
+    expect(sourceStillLinked).toBeUndefined();
+
+    // Step 8: the FIRST request's own row is untouched by the second
+    // request's approval - still exactly "rejected".
+    const firstRequestAfter = await db.getAccountRecoveryRequestById(firstRequest.id);
+    expect(firstRequestAfter!.status).toBe("rejected");
+
+    // Step 9: the SECOND request is the one that ended up approved.
+    const secondRequestAfter = await db.getAccountRecoveryRequestById(secondRequest.id);
+    expect(secondRequestAfter!.status).toBe("approved");
+    expect(secondRequestAfter!.sourceUserId).toBe(requester.id);
+    expect(secondRequestAfter!.targetUserId).toBe(target.id);
+
+    // Step 10: audit logs exist per the existing contract - one "rejected"
+    // entry for the first request, one "approved" entry for the second -
+    // never merged, never missing, never duplicated.
+    const firstAuditRows = await getTestDb()
+      .select()
+      .from(accountRecoveryAuditLogs)
+      .where(eq(accountRecoveryAuditLogs.recoveryRequestId, firstRequest.id));
+    expect(firstAuditRows.length).toBe(1);
+    expect(firstAuditRows[0].action).toBe("rejected");
+
+    const secondAuditRows = await getTestDb()
+      .select()
+      .from(accountRecoveryAuditLogs)
+      .where(eq(accountRecoveryAuditLogs.recoveryRequestId, secondRequest.id));
+    expect(secondAuditRows.length).toBe(1);
+    expect(secondAuditRows[0].action).toBe("approved");
+    expect(secondAuditRows[0].authIdentityId).toBe(identity.id);
+    expect(JSON.stringify(secondAuditRows[0].safeMetadata)).not.toMatch(new RegExp(identity.providerSubject));
   });
 
   it("[target already has a Google identity] rejected, and the pre-existing target identity is left completely untouched", async () => {
