@@ -5,12 +5,14 @@
  *
  * Two sections own their own top-level navigation and must never render
  * alongside the storefront Navbar:
- *   - /admin and every /admin/* route (including /admin/login) - AdminLayout
- *     (and AdminLoginPage for /admin/login) already render the Admin top
- *     bar/sidebar. Stacking the storefront Navbar on top of it visually
- *     covers the Admin top bar and its "Admin Menu" trigger on narrow
- *     viewports (storefront Navbar is sticky top-0 z-50; the Admin mobile
- *     top bar is fixed top-0 z-40 lg:hidden).
+ *   - /admin and every /admin/* route - AdminLayout already renders the
+ *     Admin top bar/sidebar (there is no more separate /admin/login page;
+ *     an unauthenticated visitor there is sent to the normal /login route
+ *     instead - see unauthorizedRedirect.ts). Stacking the storefront
+ *     Navbar on top of it visually covers the Admin top bar and its
+ *     "Admin Menu" trigger on narrow viewports (storefront Navbar is
+ *     sticky top-0 z-50; the Admin mobile top bar is fixed top-0 z-40
+ *     lg:hidden).
  *   - /read/* - ReaderPage renders its own sticky header (back button,
  *     episode title, font/theme/TOC controls); see Navbar.tsx's prior
  *     inline comment for the stacking-sticky-headers issue this avoided.

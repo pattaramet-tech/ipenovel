@@ -42,5 +42,5 @@ export function redirectToLoginIfUnauthorized(
 ): void {
   const target = resolveGlobalUnauthorizedRedirect(error, pathname);
   if (target === "none") return;
-  applyRedirect(target === "admin_login" ? "/admin/login" : getOauthLoginUrl());
+  applyRedirect(target === "admin_login" ? "/login" : getOauthLoginUrl());
 }

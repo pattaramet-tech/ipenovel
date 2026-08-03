@@ -389,39 +389,45 @@ class SDKServer {
       );
     }
 
-    // Every path below this point needs the database - confirm it is
-    // actually available BEFORE any user/admin lookup, so an outage
-    // propagates as a real infrastructure error instead of being silently
-    // misread as "no such admin" or "no such user" (db.getUserById /
-    // getUserByOpenId both return undefined - indistinguishable from "not
-    // found" - when the database itself is unavailable). Deliberately
-    // after the session-verification check above: a request with no
-    // cookie, or an invalid one, never touches the database at all.
-    await db.assertDatabaseAvailable();
-
-    // Local (email/password) admin sessions use a synthetic "admin-<id>"
-    // openId minted only by admin.login (server/routers.ts) - never by
-    // OAuth. Role is still re-checked against the database on every
-    // request, never trusted from the token.
+    // Local (email/password) admin login has been removed entirely (see
+    // security/remove-local-admin-password-login) - it used to mint a
+    // synthetic "admin-<id>" openId (server/routers.ts's now-deleted
+    // admin.login), never issued by OAuth. Any session bearing that shape
+    // is a leftover from the removed mechanism (a still-live old cookie, or
+    // a forged attempt to mimic one) and must be rejected outright, never
+    // resolved via a database lookup - unlike a real OAuth-issued openId,
+    // there is no scenario where trusting this shape is still valid, so
+    // this check needs no database access at all and runs BEFORE the
+    // availability guard below. Uses "invalid_session_token" (not a
+    // separate reason) because this is now, structurally, exactly that: a
+    // credential shape that can never become valid again - so createContext
+    // clears the cookie too (see authErrors.ts), guaranteeing an old local
+    // admin session cookie stops being resent as well as stops working.
     if (session.openId.startsWith("admin-")) {
-      const adminId = parseInt(session.openId.substring(6), 10);
-      const user = await db.getUserById(adminId);
-      if (user && user.role === "admin") {
-        return user;
-      }
-      // Signature/claims verified fine, but this admin account no longer
-      // qualifies (deleted, demoted, or a bogus id) - an expected
-      // "credential no longer grants access" outcome, not an error. Not
-      // cleared: this is a validly-signed token, not a structurally
-      // invalid one - see authErrors.ts.
-      throw new AnonymousCredentialError("Admin session no longer valid", "admin_session_invalid");
+      throw new AnonymousCredentialError(
+        "Local admin sessions are no longer supported",
+        "invalid_session_token"
+      );
     }
 
-    // AUTH_FORCE_RELOGIN_AFTER - only ever applies to a regular (non-admin)
-    // user session, which is exactly why this check sits AFTER the
-    // admin-openId branch above (which already returned or threw): a local
-    // admin session can never reach this line. When
-    // ENV.forceReloginAfterSeconds is null (unset/invalid), this always
+    // Every path below this point needs the database - confirm it is
+    // actually available BEFORE any user lookup, so an outage propagates as
+    // a real infrastructure error instead of being silently misread as "no
+    // such user" (db.getUserByOpenId returns undefined - indistinguishable
+    // from "not found" - when the database itself is unavailable).
+    // Deliberately after the session-verification check above: a request
+    // with no cookie, or an invalid one, never touches the database at all.
+    await db.assertDatabaseAvailable();
+
+    // AUTH_FORCE_RELOGIN_AFTER applies to every real, OAuth-issued session -
+    // including an admin's, since there is no more separate concept of "an
+    // admin session" distinct from a regular one (an admin is just a
+    // regular user whose `role` is "admin" - see
+    // security/remove-local-admin-password-login). Only the synthetic,
+    // now-permanently-rejected "admin-<id>" openId shape from the removed
+    // local admin login is guaranteed to never reach this line at all (it
+    // throws, unconditionally, above - before this point is ever reached).
+    // When ENV.forceReloginAfterSeconds is null (unset/invalid), this always
     // resolves to false - see isSessionIssuedBeforeCutoff/
     // resolveForceReloginCutoffSeconds. A cutoff set in the FUTURE is a
     // SCHEDULED activation - it stays completely inert (every session keeps

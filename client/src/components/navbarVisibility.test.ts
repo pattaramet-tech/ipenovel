@@ -7,7 +7,7 @@ describe("shouldHideGlobalNavbar", () => {
     "/admin/payments",
     "/admin/orders/123",
     "/admin/settings",
-    "/admin/login",
+    "/admin/novels",
     "/read/123",
   ])("hides the storefront navbar on %s", location => {
     expect(shouldHideGlobalNavbar(location)).toBe(true);

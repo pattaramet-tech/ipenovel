@@ -5,8 +5,8 @@ import path from "node:path";
 
 /**
  * Auth Phase 2A wiring checks for AdminDashboard - source-text assertions
- * (no DOM harness in this repo; see AdminLoginPage.test.ts/
- * authClientStorage.test.ts for the same pattern). Pins that this page no
+ * (no DOM harness in this repo; see authClientStorage.test.ts for the same
+ * pattern). Pins that this page no
  * longer reads the admin-session localStorage flag, no longer runs its own
  * competing loading/"Access Denied" screens (AdminLayout is now the sole
  * gate), and gates its admin queries with the shared resolveAdminAccessState

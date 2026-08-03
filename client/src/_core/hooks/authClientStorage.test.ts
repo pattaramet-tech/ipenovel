@@ -184,7 +184,7 @@ describe("useAuth.ts source shape (static regression guard - no DOM harness in t
     const redirectEffectEnd = useAuthSource.indexOf("state.user,\n  ]);", redirectEffectStart);
     expect(redirectEffectEnd).toBeGreaterThan(-1);
     const redirectEffectBlock = useAuthSource.slice(redirectEffectStart, redirectEffectEnd);
-    expect(redirectEffectBlock).toMatch(/target === "admin_login" \? "\/admin\/login" : getLoginUrl\(\)/);
+    expect(redirectEffectBlock).toMatch(/target === "admin_login" \? "\/login" : getLoginUrl\(\)/);
   });
 
   it("the redirect effect bails out on a genuine auth.me infrastructure error (meQuery.error) BEFORE checking state.user - an error means 'unknown', not 'unauthenticated', and must never be treated as proof of no session", () => {

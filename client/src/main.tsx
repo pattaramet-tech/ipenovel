@@ -13,11 +13,13 @@ const queryClient = new QueryClient();
 
 // Path-aware - see globalUnauthorizedRedirect.ts / unauthorizedRedirect.ts's
 // docstrings, the same rule useAuth.ts's redirectOnUnauthenticated effect
-// and AdminLayout.tsx use. A UNAUTHORIZED admin API call (expired/missing
-// local admin session) must return to /admin/login, not the OAuth flow;
-// every other route keeps going to OAuth, unchanged. FORBIDDEN and any
-// other error never redirect at all. getLoginUrl() is only ever invoked for
-// the "oauth" target - never unconditionally.
+// and AdminLayout.tsx use. A UNAUTHORIZED call on /admin/* (expired/missing
+// session - there is no more separate local admin login, see
+// security/remove-local-admin-password-login) returns to the literal
+// /login page, not the dynamic OAuth flow; every other route keeps going to
+// OAuth, unchanged. FORBIDDEN and any other error never redirect at all.
+// getLoginUrl() is only ever invoked for the "oauth" target - never
+// unconditionally.
 const handleQueryOrMutationError = (error: unknown) => {
   if (typeof window === "undefined") return;
   redirectToLoginIfUnauthorized(

@@ -99,13 +99,12 @@ export async function getDb() {
  * initialize) - never DATABASE_URL, host, username, or password, and never
  * an AnonymousCredentialError. A database outage is an infrastructure
  * failure, not "no session" or "invalid credentials" - callers in
- * server/_core/sdk.ts's authenticateRequest, server/_core/oauth.ts's OAuth
- * callback, and server/routers.ts's admin.login all call this before any
- * user/admin lookup so an outage propagates as a real error instead of
- * being silently misread as "no such user"/"invalid credentials" (every
- * *Db lookup function in this file already returns undefined/null when the
- * database is unavailable - that fallback is intentionally left unchanged
- * for their many other, non-auth callers).
+ * server/_core/sdk.ts's authenticateRequest and server/_core/oauth.ts's
+ * OAuth callback all call this before any user lookup so an outage
+ * propagates as a real error instead of being silently misread as "no such
+ * user" (every *Db lookup function in this file already returns
+ * undefined/null when the database is unavailable - that fallback is
+ * intentionally left unchanged for their many other, non-auth callers).
  */
 export async function assertDatabaseAvailable(): Promise<void> {
   const db = await getDb();
@@ -2695,15 +2694,6 @@ export async function hasPointsBeenRedeemedForOrder(orderId: number, tx?: any): 
 
   return result.length > 0;
 }
-
-export async function getAdminByEmail(email: string) {
-  const db = await getDb();
-  if (!db) return undefined;
-
-  const result = await db.select().from(users).where(eq(users.email, email)).limit(1);
-  return result[0];
-}
-
 
 // ============ HOME PAGE & CATALOG QUERIES ============
 

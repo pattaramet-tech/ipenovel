@@ -35,7 +35,6 @@ import AdminMediaMigrationPage from "@/pages/AdminMediaMigrationPage";
 import AdminSettingsPage from "@/pages/AdminSettingsPage";
 import AdminBulkUploadPage from "@/pages/AdminBulkUploadPage";
 import AdminNovelManagePage from "@/pages/AdminNovelManagePage";
-import AdminLoginPage from "@/pages/AdminLoginPage";
 import AdminAnalyticsPage from "@/pages/AdminAnalyticsPage";
 import NovelDetailPage from "@/pages/NovelDetailPage";
 import PointsPage from "@/pages/PointsPage";
@@ -73,7 +72,6 @@ function Router() {
         <Route path={"/wallet"} component={WalletPage} />
         <Route path={"/payment/:orderId"} component={PaymentPage} />
         <Route path={"/sports-votes"} component={SportsVotesPage} />
-        <Route path={"/admin/login"} component={AdminLoginPage} />
         <Route path={"/admin"} component={AdminDashboard} />
         <Route path={"/admin/novels/:novelId"} component={AdminNovelManagePage} />
         <Route path={"/admin/novels"} component={AdminNovelsPage} />
