@@ -1,9 +1,0 @@
-{
-  "query": "\nSET FOREIGN_KEY_CHECKS=0;\nDROP TABLE IF EXISTS banners;\nDROP TABLE IF EXISTS cartItems;\nDROP TABLE IF EXISTS carts;\nDROP TABLE IF EXISTS categories;\nDROP TABLE IF EXISTS couponUsages;\nDROP TABLE IF EXISTS coupons;\nDROP TABLE IF EXISTS episodes;\nDROP TABLE IF EXISTS novelCategories;\nDROP TABLE IF EXISTS novels;\nDROP TABLE IF EXISTS orderHistory;\nDROP TABLE IF EXISTS orderItems;\nDROP TABLE IF EXISTS orders;\nDROP TABLE IF EXISTS payments;\nDROP TABLE IF EXISTS pointsTransactions;\nDROP TABLE IF EXISTS purchases;\nDROP TABLE IF EXISTS settings;\nDROP TABLE IF EXISTS users;\nDROP TABLE IF EXISTS wishlists;\nSET FOREIGN_KEY_CHECKS=1;\n",
-  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute \nSET FOREIGN_KEY_CHECKS=0;\nDROP TABLE IF EXISTS banners;\nDROP TABLE IF EXISTS cartItems;\nDROP TABLE IF EXISTS carts;\nDROP TABLE IF EXISTS categories;\nDROP TABLE IF EXISTS couponUsages;\nDROP TABLE IF EXISTS coupons;\nDROP TABLE IF EXISTS episodes;\nDROP TABLE IF EXISTS novelCategories;\nDROP TABLE IF EXISTS novels;\nDROP TABLE IF EXISTS orderHistory;\nDROP TABLE IF EXISTS orderItems;\nDROP TABLE IF EXISTS orders;\nDROP TABLE IF EXISTS payments;\nDROP TABLE IF EXISTS pointsTransactions;\nDROP TABLE IF EXISTS purchases;\nDROP TABLE IF EXISTS settings;\nDROP TABLE IF EXISTS users;\nDROP TABLE IF EXISTS wishlists;\nSET FOREIGN_KEY_CHECKS=1;\n",
-  "rows": [],
-  "messages": [],
-  "stdout": "",
-  "stderr": "",
-  "execution_time_ms": 17809
-}

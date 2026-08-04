@@ -391,19 +391,32 @@ class SDKServer {
 
     // Local (email/password) admin login has been removed entirely (see
     // security/remove-local-admin-password-login) - it used to mint a
-    // synthetic "admin-<id>" openId (server/routers.ts's now-deleted
-    // admin.login), never issued by OAuth. Any session bearing that shape
-    // is a leftover from the removed mechanism (a still-live old cookie, or
-    // a forged attempt to mimic one) and must be rejected outright, never
-    // resolved via a database lookup - unlike a real OAuth-issued openId,
-    // there is no scenario where trusting this shape is still valid, so
-    // this check needs no database access at all and runs BEFORE the
-    // availability guard below. Uses "invalid_session_token" (not a
-    // separate reason) because this is now, structurally, exactly that: a
-    // credential shape that can never become valid again - so createContext
-    // clears the cookie too (see authErrors.ts), guaranteeing an old local
-    // admin session cookie stops being resent as well as stops working.
-    if (session.openId.startsWith("admin-")) {
+    // synthetic "admin-<id>" openId, e.g. "admin-7" (server/routers.ts's
+    // now-deleted admin.login), never issued by OAuth. Any session bearing
+    // EXACTLY that shape is a leftover from the removed mechanism (a
+    // still-live old cookie, or a forged attempt to mimic one) and must be
+    // rejected outright, never resolved via a database lookup - unlike a
+    // real OAuth-issued openId, there is no scenario where trusting this
+    // shape is still valid, so this check needs no database access at all
+    // and runs BEFORE the availability guard below.
+    //
+    // Deliberately an exact `/^admin-\d+$/` match, never a
+    // `startsWith("admin-")` prefix check - the old numeric-id shape
+    // (`admin-7`, `admin-999`, ...) is the only thing the removed mechanism
+    // ever minted. A prefix check would ALSO reject a legitimate,
+    // differently-shaped real openId that merely happens to start with the
+    // same literal characters (e.g. a hypothetical "admin-editor" or
+    // "administrator-example" issued by some other identity source) -
+    // those must fall through to the normal getUserByOpenId lookup below
+    // like any other session, never be misclassified as a legacy admin
+    // credential just because of a shared string prefix.
+    //
+    // Uses "invalid_session_token" (not a separate reason) because this is
+    // now, structurally, exactly that: a credential shape that can never
+    // become valid again - so createContext clears the cookie too (see
+    // authErrors.ts), guaranteeing an old local admin session cookie stops
+    // being resent as well as stops working.
+    if (/^admin-\d+$/.test(session.openId)) {
       throw new AnonymousCredentialError(
         "Local admin sessions are no longer supported",
         "invalid_session_token"

@@ -235,6 +235,42 @@ describe("sdk.authenticateRequest", () => {
       expect((error as AnonymousCredentialError).reason).toBe("invalid_session_token");
       expect(assertDbSpy).not.toHaveBeenCalled();
     });
+
+    it('"admin-editor" (an "admin-" prefix, but NOT admin-<digits>) is NOT caught by this legacy guard - it falls through to the normal getUserByOpenId lookup like any other session, and can authenticate as a real user', async () => {
+      const realUser = fakeUser({ id: 55, openId: "admin-editor", role: "user" });
+      const getUserByOpenIdSpy = vi.spyOn(db, "getUserByOpenId").mockResolvedValue(realUser);
+      vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
+
+      const token = await sdk.createSessionToken("admin-editor", {});
+      const result = await sdk.authenticateRequest(requestWithCookie(token));
+
+      expect(result).toBe(realUser);
+      expect(getUserByOpenIdSpy).toHaveBeenCalledWith("admin-editor");
+    });
+
+    it('"administrator-example" (merely starts with letters resembling "admin", not the exact legacy shape) is NOT caught by this legacy guard either - normal lookup', async () => {
+      const realUser = fakeUser({ id: 56, openId: "administrator-example", role: "user" });
+      const getUserByOpenIdSpy = vi.spyOn(db, "getUserByOpenId").mockResolvedValue(realUser);
+      vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
+
+      const token = await sdk.createSessionToken("administrator-example", {});
+      const result = await sdk.authenticateRequest(requestWithCookie(token));
+
+      expect(result).toBe(realUser);
+      expect(getUserByOpenIdSpy).toHaveBeenCalledWith("administrator-example");
+    });
+
+    it("a real Google-style openId (\"google:...\") is completely unaffected by this legacy guard - normal lookup, exactly as before", async () => {
+      const googleUser = fakeUser({ id: 57, openId: "google:1234567890", role: "user", loginMethod: "google" });
+      const getUserByOpenIdSpy = vi.spyOn(db, "getUserByOpenId").mockResolvedValue(googleUser);
+      vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
+
+      const token = await sdk.createSessionToken("google:1234567890", {});
+      const result = await sdk.authenticateRequest(requestWithCookie(token));
+
+      expect(result).toBe(googleUser);
+      expect(getUserByOpenIdSpy).toHaveBeenCalledWith("google:1234567890");
+    });
   });
 
   describe("database unavailable", () => {

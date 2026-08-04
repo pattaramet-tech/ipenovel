@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -115,15 +116,16 @@ describe("admin.login tRPC procedure no longer exists", () => {
   });
 });
 
-describe("synthetic \"admin-<id>\" session shape is rejected outright, never resolved to a user", () => {
+describe("synthetic \"admin-<numeric id>\" session shape is rejected outright, never resolved to a user", () => {
   const sdkSource = readSource("server/_core/sdk.ts");
 
-  it("sdk.ts still recognizes the shape, but only to reject it", () => {
-    expect(sdkSource).toMatch(/session\.openId\.startsWith\(["']admin-["']\)/);
+  it("sdk.ts matches only the exact legacy shape (admin-<digits>) via a precise regex - never a startsWith(\"admin-\") prefix check, which would also swallow an unrelated real openId like \"admin-editor\"", () => {
+    expect(sdkSource).toMatch(/\/\^admin-\\d\+\$\/\.test\(session\.openId\)/);
+    expect(sdkSource).not.toMatch(/session\.openId\.startsWith\(["']admin-["']\)/);
   });
 
   it("the recognizing branch throws unconditionally - it never calls getUserById or returns a user for this shape", () => {
-    const branchStart = sdkSource.indexOf('if (session.openId.startsWith("admin-"))');
+    const branchStart = sdkSource.indexOf("if (/^admin-\\d+$/.test(session.openId))");
     expect(branchStart).toBeGreaterThan(-1);
     const branchEnd = sdkSource.indexOf("\n\n", branchStart);
     expect(branchEnd).toBeGreaterThan(branchStart);
@@ -132,6 +134,20 @@ describe("synthetic \"admin-<id>\" session shape is rejected outright, never res
     expect(branch).toMatch(/throw new AnonymousCredentialError/);
     expect(branch).not.toMatch(/getUserById/);
     expect(branch).not.toMatch(/\breturn user\b/);
+  });
+});
+
+describe(".manus/db/ (Manus's own local query/cache history, which was found to contain real connection details) is git-ignored", () => {
+  it(".gitignore has a rule covering .manus/db/ - reads only .gitignore itself, never any file under .manus/db/", () => {
+    const gitignore = readSource(".gitignore");
+    expect(gitignore).toMatch(/^\.manus\/db\/?\s*$/m);
+  });
+
+  it("no file under .manus/db/ is tracked by git anymore", () => {
+    const result = execFileSync("git", ["ls-files", ".manus/db/**"], { cwd: repoRoot, encoding: "utf8" });
+    // Only ever asserts emptiness - never logs/prints the (would-be) file
+    // list, so even a future regression here can't leak a filename/path.
+    expect(result.trim()).toBe("");
   });
 });
 

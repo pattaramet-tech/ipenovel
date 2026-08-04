@@ -1,8 +1,0 @@
-{
-  "query": "SELECT \n  p.id,\n  p.amount,\n  p.status,\n  o.id as orderId,\n  o.userId,\n  u.name as userName,\n  o.createdAt\nFROM payments p\nLEFT JOIN orders o ON p.orderId = o.id\nLEFT JOIN users u ON o.userId = u.id\nWHERE p.status = 'pending'\nORDER BY p.createdAt DESC\nLIMIT 50;",
-  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2xXBrmga3niPAGt.e0ccec4a89ee --database HEFiacXNVZGj8v7VkecB9b --execute SELECT \n  p.id,\n  p.amount,\n  p.status,\n  o.id as orderId,\n  o.userId,\n  u.name as userName,\n  o.createdAt\nFROM payments p\nLEFT JOIN orders o ON p.orderId = o.id\nLEFT JOIN users u ON o.userId = u.id\nWHERE p.status = 'pending'\nORDER BY p.createdAt DESC\nLIMIT 50;",
-  "returncode": 1,
-  "logs": [
-    "ERROR 1054 (42S22) at line 1: Unknown column 'p.amount' in 'field list'"
-  ]
-}
