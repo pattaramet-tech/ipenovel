@@ -4,13 +4,14 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
-import { MoreVertical, Type } from "lucide-react";
+import { MoreVertical, Type, Maximize2, Minimize2 } from "lucide-react";
 import styles from "./ReaderPage.module.css";
 import { formatEpisodeLabel } from "@/utils/episodeUtils";
 import { parsePackageToc, findTocEntryByChapterNumber, type PackageTocEntry } from "@/utils/packageTocUtils";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import ReaderSettings from "@/components/ReaderSettings";
 import { useReaderPreferences, getFontFamilyStack } from "@/hooks/useReaderPreferences";
+import { deriveReaderChromeState } from "./readerChromePresentation";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
 import { buildCanonicalUrl, SITE_NAME } from "@/lib/seo";
 
@@ -56,7 +57,7 @@ export default function ReaderPage() {
   const purchaseMutation = trpc.reader.purchaseEpisode.useMutation();
 
   const { preferences: readerPreferences, updatePreference: updateReaderPreference, resetPreferences: resetReaderPreferences } = useReaderPreferences();
-  const { fontSize, fontFamily, lineHeight, paragraphSpacing, theme } = readerPreferences;
+  const { fontSize, fontFamily, lineHeight, paragraphSpacing, theme, focusMode } = readerPreferences;
   const readerContentStyle: React.CSSProperties = {
     fontSize: `${fontSize}px`,
     lineHeight,
@@ -148,9 +149,9 @@ export default function ReaderPage() {
   // CSS), so once measured, the strip just needs to clear that height + a
   // small gap. Before the first measurement (or when the nav bar isn't
   // rendered for packages), fall back to the safe-area inset alone.
-  const watermarkTopOffset = headerHeight > 0
-    ? `${headerHeight + 4}px`
-    : "calc(env(safe-area-inset-top) + 4px)";
+  // (Top offset is computed further below, once Focus Mode's chrome state
+  // is known - a hidden header must use the safe-area fallback even though
+  // its measured height briefly hasn't caught up with the collapse yet.)
   const watermarkBottomOffset = navigationHeight > 0
     ? `${navigationHeight + 4}px`
     : "calc(env(safe-area-inset-bottom) + 4px)";
@@ -183,6 +184,63 @@ export default function ReaderPage() {
   const [savedIndicatorVisible, setSavedIndicatorVisible] = useState(false);
   const [showResumeBanner, setShowResumeBanner] = useState(false);
   const resumeBannerShownRef = useRef(false);
+
+  // ============ Focus Mode (full-screen reading, collapsible header) ============
+  // hasReadableContent mirrors the JSX's own "canRead && content" branch
+  // below (the only state where there's actual prose to focus on) - locked/
+  // purchase-prompt/no-content states must never collapse the header, since
+  // its back button and toolbar are the only way out of those.
+  const hasReadableContent = canRead && !!content;
+  const chromeState = useMemo(
+    () =>
+      deriveReaderChromeState({
+        focusMode,
+        canRead,
+        hasReadableContent,
+        readerMenuOpen: showReaderMenu,
+        readerSettingsOpen: showReaderSettings,
+        tocOpen: showToc,
+      }),
+    [focusMode, canRead, hasReadableContent, showReaderMenu, showReaderSettings, showToc]
+  );
+
+  const hideHeaderToggleRef = useRef<HTMLButtonElement>(null);
+  const restoreButtonRef = useRef<HTMLButtonElement>(null);
+  const prevFocusModeRef = useRef(focusMode);
+
+  // Moves focus to the restore button when Focus Mode is switched on (so a
+  // keyboard/screen-reader user isn't left on a control that just vanished
+  // behind `inert`), and back to the toolbar toggle when it's switched off -
+  // tied to the focusMode PREFERENCE transition itself, not to
+  // chromeState.showRestoreButton, so opening/closing an overlay while
+  // already in Focus Mode never re-triggers this (no focus loop).
+  useEffect(() => {
+    if (focusMode === prevFocusModeRef.current) return;
+    prevFocusModeRef.current = focusMode;
+    if (focusMode) {
+      if (chromeState.showRestoreButton) restoreButtonRef.current?.focus();
+    } else {
+      hideHeaderToggleRef.current?.focus();
+    }
+  }, [focusMode, chromeState.showRestoreButton]);
+
+  // Native `inert` (not just aria-hidden/pointer-events) so a collapsed
+  // header's buttons can never be tabbed to while invisible - the CSS
+  // transition below animates max-height/opacity/transform, none of which
+  // remove an element from the tab order on their own.
+  useEffect(() => {
+    if (!headerEl) return;
+    headerEl.inert = chromeState.hideHeader;
+  }, [headerEl, chromeState.hideHeader]);
+
+  // Header/nav padding already bakes in the safe-area insets (see their own
+  // CSS), so once measured, the strip just needs to clear that height + a
+  // small gap. While the header is hidden, its measured height lags a beat
+  // behind the CSS collapse transition, so this is keyed off the chrome
+  // STATE (not headerHeight) to avoid a jump/flash during that transition.
+  const watermarkTopOffset = !chromeState.hideHeader && headerHeight > 0
+    ? `${headerHeight + 4}px`
+    : "calc(env(safe-area-inset-top) + 4px)";
 
   // Package content bundles many chapters into one blob - parse recognizable
   // chapter headings ("บทที่ 12", "ตอนที่ 12", "Chapter 12", "#12") into a
@@ -510,8 +568,13 @@ export default function ReaderPage() {
 
   return (
     <div className={`${styles.container} ${styles[theme]}`}>
-      {/* Header */}
-      <div className={styles.header} ref={setHeaderEl}>
+      {/* Header - collapses when Focus Mode is on (see chromeState above);
+          `inert` (applied via effect) keeps its buttons out of the tab
+          order while it's collapsed, on top of the CSS animation below. */}
+      <div
+        className={`${styles.header} ${chromeState.hideHeader ? styles.headerHidden : ""}`}
+        ref={setHeaderEl}
+      >
         {/* Top row: back button (left) + reader options menu (right). Kept
             free of the title so a long novel title never gets squeezed
             between them. */}
@@ -571,8 +634,36 @@ export default function ReaderPage() {
               สารบัญ
             </button>
           )}
+
+          {hasReadableContent && (
+            <button
+              ref={hideHeaderToggleRef}
+              className={styles.readerSettingsButton}
+              onClick={() => updateReaderPreference("focusMode", true)}
+              aria-label="ซ่อนแถบด้านบน"
+              title="ซ่อนแถบด้านบน"
+            >
+              <Maximize2 size={16} />
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Restore button - the only way back once Focus Mode has collapsed
+          the header. Fixed + safe-area-anchored so it stays reachable even
+          when the header it's replacing would otherwise have been. */}
+      {chromeState.showRestoreButton && (
+        <button
+          ref={restoreButtonRef}
+          type="button"
+          className={styles.restoreButton}
+          onClick={() => updateReaderPreference("focusMode", false)}
+          aria-label="แสดงแถบด้านบน"
+          title="แสดงแถบด้านบน"
+        >
+          <Minimize2 size={16} />
+        </button>
+      )}
 
       {/* Progress bar - reflects live scroll position while reading */}
       {canRead && content && (

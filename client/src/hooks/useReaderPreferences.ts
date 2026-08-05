@@ -9,6 +9,10 @@ export interface ReaderPreferences {
   lineHeight: number;
   paragraphSpacing: number;
   theme: ReaderTheme;
+  /** Full-screen "Focus Mode" - collapses the reader's own header chrome
+   *  while reading. Client-side only (see readerChromePresentation.ts for
+   *  the derived on-screen state); never persisted server-side. */
+  focusMode: boolean;
 }
 
 const STORAGE_KEY = "ipenovel_reader_preferences";
@@ -19,6 +23,7 @@ export const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
   lineHeight: 1.8,
   paragraphSpacing: 16,
   theme: "light",
+  focusMode: false,
 };
 
 export const FONT_SIZE_MIN = 12;
@@ -74,6 +79,7 @@ function loadPreferences(): ReaderPreferences {
         ? clamp(parsed.paragraphSpacing, PARAGRAPH_SPACING_MIN, PARAGRAPH_SPACING_MAX)
         : DEFAULT_READER_PREFERENCES.paragraphSpacing,
       theme: isValidTheme(parsed.theme) ? parsed.theme : DEFAULT_READER_PREFERENCES.theme,
+      focusMode: typeof parsed.focusMode === "boolean" ? parsed.focusMode : DEFAULT_READER_PREFERENCES.focusMode,
     };
   } catch {
     return DEFAULT_READER_PREFERENCES;
