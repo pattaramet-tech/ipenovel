@@ -9,6 +9,10 @@ export interface ReaderPreferences {
   lineHeight: number;
   paragraphSpacing: number;
   theme: ReaderTheme;
+  /** Full-screen "Focus Mode" - collapses the reader's own header chrome
+   *  while reading. Client-side only (see readerChromePresentation.ts for
+   *  the derived on-screen state); never persisted server-side. */
+  focusMode: boolean;
 }
 
 const STORAGE_KEY = "ipenovel_reader_preferences";
@@ -19,6 +23,7 @@ export const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
   lineHeight: 1.8,
   paragraphSpacing: 16,
   theme: "light",
+  focusMode: false,
 };
 
 export const FONT_SIZE_MIN = 12;
@@ -54,29 +59,57 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+/**
+ * Pure parser for the persisted `ipenovel_reader_preferences` value - no
+ * localStorage/window access, so it's unit-testable on its own (see
+ * useReaderPreferences.test.ts). Every field falls back independently to
+ * DEFAULT_READER_PREFERENCES (a missing/wrong-typed/legacy-shaped field
+ * never invalidates the others), and every return path builds a fresh
+ * object - never the DEFAULT_READER_PREFERENCES reference itself, so a
+ * caller can never mutate the shared default by mutating what this returns.
+ */
+export function parseStoredReaderPreferences(raw: string | null): ReaderPreferences {
+  if (!raw) return { ...DEFAULT_READER_PREFERENCES };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ...DEFAULT_READER_PREFERENCES };
+  }
+
+  if (typeof parsed !== "object" || parsed === null) {
+    return { ...DEFAULT_READER_PREFERENCES };
+  }
+  const value = parsed as Record<string, unknown>;
+
+  return {
+    fontSize: typeof value.fontSize === "number"
+      ? clamp(value.fontSize, FONT_SIZE_MIN, FONT_SIZE_MAX)
+      : DEFAULT_READER_PREFERENCES.fontSize,
+    fontFamily: isValidFontFamily(value.fontFamily) ? value.fontFamily : DEFAULT_READER_PREFERENCES.fontFamily,
+    lineHeight: typeof value.lineHeight === "number"
+      ? clamp(value.lineHeight, LINE_HEIGHT_MIN, LINE_HEIGHT_MAX)
+      : DEFAULT_READER_PREFERENCES.lineHeight,
+    paragraphSpacing: typeof value.paragraphSpacing === "number"
+      ? clamp(value.paragraphSpacing, PARAGRAPH_SPACING_MIN, PARAGRAPH_SPACING_MAX)
+      : DEFAULT_READER_PREFERENCES.paragraphSpacing,
+    theme: isValidTheme(value.theme) ? value.theme : DEFAULT_READER_PREFERENCES.theme,
+    // Legacy stored preferences (saved before Focus Mode existed) simply
+    // don't have this key - `undefined` falls through to the same default
+    // path as a wrong-typed value (string/number), both correctly landing
+    // on `false`.
+    focusMode: typeof value.focusMode === "boolean" ? value.focusMode : DEFAULT_READER_PREFERENCES.focusMode,
+  };
+}
+
 function loadPreferences(): ReaderPreferences {
-  if (typeof window === "undefined") return DEFAULT_READER_PREFERENCES;
+  if (typeof window === "undefined") return { ...DEFAULT_READER_PREFERENCES };
 
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULT_READER_PREFERENCES;
-
-    const parsed = JSON.parse(raw);
-    return {
-      fontSize: typeof parsed.fontSize === "number"
-        ? clamp(parsed.fontSize, FONT_SIZE_MIN, FONT_SIZE_MAX)
-        : DEFAULT_READER_PREFERENCES.fontSize,
-      fontFamily: isValidFontFamily(parsed.fontFamily) ? parsed.fontFamily : DEFAULT_READER_PREFERENCES.fontFamily,
-      lineHeight: typeof parsed.lineHeight === "number"
-        ? clamp(parsed.lineHeight, LINE_HEIGHT_MIN, LINE_HEIGHT_MAX)
-        : DEFAULT_READER_PREFERENCES.lineHeight,
-      paragraphSpacing: typeof parsed.paragraphSpacing === "number"
-        ? clamp(parsed.paragraphSpacing, PARAGRAPH_SPACING_MIN, PARAGRAPH_SPACING_MAX)
-        : DEFAULT_READER_PREFERENCES.paragraphSpacing,
-      theme: isValidTheme(parsed.theme) ? parsed.theme : DEFAULT_READER_PREFERENCES.theme,
-    };
+    return parseStoredReaderPreferences(window.localStorage.getItem(STORAGE_KEY));
   } catch {
-    return DEFAULT_READER_PREFERENCES;
+    return { ...DEFAULT_READER_PREFERENCES };
   }
 }
 
@@ -101,7 +134,7 @@ export function useReaderPreferences() {
   }, []);
 
   const resetPreferences = useCallback(() => {
-    setPreferences(DEFAULT_READER_PREFERENCES);
+    setPreferences({ ...DEFAULT_READER_PREFERENCES });
   }, []);
 
   return { preferences, updatePreference, resetPreferences };
