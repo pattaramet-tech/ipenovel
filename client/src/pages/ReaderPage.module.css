@@ -67,12 +67,15 @@
 /* Restore button - the header's Focus Mode replacement while it's
    collapsed. Fixed (not sticky, since the header it stands in for is gone)
    and anchored past the safe-area inset so it's never hidden behind a
-   notch/status bar. z-index sits above the progress bar (99) and watermark
-   (20) - both of which it can visually overlap in the top-right corner -
-   but below the reader menu dropdown (59-60 is actually lower than this by
-   number, but the two are mutually exclusive by construction: showing this
-   button implies no overlay is open) and every modal/drawer overlay
-   (1000+). */
+   notch/status bar. It never actually overlaps the watermark strip: the
+   watermark's own top offset (see ReaderPage.tsx's watermarkTopOffset) is
+   pushed down to clear this button's full height + gap whenever the header
+   is hidden, so the two never occupy the same space - the z-index below
+   (100, above the progress bar's 99 and the watermark's 20) only matters
+   for the sliver of time before that offset settles. Below the reader menu
+   dropdown/modal-drawer overlays (1000+) - the two are mutually exclusive
+   by construction anyway, since showing this button implies no overlay is
+   open. */
 .restoreButton {
   position: fixed;
   top: calc(env(safe-area-inset-top) + 10px);
@@ -81,8 +84,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
+  gap: 0.4rem;
+  min-width: 40px;
   height: 40px;
+  padding: 0 10px;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
   border: none;
@@ -99,6 +104,29 @@
 .restoreButton:focus-visible {
   outline: 2px solid #4da6ff;
   outline-offset: 2px;
+}
+
+.restoreButtonLabel {
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.focusButtonLabel {
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .restoreButton {
+    min-width: 40px;
+    width: 40px;
+    padding: 0;
+  }
+
+  .restoreButtonLabel,
+  .focusButtonLabel {
+    display: none;
+  }
 }
 
 .dark .header {

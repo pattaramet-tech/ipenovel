@@ -23,20 +23,21 @@ export function deriveReaderChromeState(input: ReaderChromeInput): ReaderChromeS
   // Focus Mode only ever collapses the header while there's actual content
   // being read - never on the locked/purchase-prompt/no-content states,
   // where the header's back button and toolbar are the only way out.
-  const focusActive = input.focusMode && input.canRead && input.hasReadableContent;
+  const focusEligible = input.focusMode && input.canRead && input.hasReadableContent;
 
-  // Any overlay (reader menu dropdown, Settings panel, TOC drawer) already
-  // covers the header visually - but the header staying `inert` either way
-  // is fine, so it deliberately does NOT re-expand hideHeader here (that
-  // would make the header pop back in and out on every overlay open/close,
-  // which is jarring). The floating restore button, however, is a separate
-  // fixed-position element that would otherwise poke out from under a
-  // translucent overlay backdrop and be reachable by keyboard while hidden
-  // behind it - so it's suppressed whenever an overlay is open.
+  // The reader menu dropdown, Settings panel, and TOC drawer all live
+  // inside/above the header's own DOM (the menu) or need the header's
+  // controls to reopen them (Settings/TOC) - so while any of them is open,
+  // the header must temporarily reappear rather than stay collapsed behind
+  // an overlay. This doesn't touch the `focusMode` preference itself: once
+  // the overlay closes, the header goes back to being hidden exactly as
+  // Focus Mode already had it, with no separate state to reconcile.
   const overlayOpen = input.readerMenuOpen || input.readerSettingsOpen || input.tocOpen;
+
+  const focusActive = focusEligible && !overlayOpen;
 
   return {
     hideHeader: focusActive,
-    showRestoreButton: focusActive && !overlayOpen,
+    showRestoreButton: focusActive,
   };
 }

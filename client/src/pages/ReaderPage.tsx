@@ -191,6 +191,12 @@ export default function ReaderPage() {
   // purchase-prompt/no-content states must never collapse the header, since
   // its back button and toolbar are the only way out of those.
   const hasReadableContent = canRead && !!content;
+  // Raw "is anything covering the header" flag - deliberately exposed here
+  // (not just baked into chromeState) because the focus-management effect
+  // below needs to distinguish "header visible because Focus Mode is truly
+  // off" from "header visible only because an overlay forced it back open",
+  // which chromeState.hideHeader alone can't tell apart.
+  const overlayOpen = showReaderMenu || showReaderSettings || showToc;
   const chromeState = useMemo(
     () =>
       deriveReaderChromeState({
@@ -206,41 +212,73 @@ export default function ReaderPage() {
 
   const hideHeaderToggleRef = useRef<HTMLButtonElement>(null);
   const restoreButtonRef = useRef<HTMLButtonElement>(null);
-  const prevFocusModeRef = useRef(focusMode);
-
-  // Moves focus to the restore button when Focus Mode is switched on (so a
-  // keyboard/screen-reader user isn't left on a control that just vanished
-  // behind `inert`), and back to the toolbar toggle when it's switched off -
-  // tied to the focusMode PREFERENCE transition itself, not to
-  // chromeState.showRestoreButton, so opening/closing an overlay while
-  // already in Focus Mode never re-triggers this (no focus loop).
-  useEffect(() => {
-    if (focusMode === prevFocusModeRef.current) return;
-    prevFocusModeRef.current = focusMode;
-    if (focusMode) {
-      if (chromeState.showRestoreButton) restoreButtonRef.current?.focus();
-    } else {
-      hideHeaderToggleRef.current?.focus();
-    }
-  }, [focusMode, chromeState.showRestoreButton]);
 
   // Native `inert` (not just aria-hidden/pointer-events) so a collapsed
   // header's buttons can never be tabbed to while invisible - the CSS
   // transition below animates max-height/opacity/transform, none of which
-  // remove an element from the tab order on their own.
+  // remove an element from the tab order on their own. Declared BEFORE the
+  // focus-management effect below so it commits first within the same
+  // render: the header toggle button lives inside headerEl, and focusing a
+  // descendant of a still-inert ancestor is a no-op.
   useEffect(() => {
     if (!headerEl) return;
     headerEl.inert = chromeState.hideHeader;
   }, [headerEl, chromeState.hideHeader]);
+
+  const prevFocusModeRef = useRef(focusMode);
+  // A focusMode preference flip can happen while its target button isn't
+  // actually renderable yet - e.g. turning Focus Mode on from the still-open
+  // Settings panel, where the restore button stays suppressed by the
+  // overlay until Settings closes. These stay "armed" across renders until
+  // the target becomes ready, instead of firing (and missing) once.
+  const pendingRestoreFocusRef = useRef(false);
+  const pendingHeaderFocusRef = useRef(false);
+
+  // Detects the focusMode PREFERENCE transition itself (never re-arms just
+  // because an overlay opened/closed - no focus loop), arms the matching
+  // pending flag, then immediately resolves whichever pending flag already
+  // has a ready target. Re-runs whenever readiness itself changes
+  // (chromeState's two outputs, or overlayOpen closing) so a flag armed
+  // while its target wasn't ready yet still gets resolved later, exactly
+  // once.
+  useEffect(() => {
+    if (focusMode !== prevFocusModeRef.current) {
+      prevFocusModeRef.current = focusMode;
+      if (focusMode) {
+        pendingRestoreFocusRef.current = true;
+        pendingHeaderFocusRef.current = false;
+      } else {
+        pendingHeaderFocusRef.current = true;
+        pendingRestoreFocusRef.current = false;
+      }
+    }
+
+    if (pendingRestoreFocusRef.current && chromeState.showRestoreButton) {
+      restoreButtonRef.current?.focus();
+      pendingRestoreFocusRef.current = false;
+    }
+    // Never focus the header's toggle button while it's only visible
+    // because an overlay forced it back open (Settings/TOC/menu still
+    // covering it) - wait for the overlay to actually close first.
+    if (pendingHeaderFocusRef.current && !chromeState.hideHeader && !overlayOpen) {
+      hideHeaderToggleRef.current?.focus();
+      pendingHeaderFocusRef.current = false;
+    }
+  }, [focusMode, chromeState.showRestoreButton, chromeState.hideHeader, overlayOpen]);
 
   // Header/nav padding already bakes in the safe-area insets (see their own
   // CSS), so once measured, the strip just needs to clear that height + a
   // small gap. While the header is hidden, its measured height lags a beat
   // behind the CSS collapse transition, so this is keyed off the chrome
   // STATE (not headerHeight) to avoid a jump/flash during that transition.
-  const watermarkTopOffset = !chromeState.hideHeader && headerHeight > 0
-    ? `${headerHeight + 4}px`
-    : "calc(env(safe-area-inset-top) + 4px)";
+  // While hidden, the floating restore button (40px, anchored just past the
+  // safe-area inset - see .restoreButton) takes the header's old spot, so
+  // the watermark strip must clear IT, not just the safe area alone.
+  const watermarkTopOffset = chromeState.hideHeader
+    ? "calc(env(safe-area-inset-top) + 58px)"
+    : headerHeight > 0
+      ? `${headerHeight + 4}px`
+      : "calc(env(safe-area-inset-top) + 4px)";
 
   // Package content bundles many chapters into one blob - parse recognizable
   // chapter headings ("บทที่ 12", "ตอนที่ 12", "Chapter 12", "#12") into a
@@ -644,6 +682,7 @@ export default function ReaderPage() {
               title="ซ่อนแถบด้านบน"
             >
               <Maximize2 size={16} />
+              <span className={styles.focusButtonLabel}>ซ่อนแถบด้านบน</span>
             </button>
           )}
         </div>
@@ -662,6 +701,7 @@ export default function ReaderPage() {
           title="แสดงแถบด้านบน"
         >
           <Minimize2 size={16} />
+          <span className={styles.restoreButtonLabel}>แสดงแถบด้านบน</span>
         </button>
       )}
 
