@@ -7,21 +7,54 @@
  * redirect, body parsers, OAuth routes, tRPC, and the SPA static fallback.
  */
 import type { Express, Request, Response } from "express";
-import { sql } from "drizzle-orm";
+import type { Pool as CallbackMySql2Pool, QueryError } from "mysql2";
 import { getDb } from "../db";
 import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
 
-/** Real readiness ping: a live read-only query, not just "did the client construct". */
+// Bounds the actual mysql2 operation, not just our own wrapper promise -
+// see pingDatabase()'s docstring for why a client-side race alone isn't
+// enough. Must stay below READYZ_PING_TIMEOUT_MS so the database itself
+// gives up and settles before the HTTP layer's own bound would otherwise
+// have to step in.
+export const DB_PING_TIMEOUT_MS = 2500;
+
+/**
+ * Real readiness ping: a live read-only query, not just "did the client
+ * construct" - and, critically, one that is guaranteed to settle on its
+ * own within DB_PING_TIMEOUT_MS.
+ *
+ * This deliberately bypasses Drizzle's `db.execute(sql\`...\`)` and goes
+ * through Drizzle's own documented `$client` field (see
+ * MySql2Database & { $client } in drizzle-orm/mysql2/driver.d.ts) to reach
+ * the underlying mysql2 driver instance directly - `drizzle(DATABASE_URL)`
+ * always constructs this via mysql2's own `createPool()` (see
+ * drizzle-orm/mysql2/driver.js), so `$client` is a real, callback-style
+ * mysql2 `Pool`, confirmed against the mysql2@3.22.5 / drizzle-orm@0.44.7
+ * versions this repo has installed. Drizzle's query builder has no
+ * parameter for a per-query timeout, but mysql2's own `Pool#query()` does:
+ * every mysql2 operation accepts a `timeout` option, documented as an
+ * inactivity timeout enforced by the client itself (not the MySQL
+ * protocol) - when it fires, mysql2 invokes the callback with a
+ * `PROTOCOL_SEQUENCE_TIMEOUT` error *and* destroys the connection the
+ * query was running on (see mysql2/lib/commands/query.js's
+ * _handleTimeoutError). Because this is a Pool (not a single Connection),
+ * the destroyed connection is simply not returned to the pool - the pool
+ * transparently opens a fresh one for the next ping, so nothing here needs
+ * to track or clean up a connection by hand, and no connection is left
+ * leaked or reused in a broken state.
+ */
 export async function pingDatabase(): Promise<void> {
   const db = await getDb();
   if (!db) {
     throw new Error("[readyz] database connection is not available");
   }
-  // `getDb()` returning a client only means `drizzle(...)` didn't throw -
-  // mysql2's lazy connection means that succeeds even against an unreachable
-  // host. A real query is the only way to know the database can actually be
-  // read from right now.
-  await (db as any).execute(sql`SELECT 1`);
+  const client = (db as any).$client as CallbackMySql2Pool;
+  await new Promise<void>((resolve, reject) => {
+    client.query({ sql: "SELECT 1", timeout: DB_PING_TIMEOUT_MS }, (err: QueryError | null) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
 }
 
 export type DatabasePing = () => Promise<void>;
