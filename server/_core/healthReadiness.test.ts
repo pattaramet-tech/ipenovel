@@ -446,6 +446,88 @@ describe("registerHealthReadinessRoutes with the real pingDatabase (mocked mysql
     vi.restoreAllMocks();
   });
 
+  it("if getConnection() never calls back at all, /readyz still answers 503 within the HTTP timeout without ever acquiring a queryable connection, and concurrent requests reuse the same pending acquisition", async () => {
+    // getConnection() has no timeout of its own (see pingDatabase()'s
+    // docstring) - this deliberately never calls back, simulating a pool
+    // that can never hand out a connection (exhausted, or every existing
+    // connection stuck establishing against an unreachable host).
+    const getConnection = vi.fn((_callback: (err: unknown, conn?: MockConnection) => void) => {});
+    __setDbForTests({ $client: { getConnection } } as any);
+
+    const TIMEOUT_MS = 20;
+    const started = await startTestServer(undefined, TIMEOUT_MS);
+    server = started.server;
+
+    const responses = await Promise.all([fetch(`${started.baseUrl}/readyz`), fetch(`${started.baseUrl}/readyz`)]);
+
+    for (const res of responses) {
+      expect(res.status).toBe(503);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(await res.text()).toBe(JSON.stringify({ status: "not_ready" }));
+    }
+
+    // Both requests shared the same still-pending acquisition - it's only
+    // attempted once, never once per request, and connection.query() is
+    // never reachable since no connection was ever handed back.
+    expect(getConnection).toHaveBeenCalledTimes(1);
+  });
+
+  it("if getConnection() eventually resolves after the HTTP timeout already answered 503, the ping settles in the background and the next /readyz request starts fresh and succeeds", async () => {
+    const firstConnection = createMockConnection();
+    firstConnection.query.mockImplementation((_options: any, callback: (err: unknown) => void) => callback(null));
+    let deliverFirstConnection!: (err: unknown, conn?: MockConnection) => void;
+
+    const secondConnection = createMockConnection();
+    secondConnection.query.mockImplementation((_options: any, callback: (err: unknown) => void) => callback(null));
+
+    const getConnection = vi
+      .fn()
+      .mockImplementationOnce((callback: (err: unknown, conn?: MockConnection) => void) => {
+        // Captured, not called yet - simulates an acquisition that's still
+        // pending when the HTTP-level timeout below fires.
+        deliverFirstConnection = callback;
+      })
+      .mockImplementationOnce((callback: (err: unknown, conn: MockConnection) => void) =>
+        callback(null, secondConnection)
+      );
+    __setDbForTests({ $client: { getConnection } } as any);
+
+    const TIMEOUT_MS = 20;
+    const started = await startTestServer(undefined, TIMEOUT_MS);
+    server = started.server;
+
+    // 1-2. First /readyz request times out at the HTTP layer while
+    // getConnection() is still pending; it's been attempted only once.
+    const first = await fetch(`${started.baseUrl}/readyz`);
+    expect(first.status).toBe(503);
+    expect(await first.json()).toEqual({ status: "not_ready" });
+    expect(getConnection).toHaveBeenCalledTimes(1);
+
+    // 3-4. The connection now arrives for the still-in-flight ping; the
+    // query succeeds and the connection is released.
+    deliverFirstConnection(null, firstConnection);
+    // Short real wait purely to let that in-flight pingDatabase() promise
+    // chain (query callback -> release -> resolve -> inFlightPing's
+    // finally) settle in the background - not the real 2.5s/3s bounds.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(firstConnection.query).toHaveBeenCalledTimes(1);
+    expect(firstConnection.release).toHaveBeenCalledTimes(1);
+    expect(firstConnection.destroy).not.toHaveBeenCalled();
+
+    // 5-6. inFlightPing has cleared, so a new /readyz request starts a
+    // brand-new getConnection() call and succeeds.
+    const second = await fetch(`${started.baseUrl}/readyz`);
+    expect(second.status).toBe(200);
+    expect(await second.json()).toEqual({ status: "ready" });
+    expect(getConnection).toHaveBeenCalledTimes(2);
+
+    // 7. No connection was destroyed anywhere in this all-success scenario.
+    expect(firstConnection.destroy).not.toHaveBeenCalled();
+    expect(secondConnection.destroy).not.toHaveBeenCalled();
+    expect(secondConnection.release).toHaveBeenCalledTimes(1);
+  });
+
   it("once mysql2 times out and calls back with an error, the connection is destroyed, the shared in-flight ping clears, and the next /readyz request acquires a fresh connection", async () => {
     const timedOutConnection = createMockConnection();
     timedOutConnection.query.mockImplementation((_options: any, callback: (err: unknown) => void) => {

@@ -11,18 +11,32 @@ import type { Pool as CallbackMySql2Pool, PoolConnection, QueryError } from "mys
 import { getDb } from "../db";
 import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
 
-// Bounds the actual mysql2 operation, not just our own wrapper promise -
-// see pingDatabase()'s docstring for why a client-side race alone isn't
-// enough. Must stay below READYZ_PING_TIMEOUT_MS so the database itself
-// gives up and settles before the HTTP layer's own bound would otherwise
-// have to step in.
+// Bounds only the SELECT 1 query itself, once pool.getConnection() has
+// already handed pingDatabase() a connection - see pingDatabase()'s
+// docstring. It does *not* bound how long getConnection() may take to
+// acquire that connection in the first place; that phase has no timeout of
+// its own here and is only bounded indirectly, at the HTTP layer, by
+// registerHealthReadinessRoutes's own READYZ_PING_TIMEOUT_MS race below.
 export const DB_PING_TIMEOUT_MS = 2500;
 
 /**
  * Real readiness ping: a live read-only query, not just "did the client
- * construct" - and, critically, one that is guaranteed to settle on its
- * own within DB_PING_TIMEOUT_MS, on a connection this function fully owns
- * and cleans up itself.
+ * construct" - run on a connection this function fully owns and cleans up
+ * itself. Two phases, two different timeout stories:
+ *
+ *   1. `pool.getConnection()` acquires a connection from the pool. **This
+ *      phase has no timeout of its own in this function** - if the pool is
+ *      exhausted or every connection is stuck establishing against an
+ *      unreachable host, this can hang indefinitely on its own. It is only
+ *      bounded indirectly: registerHealthReadinessRoutes races the whole
+ *      `pingDatabase()` call (both phases) against `READYZ_PING_TIMEOUT_MS`
+ *      so the HTTP *response* still arrives within 3s, without cancelling
+ *      this still-pending acquisition, and its existing `inFlightPing`
+ *      dedup means later `/readyz` requests reuse this same in-flight call
+ *      rather than starting a second `getConnection()`.
+ *   2. Once a connection is acquired, `connection.query()` runs `SELECT 1`
+ *      bounded by mysql2's own `timeout: DB_PING_TIMEOUT_MS` option below
+ *      (2.5s) - only *this* phase is guaranteed to settle on its own.
  *
  * This deliberately bypasses Drizzle's `db.execute(sql\`...\`)` (no
  * per-query timeout parameter) and goes through Drizzle's own documented
@@ -106,23 +120,29 @@ export async function pingDatabase(): Promise<void> {
 
 export type DatabasePing = () => Promise<void>;
 
-// Bounds how long a single /readyz request waits on the database before
-// answering. Without this, a stuck connection or network partition means
-// the request (and every one of Coolify's re-probes piling up behind it)
-// hangs indefinitely instead of failing fast. Exported only so the test
-// file can inject a much smaller value - production always uses this
-// default.
+// Bounds how long a single /readyz request waits before answering -
+// including any time still spent waiting for pool.getConnection() to
+// acquire a connection, which has no timeout of its own (see
+// pingDatabase()'s docstring). Without this, a stuck connection, an
+// exhausted pool, or a network partition means the request (and every one
+// of Coolify's re-probes piling up behind it) hangs indefinitely instead
+// of failing fast. Exported only so the test file can inject a much
+// smaller value - production always uses this default.
 export const READYZ_PING_TIMEOUT_MS = 3000;
 
 const READYZ_TIMED_OUT = Symbol("readyz-ping-timed-out");
 
 /**
  * Registers GET /healthz (process-only liveness, never touches the
- * database) and GET /readyz (a real, time-bounded read-only database
- * query). `ping` and `timeoutMs` are both injectable so unit tests can
- * exercise success, failure, and timeout paths deterministically and
- * without a real database connection; production callers should omit both
- * and get the real `pingDatabase` bounded by `READYZ_PING_TIMEOUT_MS`.
+ * database) and GET /readyz. `ping` and `timeoutMs` are both injectable so
+ * unit tests can exercise success, failure, and timeout paths
+ * deterministically and without a real database connection; production
+ * callers should omit both and get the real `pingDatabase`, raced against
+ * `READYZ_PING_TIMEOUT_MS` below. That race bounds the HTTP *response*
+ * time - including any time still spent acquiring a database connection -
+ * not `pingDatabase()` itself, which keeps running in the background past
+ * that point and is reused (not restarted) by the next `/readyz` request
+ * via `inFlightPing` below.
  *
  * The in-flight ping promise and the log-throttle timestamp both live in
  * this function's own closure (not module scope) so that two separate
