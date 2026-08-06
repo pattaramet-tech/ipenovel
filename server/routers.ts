@@ -1065,17 +1065,12 @@ export const appRouter = router({
 
   // ============ WISHLISTS ============
   wishlists: router({
+    // Single joined query (see db.getWishlistNovelsByUserId) - no per-row
+    // getNovelById() N+1. Archived novels are excluded by the query itself,
+    // never surfaced to /profile even if they were wishlisted before being
+    // archived.
     list: protectedProcedure.query(async ({ ctx }) => {
-      const wishlists = await db.getWishlistsByUserId(ctx.user.id);
-
-      const enriched = await Promise.all(
-        wishlists.map(async (w: any) => {
-          const novel = await db.getNovelById(w.novelId);
-          return { ...w, novel };
-        })
-      );
-
-      return enriched;
+      return db.getWishlistNovelsByUserId(ctx.user.id);
     }),
 
     // Lightweight companion to `list` - just the id/novelId pairs needed to
@@ -1089,11 +1084,22 @@ export const appRouter = router({
     add: protectedProcedure
       .input(z.object({ novelId: z.number() }))
       .mutation(async ({ input, ctx }) => {
+        // getNovelById defaults to publicOnly=true, so this also rejects an
+        // archived novel's id the same way as one that never existed - a
+        // wishlist row must never be created pointing at either.
+        const novel = await db.getNovelById(input.novelId);
+        if (!novel) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "ไม่พบนิยายที่ต้องการบันทึก" });
+        }
+
         const existing = await db.getWishlistByUserAndNovel(ctx.user.id, input.novelId);
         if (existing) {
           throw new TRPCError({ code: "CONFLICT", message: "This novel is already in your wishlist" });
         }
 
+        // The check above is best-effort (TOCTOU) - the DB's own
+        // unique_user_novel constraint on (userId, novelId) is the real
+        // guard against a race between two concurrent adds.
         await db.addToWishlist(ctx.user.id, input.novelId);
         return { success: true };
       }),

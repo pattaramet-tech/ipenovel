@@ -109,6 +109,13 @@ export default function NovelCard({
 
           {showWishlist && (
             <button
+              // Lets a caller that just removed a card (e.g. ProfilePage's
+              // Wishlist section) locate and refocus an adjacent card's
+              // heart button via a plain DOM query after the removed card
+              // unmounts - NovelCard doesn't forward a ref, so this is the
+              // lightest-weight way to make that possible without changing
+              // the component's props signature.
+              data-wishlist-novel-id={Number(id)}
               className={`absolute top-2 left-2 z-20 p-1.5 rounded-full bg-white/85 hover:bg-white transition ${
                 wishlistLoading ? "opacity-60 cursor-wait" : ""
               }`}
