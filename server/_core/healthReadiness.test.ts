@@ -277,74 +277,166 @@ describe("registerHealthReadinessRoutes - readiness timeout and ping de-duplicat
 
 // pingDatabase is the real, non-injected implementation used in production.
 // It goes through Drizzle's documented `$client` field to reach the
-// underlying mysql2 Pool directly (see pingDatabase's own docstring in
-// healthReadiness.ts for why), so these mock a bare { query } object
-// standing in for that Pool - the same __setDbForTests test hook server/db.ts
+// underlying mysql2 Pool directly, acquires its own dedicated
+// PoolConnection via `pool.getConnection()`, and owns that connection's
+// entire release-or-destroy lifecycle by hand - see pingDatabase's own
+// docstring in healthReadiness.ts for why (mysql2's per-query `timeout`
+// option does not destroy the connection on its own; only clears its own
+// timer and reports the error). These mock a bare { getConnection } Pool
+// and a { query, release, destroy } connection standing in for the real
+// mysql2 objects, via the same __setDbForTests test hook server/db.ts
 // already exposes for this purpose (see server/db.rawErrorLogging.test.ts).
 // No real database or mysql2 connection is ever touched.
+type MockConnection = {
+  query: ReturnType<typeof vi.fn>;
+  release: ReturnType<typeof vi.fn>;
+  destroy: ReturnType<typeof vi.fn>;
+};
+
+function createMockConnection(): MockConnection {
+  return { query: vi.fn(), release: vi.fn(), destroy: vi.fn() };
+}
+
+function mockPoolWithConnection(connection: MockConnection): ReturnType<typeof vi.fn> {
+  const getConnection = vi.fn((callback: (err: unknown, conn?: MockConnection) => void) =>
+    callback(null, connection)
+  );
+  __setDbForTests({ $client: { getConnection } } as any);
+  return getConnection;
+}
+
 describe("pingDatabase", () => {
   afterEach(() => {
     __setDbForTests(null);
   });
 
-  function mockClient(query: (options: any, callback: (err: unknown) => void) => void) {
-    __setDbForTests({ $client: { query: vi.fn(query) } } as any);
-  }
-
-  it("issues a real SELECT 1 query through mysql2's $client, bounded by DB_PING_TIMEOUT_MS - a client existing is not enough on its own", async () => {
-    const query = vi.fn((_options: any, callback: (err: unknown) => void) => callback(null));
-    __setDbForTests({ $client: { query } } as any);
+  it("on success: acquires one connection, queries SELECT 1 with the timeout option, releases it once, and never destroys it", async () => {
+    const connection = createMockConnection();
+    connection.query.mockImplementation((_options: any, callback: (err: unknown) => void) => callback(null));
+    const getConnection = mockPoolWithConnection(connection);
 
     await expect(pingDatabase()).resolves.toBeUndefined();
 
-    expect(query).toHaveBeenCalledTimes(1);
-    const options = query.mock.calls[0][0];
+    expect(getConnection).toHaveBeenCalledTimes(1);
+    expect(connection.query).toHaveBeenCalledTimes(1);
+    const options = connection.query.mock.calls[0][0];
     expect(options.sql).toBe("SELECT 1");
-    // This is the actual mysql2 driver-level bound - see pingDatabase's
-    // docstring: mysql2 itself destroys the connection and calls back with
-    // an error once this fires, so the real database operation (not just
-    // our own wrapper promise) is guaranteed to settle.
+    // The real mysql2 driver-level bound - see pingDatabase's docstring:
+    // this only makes mysql2 report an error via the callback, it does not
+    // destroy the connection by itself, which is exactly why this function
+    // manages release/destroy itself instead of trusting the timeout alone.
     expect(options.timeout).toBe(DB_PING_TIMEOUT_MS);
     expect(DB_PING_TIMEOUT_MS).toBeLessThan(3000); // must stay under the HTTP-level READYZ_PING_TIMEOUT_MS
+    expect(connection.release).toHaveBeenCalledTimes(1);
+    expect(connection.destroy).not.toHaveBeenCalled();
   });
 
-  it("rejects when mysql2 reports its own query timeout (PROTOCOL_SEQUENCE_TIMEOUT)", async () => {
-    mockClient((_options, callback) => {
+  it("on PROTOCOL_SEQUENCE_TIMEOUT: rejects, destroys the connection once, and never releases it", async () => {
+    const connection = createMockConnection();
+    connection.query.mockImplementation((_options: any, callback: (err: unknown) => void) => {
       const err = new Error("Query inactivity timeout");
       (err as any).code = "PROTOCOL_SEQUENCE_TIMEOUT";
       callback(err);
     });
+    mockPoolWithConnection(connection);
 
     await expect(pingDatabase()).rejects.toMatchObject({ code: "PROTOCOL_SEQUENCE_TIMEOUT" });
+
+    expect(connection.destroy).toHaveBeenCalledTimes(1);
+    expect(connection.release).not.toHaveBeenCalled();
   });
 
-  it("rejects when the query fails for a non-timeout reason, even though the client exists", async () => {
-    mockClient((_options, callback) => callback(new Error("connect ECONNREFUSED")));
+  it("on a non-timeout query/network error: rejects and destroys the connection rather than returning a possibly-broken one to the pool", async () => {
+    const connection = createMockConnection();
+    connection.query.mockImplementation((_options: any, callback: (err: unknown) => void) =>
+      callback(new Error("connect ECONNREFUSED"))
+    );
+    mockPoolWithConnection(connection);
 
     await expect(pingDatabase()).rejects.toThrow();
+
+    expect(connection.destroy).toHaveBeenCalledTimes(1);
+    expect(connection.release).not.toHaveBeenCalled();
+  });
+
+  it("when getConnection() itself fails: rejects without ever calling query, release, or destroy on any connection", async () => {
+    const getConnection = vi.fn((callback: (err: unknown, conn?: MockConnection) => void) =>
+      callback(new Error("no connections available"))
+    );
+    __setDbForTests({ $client: { getConnection } } as any);
+
+    await expect(pingDatabase()).rejects.toThrow();
+
+    expect(getConnection).toHaveBeenCalledTimes(1);
+  });
+
+  it("when connection.query() throws synchronously: rejects and destroys the connection once", async () => {
+    const connection = createMockConnection();
+    connection.query.mockImplementation(() => {
+      throw new Error("synchronous failure");
+    });
+    mockPoolWithConnection(connection);
+
+    await expect(pingDatabase()).rejects.toThrow("synchronous failure");
+
+    expect(connection.destroy).toHaveBeenCalledTimes(1);
+    expect(connection.release).not.toHaveBeenCalled();
+  });
+
+  it("a callback that fires twice (error, then a late success) only settles the promise once and only cleans up the connection once", async () => {
+    const connection = createMockConnection();
+    let lateCallback: ((err: unknown) => void) | undefined;
+    connection.query.mockImplementation((_options: any, callback: (err: unknown) => void) => {
+      lateCallback = callback;
+      callback(new Error("first callback: down"));
+    });
+    mockPoolWithConnection(connection);
+
+    await expect(pingDatabase()).rejects.toThrow("first callback: down");
+
+    // mysql2 shouldn't do this, but the settle-once guard must hold even if
+    // a callback fires again after this promise already settled.
+    lateCallback!(null);
+
+    expect(connection.destroy).toHaveBeenCalledTimes(1);
+    expect(connection.release).not.toHaveBeenCalled();
   });
 
   it("can be called again after a previous rejection - no leftover local state blocks a retry", async () => {
-    const query = vi
+    const failingConnection = createMockConnection();
+    failingConnection.query.mockImplementation((_options: any, callback: (err: unknown) => void) =>
+      callback(new Error("down"))
+    );
+    const succeedingConnection = createMockConnection();
+    succeedingConnection.query.mockImplementation((_options: any, callback: (err: unknown) => void) =>
+      callback(null)
+    );
+    const getConnection = vi
       .fn()
-      .mockImplementationOnce((_options: any, callback: (err: unknown) => void) => callback(new Error("down")))
-      .mockImplementationOnce((_options: any, callback: (err: unknown) => void) => callback(null));
-    __setDbForTests({ $client: { query } } as any);
+      .mockImplementationOnce((callback: (err: unknown, conn: MockConnection) => void) =>
+        callback(null, failingConnection)
+      )
+      .mockImplementationOnce((callback: (err: unknown, conn: MockConnection) => void) =>
+        callback(null, succeedingConnection)
+      );
+    __setDbForTests({ $client: { getConnection } } as any);
 
     await expect(pingDatabase()).rejects.toThrow();
     await expect(pingDatabase()).resolves.toBeUndefined();
 
-    expect(query).toHaveBeenCalledTimes(2);
+    expect(getConnection).toHaveBeenCalledTimes(2);
+    expect(failingConnection.destroy).toHaveBeenCalledTimes(1);
+    expect(succeedingConnection.release).toHaveBeenCalledTimes(1);
   });
 });
 
 // These exercise the full, real pipeline - registerHealthReadinessRoutes
 // using its *default* ping (the real pingDatabase, not an injected mock
-// function) - with only the mysql2 $client mocked via __setDbForTests, to
-// prove the timeout/cleanup/dedup/recovery behavior holds end-to-end and not
-// just for the injected-ping test double used above. Still no real database
-// or mysql2 connection.
-describe("registerHealthReadinessRoutes with the real pingDatabase (mocked mysql2 $client only)", () => {
+// function) - with only the mysql2 Pool/PoolConnection mocked via
+// __setDbForTests, to prove the timeout/cleanup/dedup/recovery behavior
+// holds end-to-end and not just for the injected-ping test double used
+// above. Still no real database or mysql2 connection.
+describe("registerHealthReadinessRoutes with the real pingDatabase (mocked mysql2 Pool/PoolConnection only)", () => {
   let server: Server | null = null;
 
   afterEach(async () => {
@@ -354,24 +446,30 @@ describe("registerHealthReadinessRoutes with the real pingDatabase (mocked mysql
     vi.restoreAllMocks();
   });
 
-  it("once mysql2 itself times out and calls back with an error, the shared in-flight ping clears and the next /readyz request starts a fresh query", async () => {
-    const query = vi
+  it("once mysql2 times out and calls back with an error, the connection is destroyed, the shared in-flight ping clears, and the next /readyz request acquires a fresh connection", async () => {
+    const timedOutConnection = createMockConnection();
+    timedOutConnection.query.mockImplementation((_options: any, callback: (err: unknown) => void) => {
+      // Stands in for mysql2's own internal timer firing - a short real
+      // delay (not the real 2.5s bound, which is mysql2's own internal
+      // timer and not under test here) is enough to prove our code reacts
+      // correctly once that happens.
+      setTimeout(() => {
+        const err = new Error("Query inactivity timeout");
+        (err as any).code = "PROTOCOL_SEQUENCE_TIMEOUT";
+        callback(err);
+      }, 15);
+    });
+    const freshConnection = createMockConnection();
+    freshConnection.query.mockImplementation((_options: any, callback: (err: unknown) => void) => callback(null));
+    const getConnection = vi
       .fn()
-      .mockImplementationOnce((_options: any, callback: (err: unknown) => void) => {
-        // Stands in for mysql2's own internal timer firing - see
-        // pingDatabase's docstring: mysql2 guarantees the callback fires
-        // with a PROTOCOL_SEQUENCE_TIMEOUT error once its own `timeout`
-        // option elapses. A short real delay here (not the real 2.5s bound,
-        // which is mysql2's own internal timer and not under test here)
-        // is enough to prove our code reacts correctly once that happens.
-        setTimeout(() => {
-          const err = new Error("Query inactivity timeout");
-          (err as any).code = "PROTOCOL_SEQUENCE_TIMEOUT";
-          callback(err);
-        }, 15);
-      })
-      .mockImplementationOnce((_options: any, callback: (err: unknown) => void) => callback(null));
-    __setDbForTests({ $client: { query } } as any);
+      .mockImplementationOnce((callback: (err: unknown, conn: MockConnection) => void) =>
+        callback(null, timedOutConnection)
+      )
+      .mockImplementationOnce((callback: (err: unknown, conn: MockConnection) => void) =>
+        callback(null, freshConnection)
+      );
+    __setDbForTests({ $client: { getConnection } } as any);
 
     const started = await startTestServer();
     server = started.server;
@@ -379,20 +477,23 @@ describe("registerHealthReadinessRoutes with the real pingDatabase (mocked mysql
     const first = await fetch(`${started.baseUrl}/readyz`);
     expect(first.status).toBe(503);
     expect(await first.json()).toEqual({ status: "not_ready" });
+    expect(timedOutConnection.destroy).toHaveBeenCalledTimes(1);
+    expect(timedOutConnection.release).not.toHaveBeenCalled();
 
     const second = await fetch(`${started.baseUrl}/readyz`);
     expect(second.status).toBe(200);
     expect(await second.json()).toEqual({ status: "ready" });
 
-    expect(query).toHaveBeenCalledTimes(2);
+    expect(getConnection).toHaveBeenCalledTimes(2);
   });
 
-  it("concurrent /readyz requests only trigger one mysql2 query while it is outstanding", async () => {
+  it("concurrent /readyz requests only acquire and query one connection while it is outstanding", async () => {
+    const connection = createMockConnection();
     let resolveQuery!: (err: unknown) => void;
-    const query = vi.fn((_options: any, callback: (err: unknown) => void) => {
+    connection.query.mockImplementation((_options: any, callback: (err: unknown) => void) => {
       resolveQuery = callback;
     });
-    __setDbForTests({ $client: { query } } as any);
+    const getConnection = mockPoolWithConnection(connection);
 
     const started = await startTestServer();
     server = started.server;
@@ -404,7 +505,8 @@ describe("registerHealthReadinessRoutes with the real pingDatabase (mocked mysql
     ];
 
     await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(query).toHaveBeenCalledTimes(1);
+    expect(getConnection).toHaveBeenCalledTimes(1);
+    expect(connection.query).toHaveBeenCalledTimes(1);
     resolveQuery(null);
 
     const responses = await Promise.all(requests);
@@ -412,19 +514,21 @@ describe("registerHealthReadinessRoutes with the real pingDatabase (mocked mysql
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ status: "ready" });
     }
-    expect(query).toHaveBeenCalledTimes(1);
+    expect(getConnection).toHaveBeenCalledTimes(1);
+    expect(connection.release).toHaveBeenCalledTimes(1);
   });
 
   it("never leaks the connection URL, host, username, or password from a real mysql2-shaped error, in the response or the log", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const query = vi.fn((_options: any, callback: (err: unknown) => void) => {
+    const connection = createMockConnection();
+    connection.query.mockImplementation((_options: any, callback: (err: unknown) => void) => {
       const err = new Error(
         "connect ETIMEDOUT mysql://readyzuser:sup3rSecret@readyz-db.internal.example:3306/prod"
       );
       (err as any).code = "PROTOCOL_CONNECTION_LOST";
       callback(err);
     });
-    __setDbForTests({ $client: { query } } as any);
+    mockPoolWithConnection(connection);
 
     const started = await startTestServer();
     server = started.server;
@@ -443,5 +547,6 @@ describe("registerHealthReadinessRoutes with the real pingDatabase (mocked mysql
     for (const secret of ["mysql://", "sup3rSecret", "readyzuser", "readyz-db.internal.example"]) {
       expect(loggedText).not.toContain(secret);
     }
+    expect(connection.destroy).toHaveBeenCalledTimes(1);
   });
 });

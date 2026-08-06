@@ -7,7 +7,7 @@
  * redirect, body parsers, OAuth routes, tRPC, and the SPA static fallback.
  */
 import type { Express, Request, Response } from "express";
-import type { Pool as CallbackMySql2Pool, QueryError } from "mysql2";
+import type { Pool as CallbackMySql2Pool, PoolConnection, QueryError } from "mysql2";
 import { getDb } from "../db";
 import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
 
@@ -21,39 +21,86 @@ export const DB_PING_TIMEOUT_MS = 2500;
 /**
  * Real readiness ping: a live read-only query, not just "did the client
  * construct" - and, critically, one that is guaranteed to settle on its
- * own within DB_PING_TIMEOUT_MS.
+ * own within DB_PING_TIMEOUT_MS, on a connection this function fully owns
+ * and cleans up itself.
  *
- * This deliberately bypasses Drizzle's `db.execute(sql\`...\`)` and goes
- * through Drizzle's own documented `$client` field (see
- * MySql2Database & { $client } in drizzle-orm/mysql2/driver.d.ts) to reach
- * the underlying mysql2 driver instance directly - `drizzle(DATABASE_URL)`
- * always constructs this via mysql2's own `createPool()` (see
- * drizzle-orm/mysql2/driver.js), so `$client` is a real, callback-style
- * mysql2 `Pool`, confirmed against the mysql2@3.22.5 / drizzle-orm@0.44.7
- * versions this repo has installed. Drizzle's query builder has no
- * parameter for a per-query timeout, but mysql2's own `Pool#query()` does:
- * every mysql2 operation accepts a `timeout` option, documented as an
- * inactivity timeout enforced by the client itself (not the MySQL
- * protocol) - when it fires, mysql2 invokes the callback with a
- * `PROTOCOL_SEQUENCE_TIMEOUT` error *and* destroys the connection the
- * query was running on (see mysql2/lib/commands/query.js's
- * _handleTimeoutError). Because this is a Pool (not a single Connection),
- * the destroyed connection is simply not returned to the pool - the pool
- * transparently opens a fresh one for the next ping, so nothing here needs
- * to track or clean up a connection by hand, and no connection is left
- * leaked or reused in a broken state.
+ * This deliberately bypasses Drizzle's `db.execute(sql\`...\`)` (no
+ * per-query timeout parameter) and goes through Drizzle's own documented
+ * `$client` field (see MySql2Database & { $client } in
+ * drizzle-orm/mysql2/driver.d.ts) to reach the underlying mysql2 driver
+ * instance directly - `drizzle(DATABASE_URL)` always constructs this via
+ * mysql2's own `createPool()` (see drizzle-orm/mysql2/driver.js), so
+ * `$client` is a real, callback-style mysql2 `Pool`, confirmed against the
+ * mysql2@3.22.5 / drizzle-orm@0.44.7 versions this repo has installed.
+ *
+ * mysql2's per-query `timeout` option (every operation accepts one) is an
+ * inactivity timeout enforced by the client itself, not the MySQL
+ * protocol - but per mysql2's own source
+ * (mysql2/lib/commands/query.js's `_handleTimeoutError`), firing it only
+ * clears mysql2's own internal timer and invokes the callback with a
+ * `PROTOCOL_SEQUENCE_TIMEOUT` error; it does *not* destroy the connection
+ * or remove it from the pool. Calling `Pool#query()` directly and trusting
+ * the timeout alone would let a connection whose server-side query may
+ * still be running go straight back into the pool and be handed to the
+ * next caller.
+ *
+ * So this function acquires its own dedicated `PoolConnection` via
+ * `pool.getConnection()` (public API - mysql2/typings/mysql/lib/Pool.d.ts)
+ * and owns its entire lifecycle by hand:
+ *   - success -> `connection.release()` (return it to the pool - safe,
+ *     since the query actually completed)
+ *   - timeout, any other query/network error, or a synchronous throw from
+ *     `connection.query()` -> `connection.destroy()` (public API -
+ *     mysql2/typings/mysql/lib/Connection.d.ts, and confirmed against
+ *     mysql2/lib/pool_connection.js's runtime `destroy()` to actually
+ *     remove the connection from the pool's tracking, not just close the
+ *     socket) - never released, so a connection whose state is unknown
+ *     (query still in flight server-side, response arrived but not read,
+ *     etc.) can never be handed to a later caller.
+ *   - `getConnection()` itself failing -> reject directly; there is no
+ *     connection to query, release, or destroy.
+ * A single `settled` guard makes resolve/reject and the release-or-destroy
+ * choice happen exactly once, so a callback that fires twice or arrives
+ * late after the timeout already settled this promise can never run
+ * cleanup twice or both release *and* destroy the same connection.
  */
 export async function pingDatabase(): Promise<void> {
   const db = await getDb();
   if (!db) {
     throw new Error("[readyz] database connection is not available");
   }
-  const client = (db as any).$client as CallbackMySql2Pool;
-  await new Promise<void>((resolve, reject) => {
-    client.query({ sql: "SELECT 1", timeout: DB_PING_TIMEOUT_MS }, (err: QueryError | null) => {
+  const pool = (db as any).$client as CallbackMySql2Pool;
+
+  const connection = await new Promise<PoolConnection>((resolve, reject) => {
+    pool.getConnection((err, conn) => {
       if (err) reject(err);
-      else resolve();
+      else resolve(conn);
     });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    function settleOnce(outcome: () => void, destroyConnection: boolean): void {
+      if (settled) return;
+      settled = true;
+      // Success releases the connection back to the pool; every other
+      // outcome destroys it rather than risk returning a connection whose
+      // state is no longer known-good.
+      if (destroyConnection) connection.destroy();
+      else connection.release();
+      outcome();
+    }
+
+    try {
+      connection.query({ sql: "SELECT 1", timeout: DB_PING_TIMEOUT_MS }, (err: QueryError | null) => {
+        if (err) settleOnce(() => reject(err), true);
+        else settleOnce(resolve, false);
+      });
+    } catch (err) {
+      // A synchronous throw from connection.query() itself, rather than an
+      // async callback error - the connection's state is equally unknown.
+      settleOnce(() => reject(err), true);
+    }
   });
 }
 
