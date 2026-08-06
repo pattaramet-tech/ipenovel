@@ -14,6 +14,7 @@ import { canonicalDomainRedirect } from "./canonicalDomainRedirect";
 import { handleSitemapXml } from "./sitemap";
 import { ensureDatabaseMigrated } from "./startupMigrations";
 import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
+import { registerHealthReadinessRoutes } from "./healthReadiness";
 
 // Procedures that have caused "No procedure found on path ..." client errors
 // in production when an older server build was still deployed after the
@@ -77,6 +78,14 @@ async function startServer() {
   // never be true even when the client is genuinely on HTTPS.
   app.set("trust proxy", 1);
   const server = createServer(app);
+  // Coolify liveness/readiness probes - registered immediately after `trust
+  // proxy` and before every other middleware/route below (canonical domain
+  // redirect, body parsers, OAuth, tRPC, static SPA fallback) so a health
+  // check can never be redirected to another domain or swallowed by the SPA
+  // fallback. /healthz never touches the database; /readyz does, but only
+  // ever *after* ensureDatabaseMigrated() above has already succeeded and
+  // the port is open, so it cannot report ready during startup migration.
+  registerHealthReadinessRoutes(app);
   // Canonical domain redirect (old Manus subdomain -> ipenovel.com) - must
   // run before body parsers/routes so a redirected request does no
   // unnecessary work, and after `trust proxy` so it agrees with the rest of
