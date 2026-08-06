@@ -13,10 +13,13 @@ import { __setDbForTests } from "../db";
  * everything) registered after - exactly like the real
  * canonicalDomainRedirect/serveStatic that come later in index.ts.
  */
-async function startTestServer(ping: DatabasePing): Promise<{ baseUrl: string; server: Server }> {
+async function startTestServer(
+  ping: DatabasePing,
+  timeoutMs?: number
+): Promise<{ baseUrl: string; server: Server }> {
   const app = express();
   app.set("trust proxy", 1);
-  registerHealthReadinessRoutes(app, ping);
+  registerHealthReadinessRoutes(app, ping, timeoutMs);
   app.use((req, res) => {
     res.redirect(301, "https://canonical.example.test" + req.originalUrl);
   });
@@ -144,6 +147,126 @@ describe("registerHealthReadinessRoutes", () => {
     expect(ready.status).toBe(200);
     expect(readyBody).toEqual({ status: "ready" });
     expect(other.status).toBe(301);
+  });
+});
+
+// These use a small injected timeoutMs (registerHealthReadinessRoutes's
+// third, test-only parameter) instead of fake timers: the route handler's
+// own bound is real, the injected ping is a real never-settling Promise,
+// and the request travels over a real socket, so a tiny real timeout is a
+// simpler, more deterministic way to prove the bound fires than trying to
+// intermix fake timers with real HTTP I/O. It is always orders of
+// magnitude below the real 3s production default, so no test here ever
+// waits anywhere near 3 real seconds.
+describe("registerHealthReadinessRoutes - readiness timeout and ping de-duplication", () => {
+  let server: Server | null = null;
+
+  afterEach(async () => {
+    if (server) await closeServer(server);
+    server = null;
+    vi.restoreAllMocks();
+  });
+
+  it("/readyz responds 503 within the configured timeout when the injected ping never resolves or rejects", async () => {
+    const ping = vi.fn(() => new Promise<void>(() => {}));
+    const TIMEOUT_MS = 30;
+    const started = await startTestServer(ping, TIMEOUT_MS);
+    server = started.server;
+
+    const startedAt = Date.now();
+    const res = await fetch(`${started.baseUrl}/readyz`);
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ status: "not_ready" });
+    // Generous upper bound to absorb real scheduling slack - just proves
+    // the request answered promptly instead of hanging indefinitely.
+    expect(elapsedMs).toBeLessThan(TIMEOUT_MS + 2000);
+  });
+
+  it("timeout response sets Cache-Control: no-store and never leaks timeout or error detail", async () => {
+    const ping = vi.fn(() => new Promise<void>(() => {}));
+    const started = await startTestServer(ping, 30);
+    server = started.server;
+
+    const res = await fetch(`${started.baseUrl}/readyz`);
+    const bodyText = await res.text();
+
+    expect(res.status).toBe(503);
+    expect(bodyText).toBe(JSON.stringify({ status: "not_ready" }));
+    expect(res.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("concurrent /readyz requests while a ping is pending call the injected ping only once", async () => {
+    let resolvePing!: () => void;
+    const pendingPing = new Promise<void>((resolve) => {
+      resolvePing = resolve;
+    });
+    const ping = vi.fn(() => pendingPing);
+    const started = await startTestServer(ping);
+    server = started.server;
+
+    const requests = [
+      fetch(`${started.baseUrl}/readyz`),
+      fetch(`${started.baseUrl}/readyz`),
+      fetch(`${started.baseUrl}/readyz`),
+    ];
+
+    // Give all three requests a moment to actually reach the handler and
+    // call into the shared in-flight ping before it resolves - a short
+    // real wait used purely for request synchronization, not a timing
+    // assertion, and nowhere near the 3s production timeout.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    resolvePing();
+
+    const responses = await Promise.all(requests);
+    for (const res of responses) {
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: "ready" });
+    }
+    expect(ping).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts a new ping only after the previous one has resolved", async () => {
+    const ping = vi.fn().mockResolvedValue(undefined);
+    const started = await startTestServer(ping);
+    server = started.server;
+
+    await fetch(`${started.baseUrl}/readyz`);
+    await fetch(`${started.baseUrl}/readyz`);
+
+    expect(ping).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts a new ping only after the previous one has rejected", async () => {
+    const ping = vi.fn().mockRejectedValue(new Error("down"));
+    const started = await startTestServer(ping);
+    server = started.server;
+
+    await fetch(`${started.baseUrl}/readyz`);
+    await fetch(`${started.baseUrl}/readyz`);
+
+    expect(ping).toHaveBeenCalledTimes(2);
+  });
+
+  it("logs a sanitized summary via safeErrorSummary - never the raw connection URL, username, password, or host", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ping = vi
+      .fn()
+      .mockRejectedValue(
+        new Error("connect ETIMEDOUT mysql://readyzuser:sup3rSecret@readyz-db.internal.example:3306/prod")
+      );
+    const started = await startTestServer(ping);
+    server = started.server;
+
+    await fetch(`${started.baseUrl}/readyz`);
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const loggedText = warnSpy.mock.calls[0].join(" ");
+    expect(loggedText).not.toContain("mysql://");
+    expect(loggedText).not.toContain("sup3rSecret");
+    expect(loggedText).not.toContain("readyzuser");
+    expect(loggedText).not.toContain("readyz-db.internal.example");
   });
 });
 
