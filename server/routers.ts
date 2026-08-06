@@ -20,6 +20,7 @@ import {
   checkoutMaintenanceAdminInputSchema,
 } from "./services/checkoutMaintenanceService";
 import { safeErrorSummary } from "../scripts/lib/safeErrorSummary.mjs";
+import { isDuplicateKeyError } from "./helpers/databaseErrorClassifier";
 import { fileRouter } from "./routers/fileRouter";
 import { ocrMetricsRouter } from "./routers/ocrMetricsRouter";
 import { storagePut } from "./storage";
@@ -1065,17 +1066,25 @@ export const appRouter = router({
 
   // ============ WISHLISTS ============
   wishlists: router({
+    // Single joined query (see db.getWishlistNovelsByUserId) - no per-row
+    // getNovelById() N+1. Archived novels are excluded by the query itself,
+    // never surfaced to /profile even if they were wishlisted before being
+    // archived. A database outage is caught here and turned into a generic
+    // SERVICE_UNAVAILABLE - getWishlistNovelsByUserId deliberately THROWS
+    // (never returns []) when it can't reach the database, since [] is a
+    // real, meaningful "no wishlist items" result that a DB outage must
+    // never be confused with (the UI would otherwise show an Empty state
+    // instead of an Error state for what is actually an outage).
     list: protectedProcedure.query(async ({ ctx }) => {
-      const wishlists = await db.getWishlistsByUserId(ctx.user.id);
-
-      const enriched = await Promise.all(
-        wishlists.map(async (w: any) => {
-          const novel = await db.getNovelById(w.novelId);
-          return { ...w, novel };
-        })
-      );
-
-      return enriched;
+      try {
+        return await db.getWishlistNovelsByUserId(ctx.user.id);
+      } catch (error) {
+        console.error("[wishlists.list] Unexpected error", safeErrorSummary(error));
+        throw new TRPCError({
+          code: "SERVICE_UNAVAILABLE",
+          message: "ไม่สามารถโหลดรายการอยากอ่านได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง",
+        });
+      }
     }),
 
     // Lightweight companion to `list` - just the id/novelId pairs needed to
@@ -1089,12 +1098,51 @@ export const appRouter = router({
     add: protectedProcedure
       .input(z.object({ novelId: z.number() }))
       .mutation(async ({ input, ctx }) => {
-        const existing = await db.getWishlistByUserAndNovel(ctx.user.id, input.novelId);
-        if (existing) {
-          throw new TRPCError({ code: "CONFLICT", message: "This novel is already in your wishlist" });
+        // Confirmed available BEFORE the novel-exists check - a database
+        // outage must never be reported as "novel not found" (getNovelById
+        // returns undefined either way, indistinguishable from "no such
+        // novel" on its own).
+        try {
+          await db.assertDatabaseAvailable();
+        } catch (error) {
+          console.error("[wishlists.add] Database unavailable", safeErrorSummary(error));
+          throw new TRPCError({
+            code: "SERVICE_UNAVAILABLE",
+            message: "ไม่สามารถบันทึกรายการอยากอ่านได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง",
+          });
         }
 
-        await db.addToWishlist(ctx.user.id, input.novelId);
+        // getNovelById defaults to publicOnly=true, so this also rejects an
+        // archived novel's id the same way as one that never existed - a
+        // wishlist row must never be created pointing at either.
+        const novel = await db.getNovelById(input.novelId);
+        if (!novel) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "ไม่พบนิยายที่ต้องการบันทึก" });
+        }
+
+        const existing = await db.getWishlistByUserAndNovel(ctx.user.id, input.novelId);
+        if (existing) {
+          throw new TRPCError({ code: "CONFLICT", message: "เรื่องนี้อยู่ในรายการอยากอ่านแล้ว" });
+        }
+
+        // The check above is best-effort (TOCTOU) - the DB's own
+        // unique_user_novel constraint on (userId, novelId) is the real
+        // guard against a race between two concurrent adds, mapped back to
+        // the same CONFLICT a sequential duplicate gets. Any other insert
+        // failure is logged safely and reported as a generic outage, never
+        // the raw driver error.
+        try {
+          await db.addToWishlist(ctx.user.id, input.novelId);
+        } catch (error) {
+          if (isDuplicateKeyError(error)) {
+            throw new TRPCError({ code: "CONFLICT", message: "เรื่องนี้อยู่ในรายการอยากอ่านแล้ว" });
+          }
+          console.error("[wishlists.add] Unexpected error while inserting", safeErrorSummary(error));
+          throw new TRPCError({
+            code: "SERVICE_UNAVAILABLE",
+            message: "ไม่สามารถบันทึกรายการอยากอ่านได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง",
+          });
+        }
         return { success: true };
       }),
 

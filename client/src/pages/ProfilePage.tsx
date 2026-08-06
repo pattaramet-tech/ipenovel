@@ -6,17 +6,35 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useLocation } from "wouter";
-import { Loader2, BookOpen, ChevronDown, ChevronUp, Wallet, Clock, Mail, User, Link2, CheckCircle2, LifeBuoy } from "lucide-react";
-import { useEffect, useState, useMemo } from "react";
+import {
+  Loader2,
+  BookOpen,
+  ChevronDown,
+  ChevronUp,
+  Wallet,
+  Clock,
+  Mail,
+  User,
+  Link2,
+  CheckCircle2,
+  LifeBuoy,
+  Heart,
+  BookHeart,
+  AlertTriangle,
+  RefreshCw,
+} from "lucide-react";
+import { useEffect, useState, useMemo, useRef, useCallback } from "react";
 import { toast } from "sonner";
 import { formatEpisodeLabel, compareEpisodes } from "@/utils/episodeUtils";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
 import DailyCheckinCard from "@/components/DailyCheckinCard";
+import NovelCard from "@/components/NovelCard";
 import {
   shouldShowGoogleConnectSection,
   parseGoogleConnectStatus,
   shouldShowAccountRecoveryCallout,
 } from "./profileGoogleConnectStatus";
+import { deriveProfileWishlistPresentation, buildWishlistIdByNovelId } from "./profileWishlistPresentation";
 
 export default function ProfilePage() {
   useDocumentHead({ robots: "noindex,nofollow" });
@@ -44,6 +62,107 @@ export default function ProfilePage() {
   const { data: libraryData, isLoading: libraryLoading } = trpc.reader.myLibrary.useQuery(
     {},
     { enabled: !!user }
+  );
+
+  // ============ Wishlist ============
+  const utils = trpc.useUtils();
+  const wishlistQuery = trpc.wishlists.list.useQuery(undefined, { enabled: !!user });
+  const removeWishlistMutation = trpc.wishlists.remove.useMutation();
+  const [wishlistExpanded, setWishlistExpanded] = useState(false);
+  const [pendingWishlistId, setPendingWishlistId] = useState<number | null>(null);
+  const wishlistSectionRef = useRef<HTMLDivElement>(null);
+  const wishlistHeadingRef = useRef<HTMLHeadingElement>(null);
+
+  const wishlistPresentation = useMemo(
+    () =>
+      deriveProfileWishlistPresentation({
+        isLoading: wishlistQuery.isLoading,
+        isError: wishlistQuery.isError,
+        items: wishlistQuery.data,
+        expanded: wishlistExpanded,
+      }),
+    [wishlistQuery.isLoading, wishlistQuery.isError, wishlistQuery.data, wishlistExpanded]
+  );
+
+  // NovelCard's onWishlistToggle only ever gives back a novelId (it has no
+  // idea a "wishlistId" exists) - this is the resolve step. Built through
+  // the same defensive-filter helper the presentation view uses (see
+  // profileWishlistPresentation.ts's getValidWishlistItems), so a
+  // structurally broken row can never leave a wrong/dangling entry here.
+  const wishlistIdByNovelId = useMemo(
+    () => buildWishlistIdByNovelId(wishlistQuery.data),
+    [wishlistQuery.data]
+  );
+
+  const scrollToWishlistSection = useCallback(() => {
+    const prefersReducedMotion =
+      typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    wishlistSectionRef.current?.scrollIntoView({
+      behavior: prefersReducedMotion ? "auto" : "smooth",
+      block: "start",
+    });
+  }, []);
+
+  const handleCollapseWishlist = useCallback(() => {
+    setWishlistExpanded(false);
+    // Wait a frame for the collapsed grid to actually shrink before
+    // measuring - only scroll if the heading itself would otherwise be off
+    // screen, never unconditionally.
+    requestAnimationFrame(() => {
+      const el = wishlistSectionRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const outOfView = rect.top < 0 || rect.top > window.innerHeight;
+      if (outOfView) scrollToWishlistSection();
+    });
+  }, [scrollToWishlistSection]);
+
+  const handleRemoveWishlist = useCallback(
+    (novelId: number) => {
+      const wishlistId = wishlistIdByNovelId.get(novelId);
+      if (wishlistId == null || pendingWishlistId !== null) return;
+
+      // Figure out which adjacent card (if any) should receive focus once
+      // this one unmounts - the next card in view order, else the previous
+      // one, else the section heading if nothing is left. Computed BEFORE
+      // the mutation fires, from the currently-rendered order.
+      const visibleNovelIds = wishlistPresentation.visibleItems.map((item) => item.novel.id);
+      const removedIndex = visibleNovelIds.indexOf(novelId);
+      const nextFocusNovelId =
+        removedIndex === -1
+          ? null
+          : visibleNovelIds[removedIndex + 1] ?? visibleNovelIds[removedIndex - 1] ?? null;
+
+      setPendingWishlistId(wishlistId);
+      removeWishlistMutation.mutate(
+        { wishlistId },
+        {
+          onSuccess: async () => {
+            toast.success("ลบออกจากรายการอยากอ่านแล้ว");
+            await Promise.all([
+              utils.wishlists.list.invalidate(),
+              utils.wishlists.ids.invalidate(),
+            ]);
+            requestAnimationFrame(() => {
+              const target =
+                nextFocusNovelId != null
+                  ? document.querySelector<HTMLElement>(`[data-wishlist-novel-id="${nextFocusNovelId}"]`)
+                  : null;
+              if (target) {
+                target.focus();
+              } else {
+                wishlistHeadingRef.current?.focus();
+              }
+            });
+          },
+          onError: () => {
+            toast.error("ลบออกจากรายการอยากอ่านไม่สำเร็จ");
+          },
+          onSettled: () => setPendingWishlistId(null),
+        }
+      );
+    },
+    [wishlistIdByNovelId, pendingWishlistId, wishlistPresentation.visibleItems, removeWishlistMutation, utils]
   );
 
   // Connected Accounts (Google) - only meaningful in google/transition mode;
@@ -301,7 +420,7 @@ export default function ProfilePage() {
         </div>
 
         {/* Quick Links */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <Button
             variant="outline"
             onClick={() => navigate("/orders")}
@@ -323,6 +442,101 @@ export default function ProfilePage() {
           >
             นิยายของฉัน
           </Button>
+          {/* Same-page scroll to the Wishlist section below - no /wishlist
+              route in this PR (see profileWishlistPresentation.ts). */}
+          <Button
+            variant="outline"
+            onClick={scrollToWishlistSection}
+            className="w-full h-auto py-3"
+          >
+            <Heart className="w-4 h-4 mr-2" aria-hidden="true" />
+            รายการอยากอ่าน
+          </Button>
+        </div>
+
+        {/* Wishlist Section */}
+        <div ref={wishlistSectionRef} className="mb-8" aria-busy={wishlistPresentation.view === "loading"}>
+          <div className="flex items-center gap-3 mb-1">
+            <Heart className="w-6 h-6 text-rose-500 fill-rose-500" aria-hidden="true" />
+            {/* tabIndex=-1: not part of the normal tab order, but a valid
+                target for handleRemoveWishlist's programmatic .focus() once
+                the last card in the list is removed (see its docstring). */}
+            <h2 ref={wishlistHeadingRef} tabIndex={-1} className="text-2xl font-bold text-slate-900 outline-none">
+              รายการอยากอ่าน{wishlistPresentation.totalCount > 0 ? ` (${wishlistPresentation.totalCount})` : ""}
+            </h2>
+          </div>
+          <p className="text-sm text-muted-foreground mb-6">นิยายที่คุณบันทึกไว้สำหรับอ่านภายหลัง</p>
+
+          {wishlistPresentation.view === "loading" && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
+              {Array.from({ length: 4 }).map((_, index) => (
+                <div key={index} className="space-y-3">
+                  <Skeleton className="aspect-3/4 w-full rounded-2xl" />
+                  <Skeleton className="h-4 w-4/5" />
+                </div>
+              ))}
+            </div>
+          )}
+
+          {wishlistPresentation.view === "error" && (
+            <Card className="p-12 text-center">
+              <AlertTriangle className="w-12 h-12 text-amber-400 mx-auto mb-4" aria-hidden="true" />
+              <p className="text-lg font-semibold text-slate-900">โหลดรายการอยากอ่านไม่สำเร็จ</p>
+              <p className="text-sm text-muted-foreground mt-2">เกิดข้อผิดพลาดชั่วคราว กรุณาลองใหม่อีกครั้ง</p>
+              <Button onClick={() => wishlistQuery.refetch()} className="mt-4">
+                <RefreshCw className="w-4 h-4 mr-2" aria-hidden="true" />
+                ลองใหม่
+              </Button>
+            </Card>
+          )}
+
+          {wishlistPresentation.view === "empty" && (
+            <Card className="p-12 text-center">
+              <BookHeart className="w-12 h-12 text-slate-300 mx-auto mb-4" aria-hidden="true" />
+              <p className="text-lg text-muted-foreground">ยังไม่มีรายการอยากอ่าน</p>
+              <p className="text-sm text-muted-foreground mt-2">
+                กดไอคอนหัวใจบนเรื่องที่สนใจ เพื่อบันทึกไว้อ่านภายหลัง
+              </p>
+              <Button onClick={() => navigate("/novels")} className="mt-4">
+                เลือกดูนิยาย
+              </Button>
+            </Card>
+          )}
+
+          {wishlistPresentation.view === "ready" && (
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
+                {wishlistPresentation.visibleItems.map((item) => (
+                  <NovelCard
+                    key={item.wishlistId}
+                    id={item.novel.id}
+                    title={item.novel.title}
+                    coverImageUrl={item.novel.coverImageUrl}
+                    subtitle={item.novel.description}
+                    href={`/novels/${item.novel.id}`}
+                    showWishlist
+                    isWishlisted
+                    wishlistLoading={pendingWishlistId === item.wishlistId}
+                    onWishlistToggle={handleRemoveWishlist}
+                  />
+                ))}
+              </div>
+
+              {wishlistPresentation.hasMore && (
+                <div className="mt-4 flex justify-center">
+                  {!wishlistExpanded ? (
+                    <Button variant="outline" onClick={() => setWishlistExpanded(true)}>
+                      ดูทั้งหมด
+                    </Button>
+                  ) : (
+                    <Button variant="outline" onClick={handleCollapseWishlist}>
+                      ย่อรายการ
+                    </Button>
+                  )}
+                </div>
+              )}
+            </>
+          )}
         </div>
 
         {/* Bookshelf Section */}
