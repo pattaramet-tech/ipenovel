@@ -2281,6 +2281,61 @@ export async function getWishlistsByUserId(userId: number) {
   return db.select().from(wishlists).where(eq(wishlists.userId, userId));
 }
 
+export type ProfileWishlistItem = {
+  wishlistId: number;
+  novelId: number;
+  addedAt: Date;
+  novel: {
+    id: number;
+    title: string;
+    slug: string;
+    description: string | null;
+    coverImageUrl: string | null;
+    storyStatus: "ongoing" | "finished";
+  };
+};
+
+/**
+ * Wishlist rows for a user, joined with their novel in a single query - used
+ * by wishlists.list (see routers.ts) instead of the old pattern of loading
+ * every wishlist row then calling getNovelById() per row (N+1). Only
+ * published novels are returned: a novel archived after being wishlisted
+ * just disappears from this list - its wishlist row is deliberately left
+ * alone (never auto-deleted here), so it reappears if the novel is
+ * unarchived later.
+ *
+ * Deliberately throws (never returns []) when the database itself is
+ * unavailable - an empty array is a real, meaningful result ("this user has
+ * no wishlist items") and must never be indistinguishable from "couldn't
+ * even ask the database." The caller (wishlists.list in routers.ts) is
+ * responsible for turning this into a safe, generic client-facing error.
+ */
+export async function getWishlistNovelsByUserId(userId: number): Promise<ProfileWishlistItem[]> {
+  const db = await getDb();
+  if (!db) {
+    throw new Error("[Database] Database connection is not available");
+  }
+
+  return db
+    .select({
+      wishlistId: wishlists.id,
+      novelId: wishlists.novelId,
+      addedAt: wishlists.createdAt,
+      novel: {
+        id: novels.id,
+        title: novels.title,
+        slug: novels.slug,
+        description: novels.description,
+        coverImageUrl: novels.coverImageUrl,
+        storyStatus: novels.storyStatus,
+      },
+    })
+    .from(wishlists)
+    .innerJoin(novels, eq(wishlists.novelId, novels.id))
+    .where(and(eq(wishlists.userId, userId), eq(novels.publicationStatus, "published")))
+    .orderBy(desc(wishlists.createdAt));
+}
+
 export async function addToWishlist(userId: number, novelId: number) {
   const db = await getDb();
   if (!db) return;

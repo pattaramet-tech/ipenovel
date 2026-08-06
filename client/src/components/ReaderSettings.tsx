@@ -1,4 +1,5 @@
 import { useLanguage } from "@/contexts/LanguageContext";
+import { Switch } from "@/components/ui/switch";
 import {
   FONT_FAMILY_OPTIONS,
   FONT_SIZE_MAX,
@@ -138,6 +139,24 @@ export default function ReaderSettings({ isOpen, onClose, preferences, onChange,
                   {option.icon}
                 </button>
               ))}
+            </div>
+          </div>
+          {/* Focus Mode - collapses the reader's own header while reading.
+              Same preference the toolbar's "ซ่อนแถบด้านบน" button and the
+              floating restore button drive; this is just a second,
+              discoverable entry point for the same on/off switch. */}
+          <div className={styles.section}>
+            <label className={styles.sectionLabel} htmlFor="reader-focus-mode-switch">
+              โหมดโฟกัส
+            </label>
+            <div className={styles.focusModeRow}>
+              <p className={styles.focusModeDescription}>ซ่อนแถบด้านบนขณะอ่านเพื่อพื้นที่อ่านที่กว้างขึ้น</p>
+              <Switch
+                id="reader-focus-mode-switch"
+                checked={preferences.focusMode}
+                onCheckedChange={(checked) => onChange("focusMode", checked)}
+                aria-label="โหมดโฟกัส"
+              />
             </div>
           </div>
         </div>
