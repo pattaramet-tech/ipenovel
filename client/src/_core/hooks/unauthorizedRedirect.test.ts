@@ -12,8 +12,8 @@ describe("resolveUnauthorizedRedirectTarget", () => {
     expect(resolveUnauthorizedRedirectTarget("/admin/hybrid-health")).toBe("admin_login");
   });
 
-  it("/admin/login itself -> 'none' (never redirect-loops back to itself)", () => {
-    expect(resolveUnauthorizedRedirectTarget("/admin/login")).toBe("none");
+  it("/login itself -> 'none' (never redirect-loops back to itself)", () => {
+    expect(resolveUnauthorizedRedirectTarget("/login")).toBe("none");
   });
 
   it("every other route -> 'oauth'", () => {
@@ -21,6 +21,10 @@ describe("resolveUnauthorizedRedirectTarget", () => {
     expect(resolveUnauthorizedRedirectTarget("/novels/42")).toBe("oauth");
     expect(resolveUnauthorizedRedirectTarget("/wallet")).toBe("oauth");
     expect(resolveUnauthorizedRedirectTarget("/profile")).toBe("oauth");
+  });
+
+  it("/admin/login (no longer a real route, but not itself the exempt /login path either) -> still 'admin_login', same as any other /admin/* subpath", () => {
+    expect(resolveUnauthorizedRedirectTarget("/admin/login")).toBe("admin_login");
   });
 
   it("does not treat a path that merely starts with 'admin' (not '/admin') as an admin route", () => {

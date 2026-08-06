@@ -64,10 +64,14 @@ export function resolveLoginUrl(authProvider: string | undefined, manus: ManusLo
 // Generate login URL at runtime so the Manus redirect URI reflects the
 // current origin. Branches on VITE_AUTH_PROVIDER (build-time client flag,
 // independent of the server's own AUTH_PROVIDER - see
-// server/_core/env.ts) via resolveLoginUrl above. Admin login (/admin,
-// /admin/*, /admin/login) never calls this function at all - it
-// authenticates via the separate admin.login tRPC mutation and a local,
-// server-verified session, both entirely unaffected by this flag.
+// server/_core/env.ts) via resolveLoginUrl above. There is no more
+// separate local admin login (see
+// security/remove-local-admin-password-login) - an admin signs in through
+// this exact same flow as everyone else, and the server checks
+// `ctx.user.role === "admin"` afterward. An unauthenticated visitor on
+// /admin/* is instead sent to the literal /login route (see
+// unauthorizedRedirect.ts's "admin_login" target), never through this
+// function.
 export const getLoginUrl = (): string => {
   return resolveLoginUrl(import.meta.env.VITE_AUTH_PROVIDER, {
     oauthPortalUrl: import.meta.env.VITE_OAUTH_PORTAL_URL,

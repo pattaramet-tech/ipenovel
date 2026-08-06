@@ -38,7 +38,7 @@ describe("isMigrationGateExemptPath", () => {
     expect(isMigrationGateExemptPath(path)).toBe(true);
   });
 
-  it.each(["/admin", "/admin/login", "/admin/novels", "/admin/orders/123"])("%s -> exempt (entire admin surface)", (path) => {
+  it.each(["/admin", "/admin/settings", "/admin/novels", "/admin/orders/123"])("%s -> exempt (entire admin surface)", (path) => {
     expect(isMigrationGateExemptPath(path)).toBe(true);
   });
 

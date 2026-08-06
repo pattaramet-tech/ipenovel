@@ -9,11 +9,10 @@ import { isMandatoryGoogleConnectionEnabled } from "@/_core/hooks/migrationGate"
 import { isSessionExpiredStatus } from "./loginPagePresentation";
 
 // In-app login page for AUTH_PROVIDER=transition (VITE_AUTH_PROVIDER=
-// "transition" - see client/src/const.ts's resolveLoginUrl, which is the
-// only thing that ever routes a user here: getLoginUrl() and every
-// existing "Sign in" button across the site already point at
+// "transition" - see client/src/const.ts's resolveLoginUrl). Every
+// existing "Sign in" button across the site already points at
 // getLoginUrl(), so nothing else needed to change for those call sites to
-// land here automatically). Built entirely from this app's existing
+// land here automatically. Built entirely from this app's existing
 // design system (Card/Button) - no separate visual identity from the rest
 // of the site.
 //
@@ -27,9 +26,16 @@ import { isSessionExpiredStatus } from "./loginPagePresentation";
 // buildManusLoginUrl in const.ts, the same pure function this page and
 // resolveLoginUrl's "manus" branch both call).
 //
-// Admin login (/admin/login) is a completely separate page/component and
-// never renders through here, never links here, and is untouched by this
-// file.
+// There is no more separate local (email/password) admin login page (see
+// security/remove-local-admin-password-login) - an unauthenticated visitor
+// on /admin or any /admin/* route is now sent HERE, to this exact page
+// (see unauthorizedRedirect.ts's "admin_login" target, hardcoded to the
+// literal /login path regardless of AUTH_PROVIDER, so an admin route
+// expiring never depends on OAuth config just to decide where to go).
+// This page itself has no admin-specific branch at all - once a visitor
+// signs in through whichever button above, the server checks
+// `ctx.user.role === "admin"` the same way it always has, entirely
+// independent of this page's own rendering.
 export default function LoginPage() {
   const { user, loading } = useAuth();
   const [, navigate] = useLocation();

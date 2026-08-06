@@ -24,8 +24,8 @@ describe("resolveGlobalUnauthorizedRedirect", () => {
     expect(resolveGlobalUnauthorizedRedirect(unauthorizedError(), "/admin")).toBe("admin_login");
   });
 
-  it("/admin/login UNAUTHORIZED -> 'none' (no redirect loop)", () => {
-    expect(resolveGlobalUnauthorizedRedirect(unauthorizedError(), "/admin/login")).toBe("none");
+  it("/login UNAUTHORIZED -> 'none' (no redirect loop)", () => {
+    expect(resolveGlobalUnauthorizedRedirect(unauthorizedError(), "/login")).toBe("none");
   });
 
   it("Public path UNAUTHORIZED -> 'oauth'", () => {
@@ -57,22 +57,22 @@ describe("resolveGlobalUnauthorizedRedirect", () => {
 });
 
 describe("redirectToLoginIfUnauthorized", () => {
-  it("Admin UNAUTHORIZED -> applies '/admin/login' and never calls the OAuth URL factory", () => {
+  it("Admin UNAUTHORIZED -> applies '/login' and never calls the OAuth URL factory", () => {
     const applyRedirect = vi.fn();
     const getOauthLoginUrl = vi.fn(() => OAUTH_LOGIN_URL);
 
     redirectToLoginIfUnauthorized(unauthorizedError(), "/admin/orders", applyRedirect, getOauthLoginUrl);
 
     expect(applyRedirect).toHaveBeenCalledTimes(1);
-    expect(applyRedirect).toHaveBeenCalledWith("/admin/login");
+    expect(applyRedirect).toHaveBeenCalledWith("/login");
     expect(getOauthLoginUrl).not.toHaveBeenCalled();
   });
 
-  it("/admin/login UNAUTHORIZED -> no redirect loop, no side effects at all", () => {
+  it("/login UNAUTHORIZED -> no redirect loop, no side effects at all", () => {
     const applyRedirect = vi.fn();
     const getOauthLoginUrl = vi.fn(() => OAUTH_LOGIN_URL);
 
-    redirectToLoginIfUnauthorized(unauthorizedError(), "/admin/login", applyRedirect, getOauthLoginUrl);
+    redirectToLoginIfUnauthorized(unauthorizedError(), "/login", applyRedirect, getOauthLoginUrl);
 
     expect(applyRedirect).not.toHaveBeenCalled();
     expect(getOauthLoginUrl).not.toHaveBeenCalled();

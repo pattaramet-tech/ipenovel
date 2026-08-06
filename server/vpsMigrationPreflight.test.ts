@@ -120,13 +120,13 @@ describe("checkMigrationJournalConsistency", () => {
     expect(result.journalTagsWithNoFile).toEqual([]);
   });
 
-  it("flags a .sql file on disk that the journal never references (the real 0003_admin_seed.sql/0023_gifted_juggernaut.sql class of discrepancy)", () => {
+  it("flags a .sql file on disk that the journal never references (the real 0023_gifted_juggernaut.sql class of discrepancy)", () => {
     const result = checkMigrationJournalConsistency(
-      ["0000_needy_anthem.sql", "0003_admin_seed.sql"],
+      ["0000_needy_anthem.sql", "0099_some_orphan_file.sql"],
       [{ tag: "0000_needy_anthem" }, { tag: "0003_flippant_moondragon" }]
     );
     expect(result.consistent).toBe(false);
-    expect(result.filesNotInJournal).toEqual(["0003_admin_seed"]);
+    expect(result.filesNotInJournal).toEqual(["0099_some_orphan_file"]);
     expect(result.journalTagsWithNoFile).toEqual(["0003_flippant_moondragon"]);
   });
 
@@ -174,15 +174,15 @@ describe("preflight.mjs CLI", () => {
     expect(result.stdout).toMatch(/database: ipenovel_test/);
   });
 
-  it("reports the real repo's known/classified orphan files (0023_gifted_juggernaut, 0003_admin_seed, LOCAL_ADMIN_BOOTSTRAP) as expected, not as a new/unexpected discrepancy - and never prints any file's contents", () => {
+  it("reports the real repo's one remaining known/classified orphan file (0023_gifted_juggernaut) as expected, not as a new/unexpected discrepancy - and never prints any file's contents (0003_admin_seed.sql/LOCAL_ADMIN_BOOTSTRAP.sql were deleted by security/remove-local-admin-password-login and no longer exist to appear as orphans at all)", () => {
     const result = spawnSync(process.execPath, [preflightPath, "--ack-read-only"], {
       encoding: "utf8",
       env: { ...process.env, DATABASE_URL: "x", JWT_SECRET: "x", VITE_APP_ID: "x", OAUTH_SERVER_URL: "x" },
     });
     expect(result.stdout).toMatch(/known\/classified orphan/);
     expect(result.stdout).not.toMatch(/UNEXPECTED/);
-    // Never leaks the seed file's committed credential material into a
-    // report - only file/tag names ever appear.
+    // Never leaks a credential-shaped value into the report - only file/tag
+    // names ever appear.
     expect(result.stdout).not.toMatch(/bcrypt|passwordHash|\$2a\$/i);
   });
 });

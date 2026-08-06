@@ -5,8 +5,8 @@ import path from "node:path";
 
 /**
  * Auth Phase 2A wiring checks for AdminLayout - source-text assertions (no
- * DOM harness in this repo; see AdminLoginPage.test.ts/
- * authClientStorage.test.ts for the same pattern). Pins that this is still
+ * DOM harness in this repo; see authClientStorage.test.ts for the same
+ * pattern). Pins that this is still
  * the single admin access gate (via the shared resolveAdminAccessState
  * helper, now including the "error" state), that redirecting on
  * "unauthenticated" happens in an effect (not during render) via the shared
@@ -47,7 +47,7 @@ describe("AdminLayout source shape", () => {
     const effectBlock = source.slice(effectStart, effectStart + 300);
     expect(effectBlock).toMatch(/resolveUnauthorizedRedirectTarget\(location\)/);
     expect(effectBlock).toMatch(/if \(target === "none"\) return;/);
-    expect(effectBlock).toMatch(/navigate\(target === "admin_login" \? "\/admin\/login" : getLoginUrl\(\)\)/);
+    expect(effectBlock).toMatch(/navigate\(target === "admin_login" \? "\/login" : getLoginUrl\(\)\)/);
 
     // The "unauthenticated" render branch itself must NOT call navigate()
     // directly - only the effect above may.
@@ -82,7 +82,7 @@ describe("AdminLayout source shape", () => {
     expect(errorBlock).not.toMatch(/\{error\b/);
   });
 
-  it("the forbidden (Access Denied) screen offers a Home link and a Logout/switch-account action, never auto-redirects to /admin/login", () => {
+  it("the forbidden (Access Denied) screen offers a Home link and a Logout/switch-account action, never auto-redirects to /login", () => {
     const forbiddenStart = source.indexOf('if (accessState === "forbidden")');
     const forbiddenEnd = source.indexOf("const isActive =");
     const forbiddenBlock = source.slice(forbiddenStart, forbiddenEnd);
@@ -90,7 +90,7 @@ describe("AdminLayout source shape", () => {
     expect(forbiddenBlock).toMatch(/Access Denied/);
     expect(forbiddenBlock).toMatch(/href="\/"/);
     expect(forbiddenBlock).toMatch(/handleLogout/);
-    expect(forbiddenBlock).not.toMatch(/navigate\("\/admin\/login"\)/);
+    expect(forbiddenBlock).not.toMatch(/navigate\("\/login"\)/);
   });
 
   it('logout uses useAuth().logout() - no more <a href="/api/auth/logout">', () => {
@@ -108,7 +108,7 @@ describe("AdminLayout source shape", () => {
     expect(source).toMatch(/if \(isLoggingOut\) return;/);
   });
 
-  it("navigates to /admin/login only on the success path (inside the try, after await logout()) - never in a finally, never unconditionally", () => {
+  it("navigates to /login only on the success path (inside the try, after await logout()) - never in a finally, never unconditionally", () => {
     const handleLogoutStart = source.indexOf("async function handleLogout()");
     const handleLogoutEnd = source.indexOf("\n  }\n", handleLogoutStart);
     const handleLogoutBlock = source.slice(handleLogoutStart, handleLogoutEnd);
@@ -128,8 +128,8 @@ describe("AdminLayout source shape", () => {
     // navigate() only appears in the try block, after logout() - never in
     // the catch block, which only shows an error toast.
     expect(tryBlock).toMatch(/await logout\(\)/);
-    expect(tryBlock).toMatch(/navigate\("\/admin\/login"\)/);
-    expect(tryBlock.indexOf("await logout()")).toBeLessThan(tryBlock.indexOf('navigate("/admin/login")'));
+    expect(tryBlock).toMatch(/navigate\("\/login"\)/);
+    expect(tryBlock.indexOf("await logout()")).toBeLessThan(tryBlock.indexOf('navigate("/login")'));
     expect(catchBlock).not.toMatch(/navigate\(/);
   });
 });

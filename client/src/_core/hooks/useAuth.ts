@@ -87,13 +87,14 @@ export function useAuth(options?: UseAuthOptions) {
   ]);
 
   // Narrow, path-aware redirect - see resolveUnauthorizedRedirectTarget's
-  // docstring: /admin and /admin/* go back to /admin/login (a local
-  // email/password session, never OAuth), every other route keeps going to
-  // the OAuth login flow, and /admin/login itself is never redirected
-  // (would otherwise strand the login form in a loop). getLoginUrl() is
-  // only ever called for the "oauth" target - never unconditionally, so an
-  // admin route never depends on OAuth config being present just to decide
-  // "no redirect needed here."
+  // docstring: /admin and /admin/* go back to the literal /login page
+  // (there is no separate local admin login anymore - an admin signs in
+  // through the exact same Manus/Google/transition flow as everyone else),
+  // every other route keeps going to the OAuth login flow, and /login
+  // itself is never redirected (would otherwise strand the login form in a
+  // loop). getLoginUrl() is only ever called for the "oauth" target - never
+  // unconditionally, so an admin route never depends on OAuth config being
+  // present just to decide "no redirect needed here."
   //
   // Only reacts to a CONFIRMED "no session" (meQuery settled, no error, and
   // state.user is null). Never redirects while auth.me is still loading,
@@ -113,7 +114,7 @@ export function useAuth(options?: UseAuthOptions) {
 
     const target = resolveUnauthorizedRedirectTarget(window.location.pathname);
     if (target === "none") return;
-    window.location.href = target === "admin_login" ? "/admin/login" : getLoginUrl();
+    window.location.href = target === "admin_login" ? "/login" : getLoginUrl();
   }, [
     redirectOnUnauthenticated,
     logoutMutation.isPending,

@@ -22,23 +22,30 @@
  *    rejected it (malformed, expired, wrong issuer/audience/appId,
  *    unsupported algorithm, or the wrong shape). The browser is holding a
  *    cookie that can never become valid again, so createContext clears it.
- *  - "no_user_record" / "admin_session_invalid": the token verified fine
- *    (real signature, correct issuer/audience/appId) but no database
- *    record backs it (deleted account) or a local admin session's account
- *    no longer has the admin role. Deliberately NOT cleared - unlike a
- *    structurally-invalid token, this is a legitimate, correctly-signed
- *    credential whose backing account state changed; clearing it isn't
- *    required to stop any log-flooding or retry loop, and is out of this
- *    fix's scope.
+ *  - "no_user_record": the token verified fine (real signature, correct
+ *    issuer/audience/appId) but no database record backs it (deleted
+ *    account). Deliberately NOT cleared - unlike a structurally-invalid
+ *    token, this is a legitimate, correctly-signed credential whose backing
+ *    account state changed; clearing it isn't required to stop any
+ *    log-flooding or retry loop, and is out of this fix's scope.
+ *  - "admin_session_invalid": legacy value from the now-removed local
+ *    (email/password) admin login - server/_core/sdk.ts's
+ *    authenticateRequest no longer ever produces this reason (a session
+ *    with the old synthetic "admin-<id>" openId shape is now rejected
+ *    outright as "invalid_session_token" instead - see
+ *    security/remove-local-admin-password-login). Kept in this union only
+ *    because createContext/its tests still reference it generically; no
+ *    code path in this repository throws it anymore.
  *  - "forced_relogin": the token verified fine (real signature, correct
  *    issuer/audience/appId) but was issued (JWT `iat`) before
  *    AUTH_FORCE_RELOGIN_AFTER's cutoff - see server/_core/sdk.ts's
- *    isSessionIssuedBeforeCutoff. Unlike "no_user_record"/
- *    "admin_session_invalid", this IS cleared (same as
- *    "invalid_session_token") - the whole point is to force the browser to
- *    go through a fresh login rather than keep silently resending a session
- *    that will never become valid again post-cutoff. Never applies to a
- *    local admin session (openId "admin-*") - see authenticateRequest.
+ *    isSessionIssuedBeforeCutoff. Unlike "no_user_record", this IS cleared
+ *    (same as "invalid_session_token") - the whole point is to force the
+ *    browser to go through a fresh login rather than keep silently
+ *    resending a session that will never become valid again post-cutoff.
+ *    Never applies to the old synthetic admin openId shape either - that
+ *    shape is rejected earlier, unconditionally, before this check is ever
+ *    reached - see authenticateRequest.
  */
 export type AnonymousCredentialReason =
   | "no_cookie"

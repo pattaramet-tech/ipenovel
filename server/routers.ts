@@ -1,6 +1,5 @@
-import { COOKIE_NAME, SESSION_TTL_MS } from "@shared/const";
+import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
-import { sdk } from "./_core/sdk";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, authenticatedProcedure, router } from "./_core/trpc";
 import { evaluateGoogleConnectionCutoff } from "./_core/env";
@@ -1204,45 +1203,16 @@ export const appRouter = router({
   files: fileRouter,
 
   // ============ ADMIN ROUTES ============
+  // No more local email/password admin login here (see
+  // security/remove-local-admin-password-login) - an admin signs in
+  // through the exact same Manus/Google/transition flow as every other
+  // user (see server/routers.ts's auth router / server/_core/googleOAuth.ts
+  // / server/_core/oauth.ts), and every procedure below is still gated by
+  // adminProcedure, which checks the normal session's ctx.user.role ===
+  // "admin" exactly as before - nothing about admin AUTHORIZATION changed,
+  // only the removed local-password AUTHENTICATION path.
   admin: router({
     ocr: ocrMetricsRouter,
-    login: publicProcedure
-      .input(z.object({ email: z.string().email(), password: z.string() }))
-      .mutation(async ({ input, ctx }) => {
-        // Confirmed available BEFORE the credential lookup - a database
-        // outage must never be reported as "Invalid credentials" (db.
-        // getAdminByEmail returns undefined either way, indistinguishable
-        // from "no such admin"). Propagates as an uncaught error, which
-        // tRPC's default INTERNAL_SERVER_ERROR handling plus this app's
-        // global errorFormatter (server/_core/trpc.ts) already sanitize
-        // before it reaches the client.
-        await db.assertDatabaseAvailable();
-
-        const admin = await db.getAdminByEmail(input.email);
-        if (!admin || !admin.passwordHash) {
-          throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid credentials" });
-        }
-
-        const bcrypt = await import("bcryptjs");
-        const isPasswordValid = await bcrypt.compare(input.password, admin.passwordHash);
-        if (!isPasswordValid) {
-          throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid credentials" });
-        }
-
-        // Create a session token for the admin user
-        const sessionToken = await sdk.createSessionToken(`admin-${admin.id}`, {
-          name: admin.email || "admin",
-        });
-
-        // Set the session cookie
-        const cookieOptions = getSessionCookieOptions(ctx.req);
-        ctx.res.cookie(COOKIE_NAME, sessionToken, {
-          ...cookieOptions,
-          maxAge: SESSION_TTL_MS,
-        });
-
-        return { success: true, adminId: admin.id };
-      }),
 
     payments: router({
       pending: adminProcedure.query(async () => {

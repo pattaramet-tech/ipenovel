@@ -58,16 +58,18 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
   // flips back and forth (e.g. a query refetch). Uses the SAME
   // resolveUnauthorizedRedirectTarget helper as useAuth's own redirect
   // effect and main.tsx's global tRPC error handler - AdminLayout only
-  // ever renders on /admin/* (never on /admin/login, see App.tsx's route
-  // table), so this always resolves to "admin_login" in practice, but
-  // sharing the helper keeps all three places agreeing on the rule by
-  // construction instead of by convention. getLoginUrl() is only called
-  // for the (here, unreachable) "oauth" case - never unconditionally.
+  // ever renders on /admin/* (there is no more separate /admin/login page
+  // at all, see App.tsx's route table and
+  // security/remove-local-admin-password-login), so this always resolves
+  // to "admin_login" in practice, but sharing the helper keeps all three
+  // places agreeing on the rule by construction instead of by convention.
+  // getLoginUrl() is only called for the (here, unreachable) "oauth" case -
+  // never unconditionally.
   useEffect(() => {
     if (accessState !== "unauthenticated") return;
     const target = resolveUnauthorizedRedirectTarget(location);
     if (target === "none") return;
-    navigate(target === "admin_login" ? "/admin/login" : getLoginUrl());
+    navigate(target === "admin_login" ? "/login" : getLoginUrl());
   }, [accessState, location, navigate]);
 
   async function handleLogout() {
@@ -79,7 +81,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
       // which is caught below without navigating away. See
       // logoutOutcome.ts: a transient logout failure must never look like
       // "you got logged out."
-      navigate("/admin/login");
+      navigate("/login");
     } catch {
       toast.error("Logout failed. Please try again.");
     }

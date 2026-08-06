@@ -199,34 +199,77 @@ describe("sdk.authenticateRequest", () => {
     await expect(sdk.authenticateRequest(requestWithCookie(token))).rejects.toBe(oauthError);
   });
 
-  describe("local admin session (\"admin-<id>\" openId)", () => {
-    it("returns the user when the database confirms role: admin", async () => {
+  describe("legacy local admin session (\"admin-<id>\" openId) - local admin login removed", () => {
+    it("rejects immediately with reason invalid_session_token, even when the database WOULD confirm role: admin - the JWT shape alone can never grant access anymore, and the account is never even looked up", async () => {
       const adminUser = fakeUser({ id: 7, openId: "admin-7", role: "admin" });
-      vi.spyOn(db, "getUserById").mockResolvedValue(adminUser);
+      const getUserByIdSpy = vi.spyOn(db, "getUserById").mockResolvedValue(adminUser);
 
       const token = await sdk.createSessionToken("admin-7", { name: "admin@example.invalid" });
-      const result = await sdk.authenticateRequest(requestWithCookie(token));
+      const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(token)));
 
-      expect(result).toBe(adminUser);
+      expect(error).toBeInstanceOf(AnonymousCredentialError);
+      expect((error as AnonymousCredentialError).reason).toBe("invalid_session_token");
+      expect(getUserByIdSpy).not.toHaveBeenCalled();
     });
 
-    it("rejects with reason admin_session_invalid (not cleared, see context.test.ts) when the database role is not admin - the JWT alone never grants access", async () => {
-      const demotedUser = fakeUser({ id: 7, openId: "admin-7", role: "user" });
-      vi.spyOn(db, "getUserById").mockResolvedValue(demotedUser);
+    it("rejects the same way for an id that maps to no real user at all", async () => {
+      const getUserByIdSpy = vi.spyOn(db, "getUserById");
+
+      const token = await sdk.createSessionToken("admin-999", {});
+      const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(token)));
+
+      expect(error).toBeInstanceOf(AnonymousCredentialError);
+      expect((error as AnonymousCredentialError).reason).toBe("invalid_session_token");
+      expect(getUserByIdSpy).not.toHaveBeenCalled();
+    });
+
+    it("rejects the same way even when the database is completely unavailable - the shape check runs BEFORE assertDatabaseAvailable, so an outage never matters for an old admin-<id> cookie", async () => {
+      const assertDbSpy = vi.spyOn(db, "assertDatabaseAvailable").mockRejectedValue(
+        new Error("[Database] Database connection is not available")
+      );
 
       const token = await sdk.createSessionToken("admin-7", {});
       const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(token)));
+
       expect(error).toBeInstanceOf(AnonymousCredentialError);
-      expect((error as AnonymousCredentialError).reason).toBe("admin_session_invalid");
+      expect((error as AnonymousCredentialError).reason).toBe("invalid_session_token");
+      expect(assertDbSpy).not.toHaveBeenCalled();
     });
 
-    it("rejects (AnonymousCredentialError) when no such admin user exists in the database", async () => {
-      vi.spyOn(db, "getUserById").mockResolvedValue(undefined);
+    it('"admin-editor" (an "admin-" prefix, but NOT admin-<digits>) is NOT caught by this legacy guard - it falls through to the normal getUserByOpenId lookup like any other session, and can authenticate as a real user', async () => {
+      const realUser = fakeUser({ id: 55, openId: "admin-editor", role: "user" });
+      const getUserByOpenIdSpy = vi.spyOn(db, "getUserByOpenId").mockResolvedValue(realUser);
+      vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
 
-      const token = await sdk.createSessionToken("admin-999", {});
-      await expect(sdk.authenticateRequest(requestWithCookie(token))).rejects.toBeInstanceOf(
-        AnonymousCredentialError
-      );
+      const token = await sdk.createSessionToken("admin-editor", {});
+      const result = await sdk.authenticateRequest(requestWithCookie(token));
+
+      expect(result).toBe(realUser);
+      expect(getUserByOpenIdSpy).toHaveBeenCalledWith("admin-editor");
+    });
+
+    it('"administrator-example" (merely starts with letters resembling "admin", not the exact legacy shape) is NOT caught by this legacy guard either - normal lookup', async () => {
+      const realUser = fakeUser({ id: 56, openId: "administrator-example", role: "user" });
+      const getUserByOpenIdSpy = vi.spyOn(db, "getUserByOpenId").mockResolvedValue(realUser);
+      vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
+
+      const token = await sdk.createSessionToken("administrator-example", {});
+      const result = await sdk.authenticateRequest(requestWithCookie(token));
+
+      expect(result).toBe(realUser);
+      expect(getUserByOpenIdSpy).toHaveBeenCalledWith("administrator-example");
+    });
+
+    it("a real Google-style openId (\"google:...\") is completely unaffected by this legacy guard - normal lookup, exactly as before", async () => {
+      const googleUser = fakeUser({ id: 57, openId: "google:1234567890", role: "user", loginMethod: "google" });
+      const getUserByOpenIdSpy = vi.spyOn(db, "getUserByOpenId").mockResolvedValue(googleUser);
+      vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
+
+      const token = await sdk.createSessionToken("google:1234567890", {});
+      const result = await sdk.authenticateRequest(requestWithCookie(token));
+
+      expect(result).toBe(googleUser);
+      expect(getUserByOpenIdSpy).toHaveBeenCalledWith("google:1234567890");
     });
   });
 
@@ -248,38 +291,12 @@ describe("sdk.authenticateRequest", () => {
       expect(getUserInfoWithJwtSpy).not.toHaveBeenCalled();
     });
 
-    it("valid admin JWT + database unavailable -> rejects, NOT AnonymousCredentialError, NOT reinterpreted as a demoted/deleted admin", async () => {
-      const dbOutage = new Error("[Database] Database connection is not available");
-      vi.spyOn(db, "assertDatabaseAvailable").mockRejectedValue(dbOutage);
-      const getUserByIdSpy = vi.spyOn(db, "getUserById");
-
-      const token = await sdk.createSessionToken("admin-7", {});
-      const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(token)));
-
-      expect(error).toBe(dbOutage);
-      expect(error).not.toBeInstanceOf(AnonymousCredentialError);
-      // In particular, this must not surface as reason: "admin_session_invalid"
-      // (which would silently misreport a database outage as a demoted/deleted
-      // admin account) - it isn't even the same error class.
-      expect((error as any).reason).toBeUndefined();
-      expect(getUserByIdSpy).not.toHaveBeenCalled();
-    });
-
     it("database query throwing AFTER the availability guard passes still propagates as-is (unaffected by the new guard)", async () => {
       const queryError = new Error("ER_LOCK_WAIT_TIMEOUT");
       vi.spyOn(db, "getUserByOpenId").mockRejectedValue(queryError);
 
       const token = await sdk.createSessionToken("user-123", {});
       await expect(sdk.authenticateRequest(requestWithCookie(token))).rejects.toBe(queryError);
-    });
-
-    it("an actually-nonexistent admin, with the database genuinely available, still rejects per existing policy (the guard does not change this outcome)", async () => {
-      vi.spyOn(db, "getUserById").mockResolvedValue(undefined);
-
-      const token = await sdk.createSessionToken("admin-999", {});
-      const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(token)));
-      expect(error).toBeInstanceOf(AnonymousCredentialError);
-      expect((error as AnonymousCredentialError).reason).toBe("admin_session_invalid");
     });
 
     it("an actually-nonexistent user, with the database genuinely available, still performs the OAuth sync per existing policy (the guard does not change this outcome)", async () => {
@@ -384,20 +401,22 @@ describe("sdk.authenticateRequest", () => {
       expect(result).toBe(user);
     });
 
-    it("[required test 5] a LOCAL ADMIN session issued before an already-ACTIVE cutoff (one that WOULD reject a regular user) is never rejected for forced_relogin - the admin-openId branch returns/throws before the cutoff check is ever reached", async () => {
+    it("[required test 5] a legacy LOCAL ADMIN-shaped session, even one issued before an already-ACTIVE cutoff (one that WOULD reject a regular user), is rejected outright as invalid_session_token - it never reaches the forced_relogin cutoff check at all, and is never authenticated as the admin user either way", async () => {
       vi.useFakeTimers();
       const t0 = new Date("2026-01-01T00:00:00Z");
       vi.setSystemTime(t0);
       const adminUser = fakeUser({ id: 7, openId: "admin-7", role: "admin" });
-      vi.spyOn(db, "getUserById").mockResolvedValue(adminUser);
+      const getUserByIdSpy = vi.spyOn(db, "getUserById").mockResolvedValue(adminUser);
       const token = await sdk.createSessionToken("admin-7", {}); // iat = t0
 
       const cutoff = new Date(t0.getTime() + 60_000);
       ENV.forceReloginAfterSeconds = Math.floor(cutoff.getTime() / 1000);
       vi.setSystemTime(new Date(cutoff.getTime() + 1000)); // now is past the cutoff - genuinely active
 
-      const result = await sdk.authenticateRequest(requestWithCookie(token));
-      expect(result).toBe(adminUser);
+      const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(token)));
+      expect(error).toBeInstanceOf(AnonymousCredentialError);
+      expect((error as AnonymousCredentialError).reason).toBe("invalid_session_token");
+      expect(getUserByIdSpy).not.toHaveBeenCalled();
     });
 
     it("[required test 7] the only call site (authenticateRequest) never passes a third 'now' argument - the real server clock (the function's own default) is the only source, never anything client-supplied", () => {

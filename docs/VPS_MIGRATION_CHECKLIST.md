@@ -6,14 +6,16 @@ Priority reminder: data recoverability > financial/entitlement correctness > dep
 
 ## SECURITY (do this now, independent of migration timing) — leaked admin credential
 
-Found during this audit: `drizzle/0003_admin_seed.sql` and `drizzle/LOCAL_ADMIN_BOOTSTRAP.sql` both contain a hardcoded plaintext admin password (in a comment) and its bcrypt hash, committed to git. Full classification in `docs/VPS_MIGRATION_RUNBOOK.md` §0 and §9. **Neither file may be modified or deleted in this PR** (docs/read-only-tooling scope) — the items below are operator actions outside this PR, and the file deletion itself is explicitly deferred to a separate Security/Deployment follow-up PR. **Do not paste the actual password or hash into this checklist, a PR, a chat, or a log while working through these items** — read the two files directly in the repository if you need the exact values.
+**UPDATE (`security/remove-local-admin-password-login`)**: the local email/password admin login mechanism itself has now been removed entirely - `drizzle/0003_admin_seed.sql` and `drizzle/LOCAL_ADMIN_BOOTSTRAP.sql` are deleted from the working tree, `trpc.admin.login` no longer exists, and the server no longer accepts the synthetic `admin-<id>` session shape those files' credential was used to mint (see that PR's description for the full change list). **This does NOT complete the operator actions below** - deleting the files/code does not remove the leaked credential from git history, and it does not by itself rotate any real Production/VPS admin password that may have been seeded from it. The checklist items below remain open until a human operator completes them.
+
+Found during this audit: `drizzle/0003_admin_seed.sql` and `drizzle/LOCAL_ADMIN_BOOTSTRAP.sql` both contained a hardcoded plaintext admin password (in a comment) and its bcrypt hash, committed to git. Full classification in `docs/VPS_MIGRATION_RUNBOOK.md` §0 and §9. **Do not paste the actual password or hash into this checklist, a PR, a chat, or a log while working through these items** — read the file's content from git history (e.g. `git show <commit>:drizzle/0003_admin_seed.sql`) directly in the repository if you need the exact values.
 
 - [ ] Rotate the Production admin password for any account that could plausibly match this credential — now, not gated on the VPS migration.
 - [ ] Rotate the VPS/staging admin password similarly if it was ever set up using either file as a reference.
 - [ ] Consider rotating `JWT_SECRET` during a planned maintenance window (invalidates all existing sessions — weigh the operational cost, but make it a deliberate decision, not a default skip).
-- [ ] Verify no current admin account still uses the leaked seed credential (compare stored password hashes against the hash in the two files directly — never log or paste the hash itself).
+- [ ] Verify no current admin account still uses the leaked seed credential (compare stored password hashes against the hash in the two files' git history directly — never log or paste the hash itself).
 - [ ] Confirm the team's policy going forward: never seed a fixed Production admin password from a file committed to git again (random-per-provision, handed to the operator once, is the safe pattern).
-- [ ] File/schedule the separate Security/Deployment follow-up PR that deletes `drizzle/0003_admin_seed.sql` and `drizzle/LOCAL_ADMIN_BOOTSTRAP.sql` — remember deleting the file does not remove it from git history; the rotation steps above are the actual mitigation.
+- [x] File/schedule the separate Security/Deployment follow-up PR that deletes `drizzle/0003_admin_seed.sql` and `drizzle/LOCAL_ADMIN_BOOTSTRAP.sql` — done by `security/remove-local-admin-password-login`. Remember deleting the files does not remove them from git history; the rotation steps above are still the actual mitigation and remain open.
 
 ## P0 — Backup
 

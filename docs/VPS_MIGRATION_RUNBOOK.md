@@ -10,11 +10,13 @@ Priority order for this migration, per the current cloud-credit deadline: **(1) 
 
 ## 0. CRITICAL SECURITY FINDING — hardcoded admin credential committed to the repository
 
+**UPDATE (`security/remove-local-admin-password-login`)**: the local email/password admin login mechanism this finding is about has been removed entirely - both files named below are deleted from the working tree, and the server no longer accepts the synthetic `admin-<id>` session shape their credential was used to mint. **This is code removal, not credential rotation** - the operator actions in this section (rotate the real Production/VPS admin password, consider rotating `JWT_SECRET`, verify no live account still uses the leaked hash) remain fully open and are unaffected by the file deletion; deleting a file never removes it from git history. See `docs/VPS_MIGRATION_CHECKLIST.md`'s updated top section for current status.
+
 Found during this audit, verified directly against source (not from the task prompt). **This is independent of the VPS migration itself and should be acted on regardless of migration timing.**
 
-`drizzle/0003_admin_seed.sql` and `drizzle/LOCAL_ADMIN_BOOTSTRAP.sql` both contain a hardcoded plaintext admin password (in a SQL comment) and its bcrypt hash, for an account with `role = 'admin'`. **Neither the plaintext password nor the hash is reproduced anywhere in this document, any other file in this PR, or any command output** — see §9's "Critical Security Finding" subsection for the full classification and §13 below for exactly what to do about it. If you need to see the actual values to act on them, read the two files directly in the repository; do not paste them into a PR description, chat, ticket, or log.
+`drizzle/0003_admin_seed.sql` and `drizzle/LOCAL_ADMIN_BOOTSTRAP.sql` both contained a hardcoded plaintext admin password (in a SQL comment) and its bcrypt hash, for an account with `role = 'admin'`. **Neither the plaintext password nor the hash is reproduced anywhere in this document, any other file in this PR, or any command output** — see §9's "Critical Security Finding" subsection for the full classification and §13 below for exactly what to do about it. If you need to see the actual values to act on them, read the two files' content from git history (they are deleted from the current working tree - e.g. `git show <commit>:drizzle/0003_admin_seed.sql`); do not paste them into a PR description, chat, ticket, or log.
 
-**Immediate operator action required — see the full list in §9's Security Finding and in `docs/VPS_MIGRATION_CHECKLIST.md`'s new top section.** This is not blocked on the VPS migration proceeding; it should happen as soon as an operator reads this.
+**Immediate operator action required — see the full list in §9's Security Finding and in `docs/VPS_MIGRATION_CHECKLIST.md`'s top section.** This is not blocked on the VPS migration proceeding; it should happen as soon as an operator reads this.
 
 ---
 
@@ -99,6 +101,8 @@ Re-classified this round after reading `docs/INCIDENT_MIGRATION_0024_EPISODES_CO
 - **Still not yet proven, not assumed**: this reasoning has been verified by reading the migration SQL directly, but has **not yet been exercised against a real, fresh MariaDB instance** in this PR (no database was connected to at any point in this audit). Treat "migration 0028 correctly creates/repairs `episodePurchases`, `readingProgress`, the six `episodes` reader columns, and all associated indexes on a genuinely fresh MariaDB" as a required **acceptance criterion for the staging rehearsal** — see §6 and the new checklist item in `docs/VPS_MIGRATION_CHECKLIST.md`'s P2 section, and the important caveat about the startup schema verifier's current coverage gap in that acceptance criterion.
 
 ### `drizzle/0003_admin_seed.sql` — CRITICAL SECURITY FINDING: hardcoded admin credential committed to the repository
+
+**UPDATE (`security/remove-local-admin-password-login`)**: both files named in this subsection are now deleted from the working tree, and the local admin login mechanism they seeded (`trpc.admin.login`, the `admin-<id>` synthetic session) is removed entirely - see that PR's description. The classification below (why this was Critical severity, the fact that deleting a file never deletes git history, and the required credential-rotation operator actions) is preserved as-is for historical accuracy and because the rotation items remain open.
 
 This is a **security finding, not a schema-compatibility issue** — flagged separately from the classification above because it needs an operator's immediate attention independent of anything about the VPS migration.
 
