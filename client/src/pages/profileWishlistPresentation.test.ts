@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   deriveProfileWishlistPresentation,
+  buildWishlistIdByNovelId,
   PROFILE_WISHLIST_DEFAULT_LIMIT,
   type ProfileWishlistItem,
 } from "./profileWishlistPresentation";
@@ -177,5 +178,76 @@ describe("deriveProfileWishlistPresentation", () => {
     });
     expect(result.view).toBe("empty");
     expect(result.totalCount).toBe(0);
+  });
+});
+
+describe("buildWishlistIdByNovelId", () => {
+  it("resolves a valid row's wishlistId from its novelId", () => {
+    const items = [makeItem(1), makeItem(2), makeItem(3)];
+    const map = buildWishlistIdByNovelId(items);
+    expect(map.get(1)).toBe(1);
+    expect(map.get(2)).toBe(2);
+    expect(map.get(3)).toBe(3);
+    expect(map.size).toBe(3);
+  });
+
+  it("resolves the correct wishlistId even when it differs from novelId", () => {
+    const items = [makeItem(1, { wishlistId: 501, novel: { ...makeItem(1).novel, id: 1 } })];
+    const map = buildWishlistIdByNovelId(items);
+    expect(map.get(1)).toBe(501);
+  });
+
+  it("excludes a row whose novel is null", () => {
+    const items = [makeItem(1), { ...makeItem(2), novel: null } as unknown as ProfileWishlistItem, makeItem(3)];
+    const map = buildWishlistIdByNovelId(items);
+    expect(map.has(2)).toBe(false);
+    expect(map.size).toBe(2);
+  });
+
+  it("excludes a row whose novel is undefined", () => {
+    const items = [makeItem(1), { ...makeItem(2), novel: undefined } as unknown as ProfileWishlistItem];
+    const map = buildWishlistIdByNovelId(items);
+    expect(map.size).toBe(1);
+    expect(map.has(1)).toBe(true);
+  });
+
+  it("excludes a row with a non-finite novel.id (NaN, Infinity)", () => {
+    const items = [
+      makeItem(1),
+      { ...makeItem(2), novel: { ...makeItem(2).novel, id: NaN } },
+      { ...makeItem(3), novel: { ...makeItem(3).novel, id: Infinity } },
+    ];
+    const map = buildWishlistIdByNovelId(items);
+    expect(map.size).toBe(1);
+    expect(map.has(1)).toBe(true);
+  });
+
+  it("returns an empty map for undefined input", () => {
+    const map = buildWishlistIdByNovelId(undefined);
+    expect(map.size).toBe(0);
+  });
+
+  it("returns an empty map for an empty array", () => {
+    const map = buildWishlistIdByNovelId([]);
+    expect(map.size).toBe(0);
+  });
+
+  it("uses the exact same validity rule as deriveProfileWishlistPresentation - a row excluded from one is excluded from the other", () => {
+    const items = [
+      makeItem(1),
+      { ...makeItem(2), novel: null } as unknown as ProfileWishlistItem,
+      makeItem(3),
+    ];
+
+    const presentation = deriveProfileWishlistPresentation({
+      isLoading: false,
+      isError: false,
+      items,
+      expanded: false,
+    });
+    const map = buildWishlistIdByNovelId(items);
+
+    expect(presentation.totalCount).toBe(map.size);
+    expect(presentation.visibleItems.every((item) => map.has(item.novel.id))).toBe(true);
   });
 });

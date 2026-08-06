@@ -225,4 +225,42 @@ describe.sequential("wishlists.list / add / remove (real disposable test databas
     await cleanupWishlists([user.id]);
     await deleteFixtures({ novelIds: [novelOne.id, novelTwo.id, novelThree.id], userIds: [user.id] });
   });
+
+  it("two CONCURRENT wishlists.add calls for the same novel: exactly one succeeds, the other rejects with CONFLICT (never INTERNAL_SERVER_ERROR), and exactly one row exists", async () => {
+    const testDb = requireIntegrationDb();
+    const user = await createTestUser();
+    const novel = await createTestNovel();
+    const callerA = appRouter.createCaller(ctxFor(user.id));
+    const callerB = appRouter.createCaller(ctxFor(user.id));
+
+    try {
+      const settled = await Promise.allSettled([
+        callerA.wishlists.add({ novelId: novel.id }),
+        callerB.wishlists.add({ novelId: novel.id }),
+      ]);
+
+      const fulfilled = settled.filter((r) => r.status === "fulfilled");
+      const rejected = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+
+      // Whichever request "loses" the race - whether it loses at the
+      // pre-check (the winner's row is already visible by the time it
+      // queries) or loses the database's unique_user_novel constraint on
+      // insert (both queried at nearly the same instant) - the
+      // client-facing outcome must be identical: CONFLICT, never a raw
+      // INTERNAL_SERVER_ERROR leaking a driver/constraint detail.
+      const rejectedError = rejected[0].reason;
+      expect(rejectedError).toBeInstanceOf(TRPCError);
+      expect((rejectedError as TRPCError).code).toBe("CONFLICT");
+
+      const rows = await testDb.select().from(wishlists).where(eq(wishlists.userId, user.id));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].novelId).toBe(novel.id);
+    } finally {
+      await cleanupWishlists([user.id]);
+      await deleteFixtures({ novelIds: [novel.id], userIds: [user.id] });
+    }
+  });
 });

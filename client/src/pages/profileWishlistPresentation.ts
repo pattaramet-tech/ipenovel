@@ -25,6 +25,37 @@ export type ProfileWishlistPresentation = {
   showCollapse: boolean;
 };
 
+function isValidWishlistItem(
+  item: ProfileWishlistItem | null | undefined
+): item is ProfileWishlistItem {
+  return Boolean(item && item.novel && Number.isFinite(item.novel.id));
+}
+
+/**
+ * The single place that decides which raw wishlists.list rows are safe to
+ * render/index - both deriveProfileWishlistPresentation (the grid/count)
+ * and buildWishlistIdByNovelId (the remove-handler's lookup map) filter
+ * through this SAME function, so a structurally broken row (missing
+ * `novel`, or a non-finite `novel.id`) can never end up counted in one
+ * place but silently missing from the other. The real API should never
+ * produce a row like this, but the defensive filter is cheap insurance
+ * against a `.length`/`.title`/Map-key crash if it ever did.
+ */
+export function getValidWishlistItems(items: ProfileWishlistItem[] | undefined): ProfileWishlistItem[] {
+  return (items ?? []).filter(isValidWishlistItem);
+}
+
+/**
+ * Resolves the wishlistId a NovelCard's onWishlistToggle(novelId) needs -
+ * NovelCard only ever reports back a novelId, never a wishlistId. Built
+ * from the same validated item set as the presentation view (see
+ * getValidWishlistItems's docstring) so a broken row can never leave a
+ * dangling/wrong entry in this map either.
+ */
+export function buildWishlistIdByNovelId(items: ProfileWishlistItem[] | undefined): Map<number, number> {
+  return new Map(getValidWishlistItems(items).map((item) => [item.novel.id, item.wishlistId]));
+}
+
 /**
  * Derives everything ProfilePage's Wishlist section needs to render from
  * the raw query state - state precedence is loading, then error, then
@@ -34,10 +65,8 @@ export type ProfileWishlistPresentation = {
  *
  * `items` is trusted to already be server-filtered (published novels only,
  * newest wishlist first - see db.getWishlistNovelsByUserId) - this function
- * does not re-filter by publication status or re-sort. It only defends
- * against a structurally broken row (missing `novel`), which the real API
- * should never produce, but a defensive filter here is cheap insurance
- * against a `.length`/`.title` crash if it ever did.
+ * does not re-filter by publication status or re-sort, it only defends
+ * against a structurally broken row via getValidWishlistItems above.
  */
 export function deriveProfileWishlistPresentation(input: {
   isLoading: boolean;
@@ -47,9 +76,7 @@ export function deriveProfileWishlistPresentation(input: {
   initialLimit?: number;
 }): ProfileWishlistPresentation {
   const limit = input.initialLimit ?? PROFILE_WISHLIST_DEFAULT_LIMIT;
-  const validItems = (input.items ?? []).filter(
-    (item): item is ProfileWishlistItem => Boolean(item && item.novel)
-  );
+  const validItems = getValidWishlistItems(input.items);
   const totalCount = validItems.length;
 
   if (input.isLoading) {

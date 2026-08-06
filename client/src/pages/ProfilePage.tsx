@@ -34,7 +34,7 @@ import {
   parseGoogleConnectStatus,
   shouldShowAccountRecoveryCallout,
 } from "./profileGoogleConnectStatus";
-import { deriveProfileWishlistPresentation } from "./profileWishlistPresentation";
+import { deriveProfileWishlistPresentation, buildWishlistIdByNovelId } from "./profileWishlistPresentation";
 
 export default function ProfilePage() {
   useDocumentHead({ robots: "noindex,nofollow" });
@@ -85,9 +85,12 @@ export default function ProfilePage() {
   );
 
   // NovelCard's onWishlistToggle only ever gives back a novelId (it has no
-  // idea a "wishlistId" exists) - this is the resolve step.
+  // idea a "wishlistId" exists) - this is the resolve step. Built through
+  // the same defensive-filter helper the presentation view uses (see
+  // profileWishlistPresentation.ts's getValidWishlistItems), so a
+  // structurally broken row can never leave a wrong/dangling entry here.
   const wishlistIdByNovelId = useMemo(
-    () => new Map((wishlistQuery.data ?? []).map((item) => [item.novel.id, item.wishlistId])),
+    () => buildWishlistIdByNovelId(wishlistQuery.data),
     [wishlistQuery.data]
   );
 

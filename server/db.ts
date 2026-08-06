@@ -2304,10 +2304,18 @@ export type ProfileWishlistItem = {
  * just disappears from this list - its wishlist row is deliberately left
  * alone (never auto-deleted here), so it reappears if the novel is
  * unarchived later.
+ *
+ * Deliberately throws (never returns []) when the database itself is
+ * unavailable - an empty array is a real, meaningful result ("this user has
+ * no wishlist items") and must never be indistinguishable from "couldn't
+ * even ask the database." The caller (wishlists.list in routers.ts) is
+ * responsible for turning this into a safe, generic client-facing error.
  */
 export async function getWishlistNovelsByUserId(userId: number): Promise<ProfileWishlistItem[]> {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) {
+    throw new Error("[Database] Database connection is not available");
+  }
 
   return db
     .select({
