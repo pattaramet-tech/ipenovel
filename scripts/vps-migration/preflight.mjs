@@ -1,4 +1,11 @@
-#!/usr/bin/env node
+// No shebang here on purpose - this file is only ever invoked as
+// `node scripts/vps-migration/preflight.mjs --ack-read-only` (see
+// README.md) or spawned via `process.execPath` in tests, never executed
+// directly as `./preflight.mjs`. A leading `#!` breaks Vitest 2.1.9's
+// sandboxed vm.Context module runner when this file is imported from
+// server/vpsMigrationPreflight.test.ts (SyntaxError: Invalid or
+// unexpected token) - see server/vpsMigrationScriptsSafety.test.ts for the
+// static safety checks that still cover this file.
 // Read-only VPS migration preflight check.
 //
 // Never connects to any database, never makes a network call, never writes
