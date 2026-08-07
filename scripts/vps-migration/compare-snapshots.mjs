@@ -1,4 +1,11 @@
-#!/usr/bin/env node
+// No shebang here on purpose - this file is only ever invoked as
+// `node scripts/vps-migration/compare-snapshots.mjs ...` (see README.md)
+// or spawned via `process.execPath` in tests, never executed directly as
+// `./compare-snapshots.mjs`. A leading `#!` breaks Vitest 2.1.9's
+// sandboxed vm.Context module runner when this file is imported from
+// server/vpsMigrationCompareSnapshots.test.ts (SyntaxError: Invalid or
+// unexpected token) - see server/vpsMigrationScriptsSafety.test.ts for the
+// static safety checks that still cover this file.
 // Compares two admin-produced JSON snapshot files (source vs target
 // database). Never connects to a database itself - it only reads two files
 // already on disk that a human (or preflight tooling run separately) put

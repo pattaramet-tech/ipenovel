@@ -31,6 +31,24 @@ function readSource(): string {
   return codeOnly(fs.readFileSync(migrationTestFilePath, "utf8"));
 }
 
+/**
+ * Extracts one numbered scenario's own body text - from its
+ * `it("N. ...` call up to the next scenario's `it("` call (or end of
+ * file, for the last scenario) - so checks below can inspect what a
+ * SPECIFIC scenario does, not just whether a pattern appears anywhere in
+ * the whole file. Source-text slicing, matching this file's existing
+ * static-source-check style (no AST parsing).
+ */
+function extractScenario(source: string, scenarioNumber: number): string {
+  const startMarker = `it("${scenarioNumber}. `;
+  const start = source.indexOf(startMarker);
+  if (start === -1) {
+    throw new Error(`Could not find scenario ${scenarioNumber} (looked for ${JSON.stringify(startMarker)})`);
+  }
+  const nextStart = source.indexOf('\n  it("', start + startMarker.length);
+  return nextStart === -1 ? source.slice(start) : source.slice(start, nextStart);
+}
+
 describe("migration-0024 integration test file - explicit sequential execution", () => {
   it("uses describe.sequential (), not a plain describe(), so ordering is explicit in code, not just inherited from global config", () => {
     const source = readSource();
@@ -125,14 +143,86 @@ describe("migration-0024 integration test file - no swallowed cleanup errors", (
     expect(fnBody).toMatch(/restoreToFullyMigratedWithRetry/);
   });
 
-  it("every scenario explicitly verifies the fully-migrated baseline via runFullChainAndVerify, not a bare runFullChain, when establishing its starting state", () => {
+  it("the two baseline helpers every scenario ultimately relies on (runFullChainAndVerify, verifyFullyMigratedBaseline) still exist", () => {
     const source = readSource();
     expect(source).toMatch(/async function runFullChainAndVerify/);
     expect(source).toMatch(/async function verifyFullyMigratedBaseline/);
-    // Every scenario except #1 (which deliberately starts from nothing)
-    // calls runFullChainAndVerify to establish its baseline.
-    const callCount = (source.match(/\brunFullChainAndVerify\(conn\)/g) || []).length;
-    expect(callCount).toBeGreaterThanOrEqual(9);
+  });
+
+  it("the shared cleanup path every scenario's finally block goes through (cleanupTestConnection -> restoreToFullyMigrated) restores AND verifies the fully-migrated baseline via runFullChainAndVerify as its primary attempt", () => {
+    const source = readSource();
+    const cleanupFnStart = source.indexOf("async function cleanupTestConnection");
+    expect(cleanupFnStart).toBeGreaterThan(-1);
+    const cleanupFnBody = source.slice(cleanupFnStart, cleanupFnStart + 400);
+    expect(cleanupFnBody).toMatch(/restoreToFullyMigrated\(conn\)/);
+
+    const restoreFnStart = source.indexOf("async function restoreToFullyMigrated(");
+    expect(restoreFnStart).toBeGreaterThan(-1);
+    const restoreFnBody = source.slice(restoreFnStart, restoreFnStart + 600);
+    expect(restoreFnBody).toMatch(/restoreToFullyMigratedWithRetry\(\s*\(\)\s*=>\s*runFullChainAndVerify\(conn\)/);
+  });
+
+  it("emergency recovery (emergencyResetAndRestore) resets to empty and then explicitly re-verifies the fully-migrated baseline, not just re-running the chain", () => {
+    const source = readSource();
+    const fnStart = source.indexOf("async function emergencyResetAndRestore");
+    expect(fnStart).toBeGreaterThan(-1);
+    const fnBody = source.slice(fnStart, fnStart + 400);
+    expect(fnBody).toMatch(/resetToEmptySchema\(conn,/);
+    expect(fnBody).toMatch(/runFullChain\(conn\)/);
+    expect(fnBody).toMatch(/verifyFullyMigratedBaseline\(conn\)/);
+  });
+
+  it("every one of the 10 scenarios itself calls cleanupTestConnection(conn) from its own finally block - not proven merely by the shared helper functions existing somewhere in the file", () => {
+    const source = readSource();
+    for (let n = 1; n <= 10; n++) {
+      const scenario = extractScenario(source, n);
+      // Allows both `cleanupTestConnection(conn!)` and `cleanupTestConnection(conn)` -
+      // the call must appear after a `finally {` within this SAME scenario,
+      // so a scenario that dropped cleanup (or moved it outside the
+      // finally block) fails here even though every other check in this
+      // file still passes.
+      expect(scenario).toMatch(/finally\s*\{[\s\S]*?cleanupTestConnection\(conn!?\)/);
+    }
+  });
+});
+
+/**
+ * The 10 scenarios deliberately do NOT all establish their starting state
+ * the same way - scenario 1 starts from nothing, scenarios 2-7 each start
+ * from a precise historical migration cutoff (the whole point of testing
+ * migration 0024/0025/0028's handling of legacy schemas), and only
+ * scenarios 8-10 genuinely need to start from the already-fully-migrated
+ * baseline (idempotency, final-schema-shape, and journal-resume checks all
+ * only make sense from that state). A single repo-wide occurrence count of
+ * runFullChainAndVerify(conn) can't distinguish "the file was refactored to
+ * use resetToCutoff for legacy-state scenarios" (safe, intentional - see
+ * resetToCutoff's own docstring) from "a scenario silently stopped
+ * verifying its baseline at all" (a real regression) - these checks inspect
+ * each numbered scenario's own body instead.
+ */
+describe("migration-0024 integration test file - per-scenario starting-state strategy", () => {
+  it("scenario 1 establishes its deliberately EMPTY starting state via resetToEmptySchema, not runFullChainAndVerify", () => {
+    const source = readSource();
+    const scenario = extractScenario(source, 1);
+    expect(scenario).toMatch(/resetToEmptySchema\(conn,/);
+    expect(scenario).not.toMatch(/runFullChainAndVerify\(conn\)/);
+  });
+
+  it("scenarios 2-7 each establish their own precise historical/cutoff starting state via resetToCutoff, not runFullChainAndVerify", () => {
+    const source = readSource();
+    for (const n of [2, 3, 4, 5, 6, 7]) {
+      const scenario = extractScenario(source, n);
+      expect(scenario).toMatch(/resetToCutoff\(conn,/);
+      expect(scenario).not.toMatch(/runFullChainAndVerify\(conn\)/);
+    }
+  });
+
+  it("scenarios 8-10 each genuinely start from the fully-migrated baseline via runFullChainAndVerify(conn), since that is what each of them is actually testing", () => {
+    const source = readSource();
+    for (const n of [8, 9, 10]) {
+      const scenario = extractScenario(source, n);
+      expect(scenario).toMatch(/\brunFullChainAndVerify\(conn\)/);
+    }
   });
 });
 
