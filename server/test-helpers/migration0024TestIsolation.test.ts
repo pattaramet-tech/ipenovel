@@ -171,6 +171,19 @@ describe("migration-0024 integration test file - no swallowed cleanup errors", (
     expect(fnBody).toMatch(/runFullChain\(conn\)/);
     expect(fnBody).toMatch(/verifyFullyMigratedBaseline\(conn\)/);
   });
+
+  it("every one of the 10 scenarios itself calls cleanupTestConnection(conn) from its own finally block - not proven merely by the shared helper functions existing somewhere in the file", () => {
+    const source = readSource();
+    for (let n = 1; n <= 10; n++) {
+      const scenario = extractScenario(source, n);
+      // Allows both `cleanupTestConnection(conn!)` and `cleanupTestConnection(conn)` -
+      // the call must appear after a `finally {` within this SAME scenario,
+      // so a scenario that dropped cleanup (or moved it outside the
+      // finally block) fails here even though every other check in this
+      // file still passes.
+      expect(scenario).toMatch(/finally\s*\{[\s\S]*?cleanupTestConnection\(conn!?\)/);
+    }
+  });
 });
 
 /**
