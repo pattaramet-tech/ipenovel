@@ -163,6 +163,15 @@ export const ENV = {
   isProduction: process.env.NODE_ENV === "production",
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
+  // Operator-owned, OpenAI-compatible Chat Completions provider (Coolify/VPS) -
+  // an explicit, atomic alternative to the legacy forgeApiUrl/forgeApiKey pair
+  // above. Raw, unvalidated pass-through only (same lazy-checked-only-on-use
+  // discipline as forgeApiUrl/forgeApiKey and the R2_PRIVATE_* vars) - actual
+  // precedence between this trio and BUILT_IN_FORGE_* is resolved in exactly
+  // one place, server/_core/llm.ts's resolveLLMRuntimeConfig(), not here.
+  llmApiUrl: process.env.LLM_API_URL ?? "",
+  llmApiKey: process.env.LLM_API_KEY ?? "",
+  llmModel: process.env.LLM_MODEL ?? "",
   ocrEnabled: process.env.OCR_ENABLED !== "false",
   // Cloudflare R2 - used only by server/services/r2Storage.ts for newly
   // uploaded novel covers/banners (see uploadCover/uploadImage in

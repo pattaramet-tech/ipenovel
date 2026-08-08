@@ -209,16 +209,113 @@ const normalizeToolChoice = (
   return toolChoice;
 };
 
-const resolveApiUrl = () =>
-  ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
-    ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/chat/completions`
-    : "https://forge.manus.im/v1/chat/completions";
+export type LLMRuntimeMode = "generic" | "legacy_forge";
 
-const assertApiKey = () => {
-  if (!ENV.forgeApiKey) {
-    throw new Error("OPENAI_API_KEY is not configured");
-  }
+export type LLMRuntimeConfig = {
+  mode: LLMRuntimeMode;
+  apiUrl: string;
+  apiKey: string;
+  model: string;
 };
+
+export type LLMRuntimeConfigInput = {
+  llmApiUrl?: string;
+  llmApiKey?: string;
+  llmModel?: string;
+  forgeApiUrl?: string;
+  forgeApiKey?: string;
+};
+
+const LEGACY_FORGE_MODEL = "gemini-2.5-flash";
+const LEGACY_FORGE_DEFAULT_API_URL = "https://forge.manus.im/v1/chat/completions";
+
+/**
+ * Rejects anything that isn't a plain, credential-free http(s) URL -
+ * deliberately never includes the rejected value itself in the thrown
+ * message (an operator-supplied LLM_API_URL is not something this should
+ * ever echo back into logs/error responses).
+ */
+function assertValidGenericApiUrl(rawUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error("[LLM] LLM_API_URL is not a valid absolute URL.");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("[LLM] LLM_API_URL must use the http: or https: scheme.");
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error("[LLM] LLM_API_URL must not contain embedded credentials.");
+  }
+}
+
+/**
+ * THE single place LLM_API_URL/LLM_API_KEY/LLM_MODEL vs. the legacy
+ * BUILT_IN_FORGE_API_URL/BUILT_IN_FORGE_API_KEY pair is resolved -
+ * everything else (invokeLLM below) just uses the result. Pure function
+ * (raw strings in, a config or a thrown Error out) so it's testable without
+ * touching process.env or module state - see server/_core/llm.test.ts.
+ *
+ * Precedence, deliberately fail-closed:
+ *   - If ANY of LLM_API_URL/LLM_API_KEY/LLM_MODEL is non-empty (after
+ *     trim), "generic" mode is explicitly selected and ALL THREE are
+ *     required - never falls back to BUILT_IN_FORGE_*, and never mixes a
+ *     value from one set with a value from the other (e.g. a generic URL
+ *     paired with a Forge key). A partial generic config throws, naming
+ *     only the missing variable NAMES.
+ *   - Only when none of the three LLM_* vars are set does this fall back
+ *     to "legacy_forge": BUILT_IN_FORGE_API_KEY (required),
+ *     BUILT_IN_FORGE_API_URL if set (else the historical
+ *     forge.manus.im default), and the historical hardcoded model - exactly
+ *     current Manus Production behavior, unchanged.
+ */
+export function resolveLLMRuntimeConfig(input: LLMRuntimeConfigInput): LLMRuntimeConfig {
+  const llmApiUrl = (input.llmApiUrl ?? "").trim();
+  const llmApiKey = (input.llmApiKey ?? "").trim();
+  const llmModel = (input.llmModel ?? "").trim();
+
+  const genericModeSelected = llmApiUrl !== "" || llmApiKey !== "" || llmModel !== "";
+
+  if (genericModeSelected) {
+    const missing: string[] = [];
+    if (!llmApiUrl) missing.push("LLM_API_URL");
+    if (!llmApiKey) missing.push("LLM_API_KEY");
+    if (!llmModel) missing.push("LLM_MODEL");
+    if (missing.length > 0) {
+      throw new Error(
+        `[LLM] Incomplete generic LLM configuration - missing: ${missing.join(", ")}. ` +
+          "This mode never falls back to legacy Forge configuration once selected."
+      );
+    }
+    assertValidGenericApiUrl(llmApiUrl);
+    return { mode: "generic", apiUrl: llmApiUrl, apiKey: llmApiKey, model: llmModel };
+  }
+
+  const forgeApiKey = (input.forgeApiKey ?? "").trim();
+  if (!forgeApiKey) {
+    throw new Error(
+      "[LLM] LLM API key is not configured - set LLM_API_URL, LLM_API_KEY, and LLM_MODEL " +
+        "(operator-owned provider) or BUILT_IN_FORGE_API_KEY (legacy Manus Forge)."
+    );
+  }
+
+  const forgeApiUrl = (input.forgeApiUrl ?? "").trim();
+  const apiUrl = forgeApiUrl
+    ? `${forgeApiUrl.replace(/\/$/, "")}/v1/chat/completions`
+    : LEGACY_FORGE_DEFAULT_API_URL;
+
+  return { mode: "legacy_forge", apiUrl, apiKey: forgeApiKey, model: LEGACY_FORGE_MODEL };
+}
+
+const resolveRuntimeConfig = (): LLMRuntimeConfig =>
+  resolveLLMRuntimeConfig({
+    llmApiUrl: ENV.llmApiUrl,
+    llmApiKey: ENV.llmApiKey,
+    llmModel: ENV.llmModel,
+    forgeApiUrl: ENV.forgeApiUrl,
+    forgeApiKey: ENV.forgeApiKey,
+  });
 
 const normalizeResponseFormat = ({
   responseFormat,
@@ -266,7 +363,13 @@ const normalizeResponseFormat = ({
 };
 
 export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
-  assertApiKey();
+  // Resolved lazily, per call - never at module import - so an
+  // unconfigured/misconfigured LLM provider can never crash server startup
+  // or block any route other than the one that actually tries to call an
+  // LLM (OCR's existing graceful-degradation catch in
+  // ocr-slip-verification-v2.ts's parseSlipImage() is what turns this
+  // throw into technicalError=true, not this function).
+  const config = resolveRuntimeConfig();
 
   const {
     messages,
@@ -280,7 +383,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   } = params;
 
   const payload: Record<string, unknown> = {
-    model: "gemini-2.5-flash",
+    model: config.model,
     messages: messages.map(normalizeMessage),
   };
 
@@ -296,9 +399,13 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     payload.tool_choice = normalizedToolChoice;
   }
 
-  payload.max_tokens = 32768
-  payload.thinking = {
-    "budget_tokens": 128
+  payload.max_tokens = 32768;
+  // The `thinking` field is a Forge-specific extension - an arbitrary
+  // OpenAI-compatible provider (generic mode) may reject an unrecognized
+  // field outright, so it's only ever sent in legacy_forge mode, preserving
+  // current Manus Production request behavior unchanged.
+  if (config.mode === "legacy_forge") {
+    payload.thinking = { budget_tokens: 128 };
   }
 
   const normalizedResponseFormat = normalizeResponseFormat({
@@ -312,20 +419,22 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     payload.response_format = normalizedResponseFormat;
   }
 
-  const response = await fetch(resolveApiUrl(), {
+  const response = await fetch(config.apiUrl, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      authorization: `Bearer ${ENV.forgeApiKey}`,
+      authorization: `Bearer ${config.apiKey}`,
     },
     body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(
-      `LLM invoke failed: ${response.status} ${response.statusText} – ${errorText}`
-    );
+    // Deliberately never includes the upstream response body (may contain
+    // the configured endpoint, request echoes, or provider-specific detail)
+    // or the endpoint URL itself - OCR's existing catch in
+    // ocr-slip-verification-v2.ts logs this Error verbatim via
+    // console.error, so it must already be safe to appear in logs as-is.
+    throw new Error(`LLM invoke failed: HTTP ${response.status} (${config.mode})`);
   }
 
   return (await response.json()) as InvokeResult;
