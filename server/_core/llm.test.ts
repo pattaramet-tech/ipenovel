@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ENV } from "./env";
-import { invokeLLM, resolveLLMRuntimeConfig, type LLMRuntimeConfigInput } from "./llm";
+import { getLLMRuntimeMode, invokeLLM, resolveLLMRuntimeConfig, type LLMRuntimeConfigInput } from "./llm";
 
 // A synthetic, obviously-fake credential/marker - used throughout to assert
 // it never leaks into a thrown/logged message. Never a real secret.
@@ -180,6 +180,56 @@ describe("resolveLLMRuntimeConfig", () => {
         expect(message).not.toContain("llm.example.internal");
       }
     });
+  });
+});
+
+describe("getLLMRuntimeMode", () => {
+  const originalLlmApiUrl = ENV.llmApiUrl;
+  const originalLlmApiKey = ENV.llmApiKey;
+  const originalLlmModel = ENV.llmModel;
+  const originalForgeApiUrl = ENV.forgeApiUrl;
+  const originalForgeApiKey = ENV.forgeApiKey;
+
+  afterEach(() => {
+    ENV.llmApiUrl = originalLlmApiUrl;
+    ENV.llmApiKey = originalLlmApiKey;
+    ENV.llmModel = originalLlmModel;
+    ENV.forgeApiUrl = originalForgeApiUrl;
+    ENV.forgeApiKey = originalForgeApiKey;
+  });
+
+  it("returns 'generic' when the LLM_* vars are configured, and returns ONLY the mode (never apiKey/apiUrl/model)", () => {
+    ENV.llmApiUrl = "https://llm.example.internal/chat/completions";
+    ENV.llmApiKey = "sk-test-mode-getter-key";
+    ENV.llmModel = "gpt-4o-mini";
+
+    const mode = getLLMRuntimeMode();
+
+    expect(mode).toBe("generic");
+    // Type-level guarantee, not just a runtime check: the return type is
+    // LLMRuntimeMode ("generic" | "legacy_forge"), not an object - nothing
+    // to accidentally destructure a secret out of.
+    expect(typeof mode).toBe("string");
+  });
+
+  it("returns 'legacy_forge' when no LLM_* var is configured but a Forge key is", () => {
+    ENV.llmApiUrl = "";
+    ENV.llmApiKey = "";
+    ENV.llmModel = "";
+    ENV.forgeApiKey = "forge-test-mode-getter-key";
+    ENV.forgeApiUrl = "";
+
+    expect(getLLMRuntimeMode()).toBe("legacy_forge");
+  });
+
+  it("throws (same as the underlying resolver) when nothing is configured at all", () => {
+    ENV.llmApiUrl = "";
+    ENV.llmApiKey = "";
+    ENV.llmModel = "";
+    ENV.forgeApiUrl = "";
+    ENV.forgeApiKey = "";
+
+    expect(() => getLLMRuntimeMode()).toThrow();
   });
 });
 

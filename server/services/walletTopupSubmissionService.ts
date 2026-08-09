@@ -19,7 +19,7 @@ import {
 import { getEffectiveOCRConfig } from "../_core/ocr-effective-config";
 import { formatMoney } from "../helpers/moneyNormalizer";
 import { sendOCRReviewNotification } from "./discordNotificationService";
-import { resolveStoredFileValue } from "./r2PrivateStorage";
+import { prepareSlipImageForOcr } from "./ocrImageInputService";
 
 export interface WalletTopupSubmissionResult {
   topupId: number;
@@ -75,13 +75,32 @@ export async function submitWalletTopupSlip(
     // OCR slip shows 250 (what user paid) → amountMatched should be TRUE
     // If OCR reads 260, that's a mismatch because user never paid 260.
 
-    // Step 1: Resolve a FRESH signed URL immediately before every OCR call
-    // (never reused/cached across retries) - a legacy absolute URL passes
-    // through unchanged; a resolution failure falls into the catch block
-    // below like any other OCR technical error, routing to manual review
-    // instead of crashing the submission.
-    const ocrImageUrl = await resolveStoredFileValue(slipImageUrl, "paymentSlip");
-    const parseResult = await parseSlipImage(ocrImageUrl || "");
+    // Step 1: Prepare the image input immediately before every OCR call
+    // (never reused/cached across retries). server/services/
+    // ocrImageInputService.ts resolves a FRESH signed URL and, in
+    // legacy_forge mode, hands it straight through unchanged (a legacy
+    // absolute URL also passes through unchanged) - exactly the prior
+    // behavior. In generic mode, a private r2p: reference is instead
+    // fetched server-side and converted to a base64 data URL (a generic
+    // OpenAI-compatible provider rejects a private signed HTTPS URL
+    // directly - proven on staging), while a legacy absolute URL is never
+    // server-fetched.
+    const ocrImageUrl = await prepareSlipImageForOcr(slipImageUrl);
+
+    if (!ocrImageUrl) {
+      // Image preparation failed - never call parseSlipImage()/invokeLLM()
+      // with an empty/absent image: some generic-compatible providers
+      // accept or ignore an empty image part and can still return
+      // plausible-looking text, which would then be verified and could
+      // satisfy auto-approval/crediting despite the submitted slip never
+      // actually being processed. This fixed, sanitized message (never a
+      // signed URL/key/credential) is caught by the outer catch block
+      // below like any other OCR technical error, routing to manual
+      // review instead of crashing the submission.
+      throw new Error("OCR_IMAGE_PREPARATION_FAILED");
+    }
+
+    const parseResult = await parseSlipImage(ocrImageUrl);
 
     // Handle OCR technical error
     if (parseResult.technicalError) {

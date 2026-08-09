@@ -317,6 +317,22 @@ const resolveRuntimeConfig = (): LLMRuntimeConfig =>
     forgeApiKey: ENV.forgeApiKey,
   });
 
+/**
+ * Exposes ONLY the resolved mode - never the apiKey or the rest of the
+ * runtime config - for callers that need to branch on provider mode without
+ * ever touching a secret (see server/services/ocrImageInputService.ts,
+ * which needs to know whether to prepare a base64 data URL for a generic
+ * provider or leave the existing signed-URL behavior alone for legacy
+ * Forge). Reuses resolveRuntimeConfig()/resolveLLMRuntimeConfig() - this
+ * file remains the ONLY place generic-vs-legacy_forge precedence is ever
+ * decided; nothing else may re-derive it. Throws exactly like
+ * resolveRuntimeConfig() does when the LLM isn't configured at all -
+ * callers that need a fail-closed default should catch that themselves.
+ */
+export function getLLMRuntimeMode(): LLMRuntimeMode {
+  return resolveRuntimeConfig().mode;
+}
+
 const normalizeResponseFormat = ({
   responseFormat,
   response_format,
