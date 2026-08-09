@@ -80,19 +80,46 @@ function normalizeContentType(rawContentType: string | null): string {
 }
 
 /**
- * Reads the response body up to `maxBytes`, aborting as soon as the running
- * total exceeds it - never accumulates an unbounded stream in memory, and
- * never relies on Content-Length alone (the caller already checked that
- * header first; this is the real enforcement for a missing/understated one).
+ * Best-effort teardown for a response we're about to reject WITHOUT reading
+ * its body (non-2xx, declared-too-large, unsupported MIME) - so a repeated
+ * stream of rejected responses can never occupy bandwidth/connection-pool
+ * slots waiting for a peer that has no reason to finish sending. Never
+ * throws - cleanup failing is not itself a reason to change which error the
+ * caller reports.
+ */
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // intentionally ignored - best-effort only
+  }
+}
+
+/**
+ * Reads the response body up to `maxBytes`, aborting (and canceling the
+ * reader) as soon as the running total exceeds it - never accumulates an
+ * unbounded stream in memory, and never relies on Content-Length alone (the
+ * caller already checked that header first; this is the real enforcement
+ * for a missing/understated one).
+ *
+ * Deliberately fails closed rather than ever falling back to an unbounded
+ * `response.arrayBuffer()` read: for a real fetch Response with a body,
+ * `response.body` is a ReadableStream, so a missing/unusable reader here
+ * means something is wrong with the response itself, not that this should
+ * quietly buffer the whole thing another way.
  */
 async function readBodyBounded(response: Response, maxBytes: number, signal: AbortSignal): Promise<Buffer> {
-  const reader = response.body?.getReader();
-  if (!reader) {
-    const buf = Buffer.from(await response.arrayBuffer());
-    if (buf.length > maxBytes) {
-      throw new OcrImagePreparationError("OCR_IMAGE_TOO_LARGE");
-    }
-    return buf;
+  if (!response.body) {
+    // No body at all - nothing to OCR, and nothing to cancel either.
+    throw new OcrImagePreparationError("OCR_IMAGE_EMPTY_BODY");
+  }
+
+  let reader: ReadableStreamDefaultReader<Uint8Array>;
+  try {
+    reader = response.body.getReader();
+  } catch {
+    await cancelResponseBody(response);
+    throw new OcrImagePreparationError("OCR_IMAGE_FETCH_FAILED");
   }
 
   const chunks: Uint8Array[] = [];
@@ -137,6 +164,7 @@ async function fetchAndEncodeImage(
     }
 
     if (!response.ok) {
+      await cancelResponseBody(response);
       throw new OcrImagePreparationError("OCR_IMAGE_FETCH_FAILED");
     }
 
@@ -146,12 +174,14 @@ async function fetchAndEncodeImage(
     if (contentLengthHeader) {
       const declaredLength = Number(contentLengthHeader);
       if (Number.isFinite(declaredLength) && declaredLength > opts.maxBytes) {
+        await cancelResponseBody(response);
         throw new OcrImagePreparationError("OCR_IMAGE_TOO_LARGE");
       }
     }
 
     const contentType = normalizeContentType(response.headers.get("content-type"));
     if (!SUPPORTED_OCR_IMAGE_MIME_TYPES.has(contentType)) {
+      await cancelResponseBody(response);
       throw new OcrImagePreparationError("OCR_IMAGE_UNSUPPORTED_TYPE");
     }
 
@@ -190,11 +220,19 @@ export type PrepareSlipImageForOcrDeps = {
  * Returns the string to hand to parseSlipImage(), or `null` on ANY failure
  * (unconfigured LLM, signed URL failure, fetch failure/timeout, too large,
  * unsupported/PDF MIME, empty body, or a legacy absolute URL in generic
- * mode) - callers should keep their existing `parseSlipImage(result || "")`
- * pattern exactly as it was; an empty image_url reaching invokeLLM() is
- * already handled by parseSlipImage()'s own try/catch as a technical error,
- * routing to the existing pending_review/OCR_PROCESSING_ERROR path. This
- * function itself never throws.
+ * mode). This function itself never throws.
+ *
+ * CRITICAL - callers MUST short-circuit on `null` and MUST NOT call
+ * parseSlipImage()/invokeLLM() at all in that case (never
+ * `parseSlipImage(result || "")`): parseSlipImage() only reports
+ * `technicalError` when invokeLLM() itself throws, but a generic-compatible
+ * provider that accepts or ignores an empty/missing image part can still
+ * return plausible-looking text for an empty prompt, which would then be
+ * verified and could satisfy auto-approval despite the submitted slip never
+ * actually being processed. On `null`, callers should throw a fixed,
+ * sanitized error (e.g. `new Error("OCR_IMAGE_PREPARATION_FAILED")`) into
+ * their existing OCR-technical-error catch path instead - see
+ * slipSubmissionService.ts and walletTopupSubmissionService.ts.
  */
 export async function prepareSlipImageForOcr(
   rawStoredValue: string | null | undefined,

@@ -102,14 +102,25 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
       // a private r2p: reference is instead fetched server-side and
       // converted to a base64 data URL (a generic OpenAI-compatible
       // provider rejects a private signed HTTPS URL directly - proven on
-      // staging), while a legacy absolute URL is never server-fetched. Any
-      // preparation failure here falls into the same catch block below as
-      // any other OCR technical error, routing the slip to manual review
-      // instead of crashing the submission.
+      // staging), while a legacy absolute URL is never server-fetched.
       const ocrImageUrl = await prepareSlipImageForOcr(input.slipImageUrl);
 
+      if (!ocrImageUrl) {
+        // Image preparation failed (fetch/timeout/size/MIME/legacy-URL-in-
+        // generic-mode/unconfigured-LLM/etc. - see ocrImageInputService.ts).
+        // Never call parseSlipImage()/invokeLLM() with an empty/absent
+        // image: some generic-compatible providers accept or ignore an
+        // empty image part and can still return plausible-looking text,
+        // which would then be verified and could satisfy auto-approval
+        // despite the submitted slip never actually being processed. This
+        // fixed, sanitized message (never a signed URL/key/credential) is
+        // caught by the same block below as any other OCR technical
+        // error, routing the slip to manual review instead.
+        throw new Error("OCR_IMAGE_PREPARATION_FAILED");
+      }
+
       // Extract OCR text from slip image (returns structured result with confidence)
-      const slipOcrResult = await parseSlipImage(ocrImageUrl || "");
+      const slipOcrResult = await parseSlipImage(ocrImageUrl);
 
       // Check if OCR/LLM technical error occurred
       if (slipOcrResult.technicalError) {

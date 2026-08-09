@@ -1,12 +1,19 @@
 /**
  * H. Wallet flow (see server/services/ocrImageInputService.ts) - proves
  * that an OCR image-preparation failure (prepareSlipImageForOcr() returning
- * null, e.g. a generic-mode fetch/size/MIME failure) still routes through
+ * null, e.g. a generic-mode fetch/size/MIME failure) SHORT-CIRCUITS before
+ * ever calling parseSlipImage()/invokeLLM(), and still routes through
  * submitWalletTopupSlip()'s EXISTING, unchanged technical-error path:
  * pending_review / needs_review / OCR_PROCESSING_ERROR, with no wallet
- * credit and no transaction created. Everything (db, OCR config, Discord
- * notifications, parseSlipImage, prepareSlipImageForOcr) is mocked - no
- * real database, network, or LLM call.
+ * credit and no transaction created.
+ *
+ * parseSlipImage is deliberately mocked to return a PLAUSIBLE AUTO-APPROVABLE
+ * result (technicalError: false, high confidence, a real-looking amount) -
+ * if the short-circuit were ever removed and parseSlipImage("") got called
+ * with this mock in place, the test would incorrectly observe an approval
+ * path and fail loudly, rather than silently passing for the wrong reason.
+ * Everything (db, OCR config, Discord notifications, parseSlipImage,
+ * prepareSlipImageForOcr) is mocked - no real database, network, or LLM call.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -75,22 +82,26 @@ describe("submitWalletTopupSlip - OCR image preparation failure (H)", () => {
     // this is the exact contract prepareSlipImageForOcr() guarantees on ANY
     // internal failure (see ocrImageInputService.test.ts).
     (prepareSlipImageForOcr as any).mockResolvedValue(null);
-    // parseSlipImage("") is what actually runs in production when handed an
-    // empty image_url - its own documented technicalError=true contract,
-    // not re-tested here (see ocr-slip-verification-v2.test.ts).
+    // Deliberately "dangerous": a plausible AUTO-APPROVABLE OCR result, so
+    // that if the short-circuit were ever removed and this got called, the
+    // test would observe (and fail on) an incorrect approval - never
+    // silently pass because the mock happened to already look like a
+    // failure. This proves a provider that accepts/ignores an empty image
+    // cannot influence approval, since parseSlipImage must never be reached
+    // at all on a null preparation result.
     (parseSlipImage as any).mockResolvedValue({
-      text: "",
-      ocrConfidence: 0,
-      warnings: ["Error parsing image - check URL and image format"],
-      technicalError: true,
+      text: "Amount: 250.00\nRef: FAKE-REF-000\nBank: Test Bank",
+      ocrConfidence: 99,
+      warnings: [],
+      technicalError: false,
     });
 
     const result = await submitWalletTopupSlip(7, 42, "250.00", "r2p:payment-slips/7/slip.png");
 
     expect(prepareSlipImageForOcr).toHaveBeenCalledWith("r2p:payment-slips/7/slip.png");
-    // parseSlipImage must have been called with the "" fallback, never a
-    // truthy but broken value.
-    expect(parseSlipImage).toHaveBeenCalledWith("");
+    // CRITICAL: parseSlipImage/invokeLLM must never be reached when
+    // preparation returns null - not even with an empty-string fallback.
+    expect(parseSlipImage).not.toHaveBeenCalled();
 
     expect(result.status).toBe("pending_review");
     expect(result.ocrDecision).toBe("needs_review");

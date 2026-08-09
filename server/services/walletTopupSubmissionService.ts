@@ -84,11 +84,23 @@ export async function submitWalletTopupSlip(
     // fetched server-side and converted to a base64 data URL (a generic
     // OpenAI-compatible provider rejects a private signed HTTPS URL
     // directly - proven on staging), while a legacy absolute URL is never
-    // server-fetched. Any preparation failure falls into the catch block
-    // below like any other OCR technical error, routing to manual review
-    // instead of crashing the submission.
+    // server-fetched.
     const ocrImageUrl = await prepareSlipImageForOcr(slipImageUrl);
-    const parseResult = await parseSlipImage(ocrImageUrl || "");
+
+    if (!ocrImageUrl) {
+      // Image preparation failed - never call parseSlipImage()/invokeLLM()
+      // with an empty/absent image: some generic-compatible providers
+      // accept or ignore an empty image part and can still return
+      // plausible-looking text, which would then be verified and could
+      // satisfy auto-approval/crediting despite the submitted slip never
+      // actually being processed. This fixed, sanitized message (never a
+      // signed URL/key/credential) is caught by the outer catch block
+      // below like any other OCR technical error, routing to manual
+      // review instead of crashing the submission.
+      throw new Error("OCR_IMAGE_PREPARATION_FAILED");
+    }
+
+    const parseResult = await parseSlipImage(ocrImageUrl);
 
     // Handle OCR technical error
     if (parseResult.technicalError) {

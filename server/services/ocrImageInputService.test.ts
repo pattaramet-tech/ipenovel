@@ -351,4 +351,120 @@ describe("prepareSlipImageForOcr", () => {
       expect(deps.fetchImpl).not.toHaveBeenCalled();
     });
   });
+
+  describe("P2. response body cancellation on early rejection", () => {
+    it("A. non-2xx response: cancels the response body before rejecting", async () => {
+      const response = bufferedResponse(pngBytes(4), "image/png", 403);
+      const cancelSpy = vi.spyOn(response.body!, "cancel");
+      const deps = makeDeps({ fetchImpl: vi.fn(async () => response) });
+
+      const result = await prepareSlipImageForOcr(PRIVATE_REF, deps);
+
+      expect(result).toBeNull();
+      expect(cancelSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("B. Content-Length > 5MiB: cancels the response body before any normal read", async () => {
+      const response = streamedResponse(MAX_OCR_IMAGE_BYTES + 1, "image/png", { includeContentLength: true });
+      const cancelSpy = vi.spyOn(response.body!, "cancel");
+      const deps = makeDeps({ fetchImpl: vi.fn(async () => response) });
+
+      const result = await prepareSlipImageForOcr(PRIVATE_REF, deps);
+
+      expect(result).toBeNull();
+      expect(cancelSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("C. unsupported MIME (PDF): cancels the response body before rejecting", async () => {
+      const response = bufferedResponse(pngBytes(4), "application/pdf");
+      const cancelSpy = vi.spyOn(response.body!, "cancel");
+      const deps = makeDeps({ fetchImpl: vi.fn(async () => response) });
+
+      const result = await prepareSlipImageForOcr(PRIVATE_REF, deps);
+
+      expect(result).toBeNull();
+      expect(cancelSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("C2. unsupported MIME (text/html): cancels the response body before rejecting", async () => {
+      const response = bufferedResponse(pngBytes(4), "text/html");
+      const cancelSpy = vi.spyOn(response.body!, "cancel");
+      const deps = makeDeps({ fetchImpl: vi.fn(async () => response) });
+
+      const result = await prepareSlipImageForOcr(PRIVATE_REF, deps);
+
+      expect(result).toBeNull();
+      expect(cancelSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("D. streamed body exceeds 5MiB (no Content-Length): the reader is still canceled", async () => {
+      const response = streamedResponse(MAX_OCR_IMAGE_BYTES + 1024, "image/png", { includeContentLength: false });
+      const realGetReader = response.body!.getReader.bind(response.body);
+      let readerCancelSpy: ReturnType<typeof vi.spyOn> | undefined;
+      vi.spyOn(response.body!, "getReader").mockImplementation((...args: any[]) => {
+        const reader = (realGetReader as any)(...args);
+        readerCancelSpy = vi.spyOn(reader, "cancel");
+        return reader;
+      });
+      const deps = makeDeps({ fetchImpl: vi.fn(async () => response) });
+
+      const result = await prepareSlipImageForOcr(PRIVATE_REF, deps);
+
+      expect(result).toBeNull();
+      expect(readerCancelSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("E1. response.body === null: fails closed (empty body) without ever calling arrayBuffer()", async () => {
+      const response = new Response(null, { status: 200, headers: { "content-type": "image/png" } });
+      const arrayBufferSpy = vi.spyOn(response, "arrayBuffer");
+      const deps = makeDeps({ fetchImpl: vi.fn(async () => response) });
+
+      const result = await prepareSlipImageForOcr(PRIVATE_REF, deps);
+
+      expect(result).toBeNull();
+      expect(arrayBufferSpy).not.toHaveBeenCalled();
+    });
+
+    it("E2. body exists but getReader() throws (e.g. already locked): fails closed, never calls arrayBuffer()", async () => {
+      const response = bufferedResponse(pngBytes(4), "image/png");
+      vi.spyOn(response.body!, "getReader").mockImplementation(() => {
+        throw new TypeError("ReadableStream is locked");
+      });
+      const arrayBufferSpy = vi.spyOn(response, "arrayBuffer");
+      const deps = makeDeps({ fetchImpl: vi.fn(async () => response) });
+
+      const result = await prepareSlipImageForOcr(PRIVATE_REF, deps);
+
+      expect(result).toBeNull();
+      expect(arrayBufferSpy).not.toHaveBeenCalled();
+    });
+
+    it("F1. PNG happy path still works correctly (no regression from the cancellation/bounded-reader hardening)", async () => {
+      const bytes = new Uint8Array([11, 22, 33, 44]);
+      const deps = makeDeps({ fetchImpl: vi.fn(async () => bufferedResponse(bytes, "image/png")) });
+
+      const result = await prepareSlipImageForOcr(PRIVATE_REF, deps);
+
+      expect(result).toBe(`data:image/png;base64,${Buffer.from(bytes).toString("base64")}`);
+    });
+
+    it("F2. JPEG happy path still works correctly (no regression from the cancellation/bounded-reader hardening)", async () => {
+      const bytes = new Uint8Array([55, 66, 77, 88]);
+      const deps = makeDeps({ fetchImpl: vi.fn(async () => bufferedResponse(bytes, "image/jpeg")) });
+
+      const result = await prepareSlipImageForOcr(PRIVATE_REF, deps);
+
+      expect(result).toBe(`data:image/jpeg;base64,${Buffer.from(bytes).toString("base64")}`);
+    });
+
+    it("does not cancel the body twice on the happy path (success never rejects)", async () => {
+      const response = bufferedResponse(pngBytes(4), "image/png");
+      const cancelSpy = vi.spyOn(response.body!, "cancel");
+      const deps = makeDeps({ fetchImpl: vi.fn(async () => response) });
+
+      await prepareSlipImageForOcr(PRIVATE_REF, deps);
+
+      expect(cancelSpy).not.toHaveBeenCalled();
+    });
+  });
 });
