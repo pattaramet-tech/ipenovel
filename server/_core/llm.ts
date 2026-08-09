@@ -211,6 +211,26 @@ const normalizeToolChoice = (
 
 export type LLMRuntimeMode = "generic" | "legacy_forge";
 
+/**
+ * Thrown by invokeLLM() when the provider responds with a non-2xx status -
+ * a typed, sanitized alternative to parsing `.message`. Callers that need to
+ * decide anything based on the failure (e.g. OCR's bounded transient-retry
+ * policy in server/ocr-slip-verification-v2.ts) should check `httpStatus`/
+ * `runtimeMode` on this class instead of pattern-matching the message
+ * string. `.message` itself stays exactly as sanitized as the plain Error
+ * this replaces - never the endpoint URL, the API key, or the upstream
+ * response body.
+ */
+export class LLMInvokeError extends Error {
+  constructor(
+    public readonly httpStatus: number,
+    public readonly runtimeMode: LLMRuntimeMode
+  ) {
+    super(`LLM invoke failed: HTTP ${httpStatus} (${runtimeMode})`);
+    this.name = "LLMInvokeError";
+  }
+}
+
 export type LLMRuntimeConfig = {
   mode: LLMRuntimeMode;
   apiUrl: string;
@@ -450,7 +470,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     // or the endpoint URL itself - OCR's existing catch in
     // ocr-slip-verification-v2.ts logs this Error verbatim via
     // console.error, so it must already be safe to appear in logs as-is.
-    throw new Error(`LLM invoke failed: HTTP ${response.status} (${config.mode})`);
+    throw new LLMInvokeError(response.status, config.mode);
   }
 
   return (await response.json()) as InvokeResult;
