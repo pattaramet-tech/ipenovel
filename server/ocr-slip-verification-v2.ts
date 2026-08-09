@@ -1,4 +1,4 @@
-import { invokeLLM } from "./_core/llm";
+import { invokeLLM, LLMInvokeError, type InvokeParams, type InvokeResult } from "./_core/llm";
 import crypto from "crypto";
 import { formatMoney } from "./helpers/moneyNormalizer";
 
@@ -1160,9 +1160,82 @@ export function verifySlipData(
 }
 
 // ─── LLM-based slip image parsing ──────────────────────────────────────────────
-export async function parseSlipImage(imageUrl: string): Promise<ParseSlipImageResult> {
+
+/**
+ * HTTP statuses treated as transient for a generic OpenAI-compatible
+ * provider - rate limiting and server-side/gateway failures that a bare
+ * retry can plausibly recover from. Never includes 4xx statuses that mean
+ * "this request is wrong" (400/401/403/404/etc.) - retrying those would
+ * just repeat the same failure.
+ */
+const RETRYABLE_GENERIC_HTTP_STATUSES = new Set([429, 500, 502, 503, 504]);
+
+/** 3 total attempts = the original call + up to 2 retries. */
+const MAX_LLM_ATTEMPTS = 3;
+
+/** Backoff before retry #1 and retry #2, respectively (ms). */
+const RETRY_BACKOFF_MS = [500, 1000];
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export type InvokeLLMFn = (params: InvokeParams) => Promise<InvokeResult>;
+export type SleepFn = (ms: number) => Promise<void>;
+
+export interface ParseSlipImageDeps {
+  invokeLLMFn?: InvokeLLMFn;
+  sleepFn?: SleepFn;
+}
+
+/**
+ * OCR-specific bounded retry around a single invokeLLM() call - invokeLLM()
+ * itself stays a single provider invocation with no retry semantics of its
+ * own, so this policy never silently changes behavior for any other caller.
+ * Only retries a transient HTTP failure (429/500/502/504/503) from the
+ * GENERIC provider mode - legacy_forge failures, non-transient 4xx (400/
+ * 401/403/404/...), malformed-configuration errors, and any non-
+ * LLMInvokeError (e.g. a network/parse error) all propagate on the first
+ * attempt, exactly like before this change.
+ */
+async function invokeLLMWithOcrRetry(
+  params: InvokeParams,
+  invokeLLMFn: InvokeLLMFn,
+  sleepFn: SleepFn
+): Promise<InvokeResult> {
+  for (let attempt = 1; attempt <= MAX_LLM_ATTEMPTS; attempt++) {
+    try {
+      return await invokeLLMFn(params);
+    } catch (error) {
+      const isRetryableTransientFailure =
+        error instanceof LLMInvokeError &&
+        error.runtimeMode === "generic" &&
+        RETRYABLE_GENERIC_HTTP_STATUSES.has(error.httpStatus);
+
+      if (!isRetryableTransientFailure || attempt >= MAX_LLM_ATTEMPTS) {
+        throw error;
+      }
+
+      // Safe metadata only - never the endpoint URL, API key, upstream
+      // response body, or any OCR/image content.
+      console.warn(
+        `[OCR] transient generic LLM failure; retrying status=${error.httpStatus} attempt=${attempt}/${MAX_LLM_ATTEMPTS}`
+      );
+      await sleepFn(RETRY_BACKOFF_MS[attempt - 1]);
+    }
+  }
+  // Unreachable: the loop above always returns or throws.
+  throw new Error("[OCR] invokeLLMWithOcrRetry exhausted without a result");
+}
+
+export async function parseSlipImage(
+  imageUrl: string,
+  deps: ParseSlipImageDeps = {}
+): Promise<ParseSlipImageResult> {
+  const invokeLLMFn = deps.invokeLLMFn ?? invokeLLM;
+  const sleepFn = deps.sleepFn ?? defaultSleep;
   try {
-    const response = await invokeLLM({
+    const response = await invokeLLMWithOcrRetry({
       messages: [
         {
           role: "system",
@@ -1197,7 +1270,7 @@ Do NOT translate or interpret — just extract the raw text.`,
           ],
         },
       ],
-    });
+    }, invokeLLMFn, sleepFn);
 
     const content = response.choices[0]?.message?.content;
     if (typeof content !== "string") {

@@ -68,6 +68,29 @@ export async function submitWalletTopupSlip(
   const ocrConfig = await getEffectiveOCRConfig();
   const requestedAmountNum = parseFloat(requestedAmount);
 
+  // OCR disabled: short-circuit BEFORE preparing the image or calling any
+  // provider - matches slipSubmissionService.ts's existing high-level
+  // behavior (checks ocrEnabled before entering the OCR processing block).
+  // Deliberately checked before the try block below: prepareSlipImageForOcr()
+  // and parseSlipImage()/invokeLLM() must never run when OCR is disabled,
+  // not even for a moment before eventually discovering OCR_DISABLED.
+  // Shadow mode is NOT handled here - it intentionally still runs OCR for
+  // observation while preventing auto-approval (see the shadow-mode check
+  // further down, unchanged).
+  if (!ocrConfig.enabled) {
+    return await handlePendingReview(
+      topupId,
+      userId,
+      "OCR_DISABLED",
+      "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      topup
+    );
+  }
+
   try {
     // CRITICAL: OCR verification must compare OCR-extracted amount against requestedAmount (actual money paid),
     // NOT creditedAmount. The bonus is a system reward, not part of the payment.
@@ -109,21 +132,6 @@ export async function submitWalletTopupSlip(
         userId,
         "OCR_PROCESSING_ERROR",
         "ส่งสลิปแล้ว แต่ระบบ OCR ขัดข้อง แอดมินจะตรวจสอบให้",
-        topup
-      );
-    }
-
-    // Handle OCR disabled
-    if (!ocrConfig.enabled) {
-      return await handlePendingReview(
-        topupId,
-        userId,
-        "OCR_DISABLED",
-        "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
-        undefined,
-        undefined,
-        undefined,
-        undefined,
         topup
       );
     }
