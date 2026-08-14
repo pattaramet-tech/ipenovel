@@ -123,7 +123,29 @@ image, so a migrated image and a new upload always look identical.
   data, or any credential. The migrated Private R2 reference for a slip is
   deliberately never printed, even on success.
 
-## Dry-run procedure
+## Mode selection: DRY RUN vs LIVE — fails closed, no default mode
+
+Every invocation of the CLI must pass **exactly one** of two mode flags.
+**No mode flag = script refuses to run.** It exits non-zero before any
+database or R2 access is even attempted — there is no implicit/default
+mode, live or otherwise.
+
+```
+DRY RUN:   --dry-run
+LIVE:      --live  +  an EXPLICIT --type=payments|wallet|sports
+```
+
+- `--dry-run` — preview only, no upload, no DB write. `--type` defaults to
+  `"all"` and `--type=all` is allowed here.
+- `--live` — writes to R2 and the DB. Requires an **explicit**
+  `--type=payments|wallet|sports` — there is no default type for a live
+  run, and **`--live --type=all` is rejected outright** (a live run always
+  migrates exactly one asset class at a time; this also avoids the
+  unrelated-id-space `--start-id` hazard `--type=all` has, documented under
+  "Resume procedure" below).
+- Passing **both** `--dry-run` and `--live` together is rejected.
+
+### Dry-run procedure
 
 Dry-run downloads and validates each eligible row (and, for sports,
 optimizes it) — the exact same steps 1–5 (and the WebP conversion for
@@ -149,6 +171,24 @@ tsx scripts/migrate-legacy-manus-assets-to-r2.ts --dry-run --limit=50 --type=spo
 Dry-run never requires R2 to be configured (no upload is attempted), but
 does require `DATABASE_URL` to be set to the database you want to preview
 against.
+
+### Live migration procedure
+
+There is deliberately **no npm script shortcut for a live run** (unlike
+`migrate:legacy-manus-assets:dry`) — the documented Production live command
+is always the full, explicit CLI invocation below, so the operator always
+sees (and consciously types or pastes) exactly what mode and asset class
+they're about to run:
+
+```bash
+tsx scripts/migrate-legacy-manus-assets-to-r2.ts --live --limit=20 --type=payments
+tsx scripts/migrate-legacy-manus-assets-to-r2.ts --live --limit=20 --type=wallet
+tsx scripts/migrate-legacy-manus-assets-to-r2.ts --live --limit=20 --type=sports
+```
+
+Always run the matching `--dry-run` command first (see above) and review
+its output before running the equivalent `--live` command — see "Warnings"
+below.
 
 ## Recommended batch sizes
 

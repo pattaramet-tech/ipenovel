@@ -280,10 +280,11 @@ export async function getPrivateObjectSignedUrl(
 
 /**
  * Delete an object from the private bucket. Exported for completeness (per
- * the storage adapter contract) - not currently wired into any caller,
- * since no real deletion flow exists yet anywhere in the app
- * (server/services/fileService.ts's deleteEpisodeFile is still a no-op
- * stub with zero callers).
+ * the storage adapter contract) - used by server/services/
+ * legacyManusAssetMigrationService.ts as best-effort cleanup of the exact
+ * just-uploaded object when a compare-and-swap DB write loses its race (see
+ * migrateSlipRow there). server/services/fileService.ts's deleteEpisodeFile
+ * is still a separate no-op stub with zero callers.
  */
 export async function deletePrivateObject(context: PrivateObjectContext, relKey: string): Promise<void> {
   const { client, bucketName } = getPrivateR2Client();

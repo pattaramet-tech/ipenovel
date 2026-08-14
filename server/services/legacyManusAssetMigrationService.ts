@@ -366,8 +366,13 @@ export interface LegacyManusAssetMigrationOptions {
   /** Max rows to actually process this call (after already-migrated/
    *  out-of-scope rows are filtered out). */
   limit: number;
-  /** Only rows with id >= startId - for resuming/paginating through a large
-   *  table in batches across multiple calls. */
+  /** Only rows with id >= startId. This is a LOWER-BOUND FILTER ONLY, never
+   *  a resume cursor - the correct way to resume across multiple calls is
+   *  rerunning with the SAME startId (an already-migrated row stops
+   *  matching the Manus hostname and is naturally excluded on its own).
+   *  Raising startId is safe only after independently verifying every row
+   *  below it is already migrated or intentionally out of scope - see
+   *  docs/LEGACY_MANUS_ASSET_MIGRATION.md's "Resume procedure". */
   startId?: number;
   /** sports-only: restrict to a single image column. Omit to check all
    *  three (home/away/cover). */
