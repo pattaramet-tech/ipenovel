@@ -222,9 +222,11 @@ describe("downloadLegacyManusAsset - bounded hardened download", () => {
     it("6. declared application/octet-stream + actual PNG bytes -> ACCEPT (only real magic bytes decide - see security rationale below)", async () => {
       // SECURITY RATIONALE: downloadLegacyManusAsset() never reads the
       // declared Content-Type header for ANY accept/reject decision - the
-      // ONLY thing that can ever grant acceptance is a genuine, structural
-      // magic-byte match against the allowlisted signatures, and the ONLY
-      // thing that can ever cause rejection is the ABSENCE of such a match.
+      // ONLY thing that can ever grant acceptance is a genuine magic-byte
+      // signature match against the allowlisted signatures (see
+      // detectActualMimeType - signature detection only, not a full file-
+      // validity check), and the ONLY thing that can ever cause rejection
+      // is the ABSENCE of such a match.
       // An operator-hostile or simply generic/wrong header (octet-stream,
       // text/html, application/x-arbitrary, or no header at all) can
       // therefore never bypass validation to smuggle in a disallowed type,
@@ -263,9 +265,9 @@ describe("downloadLegacyManusAsset - bounded hardened download", () => {
       expect(result.contentType).toBe("application/pdf");
     });
 
-    it("8. rejects a malformed/truncated PDF (bytes don't actually start with %PDF-)", async () => {
-      const malformedPdf = Buffer.from("this looks like a pdf but isn't", "ascii");
-      const response = bufferedResponse(malformedPdf, "application/pdf", 200);
+    it("8. declared application/pdf + bytes that do NOT contain the %PDF- magic signature -> UNSUPPORTED_TYPE", async () => {
+      const noSignature = Buffer.from("this looks like a pdf but isn't", "ascii");
+      const response = bufferedResponse(noSignature, "application/pdf", 200);
       const fetchImpl = vi.fn(async () => response);
       await expect(
         downloadLegacyManusAsset(MANUS_URL, {
@@ -274,6 +276,25 @@ describe("downloadLegacyManusAsset - bounded hardened download", () => {
           fetchImpl,
         })
       ).rejects.toMatchObject({ reason: "UNSUPPORTED_TYPE" });
+    });
+
+    it("documents the actual limit of signature-only detection: a payload that DOES start with %PDF- but is corrupted/truncated afterward is still classified as application/pdf - this is NOT full PDF structural validation", async () => {
+      // detectActualMimeType() only ever checks the fixed "%PDF-" prefix
+      // (see its docstring) - it has no PDF parser and makes no claim about
+      // the rest of the file being well-formed. This test exists so that
+      // limitation is proven and documented, not silently assumed.
+      const truncatedButSignaturePresent = Buffer.concat([
+        Buffer.from("%PDF-", "ascii"),
+        Buffer.from("\x00\x00garbage-not-a-real-pdf-body"),
+      ]);
+      const response = bufferedResponse(truncatedButSignaturePresent, "application/pdf", 200);
+      const fetchImpl = vi.fn(async () => response);
+      const result = await downloadLegacyManusAsset(MANUS_URL, {
+        allowedMimeTypes: new Set(["application/pdf"]),
+        maxBytes: 1024,
+        fetchImpl,
+      });
+      expect(result.contentType).toBe("application/pdf");
     });
 
     it("accepts a real, correctly-typed WebP payload (RIFF....WEBP signature) when allowed (sports)", async () => {

@@ -116,7 +116,15 @@ image, so a migrated image and a new upload always look identical.
   detected type differs from what the header declared, the migration
   **normalizes to the detected type** - the R2 upload's `Content-Type` and
   the generated object key's file extension (`.png`/`.jpg`/`.pdf`) both
-  follow the real bytes, never the header.
+  follow the real bytes, never the header. This is **magic-byte/signature
+  detection only** - a small fixed-length prefix check, not a full file-
+  structure or decodability validation: a payload that begins with a valid
+  signature (e.g. `%PDF-`) but is corrupted or truncated afterward is still
+  classified as that MIME type by this check alone. Sports images get an
+  additional, genuine decode-level check afterward (the same WebP-
+  conversion step a live run uses); payment slips get no decode check at
+  all, in dry-run or live - a slip that passes the signature check is
+  uploaded exactly as downloaded.
 - **No provider-independent scope creep.** Only three tables/five columns
   are ever written: `payments.slipImageUrl`, `walletTopups.slipImageUrl`,
   and `sportsMatches.{homeTeamImageUrl,awayTeamImageUrl,coverImageUrl}` —
@@ -160,11 +168,14 @@ LIVE:      --live  +  an EXPLICIT --type=payments|wallet|sports
 
 ### Dry-run procedure
 
-Dry-run downloads and validates each eligible row (and, for sports,
-optimizes it) — the exact same steps 1–5 (and the WebP conversion for
-sports) as a live run — but stops **before** uploading to R2 or writing to
-the DB, so it's an accurate check that the source asset is real and
-decodable.
+Dry-run downloads each eligible row and checks its actual bytes against a
+MIME magic-byte signature (never the declared header) — the exact same
+steps 1–5 as a live run — but stops **before** uploading to R2 or writing
+to the DB. This signature check proves the asset's real type, not that the
+whole file is well-formed (see "Safety guarantees" above). Sports rows are
+additionally decoded via the same WebP-conversion step a live run uses, a
+genuine decodability check; payment slips are signature-checked only and
+are never decoded, in dry-run or otherwise.
 
 ```bash
 pnpm migrate:legacy-manus-assets:dry

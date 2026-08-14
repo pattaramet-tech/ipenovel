@@ -175,6 +175,20 @@ function bufferStartsWith(buffer: Buffer, magic: Buffer): boolean {
  * - PDF:  `%PDF-`
  * - WebP: `RIFF` at offset 0, `WEBP` at offset 8 (skipping the 4-byte
  *   RIFF chunk size at offset 4, which this never needs to validate)
+ *
+ * This is SIGNATURE (magic-byte) detection only - a small fixed-length
+ * prefix check (plus, for WebP, one more fixed-offset marker) - never a
+ * full file-structure or decodability validation. A payload that begins
+ * with a valid signature but is corrupted or truncated afterward (e.g. a
+ * PDF that starts with `%PDF-` but has a broken/incomplete body, or a
+ * JPEG/PNG whose header is intact but whose compressed data is garbage)
+ * is still classified as that MIME type by this function alone - it only
+ * proves the signature matches, never that the rest of the file is
+ * well-formed. Sports images get an additional, genuine decode-level
+ * check afterward via `optimizeImageToWebp()` (see `migrateSportsRow`) -
+ * that check is NOT performed here. Payment slips get no decode check at
+ * all (see `migrateSlipRow`, which stores the downloaded bytes
+ * unchanged) - a slip that passes this signature check is uploaded as-is.
  */
 function detectActualMimeType(buffer: Buffer): string | null {
   if (bufferStartsWith(buffer, PNG_MAGIC)) return "image/png";
@@ -400,9 +414,13 @@ type RowClassification = "eligible" | "already_migrated" | "out_of_scope";
 
 export interface LegacyManusAssetMigrationOptions {
   /** Preview only - no download-through-upload/DB write is committed; every
-   *  eligible row is still downloaded+validated (and, for sports, optimized)
-   *  so the preview is an accurate check that the source asset is real and
-   *  decodable, it just stops before uploading to R2 or writing the DB. */
+   *  eligible row is still downloaded and its actual bytes matched against
+   *  a MIME magic-byte signature (see detectActualMimeType - never the
+   *  declared Content-Type header, and never a full file-validity check).
+   *  Sports rows are additionally decoded via optimizeImageToWebp() during
+   *  the preview, a genuine decodability check; payment slips are
+   *  signature-checked only and never decoded, in dry-run or otherwise.
+   *  The preview stops before uploading to R2 or writing the DB. */
   dryRun: boolean;
   type: LegacyManusAssetMigrationType;
   /** Max rows to actually process this call (after already-migrated/
