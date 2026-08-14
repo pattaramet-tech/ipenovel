@@ -55,12 +55,26 @@
  *   --column=COL    sports-only: "home" | "away" | "cover". Omit to check
  *                    all three columns.
  *
- * Resuming: rerun the EXACT SAME command (same mode flag, same
- * --start-id, same --limit). A row that migrated successfully no longer
- * has the legacy Manus hostname, so it's automatically excluded ("already
- * migrated") on the next run, which naturally reveals the next batch of
- * still-eligible rows without any bookkeeping. Do NOT advance --start-id
- * based on the last-seen id or the "remaining" count - a single
+ * Resuming - LIVE and DRY-RUN behave DIFFERENTLY, see
+ * formatContinuationAdvice() below for the exact runtime messages:
+ *
+ *   LIVE: rerun the EXACT SAME command (same --start-id, same --limit) to
+ *   continue. A row that migrated successfully no longer has the legacy
+ *   Manus hostname, so it's automatically excluded ("already migrated") on
+ *   the next run, which naturally reveals the next batch of still-eligible
+ *   rows without any bookkeeping.
+ *
+ *   DRY-RUN: --dry-run writes NOTHING (no upload, no DB write), so
+ *   re-running the exact same --dry-run command re-validates the SAME
+ *   first --limit eligible row(s) again, forever - unlike --live, it never
+ *   "picks up where it left off" on its own. To preview further rows,
+ *   increase --limit, and/or dry-run one --type at a time
+ *   (--type=payments / --type=wallet / --type=sports) instead of
+ *   --type=all.
+ *
+ * In BOTH modes, --start-id is only a manually-verified LOWER-BOUND
+ * FILTER, never an automatic resume cursor - do NOT advance it based on
+ * the last-seen id or the "remaining" count. Concretely: a single
  * sportsMatches row has THREE image columns (home/away/cover) that can
  * each independently still be pending after a --limit cutoff, --type=all
  * (dry-run only) draws from multiple tables whose ids are unrelated to
