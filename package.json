@@ -20,7 +20,9 @@
     "db:migrate": "node scripts/migrate.mjs",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
     "migrate:media:dry": "tsx scripts/migrate-media-to-r2.ts --dry-run --limit=20 --type=all",
-    "migrate:media": "tsx scripts/migrate-media-to-r2.ts --limit=20 --type=all"
+    "migrate:media": "tsx scripts/migrate-media-to-r2.ts --limit=20 --type=all",
+    "migrate:legacy-manus-assets:dry": "tsx scripts/migrate-legacy-manus-assets-to-r2.ts --dry-run --limit=20 --type=all",
+    "migrate:legacy-manus-assets": "tsx scripts/migrate-legacy-manus-assets-to-r2.ts --limit=20 --type=all"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",
