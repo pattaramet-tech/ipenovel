@@ -18,14 +18,26 @@
 // isMigratableManusCloudfrontUrl() below.
 //
 // Every row is its own safe unit: a row's DB column is only overwritten
-// after ITS OWN download+validate+upload has already succeeded; a failed
-// row is left completely unchanged (and therefore safe to retry on the next
-// run) and the legacy Manus source is never deleted by this service.
+// after ITS OWN download+validate+upload has already succeeded, and even
+// then only via a compare-and-swap UPDATE that also requires the column to
+// still hold the exact value read at candidate-discovery time (see
+// updatePaymentSlipUrlIfUnchanged/updateWalletTopupSlipUrlIfUnchanged/
+// updateSportsMatchImageUrlIfUnchanged in server/db.ts) - if the row changed
+// or was deleted in the meantime, the write is skipped entirely rather than
+// overwriting whatever is there now. A failed (or CAS-lost) row is left
+// completely unchanged (and therefore safe to retry on the next run) and
+// the legacy Manus source is never deleted by this service.
 import { and, asc, gte, isNotNull, ne } from "drizzle-orm";
-import { getDb, updatePayment, updateWalletTopupSlip, updateSportsMatch } from "../db";
+import {
+  getDb,
+  updatePaymentSlipUrlIfUnchanged,
+  updateWalletTopupSlipUrlIfUnchanged,
+  updateSportsMatchImageUrlIfUnchanged,
+} from "../db";
 import { payments, walletTopups, sportsMatches } from "../../drizzle/schema";
 import {
   putPrivateObject,
+  deletePrivateObject,
   isR2PrivateConfigured,
   R2PrivateStorageError,
   type PrivateObjectContext,
@@ -69,11 +81,40 @@ function isAlreadyMigratedSlipValue(value: string): boolean {
   return isPrivateObjectRef(value);
 }
 
-function isAlreadyMigratedSportsValue(value: string): boolean {
-  const bases = [ENV.r2PublicBaseUrl, KNOWN_PUBLIC_MEDIA_DOMAIN]
-    .filter((b): b is string => !!b)
-    .map((b) => b.replace(/\/+$/, ""));
-  return bases.some((base) => value.startsWith(base));
+/**
+ * Safe origin+path-prefix comparison - deliberately NOT a raw
+ * `value.startsWith(base)` string check, which would misclassify a
+ * lookalike hostname like "https://media.ipenovel.com.attacker.example/x"
+ * as already-migrated (it textually starts with the base string, but is a
+ * completely different host). Both `value` and `base` are parsed as URLs;
+ * protocol, hostname (case-insensitive), and port must match exactly, and
+ * `base`'s own path (if any - e.g. a configured R2_PUBLIC_BASE_URL with a
+ * subpath) must be a genuine path-SEGMENT prefix of `value`'s path, never a
+ * bare string prefix (so a base path of "/media" matches "/media" or
+ * "/media/x", never "/media-other/x").
+ */
+function isSameOriginAndPathPrefix(value: string, base: string): boolean {
+  let parsedValue: URL;
+  let parsedBase: URL;
+  try {
+    parsedValue = new URL(value);
+    parsedBase = new URL(base);
+  } catch {
+    return false;
+  }
+
+  if (parsedValue.protocol !== parsedBase.protocol) return false;
+  if (parsedValue.hostname.toLowerCase() !== parsedBase.hostname.toLowerCase()) return false;
+  if (parsedValue.port !== parsedBase.port) return false;
+
+  const basePath = parsedBase.pathname.replace(/\/+$/, "");
+  if (!basePath || basePath === "/") return true;
+  return parsedValue.pathname === basePath || parsedValue.pathname.startsWith(`${basePath}/`);
+}
+
+export function isAlreadyMigratedSportsValue(value: string): boolean {
+  const bases = [ENV.r2PublicBaseUrl, KNOWN_PUBLIC_MEDIA_DOMAIN].filter((b): b is string => !!b);
+  return bases.some((base) => isSameOriginAndPathPrefix(value, base));
 }
 
 // ─── Download hardening ─────────────────────────────────────────────────────
@@ -496,14 +537,25 @@ function toSafeReasonCode(error: unknown): string {
 export interface LegacyManusAssetMigrationDeps {
   downloadFn?: typeof downloadLegacyManusAsset;
   putPrivateObjectFn?: typeof putPrivateObject;
+  deletePrivateObjectFn?: typeof deletePrivateObject;
   r2PutFn?: typeof r2Put;
   optimizeImageFn?: typeof optimizeImageToWebp;
-  updatePaymentFn?: typeof updatePayment;
-  updateWalletTopupSlipFn?: typeof updateWalletTopupSlip;
-  updateSportsMatchFn?: typeof updateSportsMatch;
+  /** Compare-and-swap writers (see server/db.ts) - the migration's ONLY DB
+   *  write path. Each returns false (never throws) when the row's column no
+   *  longer holds the exact value read at candidate-discovery time (or the
+   *  row is gone) - callers must treat false as "not migrated". */
+  updatePaymentSlipUrlIfUnchangedFn?: typeof updatePaymentSlipUrlIfUnchanged;
+  updateWalletTopupSlipUrlIfUnchangedFn?: typeof updateWalletTopupSlipUrlIfUnchanged;
+  updateSportsMatchImageUrlIfUnchangedFn?: typeof updateSportsMatchImageUrlIfUnchanged;
   isR2PrivateConfiguredFn?: typeof isR2PrivateConfigured;
   isR2ConfiguredFn?: typeof isR2Configured;
 }
+
+/** Returned when the upload itself succeeded but the final compare-and-swap
+ *  DB write lost the race (the source column no longer held the exact value
+ *  read at candidate-discovery time, or the row was deleted) - the row is
+ *  reported as failed and its DB value is left completely untouched. */
+const SOURCE_CHANGED_OR_ROW_MISSING = "SOURCE_CHANGED_OR_ROW_MISSING";
 
 async function migrateSlipRow(
   row: SlipCandidateRow,
@@ -513,8 +565,10 @@ async function migrateSlipRow(
   const label = formatRowLabel(row);
   const download = deps.downloadFn ?? downloadLegacyManusAsset;
   const putPrivate = deps.putPrivateObjectFn ?? putPrivateObject;
-  const updatePaymentFn = deps.updatePaymentFn ?? updatePayment;
-  const updateWalletTopupSlipFn = deps.updateWalletTopupSlipFn ?? updateWalletTopupSlip;
+  const deletePrivate = deps.deletePrivateObjectFn ?? deletePrivateObject;
+  const updatePaymentSlipUrlIfUnchangedFn = deps.updatePaymentSlipUrlIfUnchangedFn ?? updatePaymentSlipUrlIfUnchanged;
+  const updateWalletTopupSlipUrlIfUnchangedFn =
+    deps.updateWalletTopupSlipUrlIfUnchangedFn ?? updateWalletTopupSlipUrlIfUnchanged;
 
   try {
     // 1-5: hostname, fetch, response validity, size ceiling, MIME/magic
@@ -547,11 +601,28 @@ async function migrateSlipRow(
 
     // 8: ONLY THEN update the DB row - a failure at any step above throws
     // before this line is ever reached, leaving the row (and the legacy
-    // Manus source) completely untouched.
-    if (row.source === "payments") {
-      await updatePaymentFn(row.id, { slipImageUrl: ref });
-    } else {
-      await updateWalletTopupSlipFn(row.id, ref);
+    // Manus source) completely untouched. Compare-and-swap on the EXACT
+    // value read at candidate-discovery time (row.value) - if the column no
+    // longer holds that value (a concurrent re-submission/edit, or the row
+    // was deleted), this returns false instead of overwriting whatever is
+    // there now.
+    const wonCas =
+      row.source === "payments"
+        ? await updatePaymentSlipUrlIfUnchangedFn(row.id, row.value, ref)
+        : await updateWalletTopupSlipUrlIfUnchangedFn(row.id, row.value, ref);
+
+    if (!wonCas) {
+      // The upload already succeeded and is now an orphaned private R2
+      // object, since the DB write it was for was skipped. Best-effort
+      // delete of EXACTLY that just-created key (never anything else,
+      // never derived from a value read from the DB) - putPrivateObject()/
+      // deletePrivateObject() are the only R2-private primitives that exist
+      // for this, and this is exactly the safe, narrow use they support.
+      // Cleanup failing here must never change the reported outcome or
+      // retry semantics - correct DB preservation (never overwriting a
+      // changed row) matters far more than avoiding an orphan object.
+      await deletePrivate(context, key).catch(() => {});
+      return { source: row.source, id: row.id, outcome: "failed", label, reason: SOURCE_CHANGED_OR_ROW_MISSING };
     }
 
     return { source: row.source, id: row.id, outcome: "migrated", label };
@@ -569,7 +640,8 @@ async function migrateSportsRow(
   const download = deps.downloadFn ?? downloadLegacyManusAsset;
   const r2PutFn = deps.r2PutFn ?? r2Put;
   const optimize = deps.optimizeImageFn ?? optimizeImageToWebp;
-  const updateSportsMatchFn = deps.updateSportsMatchFn ?? updateSportsMatch;
+  const updateSportsMatchImageUrlIfUnchangedFn =
+    deps.updateSportsMatchImageUrlIfUnchangedFn ?? updateSportsMatchImageUrlIfUnchanged;
 
   try {
     // 1-5: hostname, fetch, response validity, size ceiling, MIME/magic
@@ -598,10 +670,34 @@ async function migrateSportsRow(
       throw new Error("UPLOAD_VERIFICATION_FAILED");
     }
 
-    // 8: ONLY THEN update the single requested column on this match row.
+    // 8: ONLY THEN update the single requested column on this match row,
+    // via compare-and-swap on the EXACT value read at candidate-discovery
+    // time (row.value) - if that column no longer holds it (a concurrent
+    // admin edit, or the row was deleted), this returns false instead of
+    // overwriting whatever is there now.
     const columnField =
       row.column === "home" ? "homeTeamImageUrl" : row.column === "away" ? "awayTeamImageUrl" : "coverImageUrl";
-    await updateSportsMatchFn(row.id, { [columnField]: uploaded.url });
+    const wonCas = await updateSportsMatchImageUrlIfUnchangedFn(row.id, columnField, row.value, uploaded.url);
+
+    if (!wonCas) {
+      // Unlike the private-slip path, r2Storage.ts (the PUBLIC R2 adapter)
+      // has no delete primitive at all - adding one solely for this cleanup
+      // would be new surface area, not "an existing R2 abstraction that
+      // already provides a clearly safe delete". The uploaded object is
+      // therefore left in place as a harmless orphan (a public, non-
+      // sensitive image, unreferenced by any DB row) - see
+      // docs/LEGACY_MANUS_ASSET_MIGRATION.md's "Rollback philosophy"
+      // section. Correct DB preservation (never overwriting a changed row)
+      // matters far more than avoiding this orphan.
+      return {
+        source: row.source,
+        id: row.id,
+        column: row.column,
+        outcome: "failed",
+        label,
+        reason: SOURCE_CHANGED_OR_ROW_MISSING,
+      };
+    }
 
     return { source: row.source, id: row.id, column: row.column, outcome: "migrated", label, newUrl: uploaded.url };
   } catch (error) {

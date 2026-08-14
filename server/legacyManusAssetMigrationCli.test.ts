@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 // The CLI script lives under scripts/ (outside this project's `include`
 // glob, see vitest.config.ts) - imported here from a server/**/*.test.ts
-// file so parseArgs is still covered without changing the shared test
-// collection config. Importing this module never triggers main() (see its
-// own isDirectExecution guard) - only parseArgs is exercised below.
-import { parseArgs } from "../scripts/migrate-legacy-manus-assets-to-r2";
+// file so parseArgs/reportCliCrash are still covered without changing the
+// shared test collection config. Importing this module never triggers
+// main() (see its own isDirectExecution guard) - only parseArgs and
+// reportCliCrash are exercised below.
+import { parseArgs, reportCliCrash } from "../scripts/migrate-legacy-manus-assets-to-r2";
 
 describe("migrate-legacy-manus-assets-to-r2.ts - parseArgs", () => {
   it("defaults: not dry-run, limit=20, type=all, startId=0, no column", () => {
@@ -74,5 +75,48 @@ describe("migrate-legacy-manus-assets-to-r2.ts - parseArgs", () => {
       startId: 42,
       column: "away",
     });
+  });
+});
+
+describe("migrate-legacy-manus-assets-to-r2.ts - reportCliCrash (P2 sanitization)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("never prints a raw DATABASE_URL, password, or signed-URL query string on an unexpected crash", () => {
+    const FAKE_DB_HOST = "fake-db-host.internal";
+    const FAKE_PASSWORD = "FAKE_PASSWORD_MARKER_hunter2";
+    const FAKE_SIGNED_QUERY = "X-Amz-Signature=FAKE_SIGNED_QUERY_MARKER_abc123";
+    const rawDriverMessage =
+      `Failed query: update payments set slipImageUrl = ? where id = ? ` +
+      `params: mysql://root:${FAKE_PASSWORD}@${FAKE_DB_HOST}:3306/ipenovel,1,` +
+      `https://d2xsxph8kpxj0f.cloudfront.net/some/slip.png?${FAKE_SIGNED_QUERY}`;
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((() => {
+      throw new Error("process.exit called");
+    }) as any));
+
+    expect(() => reportCliCrash(new Error(rawDriverMessage))).toThrow("process.exit called");
+
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    const loggedArgs = errorSpy.mock.calls[0].map((a) => String(a)).join(" ");
+    expect(loggedArgs).not.toContain(FAKE_DB_HOST);
+    expect(loggedArgs).not.toContain(FAKE_PASSWORD);
+    expect(loggedArgs).not.toContain(FAKE_SIGNED_QUERY);
+    expect(loggedArgs).not.toContain("d2xsxph8kpxj0f.cloudfront.net");
+    expect(loggedArgs).not.toContain("mysql://");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("still logs something recognizable for a plain, already-safe error", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit called");
+    }) as any);
+
+    expect(() => reportCliCrash(new Error("ECONNREFUSED"))).toThrow("process.exit called");
+    const loggedArgs = errorSpy.mock.calls[0].map((a) => String(a)).join(" ");
+    expect(loggedArgs).toContain("ECONNREFUSED");
   });
 });

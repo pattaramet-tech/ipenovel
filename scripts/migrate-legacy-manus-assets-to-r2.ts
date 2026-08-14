@@ -26,16 +26,31 @@
  *                    R2 or writes to the DB.
  *   --limit=N       Max rows to actually process this run (default 20).
  *   --type=TYPE     "payments" | "wallet" | "sports" | "all" (default "all").
- *   --start-id=N    Only rows with id >= N (default 0) - for resuming/
- *                   paginating through a large table in batches.
+ *   --start-id=N    Only rows with id >= N (default 0). This is a LOWER-
+ *                   BOUND FILTER, not a resume cursor - see "Resuming" below.
  *   --column=COL    sports-only: "home" | "away" | "cover". Omit to check
  *                    all three columns.
+ *
+ * Resuming: rerun the EXACT SAME command (same --start-id, same --limit).
+ * A row that migrated successfully no longer has the legacy Manus hostname,
+ * so it's automatically excluded ("already migrated") on the next run,
+ * which naturally reveals the next batch of still-eligible rows without any
+ * bookkeeping. Do NOT advance --start-id based on the last-seen id or the
+ * "remaining" count - a single sportsMatches row has THREE image columns
+ * (home/away/cover) that can each independently still be pending after a
+ * --limit cutoff, --type=all draws from multiple tables whose ids are
+ * unrelated to each other, and a row that FAILED (not migrated) keeps its
+ * original low id forever. Advancing --start-id past any of these
+ * permanently skips them. Only raise --start-id when you have independently
+ * verified every row below it is either already migrated or intentionally
+ * out of scope - see docs/LEGACY_MANUS_ASSET_MIGRATION.md.
  *
  * There is deliberately no --force flag - every row is re-classified fresh
  * on every run (a migrated row no longer has the legacy Manus hostname, so
  * it's naturally skipped on rerun).
  */
 import { pathToFileURL } from "node:url";
+import { safeErrorSummary } from "./lib/safeErrorSummary.mjs";
 import {
   runLegacyManusAssetMigrationBatch,
   formatRowLabel,
@@ -164,7 +179,12 @@ async function main() {
   console.log(`Remaining:           ${result.remainingEligible}`);
   if (result.remainingEligible > 0) {
     console.log(
-      `\nNot processed this run: ${result.remainingEligible} more eligible row(s) beyond --limit=${args.limit} - re-run with a higher --limit or a later --start-id to continue.`
+      `\nNot processed this run: ${result.remainingEligible} more eligible row(s) beyond --limit=${args.limit}. ` +
+        `To continue, re-run this EXACT SAME command (same --start-id=${args.startId}) - already-migrated rows are ` +
+        "automatically skipped, so the same command naturally picks up where this run left off. Do not advance " +
+        "--start-id: a single sports match can have more than one pending column, --type=all spans tables with " +
+        "unrelated ids, and a failed row keeps its original id - advancing --start-id past any of them would skip " +
+        "them permanently. Alternatively, increase --limit to process more rows in one run."
     );
   }
 
@@ -173,13 +193,27 @@ async function main() {
   }
 }
 
+/**
+ * Top-level crash handler for an UNEXPECTED failure (anything main() itself
+ * doesn't already turn into a clean, pre-sanitized message - see the
+ * LegacyManusAssetMigrationConfigError/LegacyManusAssetMigrationLockError
+ * handling inside main()). A raw DB/network/driver error's `.message` can
+ * embed a connection string, credentials, or a full request URL (drizzle in
+ * particular echoes bound SQL parameters) - safeErrorSummary() is the same
+ * sanitizer server/db.ts and server/_core/trpc.ts already use for exactly
+ * this reason, so this is the only place in the whole script a raw
+ * `error.message` is ever allowed to reach the console. Exported so its
+ * sanitization behavior is directly testable without needing a real crash.
+ */
+export function reportCliCrash(error: unknown): void {
+  console.error("\nMigration script crashed:", safeErrorSummary(error));
+  process.exit(1);
+}
+
 // Only auto-run when executed directly - not when imported as a module (e.g.
 // to unit-test parseArgs above), so importing this file never has the side
 // effect of kicking off a real migration run.
 const isDirectExecution = !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isDirectExecution) {
-  main().catch((error) => {
-    console.error("\nMigration script crashed:", error?.message || error);
-    process.exit(1);
-  });
+  main().catch(reportCliCrash);
 }

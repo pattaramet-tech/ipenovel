@@ -78,6 +78,23 @@ image, so a migrated image and a new upload always look identical.
   correct R2 bucket → (7) verify the upload → (8) **only then** update that
   one DB column → (9) continue. If any of steps 1–7 fail, that row's DB
   value is **never** touched, and the row is reported as failed.
+- **Compare-and-swap on every DB write (step 8).** The final write is a
+  conditional `UPDATE ... WHERE id = ? AND <column> = ?` (see
+  `updatePaymentSlipUrlIfUnchanged`/`updateWalletTopupSlipUrlIfUnchanged`/
+  `updateSportsMatchImageUrlIfUnchanged` in `server/db.ts`), requiring the
+  column to still hold the EXACT value read at candidate-discovery time -
+  never just the row id. If the source value changed (e.g. the user
+  re-submitted a new slip, or an admin edited the row) or the row was
+  deleted while a slow download/upload was in flight, the write matches
+  zero rows and is reported as failed (`SOURCE_CHANGED_OR_ROW_MISSING`) -
+  the current value is never overwritten. For payment/wallet slips (Private
+  R2), the just-uploaded object is then also deleted as best-effort cleanup
+  (`deletePrivateObject`, the one existing, exact-key-only delete primitive
+  for that bucket). Sports images (Public R2) have no equivalent delete
+  primitive available today, so a CAS-lost sports upload can leave a
+  harmless orphaned object in Public R2 (a public, non-sensitive image,
+  unreferenced by any DB row) - correct DB preservation is intentionally
+  prioritized over avoiding this orphan.
 - **The legacy Manus source is never deleted.** This migration only ever
   reads from Manus and writes to R2/the DB — no delete call to Manus (or
   anywhere else) exists in this code path.
@@ -150,22 +167,46 @@ safety benefit.
 
 ## Resume procedure
 
-The script is safe to stop (Ctrl-C) and restart at any time:
+The script is safe to stop (Ctrl-C) and restart at any time.
 
-- A **successfully migrated** row no longer contains the Manus hostname, so
-  it's automatically excluded (`already migrated`) on the next run — no
-  `--start-id` bookkeeping is required to avoid re-migrating it.
-- A **failed** row is left completely unchanged, so it's automatically
-  retried (still `eligible`) on the next run.
-- `--start-id=N` is available for explicitly paginating through a very
-  large batch across multiple invocations (skip rows already known to be
-  below `N`), but is not required for correctness — only for controlling
-  how much of the table a single invocation scans.
+**PRIMARY RESUME PROCEDURE: rerun the exact same command, with the same
+`--start-id` value.** A **successfully migrated** row no longer contains the
+Manus hostname, so it's automatically excluded (`already migrated`) on the
+next run — this naturally reveals the next batch of still-eligible rows, no
+bookkeeping required. A **failed** row is left completely unchanged, so it's
+automatically retried (still `eligible`) on the next run too.
 
-To continue where a previous run's `--limit` cut off, either re-run the same
-command (already-migrated rows are skipped automatically) or use the
-reported "not processed this run" count together with `--start-id` to jump
-ahead.
+**`--start-id=N` is only an explicit LOWER-BOUND FILTER** for an operator
+who has independently verified that every relevant row below `N` is already
+migrated or intentionally out of scope. It is **not** a resume cursor, and
+must never be derived from the last-processed id or the reported "remaining"
+count — doing so can **permanently skip rows**. Concretely:
+
+- **A sports match has three independent image columns.** If a `--limit`
+  cutoff stops partway through `sportsMatch #28` (say, its `home` column
+  migrates but `away`/`cover` haven't been reached yet) and the operator
+  resumes with `--start-id=29`, `away` and `cover` for id `28` are skipped
+  forever — they still have id `28`, which is now below the new
+  `--start-id`. Rerunning with the *same* `--start-id` instead finds them
+  normally, since `home` is now `already_migrated` and no longer counts
+  against `--limit`.
+- **`--type=all` draws from three tables whose ids are unrelated to each
+  other.** If the last row processed under `--type=all` happens to be
+  `payments #50` and the operator sets `--start-id=51` for the next run,
+  any still-eligible `walletTopups` or `sportsMatches` row with an id below
+  51 (e.g. `walletTopups #12`) is silently skipped — its id has nothing to
+  do with `payments #50`'s id.
+- **A failed row keeps its original (possibly low) id forever.** If
+  `payments #3` fails (e.g. a transient network error) while `payments #50`
+  succeeds, advancing `--start-id` to anything above 3 — even if it "looks
+  done" because everything reported this run succeeded — permanently
+  excludes `payments #3` from every future run.
+
+If you must scan only part of a table across multiple invocations (e.g. a
+very large one-off backfill), only ever raise `--start-id` after
+independently confirming (via the dry-run/validation procedures below) that
+every row below the new value is genuinely done — never simply because a
+previous run "got that far".
 
 ## Validation procedure
 
@@ -206,6 +247,17 @@ There is no automated rollback, by design:
   migration intentionally does not attempt to automate reverting a
   successful write, since a bulk automated rollback carries more risk than
   the narrow, already-rare failure mode it would exist to fix.
+- **Possible orphaned Public R2 object.** If a sports-image row's source
+  value changes concurrently between candidate discovery and the final
+  write, the compare-and-swap DB write is skipped (see "Compare-and-swap on
+  every DB write" above) but the already-uploaded WebP object stays in
+  Public R2 — there is no existing delete primitive for that bucket to
+  clean it up safely. This is treated as an acceptable, low-risk outcome: it
+  is a public, non-sensitive image with no DB row pointing at it, not a
+  security or data-integrity issue, and correct DB preservation is more
+  important than avoiding it. (Payment/wallet slips, which use Private R2,
+  get a best-effort delete of the exact just-uploaded object in this same
+  scenario, since a safe delete primitive already exists for that bucket.)
 
 ## Warnings
 

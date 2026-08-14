@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   isMigratableManusCloudfrontUrl,
+  isAlreadyMigratedSportsValue,
   downloadLegacyManusAsset,
   runLegacyManusAssetMigrationBatch,
   formatRowLabel,
@@ -25,6 +26,7 @@ function makeFullDeps(overrides: Partial<LegacyManusAssetMigrationDeps> = {}) {
   return {
     downloadFn: vi.fn(async () => ({ buffer: REAL_JPEG_MAGIC, contentType: "image/jpeg" })),
     putPrivateObjectFn: vi.fn(async (_context: any, key: string) => ({ key })),
+    deletePrivateObjectFn: vi.fn(async () => {}),
     r2PutFn: vi.fn(async (key: string) => ({ key, url: `https://media.ipenovel.com/${key}` })),
     optimizeImageFn: vi.fn(async () => ({
       buffer: Buffer.from("webp-bytes"),
@@ -32,9 +34,11 @@ function makeFullDeps(overrides: Partial<LegacyManusAssetMigrationDeps> = {}) {
       width: 100,
       height: 100,
     })),
-    updatePaymentFn: vi.fn(async () => {}),
-    updateWalletTopupSlipFn: vi.fn(async () => ({})),
-    updateSportsMatchFn: vi.fn(async () => ({})),
+    // Default: this CAS write always "wins" (source unchanged) - tests that
+    // specifically exercise a lost CAS race override these to resolve false.
+    updatePaymentSlipUrlIfUnchangedFn: vi.fn(async () => true),
+    updateWalletTopupSlipUrlIfUnchangedFn: vi.fn(async () => true),
+    updateSportsMatchImageUrlIfUnchangedFn: vi.fn(async () => true),
     isR2PrivateConfiguredFn: vi.fn(() => true),
     isR2ConfiguredFn: vi.fn(() => true),
     ...overrides,
@@ -190,7 +194,7 @@ describe("runLegacyManusAssetMigrationBatch", () => {
     expect(result.eligibleCount).toBe(0);
     expect(result.results).toHaveLength(0);
     expect(deps.downloadFn).not.toHaveBeenCalled();
-    expect(deps.updatePaymentFn).not.toHaveBeenCalled();
+    expect(deps.updatePaymentSlipUrlIfUnchangedFn).not.toHaveBeenCalled();
   });
 
   it("6. already-public (R2) sports image is skipped, never touched", async () => {
@@ -204,7 +208,7 @@ describe("runLegacyManusAssetMigrationBatch", () => {
     );
     expect(result.alreadyMigratedCount).toBe(1);
     expect(result.eligibleCount).toBe(0);
-    expect(deps.updateSportsMatchFn).not.toHaveBeenCalled();
+    expect(deps.updateSportsMatchImageUrlIfUnchangedFn).not.toHaveBeenCalled();
   });
 
   it("an out-of-scope value (arbitrary external URL) is skipped, never touched", async () => {
@@ -216,7 +220,7 @@ describe("runLegacyManusAssetMigrationBatch", () => {
     );
     expect(result.outOfScopeCount).toBe(1);
     expect(result.eligibleCount).toBe(0);
-    expect(deps.updatePaymentFn).not.toHaveBeenCalled();
+    expect(deps.updatePaymentSlipUrlIfUnchangedFn).not.toHaveBeenCalled();
   });
 
   it("7. download failure leaves the DB row unchanged", async () => {
@@ -233,7 +237,7 @@ describe("runLegacyManusAssetMigrationBatch", () => {
     expect(result.failedCount).toBe(1);
     expect(result.results[0]).toMatchObject({ outcome: "failed", reason: "FETCH_FAILED" });
     expect(deps.putPrivateObjectFn).not.toHaveBeenCalled();
-    expect(deps.updatePaymentFn).not.toHaveBeenCalled();
+    expect(deps.updatePaymentSlipUrlIfUnchangedFn).not.toHaveBeenCalled();
   });
 
   it("8. upload failure leaves the DB row unchanged", async () => {
@@ -249,7 +253,7 @@ describe("runLegacyManusAssetMigrationBatch", () => {
     );
     expect(result.failedCount).toBe(1);
     expect(result.results[0].outcome).toBe("failed");
-    expect(deps.updatePaymentFn).not.toHaveBeenCalled();
+    expect(deps.updatePaymentSlipUrlIfUnchangedFn).not.toHaveBeenCalled();
   });
 
   it("9. successful private upload updates payment to an r2p: ref", async () => {
@@ -262,10 +266,11 @@ describe("runLegacyManusAssetMigrationBatch", () => {
       { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
     );
     expect(result.migratedCount).toBe(1);
-    expect(deps.updatePaymentFn).toHaveBeenCalledTimes(1);
-    const [paymentId, data] = (deps.updatePaymentFn as any).mock.calls[0];
+    expect(deps.updatePaymentSlipUrlIfUnchangedFn).toHaveBeenCalledTimes(1);
+    const [paymentId, expectedCurrent, newRef] = (deps.updatePaymentSlipUrlIfUnchangedFn as any).mock.calls[0];
     expect(paymentId).toBe(5);
-    expect(data.slipImageUrl).toMatch(/^r2p:payment-slips\/legacy\/payments\/5\//);
+    expect(expectedCurrent).toBe(MANUS_URL);
+    expect(newRef).toMatch(/^r2p:payment-slips\/legacy\/payments\/5\//);
   });
 
   it("10. successful private upload updates wallet top-up to an r2p: ref", async () => {
@@ -276,9 +281,10 @@ describe("runLegacyManusAssetMigrationBatch", () => {
       { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
     );
     expect(result.migratedCount).toBe(1);
-    expect(deps.updateWalletTopupSlipFn).toHaveBeenCalledTimes(1);
-    const [topupId, ref] = (deps.updateWalletTopupSlipFn as any).mock.calls[0];
+    expect(deps.updateWalletTopupSlipUrlIfUnchangedFn).toHaveBeenCalledTimes(1);
+    const [topupId, expectedCurrent, ref] = (deps.updateWalletTopupSlipUrlIfUnchangedFn as any).mock.calls[0];
     expect(topupId).toBe(6);
+    expect(expectedCurrent).toBe(MANUS_URL);
     expect(ref).toMatch(/^r2p:payment-slips\/legacy\/wallet-topups\/6\//);
   });
 
@@ -290,11 +296,12 @@ describe("runLegacyManusAssetMigrationBatch", () => {
       { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
     );
     expect(result.migratedCount).toBe(1);
-    expect(deps.updateSportsMatchFn).toHaveBeenCalledTimes(1);
-    const [matchId, data] = (deps.updateSportsMatchFn as any).mock.calls[0];
+    expect(deps.updateSportsMatchImageUrlIfUnchangedFn).toHaveBeenCalledTimes(1);
+    const [matchId, column, expectedCurrent, newUrl] = (deps.updateSportsMatchImageUrlIfUnchangedFn as any).mock.calls[0];
     expect(matchId).toBe(8);
-    expect(Object.keys(data)).toEqual(["homeTeamImageUrl"]);
-    expect(data.homeTeamImageUrl).toMatch(/^https:\/\/media\.ipenovel\.com\/sports-matches\/legacy\/8\/home\//);
+    expect(column).toBe("homeTeamImageUrl");
+    expect(expectedCurrent).toBe(MANUS_URL);
+    expect(newUrl).toMatch(/^https:\/\/media\.ipenovel\.com\/sports-matches\/legacy\/8\/home\//);
   });
 
   it("12. dry-run performs zero DB writes and zero uploads", async () => {
@@ -310,8 +317,8 @@ describe("runLegacyManusAssetMigrationBatch", () => {
     expect(result.wouldMigrateCount).toBe(2);
     expect(deps.putPrivateObjectFn).not.toHaveBeenCalled();
     expect(deps.r2PutFn).not.toHaveBeenCalled();
-    expect(deps.updatePaymentFn).not.toHaveBeenCalled();
-    expect(deps.updateSportsMatchFn).not.toHaveBeenCalled();
+    expect(deps.updatePaymentSlipUrlIfUnchangedFn).not.toHaveBeenCalled();
+    expect(deps.updateSportsMatchImageUrlIfUnchangedFn).not.toHaveBeenCalled();
     // dry-run still exercises download+decode to give an accurate preview.
     expect(deps.downloadFn).toHaveBeenCalledTimes(2);
   });
@@ -340,7 +347,7 @@ describe("runLegacyManusAssetMigrationBatch", () => {
     expect(result.eligibleCount).toBe(3);
     expect(result.processedCount).toBe(2);
     expect(result.remainingEligible).toBe(1);
-    expect(deps.updatePaymentFn).toHaveBeenCalledTimes(2);
+    expect(deps.updatePaymentSlipUrlIfUnchangedFn).toHaveBeenCalledTimes(2);
   });
 
   it("14. --start-id is passed through to candidate discovery", async () => {
@@ -359,7 +366,7 @@ describe("runLegacyManusAssetMigrationBatch", () => {
       { ...deps, fetchCandidateRowsFn: vi.fn(async () => firstRunRows) }
     );
     expect(firstResult.migratedCount).toBe(1);
-    const newRef: string = (deps.updatePaymentFn as any).mock.calls[0][1].slipImageUrl;
+    const newRef: string = (deps.updatePaymentSlipUrlIfUnchangedFn as any).mock.calls[0][2];
 
     // Second run: the row now holds the r2p: ref the first run wrote -
     // simulates what a real rerun would see from the DB. It must be
@@ -406,6 +413,302 @@ describe("runLegacyManusAssetMigrationBatch", () => {
     ).rejects.toBeInstanceOf(LegacyManusAssetMigrationLockError);
     releaseFirst();
     await firstRun;
+  });
+});
+
+describe("compare-and-swap protection against a stale source value (P1)", () => {
+  it("payment source changes before final write -> CAS false -> not migrated, DB never overwritten", async () => {
+    const rows: CandidateRow[] = [{ source: "payments", id: 20, value: MANUS_URL }];
+    const deps = makeFullDeps({
+      // Simulates: between candidate discovery (row.value = MANUS_URL) and
+      // this write, someone else changed payments.slipImageUrl - the CAS
+      // WHERE clause no longer matches, so the real db.ts helper would
+      // return false. The row must be reported failed, not migrated.
+      updatePaymentSlipUrlIfUnchangedFn: vi.fn(async () => false),
+    });
+    const result = await runLegacyManusAssetMigrationBatch(
+      { dryRun: false, type: "payments", limit: 10 },
+      { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
+    );
+    expect(result.migratedCount).toBe(0);
+    expect(result.failedCount).toBe(1);
+    expect(result.results[0]).toMatchObject({ outcome: "failed", reason: "SOURCE_CHANGED_OR_ROW_MISSING" });
+    // The CAS call itself was still made with the ORIGINAL value read at
+    // discovery time - it must never be called with anything else, and
+    // never asked to overwrite unconditionally.
+    const [, expectedCurrent] = (deps.updatePaymentSlipUrlIfUnchangedFn as any).mock.calls[0];
+    expect(expectedCurrent).toBe(MANUS_URL);
+  });
+
+  it("wallet source changes before final write -> CAS false -> not migrated", async () => {
+    const rows: CandidateRow[] = [{ source: "walletTopups", id: 21, value: MANUS_URL }];
+    const deps = makeFullDeps({
+      updateWalletTopupSlipUrlIfUnchangedFn: vi.fn(async () => false),
+    });
+    const result = await runLegacyManusAssetMigrationBatch(
+      { dryRun: false, type: "wallet", limit: 10 },
+      { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
+    );
+    expect(result.migratedCount).toBe(0);
+    expect(result.failedCount).toBe(1);
+    expect(result.results[0]).toMatchObject({ outcome: "failed", reason: "SOURCE_CHANGED_OR_ROW_MISSING" });
+  });
+
+  it("sports selected column changes before final write -> CAS false -> not migrated", async () => {
+    const rows: CandidateRow[] = [{ source: "sportsMatches", id: 22, column: "cover", value: MANUS_URL }];
+    const deps = makeFullDeps({
+      updateSportsMatchImageUrlIfUnchangedFn: vi.fn(async () => false),
+    });
+    const result = await runLegacyManusAssetMigrationBatch(
+      { dryRun: false, type: "sports", limit: 10, column: "cover" },
+      { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
+    );
+    expect(result.migratedCount).toBe(0);
+    expect(result.failedCount).toBe(1);
+    expect(result.results[0]).toMatchObject({ outcome: "failed", reason: "SOURCE_CHANGED_OR_ROW_MISSING" });
+    // Sports has no delete primitive for Public R2 - the uploaded object is
+    // an accepted, documented orphan, never a reason to change the outcome.
+    const [matchId, column] = (deps.updateSportsMatchImageUrlIfUnchangedFn as any).mock.calls[0];
+    expect(matchId).toBe(22);
+    expect(column).toBe("coverImageUrl");
+  });
+
+  it("affectedRows=0 (CAS false) never produces migratedCount, across a mixed batch", async () => {
+    const rows: CandidateRow[] = [
+      { source: "payments", id: 30, value: MANUS_URL },
+      { source: "payments", id: 31, value: MANUS_URL },
+    ];
+    let call = 0;
+    const deps = makeFullDeps({
+      // First row wins the CAS race, second loses it.
+      updatePaymentSlipUrlIfUnchangedFn: vi.fn(async () => {
+        call += 1;
+        return call === 1;
+      }),
+    });
+    const result = await runLegacyManusAssetMigrationBatch(
+      { dryRun: false, type: "payments", limit: 10 },
+      { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
+    );
+    expect(result.migratedCount).toBe(1);
+    expect(result.failedCount).toBe(1);
+    expect(result.results.find((r) => r.id === 30)?.outcome).toBe("migrated");
+    expect(result.results.find((r) => r.id === 31)).toMatchObject({
+      outcome: "failed",
+      reason: "SOURCE_CHANGED_OR_ROW_MISSING",
+    });
+  });
+
+  it("a lost CAS race best-effort deletes the just-uploaded PRIVATE R2 object (slips only)", async () => {
+    const rows: CandidateRow[] = [{ source: "payments", id: 32, value: MANUS_URL }];
+    const deps = makeFullDeps({
+      putPrivateObjectFn: vi.fn(async (_ctx: any, key: string) => ({ key })),
+      updatePaymentSlipUrlIfUnchangedFn: vi.fn(async () => false),
+    });
+    await runLegacyManusAssetMigrationBatch(
+      { dryRun: false, type: "payments", limit: 10 },
+      { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
+    );
+    expect(deps.deletePrivateObjectFn).toHaveBeenCalledTimes(1);
+    const [context, deletedKey] = (deps.deletePrivateObjectFn as any).mock.calls[0];
+    expect(context).toBe("paymentSlip");
+    // The exact key just uploaded, nothing derived from the DB.
+    const [, uploadedKey] = (deps.putPrivateObjectFn as any).mock.calls[0];
+    expect(deletedKey).toBe(uploadedKey);
+  });
+
+  it("a failed best-effort cleanup delete never changes the reported outcome", async () => {
+    const rows: CandidateRow[] = [{ source: "payments", id: 33, value: MANUS_URL }];
+    const deps = makeFullDeps({
+      updatePaymentSlipUrlIfUnchangedFn: vi.fn(async () => false),
+      deletePrivateObjectFn: vi.fn(async () => {
+        throw new Error("cleanup boom");
+      }),
+    });
+    const result = await runLegacyManusAssetMigrationBatch(
+      { dryRun: false, type: "payments", limit: 10 },
+      { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
+    );
+    expect(result.results[0]).toMatchObject({ outcome: "failed", reason: "SOURCE_CHANGED_OR_ROW_MISSING" });
+  });
+
+  it("DB unavailable/write failure (CAS fn throws) never produces a migrated success", async () => {
+    const rows: CandidateRow[] = [{ source: "payments", id: 34, value: MANUS_URL }];
+    const deps = makeFullDeps({
+      updatePaymentSlipUrlIfUnchangedFn: vi.fn(async () => {
+        throw new Error("Database not available");
+      }),
+    });
+    const result = await runLegacyManusAssetMigrationBatch(
+      { dryRun: false, type: "payments", limit: 10 },
+      { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
+    );
+    expect(result.migratedCount).toBe(0);
+    expect(result.results[0].outcome).toBe("failed");
+    // A thrown (not returned-false) DB failure gets the generic safe code,
+    // never SOURCE_CHANGED_OR_ROW_MISSING (that's reserved for a genuine
+    // lost CAS race) and never the raw "Database not available" text.
+    expect(result.results[0].reason).toBe("UNKNOWN_ERROR");
+  });
+});
+
+describe("isAlreadyMigratedSportsValue - exact origin/hostname matching (P2)", () => {
+  it("accepts an exact match against the known media.ipenovel.com domain", () => {
+    expect(isAlreadyMigratedSportsValue("https://media.ipenovel.com/sports-matches/1/cover/x.webp")).toBe(true);
+  });
+
+  it("rejects a lookalike hostname suffix (e.g. media.ipenovel.com.attacker.example)", () => {
+    expect(isAlreadyMigratedSportsValue("https://media.ipenovel.com.attacker.example/x.webp")).toBe(false);
+  });
+
+  it("rejects a lookalike hostname prefix/substring (e.g. evil-media.ipenovel.com)", () => {
+    expect(isAlreadyMigratedSportsValue("https://evil-media.ipenovel.com/x.webp")).toBe(false);
+    expect(isAlreadyMigratedSportsValue("https://notmedia.ipenovel.com/x.webp")).toBe(false);
+  });
+
+  it("rejects a different protocol (http instead of https)", () => {
+    expect(isAlreadyMigratedSportsValue("http://media.ipenovel.com/x.webp")).toBe(false);
+  });
+
+  it("rejects a different port", () => {
+    expect(isAlreadyMigratedSportsValue("https://media.ipenovel.com:8443/x.webp")).toBe(false);
+  });
+
+  it("rejects an unrelated hostname entirely", () => {
+    expect(isAlreadyMigratedSportsValue("https://example.com/x.webp")).toBe(false);
+  });
+
+  it("fails safe on a malformed value", () => {
+    expect(isAlreadyMigratedSportsValue("not a url")).toBe(false);
+  });
+});
+
+/**
+ * A fetchCandidateRowsFn stand-in that filters an in-memory fixture the
+ * same way the real (DB-backed) fetchCandidateRows() filters SQL rows -
+ * id >= startId, matching type, matching sports column - so these tests
+ * genuinely exercise the --start-id/--type/--column filtering semantics
+ * end-to-end through runLegacyManusAssetMigrationBatch(), without a real
+ * DB.
+ */
+function makeRealisticFetchCandidateRowsFn(allRows: CandidateRow[]) {
+  return vi.fn(async (type: string, startId: number, column?: SportsColumnForTest) => {
+    return allRows.filter((row) => {
+      if (row.id < startId) return false;
+      if (type !== "all") {
+        const wantedSource = type === "payments" ? "payments" : type === "wallet" ? "walletTopups" : "sportsMatches";
+        if (row.source !== wantedSource) return false;
+      }
+      if (row.source === "sportsMatches" && column && row.column !== column) return false;
+      return true;
+    });
+  });
+}
+type SportsColumnForTest = "home" | "away" | "cover";
+
+describe("--start-id resume-pitfall regressions (P1) - it is a lower-bound filter, NOT a resume cursor", () => {
+  it("sports home/away/cover share one match id - a --limit cutoff leaves sibling columns pending at the SAME id", async () => {
+    const allRows: CandidateRow[] = [
+      { source: "sportsMatches", id: 28, column: "home", value: MANUS_URL },
+      { source: "sportsMatches", id: 28, column: "away", value: MANUS_URL },
+      { source: "sportsMatches", id: 28, column: "cover", value: MANUS_URL },
+    ];
+    const deps = makeFullDeps();
+    const result = await runLegacyManusAssetMigrationBatch(
+      { dryRun: false, type: "sports", limit: 1, startId: 0 },
+      { ...deps, fetchCandidateRowsFn: makeRealisticFetchCandidateRowsFn(allRows) as any }
+    );
+    expect(result.processedCount).toBe(1);
+    // away + cover, same id 28, still pending after this run.
+    expect(result.remainingEligible).toBe(2);
+  });
+
+  it("advancing --start-id past a partially-migrated match id permanently excludes its remaining columns from candidate discovery", async () => {
+    // "home" already migrated (no longer the Manus hostname); "away"/
+    // "cover" are still pending, same id 28.
+    const allRows: CandidateRow[] = [
+      {
+        source: "sportsMatches",
+        id: 28,
+        column: "home",
+        value: "https://media.ipenovel.com/sports-matches/legacy/28/home/x.webp",
+      },
+      { source: "sportsMatches", id: 28, column: "away", value: MANUS_URL },
+      { source: "sportsMatches", id: 28, column: "cover", value: MANUS_URL },
+    ];
+    const deps = makeFullDeps();
+
+    // Rerunning the SAME command (start-id=0) finds away/cover normally -
+    // this is the correct, documented resume procedure.
+    const sameCommand = await runLegacyManusAssetMigrationBatch(
+      { dryRun: true, type: "sports", limit: 10, startId: 0 },
+      { ...deps, fetchCandidateRowsFn: makeRealisticFetchCandidateRowsFn(allRows) as any }
+    );
+    expect(sameCommand.eligibleCount).toBe(2);
+
+    // But an operator who advanced --start-id to 29 (believing "id 28 is
+    // done" because its FIRST column happened to migrate) never even sees
+    // away/cover - they're excluded from candidate discovery entirely.
+    const advancedStartId = await runLegacyManusAssetMigrationBatch(
+      { dryRun: true, type: "sports", limit: 10, startId: 29 },
+      { ...deps, fetchCandidateRowsFn: makeRealisticFetchCandidateRowsFn(allRows) as any }
+    );
+    expect(advancedStartId.totalChecked).toBe(0);
+    expect(advancedStartId.eligibleCount).toBe(0);
+  });
+
+  it("--type=all: rows from different tables share the same numeric id space - advancing --start-id can skip a lower-id row in a DIFFERENT table", async () => {
+    const allRows: CandidateRow[] = [
+      { source: "payments", id: 50, value: "r2p:payment-slips/legacy/payments/50/x.jpg" }, // already migrated
+      { source: "walletTopups", id: 12, value: MANUS_URL }, // still eligible, LOWER id than payments #50
+    ];
+    const deps = makeFullDeps();
+
+    const sameCommand = await runLegacyManusAssetMigrationBatch(
+      { dryRun: true, type: "all", limit: 10, startId: 0 },
+      { ...deps, fetchCandidateRowsFn: makeRealisticFetchCandidateRowsFn(allRows) as any }
+    );
+    expect(sameCommand.eligibleCount).toBe(1);
+
+    // An operator who saw "payments #50 migrated" and set --start-id=51 for
+    // the next --type=all run never sees walletTopups #12 at all - its id
+    // has nothing to do with payments #50's id.
+    const advancedStartId = await runLegacyManusAssetMigrationBatch(
+      { dryRun: true, type: "all", limit: 10, startId: 51 },
+      { ...deps, fetchCandidateRowsFn: makeRealisticFetchCandidateRowsFn(allRows) as any }
+    );
+    expect(advancedStartId.totalChecked).toBe(0);
+  });
+
+  it("a failed low-id row keeps its original id forever - advancing --start-id past it permanently excludes it from retry", async () => {
+    const allRows: CandidateRow[] = [{ source: "payments", id: 3, value: MANUS_URL }];
+    const deps = makeFullDeps({
+      downloadFn: vi.fn(async () => {
+        throw new LegacyAssetDownloadError("FETCH_FAILED");
+      }),
+    });
+    const result = await runLegacyManusAssetMigrationBatch(
+      { dryRun: false, type: "payments", limit: 10, startId: 0 },
+      { ...deps, fetchCandidateRowsFn: makeRealisticFetchCandidateRowsFn(allRows) as any }
+    );
+    expect(result.failedCount).toBe(1);
+
+    // The failure never touched the fixture's value, so a same-command
+    // rerun still finds it - this is the correct, documented resume path.
+    const rerunSame = await runLegacyManusAssetMigrationBatch(
+      { dryRun: true, type: "payments", limit: 10, startId: 0 },
+      { ...makeFullDeps(), fetchCandidateRowsFn: makeRealisticFetchCandidateRowsFn(allRows) as any }
+    );
+    expect(rerunSame.eligibleCount).toBe(1);
+
+    // But an operator who advances --start-id to 4+ (e.g. because a later,
+    // higher-id row succeeded and "looked done") permanently excludes the
+    // still-failed, still-eligible payments #3 from every future run.
+    const advancedStartId = await runLegacyManusAssetMigrationBatch(
+      { dryRun: true, type: "payments", limit: 10, startId: 4 },
+      { ...makeFullDeps(), fetchCandidateRowsFn: makeRealisticFetchCandidateRowsFn(allRows) as any }
+    );
+    expect(advancedStartId.totalChecked).toBe(0);
   });
 });
 
