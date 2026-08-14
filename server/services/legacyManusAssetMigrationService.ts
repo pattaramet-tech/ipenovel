@@ -137,13 +137,6 @@ export class LegacyAssetDownloadError extends Error {
   }
 }
 
-/** Strips `; charset=...` and any other parameters - never trusts a
- *  filename/extension, only this header. */
-function normalizeContentType(rawContentType: string | null): string {
-  if (!rawContentType) return "";
-  return rawContentType.split(";")[0].trim().toLowerCase();
-}
-
 /** Best-effort teardown for a response being rejected WITHOUT reading its
  *  body - never throws. */
 async function cancelResponseBody(response: Response): Promise<void> {
@@ -154,23 +147,61 @@ async function cancelResponseBody(response: Response): Promise<void> {
   }
 }
 
-const MAGIC_BYTES: Record<string, Buffer> = {
-  "image/jpeg": Buffer.from([0xff, 0xd8, 0xff]),
-  "image/png": Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-  "application/pdf": Buffer.from("%PDF-", "ascii"),
-};
+const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff]);
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PDF_MAGIC = Buffer.from("%PDF-", "ascii");
+const RIFF_MAGIC = Buffer.from("RIFF", "ascii");
+const WEBP_MAGIC = Buffer.from("WEBP", "ascii");
 
-/** A lightweight second check beyond the declared Content-Type header - an
- *  obviously mislabeled payload (e.g. an HTML error page served with
- *  `content-type: image/png`) is rejected before it ever reaches R2. No rule
- *  exists for image/webp here - sports rows are always decoded by
- *  optimizeImageToWebp() afterward, which itself rejects anything
- *  undecodable. */
-function matchesDeclaredContentType(buffer: Buffer, contentType: string): boolean {
-  const magic = MAGIC_BYTES[contentType];
-  if (!magic) return true;
-  if (buffer.length < magic.length) return false;
-  return buffer.subarray(0, magic.length).equals(magic);
+function bufferStartsWith(buffer: Buffer, magic: Buffer): boolean {
+  return buffer.length >= magic.length && buffer.subarray(0, magic.length).equals(magic);
+}
+
+/**
+ * Determines the asset's REAL type from its actual bytes - the ONLY source
+ * of truth used anywhere in this module for MIME validation. The declared
+ * `Content-Type` response header (and, needless to say, any filename/
+ * extension) is NEVER trusted to accept OR reject a download: some
+ * historical Manus objects have a flatly wrong Content-Type (proven on
+ * staging - a PNG served with `Content-Type: image/jpeg`), and trusting a
+ * header for a security decision is exactly the kind of bypass an
+ * attacker-influenced or simply corrupt header could exploit. Returns
+ * `null` when the bytes don't match any known signature - an unrecognized
+ * or arbitrary binary payload (HTML, JSON, garbage, an intentionally
+ * disguised file) is never assigned a MIME type by guesswork.
+ *
+ * - PNG:  `89 50 4E 47 0D 0A 1A 0A` (checked before JPEG/PDF - no overlap)
+ * - JPEG: `FF D8 FF`
+ * - PDF:  `%PDF-`
+ * - WebP: `RIFF` at offset 0, `WEBP` at offset 8 (skipping the 4-byte
+ *   RIFF chunk size at offset 4, which this never needs to validate)
+ *
+ * This is SIGNATURE (magic-byte) detection only - a small fixed-length
+ * prefix check (plus, for WebP, one more fixed-offset marker) - never a
+ * full file-structure or decodability validation. A payload that begins
+ * with a valid signature but is corrupted or truncated afterward (e.g. a
+ * PDF that starts with `%PDF-` but has a broken/incomplete body, or a
+ * JPEG/PNG whose header is intact but whose compressed data is garbage)
+ * is still classified as that MIME type by this function alone - it only
+ * proves the signature matches, never that the rest of the file is
+ * well-formed. Sports images get an additional, genuine decode-level
+ * check afterward via `optimizeImageToWebp()` (see `migrateSportsRow`) -
+ * that check is NOT performed here. Payment slips get no decode check at
+ * all (see `migrateSlipRow`, which stores the downloaded bytes
+ * unchanged) - a slip that passes this signature check is uploaded as-is.
+ */
+function detectActualMimeType(buffer: Buffer): string | null {
+  if (bufferStartsWith(buffer, PNG_MAGIC)) return "image/png";
+  if (bufferStartsWith(buffer, JPEG_MAGIC)) return "image/jpeg";
+  if (bufferStartsWith(buffer, PDF_MAGIC)) return "application/pdf";
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).equals(RIFF_MAGIC) &&
+    buffer.subarray(8, 12).equals(WEBP_MAGIC)
+  ) {
+    return "image/webp";
+  }
+  return null;
 }
 
 /**
@@ -215,6 +246,9 @@ async function readBodyBounded(response: Response, maxBytes: number, signal: Abo
 }
 
 export interface DownloadLegacyManusAssetOptions {
+  /** Types the CALLER's asset class accepts - checked against the ACTUAL
+   *  detected type (see detectActualMimeType), never the declared
+   *  Content-Type header. */
   allowedMimeTypes: ReadonlySet<string>;
   maxBytes: number;
   fetchImpl?: typeof fetch;
@@ -226,11 +260,17 @@ export interface DownloadLegacyManusAssetOptions {
  * Strict sequence: (1) hostname must be EXACTLY MANUS_CLOUDFRONT_HOSTNAME
  * over https, (2) fetch with a timeout and `redirect: "error"` (a legacy
  * CDN reference never needs to redirect), (3) response must be 2xx,
- * (4) Content-Length (when present) must not exceed maxBytes,
- * (5) Content-Type must be one of allowedMimeTypes, (6) the body is read
- * with a hard streamed byte ceiling regardless of what Content-Length
- * claimed, (7) the downloaded bytes must match their declared type's magic
- * number (where a rule exists). Never logs the URL, a query string, or the
+ * (4) Content-Length (when present) must not exceed maxBytes, (5) the body
+ * is read with a hard streamed byte ceiling regardless of what
+ * Content-Length claimed, (6) the asset's REAL type is detected from the
+ * downloaded bytes' magic number (detectActualMimeType) and must be one of
+ * allowedMimeTypes. The declared `Content-Type` response header is read
+ * NOWHERE in this function - it is never trusted to accept or reject
+ * anything (see detectActualMimeType's docstring for why: some historical
+ * Manus objects declare the wrong type outright). The returned
+ * `contentType` is always the ACTUAL detected type, never the declared
+ * one - callers (key-extension builders, the R2 upload Content-Type) must
+ * use it, not any header. Never logs the URL, a query string, or the
  * response body.
  */
 export async function downloadLegacyManusAsset(
@@ -269,21 +309,22 @@ export async function downloadLegacyManusAsset(
       }
     }
 
-    const contentType = normalizeContentType(response.headers.get("content-type"));
-    if (!allowedMimeTypes.has(contentType)) {
-      await cancelResponseBody(response);
-      throw new LegacyAssetDownloadError("UNSUPPORTED_TYPE");
-    }
-
     const bodyBytes = await readBodyBounded(response, maxBytes, controller.signal);
     if (bodyBytes.length === 0) {
       throw new LegacyAssetDownloadError("EMPTY_BODY");
     }
-    if (!matchesDeclaredContentType(bodyBytes, contentType)) {
+
+    // The ONLY MIME decision in this entire module: what do the actual
+    // bytes look like, and is that in the caller's allowlist? A payload
+    // that doesn't match any known signature (detectActualMimeType returns
+    // null) - including HTML, JSON, or arbitrary binary - is rejected here
+    // regardless of what any header claimed.
+    const actualContentType = detectActualMimeType(bodyBytes);
+    if (!actualContentType || !allowedMimeTypes.has(actualContentType)) {
       throw new LegacyAssetDownloadError("UNSUPPORTED_TYPE");
     }
 
-    return { buffer: bodyBytes, contentType };
+    return { buffer: bodyBytes, contentType: actualContentType };
   } finally {
     clearTimeout(timeoutHandle);
   }
@@ -373,9 +414,13 @@ type RowClassification = "eligible" | "already_migrated" | "out_of_scope";
 
 export interface LegacyManusAssetMigrationOptions {
   /** Preview only - no download-through-upload/DB write is committed; every
-   *  eligible row is still downloaded+validated (and, for sports, optimized)
-   *  so the preview is an accurate check that the source asset is real and
-   *  decodable, it just stops before uploading to R2 or writing the DB. */
+   *  eligible row is still downloaded and its actual bytes matched against
+   *  a MIME magic-byte signature (see detectActualMimeType - never the
+   *  declared Content-Type header, and never a full file-validity check).
+   *  Sports rows are additionally decoded via optimizeImageToWebp() during
+   *  the preview, a genuine decodability check; payment slips are
+   *  signature-checked only and never decoded, in dry-run or otherwise.
+   *  The preview stops before uploading to R2 or writing the DB. */
   dryRun: boolean;
   type: LegacyManusAssetMigrationType;
   /** Max rows to actually process this call (after already-migrated/
