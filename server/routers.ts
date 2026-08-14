@@ -22,9 +22,8 @@ import { safeErrorSummary } from "../scripts/lib/safeErrorSummary.mjs";
 import { isDuplicateKeyError } from "./helpers/databaseErrorClassifier";
 import { fileRouter } from "./routers/fileRouter";
 import { ocrMetricsRouter } from "./routers/ocrMetricsRouter";
-import { storagePut } from "./storage";
 import { r2Put, R2StorageError } from "./services/r2Storage";
-import { optimizeImageToWebp, ImageOptimizeError } from "./services/imageOptimizer";
+import { optimizeImageToWebp, ImageOptimizeError, SPORTS_MATCH_IMAGE_PRESET } from "./services/imageOptimizer";
 import { parseSlipImage } from "./ocr-slip-verification-v2";
 import { processSlipVerificationStaging } from "./ocr-slip-integration-staging";
 import { getOCRConfig } from "./_core/ocr-config";
@@ -220,7 +219,7 @@ function randomKeySuffix(): string {
  * error) to a clear tRPC error - never a raw stack trace, never a crash that
  * could take down anything outside this one upload.
  */
-async function optimizeAndUploadToR2(
+export async function optimizeAndUploadToR2(
   fileBuffer: Buffer,
   keyPrefix: string,
   dimensions: { maxWidth: number; maxHeight: number }
@@ -2477,6 +2476,9 @@ export const appRouter = router({
           fileBase64: z.string().min(1),
         }))
         .mutation(async ({ input, ctx }) => {
+          // fileName is validated/allowlisted (min length, no path use) but
+          // otherwise unused below - optimizeAndUploadToR2 generates its own
+          // collision-safe key, never trusting a source filename.
           const base64Data = input.fileBase64.split(",")[1] || input.fileBase64;
           const fileBuffer = Buffer.from(base64Data, "base64");
 
@@ -2485,12 +2487,17 @@ export const appRouter = router({
             throw new TRPCError({ code: "BAD_REQUEST", message: "Sports image must be 2MB or smaller" });
           }
 
-          const timestamp = Date.now();
-          const randomSuffix = Math.random().toString(36).substring(2, 8);
-          const sanitizedFileName = input.fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
-          const fileKey = `sports-matches/${ctx.user.id}/${timestamp}-${randomSuffix}-${sanitizedFileName}`;
+          // Optimized to WebP and uploaded to Cloudflare R2 (not the Manus
+          // storage proxy) - see the matching comment on
+          // admin.novels.uploadCover above. This is the only remaining
+          // sports-match upload path; new uploads never touch
+          // BUILT_IN_FORGE_API_URL/API_KEY.
+          const { url, key } = await optimizeAndUploadToR2(
+            fileBuffer,
+            `sports-matches/${ctx.user.id}`,
+            SPORTS_MATCH_IMAGE_PRESET
+          );
 
-          const { url, key } = await storagePut(fileKey, fileBuffer, input.mimeType);
           return { url, key };
         }),
 

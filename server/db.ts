@@ -6180,6 +6180,90 @@ export async function moveAuthIdentityOwner(
   return affectedRows > 0;
 }
 
+/**
+ * Migration-safe compare-and-swap writers for server/services/
+ * legacyManusAssetMigrationService.ts - same "conditional UPDATE, inspect
+ * affectedRows" concurrency-safety pattern as moveAuthIdentityOwner/
+ * transitionAccountRecoveryRequestStatus above, applied to a single legacy-
+ * asset column instead of a status field. Each WHERE clause requires BOTH
+ * the row id AND the column still holding the exact value the migration
+ * read at candidate-discovery time - not just the id - so a row whose
+ * source value changed (or was deleted) between discovery and this write
+ * (e.g. the user re-submitted a new slip while a slow download/upload for
+ * the OLD value was still in flight) is left completely untouched: the
+ * UPDATE simply matches zero rows and this returns false. The caller
+ * (legacyManusAssetMigrationService.ts) must treat false as "not migrated"
+ * and never report success. Deliberately NOT reused for anything else -
+ * these exist only for this one migration path, so their WHERE-clause
+ * safety can never be silently loosened by an unrelated future caller
+ * needing a plain unconditional update.
+ */
+export async function updatePaymentSlipUrlIfUnchanged(
+  paymentId: number,
+  expectedCurrentSlipImageUrl: string,
+  newSlipImageUrl: string
+): Promise<boolean> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const updateResult = await db
+    .update(payments)
+    .set({ slipImageUrl: newSlipImageUrl })
+    .where(and(eq(payments.id, paymentId), eq(payments.slipImageUrl, expectedCurrentSlipImageUrl)));
+
+  const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
+  const affectedRows = (resultHeader as any)?.affectedRows || 0;
+  return affectedRows === 1;
+}
+
+export async function updateWalletTopupSlipUrlIfUnchanged(
+  topupId: number,
+  expectedCurrentSlipImageUrl: string,
+  newSlipImageUrl: string
+): Promise<boolean> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const updateResult = await db
+    .update(walletTopups)
+    .set({ slipImageUrl: newSlipImageUrl })
+    .where(and(eq(walletTopups.id, topupId), eq(walletTopups.slipImageUrl, expectedCurrentSlipImageUrl)));
+
+  const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
+  const affectedRows = (resultHeader as any)?.affectedRows || 0;
+  return affectedRows === 1;
+}
+
+/** `column` selects exactly one of sportsMatches' three legacy-asset image
+ *  columns - the CAS condition is on THAT SAME column, never a different
+ *  one, so migrating `cover` can never be fooled by a concurrent change to
+ *  `home`/`away` on the same row. */
+export async function updateSportsMatchImageUrlIfUnchanged(
+  matchId: number,
+  column: "homeTeamImageUrl" | "awayTeamImageUrl" | "coverImageUrl",
+  expectedCurrentValue: string,
+  newValue: string
+): Promise<boolean> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const columnRef =
+    column === "homeTeamImageUrl"
+      ? sportsMatches.homeTeamImageUrl
+      : column === "awayTeamImageUrl"
+        ? sportsMatches.awayTeamImageUrl
+        : sportsMatches.coverImageUrl;
+
+  const updateResult = await db
+    .update(sportsMatches)
+    .set({ [column]: newValue } as any)
+    .where(and(eq(sportsMatches.id, matchId), eq(columnRef, expectedCurrentValue)));
+
+  const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
+  const affectedRows = (resultHeader as any)?.affectedRows || 0;
+  return affectedRows === 1;
+}
+
 /** Finalizes the target account after a successful identity move -
  *  loginMethod becomes "google" unconditionally; email is backfilled ONLY
  *  when the target currently has none (never overwrites an existing

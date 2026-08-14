@@ -29,11 +29,17 @@ export interface OptimizedImage {
 }
 
 // Shared presets - the single source of truth for both the live upload
-// endpoints (admin.novels.uploadCover / admin.banners.uploadImage in
-// routers.ts) and scripts/migrate-media-to-r2.ts, so a migrated image is
-// always optimized identically to a freshly-uploaded one.
+// endpoints (admin.novels.uploadCover / admin.banners.uploadImage /
+// admin.sportsMatches.uploadImage in routers.ts) and the matching migration
+// scripts (scripts/migrate-media-to-r2.ts, scripts/migrate-legacy-manus-
+// assets-to-r2.ts), so a migrated image is always optimized identically to a
+// freshly-uploaded one.
 export const NOVEL_COVER_PRESET: OptimizeImageOptions = { maxWidth: 1000, maxHeight: 1500 };
 export const BANNER_IMAGE_PRESET: OptimizeImageOptions = { maxWidth: 1920, maxHeight: 800 };
+// Team logos and match cover images - a single generous square-ish bound
+// covers both without needing a per-field preset (the upload endpoint
+// doesn't otherwise distinguish home/away/cover).
+export const SPORTS_MATCH_IMAGE_PRESET: OptimizeImageOptions = { maxWidth: 1200, maxHeight: 1200 };
 
 /**
  * Decode, resize, and re-encode an uploaded image buffer as WebP. Throws
