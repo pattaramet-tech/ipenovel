@@ -552,6 +552,112 @@ describe("compare-and-swap protection against a stale source value (P1)", () => 
   });
 });
 
+describe("raw vs normalized candidate values - CAS must use the exact raw DB value (P2-1)", () => {
+  const WHITESPACE_RAW = `  ${MANUS_URL}  `;
+
+  it("payment with leading/trailing whitespace: download uses the normalized URL, CAS receives the exact raw DB value, migration succeeds", async () => {
+    const rows: CandidateRow[] = [{ source: "payments", id: 40, value: MANUS_URL, rawValue: WHITESPACE_RAW }];
+    const deps = makeFullDeps();
+    const result = await runLegacyManusAssetMigrationBatch(
+      { dryRun: false, type: "payments", limit: 10 },
+      { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
+    );
+
+    expect(result.migratedCount).toBe(1);
+    // download() must be called with the NORMALIZED (trimmed) URL - the raw
+    // value has leading/trailing spaces that would fail URL parsing/the
+    // exact-hostname check.
+    expect((deps.downloadFn as any).mock.calls[0][0]).toBe(MANUS_URL);
+    // The CAS write must receive the EXACT raw DB value (untrimmed), never
+    // the normalized one - a real `WHERE slipImageUrl = ?` only matches the
+    // literal stored bytes.
+    const [, expectedCurrent] = (deps.updatePaymentSlipUrlIfUnchangedFn as any).mock.calls[0];
+    expect(expectedCurrent).toBe(WHITESPACE_RAW);
+  });
+
+  it("wallet with leading/trailing whitespace: same raw-value CAS behavior", async () => {
+    const rows: CandidateRow[] = [{ source: "walletTopups", id: 41, value: MANUS_URL, rawValue: WHITESPACE_RAW }];
+    const deps = makeFullDeps();
+    const result = await runLegacyManusAssetMigrationBatch(
+      { dryRun: false, type: "wallet", limit: 10 },
+      { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
+    );
+
+    expect(result.migratedCount).toBe(1);
+    expect((deps.downloadFn as any).mock.calls[0][0]).toBe(MANUS_URL);
+    const [, expectedCurrent] = (deps.updateWalletTopupSlipUrlIfUnchangedFn as any).mock.calls[0];
+    expect(expectedCurrent).toBe(WHITESPACE_RAW);
+  });
+
+  it("sports with leading/trailing whitespace: same raw-value CAS behavior", async () => {
+    const rows: CandidateRow[] = [
+      { source: "sportsMatches", id: 42, column: "cover", value: MANUS_URL, rawValue: WHITESPACE_RAW },
+    ];
+    const deps = makeFullDeps();
+    const result = await runLegacyManusAssetMigrationBatch(
+      { dryRun: false, type: "sports", limit: 10, column: "cover" },
+      { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
+    );
+
+    expect(result.migratedCount).toBe(1);
+    expect((deps.downloadFn as any).mock.calls[0][0]).toBe(MANUS_URL);
+    const [, , expectedCurrent] = (deps.updateSportsMatchImageUrlIfUnchangedFn as any).mock.calls[0];
+    expect(expectedCurrent).toBe(WHITESPACE_RAW);
+  });
+
+  it("a CAS write against the trimmed value (not the real raw DB value) would have lost the race - proving the fix matters", async () => {
+    // Simulates the pre-fix bug directly: a CAS helper that only ever
+    // succeeds when given the exact raw (untrimmed) value.
+    const rows: CandidateRow[] = [{ source: "payments", id: 43, value: MANUS_URL, rawValue: WHITESPACE_RAW }];
+    const deps = makeFullDeps({
+      updatePaymentSlipUrlIfUnchangedFn: vi.fn(async (_id: number, expectedCurrent: string) => expectedCurrent === WHITESPACE_RAW),
+    });
+    const result = await runLegacyManusAssetMigrationBatch(
+      { dryRun: false, type: "payments", limit: 10 },
+      { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
+    );
+    // Migrates successfully BECAUSE the CAS call now uses the raw value -
+    // if it used the normalized value instead, this mock would return
+    // false and the row would be reported failed.
+    expect(result.migratedCount).toBe(1);
+  });
+
+  it("already-migrated/out-of-scope classification still uses the NORMALIZED value", async () => {
+    const rows: CandidateRow[] = [
+      // Whitespace around an already-migrated r2p: ref - classification
+      // must still recognize it via the normalized value.
+      { source: "payments", id: 44, value: "r2p:payment-slips/1/x.jpg", rawValue: "  r2p:payment-slips/1/x.jpg  " },
+      // Whitespace around an out-of-scope external URL.
+      {
+        source: "payments",
+        id: 45,
+        value: "https://docs.google.com/some/file",
+        rawValue: "  https://docs.google.com/some/file  ",
+      },
+    ];
+    const deps = makeFullDeps();
+    const result = await runLegacyManusAssetMigrationBatch(
+      { dryRun: false, type: "payments", limit: 10 },
+      { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
+    );
+    expect(result.alreadyMigratedCount).toBe(1);
+    expect(result.outOfScopeCount).toBe(1);
+    expect(result.eligibleCount).toBe(0);
+  });
+
+  it("no regression for normal values without whitespace (rawValue omitted falls back to value)", async () => {
+    const rows: CandidateRow[] = [{ source: "payments", id: 46, value: MANUS_URL }];
+    const deps = makeFullDeps();
+    const result = await runLegacyManusAssetMigrationBatch(
+      { dryRun: false, type: "payments", limit: 10 },
+      { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
+    );
+    expect(result.migratedCount).toBe(1);
+    const [, expectedCurrent] = (deps.updatePaymentSlipUrlIfUnchangedFn as any).mock.calls[0];
+    expect(expectedCurrent).toBe(MANUS_URL);
+  });
+});
+
 describe("isAlreadyMigratedSportsValue - exact origin/hostname matching (P2)", () => {
   it("accepts an exact match against the known media.ipenovel.com domain", () => {
     expect(isAlreadyMigratedSportsValue("https://media.ipenovel.com/sports-matches/1/cover/x.webp")).toBe(true);

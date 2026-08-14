@@ -7,7 +7,7 @@ import { join } from "node:path";
 // the shared test collection config. Importing this module never triggers
 // main() itself (see its own isDirectExecution guard) - only the exported
 // functions are called directly below.
-import { parseArgs, reportCliCrash } from "../scripts/migrate-legacy-manus-assets-to-r2";
+import { parseArgs, reportCliCrash, formatContinuationAdvice } from "../scripts/migrate-legacy-manus-assets-to-r2";
 
 describe("migrate-legacy-manus-assets-to-r2.ts - parseArgs: general flags", () => {
   it("--dry-run alone is accepted, with the usual defaults", () => {
@@ -18,7 +18,7 @@ describe("migrate-legacy-manus-assets-to-r2.ts - parseArgs: general flags", () =
     expect(parseArgs(["--dry-run", "--limit=5"]).limit).toBe(5);
   });
 
-  it("rejects a non-positive --limit", () => {
+  it("rejects a non-positive or malformed --limit", () => {
     expect(() => parseArgs(["--limit=0"])).toThrow(/Invalid --limit/);
     expect(() => parseArgs(["--limit=-3"])).toThrow(/Invalid --limit/);
     expect(() => parseArgs(["--limit=abc"])).toThrow(/Invalid --limit/);
@@ -73,6 +73,62 @@ describe("migrate-legacy-manus-assets-to-r2.ts - parseArgs: general flags", () =
       startId: 42,
       column: "away",
     });
+  });
+});
+
+describe("migrate-legacy-manus-assets-to-r2.ts - parseArgs: strict integer parsing for --limit/--start-id (P2-2)", () => {
+  it.each(["20oops", "1e3", "20.5", "+20"])("rejects malformed --limit=%s", (value) => {
+    expect(() => parseArgs([`--limit=${value}`])).toThrow(/Invalid --limit/);
+  });
+
+  it.each(["100oops", "1e3", "10.5", "-0"])("rejects malformed --start-id=%s", (value) => {
+    expect(() => parseArgs([`--start-id=${value}`])).toThrow(/Invalid --start-id/);
+  });
+
+  it("--limit=20 is accepted", () => {
+    expect(parseArgs(["--dry-run", "--limit=20"]).limit).toBe(20);
+  });
+
+  it("--start-id=0 is accepted", () => {
+    expect(parseArgs(["--dry-run", "--start-id=0"]).startId).toBe(0);
+  });
+
+  it("--start-id=100 is accepted", () => {
+    expect(parseArgs(["--dry-run", "--start-id=100"]).startId).toBe(100);
+  });
+
+  it("accepts a --limit exactly at Number.MAX_SAFE_INTEGER", () => {
+    expect(parseArgs(["--dry-run", `--limit=${Number.MAX_SAFE_INTEGER}`]).limit).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
+  it("accepts a --start-id exactly at Number.MAX_SAFE_INTEGER", () => {
+    expect(parseArgs(["--dry-run", `--start-id=${Number.MAX_SAFE_INTEGER}`]).startId).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
+  it("rejects a --limit one past Number.MAX_SAFE_INTEGER", () => {
+    const tooBig = (Number.MAX_SAFE_INTEGER + 1).toString();
+    expect(() => parseArgs([`--limit=${tooBig}`])).toThrow(/Invalid --limit/);
+  });
+
+  it("rejects a --start-id one past Number.MAX_SAFE_INTEGER", () => {
+    const tooBig = (Number.MAX_SAFE_INTEGER + 1).toString();
+    expect(() => parseArgs([`--start-id=${tooBig}`])).toThrow(/Invalid --start-id/);
+  });
+
+  it("rejects a pathologically large digit string, far beyond Number.MAX_SAFE_INTEGER", () => {
+    expect(() => parseArgs(["--start-id=99999999999999999999"])).toThrow(/Invalid --start-id/);
+    expect(() => parseArgs(["--limit=99999999999999999999"])).toThrow(/Invalid --limit/);
+  });
+
+  it("never silently truncates or partially parses a malformed value", () => {
+    // "20oops" must never be silently accepted as 20.
+    let args: ReturnType<typeof parseArgs> | undefined;
+    try {
+      args = parseArgs(["--dry-run", "--limit=20oops"]);
+    } catch {
+      // expected
+    }
+    expect(args).toBeUndefined();
   });
 });
 
@@ -214,6 +270,40 @@ describe("migrate-legacy-manus-assets-to-r2.ts - package.json: no live-by-defaul
         expect(command, `script "${name}" must be --dry-run only`).toContain("--dry-run");
       }
     }
+  });
+});
+
+describe("migrate-legacy-manus-assets-to-r2.ts - formatContinuationAdvice: dry-run vs live (P2-3)", () => {
+  it("dry-run + remainingEligible prints dry-run-specific advice", () => {
+    const message = formatContinuationAdvice({ dryRun: true, limit: 20, startId: 0, type: "all" }, 5);
+    expect(message).toMatch(/re-validate the SAME first --limit=20 eligible/i);
+    expect(message).toMatch(/increase --limit/i);
+    expect(message).toMatch(/--type=payments.*--type=wallet.*--type=sports/i);
+  });
+
+  it("dry-run message does NOT say the same command picks up where it left off", () => {
+    const message = formatContinuationAdvice({ dryRun: true, limit: 20, startId: 0, type: "all" }, 5);
+    expect(message).not.toMatch(/picks up where this run left off/i);
+    expect(message).not.toMatch(/EXACT SAME command \(same --start-id/i);
+  });
+
+  it("live + remainingEligible prints exact-same-command resume advice", () => {
+    const message = formatContinuationAdvice({ dryRun: false, limit: 20, startId: 100, type: "payments" }, 5);
+    expect(message).toMatch(/re-run this EXACT SAME command \(same --start-id=100\)/i);
+    expect(message).toMatch(/picks up where this run left off/i);
+  });
+
+  it("live behavior remains unchanged: never claims dry-run-specific advice", () => {
+    const message = formatContinuationAdvice({ dryRun: false, limit: 20, startId: 0, type: "wallet" }, 3);
+    expect(message).not.toMatch(/re-validate the SAME first/i);
+    expect(message).not.toMatch(/dry-run never writes anything/i);
+  });
+
+  it("both messages mention the shared --limit=N context", () => {
+    const dryRunMessage = formatContinuationAdvice({ dryRun: true, limit: 20, startId: 0, type: "all" }, 5);
+    const liveMessage = formatContinuationAdvice({ dryRun: false, limit: 20, startId: 0, type: "payments" }, 5);
+    expect(dryRunMessage).toContain("--limit=20");
+    expect(liveMessage).toContain("--limit=20");
   });
 });
 

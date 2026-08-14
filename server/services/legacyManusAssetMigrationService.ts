@@ -341,16 +341,31 @@ function buildSportsMatchKey(matchId: number, column: SportsColumn): string {
 export type LegacyManusAssetMigrationType = "payments" | "wallet" | "sports" | "all";
 export type SportsColumn = "home" | "away" | "cover";
 
+/**
+ * `value` is the NORMALIZED (trimmed) DB value - used for URL parsing,
+ * classification (classifyRow), and the download itself. `rawValue` is the
+ * EXACT, byte-for-byte DB value with no trimming applied - used ONLY as the
+ * expected-old value for the final compare-and-swap DB write. These can
+ * differ for a historical row with incidental leading/trailing whitespace
+ * (e.g. DB value `" https://d2xsxph8kpxj0f.cloudfront.net/x.jpg "`): the
+ * CAS `WHERE column = ?` must match the exact stored bytes, or it matches
+ * zero rows forever even though the migration itself succeeds. `rawValue`
+ * is optional here (defaults to `value` at the CAS call sites below) purely
+ * so tests that don't care about whitespace can omit it - the real
+ * fetchCandidateRows() below always sets both explicitly.
+ */
 interface SlipCandidateRow {
   source: "payments" | "walletTopups";
   id: number;
   value: string;
+  rawValue?: string;
 }
 interface SportsCandidateRow {
   source: "sportsMatches";
   id: number;
   column: SportsColumn;
   value: string;
+  rawValue?: string;
 }
 export type CandidateRow = SlipCandidateRow | SportsCandidateRow;
 
@@ -471,8 +486,9 @@ export async function fetchCandidateRows(
       .where(and(isNotNull(payments.slipImageUrl), ne(payments.slipImageUrl, ""), gte(payments.id, startId)))
       .orderBy(asc(payments.id));
     for (const p of paymentRows) {
-      const value = (p.slipImageUrl || "").trim();
-      if (value) rows.push({ source: "payments", id: p.id, value });
+      const rawValue = p.slipImageUrl || "";
+      const value = rawValue.trim();
+      if (value) rows.push({ source: "payments", id: p.id, value, rawValue });
     }
   }
 
@@ -483,8 +499,9 @@ export async function fetchCandidateRows(
       .where(and(isNotNull(walletTopups.slipImageUrl), ne(walletTopups.slipImageUrl, ""), gte(walletTopups.id, startId)))
       .orderBy(asc(walletTopups.id));
     for (const w of walletRows) {
-      const value = (w.slipImageUrl || "").trim();
-      if (value) rows.push({ source: "walletTopups", id: w.id, value });
+      const rawValue = w.slipImageUrl || "";
+      const value = rawValue.trim();
+      if (value) rows.push({ source: "walletTopups", id: w.id, value, rawValue });
     }
   }
 
@@ -502,9 +519,9 @@ export async function fetchCandidateRows(
     const columnsToCheck: SportsColumn[] = column ? [column] : ["home", "away", "cover"];
     for (const m of sportsRows) {
       for (const col of columnsToCheck) {
-        const raw = col === "home" ? m.homeTeamImageUrl : col === "away" ? m.awayTeamImageUrl : m.coverImageUrl;
-        const value = (raw || "").trim();
-        if (value) rows.push({ source: "sportsMatches", id: m.id, column: col, value });
+        const rawValue = (col === "home" ? m.homeTeamImageUrl : col === "away" ? m.awayTeamImageUrl : m.coverImageUrl) || "";
+        const value = rawValue.trim();
+        if (value) rows.push({ source: "sportsMatches", id: m.id, column: col, value, rawValue });
       }
     }
   }
@@ -606,15 +623,18 @@ async function migrateSlipRow(
 
     // 8: ONLY THEN update the DB row - a failure at any step above throws
     // before this line is ever reached, leaving the row (and the legacy
-    // Manus source) completely untouched. Compare-and-swap on the EXACT
-    // value read at candidate-discovery time (row.value) - if the column no
-    // longer holds that value (a concurrent re-submission/edit, or the row
-    // was deleted), this returns false instead of overwriting whatever is
-    // there now.
+    // Manus source) completely untouched. Compare-and-swap on the EXACT RAW
+    // (untrimmed) value read at candidate-discovery time - never the
+    // normalized row.value, which would never match a DB column that has
+    // incidental leading/trailing whitespace (WHERE column = ? is an exact
+    // byte comparison). If the column no longer holds that exact value (a
+    // concurrent re-submission/edit, or the row was deleted), this returns
+    // false instead of overwriting whatever is there now.
+    const expectedCurrentValue = row.rawValue ?? row.value;
     const wonCas =
       row.source === "payments"
-        ? await updatePaymentSlipUrlIfUnchangedFn(row.id, row.value, ref)
-        : await updateWalletTopupSlipUrlIfUnchangedFn(row.id, row.value, ref);
+        ? await updatePaymentSlipUrlIfUnchangedFn(row.id, expectedCurrentValue, ref)
+        : await updateWalletTopupSlipUrlIfUnchangedFn(row.id, expectedCurrentValue, ref);
 
     if (!wonCas) {
       // The upload already succeeded and is now an orphaned private R2
@@ -676,13 +696,16 @@ async function migrateSportsRow(
     }
 
     // 8: ONLY THEN update the single requested column on this match row,
-    // via compare-and-swap on the EXACT value read at candidate-discovery
-    // time (row.value) - if that column no longer holds it (a concurrent
-    // admin edit, or the row was deleted), this returns false instead of
-    // overwriting whatever is there now.
+    // via compare-and-swap on the EXACT RAW (untrimmed) value read at
+    // candidate-discovery time - never the normalized row.value, which
+    // would never match a DB column that has incidental leading/trailing
+    // whitespace. If that column no longer holds that exact value (a
+    // concurrent admin edit, or the row was deleted), this returns false
+    // instead of overwriting whatever is there now.
     const columnField =
       row.column === "home" ? "homeTeamImageUrl" : row.column === "away" ? "awayTeamImageUrl" : "coverImageUrl";
-    const wonCas = await updateSportsMatchImageUrlIfUnchangedFn(row.id, columnField, row.value, uploaded.url);
+    const expectedCurrentValue = row.rawValue ?? row.value;
+    const wonCas = await updateSportsMatchImageUrlIfUnchangedFn(row.id, columnField, expectedCurrentValue, uploaded.url);
 
     if (!wonCas) {
       // Unlike the private-slip path, r2Storage.ts (the PUBLIC R2 adapter)

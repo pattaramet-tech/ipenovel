@@ -205,16 +205,24 @@ beyond a few hundred per invocation — sequential processing means a very
 large `--limit` mostly just makes one run take longer, with no additional
 safety benefit.
 
-## Resume procedure
+## Resume procedure (LIVE only — see "Dry-run coverage" below for --dry-run)
 
 The script is safe to stop (Ctrl-C) and restart at any time.
 
-**PRIMARY RESUME PROCEDURE: rerun the exact same command, with the same
-`--start-id` value.** A **successfully migrated** row no longer contains the
-Manus hostname, so it's automatically excluded (`already migrated`) on the
-next run — this naturally reveals the next batch of still-eligible rows, no
-bookkeeping required. A **failed** row is left completely unchanged, so it's
-automatically retried (still `eligible`) on the next run too.
+**PRIMARY RESUME PROCEDURE FOR `--live`: rerun the exact same command, with
+the same `--start-id` value.** A **successfully migrated** row no longer
+contains the Manus hostname, so it's automatically excluded (`already
+migrated`) on the next run — this naturally reveals the next batch of
+still-eligible rows, no bookkeeping required. A **failed** row is left
+completely unchanged, so it's automatically retried (still `eligible`) on
+the next run too.
+
+**This "rerun the same command" advice applies ONLY to `--live`.**
+`--dry-run` never writes anything — not to R2, not to the DB — so
+re-running the exact same `--dry-run --limit=N --start-id=M` command
+re-validates the SAME first `N` eligible rows again, every time. It does
+**not** advance on its own. See "Dry-run coverage" immediately below for
+how to actually preview further rows.
 
 **`--start-id=N` is only an explicit LOWER-BOUND FILTER** for an operator
 who has independently verified that every relevant row below `N` is already
@@ -230,12 +238,13 @@ count — doing so can **permanently skip rows**. Concretely:
   `--start-id`. Rerunning with the *same* `--start-id` instead finds them
   normally, since `home` is now `already_migrated` and no longer counts
   against `--limit`.
-- **`--type=all` draws from three tables whose ids are unrelated to each
-  other.** If the last row processed under `--type=all` happens to be
-  `payments #50` and the operator sets `--start-id=51` for the next run,
-  any still-eligible `walletTopups` or `sportsMatches` row with an id below
-  51 (e.g. `walletTopups #12`) is silently skipped — its id has nothing to
-  do with `payments #50`'s id.
+- **`--type=all` (dry-run only — `--live` always requires a single,
+  explicit `--type`) draws from three tables whose ids are unrelated to
+  each other.** If the last row previewed under `--dry-run --type=all`
+  happens to be `payments #50` and the operator sets `--start-id=51` for
+  the next preview, any still-eligible `walletTopups` or `sportsMatches`
+  row with an id below 51 (e.g. `walletTopups #12`) is silently skipped —
+  its id has nothing to do with `payments #50`'s id.
 - **A failed row keeps its original (possibly low) id forever.** If
   `payments #3` fails (e.g. a transient network error) while `payments #50`
   succeeds, advancing `--start-id` to anything above 3 — even if it "looks
@@ -247,6 +256,24 @@ very large one-off backfill), only ever raise `--start-id` after
 independently confirming (via the dry-run/validation procedures below) that
 every row below the new value is genuinely done — never simply because a
 previous run "got that far".
+
+### Dry-run coverage (how to preview MORE rows, since --dry-run never advances on its own)
+
+`--dry-run` mutates nothing — no upload, no DB write — so re-running the
+exact same `--dry-run --limit=N --start-id=M` command always re-validates
+the SAME first `N` eligible rows, forever; it will never "pick up where it
+left off" the way a `--live` run does. The CLI's own "Not processed this
+run" message says so explicitly when this applies. To actually preview more
+rows:
+
+- **Raise `--limit`** (e.g. `--limit=20` → `--limit=100` → `--limit=500`)
+  to preview more rows in a single dry-run call.
+- **Dry-run one asset class at a time** — `--type=payments`, then
+  `--type=wallet`, then `--type=sports` — instead of `--type=all`, so each
+  preview stays focused and its row count is easier to reason about.
+- `--start-id` remains only a manually-verified lower-bound filter here
+  too, exactly as described above — never derive a new value from a
+  previous dry-run's "remaining" count.
 
 ## Validation procedure
 

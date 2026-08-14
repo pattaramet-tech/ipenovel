@@ -94,6 +94,34 @@ interface CliArgs {
 }
 
 /**
+ * Strict base-10, non-negative integer parser for --limit/--start-id.
+ * `parseInt()` alone silently accepts partial/malformed input -
+ * `parseInt("20oops", 10) === 20`, `parseInt("1e3", 10) === 1`,
+ * `parseInt("20.5", 10) === 20` - so a typo could silently run with a
+ * different limit/start-id than the operator typed. This instead requires
+ * the ENTIRE raw string to be nothing but ASCII digits before any
+ * conversion happens at all - rejecting "20oops", "1e3", "20.5", "+20",
+ * "-0", and any other non-digit character outright, never truncating or
+ * partially parsing. Also rejects anything that would round-trip through
+ * `Number()` imprecisely (i.e. exceeds `Number.MAX_SAFE_INTEGER`) - a
+ * pathologically large digit string is rejected rather than silently
+ * losing precision.
+ */
+function parseStrictNonNegativeInteger(rawValue: string, flagLabel: string, minValue: number): number {
+  if (!/^[0-9]+$/.test(rawValue)) {
+    throw new Error(`Invalid ${flagLabel} value: "${rawValue}" (must be a plain base-10 integer, e.g. "20")`);
+  }
+  const parsed = Number(rawValue);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`Invalid ${flagLabel} value: "${rawValue}" (exceeds the maximum safe integer)`);
+  }
+  if (parsed < minValue) {
+    throw new Error(`Invalid ${flagLabel} value: "${rawValue}" (must be >= ${minValue})`);
+  }
+  return parsed;
+}
+
+/**
  * Fails closed: exactly one of --dry-run / --live is required, and a live
  * run additionally requires an explicit, non-"all" --type. Every rejection
  * here throws synchronously, before this function returns and therefore
@@ -116,17 +144,9 @@ export function parseArgs(argv: string[]): CliArgs {
     } else if (raw === "--live") {
       liveFlag = true;
     } else if (raw.startsWith("--limit=")) {
-      const parsed = parseInt(raw.slice("--limit=".length), 10);
-      if (!Number.isFinite(parsed) || parsed <= 0) {
-        throw new Error(`Invalid --limit value: "${raw}"`);
-      }
-      limit = parsed;
+      limit = parseStrictNonNegativeInteger(raw.slice("--limit=".length), "--limit", 1);
     } else if (raw.startsWith("--start-id=")) {
-      const parsed = parseInt(raw.slice("--start-id=".length), 10);
-      if (!Number.isFinite(parsed) || parsed < 0) {
-        throw new Error(`Invalid --start-id value: "${raw}"`);
-      }
-      startId = parsed;
+      startId = parseStrictNonNegativeInteger(raw.slice("--start-id=".length), "--start-id", 0);
     } else if (raw.startsWith("--type=")) {
       const value = raw.slice("--type=".length);
       if (value !== "payments" && value !== "wallet" && value !== "sports" && value !== "all") {
@@ -176,6 +196,55 @@ export function parseArgs(argv: string[]): CliArgs {
   }
 
   return { dryRun: dryRunFlag, limit, type, startId, column };
+}
+
+/**
+ * The correct "how do I see the rest" advice is DIFFERENT for dry-run vs
+ * live, and printing the live-mode advice for a dry-run (or vice versa) is
+ * actively misleading:
+ *
+ *   LIVE: a successfully migrated row stops matching the Manus hostname,
+ *   so re-running the EXACT SAME command (same --start-id) naturally
+ *   advances through the table with zero bookkeeping - already-migrated
+ *   rows are excluded automatically.
+ *
+ *   DRY-RUN: nothing is ever written - not to R2, not to the DB - so
+ *   re-running the exact same --dry-run/--limit/--start-id combination
+ *   re-validates the SAME first --limit eligible row(s) again, forever. It
+ *   must NEVER claim the same command "picks up where it left off". The
+ *   only ways to preview further rows are to raise --limit, or to dry-run
+ *   one --type at a time.
+ *
+ * In neither mode is --start-id ever an automatic cursor - only a
+ * manually-verified lower-bound filter (see
+ * docs/LEGACY_MANUS_ASSET_MIGRATION.md's "Resume procedure"). Exported for
+ * direct testing.
+ */
+export function formatContinuationAdvice(
+  args: Pick<CliArgs, "dryRun" | "limit" | "startId" | "type">,
+  remainingEligible: number
+): string {
+  const header = `\nNot processed this run: ${remainingEligible} more eligible row(s) beyond --limit=${args.limit}. `;
+
+  if (args.dryRun) {
+    return (
+      header +
+      `Re-running this EXACT SAME --dry-run command will re-validate the SAME first --limit=${args.limit} eligible ` +
+      "row(s) again - dry-run never writes anything, so it never advances coverage on its own. To preview further " +
+      `rows, increase --limit (e.g. --limit=${args.limit * 2}), and/or dry-run one asset class at a time ` +
+      "(--type=payments / --type=wallet / --type=sports) to keep each preview focused. --start-id is only a " +
+      "manually-verified lower-bound filter here, never an automatic cursor."
+    );
+  }
+
+  return (
+    header +
+    `To continue, re-run this EXACT SAME command (same --start-id=${args.startId}) - already-migrated rows are ` +
+    "automatically skipped, so the same command naturally picks up where this run left off. Do not advance " +
+    "--start-id based on the last-seen id or this count: a single sports match can have more than one pending " +
+    "column (home/away/cover), and a failed row keeps its original id forever - advancing --start-id past either " +
+    "would skip rows permanently. Alternatively, increase --limit to process more rows in one run."
+  );
 }
 
 /**
@@ -264,14 +333,7 @@ export async function main(): Promise<void> {
   console.log(`Failed:              ${result.failedCount}`);
   console.log(`Remaining:           ${result.remainingEligible}`);
   if (result.remainingEligible > 0) {
-    console.log(
-      `\nNot processed this run: ${result.remainingEligible} more eligible row(s) beyond --limit=${args.limit}. ` +
-        `To continue, re-run this EXACT SAME command (same --start-id=${args.startId}) - already-migrated rows are ` +
-        "automatically skipped, so the same command naturally picks up where this run left off. Do not advance " +
-        "--start-id: a single sports match can have more than one pending column, --type=all spans tables with " +
-        "unrelated ids, and a failed row keeps its original id - advancing --start-id past any of them would skip " +
-        "them permanently. Alternatively, increase --limit to process more rows in one run."
-    );
+    console.log(formatContinuationAdvice(args, result.remainingEligible));
   }
 
   if (result.failedCount > 0) {
