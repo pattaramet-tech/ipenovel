@@ -101,9 +101,22 @@ image, so a migrated image and a new upload always look identical.
 - **No unbounded downloads.** HTTPS-only, hostname must exactly equal
   `d2xsxph8kpxj0f.cloudfront.net`, `redirect: "error"` (never follows a
   redirect), a fetch timeout, a `Content-Length` pre-check, and a hard
-  streamed-byte ceiling enforced independently of any header. A response
-  whose declared `Content-Type` doesn't match its actual byte content
-  (magic-number check) is rejected too.
+  streamed-byte ceiling enforced independently of any header.
+- **MIME type is decided ONLY by the actual downloaded bytes, never the
+  declared `Content-Type` header (or any filename/extension).** Some
+  historical Manus objects have an outright wrong `Content-Type` - proven
+  on staging, where two payment slips (`payment #4440001`,
+  `payment #4770004`) were served as `Content-Type: image/jpeg` but are
+  actually PNGs (`89 50 4E 47 0D 0A 1A 0A`) - so the header is read nowhere
+  in the download path. After the bounded read completes, the bytes are
+  matched against a fixed set of real signatures (PNG, JPEG, PDF's `%PDF-`,
+  WebP's `RIFF`/`WEBP` markers); a match that isn't in the asset class's
+  allowlist, or no match at all (HTML, JSON, arbitrary binary), is rejected
+  as `UNSUPPORTED_TYPE` regardless of what any header claimed. When the
+  detected type differs from what the header declared, the migration
+  **normalizes to the detected type** - the R2 upload's `Content-Type` and
+  the generated object key's file extension (`.png`/`.jpg`/`.pdf`) both
+  follow the real bytes, never the header.
 - **No provider-independent scope creep.** Only three tables/five columns
   are ever written: `payments.slipImageUrl`, `walletTopups.slipImageUrl`,
   and `sportsMatches.{homeTeamImageUrl,awayTeamImageUrl,coverImageUrl}` —

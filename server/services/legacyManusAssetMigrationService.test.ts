@@ -21,6 +21,13 @@ function bufferedResponse(bytes: Uint8Array, contentType: string, status = 200):
 
 const REAL_JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
 const REAL_PDF_MAGIC = Buffer.from("%PDF-1.4\n%fake-pdf-body", "ascii");
+const REAL_PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]);
+const REAL_WEBP_MAGIC = Buffer.concat([
+  Buffer.from("RIFF", "ascii"),
+  Buffer.from([0x24, 0x00, 0x00, 0x00]),
+  Buffer.from("WEBPVP8 ", "ascii"),
+]);
+const HTML_BYTES = Buffer.from("<!DOCTYPE html><html><body>Not Found</body></html>", "ascii");
 
 function makeFullDeps(overrides: Partial<LegacyManusAssetMigrationDeps> = {}) {
   return {
@@ -125,25 +132,12 @@ describe("downloadLegacyManusAsset - bounded hardened download", () => {
     ).rejects.toMatchObject({ reason: "TOO_LARGE" });
   });
 
-  it("17. rejects an unsupported/invalid MIME type", async () => {
+  it("17. rejects a payload whose ACTUAL bytes don't match any known signature (declared Content-Type is irrelevant)", async () => {
     const response = bufferedResponse(new Uint8Array(10), "text/html", 200);
     const fetchImpl = vi.fn(async () => response);
     await expect(
       downloadLegacyManusAsset(MANUS_URL, {
         allowedMimeTypes: new Set(["image/png", "image/jpeg"]),
-        maxBytes: 1024,
-        fetchImpl,
-      })
-    ).rejects.toMatchObject({ reason: "UNSUPPORTED_TYPE" });
-  });
-
-  it("rejects a payload whose bytes don't match the declared Content-Type (magic-byte mismatch)", async () => {
-    const fakeJpegBytes = Buffer.from("this is not actually a jpeg");
-    const response = bufferedResponse(fakeJpegBytes, "image/jpeg", 200);
-    const fetchImpl = vi.fn(async () => response);
-    await expect(
-      downloadLegacyManusAsset(MANUS_URL, {
-        allowedMimeTypes: new Set(["image/jpeg"]),
         maxBytes: 1024,
         fetchImpl,
       })
@@ -158,27 +152,171 @@ describe("downloadLegacyManusAsset - bounded hardened download", () => {
     ).rejects.toMatchObject({ reason: "NON_2XX_RESPONSE" });
   });
 
-  it("accepts a real, correctly-typed JPEG payload", async () => {
-    const response = bufferedResponse(REAL_JPEG_MAGIC, "image/jpeg", 200);
-    const fetchImpl = vi.fn(async () => response);
-    const result = await downloadLegacyManusAsset(MANUS_URL, {
-      allowedMimeTypes: new Set(["image/jpeg"]),
-      maxBytes: 1024,
-      fetchImpl,
-    });
-    expect(result.contentType).toBe("image/jpeg");
-    expect(result.buffer.equals(REAL_JPEG_MAGIC)).toBe(true);
+  it("passes redirect: \"error\" to fetchImpl - redirect protection unchanged", async () => {
+    const fetchImpl = vi.fn(async () => bufferedResponse(REAL_PNG_MAGIC, "image/png", 200));
+    await downloadLegacyManusAsset(MANUS_URL, { allowedMimeTypes: new Set(["image/png"]), maxBytes: 1024, fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledWith(MANUS_URL, expect.objectContaining({ redirect: "error" }));
   });
 
-  it("accepts a real, correctly-typed PDF payload", async () => {
-    const response = bufferedResponse(REAL_PDF_MAGIC, "application/pdf", 200);
-    const fetchImpl = vi.fn(async () => response);
-    const result = await downloadLegacyManusAsset(MANUS_URL, {
-      allowedMimeTypes: new Set(["application/pdf"]),
-      maxBytes: 1024,
-      fetchImpl,
+  describe("MIME detection is based ONLY on actual magic bytes, never the declared Content-Type header (historical Manus MIME mismatch fix)", () => {
+    it("1. declared JPEG + actual JPEG bytes -> PASS, contentType=image/jpeg", async () => {
+      const response = bufferedResponse(REAL_JPEG_MAGIC, "image/jpeg", 200);
+      const fetchImpl = vi.fn(async () => response);
+      const result = await downloadLegacyManusAsset(MANUS_URL, {
+        allowedMimeTypes: new Set(["image/jpeg"]),
+        maxBytes: 1024,
+        fetchImpl,
+      });
+      expect(result.contentType).toBe("image/jpeg");
+      expect(result.buffer.equals(REAL_JPEG_MAGIC)).toBe(true);
     });
-    expect(result.contentType).toBe("application/pdf");
+
+    it("2. declared PNG + actual PNG bytes -> PASS, contentType=image/png", async () => {
+      const response = bufferedResponse(REAL_PNG_MAGIC, "image/png", 200);
+      const fetchImpl = vi.fn(async () => response);
+      const result = await downloadLegacyManusAsset(MANUS_URL, {
+        allowedMimeTypes: new Set(["image/png"]),
+        maxBytes: 1024,
+        fetchImpl,
+      });
+      expect(result.contentType).toBe("image/png");
+      expect(result.buffer.equals(REAL_PNG_MAGIC)).toBe(true);
+    });
+
+    it("3. declared JPEG + actual PNG bytes -> PASS and NORMALIZE to image/png (the exact staging bug: payment #4440001/#4770004)", async () => {
+      const response = bufferedResponse(REAL_PNG_MAGIC, "image/jpeg", 200);
+      const fetchImpl = vi.fn(async () => response);
+      const result = await downloadLegacyManusAsset(MANUS_URL, {
+        allowedMimeTypes: new Set(["image/jpeg", "image/png"]),
+        maxBytes: 1024,
+        fetchImpl,
+      });
+      // Accepted, and the returned type is the ACTUAL one - never the
+      // declared "image/jpeg" the response header claimed.
+      expect(result.contentType).toBe("image/png");
+    });
+
+    it("4. declared PNG + actual JPEG bytes -> PASS and NORMALIZE to image/jpeg", async () => {
+      const response = bufferedResponse(REAL_JPEG_MAGIC, "image/png", 200);
+      const fetchImpl = vi.fn(async () => response);
+      const result = await downloadLegacyManusAsset(MANUS_URL, {
+        allowedMimeTypes: new Set(["image/jpeg", "image/png"]),
+        maxBytes: 1024,
+        fetchImpl,
+      });
+      expect(result.contentType).toBe("image/jpeg");
+    });
+
+    it("5. declared JPEG + actual HTML bytes -> UNSUPPORTED_TYPE", async () => {
+      const response = bufferedResponse(HTML_BYTES, "image/jpeg", 200);
+      const fetchImpl = vi.fn(async () => response);
+      await expect(
+        downloadLegacyManusAsset(MANUS_URL, {
+          allowedMimeTypes: new Set(["image/jpeg", "image/png"]),
+          maxBytes: 1024,
+          fetchImpl,
+        })
+      ).rejects.toMatchObject({ reason: "UNSUPPORTED_TYPE" });
+    });
+
+    it("6. declared application/octet-stream + actual PNG bytes -> ACCEPT (only real magic bytes decide - see security rationale below)", async () => {
+      // SECURITY RATIONALE: downloadLegacyManusAsset() never reads the
+      // declared Content-Type header for ANY accept/reject decision - the
+      // ONLY thing that can ever grant acceptance is a genuine, structural
+      // magic-byte match against the allowlisted signatures, and the ONLY
+      // thing that can ever cause rejection is the ABSENCE of such a match.
+      // An operator-hostile or simply generic/wrong header (octet-stream,
+      // text/html, application/x-arbitrary, or no header at all) can
+      // therefore never bypass validation to smuggle in a disallowed type,
+      // and can never incorrectly block a genuinely valid, allowlisted
+      // asset either - the header carries zero weight in either direction.
+      const response = bufferedResponse(REAL_PNG_MAGIC, "application/octet-stream", 200);
+      const fetchImpl = vi.fn(async () => response);
+      const result = await downloadLegacyManusAsset(MANUS_URL, {
+        allowedMimeTypes: new Set(["image/jpeg", "image/png"]),
+        maxBytes: 1024,
+        fetchImpl,
+      });
+      expect(result.contentType).toBe("image/png");
+    });
+
+    it("6b. declared application/octet-stream + actual bytes matching NO signature -> UNSUPPORTED_TYPE (octet-stream never bypasses validation)", async () => {
+      const response = bufferedResponse(HTML_BYTES, "application/octet-stream", 200);
+      const fetchImpl = vi.fn(async () => response);
+      await expect(
+        downloadLegacyManusAsset(MANUS_URL, {
+          allowedMimeTypes: new Set(["image/jpeg", "image/png", "application/pdf"]),
+          maxBytes: 1024,
+          fetchImpl,
+        })
+      ).rejects.toMatchObject({ reason: "UNSUPPORTED_TYPE" });
+    });
+
+    it("7. accepts a real, correctly-typed PDF payload", async () => {
+      const response = bufferedResponse(REAL_PDF_MAGIC, "application/pdf", 200);
+      const fetchImpl = vi.fn(async () => response);
+      const result = await downloadLegacyManusAsset(MANUS_URL, {
+        allowedMimeTypes: new Set(["application/pdf"]),
+        maxBytes: 1024,
+        fetchImpl,
+      });
+      expect(result.contentType).toBe("application/pdf");
+    });
+
+    it("8. rejects a malformed/truncated PDF (bytes don't actually start with %PDF-)", async () => {
+      const malformedPdf = Buffer.from("this looks like a pdf but isn't", "ascii");
+      const response = bufferedResponse(malformedPdf, "application/pdf", 200);
+      const fetchImpl = vi.fn(async () => response);
+      await expect(
+        downloadLegacyManusAsset(MANUS_URL, {
+          allowedMimeTypes: new Set(["application/pdf"]),
+          maxBytes: 1024,
+          fetchImpl,
+        })
+      ).rejects.toMatchObject({ reason: "UNSUPPORTED_TYPE" });
+    });
+
+    it("accepts a real, correctly-typed WebP payload (RIFF....WEBP signature) when allowed (sports)", async () => {
+      const response = bufferedResponse(REAL_WEBP_MAGIC, "image/webp", 200);
+      const fetchImpl = vi.fn(async () => response);
+      const result = await downloadLegacyManusAsset(MANUS_URL, {
+        allowedMimeTypes: new Set(["image/jpeg", "image/png", "image/webp"]),
+        maxBytes: 1024,
+        fetchImpl,
+      });
+      expect(result.contentType).toBe("image/webp");
+    });
+
+    it("rejects a WebP-shaped RIFF payload that isn't actually WEBP (wrong FourCC at offset 8)", async () => {
+      const notWebp = Buffer.concat([
+        Buffer.from("RIFF", "ascii"),
+        Buffer.from([0x10, 0x00, 0x00, 0x00]),
+        Buffer.from("AVI garbage", "ascii"),
+      ]);
+      const response = bufferedResponse(notWebp, "image/webp", 200);
+      const fetchImpl = vi.fn(async () => response);
+      await expect(
+        downloadLegacyManusAsset(MANUS_URL, {
+          allowedMimeTypes: new Set(["image/webp"]),
+          maxBytes: 1024,
+          fetchImpl,
+        })
+      ).rejects.toMatchObject({ reason: "UNSUPPORTED_TYPE" });
+    });
+
+    it("detected type must ALSO be in the caller's allowlist - a real PNG is rejected for an asset class that doesn't allow it", async () => {
+      // Sports images never allow application/pdf - a genuine, correctly-
+      // detected PDF must still be rejected there.
+      const response = bufferedResponse(REAL_PDF_MAGIC, "application/pdf", 200);
+      const fetchImpl = vi.fn(async () => response);
+      await expect(
+        downloadLegacyManusAsset(MANUS_URL, {
+          allowedMimeTypes: new Set(["image/jpeg", "image/png", "image/webp"]),
+          maxBytes: 1024,
+          fetchImpl,
+        })
+      ).rejects.toMatchObject({ reason: "UNSUPPORTED_TYPE" });
+    });
   });
 });
 
@@ -288,7 +426,71 @@ describe("runLegacyManusAssetMigrationBatch", () => {
     expect(ref).toMatch(/^r2p:payment-slips\/legacy\/wallet-topups\/6\//);
   });
 
-  it("11. successful sports upload updates ONLY the requested column", async () => {
+  describe("11. object key extension always comes from the normalized ACTUAL MIME, never the declared header (payment slips)", () => {
+    it("actual PNG -> key ends in .png", async () => {
+      const rows: CandidateRow[] = [{ source: "payments", id: 60, value: MANUS_URL }];
+      const deps = makeFullDeps({
+        downloadFn: vi.fn(async () => ({ buffer: REAL_PNG_MAGIC, contentType: "image/png" })),
+      });
+      await runLegacyManusAssetMigrationBatch(
+        { dryRun: false, type: "payments", limit: 10 },
+        { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
+      );
+      const [, , newRef] = (deps.updatePaymentSlipUrlIfUnchangedFn as any).mock.calls[0];
+      expect(newRef).toMatch(/\.png$/);
+    });
+
+    it("actual JPEG -> key ends in .jpg", async () => {
+      const rows: CandidateRow[] = [{ source: "payments", id: 61, value: MANUS_URL }];
+      const deps = makeFullDeps({
+        downloadFn: vi.fn(async () => ({ buffer: REAL_JPEG_MAGIC, contentType: "image/jpeg" })),
+      });
+      await runLegacyManusAssetMigrationBatch(
+        { dryRun: false, type: "payments", limit: 10 },
+        { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
+      );
+      const [, , newRef] = (deps.updatePaymentSlipUrlIfUnchangedFn as any).mock.calls[0];
+      expect(newRef).toMatch(/\.jpg$/);
+    });
+
+    it("actual PDF -> key ends in .pdf", async () => {
+      const rows: CandidateRow[] = [{ source: "payments", id: 62, value: MANUS_URL }];
+      const deps = makeFullDeps({
+        downloadFn: vi.fn(async () => ({ buffer: REAL_PDF_MAGIC, contentType: "application/pdf" })),
+      });
+      await runLegacyManusAssetMigrationBatch(
+        { dryRun: false, type: "payments", limit: 10 },
+        { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
+      );
+      const [, , newRef] = (deps.updatePaymentSlipUrlIfUnchangedFn as any).mock.calls[0];
+      expect(newRef).toMatch(/\.pdf$/);
+    });
+
+    it("declared header would have said .jpg, but the download function's ACTUAL detected type (image/png) is what determines the key - proving end-to-end wiring, not just the low-level detector", async () => {
+      // Simulates exactly the staging bug: the row's stored value has no
+      // notion of a declared header (it's just a URL), but downloadFn
+      // (which internally does the real magic-byte detection tested above)
+      // reports back the TRUE type it found, and that is what the rest of
+      // the pipeline (key extension, R2 Content-Type) must use.
+      const rows: CandidateRow[] = [{ source: "payments", id: 63, value: MANUS_URL }];
+      const deps = makeFullDeps({
+        downloadFn: vi.fn(async () => ({ buffer: REAL_PNG_MAGIC, contentType: "image/png" })),
+        putPrivateObjectFn: vi.fn(async (_ctx: any, key: string, _data: Buffer, contentType: string) => {
+          expect(contentType).toBe("image/png");
+          return { key };
+        }),
+      });
+      const result = await runLegacyManusAssetMigrationBatch(
+        { dryRun: false, type: "payments", limit: 10 },
+        { ...deps, fetchCandidateRowsFn: vi.fn(async () => rows) }
+      );
+      expect(result.migratedCount).toBe(1);
+      const [, , newRef] = (deps.updatePaymentSlipUrlIfUnchangedFn as any).mock.calls[0];
+      expect(newRef).toMatch(/\.png$/);
+    });
+  });
+
+  it("11b. successful sports upload updates ONLY the requested column", async () => {
     const rows: CandidateRow[] = [{ source: "sportsMatches", id: 8, column: "home", value: MANUS_URL }];
     const deps = makeFullDeps();
     const result = await runLegacyManusAssetMigrationBatch(
