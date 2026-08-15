@@ -61,4 +61,15 @@ describe("Payment QR image - Manus CDN removal static assertions", () => {
     expect(source).toContain('merchantCode: "KB000002283068"');
     expect(source).toContain('merchantTransactionCode: "KPS004KB000002283068"');
   });
+
+  it("vite.config.ts wires up the fail-closed production-build gate for the payment QR URL", () => {
+    // Static wiring proof - the real end-to-end behavior (a real `vite
+    // build` actually failing) is proven by
+    // paymentQrImageUrlViteBuildGate.subprocess.test.ts; this just guards
+    // against a future refactor silently dropping the import/call and
+    // leaving the gate unreachable code.
+    const source = readFileSync(join(__dirname, "..", "..", "..", "vite.config.ts"), "utf8");
+    expect(source).toMatch(/validatePaymentQrImageUrlForProduction/);
+    expect(source).toMatch(/process\.argv\.includes\(\s*["']build["']\s*\)/);
+  });
 });
