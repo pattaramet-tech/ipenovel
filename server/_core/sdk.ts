@@ -6,7 +6,7 @@ import { SignJWT, jwtVerify } from "jose";
 import type { User } from "../../drizzle/schema";
 import * as db from "../db";
 import { AnonymousCredentialError } from "./authErrors";
-import { ENV } from "./env";
+import { ENV, isManusAuthActive } from "./env";
 import { normalizeProviderName } from "./providerName";
 import type {
   ExchangeTokenRequest,
@@ -462,14 +462,29 @@ class SDKServer {
     const signedInAt = new Date();
     let user = await db.getUserByOpenId(sessionUserId);
 
-    // If user not in DB, sync from OAuth server automatically. Deliberately
-    // NOT wrapped in a try/catch that falls back to anonymous: a failure
-    // here is the outbound call to the OAuth server or a database write,
-    // i.e. an infrastructure failure - not proof the session is invalid -
-    // so it must propagate and surface as a real error (see
-    // server/_core/context.ts), never be silently treated as "not logged
-    // in".
-    if (!user) {
+    // If user not in DB, sync from OAuth server automatically - but ONLY
+    // when Manus auth is actually active ("manus" or "transition" - see
+    // isManusAuthActive). This used to run unconditionally, regardless of
+    // AUTH_PROVIDER: a verified session with no matching DB row would
+    // still trigger an outbound call to Manus's OAuth server even on a
+    // deployment fully cut over to Google (AUTH_PROVIDER=google), where
+    // Manus may not be reachable at all and no code path is supposed to
+    // depend on it. That was the one un-gated edge case in the whole auth
+    // system - every other Manus-specific route/handler already checks
+    // isManusAuthActive()/isGoogleAuthActive() before doing anything
+    // provider-specific; this was the exception. When Manus auth is
+    // inactive, an orphaned session (valid signature, no backing user row)
+    // now resolves directly to the same "no_user_record" outcome as if the
+    // sync had run and still found nothing - see the `if (!user)` below -
+    // without ever calling getUserInfoWithJwt or touching OAUTH_SERVER_URL.
+    //
+    // Deliberately NOT wrapped in a try/catch that falls back to
+    // anonymous: a failure here is the outbound call to the OAuth server
+    // or a database write, i.e. an infrastructure failure - not proof the
+    // session is invalid - so it must propagate and surface as a real
+    // error (see server/_core/context.ts), never be silently treated as
+    // "not logged in".
+    if (!user && isManusAuthActive()) {
       const userInfo = await this.getUserInfoWithJwt(sessionCookie ?? "");
       await db.upsertUser({
         openId: userInfo.openId,
@@ -485,9 +500,12 @@ class SDKServer {
     }
 
     if (!user) {
-      // Session verified fine and the OAuth sync succeeded, but there is
-      // still no matching user record - an expected "no account" outcome.
-      // Not cleared, for the same reason as the admin case above.
+      // Two cases land here, both resolved identically: (a) Manus auth is
+      // active but the OAuth sync above still found nothing, or (b) Manus
+      // auth is inactive, so the sync attempt was skipped entirely. Either
+      // way this is a verified session with no way to resolve a backing
+      // user record - an expected "no account" outcome, not cleared, for
+      // the same reason as the admin case above.
       throw new AnonymousCredentialError("No user record for this session", "no_user_record");
     }
 
