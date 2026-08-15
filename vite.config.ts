@@ -3,8 +3,9 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import fs from "node:fs";
 import path from "node:path";
-import { defineConfig, type Plugin, type ViteDevServer } from "vite";
+import { defineConfig, loadEnv, type Plugin, type ViteDevServer } from "vite";
 import { vitePluginManusRuntime } from "vite-plugin-manus-runtime";
+import { validatePaymentQrImageUrlForProduction } from "./client/src/constants/paymentQrImageUrl";
 
 // =============================================================================
 // Manus Debug Collector - Vite Plugin
@@ -148,6 +149,40 @@ function vitePluginManusDebugCollector(): Plugin {
       });
     },
   };
+}
+
+// =============================================================================
+// Payment QR image - fail-closed production-build gate
+// =============================================================================
+//
+// A misconfigured deploy must never silently ship with no (or a broken/
+// legacy-Manus) payment QR image - see PR #39 (the Manus/Forge residual
+// dependency audit) and PR #40. This runs before any plugin/bundling
+// work, so an invalid config fails the build immediately rather than
+// producing a broken artifact.
+//
+// Gated on `process.argv` (not defineConfig's (command, mode) callback
+// form) because server/_core/vite.ts imports this file's default export
+// directly and spreads it - `{...viteConfig}` - into Vite's dev-mode
+// createServer(); that spread only works if the export stays a plain
+// resolved object, not a function, so the callback form isn't available
+// here. `vite build`'s own CLI invocation always includes the literal
+// "build" argv token; the dev path (createServer(), invoked from within
+// the already-running `tsx watch server/_core/index.ts` process) never
+// does, so this only ever fires for a real production build - dev/test
+// stay exactly as permissive as before.
+if (process.argv.includes("build")) {
+  // Mirrors exactly what Vite itself resolves for import.meta.env in the
+  // built client bundle (same envDir, same default "production" mode -
+  // this repo's build script never passes --mode), so this gate can never
+  // diverge from what actually ends up embedded in the output.
+  const buildEnv = loadEnv("production", PROJECT_ROOT, "");
+  const qrValidation = validatePaymentQrImageUrlForProduction(buildEnv.VITE_PAYMENT_QR_IMAGE_URL);
+  if (!qrValidation.ok) {
+    // Fixed, non-secret text only - the configured value itself is never
+    // included, whether it was missing, malformed, or pointed at Manus.
+    throw new Error(`[vite:payment-qr-image] ${qrValidation.message}`);
+  }
 }
 
 const plugins = [react(), tailwindcss(), jsxLocPlugin(), vitePluginManusRuntime(), vitePluginManusDebugCollector()];
