@@ -9,6 +9,17 @@ import { AnonymousCredentialError } from "./authErrors";
 import { ENV } from "./env";
 import { sdk } from "./sdk";
 
+/**
+ * The real, private axios instance sdk.ts's authenticateRequest ultimately
+ * posts to via getUserInfoWithJwt (SDKServer's own `this.client`, created
+ * once at module load by createOAuthHttpClient() - see sdk.ts). Accessed
+ * via `as any` specifically so tests below can assert "no HTTP call to
+ * Manus's OAuth server happened at all", one level below just spying on
+ * the getUserInfoWithJwt wrapper method itself - the two are deliberately
+ * separate assertions per this PR's test requirements.
+ */
+const oauthHttpClient = (sdk as unknown as { client: { post: (...args: unknown[]) => unknown } }).client;
+
 vi.mock("../db", async () => {
   const actual = await vi.importActual<typeof db>("../db");
   return { ...actual };
@@ -448,6 +459,157 @@ describe("sdk.authenticateRequest", () => {
       await sdk.authenticateRequest(requestWithCookie(token));
 
       expect(ENV.cookieSecret).toBe(originalSecret);
+    });
+  });
+
+  describe("orphaned-session Manus OAuth sync is gated by isManusAuthActive()", () => {
+    const originalAuthProvider = ENV.authProvider;
+
+    afterEach(() => {
+      ENV.authProvider = originalAuthProvider;
+    });
+
+    it("[A] AUTH_PROVIDER=google + orphaned session -> rejects with no_user_record, and getUserInfoWithJwt/the OAuth HTTP client/the OAuth-sync upsertUser are NEVER called", async () => {
+      ENV.authProvider = "google";
+      const getUserByOpenIdSpy = vi.spyOn(db, "getUserByOpenId").mockResolvedValue(undefined);
+      const upsertSpy = vi.spyOn(db, "upsertUser");
+      const getUserInfoWithJwtSpy = vi.spyOn(sdk, "getUserInfoWithJwt");
+      // Also stubbed to reject fast (never actually resolve/hang on a real
+      // network call) so that if the gate ever regresses, this test fails
+      // cleanly on the wrong-error-type assertion below instead of timing
+      // out trying to reach a real OAuth server.
+      const oauthClientPostSpy = vi
+        .spyOn(oauthHttpClient, "post")
+        .mockRejectedValue(new Error("[TEST] the Manus OAuth HTTP client must never be called in google mode"));
+
+      const token = await sdk.createSessionToken("orphaned-google-user", {});
+      const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(token)));
+
+      expect(error).toBeInstanceOf(AnonymousCredentialError);
+      expect((error as AnonymousCredentialError).reason).toBe("no_user_record");
+      expect(getUserByOpenIdSpy).toHaveBeenCalledWith("orphaned-google-user");
+      expect(getUserInfoWithJwtSpy).not.toHaveBeenCalled();
+      expect(oauthClientPostSpy).not.toHaveBeenCalled();
+      expect(upsertSpy).not.toHaveBeenCalled();
+    });
+
+    it("[B] AUTH_PROVIDER=manus + the same orphaned session -> the existing Manus OAuth sync path still executes exactly as before", async () => {
+      ENV.authProvider = "manus";
+      vi.spyOn(db, "getUserByOpenId")
+        .mockResolvedValueOnce(undefined) // not found yet
+        .mockResolvedValueOnce(fakeUser({ openId: "orphaned-manus-user" })); // found after sync
+      const upsertSpy = vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
+      const getUserInfoWithJwtSpy = vi.spyOn(sdk, "getUserInfoWithJwt").mockResolvedValue({
+        openId: "orphaned-manus-user",
+        name: "Somchai",
+        email: null,
+        platform: "google",
+      } as any);
+
+      const token = await sdk.createSessionToken("orphaned-manus-user", {});
+      const result = await sdk.authenticateRequest(requestWithCookie(token));
+
+      expect(getUserInfoWithJwtSpy).toHaveBeenCalledTimes(1);
+      expect(upsertSpy).toHaveBeenCalled();
+      expect(result.openId).toBe("orphaned-manus-user");
+    });
+
+    it("[C] AUTH_PROVIDER=transition + the same orphaned session -> the existing Manus OAuth sync path still executes exactly as before", async () => {
+      ENV.authProvider = "transition";
+      vi.spyOn(db, "getUserByOpenId")
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce(fakeUser({ openId: "orphaned-transition-user" }));
+      const upsertSpy = vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
+      const getUserInfoWithJwtSpy = vi.spyOn(sdk, "getUserInfoWithJwt").mockResolvedValue({
+        openId: "orphaned-transition-user",
+        name: "Somchai",
+        email: null,
+        platform: "google",
+      } as any);
+
+      const token = await sdk.createSessionToken("orphaned-transition-user", {});
+      const result = await sdk.authenticateRequest(requestWithCookie(token));
+
+      expect(getUserInfoWithJwtSpy).toHaveBeenCalledTimes(1);
+      expect(upsertSpy).toHaveBeenCalled();
+      expect(result.openId).toBe("orphaned-transition-user");
+    });
+
+    it("[D] AUTH_PROVIDER=google + an EXISTING db user -> succeeds normally, with no Manus OAuth call of any kind", async () => {
+      ENV.authProvider = "google";
+      const user = fakeUser({ openId: "existing-google-user" });
+      vi.spyOn(db, "getUserByOpenId").mockResolvedValue(user);
+      const upsertSpy = vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
+      const getUserInfoWithJwtSpy = vi.spyOn(sdk, "getUserInfoWithJwt");
+      const oauthClientPostSpy = vi
+        .spyOn(oauthHttpClient, "post")
+        .mockRejectedValue(new Error("[TEST] the Manus OAuth HTTP client must never be called for an existing user"));
+
+      const token = await sdk.createSessionToken("existing-google-user", {});
+      const result = await sdk.authenticateRequest(requestWithCookie(token));
+
+      expect(result).toBe(user);
+      expect(getUserInfoWithJwtSpy).not.toHaveBeenCalled();
+      expect(oauthClientPostSpy).not.toHaveBeenCalled();
+      // The one remaining upsertUser call is the pre-existing
+      // "refresh lastSignedIn for an already-known user" call at the very
+      // end of authenticateRequest - unrelated to, and unaffected by, the
+      // orphaned-session sync gate this PR adds.
+      expect(upsertSpy).toHaveBeenCalledTimes(1);
+      expect(upsertSpy).toHaveBeenCalledWith(expect.objectContaining({ openId: "existing-google-user" }));
+    });
+
+    it("[E] AUTH_PROVIDER=google + database unavailable -> still propagates the infrastructure error, never misclassified as no_user_record, no OAuth sync attempted", async () => {
+      ENV.authProvider = "google";
+      const dbOutage = new Error("[Database] Database connection is not available");
+      vi.spyOn(db, "assertDatabaseAvailable").mockRejectedValue(dbOutage);
+      const getUserByOpenIdSpy = vi.spyOn(db, "getUserByOpenId");
+      const getUserInfoWithJwtSpy = vi.spyOn(sdk, "getUserInfoWithJwt");
+
+      const token = await sdk.createSessionToken("some-user", {});
+      const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(token)));
+
+      expect(error).toBe(dbOutage);
+      expect(error).not.toBeInstanceOf(AnonymousCredentialError);
+      expect(getUserByOpenIdSpy).not.toHaveBeenCalled();
+      expect(getUserInfoWithJwtSpy).not.toHaveBeenCalled();
+    });
+
+    it("[F] AUTH_PROVIDER=google + no cookie -> still AnonymousCredentialError(no_cookie), unaffected by the new gate", async () => {
+      ENV.authProvider = "google";
+
+      const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(undefined)));
+
+      expect(error).toBeInstanceOf(AnonymousCredentialError);
+      expect((error as AnonymousCredentialError).reason).toBe("no_cookie");
+    });
+
+    it("[F] AUTH_PROVIDER=google + a malformed/garbage cookie -> still AnonymousCredentialError(invalid_session_token), unaffected by the new gate", async () => {
+      ENV.authProvider = "google";
+
+      const error = await captureRejection(sdk.authenticateRequest(requestWithCookie("garbage")));
+
+      expect(error).toBeInstanceOf(AnonymousCredentialError);
+      expect((error as AnonymousCredentialError).reason).toBe("invalid_session_token");
+    });
+
+    it("[F] AUTH_PROVIDER=google + an expired session -> still AnonymousCredentialError(invalid_session_token), unaffected by the new gate", async () => {
+      ENV.authProvider = "google";
+      const token = await sdk.createSessionToken("expiring-user", { expiresInMs: -1000 });
+
+      const error = await captureRejection(sdk.authenticateRequest(requestWithCookie(token)));
+
+      expect(error).toBeInstanceOf(AnonymousCredentialError);
+      expect((error as AnonymousCredentialError).reason).toBe("invalid_session_token");
+    });
+
+    it("static: the orphaned-user getUserInfoWithJwt sync block is guarded by isManusAuthActive(), not left unconditional", () => {
+      const source = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "sdk.ts"), "utf8");
+      // Anchored to the actual `if` condition immediately guarding the
+      // sync block - not merely "isManusAuthActive appears somewhere in
+      // the file" - so a future refactor that moves the call elsewhere
+      // without actually gating this block would still fail this check.
+      expect(source).toMatch(/if\s*\(\s*!user\s*&&\s*isManusAuthActive\(\)\s*\)\s*\{/);
     });
   });
 });
