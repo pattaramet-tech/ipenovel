@@ -92,6 +92,7 @@ Because `VITE_AUTH_PROVIDER` is baked into the client bundle at build time, swit
 | `R2_BUCKET_NAME` | Runtime | Public | Optional (lazy) | `env.ts:19`, `r2Storage.ts:31,99` | Public bucket name | Same as current production | reports value |
 | `R2_PUBLIC_BASE_URL` | Runtime | Public | Optional (lazy) | `env.ts:20`, `r2Storage.ts:32,75` | Public CDN base URL for R2 media | Same as current production | reports value |
 | `R2_ENDPOINT` | Runtime | Public (URL) | Optional (lazy) | `env.ts:21`, `r2Storage.ts:33,60` | R2 S3-compatible API endpoint | Same as current production | reports value |
+| `VITE_PAYMENT_QR_IMAGE_URL` | **Build** (client bundle) | Public | Required to display the payment QR (see `docs/MANUS_FORGE_RESIDUAL_AUDIT.md` §12) | `client/src/constants/payment.ts` | Public R2 URL of the bank-transfer QR code shown on CartPage, PaymentPage, and WalletPage. Replaces the previous hardcoded Manus CloudFront hotlink - has no fallback, so the `<img>` renders without a `src` when unset | Must be set to the URL returned after manually uploading the QR asset to the public R2 bucket (see PR that introduced this variable for the exact bytes/hash) | Manual: load Cart/Payment/Wallet pages, confirm the QR image renders and its `src` is the R2 URL, not `cloudfront.net` |
 
 ## Cloudflare R2 — private bucket (payment slips, paid episode files)
 

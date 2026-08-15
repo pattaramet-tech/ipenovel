@@ -11,8 +11,7 @@ import { Upload, CheckCircle, AlertCircle, QrCode } from "lucide-react";
 import { toast } from "sonner";
 import { getLoginUrl } from "@/const";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
-
-const QR_PAYMENT_IMAGE = "https://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/IMG_8158_8beb9f9a.jpeg";
+import { QR_PAYMENT_IMAGE } from "@/constants/payment";
 
 export default function PaymentPage() {
   useDocumentHead({ robots: "noindex,nofollow" });
@@ -278,7 +277,7 @@ export default function PaymentPage() {
             <CardTitle>{t("payment.qrPayment")}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <img src={QR_PAYMENT_IMAGE} alt="QR Code" className="w-64 h-64 mx-auto" />
+            <img src={QR_PAYMENT_IMAGE || undefined} alt="QR Code" className="w-64 h-64 mx-auto" />
             <p className="text-sm text-slate-600 text-center">{t("payment.scanQr")}</p>
           </CardContent>
         </Card>

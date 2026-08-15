@@ -514,7 +514,7 @@ export default function CartPage() {
 
               <div className="bg-white p-4 rounded-lg border border-slate-200">
                 <p className="text-sm font-medium text-slate-700 mb-3">{t("payment.qrPayment")}</p>
-                <img src={QR_PAYMENT_IMAGE} alt="QR Code" className="w-48 h-48 mx-auto rounded" />
+                <img src={QR_PAYMENT_IMAGE || undefined} alt="QR Code" className="w-48 h-48 mx-auto rounded" />
               </div>
 
               <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 text-sm">

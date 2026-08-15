@@ -8,8 +8,7 @@ import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { Upload, CheckCircle, AlertCircle, X, Loader2 } from "lucide-react";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
-
-const QR_PAYMENT_IMAGE = "https://d2xsxph8kpxj0f.cloudfront.net/310519663334918622/HEFiacXNVZGj8v7VkecB9b/IMG_8158_19d96370.JPG";
+import { QR_PAYMENT_IMAGE } from "@/constants/payment";
 
 /**
  * Map technical storage errors to user-friendly Thai messages
@@ -407,7 +406,7 @@ export default function WalletPage() {
               <Card className="p-6 bg-slate-50 border-2 border-slate-200">
                 <div className="flex flex-col items-center">
                   <img
-                    src={QR_PAYMENT_IMAGE}
+                    src={QR_PAYMENT_IMAGE || undefined}
                     alt="QR Payment"
                     className="w-full max-w-sm aspect-square object-contain rounded-lg"
                   />
