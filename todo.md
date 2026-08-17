@@ -1519,3 +1519,8 @@ All missing translations added. All hardcoded English replaced with i18n keys.
 - [x] ตั้งค่า VITE_PAYMENT_QR_IMAGE_URL สำหรับ Production build
 - [x] ตรวจสอบ production build ใน Preview โดยไม่เปิดเผยค่า Environment Variable
 - [x] สร้าง checkpoint ที่ผ่านการตรวจ build เพื่อให้ปรับใช้ใหม่
+
+
+## GitHub Synchronization — 17 August 2026
+- [ ] ซิงค์โปรเจกต์กับการเปลี่ยนแปลงล่าสุดจาก GitHub main
+- [ ] ยืนยัน SHA ที่ซิงค์และสถานะ working tree
