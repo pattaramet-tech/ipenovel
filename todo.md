@@ -1522,5 +1522,5 @@ All missing translations added. All hardcoded English replaced with i18n keys.
 
 
 ## GitHub Synchronization — 17 August 2026
-- [ ] ซิงค์โปรเจกต์กับการเปลี่ยนแปลงล่าสุดจาก GitHub main
-- [ ] ยืนยัน SHA ที่ซิงค์และสถานะ working tree
+- [x] ซิงค์โปรเจกต์กับการเปลี่ยนแปลงล่าสุดจาก GitHub main
+- [x] ยืนยัน SHA ที่ซิงค์และสถานะ working tree
