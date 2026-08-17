@@ -35,10 +35,49 @@ describe("MaintenanceAnnouncementBanner - static safety assertions", () => {
     expect(componentSource).not.toMatch(/className=["'][^"']*\bbackdrop/i);
   });
 
-  it("persists dismissal via localStorage only, never sessionStorage or a network call", () => {
-    expect(componentSource).toMatch(/localStorage/);
-    expect(componentSource).not.toMatch(/sessionStorage/);
+  it("dismissal is in-memory ONLY - no localStorage/sessionStorage/cookie API usage, no network call of any kind", () => {
+    // A user closing the banner must never be permanently silenced - see
+    // this component's own doc comment (which mentions these mechanisms
+    // by name to explain what it deliberately does NOT do - these
+    // assertions are deliberately scoped to actual API *usage*, e.g.
+    // `localStorage.getItem(...)`, rather than the bare word, so they
+    // don't false-positive on that prose).
+    expect(componentSource).not.toMatch(/\blocalStorage\s*[.[]/);
+    expect(componentSource).not.toMatch(/\bsessionStorage\s*[.[]/);
+    expect(componentSource).not.toMatch(/document\.cookie/i);
     expect(componentSource).not.toMatch(/\bfetch\(|trpc\./);
+  });
+
+  it("dismissed state starts at plain `false` on every mount - no lazy initializer reading any external source", () => {
+    expect(componentSource).toMatch(/useState\(false\)/);
+    // Guards against a future edit reintroducing a lazy-initializer
+    // function (`useState(() => ...)`) for `dismissed` specifically, the
+    // exact shape the old localStorage-backed version used.
+    expect(componentSource).not.toMatch(/useState\(\s*\(\)\s*=>[^)]*dismissed/i);
+  });
+
+  it("conceptually, a remount (SPA route change keeps the same component instance, but a full page reload or a fresh browser session creates a brand-new one) always starts dismissed=false again - there is nothing anywhere for a new instance to read a prior dismissal from", () => {
+    // No localStorage/sessionStorage/cookie/network read exists (see the
+    // persistence test above) and the initial value is the bare literal
+    // `false` (see the test above this one, checking `useState(false)`
+    // with no lazy-initializer function) - together these two facts are
+    // exactly what makes "every fresh mount starts visible again" true,
+    // without needing a DOM harness to mount the component and assert it
+    // directly.
+    expect(componentSource).toMatch(/const \[dismissed, setDismissed\] = useState\(false\);/);
+  });
+
+  it("handleDismiss does nothing but setDismissed(true) - no side effect, no write of any kind", () => {
+    const handleDismissMatch = componentSource.match(/const handleDismiss = \(\) => \{([\s\S]*?)\};/);
+    expect(handleDismissMatch).toBeTruthy();
+    const body = (handleDismissMatch?.[1] ?? "").trim();
+    expect(body).toBe("setDismissed(true);");
+  });
+
+  it("no readDismissed/writeDismissed helpers remain - the localStorage-backed dismissal mechanism was removed, not just unused", () => {
+    expect(componentSource).not.toMatch(/readDismissed/);
+    expect(componentSource).not.toMatch(/writeDismissed/);
+    expect(componentSource).not.toMatch(/getMaintenanceBannerDismissedStorageKey/);
   });
 
   it("exports the CSS height variable name as a constant, not a string a consumer has to retype", () => {

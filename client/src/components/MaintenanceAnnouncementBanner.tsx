@@ -2,27 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { Construction, X } from "lucide-react";
 import { MAINTENANCE_BANNER_CONFIG } from "@/config/maintenanceBanner";
-import { getMaintenanceBannerDismissedStorageKey, shouldShowMaintenanceBanner } from "./maintenanceBannerVisibility";
-
-function readDismissed(id: string): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem(getMaintenanceBannerDismissedStorageKey(id)) === "1";
-  } catch {
-    // localStorage unavailable (private browsing / quota / disabled) - the
-    // banner just can't remember a dismissal across reloads, which is a
-    // safe degradation (it never blocks anything either way).
-    return false;
-  }
-}
-
-function writeDismissed(id: string): void {
-  try {
-    window.localStorage.setItem(getMaintenanceBannerDismissedStorageKey(id), "1");
-  } catch {
-    // Same safe degradation as readDismissed above.
-  }
-}
+import { shouldShowMaintenanceBanner } from "./maintenanceBannerVisibility";
 
 /**
  * CSS custom property (set on the document root) carrying the banner's
@@ -46,12 +26,18 @@ export const MAINTENANCE_BANNER_HEIGHT_CSS_VAR = "--maintenance-banner-height";
  * the on/off switch live in config/maintenanceBanner.ts (the single
  * source of truth - edit only that file to change any of it); where it
  * renders is decided by shouldShowMaintenanceBanner
- * (maintenanceBannerVisibility.ts); a dismissal is remembered in
- * localStorage, namespaced by the config's `id` so editing the
- * announcement later automatically re-surfaces it. The SAME single
- * instance (mounted once in App.tsx, above the Switch) is what renders on
- * every route, Reader included - so a dismissal on any page dismisses it
- * everywhere, via the one shared localStorage key.
+ * (maintenanceBannerVisibility.ts). The SAME single instance (mounted
+ * once in App.tsx, above the Switch) is what renders on every route,
+ * Reader included.
+ *
+ * Dismissal is in-memory ONLY (plain React state, reset to false on
+ * every mount) - deliberately NOT persisted via localStorage,
+ * sessionStorage, a cookie, or the database. A user who closes the
+ * banner won't see it again for the rest of that page session (SPA
+ * route changes keep the same React tree, so it stays dismissed while
+ * navigating client-side), but a full page reload or a fresh visit
+ * always shows it again - the whole point being that a maintenance
+ * notice must never be permanently silenced by one click.
  *
  * Never a modal/overlay - a plain in-flow element with no backdrop, no
  * focus trap, and no interception of clicks anywhere else on the page.
@@ -59,7 +45,7 @@ export const MAINTENANCE_BANNER_HEIGHT_CSS_VAR = "--maintenance-banner-height";
  */
 export default function MaintenanceAnnouncementBanner() {
   const [location] = useLocation();
-  const [dismissed, setDismissed] = useState(() => readDismissed(MAINTENANCE_BANNER_CONFIG.id));
+  const [dismissed, setDismissed] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   const visible = !dismissed && shouldShowMaintenanceBanner(location, MAINTENANCE_BANNER_CONFIG.enabled);
@@ -97,7 +83,6 @@ export default function MaintenanceAnnouncementBanner() {
   if (!visible) return null;
 
   const handleDismiss = () => {
-    writeDismissed(MAINTENANCE_BANNER_CONFIG.id);
     setDismissed(true);
   };
 

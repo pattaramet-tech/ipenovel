@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getMaintenanceBannerDismissedStorageKey, shouldShowMaintenanceBanner } from "./maintenanceBannerVisibility";
+import { shouldShowMaintenanceBanner } from "./maintenanceBannerVisibility";
 
 describe("shouldShowMaintenanceBanner", () => {
   it.each(["/admin", "/admin/payments", "/admin/orders/123", "/admin/settings", "/admin/novels"])(
@@ -41,19 +41,5 @@ describe("shouldShowMaintenanceBanner", () => {
 
   it("does not treat a route that merely starts with 'admin' as owning its own header chrome", () => {
     expect(shouldShowMaintenanceBanner("/administrator-guide", true)).toBe(true);
-  });
-});
-
-describe("getMaintenanceBannerDismissedStorageKey", () => {
-  it("namespaces the storage key by the announcement id", () => {
-    expect(getMaintenanceBannerDismissedStorageKey("2026-08-19-core-system-upgrade")).toBe(
-      "ipenovel_maintenance_banner_dismissed_2026-08-19-core-system-upgrade"
-    );
-  });
-
-  it("produces a different key for a different id, so a new announcement is never hidden by an old dismissal", () => {
-    const keyA = getMaintenanceBannerDismissedStorageKey("announcement-a");
-    const keyB = getMaintenanceBannerDismissedStorageKey("announcement-b");
-    expect(keyA).not.toBe(keyB);
   });
 });

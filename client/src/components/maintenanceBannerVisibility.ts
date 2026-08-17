@@ -22,16 +22,3 @@ export function shouldShowMaintenanceBanner(location: string, enabled: boolean):
   if (location === "/admin" || location.startsWith("/admin/")) return false;
   return true;
 }
-
-const DISMISSED_STORAGE_KEY_PREFIX = "ipenovel_maintenance_banner_dismissed_";
-
-/**
- * The localStorage key a given announcement's dismissal is recorded
- * under - namespaced by the config's `id` (see config/maintenanceBanner.ts)
- * so bumping that id automatically re-surfaces a NEW announcement to a
- * visitor who dismissed an OLDER one, with no manual localStorage cleanup
- * and no separate "last seen id" bookkeeping key to keep in sync.
- */
-export function getMaintenanceBannerDismissedStorageKey(id: string): string {
-  return `${DISMISSED_STORAGE_KEY_PREFIX}${id}`;
-}
