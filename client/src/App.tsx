@@ -48,11 +48,26 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Navbar from "./components/Navbar";
 import MigrationGate from "./components/MigrationGate";
+import MaintenanceAnnouncementBanner from "./components/MaintenanceAnnouncementBanner";
 
 function Router() {
   return (
     <>
-      <Navbar />
+      {/* Grouped under one sticky container (rather than each sticking
+          independently) so the banner and Navbar stack cleanly at the top
+          of the viewport instead of both competing for the same top:0
+          position - see maintenanceBannerVisibility.ts. On Admin routes
+          both return null, so this wrapper is empty there (harmless). On
+          Reader routes the banner still renders (readers need the
+          maintenance notice too) while Navbar stays hidden (Reader owns
+          its own top chrome) - ReaderPage's own CSS reserves exactly the
+          banner's rendered height via --maintenance-banner-height, so the
+          two never overlap; see MaintenanceAnnouncementBanner.tsx and
+          ReaderPage.module.css. */}
+      <div className="sticky top-0 z-50">
+        <MaintenanceAnnouncementBanner />
+        <Navbar />
+      </div>
       <MigrationGate>
       <Switch>
         <Route path={"/"} component={Home} />

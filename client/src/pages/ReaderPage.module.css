@@ -1,11 +1,19 @@
 .container {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  /* Reserves space for the global maintenance announcement banner
+     (client/src/components/MaintenanceAnnouncementBanner.tsx), which - on
+     this route - renders as a normal-flow sibling ABOVE this container
+     (App.tsx), not inside it. The banner publishes its own rendered
+     height as --maintenance-banner-height (default 0px when it isn't
+     showing), so this container always exactly fills whatever viewport
+     space remains below it - no overlap, no page-level scroll gap either
+     way. See MaintenanceAnnouncementBanner.tsx's own doc comment. */
+  height: calc(100vh - var(--maintenance-banner-height, 0px));
   /* Dynamic viewport height - avoids content being clipped/covered as
      mobile Safari/Chrome show/hide their address bar and bottom toolbar.
      Falls back to 100vh above on browsers that don't support dvh. */
-  height: 100dvh;
+  height: calc(100dvh - var(--maintenance-banner-height, 0px));
   background-color: #ffffff;
   color: #000000;
   transition: background-color 0.3s, color 0.3s;
@@ -27,9 +35,13 @@
   position: sticky;
   top: 0;
   z-index: 50;
-  /* The global Navbar is hidden on this route (see Navbar.tsx), so this
-     header owns the full top of the viewport - pad it under the iOS/Android
-     status bar / notch instead of stacking behind another sticky bar. */
+  /* The global Navbar is hidden on this route (see Navbar.tsx) - the
+     maintenance announcement banner is NOT (it stays visible on Reader by
+     design, see MaintenanceAnnouncementBanner.tsx), but it renders above
+     this .container entirely (App.tsx), so from this header's own point
+     of view it still owns the top of ITS box either way - pad it under
+     the iOS/Android status bar / notch instead of stacking behind
+     another sticky bar. */
   padding-top: env(safe-area-inset-top);
   /* Focus Mode collapse target (see .headerHidden below). 640px is a
      generous cap - comfortably above any real rendered header height
@@ -67,18 +79,21 @@
 /* Restore button - the header's Focus Mode replacement while it's
    collapsed. Fixed (not sticky, since the header it stands in for is gone)
    and anchored past the safe-area inset so it's never hidden behind a
-   notch/status bar. It never actually overlaps the watermark strip: the
-   watermark's own top offset (see ReaderPage.tsx's watermarkTopOffset) is
-   pushed down to clear this button's full height + gap whenever the header
-   is hidden, so the two never occupy the same space - the z-index below
-   (100, above the progress bar's 99 and the watermark's 20) only matters
-   for the sliver of time before that offset settles. Below the reader menu
+   notch/status bar - and, same as .container/.header above, past the
+   maintenance announcement banner's own height (--maintenance-banner-height,
+   0px when it isn't showing) so it never renders under/behind the banner
+   either. It never actually overlaps the watermark strip: the watermark's
+   own top offset (see ReaderPage.tsx's watermarkTopOffset) is pushed down
+   to clear this button's full height + gap whenever the header is hidden,
+   so the two never occupy the same space - the z-index below (100, above
+   the progress bar's 99 and the watermark's 20) only matters for the
+   sliver of time before that offset settles. Below the reader menu
    dropdown/modal-drawer overlays (1000+) - the two are mutually exclusive
    by construction anyway, since showing this button implies no overlay is
    open. */
 .restoreButton {
   position: fixed;
-  top: calc(env(safe-area-inset-top) + 10px);
+  top: calc(env(safe-area-inset-top) + 10px + var(--maintenance-banner-height, 0px));
   right: 12px;
   z-index: 100;
   display: flex;
