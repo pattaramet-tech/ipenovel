@@ -198,9 +198,30 @@ const requireGoogleMigrationComplete = t.middleware(async opts => {
   // check (rather than a non-null assertion) purely so TypeScript can
   // prove it below without one - t.middleware is defined standalone, so
   // its own inferred ctx type doesn't know about whatever it's later
-  // chained onto.
+  // chained onto. This runs BEFORE the admin bypass right below, so an
+  // admin's own account still has to be authenticated exactly like any
+  // other user - the bypass only ever skips the Google-connection check,
+  // never the authentication requirement itself.
   if (!ctx.user) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  }
+
+  // Admins bypass the Google-connection migration gate entirely. This is
+  // a SEPARATE case from adminProcedure below (built on
+  // authenticatedProcedure, so an admin-only procedure never reaches this
+  // middleware at all) - this instead covers an admin's own account
+  // calling an ORDINARY protectedProcedure-gated endpoint (wallet,
+  // points, profile, reading a member-only episode, ...), which every
+  // signed-in user, admin included, can still do. Without this, an admin
+  // who happened to have no linked Google identity yet would see
+  // GOOGLE_CONNECTION_REQUIRED_MESSAGE on those ordinary endpoints even
+  // though isBlockedByGoogleMigrationGate's own docstring assumed that
+  // could never happen. Does not touch AUTH_REQUIRE_GOOGLE_CONNECTION,
+  // does not weaken adminProcedure's own role check below, and does not
+  // change anything for a role: "user" account, which still goes through
+  // isBlockedByGoogleMigrationGate exactly as before.
+  if (ctx.user.role === "admin") {
+    return next({ ctx: { ...ctx, user: ctx.user } });
   }
 
   // isBlockedByGoogleMigrationGate itself no-ops (returns false, no

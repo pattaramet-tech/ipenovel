@@ -154,6 +154,38 @@ describe("mandatory Google-migration gate - end-to-end through real router proce
       // built on authenticatedProcedure, not protectedProcedure.
       expect(identitySpy).not.toHaveBeenCalled();
     });
+
+    it("an admin calling an ORDINARY protectedProcedure QUERY (cart.get - not an admin-only procedure) is NEVER blocked either, even with no Google identity connected - the bug this fix closes", async () => {
+      activateGate();
+      vi.spyOn(db, "getOrCreateCart").mockResolvedValue({ id: 10, userId: 1 } as any);
+      vi.spyOn(db, "getCartItems").mockResolvedValue([]);
+      const identitySpy = vi.spyOn(db, "getAuthIdentityByUserAndProvider");
+
+      const caller = appRouter.createCaller(adminContext());
+      const result = await caller.cart.get();
+
+      expect(result.items).toEqual([]);
+      // Unlike admin.dashboard.summary above (an admin-only procedure that
+      // never reaches requireGoogleMigrationComplete at all), cart.get IS
+      // a genuine protectedProcedure - this is the actual regression
+      // proof: requireGoogleMigrationComplete's own admin bypass
+      // short-circuits before isBlockedByGoogleMigrationGate is ever
+      // called, for THIS admin user on THIS ordinary endpoint.
+      expect(identitySpy).not.toHaveBeenCalled();
+    });
+
+    it("an admin calling an ORDINARY protectedProcedure MUTATION (cart.clear) is NEVER blocked either", async () => {
+      activateGate();
+      vi.spyOn(db, "getOrCreateCart").mockResolvedValue({ id: 10, userId: 1 } as any);
+      vi.spyOn(db, "clearCart").mockResolvedValue(undefined as any);
+      const identitySpy = vi.spyOn(db, "getAuthIdentityByUserAndProvider");
+
+      const caller = appRouter.createCaller(adminContext());
+      const result = await caller.cart.clear();
+
+      expect(result).toEqual({ success: true });
+      expect(identitySpy).not.toHaveBeenCalled();
+    });
   });
 
   describe("gate ACTIVE, user IS connected", () => {
