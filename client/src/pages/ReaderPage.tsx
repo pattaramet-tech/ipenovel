@@ -14,6 +14,7 @@ import { useReaderPreferences, getFontFamilyStack } from "@/hooks/useReaderPrefe
 import { deriveReaderChromeState } from "./readerChromePresentation";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
 import { buildCanonicalUrl, SITE_NAME } from "@/lib/seo";
+import { MAINTENANCE_BANNER_HEIGHT_CSS_VAR } from "@/components/MaintenanceAnnouncementBanner";
 
 // How long to wait after the user stops scrolling before saving progress.
 const SCROLL_SAVE_DEBOUNCE_MS = 1500;
@@ -274,11 +275,20 @@ export default function ReaderPage() {
   // While hidden, the floating restore button (40px, anchored just past the
   // safe-area inset - see .restoreButton) takes the header's old spot, so
   // the watermark strip must clear IT, not just the safe area alone.
-  const watermarkTopOffset = chromeState.hideHeader
-    ? "calc(env(safe-area-inset-top) + 58px)"
-    : headerHeight > 0
-      ? `${headerHeight + 4}px`
-      : "calc(env(safe-area-inset-top) + 4px)";
+  //
+  // The existing three-way branch above is untouched - the outer calc()
+  // below only ADDS the maintenance announcement banner's own height on
+  // top of whichever branch applies (0px when it isn't showing), the same
+  // way .restoreButton's own `top` does - see
+  // MAINTENANCE_BANNER_HEIGHT_CSS_VAR's doc comment and
+  // ReaderPage.module.css's .container/.restoreButton.
+  const watermarkTopOffset = `calc(${
+    chromeState.hideHeader
+      ? "env(safe-area-inset-top) + 58px"
+      : headerHeight > 0
+        ? `${headerHeight + 4}px`
+        : "env(safe-area-inset-top) + 4px"
+  } + var(${MAINTENANCE_BANNER_HEIGHT_CSS_VAR}, 0px))`;
 
   // Package content bundles many chapters into one blob - parse recognizable
   // chapter headings ("บทที่ 12", "ตอนที่ 12", "Chapter 12", "#12") into a
