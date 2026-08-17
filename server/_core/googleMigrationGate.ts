@@ -35,11 +35,17 @@ export const GOOGLE_CONNECTION_REQUIRED_MESSAGE =
  * re-verifies it) - the caller (trpc.ts's protectedProcedure middleware)
  * is responsible for that. This function's only job is the ONE additional
  * question: does this already-authenticated user have a connected Google
- * identity yet? (Admin exemption is structural, not a role check here -
- * see routers.ts's local adminProcedure and server/_core/trpc.ts's own
- * adminProcedure, both built on authenticatedProcedure, never
- * protectedProcedure, so an admin-only procedure never reaches this
- * function at all.)
+ * identity yet? It deliberately does NOT check role itself - the admin
+ * exemption is handled entirely by the caller, server/_core/trpc.ts's
+ * requireGoogleMigrationComplete, which returns early for
+ * `ctx.user.role === "admin"` before ever calling this function. That
+ * covers BOTH admin cases: an admin-only procedure (routers.ts's local
+ * adminProcedure and server/_core/trpc.ts's own adminProcedure, both
+ * built on authenticatedProcedure, so they never reach this middleware -
+ * or this function - at all), and an admin's own account calling an
+ * ORDINARY protectedProcedure-gated endpoint (wallet, points, profile,
+ * ...), which previously still reached this function and could
+ * incorrectly block an admin with no linked Google identity yet.
  */
 export async function isBlockedByGoogleMigrationGate(user: Pick<User, "id">): Promise<boolean> {
   if (!evaluateGoogleConnectionCutoff().activeNow) return false;
