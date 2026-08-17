@@ -4,7 +4,6 @@ import { MAINTENANCE_BANNER_CONFIG } from "./maintenanceBanner";
 describe("MAINTENANCE_BANNER_CONFIG", () => {
   it("is the single source of truth - every field the banner needs lives here", () => {
     expect(typeof MAINTENANCE_BANNER_CONFIG.enabled).toBe("boolean");
-    expect(MAINTENANCE_BANNER_CONFIG.id.length).toBeGreaterThan(0);
     expect(MAINTENANCE_BANNER_CONFIG.title.length).toBeGreaterThan(0);
     expect(MAINTENANCE_BANNER_CONFIG.dateRangeLines.length).toBeGreaterThan(0);
     expect(MAINTENANCE_BANNER_CONFIG.bodyLines.length).toBeGreaterThan(0);
@@ -28,5 +27,9 @@ describe("MAINTENANCE_BANNER_CONFIG", () => {
 
   it("is currently enabled", () => {
     expect(MAINTENANCE_BANNER_CONFIG.enabled).toBe(true);
+  });
+
+  it("no longer carries an `id` field - dismissal is in-memory only now, so there is nothing left to namespace by announcement id", () => {
+    expect("id" in MAINTENANCE_BANNER_CONFIG).toBe(false);
   });
 });
