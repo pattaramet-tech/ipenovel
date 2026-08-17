@@ -1513,3 +1513,9 @@ All missing translations added. All hardcoded English replaced with i18n keys.
 - [x] Phase 7: Run npm run check and npm run build verification
 - [x] Phase 8: Create VERIFY_UI_FIXES.md documentation
 - [x] Phase 9: Create checkpoint and package ZIP export
+
+
+## Production Build Failure: Payment QR Image Environment Variable
+- [x] ตั้งค่า VITE_PAYMENT_QR_IMAGE_URL สำหรับ Production build
+- [x] ตรวจสอบ production build ใน Preview โดยไม่เปิดเผยค่า Environment Variable
+- [x] สร้าง checkpoint ที่ผ่านการตรวจ build เพื่อให้ปรับใช้ใหม่
