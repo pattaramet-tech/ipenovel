@@ -16,7 +16,7 @@ export type MaintenanceBannerConfig = {
 };
 
 export const MAINTENANCE_BANNER_CONFIG: MaintenanceBannerConfig = {
-  enabled: true,
+  enabled: false,
   title: "ประกาศปิดปรับปรุงระบบ",
   dateRangeLines: ["วันพุธที่ 19 สิงหาคม เวลา 23.00 น.", "ถึง วันพฤหัสบดีที่ 20 สิงหาคม เวลา 03.00 น."],
   bodyLines: [
