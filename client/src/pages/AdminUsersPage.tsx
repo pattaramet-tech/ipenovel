@@ -40,6 +40,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
+import { computePaginationClamp } from "./adminUsersPagination";
 
 type SortColumn = "id" | "name" | "email" | "createdAt" | "lastSignedIn";
 type SortOrder = "asc" | "desc";
@@ -131,6 +132,26 @@ export default function AdminUsersPage() {
   const rows: AdminUserRow[] = data?.users ?? [];
   const total = data?.total ?? 0;
   const totalPages = data?.totalPages ?? 1;
+
+  // PR #45 review finding "Reset pages that become out of range": an edit
+  // (e.g. a role change) can shrink the filtered result set enough that
+  // `page` - state the admin was already viewing - is no longer valid for
+  // the freshly-invalidated query's own totalPages (most commonly: the
+  // sole row on the last page is edited off the current filter, leaving
+  // an empty page with no way back to page 1 without touching another
+  // filter). This clamps `page` back into range whenever the server's
+  // totalPages changes under it - see computePaginationClamp's own
+  // docstring for why this can never loop (it only ever calls setPage
+  // when the page actually needs to change, never redundantly). Waits
+  // for a real response (`data !== undefined`) so it never fires against
+  // the initial loading state.
+  useEffect(() => {
+    if (data === undefined) return;
+    const decision = computePaginationClamp(page, data.totalPages);
+    if (decision.shouldUpdate) {
+      setPage(decision.nextPage);
+    }
+  }, [data?.totalPages, page]);
 
   const handleSort = (column: SortColumn) => {
     if (sortBy === column) {
