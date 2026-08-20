@@ -11,20 +11,42 @@ vi.mock("../db", async () => {
   return { ...actual };
 });
 
-/** The service issues exactly ONE raw tx.execute call itself (the target
- *  user FOR UPDATE lock) - everything else (lockAdminRoleRows,
- *  updateAdminUserFields, getAuthIdentityByUserAndProvider,
- *  getAdminUserDeleteAssessment, insertAdminUserAuditLog,
- *  deleteAuthIdentitiesForUser, deleteUsersRowChecked) is a separate
- *  db.ts export mocked directly below - same split as
- *  accountRecoveryService.test.ts's own fakeDatabase helper. */
-function fakeDatabase(targetRow: any) {
+/** The service issues NO raw tx.execute calls itself anymore for
+ *  updateAdminUserProfile - actor/target row locking goes exclusively
+ *  through db.lockUserRowForUpdate (mocked below via mockUserLocks), and
+ *  every other write (lockAdminRoleRows, updateAdminUserFields,
+ *  getAuthIdentityByUserAndProvider, insertAdminUserAuditLog) is a
+ *  separate db.ts export mocked directly - same split as
+ *  accountRecoveryService.test.ts's own fakeDatabase helper.
+ *  deleteAdminUserSafely (below) still issues its own raw tx.execute for
+ *  its target lock, so its own fakeDatabase(targetRow) is unaffected. */
+function fakeDatabase(targetRow?: any) {
   const tx = { execute: async () => [[targetRow]] };
   return { transaction: async (cb: (tx: any) => Promise<any>) => cb(tx) };
 }
 
 function fakeUserRow(overrides: Partial<{ id: number; role: "user" | "admin"; name: string | null }> = {}) {
   return { id: 1, role: "user" as const, name: "Somchai", ...overrides };
+}
+
+/** A currently-valid admin actor - the default row for id 9, the
+ *  actorAdminId every test below uses unless it's deliberately testing
+ *  self-edit (actorAdminId === userId) or actor revalidation itself. */
+const VALID_ACTOR_ROW = { id: 9, name: "Admin Nine", role: "admin" as const };
+
+/** Mocks db.lockUserRowForUpdate to answer by id from `rows`, defaulting
+ *  id 9 to VALID_ACTOR_ROW unless explicitly overridden (including to
+ *  `undefined`, for the "actor row no longer exists" case). Returns the
+ *  spy so callers can assert call order/arguments (lock ordering, same-tx
+ *  proof, duplicate-lock avoidance). */
+function mockUserLocks(
+  rows: Record<number, { id: number; name: string | null; role: "user" | "admin" } | undefined>
+) {
+  const merged: Record<number, { id: number; name: string | null; role: "user" | "admin" } | undefined> = {
+    9: VALID_ACTOR_ROW,
+    ...rows,
+  };
+  return vi.spyOn(db, "lockUserRowForUpdate").mockImplementation(async (id: number) => merged[id]);
 }
 
 describe("updateAdminUserProfile", () => {
@@ -40,7 +62,8 @@ describe("updateAdminUserProfile", () => {
 
   it("target user not found -> NOT_FOUND", async () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
-    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase(undefined) as any);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+    mockUserLocks({ 1: undefined });
 
     await expect(
       updateAdminUserProfile({ actorAdminId: 9, userId: 1, name: "New Name", reason: "valid reason" })
@@ -49,7 +72,8 @@ describe("updateAdminUserProfile", () => {
 
   it("no field actually changes (name equals current value, no role field) -> BAD_REQUEST, update is never applied", async () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
-    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase(fakeUserRow({ name: "Somchai" })) as any);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+    mockUserLocks({ 1: fakeUserRow({ name: "Somchai" }) });
     const updateSpy = vi.spyOn(db, "updateAdminUserFields");
 
     await expect(
@@ -60,7 +84,8 @@ describe("updateAdminUserProfile", () => {
 
   it("name-only change -> applies the update and writes exactly one update_name audit log, no role audit log", async () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
-    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase(fakeUserRow({ name: "Old Name" })) as any);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+    mockUserLocks({ 1: fakeUserRow({ name: "Old Name" }) });
     const updateSpy = vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
     const auditSpy = vi.spyOn(db, "insertAdminUserAuditLog").mockResolvedValue(undefined);
 
@@ -85,7 +110,8 @@ describe("updateAdminUserProfile", () => {
 
   it("role change with no confirmText -> BAD_REQUEST, update never applied", async () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
-    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase(fakeUserRow({ id: 2, role: "user" })) as any);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+    mockUserLocks({ 2: fakeUserRow({ id: 2, role: "user" }) });
     const updateSpy = vi.spyOn(db, "updateAdminUserFields");
 
     await expect(
@@ -96,7 +122,8 @@ describe("updateAdminUserProfile", () => {
 
   it("role change with WRONG confirmText -> BAD_REQUEST", async () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
-    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase(fakeUserRow({ id: 2, role: "user" })) as any);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+    mockUserLocks({ 2: fakeUserRow({ id: 2, role: "user" }) });
 
     await expect(
       updateAdminUserProfile({
@@ -111,7 +138,8 @@ describe("updateAdminUserProfile", () => {
 
   it("admin cannot demote/change their OWN role, even with correct confirmText", async () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
-    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase(fakeUserRow({ id: 9, role: "admin" })) as any);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+    mockUserLocks({ 9: { id: 9, role: "admin", name: "Admin Nine" } });
     const lockAdminsSpy = vi.spyOn(db, "lockAdminRoleRows");
 
     await expect(
@@ -128,7 +156,8 @@ describe("updateAdminUserProfile", () => {
 
   it("cannot demote the LAST remaining admin", async () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
-    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase(fakeUserRow({ id: 2, role: "admin" })) as any);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+    mockUserLocks({ 2: fakeUserRow({ id: 2, role: "admin" }) });
     vi.spyOn(db, "lockAdminRoleRows").mockResolvedValue([{ id: 2 }]);
     const updateSpy = vi.spyOn(db, "updateAdminUserFields");
 
@@ -146,7 +175,8 @@ describe("updateAdminUserProfile", () => {
 
   it("demoting an admin when other admins still exist -> succeeds", async () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
-    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase(fakeUserRow({ id: 2, role: "admin" })) as any);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+    mockUserLocks({ 2: fakeUserRow({ id: 2, role: "admin" }) });
     vi.spyOn(db, "lockAdminRoleRows").mockResolvedValue([{ id: 2 }, { id: 9 }]);
     vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
     vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue(undefined);
@@ -169,7 +199,8 @@ describe("updateAdminUserProfile", () => {
 
   it("promoting a user with NO linked Google identity to admin -> FORBIDDEN, never applies the update", async () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
-    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase(fakeUserRow({ id: 2, role: "user" })) as any);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+    mockUserLocks({ 2: fakeUserRow({ id: 2, role: "user" }) });
     vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue(undefined);
     const updateSpy = vi.spyOn(db, "updateAdminUserFields");
 
@@ -187,7 +218,8 @@ describe("updateAdminUserProfile", () => {
 
   it("promoting a user WITH a linked Google identity -> succeeds", async () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
-    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase(fakeUserRow({ id: 2, role: "user" })) as any);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+    mockUserLocks({ 2: fakeUserRow({ id: 2, role: "user" }) });
     vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue({ id: 1, provider: "google" } as any);
     vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
     const auditSpy = vi.spyOn(db, "insertAdminUserAuditLog").mockResolvedValue(undefined);
@@ -209,7 +241,8 @@ describe("updateAdminUserProfile", () => {
 
   it("[concurrent change] updateAdminUserFields loses its conditional UPDATE (returns false) -> CONFLICT, no audit log written", async () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
-    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase(fakeUserRow({ name: "Old" })) as any);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+    mockUserLocks({ 1: fakeUserRow({ name: "Old" }) });
     vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(false);
     const auditSpy = vi.spyOn(db, "insertAdminUserAuditLog");
 
@@ -221,7 +254,8 @@ describe("updateAdminUserProfile", () => {
 
   it("[rollback] audit log write throws -> the whole call rejects (the transaction rolls back the already-applied update together with it)", async () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
-    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase(fakeUserRow({ name: "Old" })) as any);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+    mockUserLocks({ 1: fakeUserRow({ name: "Old" }) });
     vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
     vi.spyOn(db, "insertAdminUserAuditLog").mockRejectedValue(new Error("db write failed"));
 
@@ -232,7 +266,8 @@ describe("updateAdminUserProfile", () => {
 
   it("email/openId/loginMethod/passwordHash/createdAt/lastSignedIn have no corresponding parameter at all - TypeScript itself rejects them", async () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
-    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase(fakeUserRow({ name: "Old" })) as any);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+    mockUserLocks({ 1: fakeUserRow({ name: "Old" }) });
     vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
     vi.spyOn(db, "insertAdminUserAuditLog").mockResolvedValue(undefined);
 
@@ -243,6 +278,127 @@ describe("updateAdminUserProfile", () => {
       reason: "valid reason",
       // @ts-expect-error - email is not part of this function's parameter type at all.
       email: "hacked@example.com",
+    });
+  });
+
+  // ---- PR #45 P1 finding: actor revalidation inside the transaction ----
+  describe("actor revalidation", () => {
+    it("[stale session] the actor was demoted to role=\"user\" before this transaction runs -> FORBIDDEN, never NOT_FOUND", async () => {
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+      mockUserLocks({
+        1: fakeUserRow({ id: 1, name: "Somchai" }),
+        9: { id: 9, name: "Admin Nine", role: "user" }, // demoted by another admin
+      });
+
+      await expect(
+        updateAdminUserProfile({ actorAdminId: 9, userId: 1, name: "New Name", reason: "valid reason" })
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    });
+
+    it("[deleted session] the actor row no longer exists at all -> FORBIDDEN", async () => {
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+      mockUserLocks({
+        1: fakeUserRow({ id: 1, name: "Somchai" }),
+        9: undefined,
+      });
+
+      await expect(
+        updateAdminUserProfile({ actorAdminId: 9, userId: 1, name: "New Name", reason: "valid reason" })
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    });
+
+    it("when actor revalidation fails, updateAdminUserFields and insertAdminUserAuditLog are NEVER called", async () => {
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+      mockUserLocks({
+        1: fakeUserRow({ id: 1, name: "Somchai" }),
+        9: { id: 9, name: "Admin Nine", role: "user" },
+      });
+      const updateSpy = vi.spyOn(db, "updateAdminUserFields");
+      const auditSpy = vi.spyOn(db, "insertAdminUserAuditLog");
+
+      await expect(
+        updateAdminUserProfile({ actorAdminId: 9, userId: 1, name: "New Name", reason: "valid reason" })
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(updateSpy).not.toHaveBeenCalled();
+      expect(auditSpy).not.toHaveBeenCalled();
+    });
+
+    it("actor still role=\"admin\" -> name update on a different target succeeds", async () => {
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+      mockUserLocks({ 1: fakeUserRow({ id: 1, name: "Old Name" }) });
+      vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
+      vi.spyOn(db, "insertAdminUserAuditLog").mockResolvedValue(undefined);
+
+      const result = await updateAdminUserProfile({
+        actorAdminId: 9,
+        userId: 1,
+        name: "New Name",
+        reason: "valid reason",
+      });
+
+      expect(result.name).toBe("New Name");
+    });
+
+    it("[self-edit] actorAdminId === userId editing only their own name -> succeeds, and locks exactly ONE row (never twice)", async () => {
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+      const lockSpy = mockUserLocks({ 9: { id: 9, name: "Old Admin Name", role: "admin" } });
+      vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
+      vi.spyOn(db, "insertAdminUserAuditLog").mockResolvedValue(undefined);
+
+      const result = await updateAdminUserProfile({
+        actorAdminId: 9,
+        userId: 9,
+        name: "New Admin Name",
+        reason: "valid reason",
+      });
+
+      expect(result.name).toBe("New Admin Name");
+      expect(lockSpy).toHaveBeenCalledTimes(1);
+      expect(lockSpy).toHaveBeenCalledWith(9, expect.anything());
+    });
+
+    it("locks the actor and target via the SAME transaction executor (proves revalidation happens inside the one locked transaction, not a separate read)", async () => {
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+      const lockSpy = mockUserLocks({ 2: fakeUserRow({ id: 2, name: "Old" }) });
+      vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
+      vi.spyOn(db, "insertAdminUserAuditLog").mockResolvedValue(undefined);
+
+      await updateAdminUserProfile({ actorAdminId: 9, userId: 2, name: "New", reason: "valid reason" });
+
+      expect(lockSpy).toHaveBeenCalledTimes(2);
+      const [firstTx, secondTx] = lockSpy.mock.calls.map((call) => call[1]);
+      expect(firstTx).toBe(secondTx);
+    });
+
+    it("[deterministic lock order] locks in ASCENDING id order regardless of which of actor/target has the smaller id", async () => {
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+
+      // Case A: actor(9) > target(2) - ascending order is [2, 9].
+      const lockSpyA = mockUserLocks({ 2: fakeUserRow({ id: 2, name: "Old" }) });
+      vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
+      vi.spyOn(db, "insertAdminUserAuditLog").mockResolvedValue(undefined);
+      await updateAdminUserProfile({ actorAdminId: 9, userId: 2, name: "New", reason: "valid reason" });
+      expect(lockSpyA.mock.calls.map((c) => c[0])).toEqual([2, 9]);
+      vi.restoreAllMocks();
+
+      // Case B: actor(2) < target(9) - ascending order is STILL [2, 9],
+      // i.e. never "actor first" as a fixed rule.
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+      const lockSpyB = vi.spyOn(db, "lockUserRowForUpdate").mockImplementation(async (id: number) =>
+        id === 2 ? { id: 2, name: "Admin Two", role: "admin" as const } : fakeUserRow({ id: 9, name: "Old" })
+      );
+      vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
+      vi.spyOn(db, "insertAdminUserAuditLog").mockResolvedValue(undefined);
+      await updateAdminUserProfile({ actorAdminId: 2, userId: 9, name: "New", reason: "valid reason" });
+      expect(lockSpyB.mock.calls.map((c) => c[0])).toEqual([2, 9]);
     });
   });
 });

@@ -6740,6 +6740,32 @@ export async function lockAdminRoleRows(tx: any): Promise<Array<{ id: number }>>
   return rows || [];
 }
 
+/**
+ * Locks and returns the minimal {id, name, role} shape for ONE users row
+ * (SELECT ... FOR UPDATE) - never passwordHash/openId/email or any other
+ * sensitive column, since this backs actor/target revalidation checks that
+ * only ever need identity + role. Returns undefined if the row no longer
+ * exists (e.g. deleted concurrently) - callers must treat that as "this
+ * account no longer exists", never as an empty/default row.
+ *
+ * The single shared helper every admin.users mutation must go through to
+ * lock a user row - see server/services/adminUserManagementService.ts's
+ * updateAdminUserProfile, which calls this once per distinct id it needs
+ * (actor and/or target) in ASCENDING id order, so an actor-A/target-B
+ * request and a concurrent actor-B/target-A request can never deadlock
+ * against each other (same fixed-lock-order technique as
+ * executeAccountRecovery's source/target user locks in
+ * accountRecoveryService.ts). Always called with an explicit transaction.
+ */
+export async function lockUserRowForUpdate(
+  userId: number,
+  tx: any
+): Promise<{ id: number; name: string | null; role: "user" | "admin" } | undefined> {
+  const rawResult: any = await tx.execute(sql`SELECT id, name, role FROM users WHERE id = ${userId} FOR UPDATE`);
+  const rows = Array.isArray(rawResult?.[0]) ? rawResult[0] : rawResult;
+  return rows?.[0];
+}
+
 /** Conditional single-row UPDATE for name/role - `expectedRole` is the
  *  role read by the SAME transaction's earlier lock, so a concurrent
  *  change between that lock and this write (should be structurally

@@ -39,13 +39,16 @@ export type UpdateAdminUserResult = {
 
 /**
  * The single-transaction Edit flow:
- *  1. lock the target user row, 2. compute which fields actually change
- *  (reject a true no-op), 3. if role is changing, re-verify EVERY role-
- *  safety rule against the LOCKED snapshot (never trust the assessment the
- *  admin UI showed moments earlier) - self-demotion, last-admin, and
- *  Google-identity-required-to-promote, 4. apply the conditional UPDATE,
- *  5. write the audit log(s), 6. commit (implicit - any throw rolls back
- *  both the update and the audit log together).
+ *  1. lock the target (and, unless it's a self-edit, the ACTOR) user row,
+ *  in ascending id order - see "Actor revalidation" below,
+ *  2. verify the actor is still a real, currently-role="admin" account,
+ *  3. compute which fields actually change (reject a true no-op),
+ *  4. if role is changing, re-verify EVERY role-safety rule against the
+ *  LOCKED target snapshot (never trust the assessment the admin UI showed
+ *  moments earlier) - self-demotion, last-admin, and
+ *  Google-identity-required-to-promote, 5. apply the conditional UPDATE,
+ *  6. write the audit log(s), 7. commit (implicit - any throw rolls back
+ *  everything together).
  *
  * `name`/`role` are `undefined` when the caller does not intend to touch
  * that field at all (not merely "unchanged") - see server/routers.ts's
@@ -53,6 +56,26 @@ export type UpdateAdminUserResult = {
  * supplied it. `name` must already be trimmed/normalized-to-null by the
  * caller (email/openId/loginMethod/passwordHash/createdAt/lastSignedIn are
  * never accepted here at all - there is no parameter for them).
+ *
+ * ACTOR REVALIDATION (PR #45 security review finding): `adminProcedure`
+ * only proves ctx.user.role was "admin" at the moment the SESSION/request
+ * was authenticated - that's a snapshot, not a live fact. Between then and
+ * this transaction actually running, a second admin could have demoted
+ * `actorAdminId` to role="user" (or deleted them outright). Without
+ * re-checking, a request from an admin whose privilege was JUST revoked
+ * could still land a name/role change on some other account. So this
+ * function locks the actor's OWN row (SELECT ... FOR UPDATE, via
+ * db.lockUserRowForUpdate) inside this same transaction and re-checks
+ * role === "admin" against that fresh read - ctx.user.role itself is never
+ * consulted here at all. When actorAdminId === userId (an admin editing
+ * their own name), the target lock IS the actor lock - only one row is
+ * ever locked, never twice. When they differ, both ids are locked via the
+ * SAME shared helper in ASCENDING id order (never "target first" or
+ * "actor first" as a fixed rule) - so a request editing {actor: A,
+ * target: B} and a concurrent request editing {actor: B, target: A} lock
+ * in the same relative order and cannot deadlock against each other (the
+ * same fixed-lock-order technique executeAccountRecovery already uses for
+ * its source/target user locks).
  */
 export async function updateAdminUserProfile(params: {
   actorAdminId: number;
@@ -72,12 +95,36 @@ export async function updateAdminUserProfile(params: {
   if (!database) throw new Error("Database not available");
 
   return database.transaction(async (tx: any) => {
-    // Step 1: lock the target user row.
-    const targetRows = unwrapRows(await tx.execute(sql`SELECT * FROM users WHERE id = ${params.userId} FOR UPDATE`));
-    const target = targetRows[0];
+    // Step 1: lock the target row and (unless this is a self-edit) the
+    // actor's row too, via the SAME shared helper, in ascending id order.
+    const isSelfEdit = params.actorAdminId === params.userId;
+    const idsToLock = isSelfEdit
+      ? [params.userId]
+      : [params.actorAdminId, params.userId].sort((a, b) => a - b);
+
+    const lockedById = new Map<number, { id: number; name: string | null; role: "user" | "admin" }>();
+    for (const id of idsToLock) {
+      const row = await db.lockUserRowForUpdate(id, tx);
+      if (row) lockedById.set(id, row);
+    }
+
+    const target = lockedById.get(params.userId);
     if (!target) throw new AdminUserManagementError("NOT_FOUND", "User not found");
 
-    // Step 2: compute real changes - a client-supplied field equal to the
+    // Step 2: actor revalidation - see this function's own "ACTOR
+    // REVALIDATION" docstring above. A missing actor row (deleted
+    // concurrently) or a role that is no longer "admin" both fail closed
+    // as FORBIDDEN, never NOT_FOUND (this is an authorization failure on
+    // the CALLER, not a "target not found" outcome).
+    const actor = isSelfEdit ? target : lockedById.get(params.actorAdminId);
+    if (!actor || actor.role !== "admin") {
+      throw new AdminUserManagementError(
+        "FORBIDDEN",
+        "Acting admin session is no longer valid - your account may have been demoted or removed"
+      );
+    }
+
+    // Step 3: compute real changes - a client-supplied field equal to the
     // current value is not a change, and a request with no real change at
     // all must be rejected outright (never a silent success).
     const nameChanged = params.name !== undefined && params.name !== (target.name ?? null);
@@ -86,7 +133,7 @@ export async function updateAdminUserProfile(params: {
       throw new AdminUserManagementError("BAD_REQUEST", "No changes to apply");
     }
 
-    // Step 3: role-safety rules - only evaluated when the role is actually
+    // Step 4: role-safety rules - only evaluated when the role is actually
     // changing. Every rule here is re-checked against the LOCKED `target`
     // row read above, not the input the client sent.
     if (roleChanged) {
@@ -124,7 +171,7 @@ export async function updateAdminUserProfile(params: {
       }
     }
 
-    // Step 4: apply the update - conditional on the role still matching
+    // Step 5: apply the update - conditional on the role still matching
     // what this transaction just locked and read (see
     // db.updateAdminUserFields's own docstring).
     const applied = await db.updateAdminUserFields(
@@ -140,7 +187,7 @@ export async function updateAdminUserProfile(params: {
       throw new AdminUserManagementError("CONFLICT", "Update failed - the account may have changed concurrently");
     }
 
-    // Step 5: audit log(s) - one row per changed field type, matching the
+    // Step 6: audit log(s) - one row per changed field type, matching the
     // adminUserAuditLogs.action enum. Never the old/new name, never the
     // email - only that the name field changed, and (for a role change)
     // the old/new role plus whether the target has a linked Google
