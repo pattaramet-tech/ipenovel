@@ -6,17 +6,13 @@ import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
 import { Loader2, RefreshCw, Eye } from "lucide-react";
 import { useState, useEffect } from "react";
-import { useLocation } from "wouter";
+import { useLocation, useSearchParams } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
-
-/** Strict positive-integer parse for the `?userId=` query param - never
- *  NaN, never 0, never a decimal, never a value with trailing garbage
- *  (unlike `parseInt`, which silently accepts "5abc" as 5). Mirrors
- *  AdminOrdersPage.tsx's own userId query-param validation. */
-function parsePositiveIntegerQueryParam(value: string | null): number | undefined {
-  if (!value) return undefined;
-  return /^[1-9]\d*$/.test(value) ? Number(value) : undefined;
-}
+import {
+  parseUserIdQueryParam,
+  readUserIdFromSearchParams,
+  withUserIdSearchParam,
+} from "./adminUserIdQueryParam";
 
 type TopupLog = {
   id: number;
@@ -36,26 +32,37 @@ type TopupLog = {
 
 export default function AdminTopupLogsPage() {
   const { user, isAuthenticated } = useAuth();
-  const [location, navigate] = useLocation();
+  // useLocation() is kept only for navigate() to a log's detail page below -
+  // its own `location` value is the pathname alone, never the query string
+  // (see adminUserIdQueryParam.ts's top-of-file docstring), so it is never
+  // used for reading/writing `?userId=`.
+  const [, navigate] = useLocation();
+  // useSearchParams() is wouter's reactive query-string hook (also used by
+  // client/src/pages/NovelsPage.tsx) - unlike useLocation(), it updates on
+  // browser back/forward and lets setSearchParams rewrite just one param
+  // while preserving every other one already in the URL.
+  const [searchParams, setSearchParams] = useSearchParams();
   const [limit] = useState(50);
   const [offset, setOffset] = useState(0);
 
-  // Read `?userId=` from the URL (e.g. navigated here from AdminUsersPage's
-  // "ดูประวัติเติมเงิน" row action) - strictly a positive integer, never
-  // trusted as-is otherwise. Synced into local state once on mount, same
-  // "sync from URL, then let local state own it" pattern as AdminOrdersPage.
-  const urlUserId = parsePositiveIntegerQueryParam(
-    new URLSearchParams(location.split("?")[1] || "").get("userId")
-  );
+  // `?userId=` (e.g. navigated here from AdminUsersPage's "ดูประวัติเติมเงิน"
+  // row action) - strictly a positive integer, never trusted as-is
+  // otherwise (see readUserIdFromSearchParams).
+  const urlUserId = readUserIdFromSearchParams(searchParams);
 
   const [userFilter, setUserFilter] = useState(urlUserId !== undefined ? String(urlUserId) : "");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
 
+  // Re-syncs whenever the URL's userId changes for ANY reason external to
+  // this page's own filter box - browser back/forward, a fresh
+  // ?userId=... link, or the param being removed/becoming invalid - not
+  // just on mount. A removed/invalid param clears the local filter too
+  // (never retains a stale User ID the URL no longer names), and the page
+  // resets to the first page of whatever the new filter returns.
   useEffect(() => {
-    if (urlUserId !== undefined) {
-      setUserFilter(String(urlUserId));
-    }
+    setUserFilter(urlUserId !== undefined ? String(urlUserId) : "");
+    setOffset(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlUserId]);
 
@@ -65,11 +72,11 @@ export default function AdminTopupLogsPage() {
 
   // Strict positive-integer parse - never NaN, never 0, never a value with
   // trailing garbage.
-  const userIdFilter = parsePositiveIntegerQueryParam(userFilter);
+  const userIdFilter = parseUserIdQueryParam(userFilter);
 
   const { data, isLoading, refetch } = trpc.wallet.admin.listTopupLogs.useQuery(
     {
-      userId: userIdFilter && !isNaN(userIdFilter) ? userIdFilter : undefined,
+      userId: userIdFilter,
       startDate: parsedStartDate,
       endDate: parsedEndDate,
       limit,
@@ -83,11 +90,15 @@ export default function AdminTopupLogsPage() {
   const totalPages = Math.ceil(total / limit);
   const currentPage = Math.floor(offset / limit) + 1;
 
+  // Reset ALSO clears `userId` from the URL (never just local state) -
+  // preserving every other existing query param - so a page refresh or a
+  // shared link doesn't silently bring the old filter back.
   const handleReset = () => {
     setUserFilter("");
     setStartDate("");
     setEndDate("");
     setOffset(0);
+    setSearchParams((prev) => withUserIdSearchParam(prev, undefined));
     refetch();
   };
 
