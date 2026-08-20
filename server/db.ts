@@ -6747,6 +6747,22 @@ export async function getAdminUserDeleteAssessment(userId: number, tx?: any): Pr
  * same relative order, which could reintroduce exactly the kind of
  * lock-order-dependent deadlock this whole admin-set-lock-first hierarchy
  * exists to eliminate.
+ *
+ * DEPENDS ON `users_role_id_idx (role, id)` (PR #45 review finding "Avoid
+ * a full-table locking scan for role changes", migration
+ * `0036_add_users_role_id_index.sql`) - without a supporting index,
+ * `WHERE role = 'admin' ORDER BY id FOR UPDATE` has no way to satisfy
+ * either the filter or the sort from an index on MySQL/MariaDB, so it
+ * scans (and locks) every row in `users`, not just the small admin set -
+ * every unrelated write (including the login-time `upsertUser` update)
+ * blocks behind it for as long as the transaction runs. `(role, id)` -
+ * role first (matches the WHERE), id second (matches the ORDER BY) - lets
+ * one index satisfy both, turning this into a range scan over just the
+ * admin rows. Deliberately no `FORCE INDEX` hint here: this query must
+ * keep working (just slower, exactly as it always has) on any deployment
+ * where migration 0036 has not run yet - a `FORCE INDEX` would instead
+ * make every role-change request fail outright until that migration is
+ * applied.
  */
 export async function lockAdminRoleRows(tx: any): Promise<Array<{ id: number }>> {
   const rawResult: any = await tx.execute(sql`SELECT id FROM users WHERE role = 'admin' ORDER BY id FOR UPDATE`);

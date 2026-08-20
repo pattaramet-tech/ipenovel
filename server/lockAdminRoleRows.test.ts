@@ -45,4 +45,20 @@ describe("lockAdminRoleRows", () => {
     expect(forUpdateIndex).toBeGreaterThan(-1);
     expect(orderByIndex).toBeLessThan(forUpdateIndex);
   });
+
+  it("[review finding 'Avoid a full-table locking scan for role changes'] never adds a FORCE INDEX hint - the query must keep working on a deployment where migration 0036 (users_role_id_idx) has not run yet, just slower, never fail outright", async () => {
+    let capturedQuery: any;
+    const tx = {
+      execute: async (query: any) => {
+        capturedQuery = query;
+        return [[]];
+      },
+    };
+
+    await lockAdminRoleRows(tx);
+
+    const text = extractSqlText(capturedQuery).toLowerCase();
+    expect(text).not.toContain("force index");
+    expect(text).not.toContain("use index");
+  });
 });

@@ -42,6 +42,21 @@ export const users = mysqlTable(
     // login. Purely additive - does not change users.id, users.openId, or
     // any existing constraint/behavior.
     emailIdx: index("users_email_idx").on(table.email),
+    // PR #45 review finding "Avoid a full-table locking scan for role
+    // changes" - server/db.ts's lockAdminRoleRows() runs
+    // `WHERE role = 'admin' ORDER BY id FOR UPDATE` as the first lock any
+    // admin.users role-change transaction acquires (see
+    // server/services/adminUserManagementService.ts's updateAdminUserProfile
+    // "LOCK HIERARCHY" docstring). Without a supporting index, that query
+    // scans (and locks) the entire `users` table on MySQL/MariaDB, blocking
+    // unrelated writes like the login-time upsertUser update for as long as
+    // the transaction runs. `(role, id)` - role first, matching the WHERE
+    // clause; id second, matching the ORDER BY - lets the same index satisfy
+    // both, so the query becomes an index range scan over just the admin
+    // rows instead of a full-table scan. Migration 0036 adds this index;
+    // purely additive - does not change any existing column, constraint, or
+    // behavior.
+    roleIdIdx: index("users_role_id_idx").on(table.role, table.id),
   })
 );
 
