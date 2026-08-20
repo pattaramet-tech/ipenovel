@@ -47,6 +47,7 @@ import {
 import { isValidStoredFileRef } from "@shared/privateFileRef";
 import * as accountRecoveryService from "./services/accountRecoveryService";
 import { AccountRecoveryError } from "./services/accountRecoveryService";
+import { updateAdminUserProfile, deleteAdminUserSafely, AdminUserManagementError } from "./services/adminUserManagementService";
 
 // ============ HELPER PROCEDURES ============
 
@@ -82,6 +83,24 @@ function mapAccountRecoveryError(error: unknown): TRPCError {
     return new TRPCError({ code: codeMap[error.code] ?? "BAD_REQUEST", message: error.message });
   }
   console.error("[AccountRecovery] Unexpected error", safeErrorSummary(error));
+  return new TRPCError({
+    code: "INTERNAL_SERVER_ERROR",
+    message: "ไม่สามารถดำเนินการได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง",
+  });
+}
+
+// ============ ADMIN USERS MANAGEMENT HELPERS ============
+
+/** AdminUserManagementError's own codes are already valid TRPCError codes
+ *  (NOT_FOUND/FORBIDDEN/BAD_REQUEST/CONFLICT), so this is a direct pass-
+ *  through rather than a translation table - unlike mapAccountRecoveryError
+ *  above. Any OTHER error (a raw database exception, etc.) never leaks its
+ *  message to the client. */
+function mapAdminUserManagementError(error: unknown): TRPCError {
+  if (error instanceof AdminUserManagementError) {
+    return new TRPCError({ code: error.code, message: error.message });
+  }
+  console.error("[AdminUserManagement] Unexpected error", safeErrorSummary(error));
   return new TRPCError({
     code: "INTERNAL_SERVER_ERROR",
     message: "ไม่สามารถดำเนินการได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง",
@@ -1434,6 +1453,105 @@ export const appRouter = router({
         }),
     }),
     dashboard: dashboardRouter,
+
+    users: router({
+      // Server-side paginated/searched/filtered/sorted user list - see
+      // db.getAdminUsersList for the explicit safe-column allowlist
+      // (never openId/passwordHash) and the EXISTS-based googleConnection
+      // filter (never a LEFT JOIN, so a user is never duplicated).
+      list: adminProcedure
+        .input(
+          z.object({
+            page: z.number().int().positive().default(1),
+            pageSize: z.union([z.literal(20), z.literal(50), z.literal(100)]).default(20),
+            search: z.string().trim().max(200).optional(),
+            role: z.enum(["user", "admin"]).optional(),
+            googleConnection: z.enum(["connected", "not_connected"]).optional(),
+            sortBy: z.enum(["id", "name", "email", "createdAt", "lastSignedIn"]).optional(),
+            sortOrder: z.enum(["asc", "desc"]).optional(),
+          })
+        )
+        .query(async ({ input }) => {
+          return db.getAdminUsersList(input);
+        }),
+
+      // name/role only - email/openId/loginMethod/passwordHash/Google
+      // identity/createdAt/lastSignedIn are all read-only from this page by
+      // design (no input field exists for any of them at all). Every role-
+      // safety rule (self-demotion, last-admin, Google-identity-required-
+      // to-promote) is re-verified server-side inside
+      // updateAdminUserProfile's own locked transaction - never trusted
+      // from the client beyond the confirmation text match.
+      update: adminProcedure
+        .input(
+          z.object({
+            userId: z.number().int().positive(),
+            name: z.union([z.string().max(255), z.null()]).optional(),
+            role: z.enum(["user", "admin"]).optional(),
+            reason: z.string().trim().min(5, "A reason is required").max(500),
+            confirmText: z.string().optional(),
+          })
+        )
+        .mutation(async ({ input, ctx }) => {
+          // Empty/whitespace-only name normalizes to null - "Empty name ให้
+          // Normalize เป็น null" - but `undefined` (field not supplied at
+          // all) is preserved as "don't touch this field", never coerced
+          // to null.
+          const normalizedName =
+            input.name === undefined
+              ? undefined
+              : input.name === null || input.name.trim() === ""
+                ? null
+                : input.name.trim();
+
+          try {
+            return await updateAdminUserProfile({
+              actorAdminId: ctx.user.id,
+              userId: input.userId,
+              name: normalizedName,
+              role: input.role,
+              reason: input.reason,
+              confirmText: input.confirmText,
+            });
+          } catch (error) {
+            throw mapAdminUserManagementError(error);
+          }
+        }),
+
+      // Read-only preview of exactly what would block a hard delete - the
+      // client shows this before enabling the delete confirmation flow, but
+      // `delete` below NEVER trusts this result; it re-runs the identical
+      // assessment inside its own locked transaction.
+      deleteAssessment: adminProcedure
+        .input(z.object({ userId: z.number().int().positive() }))
+        .query(async ({ input }) => {
+          return db.getAdminUserDeleteAssessment(input.userId);
+        }),
+
+      // Hard delete - only ever succeeds for a genuinely empty role="user"
+      // account (see deleteAdminUserSafely). Deliberately no forceDelete/
+      // skipSafetyCheck/override field anywhere in this input schema.
+      delete: adminProcedure
+        .input(
+          z.object({
+            userId: z.number().int().positive(),
+            reason: z.string().trim().min(10, "A reason is required").max(500),
+            confirmText: z.string(),
+          })
+        )
+        .mutation(async ({ input, ctx }) => {
+          try {
+            return await deleteAdminUserSafely({
+              actorAdminId: ctx.user.id,
+              userId: input.userId,
+              reason: input.reason,
+              confirmText: input.confirmText,
+            });
+          } catch (error) {
+            throw mapAdminUserManagementError(error);
+          }
+        }),
+    }),
 
     // Deprecated: fetches every episode row (all novels) including the full
     // mediumtext `content` column - heavy, unpaginated. Kept only for

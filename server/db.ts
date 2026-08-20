@@ -34,9 +34,11 @@ import {
   sportsMatchVotes,
   sportsMatchRewards,
   dailyCheckins,
+  dailyCheckinCampaigns,
   dailyCheckinRewardGrants,
   accountRecoveryRequests,
   accountRecoveryAuditLogs,
+  adminUserAuditLogs,
   Novel,
   couponUsages as couponUsagesTable,
 } from "../drizzle/schema";
@@ -6435,4 +6437,336 @@ export function buildOtherBlockingAccountRecoveryRequestsCondition(userId: numbe
     ne(accountRecoveryRequests.id, excludeRequestId),
     inArray(accountRecoveryRequests.status, BLOCKING_ACCOUNT_RECOVERY_REQUEST_STATUSES)
   );
+}
+
+// ============ ADMIN USERS MANAGEMENT ============
+// Backs the Admin Users Management page (client/src/pages/AdminUsersPage.tsx)
+// - list/search/filter/sort, name+role edit, and safe hard-delete. See
+// server/services/adminUserManagementService.ts for the orchestration/
+// transaction logic layered on top of these low-level query helpers, the
+// same split as accountRecoveryService.ts over this file's account-recovery
+// helpers above.
+
+export type AdminUsersListRow = {
+  id: number;
+  name: string | null;
+  email: string | null;
+  loginMethod: string | null;
+  role: "user" | "admin";
+  googleConnected: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  lastSignedIn: Date;
+};
+
+/** A user is directly connected to Google exactly when it has an
+ *  authIdentities row - checked via EXISTS (never a LEFT JOIN) so a future
+ *  second provider can never duplicate a users row in the result set (see
+ *  authIdentities' UNIQUE(userId, provider) - a join could still produce
+ *  more than one row per user if that ever changes; EXISTS structurally
+ *  cannot). */
+const ADMIN_USERS_GOOGLE_CONNECTED_EXPR = sql<number>`EXISTS (SELECT 1 FROM ${authIdentities} WHERE ${authIdentities.userId} = ${users.id})`;
+
+const ADMIN_USERS_SORT_COLUMNS = {
+  id: users.id,
+  name: users.name,
+  email: users.email,
+  createdAt: users.createdAt,
+  lastSignedIn: users.lastSignedIn,
+} as const;
+
+/**
+ * Server-side paginated/searched/filtered/sorted user list for the Admin
+ * Users Management page. Deliberately selects an explicit, allowlisted
+ * column set (never getTableColumns(users)) so openId/passwordHash can
+ * never leak into this response even if a future column is added to
+ * `users` - see drizzle/schema.ts's users table. `googleConnection`
+ * filters BEFORE the count and BEFORE limit/offset (both the count query
+ * and the data query share the exact same `conditions` array), and the
+ * count is a dedicated COUNT(*) query - never "fetch everything, measure
+ * .length" - so this stays a fixed two-query cost regardless of result
+ * size (no N+1).
+ */
+export async function getAdminUsersList(options: {
+  page: number;
+  pageSize: 20 | 50 | 100;
+  search?: string;
+  role?: "user" | "admin";
+  googleConnection?: "connected" | "not_connected";
+  sortBy?: "id" | "name" | "email" | "createdAt" | "lastSignedIn";
+  sortOrder?: "asc" | "desc";
+}): Promise<{ users: AdminUsersListRow[]; total: number; page: number; pageSize: number; totalPages: number }> {
+  const page = Math.max(1, options.page || 1);
+  const pageSize = options.pageSize || 20;
+
+  const database = await getDb();
+  if (!database) return { users: [], total: 0, page, pageSize, totalPages: 0 };
+
+  const conditions: any[] = [];
+
+  if (options.search) {
+    const term = `%${options.search.toLowerCase()}%`;
+    const searchConditions: any[] = [
+      sql`LOWER(${users.name}) LIKE ${term}`,
+      sql`LOWER(${users.email}) LIKE ${term}`,
+    ];
+    if (/^\d+$/.test(options.search)) {
+      searchConditions.push(eq(users.id, Number(options.search)));
+    }
+    conditions.push(or(...searchConditions));
+  }
+
+  if (options.role) {
+    conditions.push(eq(users.role, options.role));
+  }
+
+  if (options.googleConnection === "connected") {
+    conditions.push(sql`${ADMIN_USERS_GOOGLE_CONNECTED_EXPR}`);
+  } else if (options.googleConnection === "not_connected") {
+    conditions.push(sql`NOT ${ADMIN_USERS_GOOGLE_CONNECTED_EXPR}`);
+  }
+
+  let countQuery: any = database.select({ value: count() }).from(users);
+  let dataQuery: any = database
+    .select({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      loginMethod: users.loginMethod,
+      role: users.role,
+      googleConnected: ADMIN_USERS_GOOGLE_CONNECTED_EXPR,
+      createdAt: users.createdAt,
+      updatedAt: users.updatedAt,
+      lastSignedIn: users.lastSignedIn,
+    })
+    .from(users);
+
+  if (conditions.length > 0) {
+    const whereClause = and(...conditions);
+    countQuery = countQuery.where(whereClause);
+    dataQuery = dataQuery.where(whereClause);
+  }
+
+  const countResult = await countQuery;
+  const total = countResult[0]?.value ?? 0;
+
+  const sortBy = options.sortBy ?? "createdAt";
+  const sortOrder = options.sortOrder ?? "desc";
+  const orderByFn = sortOrder === "asc" ? asc : desc;
+  const primaryColumn = ADMIN_USERS_SORT_COLUMNS[sortBy] ?? users.createdAt;
+
+  const rows = await dataQuery
+    // `id` as the secondary sort key keeps pagination stable across pages
+    // even when the primary sort column has ties (e.g. many rows sharing
+    // the same createdAt second) - without it, MySQL/TiDB may return ties
+    // in a different relative order per page, causing rows to be skipped
+    // or duplicated across pages.
+    .orderBy(orderByFn(primaryColumn), asc(users.id))
+    .limit(pageSize)
+    .offset((page - 1) * pageSize);
+
+  return {
+    users: rows.map((row: any) => ({ ...row, googleConnected: Boolean(row.googleConnected) })),
+    total,
+    page,
+    pageSize,
+    totalPages: Math.ceil(total / pageSize),
+  };
+}
+
+export type AdminUserDeleteBlockerCategory = "economic" | "user_owned" | "audit_or_actor";
+
+export type AdminUserDeleteBlocker = {
+  table: string;
+  reference: string;
+  count: number;
+  category: AdminUserDeleteBlockerCategory;
+};
+
+export type AdminUserDeleteAssessment = {
+  userId: number;
+  canDelete: boolean;
+  blockers: AdminUserDeleteBlocker[];
+};
+
+/**
+ * One entry per group in
+ * server/services/adminUserDeletionClassification.ts's
+ * ADMIN_USER_DELETION_CLASSIFICATION - grouped by (table, reference) so
+ * e.g. payments.reviewedByUserId and payments.approvedByAdminId (both
+ * "Payment/Admin Review References") produce ONE blocker with an OR'd
+ * condition rather than two separate, double-counted entries. Deliberately
+ * excludes authIdentities.userId (login_data - never a blocker, see that
+ * classification entry's own reason) and the indirect (no-direct-column)
+ * tables (cartItems/orderItems/payments-via-orders - already covered by
+ * their parent row).
+ */
+const ADMIN_USER_DELETE_CHECKS: Array<{
+  table: string;
+  reference: string;
+  category: AdminUserDeleteBlockerCategory;
+  from: any;
+  condition: (userId: number) => any;
+}> = [
+  { table: "orders", reference: "Orders", category: "economic", from: orders, condition: (id) => eq(orders.userId, id) },
+  { table: "purchases", reference: "Purchases", category: "economic", from: purchases, condition: (id) => eq(purchases.userId, id) },
+  { table: "episodePurchases", reference: "Episode Purchases", category: "economic", from: episodePurchases, condition: (id) => eq(episodePurchases.userId, id) },
+  { table: "walletAccounts", reference: "Wallet Account", category: "economic", from: walletAccounts, condition: (id) => eq(walletAccounts.userId, id) },
+  { table: "walletTransactions", reference: "Wallet Transactions", category: "economic", from: walletTransactions, condition: (id) => eq(walletTransactions.userId, id) },
+  { table: "walletTopups", reference: "Wallet Top-ups", category: "economic", from: walletTopups, condition: (id) => eq(walletTopups.userId, id) },
+  { table: "topupLogs", reference: "Top-up Logs", category: "economic", from: topupLogs, condition: (id) => eq(topupLogs.userId, id) },
+  { table: "pointsTransactions", reference: "Points Transactions", category: "economic", from: pointsTransactions, condition: (id) => eq(pointsTransactions.userId, id) },
+  { table: "couponUsages", reference: "Coupon Usages", category: "economic", from: couponUsagesTable, condition: (id) => eq(couponUsagesTable.userId, id) },
+  { table: "coupons", reference: "Personal Coupons", category: "economic", from: coupons, condition: (id) => eq(coupons.ownerUserId, id) },
+  { table: "sportsMatchVotes", reference: "Sports Votes", category: "economic", from: sportsMatchVotes, condition: (id) => eq(sportsMatchVotes.userId, id) },
+  { table: "sportsMatchRewards", reference: "Sports Match Rewards", category: "economic", from: sportsMatchRewards, condition: (id) => eq(sportsMatchRewards.userId, id) },
+  { table: "dailyCheckinRewardGrants", reference: "Daily Check-in Reward Grants", category: "economic", from: dailyCheckinRewardGrants, condition: (id) => eq(dailyCheckinRewardGrants.userId, id) },
+
+  { table: "carts", reference: "Cart", category: "user_owned", from: carts, condition: (id) => eq(carts.userId, id) },
+  { table: "wishlists", reference: "Wishlist", category: "user_owned", from: wishlists, condition: (id) => eq(wishlists.userId, id) },
+  { table: "readingProgress", reference: "Reading Progress", category: "user_owned", from: readingProgress, condition: (id) => eq(readingProgress.userId, id) },
+  { table: "dailyCheckins", reference: "Daily Check-ins", category: "user_owned", from: dailyCheckins, condition: (id) => eq(dailyCheckins.userId, id) },
+
+  { table: "orderHistory", reference: "Order History Actor References", category: "audit_or_actor", from: orderHistory, condition: (id) => eq(orderHistory.actorUserId, id) },
+  { table: "payments", reference: "Payment/Admin Review References", category: "audit_or_actor", from: payments, condition: (id) => or(eq(payments.reviewedByUserId, id), eq(payments.approvedByAdminId, id)) },
+  { table: "walletTopups", reference: "Wallet Review/Approval References", category: "audit_or_actor", from: walletTopups, condition: (id) => or(eq(walletTopups.reviewedByUserId, id), eq(walletTopups.approvedByAdminId, id)) },
+  { table: "topupLogs", reference: "Top-up Log Creator References", category: "audit_or_actor", from: topupLogs, condition: (id) => eq(topupLogs.createdBy, id) },
+  { table: "dailyCheckinCampaigns", reference: "Daily Check-in Campaign Creator References", category: "audit_or_actor", from: dailyCheckinCampaigns, condition: (id) => eq(dailyCheckinCampaigns.createdBy, id) },
+  {
+    table: "accountRecoveryRequests",
+    reference: "Account Recovery Requests",
+    category: "audit_or_actor",
+    from: accountRecoveryRequests,
+    condition: (id) =>
+      or(
+        eq(accountRecoveryRequests.requesterUserId, id),
+        eq(accountRecoveryRequests.reviewedByAdminId, id),
+        eq(accountRecoveryRequests.sourceUserId, id),
+        eq(accountRecoveryRequests.targetUserId, id)
+      ),
+  },
+  {
+    table: "accountRecoveryAuditLogs",
+    reference: "Account Recovery Audit References",
+    category: "audit_or_actor",
+    from: accountRecoveryAuditLogs,
+    condition: (id) =>
+      or(
+        eq(accountRecoveryAuditLogs.actorAdminId, id),
+        eq(accountRecoveryAuditLogs.sourceUserId, id),
+        eq(accountRecoveryAuditLogs.targetUserId, id)
+      ),
+  },
+];
+
+/**
+ * Runs every hard-delete safety check against the CURRENT database state
+ * (or, when called with a `tx`, the CURRENT locked-transaction snapshot -
+ * see deleteAdminUserTransaction in adminUserManagementService.ts). Never
+ * returns row-level data - only a table/reference label and a count, per
+ * server/services/adminUserDeletionClassification.ts. Read-only - never
+ * throws for a non-deletable user, the caller decides what to do with a
+ * non-empty blockers list.
+ */
+export async function getAdminUserDeleteAssessment(userId: number, tx?: any): Promise<AdminUserDeleteAssessment> {
+  const database = tx ?? (await getDb());
+  if (!database) return { userId, canDelete: false, blockers: [] };
+
+  const blockers: AdminUserDeleteBlocker[] = [];
+  for (const check of ADMIN_USER_DELETE_CHECKS) {
+    const result = await database.select({ value: count() }).from(check.from).where(check.condition(userId));
+    const hitCount = result[0]?.value ?? 0;
+    if (hitCount > 0) {
+      blockers.push({ table: check.table, reference: check.reference, count: hitCount, category: check.category });
+    }
+  }
+
+  return { userId, canDelete: blockers.length === 0, blockers };
+}
+
+/** Locks every current admin-role row (SELECT ... FOR UPDATE) for the
+ *  duration of a role-change/delete transaction, so two concurrent
+ *  "demote the last two admins at once" (or "delete the last admin's
+ *  co-admin") requests cannot both read the same pre-transaction admin
+ *  count and both proceed - the loser blocks on this lock until the
+ *  winner commits, then re-reads the post-commit row set. Always called
+ *  with an explicit transaction, exactly like lockCartForCheckout above. */
+export async function lockAdminRoleRows(tx: any): Promise<Array<{ id: number }>> {
+  const rawResult: any = await tx.execute(sql`SELECT id FROM users WHERE role = 'admin' FOR UPDATE`);
+  const rows = Array.isArray(rawResult?.[0]) ? rawResult[0] : rawResult;
+  return rows || [];
+}
+
+/** Conditional single-row UPDATE for name/role - `expectedRole` is the
+ *  role read by the SAME transaction's earlier lock, so a concurrent
+ *  change between that lock and this write (should be structurally
+ *  impossible inside one locked transaction, but this is the cheapest
+ *  possible guard) makes this a no-op (0 affected rows) instead of an
+ *  unconditional overwrite. Never touches email/openId/loginMethod/
+ *  passwordHash/createdAt/lastSignedIn - those are read-only from this
+ *  page by design (see server/routers.ts's admin.users.update input
+ *  schema, which has no fields for them at all). */
+export async function updateAdminUserFields(
+  params: { userId: number; expectedRole: "user" | "admin"; name?: string | null; role?: "user" | "admin" },
+  tx: any
+): Promise<boolean> {
+  const updates: Record<string, unknown> = { updatedAt: new Date() };
+  if (params.name !== undefined) updates.name = params.name;
+  if (params.role !== undefined) updates.role = params.role;
+
+  const updateResult = await tx
+    .update(users)
+    .set(updates)
+    .where(and(eq(users.id, params.userId), eq(users.role, params.expectedRole)));
+
+  const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
+  return ((resultHeader as any)?.affectedRows || 0) > 0;
+}
+
+/** Deletes every authIdentities row for `userId` - always called inside the
+ *  SAME transaction as deleteUsersRowChecked, immediately before it (see
+ *  deleteAdminUserTransaction). Unlike moveAuthIdentityOwner's account-
+ *  recovery case, there is no "expected current owner" race to guard here:
+ *  once the target `users` row itself is locked, its authIdentities rows
+ *  cannot be reassigned to another user by any other code path in this
+ *  codebase. */
+export async function deleteAuthIdentitiesForUser(userId: number, tx: any): Promise<void> {
+  await tx.delete(authIdentities).where(eq(authIdentities.userId, userId));
+}
+
+/** Deletes exactly the ONE target `users` row, if it still exists - the
+ *  final step of deleteAdminUserTransaction. Returns the actual
+ *  affectedRows count so the caller can assert === 1 (see that spec's own
+ *  step 8) rather than assuming success. */
+export async function deleteUsersRowChecked(userId: number, tx: any): Promise<number> {
+  const deleteResult = await tx.delete(users).where(eq(users.id, userId));
+  const resultHeader = Array.isArray(deleteResult) ? deleteResult[0] : deleteResult;
+  return (resultHeader as any)?.affectedRows || 0;
+}
+
+/** Append-only audit log write for the Admin Users Management page - see
+ *  drizzle/schema.ts's adminUserAuditLogs doc comment for exactly what
+ *  `safeMetadata` may and may not contain. Always called inside the SAME
+ *  transaction as the mutation it records (see
+ *  server/services/adminUserManagementService.ts), mirroring
+ *  insertAccountRecoveryAuditLog's own contract. */
+export async function insertAdminUserAuditLog(
+  input: {
+    actorAdminId: number;
+    targetUserId: number;
+    action: "update_name" | "update_role" | "delete_user";
+    reason: string;
+    safeMetadata?: Record<string, unknown> | null;
+  },
+  tx?: any
+): Promise<void> {
+  const database = tx ?? (await getDb());
+  if (!database) throw new Error("Database not available");
+  await database.insert(adminUserAuditLogs).values({
+    actorAdminId: input.actorAdminId,
+    targetUserId: input.targetUserId,
+    action: input.action,
+    reason: input.reason,
+    safeMetadata: input.safeMetadata ? JSON.stringify(input.safeMetadata) : null,
+  });
 }

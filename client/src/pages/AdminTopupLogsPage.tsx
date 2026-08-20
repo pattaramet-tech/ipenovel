@@ -5,9 +5,18 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
 import { Loader2, RefreshCw, Eye } from "lucide-react";
-import { useState, useMemo } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
+
+/** Strict positive-integer parse for the `?userId=` query param - never
+ *  NaN, never 0, never a decimal, never a value with trailing garbage
+ *  (unlike `parseInt`, which silently accepts "5abc" as 5). Mirrors
+ *  AdminOrdersPage.tsx's own userId query-param validation. */
+function parsePositiveIntegerQueryParam(value: string | null): number | undefined {
+  if (!value) return undefined;
+  return /^[1-9]\d*$/.test(value) ? Number(value) : undefined;
+}
 
 type TopupLog = {
   id: number;
@@ -27,19 +36,36 @@ type TopupLog = {
 
 export default function AdminTopupLogsPage() {
   const { user, isAuthenticated } = useAuth();
-  const [, navigate] = useLocation();
+  const [location, navigate] = useLocation();
   const [limit] = useState(50);
   const [offset, setOffset] = useState(0);
-  const [userFilter, setUserFilter] = useState("");
+
+  // Read `?userId=` from the URL (e.g. navigated here from AdminUsersPage's
+  // "ดูประวัติเติมเงิน" row action) - strictly a positive integer, never
+  // trusted as-is otherwise. Synced into local state once on mount, same
+  // "sync from URL, then let local state own it" pattern as AdminOrdersPage.
+  const urlUserId = parsePositiveIntegerQueryParam(
+    new URLSearchParams(location.split("?")[1] || "").get("userId")
+  );
+
+  const [userFilter, setUserFilter] = useState(urlUserId !== undefined ? String(urlUserId) : "");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+
+  useEffect(() => {
+    if (urlUserId !== undefined) {
+      setUserFilter(String(urlUserId));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlUserId]);
 
   // Parse date inputs
   const parsedStartDate = startDate ? new Date(startDate) : undefined;
   const parsedEndDate = endDate ? new Date(endDate) : undefined;
 
-  // Parse user filter (can be ID or name)
-  const userIdFilter = userFilter ? parseInt(userFilter, 10) : undefined;
+  // Strict positive-integer parse - never NaN, never 0, never a value with
+  // trailing garbage.
+  const userIdFilter = parsePositiveIntegerQueryParam(userFilter);
 
   const { data, isLoading, refetch } = trpc.wallet.admin.listTopupLogs.useQuery(
     {
