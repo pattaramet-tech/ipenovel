@@ -309,6 +309,71 @@ describe("updateAdminUserProfile", () => {
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
     });
 
+    it("[follow-up finding] actor role=\"user\" (demoted) AND target does not exist -> FORBIDDEN, never NOT_FOUND - actor is checked first, so a demoted caller learns nothing about whether the target id exists", async () => {
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+      mockUserLocks({
+        1: undefined, // target does not exist
+        9: { id: 9, name: "Admin Nine", role: "user" }, // actor demoted
+      });
+      const updateSpy = vi.spyOn(db, "updateAdminUserFields");
+      const auditSpy = vi.spyOn(db, "insertAdminUserAuditLog");
+
+      await expect(
+        updateAdminUserProfile({ actorAdminId: 9, userId: 1, name: "New Name", reason: "valid reason" })
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(updateSpy).not.toHaveBeenCalled();
+      expect(auditSpy).not.toHaveBeenCalled();
+    });
+
+    it("[follow-up finding] actor row does not exist AND target does not exist -> FORBIDDEN, never NOT_FOUND", async () => {
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+      mockUserLocks({
+        1: undefined, // target does not exist
+        9: undefined, // actor does not exist
+      });
+      const updateSpy = vi.spyOn(db, "updateAdminUserFields");
+      const auditSpy = vi.spyOn(db, "insertAdminUserAuditLog");
+
+      await expect(
+        updateAdminUserProfile({ actorAdminId: 9, userId: 1, name: "New Name", reason: "valid reason" })
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(updateSpy).not.toHaveBeenCalled();
+      expect(auditSpy).not.toHaveBeenCalled();
+    });
+
+    it("[follow-up finding] actor is still a valid admin BUT the target does not exist -> NOT_FOUND (the actor-first ordering only changes outcomes when the actor itself is invalid)", async () => {
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+      mockUserLocks({ 1: undefined }); // target does not exist; actor(9) defaults to VALID_ACTOR_ROW
+      const updateSpy = vi.spyOn(db, "updateAdminUserFields");
+      const auditSpy = vi.spyOn(db, "insertAdminUserAuditLog");
+
+      await expect(
+        updateAdminUserProfile({ actorAdminId: 9, userId: 1, name: "New Name", reason: "valid reason" })
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+      expect(updateSpy).not.toHaveBeenCalled();
+      expect(auditSpy).not.toHaveBeenCalled();
+    });
+
+    it("[follow-up finding, self-edit] actorAdminId === userId and that row does not exist -> FORBIDDEN (treated as an invalid actor, never NOT_FOUND)", async () => {
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+      const lockSpy = mockUserLocks({ 9: undefined });
+      const updateSpy = vi.spyOn(db, "updateAdminUserFields");
+      const auditSpy = vi.spyOn(db, "insertAdminUserAuditLog");
+
+      await expect(
+        updateAdminUserProfile({ actorAdminId: 9, userId: 9, name: "New Name", reason: "valid reason" })
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      // Self-edit still locks exactly one row (id 9), even on the not-found path.
+      expect(lockSpy).toHaveBeenCalledTimes(1);
+      expect(lockSpy).toHaveBeenCalledWith(9, expect.anything());
+      expect(updateSpy).not.toHaveBeenCalled();
+      expect(auditSpy).not.toHaveBeenCalled();
+    });
+
     it("when actor revalidation fails, updateAdminUserFields and insertAdminUserAuditLog are NEVER called", async () => {
       vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
       vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);

@@ -41,13 +41,15 @@ export type UpdateAdminUserResult = {
  * The single-transaction Edit flow:
  *  1. lock the target (and, unless it's a self-edit, the ACTOR) user row,
  *  in ascending id order - see "Actor revalidation" below,
- *  2. verify the actor is still a real, currently-role="admin" account,
- *  3. compute which fields actually change (reject a true no-op),
- *  4. if role is changing, re-verify EVERY role-safety rule against the
+ *  2. verify the actor is still a real, currently-role="admin" account
+ *  (checked BEFORE target existence - see "Actor revalidation" below for
+ *  why the order matters), 3. verify the target row actually exists,
+ *  4. compute which fields actually change (reject a true no-op),
+ *  5. if role is changing, re-verify EVERY role-safety rule against the
  *  LOCKED target snapshot (never trust the assessment the admin UI showed
  *  moments earlier) - self-demotion, last-admin, and
- *  Google-identity-required-to-promote, 5. apply the conditional UPDATE,
- *  6. write the audit log(s), 7. commit (implicit - any throw rolls back
+ *  Google-identity-required-to-promote, 6. apply the conditional UPDATE,
+ *  7. write the audit log(s), 8. commit (implicit - any throw rolls back
  *  everything together).
  *
  * `name`/`role` are `undefined` when the caller does not intend to touch
@@ -76,6 +78,17 @@ export type UpdateAdminUserResult = {
  * in the same relative order and cannot deadlock against each other (the
  * same fixed-lock-order technique executeAccountRecovery already uses for
  * its source/target user locks).
+ *
+ * ACTOR CHECK BEFORE TARGET-EXISTENCE CHECK (follow-up review finding on
+ * this same PR): an earlier version of this function checked target
+ * existence first, so a request from an already-demoted/deleted actor
+ * against a NON-existent target id returned NOT_FOUND instead of
+ * FORBIDDEN - i.e. the response leaked whether an arbitrary target id
+ * exists to a caller who is no longer authorized to be asking at all.
+ * Checking the actor FIRST means an unauthorized caller always gets the
+ * SAME FORBIDDEN regardless of the target id or whether it exists -
+ * authorization is verified before anything about the target is even
+ * consulted, exactly as it should be.
  */
 export async function updateAdminUserProfile(params: {
   actorAdminId: number;
@@ -108,15 +121,20 @@ export async function updateAdminUserProfile(params: {
       if (row) lockedById.set(id, row);
     }
 
-    const target = lockedById.get(params.userId);
-    if (!target) throw new AdminUserManagementError("NOT_FOUND", "User not found");
-
-    // Step 2: actor revalidation - see this function's own "ACTOR
-    // REVALIDATION" docstring above. A missing actor row (deleted
-    // concurrently) or a role that is no longer "admin" both fail closed
-    // as FORBIDDEN, never NOT_FOUND (this is an authorization failure on
-    // the CALLER, not a "target not found" outcome).
-    const actor = isSelfEdit ? target : lockedById.get(params.actorAdminId);
+    // Step 2: actor revalidation, checked BEFORE target existence - see
+    // this function's own "ACTOR REVALIDATION" docstring above. A missing
+    // actor row (deleted concurrently) or a role that is no longer
+    // "admin" both fail closed as FORBIDDEN, never NOT_FOUND (this is an
+    // authorization failure on the CALLER, and must be indistinguishable
+    // from "the caller is unauthorized" regardless of whether the target
+    // happens to exist - checking target-existence first would let an
+    // already-demoted/deleted actor learn whether an arbitrary target id
+    // exists via the NOT_FOUND/FORBIDDEN split, which is not this
+    // function's authorization boundary to leak). Works identically for a
+    // self-edit (isSelfEdit locked only params.userId === actorAdminId,
+    // under that same key) and for a distinct actor/target pair - no
+    // separate self-edit branch needed here.
+    const actor = lockedById.get(params.actorAdminId);
     if (!actor || actor.role !== "admin") {
       throw new AdminUserManagementError(
         "FORBIDDEN",
@@ -124,7 +142,12 @@ export async function updateAdminUserProfile(params: {
       );
     }
 
-    // Step 3: compute real changes - a client-supplied field equal to the
+    // Step 3: NOW check the target exists - only reachable once the actor
+    // is confirmed to be a real, currently-admin account.
+    const target = lockedById.get(params.userId);
+    if (!target) throw new AdminUserManagementError("NOT_FOUND", "User not found");
+
+    // Step 4: compute real changes - a client-supplied field equal to the
     // current value is not a change, and a request with no real change at
     // all must be rejected outright (never a silent success).
     const nameChanged = params.name !== undefined && params.name !== (target.name ?? null);
@@ -133,7 +156,7 @@ export async function updateAdminUserProfile(params: {
       throw new AdminUserManagementError("BAD_REQUEST", "No changes to apply");
     }
 
-    // Step 4: role-safety rules - only evaluated when the role is actually
+    // Step 5: role-safety rules - only evaluated when the role is actually
     // changing. Every rule here is re-checked against the LOCKED `target`
     // row read above, not the input the client sent.
     if (roleChanged) {
@@ -171,7 +194,7 @@ export async function updateAdminUserProfile(params: {
       }
     }
 
-    // Step 5: apply the update - conditional on the role still matching
+    // Step 6: apply the update - conditional on the role still matching
     // what this transaction just locked and read (see
     // db.updateAdminUserFields's own docstring).
     const applied = await db.updateAdminUserFields(
@@ -187,7 +210,7 @@ export async function updateAdminUserProfile(params: {
       throw new AdminUserManagementError("CONFLICT", "Update failed - the account may have changed concurrently");
     }
 
-    // Step 6: audit log(s) - one row per changed field type, matching the
+    // Step 7: audit log(s) - one row per changed field type, matching the
     // adminUserAuditLogs.action enum. Never the old/new name, never the
     // email - only that the name field changed, and (for a role change)
     // the old/new role plus whether the target has a linked Google
