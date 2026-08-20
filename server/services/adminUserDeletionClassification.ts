@@ -2,7 +2,11 @@
  * The single, exhaustively-audited inventory of every user-referencing
  * column in drizzle/schema.ts, and how each one is treated by the Admin
  * Users Management hard-delete safety check
- * (server/services/adminUserDeletionService.ts's assessAdminUserDeleteSafety).
+ * (server/db.ts's getAdminUserDeleteAssessment, orchestrated by
+ * server/services/adminUserManagementService.ts's deleteAdminUserSafely -
+ * see that function's own docstring for why it is NOT currently wired to
+ * any tRPC procedure, pending a concurrency-safety fix from PR #45's
+ * security review).
  *
  * Deliberately a SEPARATE inventory from
  * server/services/accountRecoveryDataClassification.ts, not a reuse of it -
@@ -52,11 +56,14 @@
  * - "never_blocks": every other column that structurally cannot represent
  *   real, protectable data about the target account - an unverified,
  *   user-typed claim (accountRecoveryRequests.requestedLegacyUserId), or
- *   this feature's OWN audit trail (adminUserAuditLogs), which is
- *   deliberately built with no foreign key specifically so it survives a
- *   target user's hard delete (see drizzle/schema.ts's adminUserAuditLogs
- *   doc comment) - it would be self-defeating for that same table to also
- *   block the deletion it exists to outlive.
+ *   this feature's OWN audit trail's `targetUserId` (adminUserAuditLogs),
+ *   which is deliberately built with no foreign key specifically so it
+ *   survives a target user's hard delete (see drizzle/schema.ts's
+ *   adminUserAuditLogs doc comment) - it would be self-defeating for that
+ *   same "what was done to this user" record to also block the deletion it
+ *   exists to outlive. NOTE: adminUserAuditLogs.actorAdminId is the OPPOSITE
+ *   case - it IS an audit_or_actor blocker (see that category above) - the
+ *   two columns on this one table are deliberately classified differently.
  */
 
 export type AdminUserDeletionCategory = "economic" | "user_owned" | "audit_or_actor" | "login_data" | "never_blocks";
@@ -119,6 +126,14 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
   { table: "accountRecoveryAuditLogs", column: "actorAdminId", category: "audit_or_actor", reference: "Account Recovery Audit References", reason: "This account performed an audited account-recovery transition." },
   { table: "accountRecoveryAuditLogs", column: "sourceUserId", category: "audit_or_actor", reference: "Account Recovery Audit References", reason: "This account was the source in an account-recovery audit entry." },
   { table: "accountRecoveryAuditLogs", column: "targetUserId", category: "audit_or_actor", reference: "Account Recovery Audit References", reason: "This account was the target in an account-recovery audit entry." },
+  {
+    table: "adminUserAuditLogs",
+    column: "actorAdminId",
+    category: "audit_or_actor",
+    reference: "Admin User Audit Log Actor References",
+    reason:
+      "Review finding on PR #45: this account is the ADMIN who performed a prior name/role edit or delete (recorded while it still held role=\"admin\"). Protecting audit_or_actor identity is exactly this category's purpose - a former admin's actions must remain attributable after a later demotion, so this must block deletion even though it lives in this feature's own audit table (unlike targetUserId below, which is deliberately NOT protected the same way).",
+  },
 
   // ---- never_blocks: unverified claims and this feature's own self-outliving audit trail ----
   {
@@ -130,17 +145,10 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
   },
   {
     table: "adminUserAuditLogs",
-    column: "actorAdminId",
-    category: "never_blocks",
-    reference: "Admin User Audit Logs",
-    reason: "This feature's OWN append-only audit trail, deliberately built with no foreign key specifically so it survives a target user's hard delete - must never itself block the deletion it records.",
-  },
-  {
-    table: "adminUserAuditLogs",
     column: "targetUserId",
     category: "never_blocks",
     reference: "Admin User Audit Logs",
-    reason: "Same as actorAdminId above - the audit trail is designed to remain valid and readable after its target user is deleted, so it must never block that deletion.",
+    reason: "This feature's OWN append-only audit trail, deliberately built with no foreign key specifically so it survives a target user's hard delete (see drizzle/schema.ts's adminUserAuditLogs doc comment) - the record of what was done TO this user must remain readable after they're gone, so this column alone must never block that deletion. Contrast actorAdminId above, which protects a different identity (WHO did it) and IS a blocker.",
   },
 ];
 

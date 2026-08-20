@@ -201,86 +201,26 @@ describe("admin.users.update - authorization", () => {
   });
 });
 
-describe("admin.users.deleteAssessment - authorization", () => {
+describe("admin.users.delete / admin.users.deleteAssessment - deliberately NOT exposed in this PR", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("anonymous caller -> UNAUTHORIZED, the database is never queried", async () => {
-    const assessSpy = vi.spyOn(db, "getAdminUserDeleteAssessment");
-    const caller = appRouter.createCaller(contextFor(null));
-    await expect(caller.admin.users.deleteAssessment({ userId: 2 })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
-    expect(assessSpy).not.toHaveBeenCalled();
+  // PR #45 security review finding: hard-delete's transaction only locks
+  // the target `users` row, but every business table it checks (orders,
+  // carts, wallet, points, ...) uses a plain, unenforced `userId` int with
+  // no foreign key back to `users.id` - so a concurrent INSERT into any of
+  // those tables can race past the assessment and land after the delete
+  // commits, leaving an orphaned row behind. Until that gap is closed
+  // (either DB-enforced constraints proven safe with a real MariaDB
+  // concurrency test, or an equivalent application-level guarantee), the
+  // mutation and its read-only preview are withheld entirely - see
+  // server/routers.ts's admin.users router for the full rationale. This
+  // test proves that withdrawal, not just documents it: neither procedure
+  // exists on the router at all.
+  it("admin.users.delete does not exist as a callable procedure", () => {
+    expect((appRouter.admin.users as any).delete).toBeUndefined();
   });
 
-  it("regular (role: user) caller -> FORBIDDEN", async () => {
-    const caller = appRouter.createCaller(contextFor(fakeUser({ role: "user" })));
-    await expect(caller.admin.users.deleteAssessment({ userId: 2 })).rejects.toMatchObject({ code: "FORBIDDEN" });
-  });
-
-  it("admin caller -> returns the assessment, never real row data - only table/reference/count/category", async () => {
-    vi.spyOn(db, "getAdminUserDeleteAssessment").mockResolvedValue({
-      userId: 2,
-      canDelete: false,
-      blockers: [{ table: "orders", reference: "Orders", count: 3, category: "economic" }],
-    });
-    const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
-
-    const result = await caller.admin.users.deleteAssessment({ userId: 2 });
-
-    expect(result.canDelete).toBe(false);
-    expect(Object.keys(result.blockers[0]).sort()).toEqual(["category", "count", "reference", "table"].sort());
-  });
-});
-
-describe("admin.users.delete - authorization", () => {
-  afterEach(() => vi.restoreAllMocks());
-
-  const VALID_DELETE_INPUT = { userId: 2, reason: "a valid ten char reason", confirmText: "DELETE USER 2" };
-
-  it("anonymous caller -> UNAUTHORIZED, the service is never invoked", async () => {
-    const deleteSpy = vi.spyOn(adminUserManagementService, "deleteAdminUserSafely");
-    const caller = appRouter.createCaller(contextFor(null));
-    await expect(caller.admin.users.delete(VALID_DELETE_INPUT)).rejects.toMatchObject({ code: "UNAUTHORIZED" });
-    expect(deleteSpy).not.toHaveBeenCalled();
-  });
-
-  it("regular (role: user) caller -> FORBIDDEN, the service is never invoked", async () => {
-    const deleteSpy = vi.spyOn(adminUserManagementService, "deleteAdminUserSafely");
-    const caller = appRouter.createCaller(contextFor(fakeUser({ role: "user" })));
-    await expect(caller.admin.users.delete(VALID_DELETE_INPUT)).rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect(deleteSpy).not.toHaveBeenCalled();
-  });
-
-  it("admin caller -> reaches the service with the CALLER's own id as actorAdminId", async () => {
-    const deleteSpy = vi
-      .spyOn(adminUserManagementService, "deleteAdminUserSafely")
-      .mockResolvedValue({ deleted: true });
-    const caller = appRouter.createCaller(contextFor(fakeUser({ id: 5, role: "admin" })));
-
-    await caller.admin.users.delete(VALID_DELETE_INPUT);
-
-    expect(deleteSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ actorAdminId: 5, userId: 2, confirmText: "DELETE USER 2" })
-    );
-  });
-
-  it("a service-thrown CONFLICT (blockers present) maps to a real CONFLICT TRPCError, with the Thai user-facing message intact", async () => {
-    vi.spyOn(adminUserManagementService, "deleteAdminUserSafely").mockRejectedValue(
-      new AdminUserManagementError("CONFLICT", "บัญชีนี้มีข้อมูลธุรกรรมหรือข้อมูลการใช้งาน จึงไม่สามารถลบแบบถาวรได้")
-    );
-    const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
-
-    const error = await caller.admin.users.delete(VALID_DELETE_INPUT).catch((e) => e);
-    expect(error).toMatchObject({ code: "CONFLICT" });
-    expect(error.message).toContain("ไม่สามารถลบแบบถาวรได้");
-  });
-
-  it("reason shorter than 10 characters is rejected by input validation before the service ever runs", async () => {
-    const deleteSpy = vi.spyOn(adminUserManagementService, "deleteAdminUserSafely");
-    const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
-
-    await expect(
-      caller.admin.users.delete({ userId: 2, reason: "short", confirmText: "DELETE USER 2" })
-    ).rejects.toBeDefined();
-    expect(deleteSpy).not.toHaveBeenCalled();
+  it("admin.users.deleteAssessment does not exist as a callable procedure", () => {
+    expect((appRouter.admin.users as any).deleteAssessment).toBeUndefined();
   });
 });

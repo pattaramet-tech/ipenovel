@@ -6459,13 +6459,31 @@ export type AdminUsersListRow = {
   lastSignedIn: Date;
 };
 
-/** A user is directly connected to Google exactly when it has an
- *  authIdentities row - checked via EXISTS (never a LEFT JOIN) so a future
- *  second provider can never duplicate a users row in the result set (see
- *  authIdentities' UNIQUE(userId, provider) - a join could still produce
- *  more than one row per user if that ever changes; EXISTS structurally
- *  cannot). */
-const ADMIN_USERS_GOOGLE_CONNECTED_EXPR = sql<number>`EXISTS (SELECT 1 FROM ${authIdentities} WHERE ${authIdentities.userId} = ${users.id})`;
+/**
+ * A user is "Google connected" exactly when it has an authIdentities row
+ * for the "google" provider specifically - checked via EXISTS (never a
+ * LEFT JOIN) so a future second provider can never duplicate a users row
+ * in the result set (see authIdentities' UNIQUE(userId, provider) - a join
+ * could still produce more than one row per user if that ever changes;
+ * EXISTS structurally cannot).
+ *
+ * MUST filter on provider = 'google', not merely "has ANY authIdentities
+ * row" - review finding on PR #45: authIdentities is provider-agnostic
+ * (see drizzle/schema.ts's own doc comment: "google" today; deliberately a
+ * plain varchar, not an enum, so a future second provider never requires a
+ * schema migration"), so once a second provider ever exists, a user linked
+ * to ONLY that other provider would incorrectly show as Google-connected
+ * without this filter. Exported (not a local const) purely so
+ * server/adminUsersGoogleConnected.test.ts can assert the generated SQL
+ * shape via a connection-free `.toSQL()` render (same pattern as
+ * buildOtherBlockingAccountRecoveryRequestsCondition), without needing a
+ * live database.
+ */
+export function buildAdminUsersGoogleConnectedExistsCondition() {
+  return sql<number>`EXISTS (SELECT 1 FROM ${authIdentities} WHERE ${authIdentities.userId} = ${users.id} AND ${authIdentities.provider} = 'google')`;
+}
+
+const ADMIN_USERS_GOOGLE_CONNECTED_EXPR = buildAdminUsersGoogleConnectedExistsCondition();
 
 const ADMIN_USERS_SORT_COLUMNS = {
   id: users.id,
@@ -6657,16 +6675,41 @@ const ADMIN_USER_DELETE_CHECKS: Array<{
         eq(accountRecoveryAuditLogs.targetUserId, id)
       ),
   },
+  // Review finding on PR #45: a FORMER admin who performed a prior
+  // name/role edit or delete (recorded with actorAdminId = their own id,
+  // back when they still held role="admin") must not be hard-deletable
+  // after being demoted to role="user" - doing so would erase who actually
+  // performed that past action from an append-only audit trail whose
+  // entire purpose is to preserve that. Deliberately NOT checking
+  // targetUserId here (see adminUserDeletionClassification.ts's
+  // "never_blocks" entry for that column) - the audit trail is explicitly
+  // designed to remain valid after ITS OWN target is deleted; only the
+  // ACTOR identity is protected.
+  {
+    table: "adminUserAuditLogs",
+    reference: "Admin User Audit Log Actor References",
+    category: "audit_or_actor",
+    from: adminUserAuditLogs,
+    condition: (id) => eq(adminUserAuditLogs.actorAdminId, id),
+  },
 ];
 
 /**
  * Runs every hard-delete safety check against the CURRENT database state
- * (or, when called with a `tx`, the CURRENT locked-transaction snapshot -
- * see deleteAdminUserTransaction in adminUserManagementService.ts). Never
- * returns row-level data - only a table/reference label and a count, per
+ * (or, when called with a `tx`, that transaction's own read view - see
+ * deleteAdminUserSafely in adminUserManagementService.ts). Never returns
+ * row-level data - only a table/reference label and a count, per
  * server/services/adminUserDeletionClassification.ts. Read-only - never
  * throws for a non-deletable user, the caller decides what to do with a
  * non-empty blockers list.
+ *
+ * IMPORTANT: passing a `tx` here does NOT mean the ~24 tables this function
+ * queries are locked - none of them are (only the caller's own target
+ * `users` row lock, if any, applies). A concurrent write to any of these
+ * tables for the same userId can still commit right after this function
+ * returns a clean assessment - see deleteAdminUserSafely's own "NOT
+ * CONCURRENCY-SAFE YET" docstring for the full explanation and why that
+ * function is not currently wired to any tRPC procedure.
  */
 export async function getAdminUserDeleteAssessment(userId: number, tx?: any): Promise<AdminUserDeleteAssessment> {
   const database = tx ?? (await getDb());

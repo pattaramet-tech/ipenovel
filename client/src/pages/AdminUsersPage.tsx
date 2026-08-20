@@ -36,8 +36,6 @@ import {
   History,
   Copy,
   Pencil,
-  Trash2,
-  AlertTriangle,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
@@ -214,57 +212,15 @@ export default function AdminUsersPage() {
     });
   };
 
-  // ---- Delete dialog ----
-  const [deletingUser, setDeletingUser] = useState<AdminUserRow | null>(null);
-  const [deleteReason, setDeleteReason] = useState("");
-  const [deleteConfirmText, setDeleteConfirmText] = useState("");
-
-  const openDeleteDialog = (row: AdminUserRow) => {
-    setDeletingUser(row);
-    setDeleteReason("");
-    setDeleteConfirmText("");
-  };
-
-  const closeDeleteDialog = () => setDeletingUser(null);
-
-  const assessmentQuery = trpc.admin.users.deleteAssessment.useQuery(
-    { userId: deletingUser?.id ?? 0 },
-    { enabled: deletingUser !== null }
-  );
-
-  const deleteMutation = trpc.admin.users.delete.useMutation({
-    onSuccess: () => {
-      toast.success("ลบบัญชีผู้ใช้สำเร็จ");
-      closeDeleteDialog();
-      utils.admin.users.list.invalidate();
-      // Land back on page 1 if the current page could now be out of range.
-      setPage(1);
-    },
-    onError: (error) => {
-      toast.error(error.message || "ลบบัญชีผู้ใช้ไม่สำเร็จ");
-    },
-  });
-
-  const deleteExpectedConfirmText = deletingUser ? `DELETE USER ${deletingUser.id}` : "";
-  const canDelete = assessmentQuery.data?.canDelete === true;
-
-  const handleSubmitDelete = () => {
-    if (!deletingUser) return;
-    if (!canDelete) return;
-    if (deleteReason.trim().length < 10) {
-      toast.error("กรุณากรอกเหตุผล (อย่างน้อย 10 ตัวอักษร)");
-      return;
-    }
-    if (deleteConfirmText !== deleteExpectedConfirmText) {
-      toast.error(`กรุณาพิมพ์ "${deleteExpectedConfirmText}" เพื่อยืนยัน`);
-      return;
-    }
-    deleteMutation.mutate({
-      userId: deletingUser.id,
-      reason: deleteReason.trim(),
-      confirmText: deleteConfirmText,
-    });
-  };
+  // Hard delete is DELIBERATELY NOT offered on this page yet - PR #45
+  // security review finding: the server-side transaction only locks the
+  // target `users` row, which cannot stop a concurrent write to any of the
+  // (mostly foreign-key-free) business tables it checks from racing past
+  // the safety assessment. See server/routers.ts's admin.users router for
+  // the full rationale. admin.users.delete / .deleteAssessment do not exist
+  // as callable procedures right now - there is no button here to remove
+  // this comment for; when the concurrency gap is closed, the delete flow
+  // is added back deliberately, not restored by uncommenting old code.
 
   return (
     <AdminLayout>
@@ -450,13 +406,6 @@ export default function AdminUsersPage() {
                               <Pencil className="w-4 h-4 mr-2" />
                               แก้ไข
                             </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={() => openDeleteDialog(row)}
-                              className="text-red-600 focus:text-red-600"
-                            >
-                              <Trash2 className="w-4 h-4 mr-2" />
-                              ลบ
-                            </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </td>
@@ -578,84 +527,6 @@ export default function AdminUsersPage() {
             <Button onClick={handleSubmitEdit} disabled={!editHasChanges || updateMutation.isPending}>
               {updateMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
               บันทึก
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Delete Dialog */}
-      <Dialog open={deletingUser !== null} onOpenChange={(open) => !open && closeDeleteDialog()}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>ลบผู้ใช้ #{deletingUser?.id}</DialogTitle>
-          </DialogHeader>
-          {deletingUser && (
-            <div className="space-y-4">
-              <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-800">
-                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                <p>การลบบัญชีผู้ใช้เป็นการลบแบบถาวรและไม่สามารถกู้คืนได้</p>
-              </div>
-
-              {assessmentQuery.isLoading ? (
-                <div className="flex items-center justify-center py-6">
-                  <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
-                </div>
-              ) : assessmentQuery.isError ? (
-                <p className="text-sm text-red-600">ตรวจสอบข้อมูลไม่สำเร็จ กรุณาลองใหม่</p>
-              ) : assessmentQuery.data && !assessmentQuery.data.canDelete ? (
-                <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-                  <p className="font-semibold mb-2">ไม่สามารถลบบัญชีนี้ได้ เนื่องจากพบข้อมูลต่อไปนี้:</p>
-                  <ul className="list-disc list-inside space-y-0.5">
-                    {assessmentQuery.data.blockers.map((blocker) => (
-                      <li key={`${blocker.table}-${blocker.reference}`}>
-                        {blocker.reference} ({blocker.count})
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : (
-                <>
-                  <div>
-                    <Label htmlFor="delete-reason">เหตุผล (Reason)</Label>
-                    <Textarea
-                      id="delete-reason"
-                      value={deleteReason}
-                      onChange={(e) => setDeleteReason(e.target.value)}
-                      className="mt-1"
-                      rows={3}
-                      placeholder="ระบุเหตุผลในการลบ (10-500 ตัวอักษร)"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="delete-confirm">พิมพ์ "{deleteExpectedConfirmText}" เพื่อยืนยัน</Label>
-                    <Input
-                      id="delete-confirm"
-                      value={deleteConfirmText}
-                      onChange={(e) => setDeleteConfirmText(e.target.value)}
-                      className="mt-1"
-                      placeholder={deleteExpectedConfirmText}
-                    />
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={closeDeleteDialog} disabled={deleteMutation.isPending}>
-              ยกเลิก
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={handleSubmitDelete}
-              disabled={
-                !canDelete ||
-                deleteMutation.isPending ||
-                deleteReason.trim().length < 10 ||
-                deleteConfirmText !== deleteExpectedConfirmText
-              }
-            >
-              {deleteMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
-              ยืนยันการลบ
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -247,6 +247,15 @@ describe("updateAdminUserProfile", () => {
   });
 });
 
+// NOTE (PR #45 security review): these tests prove deleteAdminUserSafely's
+// BUSINESS rules (confirmation text, self/role checks, blocker handling,
+// transactional rollback on a thrown error) with mocked db.ts functions -
+// they do NOT prove, and must never be cited as proving, that this
+// function is safe against a REAL concurrent write racing the assessment
+// (see the function's own "NOT CONCURRENCY-SAFE YET" docstring). That gap
+// can only be closed/proven with a real multi-connection database
+// integration test, which does not exist yet - this function is
+// deliberately not wired to any tRPC procedure in the meantime.
 describe("deleteAdminUserSafely", () => {
   afterEach(() => vi.restoreAllMocks());
 

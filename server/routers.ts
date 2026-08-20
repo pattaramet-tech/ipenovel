@@ -47,7 +47,7 @@ import {
 import { isValidStoredFileRef } from "@shared/privateFileRef";
 import * as accountRecoveryService from "./services/accountRecoveryService";
 import { AccountRecoveryError } from "./services/accountRecoveryService";
-import { updateAdminUserProfile, deleteAdminUserSafely, AdminUserManagementError } from "./services/adminUserManagementService";
+import { updateAdminUserProfile, AdminUserManagementError } from "./services/adminUserManagementService";
 
 // ============ HELPER PROCEDURES ============
 
@@ -1518,39 +1518,26 @@ export const appRouter = router({
           }
         }),
 
-      // Read-only preview of exactly what would block a hard delete - the
-      // client shows this before enabling the delete confirmation flow, but
-      // `delete` below NEVER trusts this result; it re-runs the identical
-      // assessment inside its own locked transaction.
-      deleteAssessment: adminProcedure
-        .input(z.object({ userId: z.number().int().positive() }))
-        .query(async ({ input }) => {
-          return db.getAdminUserDeleteAssessment(input.userId);
-        }),
-
-      // Hard delete - only ever succeeds for a genuinely empty role="user"
-      // account (see deleteAdminUserSafely). Deliberately no forceDelete/
-      // skipSafetyCheck/override field anywhere in this input schema.
-      delete: adminProcedure
-        .input(
-          z.object({
-            userId: z.number().int().positive(),
-            reason: z.string().trim().min(10, "A reason is required").max(500),
-            confirmText: z.string(),
-          })
-        )
-        .mutation(async ({ input, ctx }) => {
-          try {
-            return await deleteAdminUserSafely({
-              actorAdminId: ctx.user.id,
-              userId: input.userId,
-              reason: input.reason,
-              confirmText: input.confirmText,
-            });
-          } catch (error) {
-            throw mapAdminUserManagementError(error);
-          }
-        }),
+      // Hard-delete (`deleteAssessment` + `delete`) is DELIBERATELY NOT
+      // exposed here - PR #45 security review finding: the transaction only
+      // locks the target `users` row (SELECT ... FOR UPDATE); every business
+      // table it checks (orders, carts, wallet, points, ...) uses a plain,
+      // unenforced `userId` int with no foreign key back to `users.id` (see
+      // drizzle/schema.ts), so locking `users` alone cannot stop a
+      // concurrent INSERT into any of those tables from racing past the
+      // assessment read and landing AFTER the delete commits - the delete
+      // transaction can observe zero blockers, and a concurrent write can
+      // still leave an orphaned business row behind. Fixing this for real
+      // requires either DB-enforced constraints across every referencing
+      // table (verified with a real MariaDB integration test using at least
+      // two concurrent connections) or an equivalent application-level
+      // guarantee - neither exists yet. The underlying implementation
+      // (server/services/adminUserManagementService.ts's
+      // deleteAdminUserSafely, server/db.ts's getAdminUserDeleteAssessment)
+      // is kept, tested, and correct AS FAR AS IT GOES, specifically so this
+      // gap can be closed and the endpoint re-added as follow-up work once
+      // the concurrency fix is designed and proven - it is just never wired
+      // to a reachable procedure in this PR.
     }),
 
     // Deprecated: fetches every episode row (all novels) including the full

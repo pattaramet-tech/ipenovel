@@ -188,17 +188,42 @@ export async function updateAdminUserProfile(params: {
 /**
  * The single-transaction hard-Delete flow:
  *  1. lock the target user row, 2. verify not-self and still role="user",
- *  3. re-run the FULL delete-safety assessment against the LOCKED snapshot
- *  (never the assessment the admin UI showed moments earlier), 4. any
- *  blocker at all -> rollback with CONFLICT, 5. write the audit log,
- *  6. delete authIdentities, 7. delete the users row, 8. assert exactly one
- *  row was deleted, 9. commit (implicit - any throw rolls back everything,
- *  including the audit log).
+ *  3. re-run the FULL delete-safety assessment (see
+ *  db.getAdminUserDeleteAssessment) inside the SAME transaction as the
+ *  locked target-row read, 4. any blocker at all -> rollback with CONFLICT,
+ *  5. write the audit log, 6. delete authIdentities, 7. delete the users
+ *  row, 8. assert exactly one row was deleted, 9. commit (implicit - any
+ *  throw rolls back everything, including the audit log).
  *
  * There is deliberately no `forceDelete`/`skipSafetyCheck`/`override`
  * parameter anywhere in this function's signature or body - the ONLY way
  * to make a user deletable is for their own data to genuinely become
  * empty first.
+ *
+ * NOT CONCURRENCY-SAFE YET, AND NOT WIRED TO ANY tRPC PROCEDURE - PR #45
+ * security review finding: step 1 locks ONLY the target `users` row
+ * (SELECT ... FOR UPDATE). Step 3's assessment then reads ~24 OTHER
+ * tables (orders, carts, walletAccounts, pointsTransactions, ...), every
+ * one of which stores `userId` as a plain, unenforced int with NO foreign
+ * key back to `users.id` (see drizzle/schema.ts) - locking `users` does
+ * nothing to block a concurrent INSERT into any of those tables. A
+ * transaction here can legitimately observe zero blockers at step 3, while
+ * a different, concurrent transaction commits a brand-new order/cart/
+ * wallet row for this same user microseconds later - after step 4's
+ * check has already passed, before step 7's delete commits. The result is
+ * a business row left referencing a `users.id` that no longer exists.
+ * Neither re-running the same COUNT queries again nor locking `users` a
+ * second time closes this gap - the missing piece is either DB-enforced
+ * referential integrity across every referencing table (which would need
+ * to be proven safe with a real multi-connection MariaDB integration test,
+ * see docs on PR #45) or an equivalent application-level guarantee, and
+ * neither exists yet. This function is kept, and its non-concurrency
+ * business rules (self/last-admin/audit-actor protection, no override
+ * parameter, transactional rollback) are still correct and unit-tested
+ * (see adminUserManagementService.test.ts) - but server/routers.ts
+ * deliberately does NOT expose an `admin.users.delete` procedure that
+ * calls it. Do not wire this up to an endpoint without first closing the
+ * gap described here.
  */
 export async function deleteAdminUserSafely(params: {
   actorAdminId: number;
@@ -237,9 +262,12 @@ export async function deleteAdminUserSafely(params: {
       throw new AdminUserManagementError("FORBIDDEN", "Only accounts with role \"user\" can be hard-deleted");
     }
 
-    // Step 3: re-run the full delete-safety assessment against the locked
-    // snapshot - the exact same function admin.users.deleteAssessment
-    // uses, never a second, drifted copy of the same logic.
+    // Step 3: re-run the full delete-safety assessment inside this same
+    // transaction. NOTE: this reads ~24 OTHER tables, none of which are
+    // locked by anything in this function (only the target `users` row
+    // is, from step 1) - see this function's own top-of-file "NOT
+    // CONCURRENCY-SAFE YET" warning for why that is a real, currently
+    // unresolved gap, not just a note for the future.
     const assessment = await db.getAdminUserDeleteAssessment(params.userId, tx);
 
     // Step 4: any blocker at all -> rollback with CONFLICT. Never

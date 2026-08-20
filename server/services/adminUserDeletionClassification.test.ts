@@ -103,6 +103,20 @@ describe("ADMIN_USER_DELETION_CLASSIFICATION is exhaustive and up to date", () =
       ])
     );
   });
+
+  it("[review finding on PR #45] adminUserAuditLogs.actorAdminId (WHO performed a past edit/delete) is audit_or_actor - a former admin's identity must remain protected even after they're demoted to role=\"user\"", () => {
+    const entry = ADMIN_USER_DELETION_CLASSIFICATION.find(
+      (c) => c.table === "adminUserAuditLogs" && c.column === "actorAdminId"
+    );
+    expect(entry?.category).toBe("audit_or_actor");
+  });
+
+  it("adminUserAuditLogs.targetUserId (WHAT was done to a user) stays never_blocks - the record of a past action on this account must survive its deletion, unlike who performed it", () => {
+    const entry = ADMIN_USER_DELETION_CLASSIFICATION.find(
+      (c) => c.table === "adminUserAuditLogs" && c.column === "targetUserId"
+    );
+    expect(entry?.category).toBe("never_blocks");
+  });
 });
 
 describe("indirect (no-direct-column) tables are documented and real", () => {
