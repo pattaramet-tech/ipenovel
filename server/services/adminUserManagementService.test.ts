@@ -140,7 +140,13 @@ describe("updateAdminUserProfile", () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
     vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
     mockUserLocks({ 9: { id: 9, role: "admin", name: "Admin Nine" } });
-    const lockAdminsSpy = vi.spyOn(db, "lockAdminRoleRows");
+    // Under the fixed lock hierarchy (see updateAdminUserProfile's own
+    // "LOCK HIERARCHY" docstring), ANY request that supplies `role` locks
+    // the admin-set FIRST, before per-user locks or the self-demotion
+    // check even run - so this IS called exactly once here, even though
+    // the request is ultimately rejected as a self role-change. It must
+    // never be called a SECOND time.
+    const lockAdminsSpy = vi.spyOn(db, "lockAdminRoleRows").mockResolvedValue([{ id: 9 }, { id: 10 }]);
 
     await expect(
       updateAdminUserProfile({
@@ -151,7 +157,7 @@ describe("updateAdminUserProfile", () => {
         confirmText: "CHANGE ROLE 9",
       })
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect(lockAdminsSpy).not.toHaveBeenCalled();
+    expect(lockAdminsSpy).toHaveBeenCalledTimes(1);
   });
 
   it("cannot demote the LAST remaining admin", async () => {
@@ -464,6 +470,129 @@ describe("updateAdminUserProfile", () => {
       vi.spyOn(db, "insertAdminUserAuditLog").mockResolvedValue(undefined);
       await updateAdminUserProfile({ actorAdminId: 2, userId: 9, name: "New", reason: "valid reason" });
       expect(lockSpyB.mock.calls.map((c) => c[0])).toEqual([2, 9]);
+    });
+  });
+
+  // ---- Review finding "Use one lock hierarchy for admin demotions"
+  // (PRRT_kwDOTeQWFc6a59CE): the admin-set lock must be the FIRST lock any
+  // role-changing request acquires - not just a confirmed demotion -
+  // otherwise two concurrent demotions of disjoint admin pairs can each
+  // already hold their own actor/target row locks before reaching the
+  // all-admin lock and deadlock waiting on each other. ----
+  describe("lock hierarchy", () => {
+    it("[demotion] acquires the admin-set lock BEFORE either per-user lock", async () => {
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+      const callOrder: string[] = [];
+      vi.spyOn(db, "lockAdminRoleRows").mockImplementation(async () => {
+        callOrder.push("lockAdminRoleRows");
+        return [{ id: 2 }, { id: 9 }];
+      });
+      vi.spyOn(db, "lockUserRowForUpdate").mockImplementation(async (id: number) => {
+        callOrder.push(`lockUserRowForUpdate:${id}`);
+        return id === 2 ? fakeUserRow({ id: 2, role: "admin" }) : VALID_ACTOR_ROW;
+      });
+      // Reached by the audit-log step regardless of promotion/demotion
+      // (records googleConnected in safeMetadata) - see Step 8's own
+      // db.getAuthIdentityByUserAndProvider call.
+      vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue(undefined);
+      vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
+      vi.spyOn(db, "insertAdminUserAuditLog").mockResolvedValue(undefined);
+
+      await updateAdminUserProfile({
+        actorAdminId: 9,
+        userId: 2,
+        role: "user",
+        reason: "valid reason",
+        confirmText: "CHANGE ROLE 2",
+      });
+
+      expect(callOrder).toEqual(["lockAdminRoleRows", "lockUserRowForUpdate:2", "lockUserRowForUpdate:9"]);
+    });
+
+    it("[promotion] uses the SAME hierarchy - the admin-set lock is acquired first even though promotion never needs the admin count", async () => {
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+      const callOrder: string[] = [];
+      const lockAdminsSpy = vi.spyOn(db, "lockAdminRoleRows").mockImplementation(async () => {
+        callOrder.push("lockAdminRoleRows");
+        return [{ id: 9 }];
+      });
+      vi.spyOn(db, "lockUserRowForUpdate").mockImplementation(async (id: number) => {
+        callOrder.push(`lockUserRowForUpdate:${id}`);
+        return id === 2 ? fakeUserRow({ id: 2, role: "user" }) : VALID_ACTOR_ROW;
+      });
+      vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue({ id: 1, provider: "google" } as any);
+      vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
+      vi.spyOn(db, "insertAdminUserAuditLog").mockResolvedValue(undefined);
+
+      const result = await updateAdminUserProfile({
+        actorAdminId: 9,
+        userId: 2,
+        role: "admin",
+        reason: "valid reason",
+        confirmText: "CHANGE ROLE 2",
+      });
+
+      expect(result.role).toBe("admin");
+      expect(lockAdminsSpy).toHaveBeenCalledTimes(1);
+      expect(callOrder).toEqual(["lockAdminRoleRows", "lockUserRowForUpdate:2", "lockUserRowForUpdate:9"]);
+    });
+
+    it("the admin-set lock and the per-user locks are acquired via the SAME transaction executor", async () => {
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+      const lockAdminsSpy = vi.spyOn(db, "lockAdminRoleRows").mockResolvedValue([{ id: 2 }, { id: 9 }]);
+      const lockUserSpy = mockUserLocks({ 2: fakeUserRow({ id: 2, role: "admin" }) });
+      vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue(undefined);
+      vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
+      vi.spyOn(db, "insertAdminUserAuditLog").mockResolvedValue(undefined);
+
+      await updateAdminUserProfile({
+        actorAdminId: 9,
+        userId: 2,
+        role: "user",
+        reason: "valid reason",
+        confirmText: "CHANGE ROLE 2",
+      });
+
+      const adminLockTx = lockAdminsSpy.mock.calls[0][0];
+      const userLockTxs = lockUserSpy.mock.calls.map((call) => call[1]);
+      expect(userLockTxs.every((tx) => tx === adminLockTx)).toBe(true);
+    });
+
+    it("the admin-set lock is acquired exactly ONCE per role-change request - the last-admin check reuses that same snapshot, never re-locking", async () => {
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+      const lockAdminsSpy = vi.spyOn(db, "lockAdminRoleRows").mockResolvedValue([{ id: 2 }]); // only one admin
+      mockUserLocks({ 2: fakeUserRow({ id: 2, role: "admin" }) });
+      const updateSpy = vi.spyOn(db, "updateAdminUserFields");
+
+      await expect(
+        updateAdminUserProfile({
+          actorAdminId: 9,
+          userId: 2,
+          role: "user",
+          reason: "valid reason",
+          confirmText: "CHANGE ROLE 2",
+        })
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+      expect(lockAdminsSpy).toHaveBeenCalledTimes(1);
+      expect(updateSpy).not.toHaveBeenCalled();
+    });
+
+    it("a NAME-ONLY update (role left entirely undefined) never acquires the admin-set lock at all", async () => {
+      vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+      vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+      mockUserLocks({ 1: fakeUserRow({ id: 1, name: "Old" }) });
+      const lockAdminsSpy = vi.spyOn(db, "lockAdminRoleRows");
+      vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
+      vi.spyOn(db, "insertAdminUserAuditLog").mockResolvedValue(undefined);
+
+      await updateAdminUserProfile({ actorAdminId: 9, userId: 1, name: "New", reason: "valid reason" });
+
+      expect(lockAdminsSpy).not.toHaveBeenCalled();
     });
   });
 });

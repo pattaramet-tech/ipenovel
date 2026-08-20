@@ -6727,15 +6727,29 @@ export async function getAdminUserDeleteAssessment(userId: number, tx?: any): Pr
   return { userId, canDelete: blockers.length === 0, blockers };
 }
 
-/** Locks every current admin-role row (SELECT ... FOR UPDATE) for the
- *  duration of a role-change/delete transaction, so two concurrent
- *  "demote the last two admins at once" (or "delete the last admin's
- *  co-admin") requests cannot both read the same pre-transaction admin
- *  count and both proceed - the loser blocks on this lock until the
- *  winner commits, then re-reads the post-commit row set. Always called
- *  with an explicit transaction, exactly like lockCartForCheckout above. */
+/**
+ * Locks every current admin-role row (SELECT ... FOR UPDATE) for the
+ * duration of a role-change/delete transaction, so two concurrent
+ * "demote the last two admins at once" (or "delete the last admin's
+ * co-admin") requests cannot both read the same pre-transaction admin
+ * count and both proceed - the loser blocks on this lock until the
+ * winner commits, then re-reads the post-commit row set. Always called
+ * with an explicit transaction, exactly like lockCartForCheckout above.
+ *
+ * `ORDER BY id` before `FOR UPDATE` (PR #45 review finding "Use one lock
+ * hierarchy for admin demotions") - this is the FIRST lock any role-
+ * changing admin.users mutation acquires (see
+ * server/services/adminUserManagementService.ts's updateAdminUserProfile
+ * "LOCK HIERARCHY" docstring for the full deadlock scenario this fixes),
+ * so its own row-acquisition order must itself be deterministic: without
+ * an explicit ORDER BY, MySQL/TiDB give no guarantee two concurrent
+ * `WHERE role = 'admin' FOR UPDATE` scans lock the matched rows in the
+ * same relative order, which could reintroduce exactly the kind of
+ * lock-order-dependent deadlock this whole admin-set-lock-first hierarchy
+ * exists to eliminate.
+ */
 export async function lockAdminRoleRows(tx: any): Promise<Array<{ id: number }>> {
-  const rawResult: any = await tx.execute(sql`SELECT id FROM users WHERE role = 'admin' FOR UPDATE`);
+  const rawResult: any = await tx.execute(sql`SELECT id FROM users WHERE role = 'admin' ORDER BY id FOR UPDATE`);
   const rows = Array.isArray(rawResult?.[0]) ? rawResult[0] : rawResult;
   return rows || [];
 }

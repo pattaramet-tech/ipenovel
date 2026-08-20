@@ -39,17 +39,20 @@ export type UpdateAdminUserResult = {
 
 /**
  * The single-transaction Edit flow:
- *  1. lock the target (and, unless it's a self-edit, the ACTOR) user row,
+ *  1. if the request might touch role at all (params.role !== undefined),
+ *  lock the WHOLE admin-role row set FIRST - see "LOCK HIERARCHY" below,
+ *  2. lock the target (and, unless it's a self-edit, the ACTOR) user row,
  *  in ascending id order - see "Actor revalidation" below,
- *  2. verify the actor is still a real, currently-role="admin" account
+ *  3. verify the actor is still a real, currently-role="admin" account
  *  (checked BEFORE target existence - see "Actor revalidation" below for
- *  why the order matters), 3. verify the target row actually exists,
- *  4. compute which fields actually change (reject a true no-op),
- *  5. if role is changing, re-verify EVERY role-safety rule against the
+ *  why the order matters), 4. verify the target row actually exists,
+ *  5. compute which fields actually change (reject a true no-op),
+ *  6. if role is changing, re-verify EVERY role-safety rule against the
  *  LOCKED target snapshot (never trust the assessment the admin UI showed
- *  moments earlier) - self-demotion, last-admin, and
- *  Google-identity-required-to-promote, 6. apply the conditional UPDATE,
- *  7. write the audit log(s), 8. commit (implicit - any throw rolls back
+ *  moments earlier) - self-demotion, last-admin (using the admin-set
+ *  snapshot already locked in step 1, never re-locked), and
+ *  Google-identity-required-to-promote, 7. apply the conditional UPDATE,
+ *  8. write the audit log(s), 9. commit (implicit - any throw rolls back
  *  everything together).
  *
  * `name`/`role` are `undefined` when the caller does not intend to touch
@@ -58,6 +61,32 @@ export type UpdateAdminUserResult = {
  * supplied it. `name` must already be trimmed/normalized-to-null by the
  * caller (email/openId/loginMethod/passwordHash/createdAt/lastSignedIn are
  * never accepted here at all - there is no parameter for them).
+ *
+ * LOCK HIERARCHY (PR #45 review finding "Use one lock hierarchy for admin
+ * demotions", PRRT_kwDOTeQWFc6a59CE): an earlier version of this function
+ * acquired the admin-set lock (db.lockAdminRoleRows) ONLY for an actual
+ * admin->user demotion, AFTER the actor/target row locks (step 2 above).
+ * With 4+ admins, two concurrent demotions of DISJOINT admin pairs - say
+ * {actor: A, target: B} and {actor: C, target: D} - could each already
+ * hold their own A/B or C/D row locks before either reached the all-admin
+ * lock, then each block waiting for the other's rows inside that lock -
+ * an unrecoverable deadlock InnoDB has to abort one side of, with no
+ * retry anywhere in this codepath. Fixed by making the admin-set lock the
+ * FIRST thing any role-changing request acquires - not just demotions,
+ * promotions and even a same-role no-op-role-change attempt too, so every
+ * request that could possibly need the admin-set lock acquires it in the
+ * exact same position in a single, fixed hierarchy: admin-set lock, THEN
+ * per-user locks, THEN validation, THEN safety checks, THEN the write.
+ * Two transactions can now only ever be serialized entirely behind one
+ * another (whichever acquires the admin-set lock first proceeds through
+ * its own per-user locks uncontested), never partially interleaved.
+ * A pure name-only edit (params.role left `undefined` entirely) never
+ * intends to touch role at all and skips the admin-set lock completely -
+ * only a request that supplies `role` triggers it, whether or not the
+ * role turns out to already match the target's current role. The
+ * resulting row set is captured once and reused for the later
+ * last-admin check (see step 6) - db.lockAdminRoleRows is never called a
+ * second time within one transaction.
  *
  * ACTOR REVALIDATION (PR #45 security review finding): `adminProcedure`
  * only proves ctx.user.role was "admin" at the moment the SESSION/request
@@ -71,9 +100,10 @@ export type UpdateAdminUserResult = {
  * role === "admin" against that fresh read - ctx.user.role itself is never
  * consulted here at all. When actorAdminId === userId (an admin editing
  * their own name), the target lock IS the actor lock - only one row is
- * ever locked, never twice. When they differ, both ids are locked via the
- * SAME shared helper in ASCENDING id order (never "target first" or
- * "actor first" as a fixed rule) - so a request editing {actor: A,
+ * ever locked, never twice, regardless of whether the admin-set lock (step
+ * 1) also ran first. When actor and target differ, both ids are locked
+ * via the SAME shared helper in ASCENDING id order (never "target first"
+ * or "actor first" as a fixed rule) - so a request editing {actor: A,
  * target: B} and a concurrent request editing {actor: B, target: A} lock
  * in the same relative order and cannot deadlock against each other (the
  * same fixed-lock-order technique executeAccountRecovery already uses for
@@ -108,7 +138,17 @@ export async function updateAdminUserProfile(params: {
   if (!database) throw new Error("Database not available");
 
   return database.transaction(async (tx: any) => {
-    // Step 1: lock the target row and (unless this is a self-edit) the
+    // Step 1: admin-set lock FIRST, before any per-user lock, whenever
+    // this request might touch role at all - see this function's own
+    // "LOCK HIERARCHY" docstring above for why this must run unconditionally
+    // for any role-changing attempt (promotion, demotion, or a same-role
+    // no-op), never only for a confirmed demotion. Captured once and reused
+    // by the last-admin check in step 6 below - never locked a second time.
+    // A pure name-only edit (params.role === undefined) skips this entirely.
+    const adminRowsSnapshot: Array<{ id: number }> =
+      params.role !== undefined ? await db.lockAdminRoleRows(tx) : [];
+
+    // Step 2: lock the target row and (unless this is a self-edit) the
     // actor's row too, via the SAME shared helper, in ascending id order.
     const isSelfEdit = params.actorAdminId === params.userId;
     const idsToLock = isSelfEdit
@@ -121,7 +161,7 @@ export async function updateAdminUserProfile(params: {
       if (row) lockedById.set(id, row);
     }
 
-    // Step 2: actor revalidation, checked BEFORE target existence - see
+    // Step 3: actor revalidation, checked BEFORE target existence - see
     // this function's own "ACTOR REVALIDATION" docstring above. A missing
     // actor row (deleted concurrently) or a role that is no longer
     // "admin" both fail closed as FORBIDDEN, never NOT_FOUND (this is an
@@ -142,12 +182,12 @@ export async function updateAdminUserProfile(params: {
       );
     }
 
-    // Step 3: NOW check the target exists - only reachable once the actor
+    // Step 4: NOW check the target exists - only reachable once the actor
     // is confirmed to be a real, currently-admin account.
     const target = lockedById.get(params.userId);
     if (!target) throw new AdminUserManagementError("NOT_FOUND", "User not found");
 
-    // Step 4: compute real changes - a client-supplied field equal to the
+    // Step 5: compute real changes - a client-supplied field equal to the
     // current value is not a change, and a request with no real change at
     // all must be rejected outright (never a silent success).
     const nameChanged = params.name !== undefined && params.name !== (target.name ?? null);
@@ -156,7 +196,7 @@ export async function updateAdminUserProfile(params: {
       throw new AdminUserManagementError("BAD_REQUEST", "No changes to apply");
     }
 
-    // Step 5: role-safety rules - only evaluated when the role is actually
+    // Step 6: role-safety rules - only evaluated when the role is actually
     // changing. Every rule here is re-checked against the LOCKED `target`
     // row read above, not the input the client sent.
     if (roleChanged) {
@@ -174,11 +214,12 @@ export async function updateAdminUserProfile(params: {
       }
 
       if (target.role === "admin" && params.role === "user") {
-        // Locks EVERY current admin row (not just target) so a concurrent
-        // demotion of a different admin cannot race this check - see
-        // db.lockAdminRoleRows's own docstring.
-        const adminRows = await db.lockAdminRoleRows(tx);
-        if (adminRows.length <= 1) {
+        // Reuses the admin-set snapshot already locked in Step 1 - never
+        // re-locked here (see db.lockAdminRoleRows's own docstring and
+        // this function's "LOCK HIERARCHY" note above for why re-locking
+        // mid-transaction would defeat the fixed hierarchy this exists to
+        // enforce).
+        if (adminRowsSnapshot.length <= 1) {
           throw new AdminUserManagementError("FORBIDDEN", "Cannot demote the last remaining admin");
         }
       }
@@ -194,7 +235,7 @@ export async function updateAdminUserProfile(params: {
       }
     }
 
-    // Step 6: apply the update - conditional on the role still matching
+    // Step 7: apply the update - conditional on the role still matching
     // what this transaction just locked and read (see
     // db.updateAdminUserFields's own docstring).
     const applied = await db.updateAdminUserFields(
@@ -210,7 +251,7 @@ export async function updateAdminUserProfile(params: {
       throw new AdminUserManagementError("CONFLICT", "Update failed - the account may have changed concurrently");
     }
 
-    // Step 7: audit log(s) - one row per changed field type, matching the
+    // Step 8: audit log(s) - one row per changed field type, matching the
     // adminUserAuditLogs.action enum. Never the old/new name, never the
     // email - only that the name field changed, and (for a role change)
     // the old/new role plus whether the target has a linked Google
