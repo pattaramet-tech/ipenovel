@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import * as db from "../db";
+import { ENV } from "../_core/env";
 
 /**
  * Central safety/execution logic for the Admin Users Management page - edit
@@ -11,6 +12,11 @@ import * as db from "../db";
  * orchestration/transactions/error-mapping, server/db.ts owns the
  * low-level query helpers (getAdminUserDeleteAssessment,
  * updateAdminUserFields, lockAdminRoleRows, ...).
+ *
+ * `ENV.ownerOpenId` (server/_core/env.ts) is consulted ONLY as a
+ * server-side comparison key for the configured-owner demotion guard
+ * below - it is never included in any return value, error message, log
+ * line, or audit `safeMetadata`.
  */
 
 export class AdminUserManagementError extends Error {
@@ -39,8 +45,8 @@ export type UpdateAdminUserResult = {
 
 /**
  * The single-transaction Edit flow:
- *  1. if the request might touch role at all (params.role !== undefined),
- *  lock the WHOLE admin-role row set FIRST - see "LOCK HIERARCHY" below,
+ *  1. lock the WHOLE admin-role row set FIRST, UNCONDITIONALLY, for every
+ *  mutation this function performs - see "LOCK HIERARCHY" below,
  *  2. lock the target (and, unless it's a self-edit, the ACTOR) user row,
  *  in ascending id order - see "Actor revalidation" below,
  *  3. verify the actor is still a real, currently-role="admin" account
@@ -49,8 +55,9 @@ export type UpdateAdminUserResult = {
  *  5. compute which fields actually change (reject a true no-op),
  *  6. if role is changing, re-verify EVERY role-safety rule against the
  *  LOCKED target snapshot (never trust the assessment the admin UI showed
- *  moments earlier) - self-demotion, last-admin (using the admin-set
- *  snapshot already locked in step 1, never re-locked), and
+ *  moments earlier) - self-demotion, configured-owner protection (see
+ *  "OWNER PROTECTION" below), last-admin (using the admin-set snapshot
+ *  already locked in step 1, never re-locked), and
  *  Google-identity-required-to-promote, 7. apply the conditional UPDATE,
  *  8. write the audit log(s), 9. commit (implicit - any throw rolls back
  *  everything together).
@@ -62,31 +69,34 @@ export type UpdateAdminUserResult = {
  * caller (email/openId/loginMethod/passwordHash/createdAt/lastSignedIn are
  * never accepted here at all - there is no parameter for them).
  *
- * LOCK HIERARCHY (PR #45 review finding "Use one lock hierarchy for admin
- * demotions", PRRT_kwDOTeQWFc6a59CE): an earlier version of this function
- * acquired the admin-set lock (db.lockAdminRoleRows) ONLY for an actual
- * admin->user demotion, AFTER the actor/target row locks (step 2 above).
- * With 4+ admins, two concurrent demotions of DISJOINT admin pairs - say
- * {actor: A, target: B} and {actor: C, target: D} - could each already
- * hold their own A/B or C/D row locks before either reached the all-admin
- * lock, then each block waiting for the other's rows inside that lock -
- * an unrecoverable deadlock InnoDB has to abort one side of, with no
- * retry anywhere in this codepath. Fixed by making the admin-set lock the
- * FIRST thing any role-changing request acquires - not just demotions,
- * promotions and even a same-role no-op-role-change attempt too, so every
- * request that could possibly need the admin-set lock acquires it in the
- * exact same position in a single, fixed hierarchy: admin-set lock, THEN
- * per-user locks, THEN validation, THEN safety checks, THEN the write.
- * Two transactions can now only ever be serialized entirely behind one
- * another (whichever acquires the admin-set lock first proceeds through
- * its own per-user locks uncontested), never partially interleaved.
- * A pure name-only edit (params.role left `undefined` entirely) never
- * intends to touch role at all and skips the admin-set lock completely -
- * only a request that supplies `role` triggers it, whether or not the
- * role turns out to already match the target's current role. The
- * resulting row set is captured once and reused for the later
- * last-admin check (see step 6) - db.lockAdminRoleRows is never called a
- * second time within one transaction.
+ * LOCK HIERARCHY (PR #45 review findings "Use one lock hierarchy for admin
+ * demotions" (PRRT_kwDOTeQWFc6a59CE) and its follow-up "Include name-only
+ * edits in the lock hierarchy" (PRRT_kwDOTeQWFc6a9DtH)): an earlier
+ * version of this function acquired the admin-set lock
+ * (db.lockAdminRoleRows) ONLY for requests that supplied `role`, AFTER the
+ * actor/target row locks (step 2 above) - and a still-earlier version
+ * acquired it only for an actual admin->user demotion. Either way, some
+ * request shapes (a name-only edit; with the earliest version, a
+ * promotion or no-op role attempt too) locked their actor/target rows
+ * WITHOUT ever taking the admin-set lock first. With 4+ admins, one such
+ * request touching a lower-id admin could hold that row and wait on its
+ * own admin-actor row, while a CONCURRENT role-changing request already
+ * held the entire admin-set lock and was waiting on that very same
+ * user row - a classic AB-BA deadlock InnoDB has to abort one side of,
+ * with no retry anywhere in this codepath. Fixed by making the admin-set
+ * lock the FIRST thing EVERY mutation this function performs acquires -
+ * name-only edits included, not just requests that supply `role` - so
+ * every possible request shape acquires it in the exact same position in
+ * a single, fixed hierarchy: admin-set lock, THEN per-user locks, THEN
+ * validation, THEN safety checks, THEN the write. Two transactions can
+ * now only ever be serialized entirely behind one another (whichever
+ * acquires the admin-set lock first proceeds through its own per-user
+ * locks uncontested), never partially interleaved, regardless of whether
+ * either request touches `role` at all. The resulting row set is
+ * captured once and reused for the later last-admin check when role IS
+ * changing (see step 6) - a name-only edit computes this same snapshot
+ * but simply never consults it. db.lockAdminRoleRows is never called a
+ * second time within one transaction, for any request shape.
  *
  * ACTOR REVALIDATION (PR #45 security review finding): `adminProcedure`
  * only proves ctx.user.role was "admin" at the moment the SESSION/request
@@ -118,7 +128,37 @@ export type UpdateAdminUserResult = {
  * Checking the actor FIRST means an unauthorized caller always gets the
  * SAME FORBIDDEN regardless of the target id or whether it exists -
  * authorization is verified before anything about the target is even
- * consulted, exactly as it should be.
+ * consulted, exactly as it should be. The configured-owner check below
+ * runs strictly AFTER this ordering is already established, so it never
+ * changes it: an unauthorized/stale actor still gets FORBIDDEN before
+ * anything about the target - owner or otherwise - is ever consulted.
+ *
+ * OWNER PROTECTION (PR #45 P1 review finding "Reject demotion of the
+ * configured owner", PRRT_kwDOTeQWFc6a9DtE): every authentication cycle
+ * calls db.upsertUser (or db.createGoogleUserWithIdentity for a
+ * brand-new Google sign-in), and BOTH unconditionally re-promote
+ * `ENV.ownerOpenId` back to role="admin" the moment that account signs
+ * in again - see server/db.ts's own doc comments on those two functions.
+ * That owner auto-promotion behavior is intentional and is NOT changed
+ * here. But it means a demotion applied through this page could never
+ * actually stick: the very next login (or a concurrent authentication
+ * write already in flight) silently restores admin access, and the admin
+ * who performed the demotion has no way to tell their action didn't
+ * durably take effect. So instead of allowing a demotion that cannot
+ * hold, an attempt to change the configured owner's role from "admin" to
+ * "user" is rejected outright, using `target.openId` from the SAME
+ * locked row read Step 2 already performed - never a second query, and
+ * never a value taken from client input or the caller's session. A
+ * name-only edit of the owner's account (never touching `role`) is
+ * completely unaffected and still succeeds normally. If `OWNER_OPEN_ID`
+ * is not configured (`ENV.ownerOpenId === ""`), this check can never
+ * match any real account's openId (a `NOT NULL` column that is never an
+ * empty string) and this rule is effectively inert - existing behavior
+ * for every deployment without a configured owner is unchanged. Neither
+ * the owner's openId nor the configured `OWNER_OPEN_ID` value is ever
+ * included in this function's return value, its thrown error's message,
+ * any console log, or any audit `safeMetadata` - the rejection is
+ * reported generically, the same way "last remaining admin" is.
  */
 export async function updateAdminUserProfile(params: {
   actorAdminId: number;
@@ -138,15 +178,14 @@ export async function updateAdminUserProfile(params: {
   if (!database) throw new Error("Database not available");
 
   return database.transaction(async (tx: any) => {
-    // Step 1: admin-set lock FIRST, before any per-user lock, whenever
-    // this request might touch role at all - see this function's own
-    // "LOCK HIERARCHY" docstring above for why this must run unconditionally
-    // for any role-changing attempt (promotion, demotion, or a same-role
-    // no-op), never only for a confirmed demotion. Captured once and reused
-    // by the last-admin check in step 6 below - never locked a second time.
-    // A pure name-only edit (params.role === undefined) skips this entirely.
-    const adminRowsSnapshot: Array<{ id: number }> =
-      params.role !== undefined ? await db.lockAdminRoleRows(tx) : [];
+    // Step 1: admin-set lock FIRST, before ANY per-user lock, for EVERY
+    // mutation this function performs - name-only edits included, not
+    // just requests that supply `role` - see this function's own "LOCK
+    // HIERARCHY" docstring above for the deadlock this unconditional
+    // ordering closes. Captured once and reused by the last-admin check
+    // in step 6 below when role IS changing - never locked a second time,
+    // and never re-derived - a name-only edit simply never consults it.
+    const adminRowsSnapshot: Array<{ id: number }> = await db.lockAdminRoleRows(tx);
 
     // Step 2: lock the target row and (unless this is a self-edit) the
     // actor's row too, via the SAME shared helper, in ascending id order.
@@ -155,7 +194,10 @@ export async function updateAdminUserProfile(params: {
       ? [params.userId]
       : [params.actorAdminId, params.userId].sort((a, b) => a - b);
 
-    const lockedById = new Map<number, { id: number; name: string | null; role: "user" | "admin" }>();
+    const lockedById = new Map<
+      number,
+      { id: number; name: string | null; role: "user" | "admin"; openId: string }
+    >();
     for (const id of idsToLock) {
       const row = await db.lockUserRowForUpdate(id, tx);
       if (row) lockedById.set(id, row);
@@ -214,6 +256,19 @@ export async function updateAdminUserProfile(params: {
       }
 
       if (target.role === "admin" && params.role === "user") {
+        // Configured-owner protection - see this function's own "OWNER
+        // PROTECTION" docstring above. Checked using target.openId from
+        // the SAME locked row read in Step 2 - never a second query,
+        // never client input. ENV.ownerOpenId === "" (unconfigured) can
+        // never equal a real, NOT-NULL openId, so this is a no-op on any
+        // deployment without a configured owner.
+        if (ENV.ownerOpenId && target.openId === ENV.ownerOpenId) {
+          throw new AdminUserManagementError(
+            "FORBIDDEN",
+            "This account is the configured owner and its role cannot be changed"
+          );
+        }
+
         // Reuses the admin-set snapshot already locked in Step 1 - never
         // re-locked here (see db.lockAdminRoleRows's own docstring and
         // this function's "LOCK HIERARCHY" note above for why re-locking

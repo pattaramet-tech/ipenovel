@@ -6771,12 +6771,13 @@ export async function lockAdminRoleRows(tx: any): Promise<Array<{ id: number }>>
 }
 
 /**
- * Locks and returns the minimal {id, name, role} shape for ONE users row
- * (SELECT ... FOR UPDATE) - never passwordHash/openId/email or any other
- * sensitive column, since this backs actor/target revalidation checks that
- * only ever need identity + role. Returns undefined if the row no longer
- * exists (e.g. deleted concurrently) - callers must treat that as "this
- * account no longer exists", never as an empty/default row.
+ * Locks and returns the minimal {id, name, role, openId} shape for ONE
+ * users row (SELECT ... FOR UPDATE) - never passwordHash/email or any
+ * other sensitive column, since this backs actor/target revalidation
+ * checks that only ever need identity + role (+ openId, see below).
+ * Returns undefined if the row no longer exists (e.g. deleted
+ * concurrently) - callers must treat that as "this account no longer
+ * exists", never as an empty/default row.
  *
  * The single shared helper every admin.users mutation must go through to
  * lock a user row - see server/services/adminUserManagementService.ts's
@@ -6786,12 +6787,23 @@ export async function lockAdminRoleRows(tx: any): Promise<Array<{ id: number }>>
  * against each other (same fixed-lock-order technique as
  * executeAccountRecovery's source/target user locks in
  * accountRecoveryService.ts). Always called with an explicit transaction.
+ *
+ * `openId` (PR #45 P1 review finding "Reject demotion of the configured
+ * owner") is included specifically so updateAdminUserProfile can compare
+ * the TARGET row against `ENV.ownerOpenId` using the SAME locked read
+ * used for every other revalidation - never a second query, never a
+ * client-supplied value. It is purely a server-side comparison key here:
+ * `UpdateAdminUserResult` (this function's caller's own return shape) and
+ * every audit log entry never include it - see
+ * adminUserManagementService.ts's own docstring for that boundary.
  */
 export async function lockUserRowForUpdate(
   userId: number,
   tx: any
-): Promise<{ id: number; name: string | null; role: "user" | "admin" } | undefined> {
-  const rawResult: any = await tx.execute(sql`SELECT id, name, role FROM users WHERE id = ${userId} FOR UPDATE`);
+): Promise<{ id: number; name: string | null; role: "user" | "admin"; openId: string } | undefined> {
+  const rawResult: any = await tx.execute(
+    sql`SELECT id, name, role, openId FROM users WHERE id = ${userId} FOR UPDATE`
+  );
   const rows = Array.isArray(rawResult?.[0]) ? rawResult[0] : rawResult;
   return rows?.[0];
 }
