@@ -11,6 +11,8 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import {
   parseUserIdQueryParam,
   readUserIdFromSearchParams,
+  syncUserIdInputFromUrl,
+  withUserIdInputSearchParam,
   withUserIdSearchParam,
 } from "./adminUserIdQueryParam";
 
@@ -60,8 +62,14 @@ export default function AdminTopupLogsPage() {
   // just on mount. A removed/invalid param clears the local filter too
   // (never retains a stale User ID the URL no longer names), and the page
   // resets to the first page of whatever the new filter returns.
+  //
+  // syncUserIdInputFromUrl leaves the box untouched when it already names
+  // the same filter as the URL, so this effect never fights the user's own
+  // typing below - editing `5` into `5a` drops the param without the box
+  // being blanked out from under them. Returning the identical string also
+  // makes the setState a no-op, so there is no re-render/effect loop.
   useEffect(() => {
-    setUserFilter(urlUserId !== undefined ? String(urlUserId) : "");
+    setUserFilter((prev) => syncUserIdInputFromUrl(prev, urlUserId));
     setOffset(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlUserId]);
@@ -172,8 +180,17 @@ export default function AdminTopupLogsPage() {
                   placeholder="Filter by user ID"
                   value={userFilter}
                   onChange={(e) => {
-                    setUserFilter(e.target.value);
+                    const value = e.target.value;
+                    setUserFilter(value);
                     setOffset(0);
+                    // Mirror the edit into `?userId=` (preserving every
+                    // other param) so a refresh or a copied link keeps the
+                    // filter the table is actually showing - an empty or
+                    // invalid entry removes the param instead of stranding
+                    // the previous id there. No manual refetch(): the query
+                    // input below is derived from userFilter, so changing it
+                    // is what triggers the refetch.
+                    setSearchParams((prev) => withUserIdInputSearchParam(prev, value));
                   }}
                   className="w-full"
                 />

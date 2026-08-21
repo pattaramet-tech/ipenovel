@@ -61,3 +61,53 @@ export function withUserIdSearchParam(
   }
   return next;
 }
+
+/**
+ * The raw-input form of `withUserIdSearchParam`, composed from
+ * `parseUserIdQueryParam` + `withUserIdSearchParam` so a filter box's
+ * onChange can write straight through to the URL without restating the
+ * validation rule.
+ *
+ * PR #45 review finding "Synchronize edited top-up user IDs into the URL":
+ * AdminTopupLogsPage's User ID box only ever updated local state, so
+ * editing it from a `?userId=5` link switched the table to the new user
+ * while the URL still said 5 - a refresh (or a copied link) then snapped
+ * the view back to 5 via the URL-to-state effect.
+ *
+ * An empty OR invalid input both REMOVE `userId` rather than leaving the
+ * previous id stranded in the URL: the API drops the filter for both
+ * cases identically (see readUserIdFromSearchParams), so the URL must
+ * describe that same "no filter" state or a refresh would resurrect an id
+ * the screen is no longer filtering by. Every other param is preserved
+ * and `prev` is never mutated.
+ */
+export function withUserIdInputSearchParam(
+  prev: URLSearchParams,
+  rawInput: string | null | undefined
+): URLSearchParams {
+  return withUserIdSearchParam(prev, parseUserIdQueryParam(rawInput));
+}
+
+/**
+ * Decides what a User ID filter box should display when the URL's
+ * `userId` changes, given what the box currently holds.
+ *
+ * Returns `currentInput` UNCHANGED (the identical string, so a React
+ * `setState` call bails out instead of re-rendering) whenever the box
+ * already expresses exactly the filter the URL names - including when
+ * both mean "no filter at all". That case is what keeps half-typed
+ * invalid text alive: typing `5a` into a `?userId=5` page removes the
+ * param, and without this guard the URL-to-state effect would immediately
+ * wipe the box back to empty as the user typed.
+ *
+ * Anything else is a genuinely external change - browser back/forward, a
+ * fresh `?userId=` link, or the param being removed elsewhere - and the
+ * URL wins.
+ */
+export function syncUserIdInputFromUrl(
+  currentInput: string,
+  urlUserId: number | undefined
+): string {
+  if (parseUserIdQueryParam(currentInput) === urlUserId) return currentInput;
+  return urlUserId !== undefined ? String(urlUserId) : "";
+}
