@@ -42,6 +42,7 @@
 
 import { paymentSlipClaims } from "../../drizzle/schema";
 import { eq, or } from "drizzle-orm";
+import { findLegacyApprovedDuplicate } from "./legacySlipCompatibilityService";
 import type { SlipStrongIdentifiers, StrongDuplicateKind } from "./slipIdentifierService";
 
 export type SlipClaimSourceType = "order_payment" | "wallet_topup";
@@ -53,6 +54,12 @@ export interface SlipClaimRequest {
   identifiers: SlipStrongIdentifiers;
   /** WEAK signal - stored for admin context, never enforced. */
   semanticFingerprint?: string;
+  /**
+   * Skips the pre-migration approved-record lookup. ONLY for the backfill
+   * tool, which is itself replaying historical approvals and would otherwise
+   * find every row conflicting with itself. Never set on a live payment path.
+   */
+  skipLegacyCheck?: boolean;
 }
 
 export type SlipClaimOutcome =
@@ -70,6 +77,12 @@ export type SlipClaimOutcome =
       /** The submission that already owns it, for admin cross-linking. */
       existingSourceType?: SlipClaimSourceType;
       existingSourceId?: number;
+      /**
+       * True when the conflict was found in the pre-migration approved
+       * record set rather than in the claim registry - i.e. a legacy slip
+       * that would otherwise have been replayable.
+       */
+      viaLegacyCompatibility?: boolean;
     };
 
 /**
@@ -190,6 +203,46 @@ export async function claimSlip(
     // Nothing uniquely identifies this bank transaction, so nothing can stop
     // it being submitted again. Auto-approval is therefore not permissible.
     return { claimed: false, reason: "no_strong_identifier" };
+  }
+
+  // ── LEGACY COMPATIBILITY GATE ───────────────────────────────────────────
+  // The claim registry starts EMPTY at migration time, so every payment and
+  // top-up approved before it existed has no claim row and its reference is
+  // unprotected by the UNIQUE constraints. Without this check, a slip that
+  // already created value last week would sail through: no conflicting
+  // claim exists, the INSERT succeeds, and value is created a second time.
+  //
+  // So before claiming, the already-approved financial record set is
+  // consulted GLOBALLY (all users, both sources) - never the old user-scoped
+  // or pending-only lookups that made replay possible in the first place.
+  //
+  // This runs inside the caller's transaction and is read-only. Once the
+  // backfill has populated claims for historical rows this becomes redundant
+  // belt-and-braces, but until then the registry must not be sole authority.
+  if (!request.skipLegacyCheck) {
+    try {
+      const legacyMatch = await findLegacyApprovedDuplicate(
+        request.identifiers,
+        { sourceType: request.sourceType, sourceId: request.sourceId },
+        tx
+      );
+
+      if (legacyMatch) {
+        return {
+          claimed: false,
+          reason: "already_claimed",
+          conflictKind: legacyMatch.kind,
+          existingSourceType: legacyMatch.sourceType,
+          existingSourceId: legacyMatch.sourceId,
+          viaLegacyCompatibility: true,
+        };
+      }
+    } catch (error) {
+      // A failed legacy lookup must NOT be treated as "no duplicate" - that
+      // would silently reopen the very hole this closes. Propagate so the
+      // surrounding transaction rolls back and the slip goes to review.
+      throw error;
+    }
   }
 
   try {

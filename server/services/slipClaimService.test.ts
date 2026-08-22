@@ -72,13 +72,21 @@ function makeFakeTx() {
     },
     select() {
       return {
-        from() {
+        from(table: any) {
+          const name = String(table?.[Symbol.for("drizzle:Name")] ?? "");
           return {
-            where(predicate: any) {
-              const matched = rows.filter((r) => predicate(r));
+            where() {
               return {
                 limit(n: number) {
-                  return Promise.resolve(matched.slice(0, n));
+                  // The legacy compatibility layer scans approved payments and
+                  // wallet top-ups. This fake has no historical records, so it
+                  // returns none - these tests exercise the claim registry
+                  // itself. Legacy behavior is covered separately in
+                  // legacySlipCompatibilityService.test.ts.
+                  if (name === "payments" || name === "walletTopups") {
+                    return Promise.resolve([]);
+                  }
+                  return Promise.resolve(rows.slice(0, n));
                 },
               };
             },
@@ -229,6 +237,15 @@ describe("claimSlip - concurrency", () => {
 describe("claimSlip - infrastructure errors are not swallowed", () => {
   it("a non-duplicate error propagates so the outer transaction rolls back", async () => {
     const brokenTx = {
+      // The legacy lookup runs first and must succeed, so this test isolates
+      // a failure of the INSERT itself.
+      select() {
+        return {
+          from() {
+            return { where() { return { limit: async () => [] }; } };
+          },
+        };
+      },
       insert() {
         return {
           async values() {
