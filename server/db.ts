@@ -3954,39 +3954,47 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
     // transaction, so a slip claimed by another submission between page load
     // and the click cannot credit a second wallet.
     //
-    // Unlike the auto-approval path, a top-up with NO strong identifier is
-    // still approvable here - that is precisely the unreadable-but-genuine
-    // slip a human is reviewing, and blocking it would make such top-ups
-    // permanently unapprovable. The claim still runs whenever an identifier
-    // exists, which is what prevents one transfer funding two credits.
+    // A top-up with NO strong identifier cannot be protected against replay,
+    // so normal Approve must not quietly proceed - that would make ordinary
+    // admin approval a silent bypass of the registry. After server-side
+    // fileHash wiring every NEW slip carries at least an exact-file
+    // identifier even when OCR fails, so reaching this branch means a legacy
+    // row or unreadable bytes: a deliberate human decision, not a default.
     {
       const { identifiers, semanticFingerprint } = deriveStrongIdentifiersFromExtractedData(
         topup.extractedData as string | null
       );
 
-      if (hasStrongIdentifier(identifiers)) {
-        const claim = await claimSlip(
-          {
-            sourceType: "wallet_topup",
-            sourceId: topupId,
-            userId: topup.userId,
-            identifiers,
-            semanticFingerprint,
-          },
-          tx
+      if (!hasStrongIdentifier(identifiers)) {
+        throw new WalletSlipClaimError(
+          "NO_STRONG_IDENTIFIER",
+          "This top-up has no transaction reference and no readable slip file, so it cannot " +
+            "be protected against replay. It needs the legacy override path (not yet " +
+            "available) rather than a normal approval."
         );
+      }
 
-        if (!claim.claimed && claim.reason === "already_claimed") {
-          const ownedByThisTopup =
-            claim.existingSourceType === "wallet_topup" &&
-            claim.existingSourceId === topupId;
+      const claim = await claimSlip(
+        {
+          sourceType: "wallet_topup",
+          sourceId: topupId,
+          userId: topup.userId,
+          identifiers,
+          semanticFingerprint,
+        },
+        tx
+      );
 
-          if (!ownedByThisTopup) {
-            throw new WalletSlipClaimError(
-              "SLIP_ALREADY_CLAIMED",
-              describeClaimFailure(claim)
-            );
-          }
+      if (!claim.claimed && claim.reason === "already_claimed") {
+        const ownedByThisTopup =
+          claim.existingSourceType === "wallet_topup" &&
+          claim.existingSourceId === topupId;
+
+        if (!ownedByThisTopup) {
+          throw new WalletSlipClaimError(
+            "SLIP_ALREADY_CLAIMED",
+            describeClaimFailure(claim)
+          );
         }
       }
     }

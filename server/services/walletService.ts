@@ -154,9 +154,12 @@ export async function adminApproveWalletTopup(topupId: number, adminUserId: numb
     // message rather than a generic 500, so the UI can prompt a refresh and
     // point at the submission that already owns the slip.
     if (error instanceof db.WalletSlipClaimError) {
+      // NO_STRONG_IDENTIFIER is a precondition the admin must resolve (recheck
+      // or legacy override); SLIP_ALREADY_CLAIMED is a conflict with another
+      // submission. Distinct codes so the UI can say the right thing.
       throw new TRPCError({
-        code: "CONFLICT",
-        message: `SLIP_ALREADY_CLAIMED: ${error.message}`,
+        code: error.code === "NO_STRONG_IDENTIFIER" ? "PRECONDITION_FAILED" : "CONFLICT",
+        message: `${error.code}: ${error.message}`,
       });
     }
     throw new TRPCError({

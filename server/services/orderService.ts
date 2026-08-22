@@ -335,40 +335,59 @@ async function approvePaymentInTx(paymentId: number, approvedBy: string, adminLa
   // A slip claimed by someone else between page load and this click fails
   // here rather than creating a second helping of value from one transfer.
   //
-  // Deliberately non-blocking when a payment has no strong identifier: those
-  // are exactly the slips an admin is reviewing BY HAND, and refusing them
-  // would make unreadable-but-genuine slips unapprovable. Manual approval is
-  // a human decision with an audit trail; what must never happen is one
-  // transfer silently funding two orders, which the claim below prevents
-  // whenever an identifier exists.
+  // Nothing from the admin's browser is trusted: the OCR panel it renders is
+  // display state, and `payment` was reloaded fresh above.
   const { identifiers, semanticFingerprint } = deriveStrongIdentifiersFromExtractedData(
     payment.extractedData as string | null
   );
 
-  if (hasStrongIdentifier(identifiers)) {
-    const claim = await claimSlip(
-      {
-        sourceType: "order_payment",
-        sourceId: payment.id,
-        userId: order.userId,
-        identifiers,
-        semanticFingerprint,
-      },
-      tx
+  if (!hasStrongIdentifier(identifiers)) {
+    // A payment with NO strong identifier cannot be protected against replay
+    // at all, so normal Approve must NOT quietly proceed - doing so would
+    // make ordinary admin approval a silent bypass of the whole registry.
+    //
+    // After server-side fileHash wiring, every NEW slip carries at least an
+    // exact-file identifier even when OCR fails completely, so reaching this
+    // branch means either a genuinely legacy row or a slip whose bytes could
+    // not be read. Both need a deliberate human decision, not a default.
+    //
+    // A dedicated break-glass path for such legacy rows (admin-only, typed
+    // confirmation, mandatory reason, audit record, never reachable from OCR
+    // auto-approval) is documented as follow-up rather than implemented here;
+    // until it exists this fails loudly and states what is required.
+    throw new Error(
+      "NO_STRONG_IDENTIFIER: This payment has no transaction reference and no readable " +
+        "slip file, so it cannot be protected against replay. Run Recheck OCR first; if the " +
+        "slip still yields no identifier, this record needs the legacy override path " +
+        "(not yet available) rather than a normal approval."
     );
+  }
 
-    if (!claim.claimed && claim.reason === "already_claimed") {
-      const ownedByThisPayment =
-        claim.existingSourceType === "order_payment" && claim.existingSourceId === payment.id;
+  const claim = await claimSlip(
+    {
+      sourceType: "order_payment",
+      sourceId: payment.id,
+      userId: order.userId,
+      identifiers,
+      semanticFingerprint,
+    },
+    tx
+  );
 
-      if (!ownedByThisPayment) {
-        // Surfaced to the admin UI as SLIP_ALREADY_CLAIMED so it can prompt a
-        // refresh/recheck and link to the submission that owns the slip.
-        throw new Error(`SLIP_ALREADY_CLAIMED: ${describeClaimFailure(claim)}`);
-      }
-      // Already claimed by THIS payment - a retried approval of work that
-      // partially committed earlier. Not a replay; continue.
+  if (!claim.claimed && claim.reason === "already_claimed") {
+    const ownedByThisPayment =
+      claim.existingSourceType === "order_payment" && claim.existingSourceId === payment.id;
+
+    if (!ownedByThisPayment) {
+      // Surfaced to the admin UI as SLIP_ALREADY_CLAIMED so it can prompt a
+      // refresh/recheck and link to the submission that owns the slip. This
+      // also fires for a pre-migration approved record found by the legacy
+      // compatibility lookup, which is what stops historical slips being
+      // replayed while the claim registry is still being backfilled.
+      throw new Error(`SLIP_ALREADY_CLAIMED: ${describeClaimFailure(claim)}`);
     }
+    // Already claimed by THIS payment - a retried approval of work that
+    // partially committed earlier. Not a replay; continue.
   }
 
   // Use ApprovalService for manual approval with metadata
