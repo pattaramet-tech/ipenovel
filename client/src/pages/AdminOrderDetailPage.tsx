@@ -88,7 +88,7 @@ export default function AdminOrderDetailPage() {
   const [isApproving, setIsApproving] = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
 
-  const { data: order, isLoading } = trpc.admin.orders.detail.useQuery(
+  const { data: order, isLoading, refetch: refetchOrder } = trpc.admin.orders.detail.useQuery(
     { orderId: parseInt(orderId || "0", 10) },
     { enabled: !!orderId }
   );
@@ -348,7 +348,13 @@ export default function AdminOrderDetailPage() {
             {/* OCR Result Panel - Show OCR metadata if available */}
             {!isWalletPayment && order.payment && (
               <div className="mt-6">
-                <OCRResultPanel payment={order.payment} />
+                <OCRResultPanel
+                  payment={order.payment}
+                  // A recheck rewrites the payment's OCR display metadata
+                  // server-side, so the detail query is refetched to show the
+                  // fresh snapshot rather than the pre-recheck one.
+                  onRecheckComplete={() => { void refetchOrder(); }}
+                />
               </div>
             )}
           </Card>
