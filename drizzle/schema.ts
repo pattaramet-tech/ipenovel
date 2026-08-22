@@ -42,6 +42,21 @@ export const users = mysqlTable(
     // login. Purely additive - does not change users.id, users.openId, or
     // any existing constraint/behavior.
     emailIdx: index("users_email_idx").on(table.email),
+    // PR #45 review finding "Avoid a full-table locking scan for role
+    // changes" - server/db.ts's lockAdminRoleRows() runs
+    // `WHERE role = 'admin' ORDER BY id FOR UPDATE` as the first lock any
+    // admin.users role-change transaction acquires (see
+    // server/services/adminUserManagementService.ts's updateAdminUserProfile
+    // "LOCK HIERARCHY" docstring). Without a supporting index, that query
+    // scans (and locks) the entire `users` table on MySQL/MariaDB, blocking
+    // unrelated writes like the login-time upsertUser update for as long as
+    // the transaction runs. `(role, id)` - role first, matching the WHERE
+    // clause; id second, matching the ORDER BY - lets the same index satisfy
+    // both, so the query becomes an index range scan over just the admin
+    // rows instead of a full-table scan. Migration 0036 adds this index;
+    // purely additive - does not change any existing column, constraint, or
+    // behavior.
+    roleIdIdx: index("users_role_id_idx").on(table.role, table.id),
   })
 );
 
@@ -1308,3 +1323,44 @@ export const accountRecoveryAuditLogs = mysqlTable(
 
 export type AccountRecoveryAuditLog = typeof accountRecoveryAuditLogs.$inferSelect;
 export type InsertAccountRecoveryAuditLog = typeof accountRecoveryAuditLogs.$inferInsert;
+
+/**
+ * Append-only audit trail for the Admin Users Management page - one row per
+ * name/role edit or hard delete performed through admin.users.update /
+ * admin.users.delete (server/routers.ts). Deliberately NO foreign key from
+ * targetUserId to users.id (unlike authIdentities.userId's deliberate
+ * exception - see that column's own doc comment) - this row must remain
+ * readable after its target user is hard-deleted, which a CASCADE or a
+ * plain FK constraint would either destroy or block outright.
+ *
+ * `safeMetadata` follows this schema's existing "text column + manual JSON
+ * serialization" convention (see accountRecoveryAuditLogs.safeMetadata) -
+ * only ever field names changed, old/new role, googleConnected, and a
+ * privacy-free summary of a delete-safety assessment. Never an email, a
+ * name (old or new), an openId, a Google subject, a password hash, or a
+ * token/secret - see server/services/adminUserAuditLog.ts for the single
+ * place that builds this value.
+ *
+ * There is deliberately no update/delete API for rows in this table -
+ * append-only is enforced by never writing one, not by a DB permission.
+ */
+export const adminUserAuditLogs = mysqlTable(
+  "adminUserAuditLogs",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    actorAdminId: int("actorAdminId").notNull(),
+    targetUserId: int("targetUserId").notNull(),
+    action: mysqlEnum("action", ["update_name", "update_role", "delete_user"]).notNull(),
+    reason: text("reason").notNull(),
+    safeMetadata: text("safeMetadata"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    actorAdminIdIdx: index("adminUserAuditLogs_actorAdminId_idx").on(table.actorAdminId),
+    targetUserIdIdx: index("adminUserAuditLogs_targetUserId_idx").on(table.targetUserId),
+    createdAtIdx: index("adminUserAuditLogs_createdAt_idx").on(table.createdAt),
+  })
+);
+
+export type AdminUserAuditLog = typeof adminUserAuditLogs.$inferSelect;
+export type InsertAdminUserAuditLog = typeof adminUserAuditLogs.$inferInsert;

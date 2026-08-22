@@ -47,6 +47,7 @@ import {
 import { isValidStoredFileRef } from "@shared/privateFileRef";
 import * as accountRecoveryService from "./services/accountRecoveryService";
 import { AccountRecoveryError } from "./services/accountRecoveryService";
+import { updateAdminUserProfile, AdminUserManagementError } from "./services/adminUserManagementService";
 
 // ============ HELPER PROCEDURES ============
 
@@ -82,6 +83,24 @@ function mapAccountRecoveryError(error: unknown): TRPCError {
     return new TRPCError({ code: codeMap[error.code] ?? "BAD_REQUEST", message: error.message });
   }
   console.error("[AccountRecovery] Unexpected error", safeErrorSummary(error));
+  return new TRPCError({
+    code: "INTERNAL_SERVER_ERROR",
+    message: "ไม่สามารถดำเนินการได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง",
+  });
+}
+
+// ============ ADMIN USERS MANAGEMENT HELPERS ============
+
+/** AdminUserManagementError's own codes are already valid TRPCError codes
+ *  (NOT_FOUND/FORBIDDEN/BAD_REQUEST/CONFLICT), so this is a direct pass-
+ *  through rather than a translation table - unlike mapAccountRecoveryError
+ *  above. Any OTHER error (a raw database exception, etc.) never leaks its
+ *  message to the client. */
+function mapAdminUserManagementError(error: unknown): TRPCError {
+  if (error instanceof AdminUserManagementError) {
+    return new TRPCError({ code: error.code, message: error.message });
+  }
+  console.error("[AdminUserManagement] Unexpected error", safeErrorSummary(error));
   return new TRPCError({
     code: "INTERNAL_SERVER_ERROR",
     message: "ไม่สามารถดำเนินการได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง",
@@ -1434,6 +1453,92 @@ export const appRouter = router({
         }),
     }),
     dashboard: dashboardRouter,
+
+    users: router({
+      // Server-side paginated/searched/filtered/sorted user list - see
+      // db.getAdminUsersList for the explicit safe-column allowlist
+      // (never openId/passwordHash) and the EXISTS-based googleConnection
+      // filter (never a LEFT JOIN, so a user is never duplicated).
+      list: adminProcedure
+        .input(
+          z.object({
+            page: z.number().int().positive().default(1),
+            pageSize: z.union([z.literal(20), z.literal(50), z.literal(100)]).default(20),
+            search: z.string().trim().max(200).optional(),
+            role: z.enum(["user", "admin"]).optional(),
+            googleConnection: z.enum(["connected", "not_connected"]).optional(),
+            sortBy: z.enum(["id", "name", "email", "createdAt", "lastSignedIn"]).optional(),
+            sortOrder: z.enum(["asc", "desc"]).optional(),
+          })
+        )
+        .query(async ({ input }) => {
+          return db.getAdminUsersList(input);
+        }),
+
+      // name/role only - email/openId/loginMethod/passwordHash/Google
+      // identity/createdAt/lastSignedIn are all read-only from this page by
+      // design (no input field exists for any of them at all). Every role-
+      // safety rule (self-demotion, last-admin, Google-identity-required-
+      // to-promote) is re-verified server-side inside
+      // updateAdminUserProfile's own locked transaction - never trusted
+      // from the client beyond the confirmation text match.
+      update: adminProcedure
+        .input(
+          z.object({
+            userId: z.number().int().positive(),
+            name: z.union([z.string().max(255), z.null()]).optional(),
+            role: z.enum(["user", "admin"]).optional(),
+            reason: z.string().trim().min(5, "A reason is required").max(500),
+            confirmText: z.string().optional(),
+          })
+        )
+        .mutation(async ({ input, ctx }) => {
+          // Empty/whitespace-only name normalizes to null - "Empty name ให้
+          // Normalize เป็น null" - but `undefined` (field not supplied at
+          // all) is preserved as "don't touch this field", never coerced
+          // to null.
+          const normalizedName =
+            input.name === undefined
+              ? undefined
+              : input.name === null || input.name.trim() === ""
+                ? null
+                : input.name.trim();
+
+          try {
+            return await updateAdminUserProfile({
+              actorAdminId: ctx.user.id,
+              userId: input.userId,
+              name: normalizedName,
+              role: input.role,
+              reason: input.reason,
+              confirmText: input.confirmText,
+            });
+          } catch (error) {
+            throw mapAdminUserManagementError(error);
+          }
+        }),
+
+      // Hard-delete (`deleteAssessment` + `delete`) is DELIBERATELY NOT
+      // exposed here - PR #45 security review finding: the transaction only
+      // locks the target `users` row (SELECT ... FOR UPDATE); every business
+      // table it checks (orders, carts, wallet, points, ...) uses a plain,
+      // unenforced `userId` int with no foreign key back to `users.id` (see
+      // drizzle/schema.ts), so locking `users` alone cannot stop a
+      // concurrent INSERT into any of those tables from racing past the
+      // assessment read and landing AFTER the delete commits - the delete
+      // transaction can observe zero blockers, and a concurrent write can
+      // still leave an orphaned business row behind. Fixing this for real
+      // requires either DB-enforced constraints across every referencing
+      // table (verified with a real MariaDB integration test using at least
+      // two concurrent connections) or an equivalent application-level
+      // guarantee - neither exists yet. The underlying implementation
+      // (server/services/adminUserManagementService.ts's
+      // deleteAdminUserSafely, server/db.ts's getAdminUserDeleteAssessment)
+      // is kept, tested, and correct AS FAR AS IT GOES, specifically so this
+      // gap can be closed and the endpoint re-added as follow-up work once
+      // the concurrency fix is designed and proven - it is just never wired
+      // to a reachable procedure in this PR.
+    }),
 
     // Deprecated: fetches every episode row (all novels) including the full
     // mediumtext `content` column - heavy, unpaginated. Kept only for

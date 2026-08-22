@@ -11,6 +11,7 @@ const expectedSections = ["Main", "Sales", "Content", "Marketing", "System"];
 const expectedRoutes = [
   "/admin",
   "/admin/analytics",
+  "/admin/users",
   "/admin/orders",
   "/admin/payments",
   "/admin/wallet-topups",
@@ -46,6 +47,7 @@ describe("admin navigation configuration", () => {
     ["/admin/orders/123", "Orders"],
     ["/admin/wallet-topups/456", "Wallet Top-ups"],
     ["/admin/settings", "Settings"],
+    ["/admin/users", "Users"],
     ["/admin/unknown", "Admin"],
   ])("resolves %s to the correct title", (location, title) => {
     expect(getAdminRouteTitle(location)).toBe(title);
@@ -54,5 +56,6 @@ describe("admin navigation configuration", () => {
   it("does not treat child Admin routes as the Dashboard route", () => {
     expect(isAdminRouteActive("/admin", "/admin")).toBe(true);
     expect(isAdminRouteActive("/admin/orders", "/admin")).toBe(false);
+    expect(isAdminRouteActive("/admin/users", "/admin")).toBe(false);
   });
 });

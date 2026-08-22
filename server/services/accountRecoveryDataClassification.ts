@@ -149,6 +149,18 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     reason: "The admin/system actor who wrote the log entry, not the top-up's own owner (see topupLogs.userId, already economic_hard_block).",
   },
   {
+    table: "adminUserAuditLogs",
+    column: "actorAdminId",
+    category: "deliberately_ignored",
+    reason: "The Admin Users Management feature's OWN append-only audit trail (server/services/adminUserManagementService.ts) - the admin who performed a name/role edit or delete, not the account-recovery source's own data. Unrelated to this workflow entirely.",
+  },
+  {
+    table: "adminUserAuditLogs",
+    column: "targetUserId",
+    category: "deliberately_ignored",
+    reason: "The Admin Users Management feature's OWN append-only audit trail - the user a name/role edit or delete was performed on, tracked by that feature's own delete-safety check (server/services/adminUserDeletionClassification.ts), not the account-recovery workflow.",
+  },
+  {
     table: "walletTopups",
     column: "reviewedByUserId",
     category: "deliberately_ignored",

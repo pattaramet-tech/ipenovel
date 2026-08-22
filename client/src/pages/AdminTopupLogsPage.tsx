@@ -5,9 +5,16 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
 import { Loader2, RefreshCw, Eye } from "lucide-react";
-import { useState, useMemo } from "react";
-import { useLocation } from "wouter";
+import { useState, useEffect } from "react";
+import { useLocation, useSearchParams } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
+import {
+  parseUserIdQueryParam,
+  readUserIdFromSearchParams,
+  syncUserIdInputFromUrl,
+  withUserIdInputSearchParam,
+  withUserIdSearchParam,
+} from "./adminUserIdQueryParam";
 
 type TopupLog = {
   id: number;
@@ -27,23 +34,57 @@ type TopupLog = {
 
 export default function AdminTopupLogsPage() {
   const { user, isAuthenticated } = useAuth();
+  // useLocation() is kept only for navigate() to a log's detail page below -
+  // its own `location` value is the pathname alone, never the query string
+  // (see adminUserIdQueryParam.ts's top-of-file docstring), so it is never
+  // used for reading/writing `?userId=`.
   const [, navigate] = useLocation();
+  // useSearchParams() is wouter's reactive query-string hook (also used by
+  // client/src/pages/NovelsPage.tsx) - unlike useLocation(), it updates on
+  // browser back/forward and lets setSearchParams rewrite just one param
+  // while preserving every other one already in the URL.
+  const [searchParams, setSearchParams] = useSearchParams();
   const [limit] = useState(50);
   const [offset, setOffset] = useState(0);
-  const [userFilter, setUserFilter] = useState("");
+
+  // `?userId=` (e.g. navigated here from AdminUsersPage's "ดูประวัติเติมเงิน"
+  // row action) - strictly a positive integer, never trusted as-is
+  // otherwise (see readUserIdFromSearchParams).
+  const urlUserId = readUserIdFromSearchParams(searchParams);
+
+  const [userFilter, setUserFilter] = useState(urlUserId !== undefined ? String(urlUserId) : "");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+
+  // Re-syncs whenever the URL's userId changes for ANY reason external to
+  // this page's own filter box - browser back/forward, a fresh
+  // ?userId=... link, or the param being removed/becoming invalid - not
+  // just on mount. A removed/invalid param clears the local filter too
+  // (never retains a stale User ID the URL no longer names), and the page
+  // resets to the first page of whatever the new filter returns.
+  //
+  // syncUserIdInputFromUrl leaves the box untouched when it already names
+  // the same filter as the URL, so this effect never fights the user's own
+  // typing below - editing `5` into `5a` drops the param without the box
+  // being blanked out from under them. Returning the identical string also
+  // makes the setState a no-op, so there is no re-render/effect loop.
+  useEffect(() => {
+    setUserFilter((prev) => syncUserIdInputFromUrl(prev, urlUserId));
+    setOffset(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlUserId]);
 
   // Parse date inputs
   const parsedStartDate = startDate ? new Date(startDate) : undefined;
   const parsedEndDate = endDate ? new Date(endDate) : undefined;
 
-  // Parse user filter (can be ID or name)
-  const userIdFilter = userFilter ? parseInt(userFilter, 10) : undefined;
+  // Strict positive-integer parse - never NaN, never 0, never a value with
+  // trailing garbage.
+  const userIdFilter = parseUserIdQueryParam(userFilter);
 
   const { data, isLoading, refetch } = trpc.wallet.admin.listTopupLogs.useQuery(
     {
-      userId: userIdFilter && !isNaN(userIdFilter) ? userIdFilter : undefined,
+      userId: userIdFilter,
       startDate: parsedStartDate,
       endDate: parsedEndDate,
       limit,
@@ -57,11 +98,15 @@ export default function AdminTopupLogsPage() {
   const totalPages = Math.ceil(total / limit);
   const currentPage = Math.floor(offset / limit) + 1;
 
+  // Reset ALSO clears `userId` from the URL (never just local state) -
+  // preserving every other existing query param - so a page refresh or a
+  // shared link doesn't silently bring the old filter back.
   const handleReset = () => {
     setUserFilter("");
     setStartDate("");
     setEndDate("");
     setOffset(0);
+    setSearchParams((prev) => withUserIdSearchParam(prev, undefined));
     refetch();
   };
 
@@ -135,8 +180,17 @@ export default function AdminTopupLogsPage() {
                   placeholder="Filter by user ID"
                   value={userFilter}
                   onChange={(e) => {
-                    setUserFilter(e.target.value);
+                    const value = e.target.value;
+                    setUserFilter(value);
                     setOffset(0);
+                    // Mirror the edit into `?userId=` (preserving every
+                    // other param) so a refresh or a copied link keeps the
+                    // filter the table is actually showing - an empty or
+                    // invalid entry removes the param instead of stranding
+                    // the previous id there. No manual refetch(): the query
+                    // input below is derived from userFilter, so changing it
+                    // is what triggers the refetch.
+                    setSearchParams((prev) => withUserIdInputSearchParam(prev, value));
                   }}
                   className="w-full"
                 />

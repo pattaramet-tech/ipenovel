@@ -246,6 +246,20 @@
       "when": 1785524336060,
       "tag": "0034_add_account_recovery_workflow",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "5",
+      "when": 1787228418262,
+      "tag": "0035_add_admin_user_audit_logs",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "5",
+      "when": 1787256834694,
+      "tag": "0036_add_users_role_id_index",
+      "breakpoints": true
     }
   ]
 }

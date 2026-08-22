@@ -5,9 +5,14 @@ import { Input } from "@/components/ui/input";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { trpc } from "@/lib/trpc";
 import { Loader2, Search, ChevronLeft, ChevronRight } from "lucide-react";
-import { useLocation } from "wouter";
+import { useLocation, useSearchParams } from "wouter";
 import { useState, useEffect } from "react";
 import AdminLayout from "@/components/AdminLayout";
+import {
+  parseUserIdQueryParam,
+  readUserIdFromSearchParams,
+  withUserIdSearchParam,
+} from "./adminUserIdQueryParam";
 
 interface AdminOrdersResult {
   orders: Array<any>;
@@ -18,13 +23,23 @@ interface AdminOrdersResult {
 }
 
 export default function AdminOrdersPage() {
-  const [location, setLocation] = useLocation();
+  // useLocation() is kept only for navigate() to an order's detail page
+  // below - its own `location` value is the pathname alone, never the
+  // query string (see adminUserIdQueryParam.ts's top-of-file docstring),
+  // so it is never used for reading/writing `?userId=`.
+  const [, setLocation] = useLocation();
+  // useSearchParams() is wouter's reactive query-string hook (also used by
+  // client/src/pages/NovelsPage.tsx) - unlike useLocation(), it updates on
+  // browser back/forward and lets setSearchParams rewrite just one param
+  // while preserving every other one already in the URL.
+  const [searchParams, setSearchParams] = useSearchParams();
   const { t } = useLanguage();
-  
-  // Parse URL query parameters
-  const queryParams = new URLSearchParams(location.split('?')[1] || '');
-  const urlUserId = queryParams.get('userId');
-  
+
+  // `?userId=` - strictly a positive integer, never trusted as-is
+  // otherwise (see readUserIdFromSearchParams). Never `parseInt()`, which
+  // would silently accept a value like "5abc" as 5.
+  const urlUserId = readUserIdFromSearchParams(searchParams);
+
   // Pagination and filtering state
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -34,16 +49,21 @@ export default function AdminOrdersPage() {
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [paymentStatusFilter, setPaymentStatusFilter] = useState<string>("");
   const [hasDiscountFilter, setHasDiscountFilter] = useState<boolean | undefined>(undefined);
-  const [userIdInput, setUserIdInput] = useState<string>("");
-  const [appliedUserId, setAppliedUserId] = useState<string>("");
+  const [userIdInput, setUserIdInput] = useState<string>(urlUserId !== undefined ? String(urlUserId) : "");
+  const [appliedUserId, setAppliedUserId] = useState<number | undefined>(urlUserId);
   const [userIdError, setUserIdError] = useState<string>("");
 
-  // Sync userId from URL on mount
+  // Re-syncs the input box AND the applied filter whenever the URL's
+  // userId changes for ANY reason external to this page's own input box -
+  // browser back/forward, a fresh ?userId=... link, or the param being
+  // removed/becoming invalid. A removed or invalid value clears the
+  // applied filter and returns to page 1, exactly like a manual clear.
   useEffect(() => {
-    if (urlUserId) {
-      setUserIdInput(urlUserId);
-      setAppliedUserId(urlUserId);
-    }
+    setUserIdInput(urlUserId !== undefined ? String(urlUserId) : "");
+    setAppliedUserId(urlUserId);
+    setUserIdError("");
+    setPage(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlUserId]);
 
   // Fetch orders with filters
@@ -55,10 +75,10 @@ export default function AdminOrdersPage() {
     sortOrder,
     status: statusFilter || undefined,
     paymentStatus: paymentStatusFilter || undefined,
-    userId: appliedUserId ? parseInt(appliedUserId, 10) : undefined,
+    userId: appliedUserId,
     hasDiscount: hasDiscountFilter,
   };
-  
+
   const { data: result, isLoading, refetch } = trpc.admin.orders.list.useQuery(queryInput as any);
 
   const orders = result?.orders || [];
@@ -99,34 +119,28 @@ export default function AdminOrdersPage() {
     setPage(1);
   };
 
-  // Handle userId filter
+  // Handle userId filter - writes through useSearchParams (preserving
+  // every other existing query param), never a hand-built `location`
+  // string.
   const handleUserIdChange = (value: string) => {
     setUserIdInput(value);
     setUserIdError("");
-    
+
     if (value === "") {
-      setAppliedUserId("");
-      // Remove userId from URL
-      const newParams = new URLSearchParams(location.split('?')[1] || '');
-      newParams.delete('userId');
-      const newUrl = newParams.toString() ? `?${newParams.toString()}` : '';
-      setLocation(newUrl);
+      setAppliedUserId(undefined);
+      setSearchParams((prev) => withUserIdSearchParam(prev, undefined));
       setPage(1);
       return;
     }
-    
-    // Strict validation: positive integers only
-    const regex = /^[1-9]\d*$/;
-    if (!regex.test(value)) {
+
+    const parsed = parseUserIdQueryParam(value);
+    if (parsed === undefined) {
       setUserIdError("User ID must be a positive integer (no 0, decimals, or letters)");
       return;
     }
-    
-    setAppliedUserId(value);
-    // Add userId to URL
-    const newParams = new URLSearchParams(location.split('?')[1] || '');
-    newParams.set('userId', value);
-    setLocation(`?${newParams.toString()}`);
+
+    setAppliedUserId(parsed);
+    setSearchParams((prev) => withUserIdSearchParam(prev, parsed));
     setPage(1);
   };
 

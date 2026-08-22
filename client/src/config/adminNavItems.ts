@@ -24,6 +24,7 @@ import {
   Activity,
   UserSearch,
   ImagePlus,
+  Users,
 } from "lucide-react";
 
 export interface NavItem {
@@ -55,6 +56,11 @@ export const adminNavSections: NavSection[] = [
         label: "Analytics",
         href: "/admin/analytics",
         icon: BarChart3,
+      },
+      {
+        label: "Users",
+        href: "/admin/users",
+        icon: Users,
       },
     ],
   },

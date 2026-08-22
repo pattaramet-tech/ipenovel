@@ -1,0 +1,1 @@
+CREATE INDEX `users_role_id_idx` ON `users` (`role`,`id`);
