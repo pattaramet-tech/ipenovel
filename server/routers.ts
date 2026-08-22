@@ -11,6 +11,8 @@ import * as walletService from "./services/walletService";
 import { ApprovalService } from "./services/approvalService";
 import { submitPaymentSlip } from "./services/slipSubmissionService";
 import { uploadPaymentSlipFile } from "./services/slipFileUploadService";
+import { recheckOrderPaymentOcr } from "./services/ocrRecheckService";
+import { getOcrAttemptHistory } from "./services/ocrAttemptService";
 import {
   assertCheckoutAvailable,
   assertSlipCheckoutAvailable,
@@ -1439,6 +1441,31 @@ export const appRouter = router({
           }
           return { success: true };
         }),
+      /**
+       * Re-runs OCR + verification against the slip already on file.
+       *
+       * Diagnostic ONLY. It cannot approve, cannot reject, and cannot change
+       * payment or order status - see ocrRecheckService for the guarantees
+       * and the tests that enforce them. When verification passes it reports
+       * readyForAdminApproval so an admin can then press Approve, which runs
+       * its own independent anti-replay claim.
+       */
+      recheckOcr: adminProcedure
+        .input(z.object({ paymentId: z.number().int().positive() }))
+        .mutation(async ({ input, ctx }) => {
+          return recheckOrderPaymentOcr({
+            paymentId: input.paymentId,
+            adminUserId: ctx.user.id,
+          });
+        }),
+
+      /** Sanitized OCR attempt history for the admin detail panel. */
+      ocrAttempts: adminProcedure
+        .input(z.object({ paymentId: z.number().int().positive() }))
+        .query(async ({ input }) => {
+          return getOcrAttemptHistory("order_payment", input.paymentId);
+        }),
+
       reject: adminProcedure
         .input(z.object({ orderId: z.number(), rejectionReason: z.string() }))
         .mutation(async ({ input, ctx }) => {
