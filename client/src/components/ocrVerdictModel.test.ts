@@ -360,3 +360,166 @@ describe("backward compatibility with legacy rows", () => {
     expect(row.state).toBe("pass");
   });
 });
+
+// ─── Server-driven fields (correction round) ─────────────────────────────
+
+describe("effective freshness window comes from the server", () => {
+  it("uses whatever window the server supplied, not a hard-coded 120", () => {
+    const t = compareTransactionTime(
+      input({
+        allowedWindowMinutes: 30,
+        extracted: { ...input().extracted!, transactionDateTime: "2026-08-22T10:00:00Z" },
+        slipSubmittedAt: "2026-08-22T10:45:00Z",
+      })
+    );
+    // 45 min elapsed against a 30 min window -> outside.
+    expect(t.allowedWindowMinutes).toBe(30);
+    expect(t.differenceMinutes).toBe(45);
+    expect(t.withinWindow).toBe(false);
+  });
+
+  it("the same slip passes under a larger configured window", () => {
+    const t = compareTransactionTime(
+      input({
+        allowedWindowMinutes: 240,
+        extracted: { ...input().extracted!, transactionDateTime: "2026-08-22T10:00:00Z" },
+        slipSubmittedAt: "2026-08-22T10:45:00Z",
+      })
+    );
+    expect(t.withinWindow).toBe(true);
+  });
+
+  it("reports NOT EVALUATED when no window was supplied rather than assuming one", () => {
+    const row = buildChecklist(
+      input({
+        allowedWindowMinutes: null,
+        extracted: { ...input().extracted!, transactionDateTime: "2026-08-22T10:00:00Z" },
+        slipSubmittedAt: "2026-08-22T10:45:00Z",
+      })
+    ).find((r) => r.key === "freshness")!;
+    expect(row.state).toBe("not_evaluated");
+  });
+});
+
+describe("server recipient verdict is rendered, not re-decided", () => {
+  it("renders a strong server verdict as PASS", () => {
+    const r = describeRecipient(
+      input({
+        extracted: { amount: 100 },
+        serverRecipient: {
+          recipientVerified: true,
+          recipientEvidenceType: "merchant_code",
+          recipientEvidenceStrength: "strong",
+        },
+      })
+    );
+    expect(r.verified).toBe(true);
+    expect(r.state).toBe("pass");
+    expect(r.detail).toMatch(/server-verified/i);
+  });
+
+  it("renders a fallback server verdict as WARNING", () => {
+    const r = describeRecipient(
+      input({
+        extracted: { amount: 100 },
+        serverRecipient: {
+          recipientVerified: true,
+          recipientEvidenceType: "shop_alias",
+          recipientEvidenceStrength: "fallback",
+        },
+      })
+    );
+    expect(r.state).toBe("warning");
+    expect(r.detail).toMatch(/weaker/i);
+  });
+
+  it("renders an unverified server verdict without claiming verification", () => {
+    const r = describeRecipient(
+      input({
+        extracted: { amount: 100, merchantCode: "KB000002283068" },
+        serverRecipient: {
+          recipientVerified: false,
+          recipientEvidenceType: "insufficient",
+          recipientEvidenceStrength: "none",
+        },
+      })
+    );
+    // Server said no; the local fallback must NOT override it to "verified".
+    expect(r.verified).toBe(false);
+    expect(r.evidenceType).toBe("insufficient");
+  });
+});
+
+describe("duplicate panel is driven by server data", () => {
+  it("a strong server duplicate links the matched wallet top-up", () => {
+    const d = describeDuplicate(
+      input({
+        duplicate: { strength: "strong", matchedSourceType: "wallet_topup", matchedSourceId: 88 },
+      })
+    );
+    expect(d.strength).toBe("strong");
+    expect(d.matchedLabel).toBe("Wallet top-up #88");
+    expect(d.matchedHref).toContain("88");
+  });
+
+  it("a legacy-compatibility match says so explicitly", () => {
+    const d = describeDuplicate(
+      input({
+        duplicate: {
+          strength: "strong",
+          matchedSourceType: "order_payment",
+          matchedSourceId: 12,
+          viaLegacyCompatibility: true,
+        },
+      })
+    );
+    expect(d.headline).toMatch(/predates the claim registry/i);
+  });
+
+  it("an old fingerprint alone is still only LEGACY / WEAK", () => {
+    const d = describeDuplicate(
+      input({ legacyFingerprint: "abc", extracted: { amount: 100 }, duplicate: null })
+    );
+    expect(d.strength).toBe("legacy");
+    expect(d.strength).not.toBe("strong");
+  });
+});
+
+describe("exact-file identifier status", () => {
+  it("AVAILABLE marks the file row PASS and never shows a hash", () => {
+    const row = buildChecklist(input({ fileIdentifierStatus: "AVAILABLE" })).find(
+      (r) => r.key === "duplicate_file"
+    )!;
+    expect(row.state).toBe("pass");
+    expect(row.detail).toBe("Exact File Identifier: AVAILABLE");
+    expect(row.detail).not.toMatch(/[0-9a-f]{32,}/);
+  });
+
+  it("MATCH fails the row", () => {
+    const row = buildChecklist(input({ fileIdentifierStatus: "MATCH" })).find(
+      (r) => r.key === "duplicate_file"
+    )!;
+    expect(row.state).toBe("fail");
+  });
+
+  it("UNAVAILABLE is NOT EVALUATED, never a false pass", () => {
+    const row = buildChecklist(input({ fileIdentifierStatus: "UNAVAILABLE" })).find(
+      (r) => r.key === "duplicate_file"
+    )!;
+    expect(row.state).toBe("not_evaluated");
+  });
+});
+
+describe("QR stays deferred and never falsely clears anything", () => {
+  it("QR row is NOT EVALUATED and says decoding is disabled", () => {
+    const row = buildChecklist(input()).find((r) => r.key === "duplicate_qr")!;
+    expect(row.state).toBe("not_evaluated");
+    expect(row.state).not.toBe("pass");
+    expect(row.detail).toMatch(/not enabled/i);
+  });
+
+  it("a deferred QR check never turns a failing verdict into a pass", () => {
+    const rows = buildChecklist(input({ reviewReason: "MISSING_REFERENCE" }));
+    expect(rows.find((r) => r.key === "final")!.state).toBe("fail");
+  });
+});

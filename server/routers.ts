@@ -13,6 +13,14 @@ import { submitPaymentSlip } from "./services/slipSubmissionService";
 import { uploadPaymentSlipFile } from "./services/slipFileUploadService";
 import { recheckOrderPaymentOcr } from "./services/ocrRecheckService";
 import { getOcrAttemptHistory } from "./services/ocrAttemptService";
+import { findExistingClaim } from "./services/slipClaimService";
+import { findLegacyApprovedDuplicate } from "./services/legacySlipCompatibilityService";
+import { describeFileIdentifierStatus } from "./services/slipFileHashService";
+import {
+  deriveStrongIdentifiersFromExtractedData,
+  hasStrongIdentifier,
+} from "./services/slipIdentifierService";
+import { getEffectiveOCRConfig } from "./_core/ocr-effective-config";
 import {
   assertCheckoutAvailable,
   assertSlipCheckoutAvailable,
@@ -26,7 +34,7 @@ import { fileRouter } from "./routers/fileRouter";
 import { ocrMetricsRouter } from "./routers/ocrMetricsRouter";
 import { r2Put, R2StorageError } from "./services/r2Storage";
 import { optimizeImageToWebp, ImageOptimizeError, SPORTS_MATCH_IMAGE_PRESET } from "./services/imageOptimizer";
-import { parseSlipImage } from "./ocr-slip-verification-v2";
+import { parseSlipImage, verifyRecipient } from "./ocr-slip-verification-v2";
 import { processSlipVerificationStaging } from "./ocr-slip-integration-staging";
 import { getOCRConfig } from "./_core/ocr-config";
 import {
@@ -1277,6 +1285,13 @@ export const appRouter = router({
             if (typeof error?.message === "string" && error.message.startsWith("SLIP_ALREADY_CLAIMED")) {
               throw new TRPCError({ code: "CONFLICT", message: error.message });
             }
+            // No strong identifier: normal Approve must not silently bypass
+            // anti-replay. PRECONDITION_FAILED so the UI can distinguish
+            // "someone else owns this slip" from "this slip cannot be
+            // protected at all and needs the legacy override".
+            if (typeof error?.message === "string" && error.message.startsWith("NO_STRONG_IDENTIFIER")) {
+              throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
+            }
             throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to approve payment. Please try again." });
           }
         }),
@@ -1408,7 +1423,96 @@ export const appRouter = router({
 
           const payment = await withResolvedSlipUrl(rawPayment, "admin.orders.detail");
 
-          return { order, items, payment, history, approvalMetadata, formattedApprovalSource };
+          // ── ONE SOURCE OF TRUTH FOR THE FRESHNESS WINDOW ────────────────
+          // The admin panel previously recomputed freshness against a
+          // hard-coded 120 minutes while the server verified against the
+          // EFFECTIVE config, so any deployment with a different window saw a
+          // checklist that disagreed with the actual decision. The effective
+          // value is now returned and the panel renders THIS number.
+          const ocrConfig = await getEffectiveOCRConfig();
+
+          // ── DUPLICATE STATE (read-only, admin-only) ─────────────────────
+          // Derived server-side so the panel never has to infer duplicate
+          // strength from a legacy fingerprint.
+          let duplicate:
+            | {
+                strength: "strong";
+                kind: string;
+                matchedSourceType: "order_payment" | "wallet_topup";
+                matchedSourceId: number;
+                viaLegacyCompatibility: boolean;
+              }
+            | undefined;
+          let fileIdentifierStatus: "AVAILABLE" | "MATCH" | "UNAVAILABLE" = "UNAVAILABLE";
+          let recipient: ReturnType<typeof verifyRecipient> | undefined;
+
+          if (rawPayment?.extractedData) {
+            const { identifiers } = deriveStrongIdentifiersFromExtractedData(
+              rawPayment.extractedData as string
+            );
+            const database = await db.getDb();
+            if (database && hasStrongIdentifier(identifiers)) {
+              const claim = await findExistingClaim(identifiers, database);
+              const owned =
+                claim?.sourceType === "order_payment" && claim?.sourceId === rawPayment.id;
+              if (claim && !owned) {
+                duplicate = {
+                  strength: "strong",
+                  kind: claim.kind,
+                  matchedSourceType: claim.sourceType,
+                  matchedSourceId: claim.sourceId,
+                  viaLegacyCompatibility: false,
+                };
+              } else if (!claim) {
+                const legacy = await findLegacyApprovedDuplicate(
+                  identifiers,
+                  { sourceType: "order_payment", sourceId: rawPayment.id },
+                  database
+                );
+                if (legacy) {
+                  duplicate = {
+                    strength: "strong",
+                    kind: legacy.kind,
+                    matchedSourceType: legacy.sourceType,
+                    matchedSourceId: legacy.sourceId,
+                    viaLegacyCompatibility: true,
+                  };
+                }
+              }
+            }
+            fileIdentifierStatus = describeFileIdentifierStatus({
+              fileHash: identifiers.fileHash,
+              duplicateFileMatch: duplicate?.kind === "file",
+            });
+
+            // Recipient verdict recomputed SERVER-SIDE from the stored
+            // extraction, using the same function verifySlipData gates on.
+            // Recomputing (rather than reading a persisted flag) means legacy
+            // rows written before the gate existed are graded correctly too,
+            // and the panel never re-decides this in client constants.
+            try {
+              const parsedExtracted = JSON.parse(rawPayment.extractedData as string);
+              recipient = verifyRecipient(parsedExtracted);
+            } catch {
+              recipient = undefined;
+            }
+          }
+
+          return {
+            order,
+            items,
+            payment,
+            history,
+            approvalMetadata,
+            formattedApprovalSource,
+            ocrMeta: {
+              effectiveWindowMinutes: ocrConfig.maxTimeWindowMinutes,
+              minConfidence: ocrConfig.minConfidence,
+              duplicate,
+              fileIdentifierStatus,
+              recipient,
+            },
+          };
         }),
 
          approve: adminProcedure
@@ -1436,6 +1540,13 @@ export const appRouter = router({
             // CONFLICT the admin can act on, not a malformed request.
             if (typeof error?.message === "string" && error.message.startsWith("SLIP_ALREADY_CLAIMED")) {
               throw new TRPCError({ code: "CONFLICT", message: error.message });
+            }
+            // No strong identifier: normal Approve must not silently bypass
+            // anti-replay. PRECONDITION_FAILED so the UI can distinguish
+            // "someone else owns this slip" from "this slip cannot be
+            // protected at all and needs the legacy override".
+            if (typeof error?.message === "string" && error.message.startsWith("NO_STRONG_IDENTIFIER")) {
+              throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
             }
             throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to approve payment. Please try again." });
           }

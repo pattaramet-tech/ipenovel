@@ -290,3 +290,60 @@ describe("sanitizeSnapshot strips anything sensitive", () => {
     expect(JSON.parse(sanitizeSnapshot(JSON.stringify(snapshot))!)).toEqual(snapshot);
   });
 });
+
+// ─── Recheck reads global duplicate state, but never writes ──────────────
+
+describe("Admin Recheck duplicate lookup is READ-ONLY", () => {
+  const source = fs.readFileSync(
+    path.resolve(process.cwd(), "server/services/ocrRecheckService.ts"),
+    "utf-8"
+  );
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ 	]*\/\/.*$/gm, "");
+
+  it("queries the claim registry", () => {
+    expect(code).toMatch(/findExistingClaim\s*\(/);
+  });
+
+  it("queries the legacy approved-record compatibility layer too", () => {
+    expect(code).toMatch(/findLegacyApprovedDuplicate\s*\(/);
+  });
+
+  it("still never calls claimSlip - Approve remains the only writer", () => {
+    expect(code).not.toMatch(/claimSlip\s*\(/);
+  });
+
+  it("never inserts into paymentSlipClaims", () => {
+    expect(code).not.toMatch(/insert\s*\(/);
+  });
+
+  it("refuses READY FOR ADMIN APPROVAL when a duplicate was found", () => {
+    // verificationPassed is ANDed with the absence of a duplicate match, so a
+    // claimed slip can never be presented as ready to approve.
+    expect(code).toMatch(/verificationPassed\s*=\s*verification\.isAutoApproved\s*&&\s*!duplicateMatch/);
+  });
+
+  it("returns the matched owner for admin cross-linking", () => {
+    expect(code).toMatch(/matchedSourceType/);
+    expect(code).toMatch(/matchedSourceId/);
+  });
+
+  it("maps a duplicate to a strong reason code", () => {
+    expect(code).toMatch(/DUPLICATE_REFERENCE/);
+    expect(code).toMatch(/DUPLICATE_FILE/);
+  });
+
+  it("recomputes the file hash server-side rather than trusting stored state", () => {
+    expect(code).toMatch(/computeSlipFileHash\s*\(\s*payment\.slipImageUrl/);
+  });
+
+  it("returns the EFFECTIVE window, never a hard-coded 120", () => {
+    expect(code).toMatch(/effectiveWindowMinutes:\s*config\.maxTimeWindowMinutes/);
+    expect(code).not.toMatch(/allowedWindowMinutes:\s*120/);
+  });
+
+  it("preserves the provider diagnostic instead of re-wrapping it", () => {
+    // The old code threw new Error(code), discarding HTTP status and attempts.
+    expect(code).toMatch(/PreservedProviderFailure/);
+    expect(code).not.toMatch(/throw new Error\(parsed\.technicalErrorCode/);
+  });
+});

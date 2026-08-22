@@ -350,6 +350,9 @@ export default function AdminOrderDetailPage() {
               <div className="mt-6">
                 <OCRResultPanel
                   payment={order.payment}
+                  // Server-derived: effective freshness window + duplicate
+                  // finding. The panel must not recompute either locally.
+                  ocrMeta={(order as any).ocrMeta}
                   // A recheck rewrites the payment's OCR display metadata
                   // server-side, so the detail query is refetched to show the
                   // fresh snapshot rather than the pre-recheck one.

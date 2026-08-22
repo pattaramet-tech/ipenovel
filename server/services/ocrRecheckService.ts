@@ -35,6 +35,24 @@ import {
   hasStrongIdentifier,
 } from "./slipIdentifierService";
 import { recordOcrAttempt } from "./ocrAttemptService";
+import {
+  computeSlipFileHash,
+  describeFileIdentifierStatus,
+  type FileIdentifierStatus,
+} from "./slipFileHashService";
+import { findExistingClaim, type SlipClaimSourceType } from "./slipClaimService";
+import { findLegacyApprovedDuplicate } from "./legacySlipCompatibilityService";
+
+/**
+ * Carries an already-sanitized provider diagnostic out of the OCR block
+ * without it being re-derived (and thereby flattened) by the catch.
+ */
+class PreservedProviderFailure extends Error {
+  constructor(readonly diagnostic: ProviderDiagnostic) {
+    super(diagnostic.code);
+    this.name = "PreservedProviderFailure";
+  }
+}
 
 export interface RecheckOcrInput {
   paymentId: number;
@@ -57,6 +75,22 @@ export interface RecheckOcrResult {
   ocrConfidence?: number;
   confidenceKnown: boolean;
   hasStrongIdentifier: boolean;
+  /**
+   * The EFFECTIVE freshness window actually used by verification. Returned so
+   * the admin panel renders the same number the server judged against,
+   * instead of assuming a hard-coded 120.
+   */
+  effectiveWindowMinutes: number;
+  /** Admin-safe file identifier status - never the hash itself. */
+  fileIdentifierStatus: FileIdentifierStatus;
+  /** Read-only duplicate finding. Approve still runs its own atomic claim. */
+  duplicate?: {
+    strength: "strong";
+    kind: string;
+    matchedSourceType: SlipClaimSourceType;
+    matchedSourceId: number;
+    viaLegacyCompatibility: boolean;
+  };
 }
 
 export async function recheckOrderPaymentOcr(
@@ -119,6 +153,8 @@ export async function recheckOrderPaymentOcr(
       rootCauseSummary: summary.summary,
       confidenceKnown: false,
       hasStrongIdentifier: false,
+      effectiveWindowMinutes: config.maxTimeWindowMinutes,
+      fileIdentifierStatus: "UNAVAILABLE",
     };
   }
 
@@ -137,18 +173,29 @@ export async function recheckOrderPaymentOcr(
 
     const parsed = await parseSlipImage(ocrImageUrl);
     if (parsed.technicalError) {
-      throw new Error(parsed.technicalErrorCode ?? "OCR_PROCESSING_ERROR");
+      // Use the diagnostic parseSlipImage already produced. Re-wrapping this
+      // in a plain Error (as it previously did) discarded the HTTP status,
+      // runtime mode and attempt count, so every failed recheck was recorded
+      // as an unspecified one-attempt error - the exact defect Codex flagged.
+      throw new PreservedProviderFailure(
+        parsed.providerDiagnostic ?? describeProviderFailure(new Error("OCR_PROCESSING_ERROR"))
+      );
     }
 
     ocrText = parsed.text;
     confidenceKnown = parsed.confidenceKnown === true;
     providerConfidence = confidenceKnown ? parsed.ocrConfidence : undefined;
   } catch (error) {
-    providerDiagnostic = describeProviderFailure(error);
+    providerDiagnostic =
+      error instanceof PreservedProviderFailure
+        ? error.diagnostic
+        : describeProviderFailure(error);
     const summary = summarizeRootCause({
       reviewReason: providerDiagnostic.code,
       providerDiagnostic,
     });
+
+    const technicalPathFileHash = await computeSlipFileHash(payment.slipImageUrl);
 
     const attemptNo = await recordOcrAttempt({
       subjectType: "order_payment",
@@ -182,7 +229,12 @@ export async function recheckOrderPaymentOcr(
       rootCauseSummary: summary.summary,
       providerDiagnostic,
       confidenceKnown: false,
-      hasStrongIdentifier: false,
+      // Even with OCR down, the exact-file identifier is recomputed from the
+      // stored bytes, so an admin can see the slip is still anti-replay
+      // protected for manual handling.
+      hasStrongIdentifier: Boolean(technicalPathFileHash),
+      effectiveWindowMinutes: config.maxTimeWindowMinutes,
+      fileIdentifierStatus: describeFileIdentifierStatus({ fileHash: technicalPathFileHash }),
     };
   }
 
@@ -208,30 +260,102 @@ export async function recheckOrderPaymentOcr(
     config.maxTimeWindowMinutes
   );
 
-  const { identifiers } = deriveStrongIdentifiersFromExtractedData(JSON.stringify(extracted));
+  // The exact-file identifier is RECOMPUTED from the stored bytes, never
+  // carried over from the browser or from whatever the previous run wrote.
+  // This keeps a recheck's identifier set at least as strong as submission's,
+  // even when this OCR pass read nothing.
+  const recomputedFileHash = await computeSlipFileHash(payment.slipImageUrl);
+  const extractedWithFile = recomputedFileHash
+    ? { ...extracted, fileHash: recomputedFileHash }
+    : extracted;
+
+  const { identifiers } = deriveStrongIdentifiersFromExtractedData(
+    JSON.stringify(extractedWithFile)
+  );
   const strongIdentifierPresent = hasStrongIdentifier(identifiers);
+
+  // ── GLOBAL DUPLICATE LOOKUP (READ-ONLY) ───────────────────────────────
+  // A recheck must never report READY FOR ADMIN APPROVAL for a slip whose
+  // identifiers are already owned by another submission - that would invite
+  // an admin to approve something Approve is guaranteed to refuse.
+  //
+  // Strictly read-only: it queries the claim registry and the pre-migration
+  // approved records, and NEVER inserts a claim. Approve remains the sole
+  // authority and runs its own atomic claim, so a race opened after this
+  // read is still closed there.
+  let duplicateMatch:
+    | { kind: string; sourceType: SlipClaimSourceType; sourceId: number; viaLegacy: boolean }
+    | undefined;
+
+  if (strongIdentifierPresent) {
+    const database = await db.getDb();
+    if (database) {
+      const existingClaim = await findExistingClaim(identifiers, database);
+      if (
+        existingClaim &&
+        !(existingClaim.sourceType === "order_payment" && existingClaim.sourceId === payment.id)
+      ) {
+        duplicateMatch = {
+          kind: existingClaim.kind,
+          sourceType: existingClaim.sourceType,
+          sourceId: existingClaim.sourceId,
+          viaLegacy: false,
+        };
+      } else {
+        const legacy = await findLegacyApprovedDuplicate(
+          identifiers,
+          { sourceType: "order_payment", sourceId: payment.id },
+          database
+        );
+        if (legacy) {
+          duplicateMatch = {
+            kind: legacy.kind,
+            sourceType: legacy.sourceType,
+            sourceId: legacy.sourceId,
+            viaLegacy: true,
+          };
+        }
+      }
+    }
+  }
 
   // Passing verification is NOT approval. It only means an admin may now
   // approve with confidence; the Approve action re-runs its own anti-replay
   // claim independently of anything decided here.
-  const verificationPassed = verification.isAutoApproved;
+  const verificationPassed = verification.isAutoApproved && !duplicateMatch;
   const readyForAdminApproval = verificationPassed && strongIdentifierPresent;
 
-  const reviewReason = verificationPassed
-    ? strongIdentifierPresent
-      ? undefined
-      : "NO_STRONG_IDENTIFIER"
-    : verification.reviewReason;
+  const duplicateReason =
+    duplicateMatch?.kind === "file"
+      ? "DUPLICATE_FILE"
+      : duplicateMatch?.kind === "qr"
+        ? "DUPLICATE_QR"
+        : duplicateMatch
+          ? "DUPLICATE_REFERENCE"
+          : undefined;
+
+  const reviewReason =
+    duplicateReason ??
+    (verification.isAutoApproved
+      ? strongIdentifierPresent
+        ? undefined
+        : "NO_STRONG_IDENTIFIER"
+      : verification.reviewReason);
 
   const summary = summarizeRootCause({
     reviewReason,
     readyForAdminApproval,
+    duplicateSourceLabel: duplicateMatch
+      ? duplicateMatch.sourceType === "order_payment"
+        ? `order payment #${duplicateMatch.sourceId}`
+        : `wallet top-up #${duplicateMatch.sourceId}`
+      : null,
   });
 
   // Refresh the DISPLAY metadata only. status/slipSubmittedAt are excluded
   // by construction - this update names every column it writes.
   await db.updatePayment(payment.id, {
-    extractedData: JSON.stringify(extracted),
+    extractedData: JSON.stringify(extractedWithFile),
     ocrConfidence: extracted.confidence ?? 0,
     reviewReason: reviewReason ?? null,
     ocrDecision: "needs_review",
@@ -276,5 +400,19 @@ export async function recheckOrderPaymentOcr(
     ocrConfidence: extracted.confidence,
     confidenceKnown: extracted.confidenceKnown !== false,
     hasStrongIdentifier: strongIdentifierPresent,
+    effectiveWindowMinutes: config.maxTimeWindowMinutes,
+    fileIdentifierStatus: describeFileIdentifierStatus({
+      fileHash: recomputedFileHash,
+      duplicateFileMatch: duplicateMatch?.kind === "file",
+    }),
+    duplicate: duplicateMatch
+      ? {
+          strength: "strong",
+          kind: duplicateMatch.kind,
+          matchedSourceType: duplicateMatch.sourceType,
+          matchedSourceId: duplicateMatch.sourceId,
+          viaLegacyCompatibility: duplicateMatch.viaLegacy,
+        }
+      : undefined,
   };
 }

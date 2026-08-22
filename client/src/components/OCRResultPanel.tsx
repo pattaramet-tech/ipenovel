@@ -45,6 +45,28 @@ interface OCRResultPanelProps {
     slipSubmittedAt?: string | Date | null;
     order?: { totalAmount: number | string };
   };
+  /**
+   * Server-derived OCR metadata from admin.orders.detail. Carries the
+   * EFFECTIVE freshness window and the server's duplicate finding, so the
+   * panel never recomputes either from a hard-coded constant.
+   */
+  ocrMeta?: {
+    effectiveWindowMinutes?: number;
+    minConfidence?: number;
+    duplicate?: {
+      strength: "strong";
+      kind: string;
+      matchedSourceType: "order_payment" | "wallet_topup";
+      matchedSourceId: number;
+      viaLegacyCompatibility: boolean;
+    } | null;
+    fileIdentifierStatus?: "AVAILABLE" | "MATCH" | "UNAVAILABLE";
+    recipient?: {
+      recipientVerified?: boolean;
+      recipientEvidenceType?: string;
+      recipientEvidenceStrength?: string;
+    } | null;
+  } | null;
   /** Called after a successful recheck so the parent can refetch. */
   onRecheckComplete?: () => void;
 }
@@ -112,17 +134,25 @@ function VerdictBanner({ verdict }: { verdict: OcrVerdict }) {
   );
 }
 
-export function OCRResultPanel({ payment, onRecheckComplete }: OCRResultPanelProps) {
+export function OCRResultPanel({ payment, ocrMeta, onRecheckComplete }: OCRResultPanelProps) {
   const [showRawJson, setShowRawJson] = useState(false);
   const [recheckError, setRecheckError] = useState<string | null>(null);
   const [recheckResult, setRecheckResult] = useState<any | null>(null);
 
   const extracted = parseExtracted(payment.extractedData);
 
+  // Sanitized attempt history - no raw OCR text, no secrets (the server
+  // strips both; see ocrAttemptService.sanitizeSnapshot).
+  const attemptsQuery = (trpc as any).admin?.orders?.ocrAttempts?.useQuery?.(
+    { paymentId: payment.id },
+    { enabled: Boolean(payment.id) }
+  );
+
   const recheck = (trpc as any).admin?.orders?.recheckOcr?.useMutation?.({
     onSuccess: (data: any) => {
       setRecheckResult(data);
       setRecheckError(null);
+      attemptsQuery?.refetch?.();
       onRecheckComplete?.();
     },
     onError: (error: any) => {
@@ -146,11 +176,23 @@ export function OCRResultPanel({ payment, onRecheckComplete }: OCRResultPanelPro
     extracted: extracted as OcrPanelInput["extracted"],
     expectedAmount: payment.order?.totalAmount != null ? Number(payment.order.totalAmount) : null,
     slipSubmittedAt: payment.slipSubmittedAt ?? null,
-    allowedWindowMinutes: 120,
+    // The EFFECTIVE window the server actually verified against. Previously
+    // hard-coded to 120, which disagreed with any deployment configured
+    // differently and could show PASS for a slip the server sent to review.
+    allowedWindowMinutes:
+      recheckResult?.effectiveWindowMinutes ?? ocrMeta?.effectiveWindowMinutes ?? null,
     legacyFingerprint: payment.fingerprint,
     providerDiagnostic: recheckResult?.providerDiagnostic ?? null,
     rootCauseSummary: recheckResult?.rootCauseSummary ?? null,
     category: recheckResult?.category ?? null,
+    // Server-derived duplicate finding. Never inferred from a legacy
+    // fingerprint - an old opaque fingerprint is shown as LEGACY / WEAK.
+    duplicate: recheckResult?.duplicate ?? ocrMeta?.duplicate ?? null,
+    // Server verdict is authoritative; the model falls back to display-only
+    // local grading solely for rows the server could not grade.
+    serverRecipient: ocrMeta?.recipient ?? null,
+    fileIdentifierStatus:
+      recheckResult?.fileIdentifierStatus ?? ocrMeta?.fileIdentifierStatus ?? null,
   };
 
   const verdict = deriveVerdict(model);
@@ -345,6 +387,45 @@ export function OCRResultPanel({ payment, onRecheckComplete }: OCRResultPanelPro
           )}
         </div>
       </div>
+
+      {/* OCR attempt history - the real sequence, automatic runs included */}
+      {Array.isArray(attemptsQuery?.data) && attemptsQuery.data.length > 0 && (
+        <div>
+          <p className="text-sm font-semibold text-slate-700 mb-2">OCR Attempt History</p>
+          <div className="bg-white rounded border border-blue-200 divide-y divide-slate-100">
+            {attemptsQuery.data.map((a: any) => (
+              <div key={`${a.attemptNo}-${a.startedAt}`} className="p-2.5 text-sm">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-semibold text-slate-800">#{a.attemptNo}</span>
+                  <Badge className="text-[10px] bg-slate-100 text-slate-700">
+                    {String(a.trigger).replace(/_/g, " ")}
+                  </Badge>
+                  <Badge
+                    className={`text-[10px] ${
+                      a.result === "auto_approved"
+                        ? "bg-green-100 text-green-800"
+                        : a.result === "technical_failure"
+                          ? "bg-red-100 text-red-800"
+                          : "bg-yellow-100 text-yellow-800"
+                    }`}
+                  >
+                    {String(a.result).replace(/_/g, " ")}
+                  </Badge>
+                  {a.reviewReason && (
+                    <span className="text-xs text-slate-600">{a.reviewReason}</span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {a.startedAt ? new Date(a.startedAt).toLocaleString() : "—"}
+                  {a.reviewCategory === "TECHNICAL" && a.providerHttpStatus
+                    ? ` · HTTP ${a.providerHttpStatus} · ${a.providerAttemptCount} attempt(s)`
+                    : ""}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Raw JSON - last, and never required to understand the outcome */}
       {extracted && (

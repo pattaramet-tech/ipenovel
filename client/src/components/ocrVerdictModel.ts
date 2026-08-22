@@ -65,7 +65,21 @@ export interface OcrPanelInput {
     strength?: "strong" | "weak";
     matchedSourceType?: "order_payment" | "wallet_topup";
     matchedSourceId?: number;
+    /** True when found in pre-migration approved records, not the registry. */
+    viaLegacyCompatibility?: boolean;
   } | null;
+  /**
+   * The server's recipient verdict (verifySlipData's breakdown). When present
+   * it is authoritative and is rendered verbatim; the local grading is only a
+   * legacy-row display fallback.
+   */
+  serverRecipient?: {
+    recipientVerified?: boolean;
+    recipientEvidenceType?: string;
+    recipientEvidenceStrength?: string;
+  } | null;
+  /** Admin-safe exact-file identifier status. The hash itself is never sent. */
+  fileIdentifierStatus?: "AVAILABLE" | "MATCH" | "UNAVAILABLE" | null;
   providerDiagnostic?: {
     code?: string;
     providerHttpStatus?: number;
@@ -195,7 +209,9 @@ export function describeDuplicate(input: OcrPanelInput): DuplicatePresentation {
 
     return {
       strength: "strong",
-      headline: "Confirmed duplicate - a strong identifier matched an earlier submission.",
+      headline: dup.viaLegacyCompatibility
+        ? "Confirmed duplicate - matched an approved record that predates the claim registry."
+        : "Confirmed duplicate - a strong identifier matched an earlier submission.",
       matchedLabel: matched?.label,
       matchedHref: matched?.href,
     };
@@ -358,7 +374,18 @@ export function buildChecklist(input: OcrPanelInput): ChecklistRow[] {
   rows.push({
     key: "duplicate_file",
     label: "Exact File Duplicate",
-    state: input.reviewReason === "DUPLICATE_FILE" ? "fail" : "not_evaluated",
+    state:
+      input.reviewReason === "DUPLICATE_FILE" || input.fileIdentifierStatus === "MATCH"
+        ? "fail"
+        : input.fileIdentifierStatus === "AVAILABLE"
+          ? "pass"
+          : "not_evaluated",
+    // The raw hash is never shown - it fingerprints a customer's payment
+    // document and would leak into screenshots and support tickets.
+    detail:
+      input.fileIdentifierStatus === "UNAVAILABLE"
+        ? "Exact File Identifier: UNAVAILABLE"
+        : `Exact File Identifier: ${input.fileIdentifierStatus ?? "UNAVAILABLE"}`,
   });
 
   rows.push({
@@ -435,15 +462,31 @@ export const MERCHANT_EXPECTATIONS = {
 };
 
 /**
- * Grades recipient evidence by STRENGTH rather than requiring one fixed
- * field. Different Thai banks print different things - a KBank transfer slip
- * and a bill-payment slip expose different identifiers - so demanding a
- * merchant code from every bank would fail legitimate slips.
+ * Renders the SERVER's recipient verdict when one is present.
  *
- * An exact strong-identifier match outranks a fuzzy shop-name match, and
- * insufficient evidence is a WARNING routed to review, never a rejection.
+ * The financial authority is server-side (verifySlipData -> verifyRecipient);
+ * this function must never be the thing that decides whether the money
+ * reached IpeNovel. When the server verdict is available on the breakdown it
+ * is displayed verbatim. The local grading below is a DISPLAY-ONLY fallback
+ * for legacy rows stored before the server gate existed, and is deliberately
+ * incapable of authorising anything - nothing reads its result to approve.
  */
 export function describeRecipient(input: OcrPanelInput): RecipientVerification {
+  const server = input.serverRecipient;
+  if (server && server.recipientEvidenceType) {
+    const strength = server.recipientEvidenceStrength;
+    return {
+      verified: server.recipientVerified === true,
+      evidenceType: server.recipientEvidenceType as RecipientEvidenceType,
+      state: !server.recipientVerified ? "warning" : strength === "strong" ? "pass" : "warning",
+      detail: !server.recipientVerified
+        ? "Server could not confirm the recipient. Check the slip image manually."
+        : strength === "strong"
+          ? "Verified by exact merchant/biller code (server-verified)."
+          : "Verified by approved shop/receiver name only - weaker than a code match (server-verified).",
+    };
+  }
+
   const e = input.extracted;
 
   if (e?.merchantTransactionCode === MERCHANT_EXPECTATIONS.merchantTransactionCode) {
