@@ -372,3 +372,47 @@ export function hasStrongIdentifier(identifiers: SlipStrongIdentifiers): boolean
     identifiers.referenceHash || identifiers.fileHash || identifiers.qrPayloadHash
   );
 }
+
+/**
+ * The RAW, case-preserving reference to hand to the legacy compatibility
+ * lookup - and ONLY to that lookup.
+ *
+ * Pre-migration rows stored the reference upper-cased. `hashSlipReference` is
+ * deliberately case-preserving, so a replay whose fresh OCR keeps the original
+ * mixed case cannot match such a row by hash alone. Giving the lookup the raw
+ * value lets it also try the upper-cased form and recognise the historical
+ * approval.
+ *
+ * CRITICAL: this value never influences the CLAIM. The claim always uses the
+ * case-preserving `referenceHash`; this only widens legacy DETECTION, and a
+ * false positive there routes to human review rather than blocking anything.
+ *
+ * Always derived server-side from persisted evidence - never accepted from a
+ * request. Returns undefined when there is no usable evidence.
+ */
+export function getRawReferenceForLegacyLookup(
+  extractedDataJson: string | null | undefined
+): string | undefined {
+  if (!extractedDataJson) return undefined;
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(extractedDataJson);
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object") return undefined;
+
+  // Prefer the value that preserved its original casing.
+  if (typeof parsed.referenceRaw === "string" && parsed.referenceRaw.trim().length >= 4) {
+    return parsed.referenceRaw.trim();
+  }
+
+  // Fall back to the legacy field. Its casing may already be lost, which is
+  // exactly why the lookup tries both forms - no casing is invented here.
+  if (typeof parsed.reference === "string" && parsed.reference.trim().length >= 4) {
+    return parsed.reference.trim();
+  }
+
+  return undefined;
+}

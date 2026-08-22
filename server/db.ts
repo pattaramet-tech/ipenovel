@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   deriveStrongIdentifiersFromExtractedData,
+  getRawReferenceForLegacyLookup,
   hasStrongIdentifier,
 } from "./services/slipIdentifierService";
 import { claimSlip, describeClaimFailure } from "./services/slipClaimService";
@@ -3961,9 +3962,10 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
     // identifier even when OCR fails, so reaching this branch means a legacy
     // row or unreadable bytes: a deliberate human decision, not a default.
     {
-      const { identifiers, semanticFingerprint } = deriveStrongIdentifiersFromExtractedData(
-        topup.extractedData as string | null
-      );
+      // Reloaded inside the transaction; nothing from the admin's browser.
+      const persistedExtractedData = topup.extractedData as string | null;
+      const { identifiers, semanticFingerprint } =
+        deriveStrongIdentifiersFromExtractedData(persistedExtractedData);
 
       if (!hasStrongIdentifier(identifiers)) {
         throw new WalletSlipClaimError(
@@ -3981,6 +3983,9 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
           userId: topup.userId,
           identifiers,
           semanticFingerprint,
+          // Legacy lookup only - the claim itself still uses the
+          // case-preserving hash derived above.
+          referenceRawForLegacyLookup: getRawReferenceForLegacyLookup(persistedExtractedData),
         },
         tx
       );
@@ -5925,6 +5930,7 @@ export async function approveWalletTopupWithOCR(
       const { identifiers, semanticFingerprint } = deriveStrongIdentifiersFromExtractedData(
         ocrData.extractedData
       );
+      const autoRawReference = getRawReferenceForLegacyLookup(ocrData.extractedData);
 
       if (!hasStrongIdentifier(identifiers)) {
         throw new WalletSlipClaimError(
@@ -5940,6 +5946,8 @@ export async function approveWalletTopupWithOCR(
           userId: topup.userId,
           identifiers,
           semanticFingerprint,
+          // Legacy lookup only - never used for the claim itself.
+          referenceRawForLegacyLookup: autoRawReference,
         },
         tx
       );

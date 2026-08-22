@@ -14,7 +14,10 @@ import * as orderService from "./orderService";
 import { sendOCRReviewNotification } from "./discordNotificationService";
 import { R2PrivateStorageError } from "./r2PrivateStorage";
 import { prepareSlipImageForOcr } from "./ocrImageInputService";
-import { deriveStrongIdentifiersFromExtractedData } from "./slipIdentifierService";
+import {
+  deriveStrongIdentifiersFromExtractedData,
+  getRawReferenceForLegacyLookup,
+} from "./slipIdentifierService";
 import { claimSlip, describeClaimFailure } from "./slipClaimService";
 import { computeSlipFileHash } from "./slipFileHashService";
 import { describeProviderFailure, type ProviderDiagnostic } from "./ocrDiagnosticsService";
@@ -301,11 +304,11 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
 
     try {
       await dbConnection.transaction(async (tx: any) => {
-        const { identifiers, semanticFingerprint } = deriveStrongIdentifiersFromExtractedData(
-          verificationResult.extractedData
-            ? JSON.stringify(verificationResult.extractedData)
-            : null
-        );
+        const extractedJson = verificationResult.extractedData
+          ? JSON.stringify(verificationResult.extractedData)
+          : null;
+        const { identifiers, semanticFingerprint } =
+          deriveStrongIdentifiersFromExtractedData(extractedJson);
 
         const claim = await claimSlip(
           {
@@ -314,6 +317,11 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
             userId: order.userId,
             identifiers,
             semanticFingerprint,
+            // Server-derived raw reference, for the LEGACY LOOKUP ONLY. Lets a
+            // mixed-case read match a historical row that kept only the
+            // upper-cased reference. The claim itself still uses the
+            // case-preserving hash above.
+            referenceRawForLegacyLookup: getRawReferenceForLegacyLookup(extractedJson),
           },
           tx
         );

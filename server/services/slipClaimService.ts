@@ -44,6 +44,7 @@ import { paymentSlipClaims } from "../../drizzle/schema";
 import { eq, or } from "drizzle-orm";
 import { findLegacyApprovedDuplicate } from "./legacySlipCompatibilityService";
 import { hashSlipReference } from "./slipIdentifierService";
+import { isLegacyScanRequired } from "./slipBackfillStateService";
 import type { SlipStrongIdentifiers, StrongDuplicateKind } from "./slipIdentifierService";
 
 export type SlipClaimSourceType = "order_payment" | "wallet_topup";
@@ -225,7 +226,16 @@ export async function claimSlip(
   // This runs inside the caller's transaction and is read-only. Once the
   // backfill has populated claims for historical rows this becomes redundant
   // belt-and-braces, but until then the registry must not be sole authority.
-  if (!request.skipLegacyCheck) {
+  // The scan is skipped once a verified backfill has written a claim for every
+  // historical approval - at that point the UNIQUE registry is sufficient and
+  // this O(N) scan is pure cost on every approval. The switch is read from the
+  // DATABASE and fails safe: any read problem, malformed value, or missing
+  // record keeps the scan enabled.
+  const legacyScanRequired = request.skipLegacyCheck
+    ? false
+    : await isLegacyScanRequired();
+
+  if (legacyScanRequired) {
     try {
       const legacyMatch = await findLegacyApprovedDuplicate(
         {

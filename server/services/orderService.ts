@@ -4,6 +4,7 @@ import { ApprovalService } from "./approvalService";
 import { normalizeMoneyAmount, formatMoney } from "../helpers/moneyNormalizer";
 import {
   deriveStrongIdentifiersFromExtractedData,
+  getRawReferenceForLegacyLookup,
   hasStrongIdentifier,
 } from "./slipIdentifierService";
 import { claimSlip, describeClaimFailure } from "./slipClaimService";
@@ -337,9 +338,10 @@ async function approvePaymentInTx(paymentId: number, approvedBy: string, adminLa
   //
   // Nothing from the admin's browser is trusted: the OCR panel it renders is
   // display state, and `payment` was reloaded fresh above.
-  const { identifiers, semanticFingerprint } = deriveStrongIdentifiersFromExtractedData(
-    payment.extractedData as string | null
-  );
+  // Reloaded server-side above; nothing here comes from the admin's browser.
+  const persistedExtractedData = payment.extractedData as string | null;
+  const { identifiers, semanticFingerprint } =
+    deriveStrongIdentifiersFromExtractedData(persistedExtractedData);
 
   if (!hasStrongIdentifier(identifiers)) {
     // A payment with NO strong identifier cannot be protected against replay
@@ -370,6 +372,8 @@ async function approvePaymentInTx(paymentId: number, approvedBy: string, adminLa
       userId: order.userId,
       identifiers,
       semanticFingerprint,
+      // Derived from the PERSISTED extraction, for the legacy lookup only.
+      referenceRawForLegacyLookup: getRawReferenceForLegacyLookup(persistedExtractedData),
     },
     tx
   );
