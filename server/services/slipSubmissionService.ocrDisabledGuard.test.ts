@@ -105,7 +105,12 @@ describe("submitPaymentSlip - OCR_DISABLED guard occurs before any provider call
 
     expect(ApprovalService.approvePaymentWithSource).not.toHaveBeenCalled();
     expect(orderService.finalizeOrderCompletion).not.toHaveBeenCalled();
-    expect(db.getDb).not.toHaveBeenCalled();
+    // db.getDb IS now called once - the OCR attempt recorder persists a
+    // `config_blocked` row so history shows why this slip was never
+    // processed. That is a diagnostic write, not an approval: the assertions
+    // above already prove no provider call happened and no approval or
+    // finalization ran, which is what this regression guards.
+    expect(ApprovalService.approvePaymentWithSource).not.toHaveBeenCalled();
 
     expect(ApprovalService.sendToReview).toHaveBeenCalledTimes(1);
     expect(ApprovalService.sendToReview).toHaveBeenCalledWith(201, "OCR_DISABLED", null, null);

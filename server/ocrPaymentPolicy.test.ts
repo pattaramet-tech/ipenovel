@@ -86,6 +86,10 @@ function extracted(overrides: Partial<ExtractedSlipData> = {}): ExtractedSlipDat
     detectedBank: "KBANK",
     confidence: 99,
     confidenceKnown: true,
+    // Recipient evidence is part of a COMPLETE slip: verifySlipData now
+    // refuses to auto-approve without proof the money reached IpeNovel, so a
+    // fixture lacking it is not a "good slip" any more.
+    merchantCode: "KB000002283068",
     ...overrides,
   };
 }
@@ -139,6 +143,112 @@ describe("unknown confidence must not auto-approve", () => {
   });
 });
 
+// ─── Server-side recipient gate ───────────────────────────────────────────
+
+describe("recipient verification is a SERVER gate, not just a UI label", () => {
+  it("an exact SCB merchant/biller slip passes", () => {
+    const result = verifySlipData(
+      extracted({
+        merchantCode: undefined,
+        merchantTransactionCode: "KPS004KB000002283068",
+        receiverAccountOrId: "010753600031501",
+      }),
+      context,
+      new Set(),
+      new Set()
+    );
+    expect(result.breakdown?.recipientVerified).toBe(true);
+    expect(result.breakdown?.recipientEvidenceStrength).toBe("strong");
+    expect(result.isAutoApproved).toBe(true);
+  });
+
+  it("an exact KTB merchant code passes", () => {
+    const result = verifySlipData(
+      extracted({ detectedBank: "KTB", merchantCode: "KB000002283068" }),
+      context,
+      new Set(),
+      new Set()
+    );
+    expect(result.breakdown?.recipientEvidenceType).toBe("merchant_code");
+    expect(result.isAutoApproved).toBe(true);
+  });
+
+  it("a biller ID alone is strong evidence - bill-payment slips print no merchant code", () => {
+    const result = verifySlipData(
+      extracted({ merchantCode: undefined, receiverAccountOrId: "010753600031501" }),
+      context,
+      new Set(),
+      new Set()
+    );
+    expect(result.breakdown?.recipientEvidenceType).toBe("biller_id");
+    expect(result.isAutoApproved).toBe(true);
+  });
+
+  it("a KBank transfer with the Ipe Novel alias and NO merchant code is a valid fallback", () => {
+    const result = verifySlipData(
+      extracted({ merchantCode: undefined, shopName: "Ipe Novel" }),
+      context,
+      new Set(),
+      new Set()
+    );
+    expect(result.breakdown?.recipientVerified).toBe(true);
+    expect(result.breakdown?.recipientEvidenceStrength).toBe("fallback");
+    expect(result.isAutoApproved).toBe(true);
+  });
+
+  it("a receiver name alias also qualifies as the documented fallback", () => {
+    const result = verifySlipData(
+      extracted({ merchantCode: undefined, receiverName: "IPENOVEL" }),
+      context,
+      new Set(),
+      new Set()
+    );
+    expect(result.breakdown?.recipientEvidenceType).toBe("receiver_name");
+    expect(result.isAutoApproved).toBe(true);
+  });
+
+  it("an UNRELATED receiver can never auto-approve", () => {
+    const result = verifySlipData(
+      extracted({ merchantCode: undefined, shopName: "Some Other Shop", receiverName: "นาย ก" }),
+      context,
+      new Set(),
+      new Set()
+    );
+    expect(result.isAutoApproved).toBe(false);
+    expect(result.reviewReason).toBe("RECIPIENT_NOT_VERIFIED");
+    expect(result.status).toBe("pending_review");
+  });
+
+  it("a WRONG merchant code is not accepted as evidence", () => {
+    const result = verifySlipData(
+      extracted({ merchantCode: "KB999999999999" }),
+      context,
+      new Set(),
+      new Set()
+    );
+    expect(result.isAutoApproved).toBe(false);
+    expect(result.reviewReason).toBe("RECIPIENT_NOT_VERIFIED");
+  });
+
+  it("missing recipient evidence entirely -> needs review, never rejection", () => {
+    const result = verifySlipData(
+      extracted({ merchantCode: undefined }),
+      context,
+      new Set(),
+      new Set()
+    );
+    expect(result.reviewReason).toBe("RECIPIENT_NOT_VERIFIED");
+    expect(result.status).toBe("pending_review");
+    expect(result.status).not.toBe("rejected" as never);
+  });
+
+  it("exposes the graded evidence fields for the UI to render", () => {
+    const result = verifySlipData(extracted(), context, new Set(), new Set());
+    expect(result.breakdown?.recipientEvidenceType).toBeDefined();
+    expect(result.breakdown?.recipientEvidenceStrength).toBeDefined();
+  });
+});
+
 describe("weak duplicate evidence is never a confirmed duplicate", () => {
   it("a fingerprint-only match reports WEAK_DUPLICATE_RISK, not DUPLICATE_FINGERPRINT", () => {
     const data = extracted();
@@ -160,5 +270,50 @@ describe("weak duplicate evidence is never a confirmed duplicate", () => {
       new Set()
     );
     expect(result.breakdown?.duplicateEvidenceStrength).toBe("strong");
+  });
+});
+
+// ─── Manual approval may not silently bypass anti-replay ─────────────────
+
+describe("normal Admin Approve refuses a payment with NO strong identifier", () => {
+  const orderCode = fs
+    .readFileSync(path.resolve(REPO_ROOT, "server/services/orderService.ts"), "utf-8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ 	]*\/\/.*$/gm, "");
+
+  it("throws NO_STRONG_IDENTIFIER instead of proceeding", () => {
+    expect(orderCode).toMatch(/hasStrongIdentifier\(identifiers\)/);
+    expect(orderCode).toMatch(/NO_STRONG_IDENTIFIER/);
+  });
+
+  it("the claim is no longer conditional on an identifier existing", () => {
+    // Previously the whole claim block was wrapped in `if (hasStrongIdentifier)`,
+    // so a payment without one approved with no anti-replay check at all.
+    expect(orderCode).not.toMatch(/if \(hasStrongIdentifier\(identifiers\)\) \{[\s\S]*claimSlip/);
+  });
+
+  it("still claims atomically when an identifier IS present", () => {
+    expect(orderCode).toMatch(/claimSlip\s*\(/);
+    expect(orderCode).toMatch(/SLIP_ALREADY_CLAIMED/);
+  });
+
+  it("points the admin at recheck / the legacy override rather than approving", () => {
+    expect(orderCode).toMatch(/Recheck OCR/i);
+    expect(orderCode).toMatch(/legacy override/i);
+  });
+});
+
+describe("wallet manual approval applies the same policy", () => {
+  const dbCode = fs
+    .readFileSync(path.resolve(REPO_ROOT, "server/db.ts"), "utf-8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ 	]*\/\/.*$/gm, "");
+
+  it("throws NO_STRONG_IDENTIFIER for an unprotectable top-up", () => {
+    expect(dbCode).toMatch(/NO_STRONG_IDENTIFIER/);
+  });
+
+  it("never silently approves without a claim attempt", () => {
+    expect(dbCode).toMatch(/claimSlip\s*\(/);
   });
 });

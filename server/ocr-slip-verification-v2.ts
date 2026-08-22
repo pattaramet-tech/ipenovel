@@ -7,6 +7,10 @@ import {
   normalizeOcrTextForParsing,
   normalizeSlipReference,
 } from "./services/slipIdentifierService";
+import {
+  describeProviderFailure,
+  type ProviderDiagnostic,
+} from "./services/ocrDiagnosticsService";
 
 /**
  * OCR Slip Verification System — Production Hardened
@@ -37,7 +41,106 @@ const MERCHANT_CONFIG = {
   ],
   merchantCode: "KB000002283068",
   merchantTransactionCode: "KPS004KB000002283068",
+  /** Bill-payment slips (SCB/KTB) print this instead of a merchant code. */
+  billerId: "010753600031501",
 };
+
+export type RecipientEvidenceType =
+  | "merchant_transaction_code"
+  | "merchant_code"
+  | "biller_id"
+  | "shop_alias"
+  | "receiver_name"
+  | "insufficient";
+
+export type RecipientEvidenceStrength = "strong" | "fallback" | "none";
+
+export interface RecipientVerificationResult {
+  recipientVerified: boolean;
+  recipientEvidenceType: RecipientEvidenceType;
+  recipientEvidenceStrength: RecipientEvidenceStrength;
+}
+
+/**
+ * SERVER-SIDE recipient verification - the authority for whether the money
+ * actually reached IpeNovel.
+ *
+ * This deliberately lives beside verifySlipData rather than in the admin
+ * panel: the panel is a renderer, and a financial gate implemented only in
+ * client constants would let auto-approval proceed without ever proving the
+ * recipient. The UI now renders THIS result.
+ *
+ * Evidence is GRADED rather than requiring one identical field from every
+ * bank, because Thai banks genuinely print different things - a KBank
+ * transfer slip carries a receiver name and no merchant code, while an
+ * SCB/KTB bill-payment slip carries merchant/biller codes. Demanding a
+ * merchant code from every bank would reject legitimate transfers.
+ *
+ *   strong   - an exact match on merchantTransactionCode, merchantCode or
+ *              billerId. Unambiguous: these identify our merchant account.
+ *   fallback - an approved shop/receiver alias ("Ipe Novel"/"Ipenovel").
+ *              Documented, weaker, and sufficient only because plain
+ *              transfer slips expose nothing stronger.
+ *   none     - insufficient evidence -> RECIPIENT_NOT_VERIFIED -> review.
+ *
+ * Never rejects. Insufficient evidence routes to a human.
+ */
+export function verifyRecipient(extracted: ExtractedSlipData): RecipientVerificationResult {
+  if (extracted.merchantTransactionCode === MERCHANT_CONFIG.merchantTransactionCode) {
+    return {
+      recipientVerified: true,
+      recipientEvidenceType: "merchant_transaction_code",
+      recipientEvidenceStrength: "strong",
+    };
+  }
+
+  if (extracted.merchantCode === MERCHANT_CONFIG.merchantCode) {
+    return {
+      recipientVerified: true,
+      recipientEvidenceType: "merchant_code",
+      recipientEvidenceStrength: "strong",
+    };
+  }
+
+  if (extracted.receiverAccountOrId === MERCHANT_CONFIG.billerId) {
+    return {
+      recipientVerified: true,
+      recipientEvidenceType: "biller_id",
+      recipientEvidenceStrength: "strong",
+    };
+  }
+
+  // Fallback: an approved shop/receiver alias. Compared case-insensitively
+  // on a whitespace-collapsed value, because OCR spacing around Thai and
+  // Latin names is not stable.
+  const normalize = (value?: string) =>
+    (value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+  const aliases = MERCHANT_CONFIG.shopNameAliases.map(normalize).filter(Boolean);
+
+  const shopName = normalize(extracted.shopName);
+  if (shopName && aliases.some((alias) => shopName.includes(alias))) {
+    return {
+      recipientVerified: true,
+      recipientEvidenceType: "shop_alias",
+      recipientEvidenceStrength: "fallback",
+    };
+  }
+
+  const receiverName = normalize(extracted.receiverName);
+  if (receiverName && aliases.some((alias) => receiverName.includes(alias))) {
+    return {
+      recipientVerified: true,
+      recipientEvidenceType: "receiver_name",
+      recipientEvidenceStrength: "fallback",
+    };
+  }
+
+  return {
+    recipientVerified: false,
+    recipientEvidenceType: "insufficient",
+    recipientEvidenceStrength: "none",
+  };
+}
 
 // ─── Thai month mapping ───────────────────────────────────────────────────────
 const THAI_MONTHS: Record<string, number> = {
@@ -187,6 +290,10 @@ export interface VerificationBreakdown {
    * presented to an admin as a confirmed duplicate.
    */
   duplicateEvidenceStrength?: "strong" | "weak";
+  /** SERVER-side proof the money reached IpeNovel. See verifyRecipient. */
+  recipientVerified?: boolean;
+  recipientEvidenceType?: RecipientEvidenceType;
+  recipientEvidenceStrength?: RecipientEvidenceStrength;
   /** False when no confidence was reported at all (distinct from a low one). */
   confidenceKnown?: boolean;
   finalDecision: "approved" | "pending_review";
@@ -217,6 +324,12 @@ export interface ParseSlipImageResult {
   technicalError?: boolean; // true if OCR/LLM technical error occurred
   /** Stable technical failure code (see OcrTechnicalFailureCode). */
   technicalErrorCode?: string;
+  /**
+   * Sanitized provider metadata for the failure - HTTP status, runtime mode
+   * and attempt count only. Present whenever technicalError is true so the
+   * caller can record and display WHY, instead of "an OCR error occurred".
+   */
+  providerDiagnostic?: ProviderDiagnostic;
 }
 
 // ─── Fenced JSON parsing with trailing text support ────────────────────────────
@@ -1276,6 +1389,26 @@ export function verifySlipData(
     return result;
   }
 
+  // ===== RECIPIENT GATE =====================================================
+
+  // Proves the money actually reached IpeNovel before any auto-approval.
+  // Previously nothing on the server checked this: a slip could match on
+  // amount, date and reference while having been paid to someone else
+  // entirely, and only the admin panel described the recipient - too late
+  // to stop auto-approval.
+  const recipient = verifyRecipient(extracted);
+  breakdown.recipientVerified = recipient.recipientVerified;
+  breakdown.recipientEvidenceType = recipient.recipientEvidenceType;
+  breakdown.recipientEvidenceStrength = recipient.recipientEvidenceStrength;
+
+  if (!recipient.recipientVerified) {
+    result.reviewReason = "RECIPIENT_NOT_VERIFIED";
+    breakdown.failureReason =
+      "Could not confirm from the slip that this payment was made to IpeNovel " +
+      "(no matching merchant code, biller ID, or approved shop/receiver name).";
+    return result;
+  }
+
   // ===== CONFIDENCE AND STRUCTURED DATA GATE ================================
 
   // Unknown != low. A slip whose confidence was never reported has no
@@ -1359,10 +1492,13 @@ export interface ParseSlipImageDeps {
 async function invokeLLMWithOcrRetry(
   params: InvokeParams,
   invokeLLMFn: InvokeLLMFn,
-  sleepFn: SleepFn
+  sleepFn: SleepFn,
+  /** Mutated so the caller learns how many provider calls actually happened. */
+  attemptCounter?: { count: number }
 ): Promise<InvokeResult> {
   for (let attempt = 1; attempt <= MAX_LLM_ATTEMPTS; attempt++) {
     try {
+      if (attemptCounter) attemptCounter.count = attempt;
       return await invokeLLMFn(params);
     } catch (error) {
       const isRetryableTransientFailure =
@@ -1392,6 +1528,10 @@ export async function parseSlipImage(
 ): Promise<ParseSlipImageResult> {
   const invokeLLMFn = deps.invokeLLMFn ?? invokeLLM;
   const sleepFn = deps.sleepFn ?? defaultSleep;
+  // Tracks how many provider invocations actually occurred so a
+  // 503-after-3-retries can be told apart from a single blip. Without this
+  // the caller could only ever report "one unspecified attempt".
+  const attemptCounter = { count: 0 };
   try {
     const response = await invokeLLMWithOcrRetry({
       messages: [
@@ -1428,7 +1568,7 @@ Do NOT translate or interpret — just extract the raw text.`,
           ],
         },
       ],
-    }, invokeLLMFn, sleepFn);
+    }, invokeLLMFn, sleepFn, attemptCounter);
 
     const content = response.choices[0]?.message?.content;
     if (typeof content !== "string") {
@@ -1468,12 +1608,33 @@ Do NOT translate or interpret — just extract the raw text.`,
       warnings,
     };
   } catch (error) {
-    console.error("[OCR] Error parsing slip image:", error);
+    // Sanitized provider metadata is preserved instead of being flattened to
+    // a bare `technicalError: true`. Previously an LLMInvokeError's HTTP
+    // status, runtime mode and retry count were all discarded here, so every
+    // failure - a 503 after three retries, a 401 misconfiguration, a rate
+    // limit - was reported and recorded identically as one unspecified
+    // error, and an admin could not tell a provider outage from a bad slip.
+    //
+    // describeProviderFailure returns only a fixed code, an HTTP status, a
+    // runtime mode and an attempt count. It never carries the endpoint, the
+    // API key, an Authorization header, the upstream body, a signed URL, or
+    // base64 image data - see its own tests.
+    const diagnostic = describeProviderFailure(error, Math.max(1, attemptCounter.count));
+
+    // Logged with the safe code only, never the raw error object (whose
+    // message may embed a URL or credential).
+    console.error(
+      `[OCR] slip parse failed: ${diagnostic.code} status=${diagnostic.providerHttpStatus ?? "n/a"} attempts=${diagnostic.providerAttemptCount}`
+    );
+
     return {
       text: "",
       ocrConfidence: 0,
+      confidenceKnown: false,
       warnings: ["Error parsing image - check URL and image format"],
       technicalError: true, // Flag OCR/LLM technical failure
+      technicalErrorCode: diagnostic.code,
+      providerDiagnostic: diagnostic,
     };
   }
 }

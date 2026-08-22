@@ -16,6 +16,9 @@ import { R2PrivateStorageError } from "./r2PrivateStorage";
 import { prepareSlipImageForOcr } from "./ocrImageInputService";
 import { deriveStrongIdentifiersFromExtractedData } from "./slipIdentifierService";
 import { claimSlip, describeClaimFailure } from "./slipClaimService";
+import { computeSlipFileHash } from "./slipFileHashService";
+import { describeProviderFailure, type ProviderDiagnostic } from "./ocrDiagnosticsService";
+import { recordOcrAttempt } from "./ocrAttemptService";
 
 /**
  * Thrown to abort an in-flight auto-approval transaction when the slip's
@@ -108,6 +111,20 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
 
   let verificationResult: any;
   let shouldApprove = false;
+  const ocrStartedAt = new Date();
+  let providerDiagnostic: ProviderDiagnostic | undefined;
+
+  // ── EXACT-FILE IDENTIFIER ───────────────────────────────────────────────
+  // Computed from the bytes actually stored in the private bucket, BEFORE
+  // and independently of any OCR call, so a slip still carries a strong
+  // identifier when OCR fails completely (provider outage, rate limit,
+  // unreadable image). Without it such a slip would have no identifier at
+  // all and nothing could stop it being submitted again.
+  //
+  // Never client-supplied: computeSlipFileHash takes only the server-held
+  // storage reference, so there is no parameter through which a caller could
+  // inject a forged hash.
+  const slipFileHash = await computeSlipFileHash(input.slipImageUrl);
 
   if (ocrEnabled) {
     // OCR is enabled: run OCR processing with error handling
@@ -143,43 +160,69 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
 
       // Check if OCR/LLM technical error occurred
       if (slipOcrResult.technicalError) {
-        console.error(`[OCR] Technical error detected for order ${order.id}`);
+        // The sanitized provider diagnostic (HTTP status, runtime mode,
+        // attempt count) is preserved rather than collapsed into a generic
+        // OCR_PROCESSING_ERROR, so an admin can tell a 503-after-3-retries
+        // from a 401 misconfiguration from a bad slip.
+        providerDiagnostic = slipOcrResult.providerDiagnostic;
+        const reviewReason = slipOcrResult.technicalErrorCode ?? "OCR_PROCESSING_ERROR";
+        console.error(
+          `[OCR] technical failure for order ${order.id}: ${reviewReason} status=${providerDiagnostic?.providerHttpStatus ?? "n/a"} attempts=${providerDiagnostic?.providerAttemptCount ?? 1}`
+        );
         verificationResult = {
           isAutoApproved: false,
           isShadowMode: false,
-          reviewReason: "OCR_PROCESSING_ERROR",
+          reviewReason,
           ocrConfidence: 0,
           detectedBank: null,
-          extractedData: null,
-          breakdown: { reason: "OCR processing failed. Slip sent to manual review." },
+          // Even with no OCR result, the exact-file identifier is retained so
+          // this slip is still anti-replay protected through manual review.
+          extractedData: slipFileHash ? { fileHash: slipFileHash } : null,
+          breakdown: { reason: providerDiagnostic?.message ?? "OCR processing failed. Slip sent to manual review." },
           duplicateStatus: {
             isDuplicateReference: false,
             isDuplicateFingerprint: false,
           },
           ocrDecision: "needs_review",
           fingerprint: null,
+          providerDiagnostic,
         };
         shouldApprove = false;
       } else {
         // Process slip verification with staging enhancements (shadow mode, metrics)
         verificationResult = await processSlipVerificationStaging(payment.id, slipOcrResult);
+        // Attach the server-computed exact-file identifier so it reaches
+        // strong-identifier derivation and the claim registry.
+        if (slipFileHash && verificationResult.extractedData) {
+          verificationResult.extractedData = {
+            ...verificationResult.extractedData,
+            fileHash: slipFileHash,
+          };
+        }
         // Determine if we should actually approve or just simulate
         shouldApprove = verificationResult.isAutoApproved && !verificationResult.isShadowMode;
       }
     } catch (ocrError) {
-      // OCR technical error: send to manual review instead of crashing
-      console.error(`[OCR] Technical error processing slip for order ${order.id}:`, ocrError);
+      // OCR technical error: send to manual review instead of crashing.
+      // describeProviderFailure keeps only sanitized metadata - it never
+      // propagates the thrown error's own message, which may embed an
+      // endpoint or credential.
+      providerDiagnostic = describeProviderFailure(ocrError);
+      console.error(
+        `[OCR] technical failure for order ${order.id}: ${providerDiagnostic.code} status=${providerDiagnostic.providerHttpStatus ?? "n/a"} attempts=${providerDiagnostic.providerAttemptCount}`
+      );
       verificationResult = {
         isAutoApproved: false,
         isShadowMode: false,
-        reviewReason: "OCR_PROCESSING_ERROR",
+        reviewReason: providerDiagnostic.code,
         ocrConfidence: 0,
         detectedBank: null,
-        extractedData: null,
-        breakdown: { reason: "OCR processing failed. Slip sent to manual review." },
+        extractedData: slipFileHash ? { fileHash: slipFileHash } : null,
+        breakdown: { reason: providerDiagnostic.message },
         duplicateStatus: {
           isDuplicateReference: false,
         },
+        providerDiagnostic,
       };
       shouldApprove = false;
     }
@@ -471,6 +514,57 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
       });
     });
   }
+
+  // ── AUTOMATIC ATTEMPT HISTORY ───────────────────────────────────────────
+  // Records the INITIAL run - including the provider failure that usually
+  // caused the review in the first place. Previously only rechecks were
+  // recorded, so history began at attempt #2 and never showed why the slip
+  // needed reviewing. Best-effort by construction: recordOcrAttempt swallows
+  // its own errors, so diagnostics can never break money correctness.
+  await recordOcrAttempt({
+    subjectType: "order_payment",
+    subjectId: payment.id,
+    trigger: "automatic",
+    initiatedByUserId: null,
+    startedAt: ocrStartedAt,
+    stage: providerDiagnostic
+      ? providerDiagnostic.code === "OCR_IMAGE_PREPARATION_FAILED"
+        ? "image_preparation"
+        : "provider_call"
+      : "completed",
+    result: !ocrEnabled
+      ? "config_blocked"
+      : providerDiagnostic
+        ? "technical_failure"
+        : shouldApprove
+          ? "auto_approved"
+          : "needs_review",
+    reviewCategory: providerDiagnostic
+      ? "TECHNICAL"
+      : !ocrEnabled
+        ? "CONFIG"
+        : shouldApprove
+          ? null
+          : "DATA",
+    reviewReason: verificationResult?.reviewReason ?? null,
+    confidence:
+      verificationResult?.extractedData?.confidenceKnown === false
+        ? null
+        : (verificationResult?.ocrConfidence ?? null),
+    providerMode: providerDiagnostic?.providerMode ?? null,
+    providerHttpStatus: providerDiagnostic?.providerHttpStatus ?? null,
+    providerAttemptCount: providerDiagnostic?.providerAttemptCount ?? (ocrEnabled ? 1 : 0),
+    verificationSnapshot: JSON.stringify({
+      amountMatched: verificationResult?.breakdown?.amountMatched,
+      datePresent: verificationResult?.breakdown?.datePresent,
+      dateWithinWindow: verificationResult?.breakdown?.dateWithinWindow,
+      referencePresent: verificationResult?.breakdown?.referencePresent,
+      recipientVerified: verificationResult?.breakdown?.recipientVerified,
+      recipientEvidenceType: verificationResult?.breakdown?.recipientEvidenceType,
+      confidenceKnown: verificationResult?.breakdown?.confidenceKnown,
+      fileHashAvailable: Boolean(slipFileHash),
+    }),
+  });
 
   return {
     success: true,

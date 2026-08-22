@@ -20,6 +20,9 @@ import { getEffectiveOCRConfig } from "../_core/ocr-effective-config";
 import { formatMoney } from "../helpers/moneyNormalizer";
 import { sendOCRReviewNotification } from "./discordNotificationService";
 import { prepareSlipImageForOcr } from "./ocrImageInputService";
+import { computeSlipFileHash } from "./slipFileHashService";
+import { describeProviderFailure, type ProviderDiagnostic } from "./ocrDiagnosticsService";
+import { recordOcrAttempt } from "./ocrAttemptService";
 
 export interface WalletTopupSubmissionResult {
   topupId: number;
@@ -68,6 +71,49 @@ export async function submitWalletTopupSlip(
   const ocrConfig = await getEffectiveOCRConfig();
   const requestedAmountNum = parseFloat(requestedAmount);
 
+  // Declared here (not inside the try) so the attempt recorder below can see
+  // them on every exit path, including the technical-failure ones.
+  const walletOcrStartedAt = new Date();
+  let walletSlipFileHash: string | undefined;
+  let walletProviderDiagnostic: ProviderDiagnostic | undefined;
+
+  /**
+   * Appends this run to the persistent attempt history. Best-effort:
+   * recordOcrAttempt swallows its own errors, so diagnostics can never break
+   * wallet crediting. Records automatic runs that previously left no trace at
+   * all, so history reflects the real sequence rather than starting at the
+   * first admin recheck.
+   */
+  const recordWalletAttempt = async (
+    result: "auto_approved" | "needs_review" | "technical_failure" | "config_blocked",
+    reviewReason: string | null,
+    category: string | null,
+    confidence: number | null
+  ) => {
+    await recordOcrAttempt({
+      subjectType: "wallet_topup",
+      subjectId: topupId,
+      trigger: "automatic",
+      initiatedByUserId: null,
+      startedAt: walletOcrStartedAt,
+      stage: walletProviderDiagnostic
+        ? walletProviderDiagnostic.code === "OCR_IMAGE_PREPARATION_FAILED"
+          ? "image_preparation"
+          : "provider_call"
+        : "completed",
+      result,
+      reviewCategory: category,
+      reviewReason,
+      confidence,
+      providerMode: walletProviderDiagnostic?.providerMode ?? null,
+      providerHttpStatus: walletProviderDiagnostic?.providerHttpStatus ?? null,
+      providerAttemptCount: walletProviderDiagnostic?.providerAttemptCount ?? 1,
+      verificationSnapshot: JSON.stringify({
+        fileHashAvailable: Boolean(walletSlipFileHash),
+      }),
+    });
+  };
+
   // OCR disabled: short-circuit BEFORE preparing the image or calling any
   // provider - matches slipSubmissionService.ts's existing high-level
   // behavior (checks ocrEnabled before entering the OCR processing block).
@@ -78,6 +124,7 @@ export async function submitWalletTopupSlip(
   // observation while preventing auto-approval (see the shadow-mode check
   // further down, unchanged).
   if (!ocrConfig.enabled) {
+    await recordWalletAttempt("config_blocked", "OCR_DISABLED", "CONFIG", null);
     return await handlePendingReview(
       topupId,
       userId,
@@ -108,6 +155,13 @@ export async function submitWalletTopupSlip(
     // OpenAI-compatible provider rejects a private signed HTTPS URL
     // directly - proven on staging), while a legacy absolute URL is never
     // server-fetched.
+    // ── EXACT-FILE IDENTIFIER ─────────────────────────────────────────
+    // Computed server-side from the stored bytes BEFORE any OCR call, so a
+    // top-up still carries a strong identifier when OCR fails completely.
+    // Never client-supplied: computeSlipFileHash takes only the server-held
+    // storage reference.
+    walletSlipFileHash = await computeSlipFileHash(slipImageUrl);
+
     const ocrImageUrl = await prepareSlipImageForOcr(slipImageUrl);
 
     if (!ocrImageUrl) {
@@ -125,12 +179,21 @@ export async function submitWalletTopupSlip(
 
     const parseResult = await parseSlipImage(ocrImageUrl);
 
-    // Handle OCR technical error
+    // Handle OCR technical error. The sanitized provider diagnostic is
+    // preserved instead of being flattened to OCR_PROCESSING_ERROR, so an
+    // admin can distinguish a provider outage from a bad slip.
     if (parseResult.technicalError) {
+      walletProviderDiagnostic = parseResult.providerDiagnostic;
+      await recordWalletAttempt(
+        "technical_failure",
+        parseResult.technicalErrorCode ?? "OCR_PROCESSING_ERROR",
+        "TECHNICAL",
+        null
+      );
       return await handleOCRError(
         topupId,
         userId,
-        "OCR_PROCESSING_ERROR",
+        parseResult.technicalErrorCode ?? "OCR_PROCESSING_ERROR",
         "ส่งสลิปแล้ว แต่ระบบ OCR ขัดข้อง แอดมินจะตรวจสอบให้",
         topup
       );
@@ -138,6 +201,7 @@ export async function submitWalletTopupSlip(
 
     // Handle shadow mode
     if (ocrConfig.shadowModeEnabled) {
+      await recordWalletAttempt("needs_review", "SHADOW_MODE", "CONFIG", null);
       return await handlePendingReview(
         topupId,
         userId,
@@ -152,7 +216,19 @@ export async function submitWalletTopupSlip(
     }
 
     // Step 2: Extract slip data
-    const extractedData = extractSlipData(parseResult.text, parseResult.ocrConfidence);
+    // `undefined`, NOT the numeric 0 placeholder, when the provider never
+    // reported a confidence - otherwise extractSlipData reads 0 as a real
+    // "0%" reading and UNKNOWN_CONFIDENCE collapses into LOW_CONFIDENCE.
+    // See the identical fix in ocr-slip-integration-staging.ts.
+    const rawExtracted = extractSlipData(
+      parseResult.text,
+      parseResult.confidenceKnown === false ? undefined : parseResult.ocrConfidence
+    );
+    // Attach the server-computed exact-file identifier so it reaches strong
+    // identifier derivation and the claim registry.
+    const extractedData = walletSlipFileHash
+      ? { ...rawExtracted, fileHash: walletSlipFileHash }
+      : rawExtracted;
 
     // Step 3: Verify slip data
     const existingRefs = new Set(await getExistingReferencesForWallet(userId));
@@ -182,6 +258,7 @@ export async function submitWalletTopupSlip(
 
     // Step 4: Check for duplicates (if reviewReason indicates duplicate)
     if (verificationResult.reviewReason?.includes("DUPLICATE")) {
+      await recordWalletAttempt("needs_review", "WEAK_DUPLICATE_RISK", "DATA", null);
       return await handleDuplicate(
         topupId,
         userId,
@@ -196,6 +273,7 @@ export async function submitWalletTopupSlip(
 
     // Step 5: Check confidence level
     if (finalConfidence < ocrConfig.minConfidence) {
+      await recordWalletAttempt("needs_review", "LOW_CONFIDENCE", "DATA", null);
       return await handlePendingReview(
         topupId,
         userId,
@@ -211,6 +289,7 @@ export async function submitWalletTopupSlip(
 
     // Step 6: Check amount match
     if (!verificationResult.breakdown?.amountMatched) {
+      await recordWalletAttempt("needs_review", "AMOUNT_MISMATCH", "DATA", null);
       return await handlePendingReview(
         topupId,
         userId,
@@ -226,6 +305,7 @@ export async function submitWalletTopupSlip(
 
     // Step 7: Check missing required fields
     if (!verificationResult.breakdown?.referencePresent) {
+      await recordWalletAttempt("needs_review", "MISSING_FIELDS", "DATA", null);
       return await handlePendingReview(
         topupId,
         userId,
@@ -241,6 +321,7 @@ export async function submitWalletTopupSlip(
 
     // Step 8: Auto-approve if all checks pass
     if (ocrConfig.autoApproveEnabled && verificationResult.status === "approved") {
+      await recordWalletAttempt("auto_approved", null, null, finalConfidence);
       return await autoApproveWalletTopup(
         topupId,
         userId,
@@ -253,6 +334,7 @@ export async function submitWalletTopupSlip(
     }
 
     // Step 9: Default to pending review if auto-approve is disabled
+    await recordWalletAttempt("needs_review", "AUTO_APPROVE_DISABLED", "CONFIG", null);
     return await handlePendingReview(
       topupId,
       userId,
@@ -265,11 +347,22 @@ export async function submitWalletTopupSlip(
       topup
     );
   } catch (error: any) {
-    console.error("Wallet top-up OCR submission error:", error);
+    // Sanitized classification only - the thrown error's own message may
+    // embed an endpoint or credential and is never propagated.
+    walletProviderDiagnostic = describeProviderFailure(error);
+    console.error(
+      `[Wallet OCR] technical failure for topup ${topupId}: ${walletProviderDiagnostic.code} status=${walletProviderDiagnostic.providerHttpStatus ?? "n/a"} attempts=${walletProviderDiagnostic.providerAttemptCount}`
+    );
+    await recordWalletAttempt(
+      "technical_failure",
+      walletProviderDiagnostic.code,
+      "TECHNICAL",
+      null
+    );
     return await handleOCRError(
       topupId,
       userId,
-      "OCR_PROCESSING_ERROR",
+      walletProviderDiagnostic.code,
       "ส่งสลิปแล้ว แต่ระบบ OCR ขัดข้อง แอดมินจะตรวจสอบให้",
       topup
     );

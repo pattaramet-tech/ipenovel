@@ -67,7 +67,7 @@ describe("submitWalletTopupSlip - OCR image preparation failure (H)", () => {
       id: 42,
       status: "pending_review",
       ocrDecision: "needs_review",
-      reviewReason: "OCR_PROCESSING_ERROR",
+      reviewReason: "OCR_IMAGE_PREPARATION_FAILED",
     });
     (getEffectiveOCRConfig as any).mockResolvedValue({
       enabled: true,
@@ -105,7 +105,8 @@ describe("submitWalletTopupSlip - OCR image preparation failure (H)", () => {
 
     expect(result.status).toBe("pending_review");
     expect(result.ocrDecision).toBe("needs_review");
-    expect(result.reviewReason).toBe("OCR_PROCESSING_ERROR");
+    // Specific code now - see the identical change on the order path.
+    expect(result.reviewReason).toBe("OCR_IMAGE_PREPARATION_FAILED");
 
     // No auto-approval or crediting function was ever reached.
     expect(db.approveWalletTopupWithOCR).not.toHaveBeenCalled();
@@ -117,6 +118,6 @@ describe("submitWalletTopupSlip - OCR image preparation failure (H)", () => {
     const [, updateData] = (db.updateWalletTopupWithOCRApproval as any).mock.calls[0];
     expect(updateData.status).toBe("pending_review");
     expect(updateData.ocrDecision).toBe("needs_review");
-    expect(updateData.reviewReason).toBe("OCR_PROCESSING_ERROR");
+    expect(updateData.reviewReason).toBe("OCR_IMAGE_PREPARATION_FAILED");
   });
 });
