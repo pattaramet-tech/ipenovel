@@ -135,6 +135,25 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
       "Review finding on PR #45: this account is the ADMIN who performed a prior name/role edit or delete (recorded while it still held role=\"admin\"). Protecting audit_or_actor identity is exactly this category's purpose - a former admin's actions must remain attributable after a later demotion, so this must block deletion even though it lives in this feature's own audit table (unlike targetUserId below, which is deliberately NOT protected the same way).",
   },
 
+  {
+    table: "ocrVerificationAttempts",
+    column: "initiatedByUserId",
+    category: "audit_or_actor",
+    reference: "OCR Recheck Actor References",
+    reason:
+      "This account is the ADMIN who requested an OCR recheck on someone else's payment. Same reasoning as adminUserAuditLogs.actorAdminId: a former admin's diagnostic actions on a financial record must remain attributable after a later demotion, so this blocks deletion. NULL on automatic (system-initiated) attempts, which therefore reference no user at all.",
+  },
+
+  // ---- economic: financial value creation ----
+  {
+    table: "paymentSlipClaims",
+    column: "userId",
+    category: "economic",
+    reference: "Payment Slip Claims",
+    reason:
+      "A claim row is proof this account consumed a real bank transaction to create financial value (an order payment or a wallet top-up), so it is economic evidence in its own right - and such an account is already blocked by the underlying payments/orders/walletTopups rows anyway. Critically, the claim row itself must NEVER be deleted along with the user: paymentSlipClaims is the global anti-replay registry, and removing a user's claims would re-open every slip they ever used for replay by anyone. Like adminUserAuditLogs it carries no foreign key precisely so it outlives the accounts it references; unlike that table it also BLOCKS deletion, because it represents money rather than a record of administration.",
+  },
+
   // ---- never_blocks: unverified claims and this feature's own self-outliving audit trail ----
   {
     table: "accountRecoveryRequests",
