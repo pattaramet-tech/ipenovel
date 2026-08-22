@@ -1,6 +1,12 @@
 import { invokeLLM, LLMInvokeError, type InvokeParams, type InvokeResult } from "./_core/llm";
 import crypto from "crypto";
 import { formatMoney } from "./helpers/moneyNormalizer";
+import {
+  buildSemanticFingerprint,
+  hashSlipReference,
+  normalizeOcrTextForParsing,
+  normalizeSlipReference,
+} from "./services/slipIdentifierService";
 
 /**
  * OCR Slip Verification System — Production Hardened
@@ -127,7 +133,22 @@ export interface ExtractedSlipData {
   amount?: number;
   transactionDate?: Date;
   transactionDateTime?: Date;
+  /** Upper-cased reference. Legacy contract - kept for existing rows/tests. */
   reference?: string;
+  /** Reference exactly as printed, original casing intact. For admin display. */
+  referenceRaw?: string;
+  /** Whitespace-stripped, case-preserving reference used for comparison. */
+  referenceNormalized?: string;
+  /** SHA-256 of referenceNormalized. STRONG anti-replay identifier. */
+  referenceHash?: string;
+  /** Coarse bank/account/amount/date hash. WEAK risk signal only, never proof. */
+  semanticFingerprint?: string;
+  /**
+   * False when neither the caller nor the model supplied a confidence.
+   * Unknown confidence MUST NOT auto-approve - see verifySlipData's
+   * UNKNOWN_CONFIDENCE gate.
+   */
+  confidenceKnown?: boolean;
   detectedBank?: string;
   detectedBankName?: string;
   shopName?: string;
@@ -161,6 +182,13 @@ export interface VerificationBreakdown {
   duplicateFingerprint: boolean;
   bankDetected: boolean;
   ocrConfidence: number;
+  /**
+   * How much the duplicate signal is actually worth. "weak" must never be
+   * presented to an admin as a confirmed duplicate.
+   */
+  duplicateEvidenceStrength?: "strong" | "weak";
+  /** False when no confidence was reported at all (distinct from a low one). */
+  confidenceKnown?: boolean;
   finalDecision: "approved" | "pending_review";
   failureReason?: string;
 }
@@ -179,8 +207,16 @@ export interface VerificationResult {
 export interface ParseSlipImageResult {
   text: string;
   ocrConfidence: number;
+  /**
+   * False when the provider never reported a confidence. `ocrConfidence` is
+   * then 0 as a placeholder ONLY - it must not be read as "0% confident",
+   * and it must never satisfy an auto-approval threshold.
+   */
+  confidenceKnown?: boolean;
   warnings: string[];
   technicalError?: boolean; // true if OCR/LLM technical error occurred
+  /** Stable technical failure code (see OcrTechnicalFailureCode). */
+  technicalErrorCode?: string;
 }
 
 // ─── Fenced JSON parsing with trailing text support ────────────────────────────
@@ -303,30 +339,63 @@ function getFieldBySuffixMatch(flattened: Record<string, any>, suffixes: string[
   return undefined;
 }
 
-function extractOcrConfidence(text: string): number {
+/**
+ * Parses a self-reported OCR confidence out of the model's text.
+ *
+ * Returns `undefined` when NO confidence statement is present. That is a
+ * meaningfully different state from "0%" and callers must keep it distinct:
+ * an unknown confidence must route to review (UNKNOWN_CONFIDENCE), never be
+ * back-filled with an invented number. See parseSlipImage(), which used to
+ * substitute a hard-coded 85 here.
+ *
+ * The label alternation covers every phrasing observed from the provider:
+ * "OCR Confidence Score", "Estimated OCR Confidence" and "OCR Confidence
+ * Estimation", each in both `99%` and `99/100` forms, with or without
+ * markdown emphasis around the label or the value.
+ */
+export function parseOcrConfidence(text: string): number | undefined {
+  if (!text) return undefined;
+
+  // Markdown emphasis is stripped first so a single label alternation covers
+  // "**OCR Confidence Score:** 99%" and "OCR Confidence Score: 99%" alike.
+  const flat = text.replace(/[*_`]+/g, "");
+
+  const label = String.raw`(?:Estimated\s*OCR\s*Confidence(?:\s*(?:Score|Estimation))?|OCR\s*Confidence\s*(?:Score|Estimation|Level)?|OCR[_\s]*Confidence[_\s]*Score)`;
+
   const patterns = [
-    /\*\*OCR\s*Confidence\s*Score\s*:\s*\*\*\s*(\d+)\/100/i,
-    /\*\*OCR\s*Confidence\s*Score\s*:\s*\*\*\s*(\d+)/i,
-    /OCR\s*Confidence\s*Score\s*:\s*(\d+)\s*\/\s*100/i,
-    /OCR\s*Confidence\s*Score\s*:\s*(\d+)/i,
-    /"ocr_confidence"\s*:\s*(\d+)/i,
-    /ocr_confidence\s*[:=]\s*(\d+)/i,
-    /"OCR_Confidence_Score"\s*:\s*(\d+)/i,
-    /OCR_Confidence_Score\s*[:=]\s*(\d+)/i,
-    /confidence\s*[:=]\s*(\d+)/i,
+    // "<label>: 99/100" - the /100 form must be tried before the bare form
+    // so the denominator is never mistaken for the score.
+    new RegExp(String.raw`${label}\s*[:=]?\s*(\d{1,3})\s*/\s*100`, "i"),
+    // "<label>: 99%" / "<label>: 99"
+    new RegExp(String.raw`${label}\s*[:=]?\s*(\d{1,3})\s*%?`, "i"),
+    // JSON-ish shapes emitted inside the fenced block.
+    /"?ocr[_\s]*confidence(?:[_\s]*score)?"?\s*[:=]\s*"?(\d{1,3})\s*\/\s*100"?/i,
+    /"?ocr[_\s]*confidence(?:[_\s]*score)?"?\s*[:=]\s*"?(\d{1,3})"?/i,
+    /"?confidence"?\s*[:=]\s*"?(\d{1,3})\s*\/\s*100"?/i,
+    /"?confidence"?\s*[:=]\s*"?(\d{1,3})\s*%/i,
+    /"?confidence"?\s*[:=]\s*"?(\d{1,3})"?/i,
   ];
 
   for (const pattern of patterns) {
-    const match = text.match(pattern);
+    const match = flat.match(pattern);
     if (match?.[1]) {
-      const parsed = parseInt(match[1]);
+      const parsed = parseInt(match[1], 10);
       if (!isNaN(parsed) && parsed >= 0 && parsed <= 100) {
         return parsed;
       }
     }
   }
 
-  return 0;
+  return undefined;
+}
+
+/**
+ * Backward-compatible wrapper: existing callers that need a plain number
+ * still get 0 for "not stated". New code should prefer parseOcrConfidence()
+ * so it can tell "unknown" apart from a genuine zero.
+ */
+function extractOcrConfidence(text: string): number {
+  return parseOcrConfidence(text) ?? 0;
 }
 
 function extractAmount(flattened: Record<string, any>, text: string): number | undefined {
@@ -385,13 +454,50 @@ function extractAmount(flattened: Record<string, any>, text: string): number | u
   return undefined;
 }
 
-function extractReference(flattened: Record<string, any>, text: string): string | undefined {
+/**
+ * Thai/English labels that introduce a real BANK TRANSACTION REFERENCE.
+ *
+ * `เลขที่รายการ` / `เลขรายการ` are included because KBank prints the
+ * transaction reference under exactly that label (e.g.
+ * `เลขที่รายการ: 016234222922AQR05745`). Their absence here is what produced
+ * a false MISSING_REFERENCE on otherwise perfectly readable KBank slips.
+ *
+ * Deliberately EXCLUDES receiver-account/biller labels. A KBank bill-payment
+ * slip also carries a receiver id such as `202608223588503`, and silently
+ * promoting that to "the transaction reference" would give two different
+ * transfers to the same merchant the same identifier - the exact false-match
+ * class the strong/weak split exists to prevent. Receiver ids are captured
+ * separately by extractBillerId().
+ */
+const REFERENCE_LABEL_PATTERN = String.raw`(?:เลขที่รายการ|เลขรายการ|เลขที่อ้างอิง|เลขอ้างอิง|รหัสอ้างอิง|หมายเลขอ้างอิง|รหัสรายการ|Transaction\s*(?:ID|Reference|No\.?|Number)|Reference\s*(?:No\.?|Number|Code|#)?|Ref\.?(?:\s*No\.?)?|Txn\s*(?:ID|Code|No\.?)?)`;
+
+/**
+ * Reference token charset.
+ *
+ * Case-SENSITIVE on purpose: SCB emits mixed-case references such as
+ * `202608225ApOyxElgdOo7YVwv`, so the raw casing must survive extraction to
+ * be shown to an admin and to be normalized/hashed without collisions. The
+ * legacy `.toUpperCase()` applied here is preserved for the returned
+ * `reference` field only (see extractSlipData, which also records the
+ * untouched raw value).
+ */
+const REFERENCE_TOKEN = String.raw`([A-Za-z0-9][A-Za-z0-9\-/]{3,63})`;
+
+/**
+ * Extracts the RAW transaction reference exactly as printed - original
+ * casing preserved, no upper-casing. Callers decide how to normalize.
+ */
+export function extractReferenceRaw(
+  flattened: Record<string, any>,
+  text: string
+): string | undefined {
   let refVal = getFieldBySuffixMatch(flattened, [
     "transaction_id_or_reference_number.value",
     "transaction_id_or_reference_number",
     "reference",
     "reference_number",
     "เลขที่รายการ",
+    "เลขรายการ",
     "รหัสรายการ",
     "รหัสอ้างอิง",
     "หมายเลขอ้างอิง",
@@ -403,41 +509,40 @@ function extractReference(flattened: Record<string, any>, text: string): string 
     if (typeof refVal === "object" && refVal !== null && "value" in refVal) {
       refVal = refVal.value;
     }
-    const val = String(refVal).trim().toUpperCase();
+    const val = String(refVal).trim();
     if (val.length >= 4) return val;
   }
 
-  // Fallback to regex
+  // Regex fallback over the raw text. Two passes: an explicit separator
+  // (`:` / `：` / `-` / `=`) first, then the "label on one line, value on the
+  // next" layout, so a labelled value is always preferred over a positional
+  // guess.
   const patterns = [
-    // Reference with colon separator
-    /เลขที่อ้างอิง\s*[:：]\s*([A-Z0-9]+)/i,
-    /หมายเลขอ้างอิง\s*[:：]\s*([A-Z0-9]+)/i,
-    /เลขที่รายการ\s*[:：]\s*([A-Z0-9]+)/i,
-    /รหัสรายการ\s*[:：]\s*([A-Z0-9]+)/i,
-    /รหัสอ้างอิง\s*[:：]\s*([A-Z0-9]+)/i,
-    /reference\s*(?:number|#|code)?\s*[:：]\s*([A-Z0-9]+)/i,
-    /ref\s*[:：]\s*([A-Z0-9]+)/i,
-    /transaction\s*id\s*[:：]\s*([A-Z0-9]+)/i,
-    /txn\s*(?:id|code)?\s*[:：]\s*([A-Z0-9]+)/i,
-    // KTB/BAY/GSB newline patterns: label on one line, value on next
-    /เลขที่อ้างอิง[\s\n]+([A-Z0-9]+)/i,
-    /หมายเลขอ้างอิง[\s\n]+([A-Z0-9]+)/i,
-    /เลขที่รายการ[\s\n]+([A-Z0-9]+)/i,
-    /รหัสรายการ[\s\n]+([A-Z0-9]+)/i,
-    /รหัสอ้างอิง[\s\n]+([A-Z0-9]+)/i,
-    /reference\s*(?:number|#|code)?[\s\n]+([A-Z0-9]+)/i,
-    /transaction\s*id[\s\n]+([A-Z0-9]+)/i,
+    new RegExp(
+      String.raw`${REFERENCE_LABEL_PATTERN}\s*[:：=-]\s*${REFERENCE_TOKEN}`,
+      "i"
+    ),
+    new RegExp(String.raw`${REFERENCE_LABEL_PATTERN}[ \t]*\n[ \t]*${REFERENCE_TOKEN}`, "i"),
+    new RegExp(String.raw`${REFERENCE_LABEL_PATTERN}\s+${REFERENCE_TOKEN}`, "i"),
   ];
 
   for (const pattern of patterns) {
     const match = text.match(pattern);
     if (match?.[1]) {
-      const extracted = match[1].trim().toUpperCase();
+      const extracted = match[1].trim().replace(/[.,;]+$/, "");
       if (extracted.length >= 4) return extracted;
     }
   }
 
   return undefined;
+}
+
+function extractReference(flattened: Record<string, any>, text: string): string | undefined {
+  const raw = extractReferenceRaw(flattened, text);
+  // Legacy contract: the `reference` field has always been upper-cased, and
+  // historical rows/tests depend on that. The untouched value is surfaced
+  // separately as `referenceRaw`.
+  return raw ? raw.toUpperCase() : undefined;
 }
 
 function extractShopName(flattened: Record<string, any>, text: string): string | undefined {
@@ -914,14 +1019,24 @@ export function extractSlipData(ocrText: string, visionConfidence?: number): Ext
   // Extract JSON and confidence from fenced text
   const jsonResult = extractJsonFromText(ocrText);
   const flattened = jsonResult ? flattenObject(jsonResult.json) : {};
-  const extractedConfidence = jsonResult?.confidence ?? extractOcrConfidence(ocrText);
+  // `undefined` here means the model never stated a confidence at all. That
+  // is preserved (never coerced to a number) so verifySlipData can raise
+  // UNKNOWN_CONFIDENCE instead of auto-approving on an invented value.
+  const statedConfidence = parseOcrConfidence(ocrText);
 
-  const text = normalizeThaiNumerals(ocrText);
+  // Markdown emphasis/bullets/headings are stripped BEFORE field parsing.
+  // A real SCB slip renders its amount as "**จำนวนเงิน**\n100.00", which the
+  // label patterns could not match across the trailing `**` - producing a
+  // false MISSING_AMOUNT on a slip whose text was read perfectly. Only
+  // formatting markers are removed; digits, separators and reference tokens
+  // are untouched (see normalizeOcrTextForParsing).
+  const text = normalizeOcrTextForParsing(normalizeThaiNumerals(ocrText));
 
   const amount = extractAmount(flattened, text);
   const transactionDateResult = extractTransactionDate(flattened, text);
   const { date: transactionDate, dateTime: transactionDateTime } = transactionDateResult || {};
   const reference = extractReference(flattened, text);
+  const referenceRaw = extractReferenceRaw(flattened, text);
   const shopName = extractShopName(flattened, text);
   const maskedAccount = extractMaskedAccount(flattened, text);
   const merchantCode = extractMerchantCode(flattened, text);
@@ -942,9 +1057,17 @@ export function extractSlipData(ocrText: string, visionConfidence?: number): Ext
   if (maskedAccount) structuredConfidence += 5;
   structuredConfidence = Math.min(structuredConfidence, 100);
 
+  // A confidence is "known" only if the caller supplied a real vision score
+  // or the model actually stated one. When neither exists the score below is
+  // still computed (so the structured signal is visible to an admin), but
+  // `confidenceKnown: false` travels with it and blocks auto-approval.
+  const effectiveVisionConfidence =
+    typeof visionConfidence === "number" ? visionConfidence : statedConfidence;
+  const confidenceKnown = typeof effectiveVisionConfidence === "number";
+
   const normalizedVisionConfidence = Math.max(
     0,
-    Math.min(100, typeof visionConfidence === "number" ? visionConfidence : extractedConfidence)
+    Math.min(100, effectiveVisionConfidence ?? 0)
   );
 
   const finalConfidence = Math.round(
@@ -956,6 +1079,15 @@ export function extractSlipData(ocrText: string, visionConfidence?: number): Ext
     transactionDate,
     transactionDateTime,
     reference,
+    referenceRaw,
+    referenceNormalized: normalizeSlipReference(referenceRaw),
+    referenceHash: hashSlipReference(referenceRaw),
+    semanticFingerprint: buildSemanticFingerprint({
+      detectedBank,
+      maskedAccount,
+      amount,
+      transactionDate,
+    }),
     detectedBank,
     detectedBankName,
     receiverAccountOrId,
@@ -964,6 +1096,7 @@ export function extractSlipData(ocrText: string, visionConfidence?: number): Ext
     merchantCode,
     merchantTransactionCode,
     confidence: finalConfidence,
+    confidenceKnown,
     visionConfidence: normalizedVisionConfidence,
     structuredConfidence,
     finalConfidence,
@@ -1030,6 +1163,7 @@ export function verifySlipData(
     duplicateFingerprint: false,
     bankDetected: !!extracted.detectedBank,
     ocrConfidence: extracted.confidence ?? 0,
+    confidenceKnown: extracted.confidenceKnown !== false,
     finalDecision: "pending_review",
   };
 
@@ -1118,18 +1252,42 @@ export function verifySlipData(
   if (existingReferences.has(extracted.reference)) {
     result.reviewReason = "DUPLICATE_REFERENCE";
     breakdown.duplicateReference = true;
+    breakdown.duplicateEvidenceStrength = "strong";
     breakdown.failureReason = "Reference already used in another payment";
     return result;
   }
 
+  // WEAK evidence only.
+  //
+  // This fingerprint's fallback branch hashes bank|account|amount|date, so a
+  // customer legitimately transferring 100 THB twice from one account on one
+  // day collides with themselves. It is therefore recorded as a RISK SIGNAL
+  // that routes to human review - never reported as a confirmed duplicate,
+  // and never used to block financial value on its own. Strong proof comes
+  // only from referenceHash / fileHash / qrPayloadHash via the claim
+  // registry (see slipClaimService).
   if (existingFingerprints.has(fingerprint)) {
-    result.reviewReason = "DUPLICATE_FINGERPRINT";
+    result.reviewReason = "WEAK_DUPLICATE_RISK";
     breakdown.duplicateFingerprint = true;
-    breakdown.failureReason = "Duplicate payment detected (fingerprint match)";
+    breakdown.duplicateEvidenceStrength = "weak";
+    breakdown.failureReason =
+      "Possible duplicate only - same bank, account, amount and date as an earlier " +
+      "submission. NOT proof of a duplicate transaction; needs human review.";
     return result;
   }
 
   // ===== CONFIDENCE AND STRUCTURED DATA GATE ================================
+
+  // Unknown != low. A slip whose confidence was never reported has no
+  // evidence of quality at all, so it can never satisfy the threshold - and
+  // must not be silently treated as 0% "low" either, because the two need
+  // different admin explanations.
+  if (extracted.confidenceKnown === false) {
+    result.reviewReason = "UNKNOWN_CONFIDENCE";
+    breakdown.failureReason =
+      "OCR confidence was not reported by the provider - cannot auto-approve without it";
+    return result;
+  }
 
   if ((extracted.confidence ?? 0) < minConfidence) {
     result.reviewReason = "LOW_CONFIDENCE";
@@ -1281,14 +1439,22 @@ Do NOT translate or interpret — just extract the raw text.`,
       };
     }
 
-    // Extract OCR confidence using improved parser
-    let ocrConfidence = extractOcrConfidence(content);
-    if (ocrConfidence === 0) {
-      ocrConfidence = 85; // Default reasonable confidence
-    }
+    // Extract OCR confidence. `undefined` means the model never stated one.
+    //
+    // This previously substituted a hard-coded 85 whenever parsing failed,
+    // which manufactured a passing score out of nothing: an unreadable slip
+    // could clear the >=85 auto-approval gate purely because the provider
+    // omitted a confidence line. Unknown now stays unknown and travels as
+    // confidenceKnown:false, which verifySlipData turns into
+    // UNKNOWN_CONFIDENCE -> manual review.
+    const statedConfidence = parseOcrConfidence(content);
+    const confidenceKnown = statedConfidence !== undefined;
+    const ocrConfidence = statedConfidence ?? 0;
 
     const warnings: string[] = [];
-    if (ocrConfidence < 70) {
+    if (!confidenceKnown) {
+      warnings.push("OCR confidence not reported by provider - manual review required");
+    } else if (ocrConfidence < 70) {
       warnings.push("Low OCR confidence - manual review recommended");
     }
     if (content.length < 50) {
@@ -1298,6 +1464,7 @@ Do NOT translate or interpret — just extract the raw text.`,
     return {
       text: content,
       ocrConfidence,
+      confidenceKnown,
       warnings,
     };
   } catch (error) {
