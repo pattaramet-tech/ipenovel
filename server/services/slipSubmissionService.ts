@@ -193,9 +193,13 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
         verificationResult = await processSlipVerificationStaging(payment.id, slipOcrResult);
         // Attach the server-computed exact-file identifier so it reaches
         // strong-identifier derivation and the claim registry.
-        if (slipFileHash && verificationResult.extractedData) {
+        // Attach the exact-file identifier on EVERY outcome, including shadow
+        // mode and any path where staging produced no extraction at all - the
+        // identifier comes from storage, not from OCR, so it must survive
+        // regardless of what the provider returned.
+        if (slipFileHash) {
           verificationResult.extractedData = {
-            ...verificationResult.extractedData,
+            ...(verificationResult.extractedData ?? {}),
             fileHash: slipFileHash,
           };
         }
@@ -235,7 +239,12 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
       reviewReason: "OCR_DISABLED",
       ocrConfidence: 0,
       detectedBank: null,
-      extractedData: null,
+      // The server-derived exact-file identifier is persisted even though OCR
+      // never ran. Storing null here would leave every slip submitted while
+      // OCR is disabled with NO strong identifier, and manual approval now
+      // refuses such records - which would make them permanently unapprovable.
+      // Computing this needs no provider: it hashes the stored bytes.
+      extractedData: slipFileHash ? { fileHash: slipFileHash } : null,
       breakdown: { reason: "OCR processing is disabled by effective config" },
       duplicateStatus: {
         isDuplicateReference: false,
