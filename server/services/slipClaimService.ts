@@ -43,6 +43,7 @@
 import { paymentSlipClaims } from "../../drizzle/schema";
 import { eq, or } from "drizzle-orm";
 import { findLegacyApprovedDuplicate } from "./legacySlipCompatibilityService";
+import { hashSlipReference } from "./slipIdentifierService";
 import type { SlipStrongIdentifiers, StrongDuplicateKind } from "./slipIdentifierService";
 
 export type SlipClaimSourceType = "order_payment" | "wallet_topup";
@@ -60,6 +61,11 @@ export interface SlipClaimRequest {
    * find every row conflicting with itself. Never set on a live payment path.
    */
   skipLegacyCheck?: boolean;
+  /**
+   * The RAW (case-preserving) reference, used only to widen the legacy
+   * lookup - see referenceHashUpperCandidate. Never used for the claim.
+   */
+  referenceRawForLegacyLookup?: string;
 }
 
 export type SlipClaimOutcome =
@@ -222,7 +228,19 @@ export async function claimSlip(
   if (!request.skipLegacyCheck) {
     try {
       const legacyMatch = await findLegacyApprovedDuplicate(
-        request.identifiers,
+        {
+          referenceHash: request.identifiers.referenceHash,
+          fileHash: request.identifiers.fileHash,
+          // Covers the reverse casing gap: a legacy row persisted only as an
+          // UPPER-CASED reference, with no rawText to reparse, cannot match a
+          // fresh mixed-case read. Hashing the incoming reference in its
+          // upper-cased form gives that row something to match against.
+          // Matching only - the claim itself always uses the case-preserving
+          // hash, and a false positive here routes to review, never a block.
+          referenceHashUpperCandidate: request.referenceRawForLegacyLookup
+            ? hashSlipReference(request.referenceRawForLegacyLookup.toUpperCase())
+            : undefined,
+        },
         { sourceType: request.sourceType, sourceId: request.sourceId },
         tx
       );

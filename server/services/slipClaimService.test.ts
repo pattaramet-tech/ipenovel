@@ -76,15 +76,19 @@ function makeFakeTx() {
           const name = String(table?.[Symbol.for("drizzle:Name")] ?? "");
           return {
             where() {
+              // The legacy compatibility scan pages with .orderBy().limit();
+              // the claim registry lookup uses .limit() directly. This fake
+              // has no historical records, so the legacy scan finds none -
+              // those paths are covered in
+              // legacySlipCompatibilityService.test.ts.
+              const emptyLegacyPage = () => Promise.resolve([]);
               return {
+                orderBy() {
+                  return { limit: emptyLegacyPage };
+                },
                 limit(n: number) {
-                  // The legacy compatibility layer scans approved payments and
-                  // wallet top-ups. This fake has no historical records, so it
-                  // returns none - these tests exercise the claim registry
-                  // itself. Legacy behavior is covered separately in
-                  // legacySlipCompatibilityService.test.ts.
                   if (name === "payments" || name === "walletTopups") {
-                    return Promise.resolve([]);
+                    return emptyLegacyPage();
                   }
                   return Promise.resolve(rows.slice(0, n));
                 },
@@ -242,7 +246,16 @@ describe("claimSlip - infrastructure errors are not swallowed", () => {
       select() {
         return {
           from() {
-            return { where() { return { limit: async () => [] }; } };
+            return {
+              where() {
+                return {
+                  orderBy() {
+                    return { limit: async () => [] };
+                  },
+                  limit: async () => [],
+                };
+              },
+            };
           },
         };
       },
