@@ -1364,3 +1364,161 @@ export const adminUserAuditLogs = mysqlTable(
 
 export type AdminUserAuditLog = typeof adminUserAuditLogs.$inferSelect;
 export type InsertAdminUserAuditLog = typeof adminUserAuditLogs.$inferInsert;
+
+/**
+ * Global anti-replay claim registry for payment slips.
+ *
+ * INVARIANT: ONE REAL BANK TRANSACTION CAN CREATE FINANCIAL VALUE ONCE.
+ *
+ * Before this table, duplicate detection was a SELECT-then-decide read over
+ * per-user, pending-only data, which was unsafe in three separate ways:
+ *   1. Wallet duplicate lookups were scoped to a single userId, so the same
+ *      slip could be replayed by a DIFFERENT user.
+ *   2. Order-payment lookups scanned only PENDING payments, so a slip that
+ *      had already been APPROVED was invisible and could be reused.
+ *   3. A read followed by a write is a race: two concurrent submissions can
+ *      both observe "no duplicate" and both create value.
+ *
+ * A row here is a CLAIM on a strong identifier, inserted inside the SAME
+ * transaction that finalizes the money. Uniqueness is enforced by the
+ * DATABASE, so concurrency is resolved by the engine rather than by
+ * application timing: of two racing claimants exactly one commits and the
+ * other gets a duplicate-key error and is routed to manual review.
+ *
+ * Only STRONG identifiers appear here. `semanticFingerprint` is deliberately
+ * NOT unique and NOT a claim - a customer may legitimately send the same
+ * amount from the same account twice in one day, so treating that shape as
+ * proof would block real payments. It is stored purely as a review signal.
+ *
+ * NULL handling: MySQL/MariaDB UNIQUE indexes permit multiple NULLs, which
+ * is exactly the behavior needed - a slip with no readable reference simply
+ * does not claim the reference slot, and never collides with other
+ * reference-less slips.
+ *
+ * Append-only in practice: rows are inserted when value is created and are
+ * never rewritten. There is no FK to users/orders/walletTopups because the
+ * registry must outlive and span both financial sources.
+ */
+export const paymentSlipClaims = mysqlTable(
+  "paymentSlipClaims",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    /** Which financial flow consumed the slip. */
+    sourceType: mysqlEnum("sourceType", ["order_payment", "wallet_topup"]).notNull(),
+    /** payments.id or walletTopups.id, depending on sourceType. */
+    sourceId: int("sourceId").notNull(),
+    /** Owner of the claiming submission - for admin traceability only. */
+    userId: int("userId").notNull(),
+    /** SHA-256 of the normalized bank transaction reference. */
+    referenceHash: varchar("referenceHash", { length: 64 }),
+    /** SHA-256 of the raw uploaded slip bytes. */
+    fileHash: varchar("fileHash", { length: 64 }),
+    /** SHA-256 of the decoded slip QR payload, when decoding is available. */
+    qrPayloadHash: varchar("qrPayloadHash", { length: 64 }),
+    /** WEAK signal. Indexed for lookup, deliberately NOT unique. */
+    semanticFingerprint: varchar("semanticFingerprint", { length: 64 }),
+    claimedAt: timestamp("claimedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    // The three strong-identifier locks. These are what actually enforce
+    // "once", globally across orders AND wallet top-ups AND users.
+    referenceHashUnique: uniqueIndex("paymentSlipClaims_referenceHash_unique").on(
+      table.referenceHash
+    ),
+    fileHashUnique: uniqueIndex("paymentSlipClaims_fileHash_unique").on(table.fileHash),
+    qrPayloadHashUnique: uniqueIndex("paymentSlipClaims_qrPayloadHash_unique").on(
+      table.qrPayloadHash
+    ),
+    // Non-unique: weak evidence is looked up, never enforced.
+    semanticFingerprintIdx: index("paymentSlipClaims_semanticFingerprint_idx").on(
+      table.semanticFingerprint
+    ),
+    // "Which submission consumed this slip?" for the admin duplicate panel.
+    sourceIdx: index("paymentSlipClaims_source_idx").on(table.sourceType, table.sourceId),
+    userIdIdx: index("paymentSlipClaims_userId_idx").on(table.userId),
+  })
+);
+
+export type PaymentSlipClaim = typeof paymentSlipClaims.$inferSelect;
+export type InsertPaymentSlipClaim = typeof paymentSlipClaims.$inferInsert;
+
+/**
+ * Persistent OCR attempt history (automatic submissions + admin rechecks).
+ *
+ * Answers the question an admin previously could not answer from the UI:
+ * "did this fail because the OCR provider broke, or because the slip data
+ * was genuinely wrong?" Each attempt records which stage it reached and a
+ * typed result, so a provider outage is never mistaken for a bad slip.
+ *
+ * SANITIZED DIAGNOSTICS ONLY. This table must never receive an API key, an
+ * Authorization header, an LLM endpoint carrying credentials, a signed R2
+ * URL, base64 image data, or a raw upstream error body. `providerHttpStatus`
+ * and `providerAttemptCount` are the only provider-side facts kept, which is
+ * enough to distinguish a 503-after-3-retries from a 401 misconfiguration.
+ *
+ * Raw OCR text is intentionally NOT duplicated here - payments.extractedData
+ * already stores the extracted financial evidence, and copying PII-bearing
+ * slip text per attempt would multiply the sensitive footprint for no
+ * diagnostic gain.
+ *
+ * subjectType is an enum rather than an order-only column so wallet top-up
+ * rechecks can be added later without a schema migration.
+ */
+export const ocrVerificationAttempts = mysqlTable(
+  "ocrVerificationAttempts",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    subjectType: mysqlEnum("subjectType", ["order_payment", "wallet_topup"]).notNull(),
+    /** payments.id or walletTopups.id. */
+    subjectId: int("subjectId").notNull(),
+    /** 1-based, monotonically increasing per subject. */
+    attemptNo: int("attemptNo").notNull().default(1),
+    trigger: mysqlEnum("trigger", ["automatic", "admin_recheck"]).notNull(),
+    /** Admin who requested a recheck; NULL for automatic submissions. */
+    initiatedByUserId: int("initiatedByUserId"),
+    startedAt: timestamp("startedAt").notNull(),
+    completedAt: timestamp("completedAt"),
+    /** "generic" | "legacy_forge" - runtime mode only, never an endpoint. */
+    providerMode: varchar("providerMode", { length: 32 }),
+    providerModel: varchar("providerModel", { length: 128 }),
+    providerHttpStatus: int("providerHttpStatus"),
+    providerAttemptCount: int("providerAttemptCount").notNull().default(0),
+    /** How far the pipeline got before stopping. */
+    stage: mysqlEnum("stage", [
+      "image_preparation",
+      "provider_call",
+      "response_parse",
+      "field_extraction",
+      "verification",
+      "completed",
+    ]).notNull(),
+    result: mysqlEnum("result", [
+      "auto_approved",
+      "needs_review",
+      "technical_failure",
+      "config_blocked",
+    ]).notNull(),
+    /** TECHNICAL | DATA | CONFIG - see OcrDiagnosticCategory. */
+    reviewCategory: varchar("reviewCategory", { length: 32 }),
+    /** Stable reason code, e.g. MISSING_REFERENCE / PROVIDER_RATE_LIMIT. */
+    reviewReason: varchar("reviewReason", { length: 64 }),
+    /** NULL means the provider never reported one - distinct from 0. */
+    confidence: int("confidence"),
+    /** Sanitized JSON snapshot of the verification checklist. No raw text. */
+    verificationSnapshot: text("verificationSnapshot"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    subjectIdx: index("ocrVerificationAttempts_subject_idx").on(
+      table.subjectType,
+      table.subjectId
+    ),
+    createdAtIdx: index("ocrVerificationAttempts_createdAt_idx").on(table.createdAt),
+    initiatedByIdx: index("ocrVerificationAttempts_initiatedByUserId_idx").on(
+      table.initiatedByUserId
+    ),
+  })
+);
+
+export type OcrVerificationAttempt = typeof ocrVerificationAttempts.$inferSelect;
+export type InsertOcrVerificationAttempt = typeof ocrVerificationAttempts.$inferInsert;

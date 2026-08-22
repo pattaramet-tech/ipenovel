@@ -1,5 +1,26 @@
 import { createHash } from "node:crypto";
+import {
+  deriveStrongIdentifiersFromExtractedData,
+  hasStrongIdentifier,
+} from "./services/slipIdentifierService";
+import { claimSlip, describeClaimFailure } from "./services/slipClaimService";
 import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql, gt, lt, ne, like } from "drizzle-orm";
+
+/**
+ * Raised when a wallet top-up cannot claim its slip's strong identifiers.
+ *
+ * Carries a stable `code` so callers can map it to an admin-facing message
+ * (SLIP_ALREADY_CLAIMED / NO_STRONG_IDENTIFIER) without string-matching, and
+ * so an anti-replay refusal is never confused with a database fault.
+ */
+export class WalletSlipClaimError extends Error {
+  readonly code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "WalletSlipClaimError";
+    this.code = code;
+  }
+}
 import { alias } from "drizzle-orm/mysql-core";
 import { getTableColumns } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
@@ -3925,7 +3946,51 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
       throw new Error("Wallet top-up not found");
     }
     const topup = topupResult[0];
-    
+
+    // Step 1b: ANTI-REPLAY GATE (manual admin approval).
+    //
+    // The admin's browser is never trusted: identifiers are recomputed
+    // server-side from the persisted extractedData and claimed inside THIS
+    // transaction, so a slip claimed by another submission between page load
+    // and the click cannot credit a second wallet.
+    //
+    // Unlike the auto-approval path, a top-up with NO strong identifier is
+    // still approvable here - that is precisely the unreadable-but-genuine
+    // slip a human is reviewing, and blocking it would make such top-ups
+    // permanently unapprovable. The claim still runs whenever an identifier
+    // exists, which is what prevents one transfer funding two credits.
+    {
+      const { identifiers, semanticFingerprint } = deriveStrongIdentifiersFromExtractedData(
+        topup.extractedData as string | null
+      );
+
+      if (hasStrongIdentifier(identifiers)) {
+        const claim = await claimSlip(
+          {
+            sourceType: "wallet_topup",
+            sourceId: topupId,
+            userId: topup.userId,
+            identifiers,
+            semanticFingerprint,
+          },
+          tx
+        );
+
+        if (!claim.claimed && claim.reason === "already_claimed") {
+          const ownedByThisTopup =
+            claim.existingSourceType === "wallet_topup" &&
+            claim.existingSourceId === topupId;
+
+          if (!ownedByThisTopup) {
+            throw new WalletSlipClaimError(
+              "SLIP_ALREADY_CLAIMED",
+              describeClaimFailure(claim)
+            );
+          }
+        }
+      }
+    }
+
     // Step 2: Conditional status update - ONLY update if still pending or pending_review (idempotency)
     // CRITICAL: Only the winning concurrent request may proceed
     // Losing requests will have 0 rows affected and must abort immediately
@@ -5832,6 +5897,64 @@ export async function approveWalletTopupWithOCR(
       throw new Error("Wallet top-up not found");
     }
     const topup = topupResult[0];
+
+    // Step 1b: ANTI-REPLAY GATE.
+    //
+    // Claimed in THIS transaction, immediately before any wallet credit, so
+    // one bank transaction can create value exactly once - across wallet
+    // top-ups AND order payments AND users.
+    //
+    // This closes three concrete holes in the previous read-then-decide
+    // duplicate check: it was scoped to a single userId (so another user
+    // could replay the same slip), it scanned only PENDING order payments
+    // (so an already-APPROVED slip was invisible), and being a plain SELECT
+    // it could not stop two concurrent submissions from both passing.
+    //
+    // A slip with no strong identifier cannot be claimed, and therefore must
+    // not auto-approve; it is routed to manual review instead. Rejection is
+    // never performed here - only an admin may reject.
+    if (ocrData.status === "approved") {
+      const { identifiers, semanticFingerprint } = deriveStrongIdentifiersFromExtractedData(
+        ocrData.extractedData
+      );
+
+      if (!hasStrongIdentifier(identifiers)) {
+        throw new WalletSlipClaimError(
+          "NO_STRONG_IDENTIFIER",
+          "This slip has no readable transaction reference, so replay cannot be prevented automatically."
+        );
+      }
+
+      const claim = await claimSlip(
+        {
+          sourceType: "wallet_topup",
+          sourceId: topupId,
+          userId: topup.userId,
+          identifiers,
+          semanticFingerprint,
+        },
+        tx
+      );
+
+      if (!claim.claimed) {
+        const ownedByThisTopup =
+          claim.reason === "already_claimed" &&
+          claim.existingSourceType === "wallet_topup" &&
+          claim.existingSourceId === topupId;
+
+        if (!ownedByThisTopup) {
+          const code =
+            claim.reason === "no_strong_identifier"
+              ? "NO_STRONG_IDENTIFIER"
+              : claim.conflictKind === "file"
+                ? "DUPLICATE_FILE"
+                : claim.conflictKind === "qr"
+                  ? "DUPLICATE_QR"
+                  : "DUPLICATE_REFERENCE";
+          throw new WalletSlipClaimError(code, describeClaimFailure(claim));
+        }
+      }
+    }
 
     // Step 2: Only proceed if status is pending or pending_review (idempotency)
     if (ocrData.status === "approved") {

@@ -14,6 +14,25 @@ import * as orderService from "./orderService";
 import { sendOCRReviewNotification } from "./discordNotificationService";
 import { R2PrivateStorageError } from "./r2PrivateStorage";
 import { prepareSlipImageForOcr } from "./ocrImageInputService";
+import { deriveStrongIdentifiersFromExtractedData } from "./slipIdentifierService";
+import { claimSlip, describeClaimFailure } from "./slipClaimService";
+
+/**
+ * Thrown to abort an in-flight auto-approval transaction when the slip's
+ * strong identifiers could not be claimed - either because another
+ * submission already owns them, or because the slip has no strong identifier
+ * at all and replay therefore cannot be prevented.
+ *
+ * A distinct type so the surrounding catch can tell "anti-replay said no"
+ * (a business outcome -> manual review) apart from a genuine infrastructure
+ * failure (which must keep propagating).
+ */
+class SlipClaimRejected extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SlipClaimRejected";
+  }
+}
 
 export interface SlipSubmissionInput {
   orderId: number;
@@ -220,13 +239,59 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
     if (!dbConnection) {
       throw new Error("Database connection failed");
     }
-    await dbConnection.transaction(async (tx: any) => {
-      await ApprovalService.approvePaymentWithSource(
-        payment.id,
-        "auto",
-        { autoApprovedAt: new Date() },
-        tx
-      );
+    // ── ANTI-REPLAY GATE (auto-approval) ──────────────────────────────────
+    // Claimed inside the SAME transaction that approves and finalizes, so
+    // one bank transaction can fund exactly one order. If the claim loses a
+    // race - or the slip carries no strong identifier at all, meaning replay
+    // could not be prevented - this throws, the transaction rolls back, and
+    // the catch below routes the slip to manual review. OCR never rejects.
+    let autoApprovalBlockedReason: string | null = null;
+
+    try {
+      await dbConnection.transaction(async (tx: any) => {
+        const { identifiers, semanticFingerprint } = deriveStrongIdentifiersFromExtractedData(
+          verificationResult.extractedData
+            ? JSON.stringify(verificationResult.extractedData)
+            : null
+        );
+
+        const claim = await claimSlip(
+          {
+            sourceType: "order_payment",
+            sourceId: payment.id,
+            userId: order.userId,
+            identifiers,
+            semanticFingerprint,
+          },
+          tx
+        );
+
+        if (!claim.claimed) {
+          const ownedByThisPayment =
+            claim.reason === "already_claimed" &&
+            claim.existingSourceType === "order_payment" &&
+            claim.existingSourceId === payment.id;
+
+          if (!ownedByThisPayment) {
+            autoApprovalBlockedReason =
+              claim.reason === "no_strong_identifier"
+                ? "NO_STRONG_IDENTIFIER"
+                : claim.reason === "already_claimed" && claim.conflictKind === "file"
+                  ? "DUPLICATE_FILE"
+                  : claim.reason === "already_claimed" && claim.conflictKind === "qr"
+                    ? "DUPLICATE_QR"
+                    : "DUPLICATE_REFERENCE";
+            // Abort the whole auto-approval; nothing financial has committed.
+            throw new SlipClaimRejected(describeClaimFailure(claim));
+          }
+        }
+
+        await ApprovalService.approvePaymentWithSource(
+          payment.id,
+          "auto",
+          { autoApprovedAt: new Date() },
+          tx
+        );
 
       // Also save OCR metadata to payment record
       await db.updatePayment(payment.id, {
@@ -273,9 +338,33 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
         note: approvalNote,
       }, tx);
       // Finalize order: create purchase records, award loyalty points, record coupon usage
-      await orderService.finalizeOrderCompletion(order.id, input.userId, tx);
-    });
-  } else {
+        await orderService.finalizeOrderCompletion(order.id, input.userId, tx);
+      });
+    } catch (claimError) {
+      if (!(claimError instanceof SlipClaimRejected)) {
+        // A genuine failure (DB error, finalization race). Preserve the
+        // pre-existing contract: callers treat a throw here as "processing
+        // deferred, order stays pending for manual review".
+        throw claimError;
+      }
+
+      // Anti-replay blocked auto-approval. Nothing financial committed. Fall
+      // through to the manual-review branch below with a precise reason -
+      // never a rejection, which only an admin may issue.
+      console.warn(
+        `[OCR] auto-approval blocked by anti-replay for payment ${payment.id}: ${autoApprovalBlockedReason}`
+      );
+      shouldApprove = false;
+      verificationResult = {
+        ...verificationResult,
+        isAutoApproved: false,
+        reviewReason: autoApprovalBlockedReason ?? "DUPLICATE_REFERENCE",
+        ocrDecision: "needs_review",
+      };
+    }
+  }
+
+  if (!shouldApprove) {
     // Pending review: update payment record with OCR metadata
     await ApprovalService.sendToReview(
       payment.id,

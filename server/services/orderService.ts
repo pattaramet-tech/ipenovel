@@ -2,6 +2,11 @@ import * as db from "../db";
 
 import { ApprovalService } from "./approvalService";
 import { normalizeMoneyAmount, formatMoney } from "../helpers/moneyNormalizer";
+import {
+  deriveStrongIdentifiersFromExtractedData,
+  hasStrongIdentifier,
+} from "./slipIdentifierService";
+import { claimSlip, describeClaimFailure } from "./slipClaimService";
 
 const COUPON_OWNERSHIP_DENIAL_PATTERNS = [/^coupon not found$/i, /belongs to another user/i];
 
@@ -311,6 +316,9 @@ export async function approvePayment(paymentId: number, approvedBy: string, admi
 }
 
 async function approvePaymentInTx(paymentId: number, approvedBy: string, adminLabel: string | undefined, tx: any): Promise<{ message: string }> {
+  // Reloaded fresh INSIDE the transaction. The admin's browser may have had
+  // this order open for a long time, and the OCR panel it renders is display
+  // state, not authority - nothing client-supplied is trusted here.
   const payment = await db.getPaymentById(paymentId, tx);
   if (!payment) {
     throw new Error("Payment not found");
@@ -319,6 +327,48 @@ async function approvePaymentInTx(paymentId: number, approvedBy: string, adminLa
   const order = await db.getOrderById(payment.orderId, tx);
   if (!order) {
     throw new Error("Order not found");
+  }
+
+  // ── ANTI-REPLAY GATE ────────────────────────────────────────────────────
+  // Strong identifiers are recomputed server-side from persisted data and
+  // claimed in THIS transaction, so the claim and the money commit together.
+  // A slip claimed by someone else between page load and this click fails
+  // here rather than creating a second helping of value from one transfer.
+  //
+  // Deliberately non-blocking when a payment has no strong identifier: those
+  // are exactly the slips an admin is reviewing BY HAND, and refusing them
+  // would make unreadable-but-genuine slips unapprovable. Manual approval is
+  // a human decision with an audit trail; what must never happen is one
+  // transfer silently funding two orders, which the claim below prevents
+  // whenever an identifier exists.
+  const { identifiers, semanticFingerprint } = deriveStrongIdentifiersFromExtractedData(
+    payment.extractedData as string | null
+  );
+
+  if (hasStrongIdentifier(identifiers)) {
+    const claim = await claimSlip(
+      {
+        sourceType: "order_payment",
+        sourceId: payment.id,
+        userId: order.userId,
+        identifiers,
+        semanticFingerprint,
+      },
+      tx
+    );
+
+    if (!claim.claimed && claim.reason === "already_claimed") {
+      const ownedByThisPayment =
+        claim.existingSourceType === "order_payment" && claim.existingSourceId === payment.id;
+
+      if (!ownedByThisPayment) {
+        // Surfaced to the admin UI as SLIP_ALREADY_CLAIMED so it can prompt a
+        // refresh/recheck and link to the submission that owns the slip.
+        throw new Error(`SLIP_ALREADY_CLAIMED: ${describeClaimFailure(claim)}`);
+      }
+      // Already claimed by THIS payment - a retried approval of work that
+      // partially committed earlier. Not a replay; continue.
+    }
   }
 
   // Use ApprovalService for manual approval with metadata

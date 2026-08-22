@@ -1268,6 +1268,13 @@ export const appRouter = router({
             await orderService.approvePayment(input.paymentId, String(ctx.user.id));
             return { success: true };
           } catch (error: any) {
+            // Anti-replay refusal: the slip was claimed by another
+            // submission, possibly after this admin loaded the page. CONFLICT
+            // (not BAD_REQUEST) so the UI can tell "stale page, refresh and
+            // recheck" apart from "this request was malformed".
+            if (typeof error?.message === "string" && error.message.startsWith("SLIP_ALREADY_CLAIMED")) {
+              throw new TRPCError({ code: "CONFLICT", message: error.message });
+            }
             throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to approve payment. Please try again." });
           }
         }),
@@ -1423,6 +1430,11 @@ export const appRouter = router({
               ctx.user.name || "Admin"
             );
           } catch (error: any) {
+            // See admin.payments.approve above - a claimed slip is a
+            // CONFLICT the admin can act on, not a malformed request.
+            if (typeof error?.message === "string" && error.message.startsWith("SLIP_ALREADY_CLAIMED")) {
+              throw new TRPCError({ code: "CONFLICT", message: error.message });
+            }
             throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to approve payment. Please try again." });
           }
           return { success: true };

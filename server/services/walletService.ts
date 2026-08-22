@@ -148,6 +148,17 @@ export async function adminApproveWalletTopup(topupId: number, adminUserId: numb
   try {
     return await db.approveWalletTopup(topupId, adminUserId);
   } catch (error) {
+    // An anti-replay refusal is an expected business state, not a server
+    // fault: the slip was claimed by another submission (possibly after this
+    // admin loaded the page). Surface it as a CONFLICT with an actionable
+    // message rather than a generic 500, so the UI can prompt a refresh and
+    // point at the submission that already owns the slip.
+    if (error instanceof db.WalletSlipClaimError) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `SLIP_ALREADY_CLAIMED: ${error.message}`,
+      });
+    }
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
       message: error instanceof Error ? error.message : "Failed to approve wallet top-up",

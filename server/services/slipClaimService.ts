@@ -1,0 +1,301 @@
+/**
+ * Atomic anti-replay claim service.
+ *
+ * INVARIANT: ONE REAL BANK TRANSACTION CAN CREATE FINANCIAL VALUE ONCE -
+ * across order payments, wallet top-ups, and users alike.
+ *
+ * ── Why a claim, not a check ──────────────────────────────────────────────
+ * The previous design was "SELECT existing references -> if none, approve".
+ * That is a check-then-act race:
+ *
+ *     A: SELECT -> none        B: SELECT -> none
+ *     A: approve  (value #1)   B: approve  (value #2)
+ *
+ * Both observe a clean read and both create value from ONE bank transaction.
+ * No amount of re-reading fixes this; the decision has to be made by
+ * something that can serialize the two writers.
+ *
+ * So instead of asking "is this a duplicate?", callers CLAIM the slip's
+ * strong identifiers by INSERTing them, inside the SAME transaction that
+ * finalizes the money. The UNIQUE indexes on paymentSlipClaims make the
+ * database the arbiter: exactly one of the racing inserts commits, the other
+ * fails with a duplicate-key error and is routed to manual review. The claim
+ * and the financial effect therefore commit or roll back together - there is
+ * no window in which one exists without the other.
+ *
+ * ── What may be claimed ───────────────────────────────────────────────────
+ * STRONG identifiers only: referenceHash, fileHash, qrPayloadHash. Each maps
+ * to one real bank transaction.
+ *
+ * semanticFingerprint is recorded on the row but is NOT unique and is NEVER
+ * claimed, because two legitimate transfers of the same amount from the same
+ * account on the same day share it. Enforcing it would block real customers.
+ *
+ * A slip with NO strong identifier cannot be claimed at all. Such a slip must
+ * never auto-approve - there is nothing to prevent it being replayed - so
+ * callers receive `noStrongIdentifier` and must route to human review.
+ *
+ * ── What this service never does ──────────────────────────────────────────
+ * It never rejects a payment. A failed claim produces a review outcome; only
+ * an admin may reject.
+ */
+
+import { paymentSlipClaims } from "../../drizzle/schema";
+import { eq, or } from "drizzle-orm";
+import type { SlipStrongIdentifiers, StrongDuplicateKind } from "./slipIdentifierService";
+
+export type SlipClaimSourceType = "order_payment" | "wallet_topup";
+
+export interface SlipClaimRequest {
+  sourceType: SlipClaimSourceType;
+  sourceId: number;
+  userId: number;
+  identifiers: SlipStrongIdentifiers;
+  /** WEAK signal - stored for admin context, never enforced. */
+  semanticFingerprint?: string;
+}
+
+export type SlipClaimOutcome =
+  | { claimed: true; claimId: number; claimedKinds: StrongDuplicateKind[] }
+  | {
+      claimed: false;
+      /** No strong identifier existed, so nothing could be claimed. */
+      reason: "no_strong_identifier";
+    }
+  | {
+      claimed: false;
+      reason: "already_claimed";
+      /** Which strong identifier was already taken, when determinable. */
+      conflictKind?: StrongDuplicateKind;
+      /** The submission that already owns it, for admin cross-linking. */
+      existingSourceType?: SlipClaimSourceType;
+      existingSourceId?: number;
+    };
+
+/**
+ * MySQL/MariaDB duplicate-key signals. Checked structurally rather than by
+ * message text so a locale-translated server message still classifies.
+ */
+function isDuplicateKeyError(error: unknown): boolean {
+  const e = error as { code?: string; errno?: number; message?: string } | null;
+  if (!e) return false;
+  if (e.code === "ER_DUP_ENTRY") return true;
+  if (e.errno === 1062) return true;
+  return typeof e.message === "string" && /duplicate entry/i.test(e.message);
+}
+
+/**
+ * Best-effort mapping of a duplicate-key error to the specific identifier
+ * that collided, using the index name the engine reports.
+ */
+function conflictKindFromError(error: unknown): StrongDuplicateKind | undefined {
+  const message = (error as { message?: string } | null)?.message ?? "";
+  if (/referenceHash/i.test(message)) return "reference";
+  if (/fileHash/i.test(message)) return "file";
+  if (/qrPayloadHash/i.test(message)) return "qr";
+  return undefined;
+}
+
+function presentKinds(identifiers: SlipStrongIdentifiers): StrongDuplicateKind[] {
+  const kinds: StrongDuplicateKind[] = [];
+  if (identifiers.referenceHash) kinds.push("reference");
+  if (identifiers.fileHash) kinds.push("file");
+  if (identifiers.qrPayloadHash) kinds.push("qr");
+  return kinds;
+}
+
+/**
+ * Looks up which existing claim owns any of the supplied strong identifiers.
+ *
+ * READ-ONLY and advisory. Used to enrich an admin explanation ("already used
+ * by wallet top-up #123") and to pre-empt an obviously-doomed approval with
+ * a clear message. It is NEVER the authority for the claim decision - that is
+ * always the UNIQUE constraint inside claimSlip(), because any read performed
+ * before the write can be invalidated by a concurrent commit.
+ */
+export async function findExistingClaim(
+  identifiers: SlipStrongIdentifiers,
+  tx: any
+): Promise<
+  | {
+      kind: StrongDuplicateKind;
+      sourceType: SlipClaimSourceType;
+      sourceId: number;
+      userId: number;
+    }
+  | undefined
+> {
+  const conditions = [];
+  if (identifiers.referenceHash) {
+    conditions.push(eq(paymentSlipClaims.referenceHash, identifiers.referenceHash));
+  }
+  if (identifiers.fileHash) {
+    conditions.push(eq(paymentSlipClaims.fileHash, identifiers.fileHash));
+  }
+  if (identifiers.qrPayloadHash) {
+    conditions.push(eq(paymentSlipClaims.qrPayloadHash, identifiers.qrPayloadHash));
+  }
+  if (conditions.length === 0) return undefined;
+
+  const rows = await tx
+    .select()
+    .from(paymentSlipClaims)
+    .where(conditions.length === 1 ? conditions[0] : or(...conditions))
+    .limit(1);
+
+  const row = rows?.[0];
+  if (!row) return undefined;
+
+  let kind: StrongDuplicateKind = "reference";
+  if (identifiers.referenceHash && row.referenceHash === identifiers.referenceHash) {
+    kind = "reference";
+  } else if (identifiers.fileHash && row.fileHash === identifiers.fileHash) {
+    kind = "file";
+  } else if (identifiers.qrPayloadHash && row.qrPayloadHash === identifiers.qrPayloadHash) {
+    kind = "qr";
+  }
+
+  return {
+    kind,
+    sourceType: row.sourceType as SlipClaimSourceType,
+    sourceId: row.sourceId as number,
+    userId: row.userId as number,
+  };
+}
+
+/**
+ * Atomically claims a slip's strong identifiers.
+ *
+ * MUST be called with `tx` being the SAME transaction that creates the
+ * financial value (approval + wallet credit / order finalization). Passing a
+ * separate connection would reintroduce the very race this exists to close.
+ *
+ * Returns an outcome instead of throwing on conflict: a duplicate is an
+ * expected business state that routes to manual review, not a system fault.
+ * Genuine infrastructure errors still propagate so the surrounding
+ * transaction rolls back rather than silently approving.
+ *
+ * Idempotency note: a re-claim by the SAME source (e.g. an admin retrying an
+ * approval that already committed) is reported as already_claimed with the
+ * existing source echoed back, letting the caller recognise "this is mine"
+ * rather than treating it as a replay by someone else.
+ */
+export async function claimSlip(
+  request: SlipClaimRequest,
+  tx: any
+): Promise<SlipClaimOutcome> {
+  const kinds = presentKinds(request.identifiers);
+
+  if (kinds.length === 0) {
+    // Nothing uniquely identifies this bank transaction, so nothing can stop
+    // it being submitted again. Auto-approval is therefore not permissible.
+    return { claimed: false, reason: "no_strong_identifier" };
+  }
+
+  try {
+    const inserted = await tx.insert(paymentSlipClaims).values({
+      sourceType: request.sourceType,
+      sourceId: request.sourceId,
+      userId: request.userId,
+      referenceHash: request.identifiers.referenceHash ?? null,
+      fileHash: request.identifiers.fileHash ?? null,
+      qrPayloadHash: request.identifiers.qrPayloadHash ?? null,
+      semanticFingerprint: request.semanticFingerprint ?? null,
+      claimedAt: new Date(),
+    });
+
+    const claimId = Number((inserted as any)?.[0]?.insertId ?? (inserted as any)?.insertId ?? 0);
+    return { claimed: true, claimId, claimedKinds: kinds };
+  } catch (error) {
+    if (!isDuplicateKeyError(error)) {
+      // Not a replay - a real failure. Propagate so the caller's transaction
+      // rolls back instead of finalizing money on an unverified claim.
+      throw error;
+    }
+
+    // Someone else owns one of these identifiers. Identify who, for the admin
+    // message. This read runs in the same failed-statement transaction, so it
+    // is advisory only; the authoritative fact is simply "we did not get it".
+    let existing:
+      | Awaited<ReturnType<typeof findExistingClaim>>
+      | undefined;
+    try {
+      existing = await findExistingClaim(request.identifiers, tx);
+    } catch {
+      // Never let diagnostics enrichment mask the real outcome.
+      existing = undefined;
+    }
+
+    return {
+      claimed: false,
+      reason: "already_claimed",
+      conflictKind: conflictKindFromError(error) ?? existing?.kind,
+      existingSourceType: existing?.sourceType,
+      existingSourceId: existing?.sourceId,
+    };
+  }
+}
+
+/**
+ * Human-readable, admin-safe explanation of a failed claim.
+ * Contains no identifiers, hashes, URLs, or user PII.
+ */
+export function describeClaimFailure(outcome: SlipClaimOutcome): string {
+  if (outcome.claimed) return "";
+
+  if (outcome.reason === "no_strong_identifier") {
+    return (
+      "No strong identifier could be derived from this slip (no readable transaction " +
+      "reference, no file hash, no QR payload), so replay cannot be prevented " +
+      "automatically. Manual review is required."
+    );
+  }
+
+  const what =
+    outcome.conflictKind === "file"
+      ? "This exact slip image"
+      : outcome.conflictKind === "qr"
+        ? "This slip's QR payload"
+        : "This bank transaction reference";
+
+  const where =
+    outcome.existingSourceType && outcome.existingSourceId
+      ? outcome.existingSourceType === "order_payment"
+        ? ` (already used by order payment #${outcome.existingSourceId})`
+        : ` (already used by wallet top-up #${outcome.existingSourceId})`
+      : "";
+
+  return `${what} has already been used to create value${where}. It cannot be used again.`;
+}
+
+/**
+ * Looks up submissions sharing a WEAK semantic fingerprint.
+ *
+ * Returned purely as a review signal for the admin panel. Callers must label
+ * it as "possible duplicate only" and must never block, reject, or
+ * auto-decide on it - the same customer sending the same amount twice in one
+ * day produces this match legitimately.
+ */
+export async function findWeakFingerprintMatches(
+  semanticFingerprint: string | undefined,
+  excludeSource: { sourceType: SlipClaimSourceType; sourceId: number },
+  tx: any
+): Promise<Array<{ sourceType: SlipClaimSourceType; sourceId: number }>> {
+  if (!semanticFingerprint) return [];
+
+  const rows = await tx
+    .select()
+    .from(paymentSlipClaims)
+    .where(eq(paymentSlipClaims.semanticFingerprint, semanticFingerprint))
+    .limit(20);
+
+  return (rows ?? [])
+    .filter(
+      (r: any) =>
+        !(r.sourceType === excludeSource.sourceType && r.sourceId === excludeSource.sourceId)
+    )
+    .map((r: any) => ({
+      sourceType: r.sourceType as SlipClaimSourceType,
+      sourceId: r.sourceId as number,
+    }));
+}

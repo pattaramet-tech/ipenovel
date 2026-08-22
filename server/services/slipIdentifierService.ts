@@ -292,3 +292,83 @@ export function classifyDuplicateEvidence(
 export function isStrongDuplicate(evidence: DuplicateEvidence): boolean {
   return evidence.strength === "strong";
 }
+
+// ─── Deriving identifiers from a stored record ────────────────────────────
+
+/**
+ * Recomputes strong identifiers from a payment/top-up row's stored
+ * `extractedData` JSON.
+ *
+ * Used by the admin approval path, which must NOT trust whatever the admin's
+ * browser happens to be showing: the page may have been open for a long time
+ * and the OCR panel it renders is display state, not authority. Everything
+ * here is derived server-side from persisted data.
+ *
+ * Handles legacy rows gracefully. Older records predate referenceHash and
+ * store only `reference`, so the hash is recomputed from that value; records
+ * with no readable reference simply yield no identifier, which callers must
+ * treat as "cannot auto-approve / cannot claim", never as "safe".
+ *
+ * Never throws on malformed JSON - a corrupt blob yields no identifiers,
+ * which fails safe toward manual review.
+ */
+export function deriveStrongIdentifiersFromExtractedData(
+  extractedDataJson: string | null | undefined
+): { identifiers: SlipStrongIdentifiers; semanticFingerprint?: string } {
+  if (!extractedDataJson) return { identifiers: {} };
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(extractedDataJson);
+  } catch {
+    return { identifiers: {} };
+  }
+  if (!parsed || typeof parsed !== "object") return { identifiers: {} };
+
+  // Prefer a stored hash; otherwise recompute from whichever reference form
+  // the record has. `referenceRaw` is preferred over the legacy upper-cased
+  // `reference` because it preserves the original casing.
+  const referenceHash =
+    typeof parsed.referenceHash === "string" && parsed.referenceHash.length === 64
+      ? parsed.referenceHash
+      : hashSlipReference(parsed.referenceRaw ?? parsed.reference);
+
+  const fileHash =
+    typeof parsed.fileHash === "string" && parsed.fileHash.length === 64
+      ? parsed.fileHash
+      : undefined;
+
+  const qrPayloadHash =
+    typeof parsed.qrPayloadHash === "string" && parsed.qrPayloadHash.length === 64
+      ? parsed.qrPayloadHash
+      : undefined;
+
+  let semanticFingerprint: string | undefined =
+    typeof parsed.semanticFingerprint === "string" ? parsed.semanticFingerprint : undefined;
+
+  if (!semanticFingerprint) {
+    const txDate =
+      typeof parsed.transactionDate === "string" || parsed.transactionDate instanceof Date
+        ? new Date(parsed.transactionDate)
+        : undefined;
+    semanticFingerprint = buildSemanticFingerprint({
+      detectedBank: parsed.detectedBank,
+      maskedAccount: parsed.maskedAccount,
+      amount: typeof parsed.amount === "number" ? parsed.amount : undefined,
+      transactionDate:
+        txDate && !Number.isNaN(txDate.getTime()) ? txDate : undefined,
+    });
+  }
+
+  return {
+    identifiers: { referenceHash, fileHash, qrPayloadHash },
+    semanticFingerprint,
+  };
+}
+
+/** True when at least one strong identifier exists to claim. */
+export function hasStrongIdentifier(identifiers: SlipStrongIdentifiers): boolean {
+  return Boolean(
+    identifiers.referenceHash || identifiers.fileHash || identifiers.qrPayloadHash
+  );
+}
