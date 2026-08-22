@@ -8,41 +8,55 @@
  * by the new UNIQUE constraints and could be replayed. This tool writes the
  * missing claims so historical value creation is represented in the registry.
  *
+ * Until it has run to completion, the approval path also performs a full
+ * historical scan on every claim (see legacySlipCompatibilityService). That
+ * scan is O(N) per approval and is disabled only by --mark-complete below.
+ *
  * ── Safety ────────────────────────────────────────────────────────────────
  *   * DRY-RUN IS THE DEFAULT. --live is required to write anything.
+ *   * --mark-complete requires --live, and applies only after a fully clean
+ *     run: every page scanned to EOF on BOTH sources, no query failures, no
+ *     insert failures, and no unresolved strong-identifier collisions.
  *   * NEVER modifies payment/top-up financial status, amounts, or approval
- *     metadata. It only INSERTs into paymentSlipClaims.
- *   * NEVER calls an LLM. When a legacy row has rawText but no parsed
- *     reference, the LOCAL parser is re-run against that stored text - no
- *     network, no provider cost, no new OCR decision.
- *   * Collisions are REPORTED, never silently swallowed. Two historical rows
- *     sharing one reference is a real finding (a past double-credit, or a
- *     parser bug) and an operator must see it rather than have an
- *     INSERT IGNORE hide it.
- *   * Refuses to run against a database whose URL looks like production
- *     unless --i-understand-this-is-not-production is passed, so a stray
- *     shell env cannot point it at live data.
+ *     metadata. It only INSERTs into paymentSlipClaims (and, with
+ *     --mark-complete, one settings row).
+ *   * NEVER calls an LLM. When a legacy row has rawText but no case-preserving
+ *     reference, the LOCAL parser is re-run against that stored text.
+ *   * Collisions are REPORTED, never swallowed. Two historical rows sharing a
+ *     strong identifier is a real finding an operator must adjudicate.
+ *   * Refuses a production-looking DATABASE_URL without an explicit override.
+ *
+ * ── Pagination ────────────────────────────────────────────────────────────
+ * Scans page-by-page ordered by ascending primary key until both sources are
+ * exhausted. --page-size bounds MEMORY per page; it never caps total rows
+ * scanned. No single transaction spans the run: pages commit independently,
+ * so a crash mid-run leaves the state incomplete and the safety scan enabled.
  *
  * Usage:
  *   node scripts/backfill-slip-claims.mjs --dry-run
- *   node scripts/backfill-slip-claims.mjs --live
- *   node scripts/backfill-slip-claims.mjs --dry-run --limit 500
+ *   node scripts/backfill-slip-claims.mjs --dry-run --page-size 500
+ *   node scripts/backfill-slip-claims.mjs --live --page-size 500
+ *   node scripts/backfill-slip-claims.mjs --live --mark-complete
  */
 
 import process from "node:process";
+import { BackfillOptionError, parseBackfillOptions } from "./lib/backfillCliOptions.mjs";
+import { createCollisionTracker } from "./lib/backfillCollisionTracker.mjs";
 
-const args = process.argv.slice(2);
-const has = (flag) => args.includes(flag);
+const TOOL_VERSION = "backfill-slip-claims@2";
 
-const isLive = has("--live");
-const isDryRun = has("--dry-run") || !isLive;
-const limitArg = args.indexOf("--limit");
-const limit = limitArg >= 0 ? Number(args[limitArg + 1]) : 10000;
-
-if (isLive && has("--dry-run")) {
-  console.error("[backfill] --dry-run and --live are mutually exclusive.");
-  process.exit(2);
+let options;
+try {
+  options = parseBackfillOptions(process.argv.slice(2));
+} catch (error) {
+  if (error instanceof BackfillOptionError) {
+    console.error(`[backfill] ${error.message}`);
+    process.exit(2);
+  }
+  throw error;
 }
+
+const { isLive, markComplete, pageSize, allowProductionLookingUrl } = options;
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -50,9 +64,9 @@ if (!databaseUrl) {
   process.exit(2);
 }
 
-// Guard against an operator accidentally pointing this at production.
-const looksProduction = /prod/i.test(databaseUrl) && !/preview|staging|test|local/i.test(databaseUrl);
-if (looksProduction && !has("--i-understand-this-is-not-production")) {
+const looksProduction =
+  /prod/i.test(databaseUrl) && !/preview|staging|test|local/i.test(databaseUrl);
+if (looksProduction && !allowProductionLookingUrl) {
   console.error(
     "[backfill] DATABASE_URL looks like PRODUCTION. Refusing to run.\n" +
       "           This tool is intended for preview/staging. If you are certain,\n" +
@@ -62,12 +76,13 @@ if (looksProduction && !has("--i-understand-this-is-not-production")) {
 }
 
 console.log(
-  `[backfill] mode=${isLive ? "LIVE (will INSERT claims)" : "DRY-RUN (no writes)"} limit=${limit}`
+  `[backfill] mode=${isLive ? "LIVE (will INSERT claims)" : "DRY-RUN (no writes)"} ` +
+    `pageSize=${pageSize} markComplete=${markComplete ? "yes" : "no"}`
 );
 
 const { default: mysql } = await import("mysql2/promise");
 const { drizzle } = await import("drizzle-orm/mysql2");
-const { and, eq, isNotNull } = await import("drizzle-orm");
+const { and, asc, eq, gt, isNotNull, or } = await import("drizzle-orm");
 const schema = await import("../drizzle/schema.ts");
 const identifiers = await import("../server/services/slipIdentifierService.ts");
 const parser = await import("../server/ocr-slip-verification-v2.ts");
@@ -76,13 +91,14 @@ const connection = await mysql.createConnection(databaseUrl);
 const db = drizzle(connection);
 
 /**
- * Derives a reference hash from a stored row, re-running the LOCAL parser
- * against stored rawText when the row has no usable reference.
+ * Derives strong identifiers from a stored row.
  *
- * This is what recovers the KBank rows that previously failed with
- * MISSING_REFERENCE: their rawText contained `เลขที่รายการ: ...` all along;
- * only the parser could not see the label. Re-parsing locally recovers the
- * reference with no LLM call.
+ * CASING ORDER MATTERS. hashSlipReference is case-preserving, but
+ * pre-migration rows stored only the OLD upper-cased `reference`; hashing
+ * that produces a value a fresh mixed-case read can never match. So a stored
+ * hash or referenceRaw is used when present, otherwise the stored rawText is
+ * re-parsed with the LOCAL parser (recovering the original casing from the
+ * OCR evidence), and only then the upper-cased field.
  */
 function deriveIdentifiers(extractedDataJson) {
   const direct = identifiers.deriveStrongIdentifiersFromExtractedData(extractedDataJson);
@@ -94,18 +110,6 @@ function deriveIdentifiers(extractedDataJson) {
     parsed = null;
   }
 
-  // CASING IS THE WHOLE POINT OF THIS ORDER.
-  //
-  // hashSlipReference is deliberately case-preserving, but pre-migration rows
-  // stored only the OLD upper-cased `reference`. Hashing that field produces a
-  // value a fresh mixed-case read (e.g. SCB's 202608225ApOyxElgdOo7YVwv) can
-  // never match. So a stored hash or referenceRaw is used when present, and
-  // otherwise the stored rawText is re-parsed with the LOCAL parser FIRST -
-  // recovering the original casing from the OCR evidence - before falling back
-  // to the upper-cased field.
-  //
-  // An earlier revision returned `direct` immediately whenever it yielded any
-  // identifier, which meant the upper-cased fallback won over better evidence.
   const hasCasePreservingEvidence =
     (typeof parsed?.referenceHash === "string" && parsed.referenceHash.length === 64) ||
     Boolean(parsed?.referenceRaw);
@@ -117,7 +121,6 @@ function deriveIdentifiers(extractedDataJson) {
   const rawText = parsed?.rawText;
   if (typeof rawText === "string" && rawText.trim().length > 0) {
     try {
-      // LOCAL parser only - never an LLM call.
       const reExtracted = parser.extractSlipData(rawText);
       const reHash = identifiers.hashSlipReference(
         reExtracted.referenceRaw ?? reExtracted.reference
@@ -130,12 +133,10 @@ function deriveIdentifiers(extractedDataJson) {
         };
       }
     } catch {
-      // Fall through to the legacy field - a parser failure must not lose the
-      // row entirely, only its best-quality evidence.
+      // Fall through - a parser failure loses only the best-quality evidence.
     }
   }
 
-  // Last resort: whatever direct derivation produced (the upper-cased field).
   return { ...direct, recoveredByReparse: false };
 }
 
@@ -146,50 +147,102 @@ const stats = {
   claimed: 0,
   recoveredByReparse: 0,
   noIdentifier: 0,
-  collisions: [],
+  failures: [],
+  paymentMaxId: 0,
+  walletTopupMaxId: 0,
 };
 
-/** In-run index so two historical rows sharing a reference are detected. */
-const seen = new Map();
+/**
+ * Every strong identifier is tracked INDEPENDENTLY - see
+ * scripts/lib/backfillCollisionTracker.mjs for why keying on
+ * `referenceHash ?? fileHash` silently missed file collisions.
+ */
+const tracker = createCollisionTracker();
+
+/**
+ * "Already represented?" against the REGISTRY, across EVERY present
+ * identifier - not reference-only.
+ *
+ * A fileHash-only historical row, or a row whose reference differs but whose
+ * fileHash already belongs to a claim, must be recognised as represented so an
+ * idempotent re-run does not report it as a fresh collision or attempt a
+ * doomed insert.
+ */
+async function findExistingClaimRow(ids) {
+  const conditions = [];
+  if (ids.referenceHash) {
+    conditions.push(eq(schema.paymentSlipClaims.referenceHash, ids.referenceHash));
+  }
+  if (ids.fileHash) {
+    conditions.push(eq(schema.paymentSlipClaims.fileHash, ids.fileHash));
+  }
+  if (ids.qrPayloadHash) {
+    conditions.push(eq(schema.paymentSlipClaims.qrPayloadHash, ids.qrPayloadHash));
+  }
+  if (conditions.length === 0) return undefined;
+
+  const rows = await db
+    .select()
+    .from(schema.paymentSlipClaims)
+    .where(conditions.length === 1 ? conditions[0] : or(...conditions))
+    .limit(1);
+
+  const row = rows?.[0];
+  if (!row) return undefined;
+
+  let matchedKind = "reference";
+  if (ids.referenceHash && row.referenceHash === ids.referenceHash) matchedKind = "reference";
+  else if (ids.fileHash && row.fileHash === ids.fileHash) matchedKind = "file";
+  else if (ids.qrPayloadHash && row.qrPayloadHash === ids.qrPayloadHash) matchedKind = "qr";
+
+  return { row, matchedKind };
+}
 
 async function processRows(sourceType, rows) {
   for (const row of rows) {
     stats.scanned += 1;
+    if (sourceType === "order_payment") {
+      stats.paymentMaxId = Math.max(stats.paymentMaxId, row.id);
+    } else {
+      stats.walletTopupMaxId = Math.max(stats.walletTopupMaxId, row.id);
+    }
 
     const derived = deriveIdentifiers(row.extractedData);
     if (derived.recoveredByReparse) stats.recoveredByReparse += 1;
 
-    if (!identifiers.hasStrongIdentifier(derived.identifiers)) {
+    const ids = derived.identifiers;
+    if (!identifiers.hasStrongIdentifier(ids)) {
       stats.noIdentifier += 1;
       continue;
     }
 
-    const key = derived.identifiers.referenceHash ?? derived.identifiers.fileHash;
+    const current = { sourceType, sourceId: row.id };
 
-    const prior = seen.get(key);
-    if (prior) {
-      // Two APPROVED historical records share one bank transaction. Report -
-      // never quietly skip: this is either a past double-credit or a parser
-      // bug, and an operator must decide which.
-      stats.collisions.push({
-        identifier: key.slice(0, 12) + "...",
-        first: `${prior.sourceType}#${prior.sourceId}`,
-        second: `${sourceType}#${row.id}`,
+    // Already in the registry (ANY identifier)? Then this row is represented;
+    // it is NOT a collision and must not be re-inserted.
+    let existing;
+    try {
+      existing = await findExistingClaimRow(ids);
+    } catch (error) {
+      stats.failures.push({
+        source: `${sourceType}#${row.id}`,
+        stage: "registry lookup",
+        error: error?.code ?? error?.message ?? "unknown",
       });
       continue;
     }
-    seen.set(key, { sourceType, sourceId: row.id });
 
-    // Skip rows already represented (idempotent re-runs).
-    const existing = await db
-      .select({ id: schema.paymentSlipClaims.id })
-      .from(schema.paymentSlipClaims)
-      .where(eq(schema.paymentSlipClaims.referenceHash, derived.identifiers.referenceHash ?? ""))
-      .limit(1);
-    if (existing?.length) {
+    if (existing) {
       stats.alreadyClaimed += 1;
+      tracker.remember(ids, current);
       continue;
     }
+
+    // Collisions WITHIN this run, checked per identifier.
+    const collidingKinds = tracker.check(ids, current);
+    if (collidingKinds.length > 0) continue;
+
+    tracker.remember(ids, current);
 
     if (!isLive) {
       stats.wouldClaim += 1;
@@ -201,32 +254,43 @@ async function processRows(sourceType, rows) {
         sourceType,
         sourceId: row.id,
         userId: row.userId ?? 0,
-        referenceHash: derived.identifiers.referenceHash ?? null,
-        fileHash: derived.identifiers.fileHash ?? null,
-        qrPayloadHash: null,
+        referenceHash: ids.referenceHash ?? null,
+        fileHash: ids.fileHash ?? null,
+        qrPayloadHash: ids.qrPayloadHash ?? null,
         semanticFingerprint: derived.semanticFingerprint ?? null,
         claimedAt: new Date(),
       });
       stats.claimed += 1;
     } catch (error) {
-      // A duplicate-key error here is itself a collision worth reporting.
-      stats.collisions.push({
-        identifier: String(key).slice(0, 12) + "...",
-        first: "existing claim",
-        second: `${sourceType}#${row.id}`,
-        error: error?.code ?? "insert failed",
-      });
+      // A duplicate-key error here is a genuine collision the pre-checks
+      // missed (e.g. a concurrent writer); anything else is a real failure.
+      const isDuplicate = error?.code === "ER_DUP_ENTRY" || error?.errno === 1062;
+      if (isDuplicate) {
+        tracker.collisions.push({
+          kind: "registry",
+          identifier: "(unique index)",
+          first: "existing claim",
+          second: `${sourceType}#${row.id}`,
+        });
+      } else {
+        stats.failures.push({
+          source: `${sourceType}#${row.id}`,
+          stage: "insert",
+          error: error?.code ?? error?.message ?? "unknown",
+        });
+      }
     }
   }
 }
 
+const reachedEof = { payments: false, walletTopups: false };
+
 try {
   // GLOBAL scans - every user, approved rows only (approval is the evidence
   // that value was created), paged by ascending primary key so coverage is
-  // COMPLETE and deterministic. Deliberately not the old user-scoped or
-  // pending-only helpers, and deliberately NOT a fixed row cap: an arbitrary
+  // COMPLETE and deterministic. Deliberately NOT a fixed row cap: an arbitrary
   // limit would silently leave later rows unbackfilled and replayable.
-  async function scanAll(table, statusCol, idCol, extractedCol, extraCols, onPage) {
+  async function scanAll(key, table, statusCol, idCol, extractedCol, extraCols, onPage) {
     let cursor = 0;
     for (;;) {
       const page = await db
@@ -236,14 +300,21 @@ try {
         .orderBy(asc(idCol))
         .limit(pageSize);
 
-      if (!page || page.length === 0) return;
+      if (!page || page.length === 0) {
+        reachedEof[key] = true;
+        return;
+      }
       await onPage(page);
       cursor = page[page.length - 1].id;
-      if (page.length < pageSize) return;
+      if (page.length < pageSize) {
+        reachedEof[key] = true;
+        return;
+      }
     }
   }
 
   await scanAll(
+    "payments",
     schema.payments,
     schema.payments.status,
     schema.payments.id,
@@ -264,6 +335,7 @@ try {
   );
 
   await scanAll(
+    "walletTopups",
     schema.walletTopups,
     schema.walletTopups.status,
     schema.walletTopups.id,
@@ -280,19 +352,67 @@ try {
   console.log(`  recovered by re-parse    : ${stats.recoveredByReparse}`);
   console.log(`  no strong identifier     : ${stats.noIdentifier}`);
   console.log(
-    isLive ? `  claims INSERTED          : ${stats.claimed}` : `  would insert             : ${stats.wouldClaim}`
+    isLive
+      ? `  claims INSERTED          : ${stats.claimed}`
+      : `  would insert             : ${stats.wouldClaim}`
   );
-  console.log(`  collisions REPORTED      : ${stats.collisions.length}`);
+  console.log(`  collisions REPORTED      : ${tracker.collisions.length}`);
+  console.log(`  failures                 : ${stats.failures.length}`);
 
-  if (stats.collisions.length > 0) {
+  if (tracker.collisions.length > 0) {
     console.log("\n[backfill] COLLISIONS - review each before treating the backfill as complete:");
-    for (const c of stats.collisions) {
-      console.log(`  - ${c.identifier}  ${c.first}  <->  ${c.second}${c.error ? `  (${c.error})` : ""}`);
+    for (const c of tracker.collisions) {
+      console.log(`  - [${c.kind}] ${c.identifier}  ${c.first}  <->  ${c.second}`);
     }
     console.log(
-      "\n  A collision means two APPROVED records share one bank transaction.\n" +
+      "\n  A collision means two APPROVED records share one strong identifier.\n" +
         "  That is either a historical double-credit or a parser bug. It has NOT\n" +
         "  been auto-resolved and no financial record was modified."
+    );
+  }
+
+  if (stats.failures.length > 0) {
+    console.log("\n[backfill] FAILURES:");
+    for (const f of stats.failures) {
+      console.log(`  - ${f.source} (${f.stage}): ${f.error}`);
+    }
+  }
+
+  // ── Completion ─────────────────────────────────────────────────────────
+  const cleanRun =
+    stats.failures.length === 0 &&
+    tracker.collisions.length === 0 &&
+    reachedEof.payments &&
+    reachedEof.walletTopups;
+
+  if (markComplete) {
+    if (!cleanRun) {
+      console.error(
+        "\n[backfill] REFUSING to mark complete. A completion flag disables the legacy\n" +
+          "           safety scan, so it is only written after a fully clean run:\n" +
+          `             failures=${stats.failures.length} collisions=${tracker.collisions.length} ` +
+          `paymentsEOF=${reachedEof.payments} topupsEOF=${reachedEof.walletTopups}\n` +
+          "           Resolve the findings above and re-run."
+      );
+      process.exitCode = 1;
+    } else {
+      const state = await import("../server/services/slipBackfillStateService.ts");
+      await state.markSlipBackfillComplete({
+        toolVersion: TOOL_VERSION,
+        paymentMaxId: stats.paymentMaxId,
+        walletTopupMaxId: stats.walletTopupMaxId,
+        claimsInserted: stats.claimed,
+      });
+      console.log(
+        "\n[backfill] Marked COMPLETE. The approval path will now rely on the\n" +
+          "           paymentSlipClaims UNIQUE registry and skip the historical scan.\n" +
+          "           Every new approval still writes its own claim atomically."
+      );
+    }
+  } else if (isLive && cleanRun) {
+    console.log(
+      "\n[backfill] Live run clean. Re-run with --live --mark-complete to disable the\n" +
+        "           legacy historical scan."
     );
   }
 
@@ -300,7 +420,9 @@ try {
     console.log("\n[backfill] DRY-RUN complete. No rows were written. Re-run with --live to apply.");
   }
 
-  process.exitCode = stats.collisions.length > 0 ? 1 : 0;
+  if (tracker.collisions.length > 0 || stats.failures.length > 0) {
+    process.exitCode = 1;
+  }
 } finally {
   await connection.end();
 }
