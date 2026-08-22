@@ -14,6 +14,11 @@
  * the server already decided.
  */
 
+import {
+  effectiveFreshnessWindowMinutes,
+  isWithinFreshnessWindow,
+} from "@shared/slipFreshness";
+
 export type CheckState = "pass" | "fail" | "warning" | "not_evaluated";
 
 export type OcrVerdict =
@@ -145,10 +150,20 @@ export interface TimeComparison {
 const MISREAD_HINT_THRESHOLD_MINUTES = 365 * 24 * 60;
 
 export function compareTransactionTime(input: OcrPanelInput): TimeComparison {
+  const hasTransactionTime = Boolean(input.extracted?.transactionDateTime);
   const transactionAt =
     toDate(input.extracted?.transactionDateTime) ?? toDate(input.extracted?.transactionDate);
   const submittedAt = toDate(input.slipSubmittedAt);
-  const allowedWindowMinutes = input.allowedWindowMinutes ?? undefined;
+
+  // The allowance is derived with the SAME shared rule the server verifies
+  // with (shared/slipFreshness.ts), so a date-only result gets the server's
+  // at-least-one-day floor here too. Comparing every result against the bare
+  // configured window is what made the panel show FAIL for date-only slips
+  // the server had accepted.
+  const allowedWindowMinutes =
+    input.allowedWindowMinutes == null
+      ? undefined
+      : effectiveFreshnessWindowMinutes(input.allowedWindowMinutes, hasTransactionTime);
 
   if (!transactionAt || !submittedAt) {
     return { transactionAt, submittedAt, allowedWindowMinutes };
@@ -161,7 +176,7 @@ export function compareTransactionTime(input: OcrPanelInput): TimeComparison {
   const withinWindow =
     allowedWindowMinutes === undefined
       ? undefined
-      : differenceMinutes >= -5 && differenceMinutes <= allowedWindowMinutes;
+      : isWithinFreshnessWindow(differenceMinutes, allowedWindowMinutes);
 
   const possibleMisreadWarning =
     Math.abs(differenceMinutes) >= MISREAD_HINT_THRESHOLD_MINUTES

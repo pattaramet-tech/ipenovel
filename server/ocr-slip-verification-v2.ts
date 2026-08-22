@@ -11,6 +11,10 @@ import {
   describeProviderFailure,
   type ProviderDiagnostic,
 } from "./services/ocrDiagnosticsService";
+import {
+  effectiveFreshnessWindowMinutes,
+  isWithinFreshnessWindow,
+} from "@shared/slipFreshness";
 
 /**
  * OCR Slip Verification System — Production Hardened
@@ -296,6 +300,12 @@ export interface VerificationBreakdown {
   recipientEvidenceStrength?: RecipientEvidenceStrength;
   /** False when no confidence was reported at all (distinct from a low one). */
   confidenceKnown?: boolean;
+  /**
+   * The allowance actually applied to THIS result - the configured window,
+   * or at least a day when only a calendar date could be read. Surfaced so
+   * the admin panel shows the number the server really judged against.
+   */
+  effectiveWindowMinutes?: number;
   finalDecision: "approved" | "pending_review";
   failureReason?: string;
 }
@@ -1335,22 +1345,21 @@ export function verifySlipData(
   const transactionTime = (extracted.transactionDateTime ?? extracted.transactionDate)!.getTime();
   const verificationTime = (context.slipSubmittedAt ?? context.paymentCreatedAt).getTime();
   const timeDiffMs = verificationTime - transactionTime;
-  const clockSkewMs = 5 * 60 * 1000;
+  const timeDiffMinutes = timeDiffMs / 60000;
 
-  const safeMaxWindowMinutes = Number.isFinite(maxTimeWindowMinutes)
-    ? Math.max(5, maxTimeWindowMinutes)
-    : 120;
+  // The allowance now comes from the SHARED rule in shared/slipFreshness.ts,
+  // which the admin panel imports too. Previously this date-only floor lived
+  // only here, so the panel judged a date-only slip against the configured
+  // window and displayed FAIL for slips the server had accepted.
+  const effectiveWindowMinutes = effectiveFreshnessWindowMinutes(
+    maxTimeWindowMinutes,
+    Boolean(extracted.transactionDateTime)
+  );
+  breakdown.effectiveWindowMinutes = effectiveWindowMinutes;
 
-  let maxAgeMs: number;
-  if (extracted.transactionDateTime) {
-    maxAgeMs = safeMaxWindowMinutes * 60 * 1000;
-  } else {
-    maxAgeMs = Math.max(safeMaxWindowMinutes, 24 * 60) * 60 * 1000;
-  }
-
-  if (timeDiffMs > maxAgeMs || timeDiffMs < -clockSkewMs) {
+  if (!isWithinFreshnessWindow(timeDiffMinutes, effectiveWindowMinutes)) {
     result.reviewReason = "TRANSACTION_OUTSIDE_TIME_WINDOW";
-    breakdown.failureReason = `Transaction outside time window: ${timeDiffMs}ms (max: ${maxAgeMs}ms)`;
+    breakdown.failureReason = `Transaction outside time window: ${Math.round(timeDiffMinutes)} min (allowed: ${effectiveWindowMinutes} min)`;
     return result;
   }
   breakdown.dateWithinWindow = true;

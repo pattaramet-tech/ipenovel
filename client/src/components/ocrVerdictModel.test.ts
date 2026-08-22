@@ -523,3 +523,76 @@ describe("QR stays deferred and never falsely clears anything", () => {
     expect(rows.find((r) => r.key === "final")!.state).toBe("fail");
   });
 });
+
+
+// ─── P2: date-only freshness must match the server exactly ───────────────
+
+describe("date-only freshness parity with the server", () => {
+  const dateOnly = (transactionDate: string, slipSubmittedAt: string, configured: number) =>
+    compareTransactionTime(
+      input({
+        allowedWindowMinutes: configured,
+        // No transactionDateTime - only a calendar date, as OCR often yields.
+        extracted: { amount: 100, transactionDate },
+        slipSubmittedAt,
+      })
+    );
+
+  const withTime = (transactionDateTime: string, slipSubmittedAt: string, configured: number) =>
+    compareTransactionTime(
+      input({
+        allowedWindowMinutes: configured,
+        extracted: { amount: 100, transactionDateTime },
+        slipSubmittedAt,
+      })
+    );
+
+  it("configured=120, DATE-ONLY, 600 min gap -> PASS (server grants >= 1440)", () => {
+    const t = dateOnly("2026-08-22T00:00:00Z", "2026-08-22T10:00:00Z", 120);
+    expect(t.differenceMinutes).toBe(600);
+    expect(t.allowedWindowMinutes).toBe(1440);
+    // Previously this rendered FAIL against the bare 120-minute window while
+    // the server had accepted the slip.
+    expect(t.withinWindow).toBe(true);
+  });
+
+  it("configured=120, WITH TIME, 600 min gap -> FAIL (matches the server)", () => {
+    const t = withTime("2026-08-22T00:00:00Z", "2026-08-22T10:00:00Z", 120);
+    expect(t.differenceMinutes).toBe(600);
+    expect(t.allowedWindowMinutes).toBe(120);
+    expect(t.withinWindow).toBe(false);
+  });
+
+  it("configured=2000, DATE-ONLY uses 2000, not the 1440 floor", () => {
+    const t = dateOnly("2026-08-22T00:00:00Z", "2026-08-22T10:00:00Z", 2000);
+    expect(t.allowedWindowMinutes).toBe(2000);
+  });
+
+  it("a date-only slip beyond a full day still FAILS", () => {
+    const t = dateOnly("2026-08-20T00:00:00Z", "2026-08-22T10:00:00Z", 120);
+    expect(t.withinWindow).toBe(false);
+  });
+
+  it("missing config still reports NOT EVALUATED, never an assumed window", () => {
+    const row = buildChecklist(
+      input({
+        allowedWindowMinutes: null,
+        extracted: { amount: 100, transactionDate: "2026-08-22T00:00:00Z" },
+        slipSubmittedAt: "2026-08-22T10:00:00Z",
+      })
+    ).find((r) => r.key === "freshness")!;
+    expect(row.state).toBe("not_evaluated");
+  });
+
+  it("the freshness checklist row shows the EFFECTIVE allowance", () => {
+    const row = buildChecklist(
+      input({
+        allowedWindowMinutes: 120,
+        extracted: { amount: 100, transactionDate: "2026-08-22T00:00:00Z" },
+        slipSubmittedAt: "2026-08-22T10:00:00Z",
+      })
+    ).find((r) => r.key === "freshness")!;
+    expect(row.state).toBe("pass");
+    expect(row.detail).toContain("1440");
+  });
+});
