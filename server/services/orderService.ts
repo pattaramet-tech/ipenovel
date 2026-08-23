@@ -322,6 +322,8 @@ export async function approvePayment(
       expectedLegacyAliasHash?: string;
       expectedMatchedSourceType: "order_payment" | "wallet_topup";
       expectedMatchedSourceId: number;
+      /** The exact case-preserving reference the admin adjudicated. */
+      expectedIncomingReferenceHash?: string;
     };
     /**
      * Invoked INSIDE the approval transaction so a successful legacy-case
@@ -352,6 +354,8 @@ async function approvePaymentInTx(
       expectedLegacyAliasHash?: string;
       expectedMatchedSourceType: "order_payment" | "wallet_topup";
       expectedMatchedSourceId: number;
+      /** The exact case-preserving reference the admin adjudicated. */
+      expectedIncomingReferenceHash?: string;
     };
     auditResolution?: (tx: any) => Promise<void>;
   }

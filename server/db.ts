@@ -4074,6 +4074,8 @@ export async function approveWalletTopup(
       expectedLegacyAliasHash?: string;
       expectedMatchedSourceType: "order_payment" | "wallet_topup";
       expectedMatchedSourceId: number;
+      /** The exact case-preserving reference the admin adjudicated. */
+      expectedIncomingReferenceHash?: string;
     };
     auditResolution?: (tx: any) => Promise<void>;
   }
@@ -4291,7 +4293,15 @@ export async function rejectWalletTopup(
    * when the rejection then lost a race or failed, leaving the top-up
    * reviewable but unresolvable.
    */
-  options?: { auditResolution?: (tx: any) => Promise<void> }
+  options?: {
+    /**
+     * Runs under the row lock while the top-up is STILL REVIEWABLE, before
+     * the status changes. Evidence revalidation belongs here: running it
+     * after the rejection meant it saw `rejected` and always refused.
+     */
+    revalidate?: (tx: any) => Promise<void>;
+    auditResolution?: (tx: any) => Promise<void>;
+  }
 ) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -4304,6 +4314,12 @@ export async function rejectWalletTopup(
 
     const topup = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
     if (!topup || topup.length === 0) throw new Error("Wallet top-up not found");
+
+    // Locked, reloaded, and still reviewable: the only correct point to
+    // revalidate the evidence a resolution rests on.
+    if (options?.revalidate) {
+      await options.revalidate(tx);
+    }
 
     // Conditional update - only reject if still pending or pending_review (idempotency)
     const updateResult = await tx

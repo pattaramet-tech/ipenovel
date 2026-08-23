@@ -6,6 +6,7 @@ CREATE TABLE `paymentSlipReviewResolutions` (
 	`matchedSourceType` enum('order_payment','wallet_topup'),
 	`matchedSourceId` int,
 	`legacyAliasHash` varchar(64),
+	`adjudicatedReferenceHash` varchar(64),
 	`adminUserId` int NOT NULL,
 	`reason` text NOT NULL,
 	`createdAt` timestamp NOT NULL DEFAULT (now()),

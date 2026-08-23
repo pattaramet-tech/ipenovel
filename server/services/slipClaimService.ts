@@ -89,6 +89,18 @@ export interface SlipClaimRequest {
     expectedLegacyAliasHash?: string;
     expectedMatchedSourceType: SlipClaimSourceType;
     expectedMatchedSourceId: number;
+    /**
+     * The EXACT case-preserving reference hash the admin adjudicated.
+     *
+     * Binding to the alias and the matched source alone was still too loose:
+     * those describe the historical FOLD, and folding is lossy. A Recheck
+     * changing `abc123` to `AbC123` keeps the same alias and the same matched
+     * row, so the waiver still applied - to a case-preserving reference no
+     * human had ever seen, which the claim then inserted.
+     *
+     * Never upper-cased, and never supplied by a browser.
+     */
+    expectedIncomingReferenceHash?: string;
   };
 }
 
@@ -373,7 +385,12 @@ export async function claimSlip(
       const matchesAdjudicated =
         adjudicated.expectedMatchedSourceType === conflict.matchedSourceType &&
         adjudicated.expectedMatchedSourceId === conflict.matchedSourceId &&
-        (adjudicated.expectedLegacyAliasHash ?? null) === (conflict.legacyAliasHash ?? null);
+        (adjudicated.expectedLegacyAliasHash ?? null) === (conflict.legacyAliasHash ?? null) &&
+        // AND the exact thing being approved. The three above identify the
+        // historical fold; only this identifies the CURRENT case-preserving
+        // reference, which is what the claim is about to take ownership of.
+        (adjudicated.expectedIncomingReferenceHash ?? null) ===
+          (request.identifiers.referenceHash ?? null);
 
       if (!matchesAdjudicated) {
         return {

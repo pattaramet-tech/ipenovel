@@ -2905,6 +2905,13 @@
           "notNull": false,
           "autoincrement": false
         },
+        "adjudicatedReferenceHash": {
+          "name": "adjudicatedReferenceHash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "adminUserId": {
           "name": "adminUserId",
           "type": "int",

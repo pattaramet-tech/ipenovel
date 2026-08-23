@@ -268,7 +268,55 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
     const currentPayment = await db.getPaymentById(payment.id);
     if (currentPayment?.status === "approved" || currentPayment?.status === "rejected") {
       console.log(`[OCR] Payment ${payment.id} is already ${currentPayment.status}, skipping re-approval`);
-      // Return safe no-op result
+
+      // ── ATTEMPT HISTORY SURVIVES THE RACE ─────────────────────────────
+      // This early return skips the recording at the end of the function, so
+      // an OCR run that did all its provider and verification work vanished
+      // from history exactly when an admin most needs to explain what
+      // happened - a concurrent approval or rejection. Recorded HERE, before
+      // returning, so every automatic run leaves exactly one row: this path
+      // returns immediately afterwards and can never also reach the terminal
+      // recording below.
+      //
+      // Classified STATE, not TECHNICAL and not a duplicate: nothing failed
+      // and nothing was replayed - a human simply got there first. The
+      // attempt `result` enum has no state member and adding one would need a
+      // migration, so `needs_review` carries it, matching the wallet
+      // TOPUP_SUPERSEDED_BY_FINALIZATION trade-off.
+      await recordOcrAttempt({
+        subjectType: "order_payment",
+        subjectId: payment.id,
+        trigger: "automatic",
+        initiatedByUserId: null,
+        startedAt: ocrStartedAt,
+        stage: "completed",
+        result: "needs_review",
+        reviewCategory: "STATE",
+        reviewReason: "OCR_SUPERSEDED_BY_FINALIZATION",
+        confidence:
+          verificationResult?.extractedData?.confidenceKnown === false
+            ? null
+            : (verificationResult?.ocrConfidence ?? null),
+        // Sanitized diagnostics only - mode, status and count. Never a URL,
+        // a credential, or a raw provider response.
+        providerMode: providerDiagnostic?.providerMode ?? null,
+        providerHttpStatus: providerDiagnostic?.providerHttpStatus ?? null,
+        providerAttemptCount: providerDiagnostic?.providerAttemptCount ?? (ocrEnabled ? 1 : 0),
+        verificationSnapshot: JSON.stringify({
+          amountMatched: verificationResult?.breakdown?.amountMatched,
+          datePresent: verificationResult?.breakdown?.datePresent,
+          dateWithinWindow: verificationResult?.breakdown?.dateWithinWindow,
+          referencePresent: verificationResult?.breakdown?.referencePresent,
+          recipientVerified: verificationResult?.breakdown?.recipientVerified,
+          recipientEvidenceType: verificationResult?.breakdown?.recipientEvidenceType,
+          confidenceKnown: verificationResult?.breakdown?.confidenceKnown,
+          fileHashAvailable: Boolean(slipFileHash),
+          supersededByFinalization: true,
+        }),
+      });
+
+      // Return safe no-op result. NOTHING is mutated: the persisted status is
+      // authoritative and this run creates no claim and no value.
       return {
         success: true,
         message: `Payment already ${currentPayment.status}`,

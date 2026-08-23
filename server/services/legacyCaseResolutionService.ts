@@ -70,6 +70,15 @@ export interface AdjudicatedAmbiguity {
   legacyAliasHash?: string;
   matchedSourceType: LegacyCaseSubjectType;
   matchedSourceId: number;
+  /**
+   * The CURRENT case-preserving reference hash at adjudication time.
+   *
+   * The three fields above identify the historical fold, which is lossy:
+   * `abc123` and `AbC123` share all of them. This identifies the exact thing
+   * the admin decided about, so a casing-only OCR change between the review
+   * and the transaction can no longer pass as "unchanged".
+   */
+  incomingReferenceHash?: string;
 }
 
 /** Per-subject adapter. Keeps the generic layer free of subject specifics. */
@@ -90,6 +99,12 @@ interface SubjectAdapter {
   /**
    * Rejects the subject and writes the resolution record in ONE transaction.
    *
+   * `revalidate` runs under the row lock WHILE THE SUBJECT IS STILL
+   * REVIEWABLE, before any status change. Running the evidence check after
+   * the rejection was self-defeating: the guard requires a reviewable status,
+   * which the rejection had just removed, so every confirmed_duplicate threw
+   * CONFLICT and rolled itself back.
+   *
    * `auditResolution` is invoked only AFTER a CONDITIONAL rejection has been
    * confirmed to have won the race, and inside the same transaction - so the
    * record can never outlive a rejection that did not happen.
@@ -97,6 +112,7 @@ interface SubjectAdapter {
   rejectWithResolution(args: {
     adminUserId: number;
     reason: string;
+    revalidate: (tx: any) => Promise<void>;
     auditResolution: (tx: any) => Promise<void>;
   }): Promise<void>;
 }
@@ -126,11 +142,12 @@ function adapterFor(input: ResolveLegacyCaseInput): SubjectAdapter {
             expectedLegacyAliasHash: adjudicated.legacyAliasHash,
             expectedMatchedSourceType: adjudicated.matchedSourceType,
             expectedMatchedSourceId: adjudicated.matchedSourceId,
+            expectedIncomingReferenceHash: adjudicated.incomingReferenceHash,
           },
           auditResolution,
         });
       },
-      async rejectWithResolution({ adminUserId, reason, auditResolution }) {
+      async rejectWithResolution({ adminUserId, reason, revalidate, auditResolution }) {
         const database = await requireDb();
         await database.transaction(async (tx: any) => {
           // 0. LOCK the subject so the evidence cannot be rewritten by a
@@ -151,7 +168,11 @@ function adapterFor(input: ResolveLegacyCaseInput): SubjectAdapter {
             });
           }
 
-          // 3. The conditional rejection is the ARBITER of the race. Losing
+          // 3. Revalidate the evidence WHILE THE STATUS IS STILL REVIEWABLE.
+          //    This has to happen before the rejection, not after it.
+          await revalidate(tx);
+
+          // 4. The conditional rejection is the ARBITER of the race. Losing
           //    it rolls the resolution record back with everything else.
           const won = await db.rejectPaymentIfReviewable(
             input.subjectId,
@@ -168,12 +189,12 @@ function adapterFor(input: ResolveLegacyCaseInput): SubjectAdapter {
             });
           }
 
-          // 4. Reuse the existing rejection flow for its side effects (order
+          // 5. Reuse the existing rejection flow for its side effects (order
           //    status, order history, approval metadata) rather than
           //    inventing a second one - inside THIS transaction.
           await orderService.rejectPayment(input.subjectId, String(adminUserId), reason, tx);
 
-          // 5. Audit last, same transaction.
+          // 6. Audit last, same transaction.
           await auditResolution(tx);
         });
       },
@@ -208,15 +229,18 @@ function adapterFor(input: ResolveLegacyCaseInput): SubjectAdapter {
           expectedLegacyAliasHash: adjudicated.legacyAliasHash,
           expectedMatchedSourceType: adjudicated.matchedSourceType,
           expectedMatchedSourceId: adjudicated.matchedSourceId,
+          expectedIncomingReferenceHash: adjudicated.incomingReferenceHash,
         },
         auditResolution,
       });
     },
-    async rejectWithResolution({ adminUserId, reason, auditResolution }) {
-      // rejectWalletTopup already reloads inside its own transaction and
-      // rejects CONDITIONALLY, throwing when it loses the race. The audit
-      // callback runs inside that same transaction, after the win.
+    async rejectWithResolution({ adminUserId, reason, revalidate, auditResolution }) {
+      // rejectWalletTopup already locks and reloads inside its own
+      // transaction and rejects CONDITIONALLY, throwing when it loses the
+      // race. `revalidate` runs there while the top-up is still reviewable;
+      // the audit runs after the win. Both inside that one transaction.
       await db.rejectWalletTopup(input.subjectId, adminUserId, reason, {
+        revalidate,
         auditResolution,
       });
     },
@@ -246,6 +270,8 @@ export async function describeLegacyCaseAmbiguity(
       legacyAliasHash?: string;
       matchedSourceType: LegacyCaseSubjectType;
       matchedSourceId: number;
+      /** Case-preserving, derived from the SAME extraction as the fold. */
+      incomingReferenceHash?: string;
     }
   | { present: false }
 > {
@@ -270,18 +296,28 @@ export async function describeLegacyCaseAmbiguity(
     legacyAliasHash: conflict.legacyAliasHash,
     matchedSourceType: conflict.matchedSourceType,
     matchedSourceId: conflict.matchedSourceId,
+    // Never upper-cased: this is the exact value, taken from the same
+    // persisted extraction the fold was computed from.
+    incomingReferenceHash: identifiers.referenceHash,
   };
 }
 
 /** Same alias, same matched source. Anything else is different evidence. */
 function sameAmbiguity(
   a: AdjudicatedAmbiguity,
-  b: { legacyAliasHash?: string; matchedSourceType: LegacyCaseSubjectType; matchedSourceId: number }
+  b: {
+    legacyAliasHash?: string;
+    matchedSourceType: LegacyCaseSubjectType;
+    matchedSourceId: number;
+    incomingReferenceHash?: string;
+  }
 ): boolean {
   return (
     (a.legacyAliasHash ?? null) === (b.legacyAliasHash ?? null) &&
     a.matchedSourceType === b.matchedSourceType &&
-    a.matchedSourceId === b.matchedSourceId
+    a.matchedSourceId === b.matchedSourceId &&
+    // The exact case-preserving reference, not just the fold it maps to.
+    (a.incomingReferenceHash ?? null) === (b.incomingReferenceHash ?? null)
   );
 }
 
@@ -382,6 +418,7 @@ export async function resolveLegacyCaseAmbiguity(
     legacyAliasHash: ambiguity.legacyAliasHash,
     matchedSourceType: ambiguity.matchedSourceType,
     matchedSourceId: ambiguity.matchedSourceId,
+    incomingReferenceHash: ambiguity.incomingReferenceHash,
   };
 
   if (input.decision === "confirmed_duplicate") {
@@ -396,13 +433,14 @@ export async function resolveLegacyCaseAmbiguity(
     await adapter.rejectWithResolution({
       adminUserId: input.adminUserId,
       reason: `Legacy reference case ambiguity confirmed as duplicate: ${reason}`,
-      auditResolution: async (tx: any) => {
-        // The subject row is already locked by the rejection transaction, so
-        // this re-derives CURRENT evidence and requires it to be EXACTLY what
-        // was adjudicated. A rejection must not rest on a fold that has since
-        // been replaced any more than an approval may.
+      // Under the row lock, while the subject is STILL REVIEWABLE: re-derive
+      // CURRENT evidence and require it to be EXACTLY what was adjudicated. A
+      // rejection must not rest on evidence that has since been replaced any
+      // more than an approval may.
+      revalidate: async (tx: any) => {
         await requireUnchangedAmbiguityInTx(input, adapter, adjudicated, tx);
-
+      },
+      auditResolution: async (tx: any) => {
         await insertResolution(tx, {
           subjectType: input.subjectType,
           subjectId: input.subjectId,
@@ -484,7 +522,12 @@ async function insertResolution(
     subjectType: LegacyCaseSubjectType;
     subjectId: number;
     resolutionType: "legacy_case_confirmed_distinct" | "legacy_case_confirmed_duplicate";
-    ambiguity: { legacyAliasHash?: string; matchedSourceType: LegacyCaseSubjectType; matchedSourceId: number };
+    ambiguity: {
+      legacyAliasHash?: string;
+      matchedSourceType: LegacyCaseSubjectType;
+      matchedSourceId: number;
+      incomingReferenceHash?: string;
+    };
     adminUserId: number;
     reason: string;
   }
@@ -497,6 +540,9 @@ async function insertResolution(
       matchedSourceType: args.ambiguity.matchedSourceType,
       matchedSourceId: args.ambiguity.matchedSourceId,
       legacyAliasHash: args.ambiguity.legacyAliasHash ?? null,
+      // Which case-preserving reference was actually adjudicated - the alias
+      // above cannot answer that, because folding is lossy.
+      adjudicatedReferenceHash: args.ambiguity.incomingReferenceHash ?? null,
       adminUserId: args.adminUserId,
       reason: args.reason,
     });

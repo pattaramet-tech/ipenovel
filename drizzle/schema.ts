@@ -1589,6 +1589,20 @@ export const paymentSlipReviewResolutions = mysqlTable(
     matchedSourceId: int("matchedSourceId"),
     /** The lossy alias that triggered the review. Advisory context only. */
     legacyAliasHash: varchar("legacyAliasHash", { length: 64 }),
+    /**
+     * The EXACT case-preserving reference hash the admin adjudicated.
+     *
+     * The alias above identifies only the historical FOLD, and folding is
+     * lossy: `abc123` and `AbC123` share it. Without this, a resolution row
+     * cannot say WHICH case-preserving reference a human actually approved,
+     * and a casing-only change between review and approval was
+     * indistinguishable from no change at all.
+     *
+     * Nullable for rows written before this field existed. Never a secret -
+     * a salted-free SHA of a bank reference, exactly like every other hash
+     * in this schema.
+     */
+    adjudicatedReferenceHash: varchar("adjudicatedReferenceHash", { length: 64 }),
     adminUserId: int("adminUserId").notNull(),
     /** Mandatory, non-empty operator justification. */
     reason: text("reason").notNull(),
