@@ -8,17 +8,18 @@ import { getRawReferenceForLegacyLookup, hashSlipReference } from "./slipIdentif
 import * as backfillState from "./slipBackfillStateService";
 
 /**
- * P1: retiring the historical scan must not retire mixed-case protection.
+ * The advisory LEGACY CASE alias.
  *
- * `--mark-complete` disables the legacy scan, which was the ONLY place the
- * upper-cased candidate was compared. A legacy approval holding only an
- * upper-cased `reference` (true casing unrecoverable, no rawText) is stored by
- * the backfill under the upper-case hash, so a replay whose fresh OCR keeps
- * the original mixed case has a different case-preserving hash and could take
- * a new claim once the scan was off.
+ * Some pre-migration approvals kept only an upper-cased `reference`, so their
+ * true casing is unrecoverable and an exact hash can never match a fresh
+ * mixed-case read of the same transaction. `legacyReferenceUpperHash` marks
+ * exactly those rows.
  *
- * The fix is an INDEXED, non-unique `referenceHashUpper` alias on the claim
- * registry, checked on every claim regardless of scan state.
+ * It is ADVISORY, never ownership. Upper-casing is lossy, so a hit may be one
+ * replayed transaction OR two genuinely different references that fold
+ * together. It therefore stops auto-approval WITHOUT inserting a claim and
+ * routes to an explicit admin resolution - it is never `already_claimed`,
+ * which would leave a legitimate distinct payment permanently unapprovable.
  */
 
 afterEach(() => {
@@ -92,7 +93,7 @@ function makeRegistry(seed: any[] = []) {
  */
 function findColumns(cond: any): string[] {
   const names = new Set<string>();
-  const known = ["referenceHash", "referenceHashUpper", "fileHash", "qrPayloadHash"];
+  const known = ["referenceHash", "legacyReferenceUpperHash", "fileHash", "qrPayloadHash"];
 
   const visit = (node: any, depth = 0) => {
     if (!node || typeof node !== "object" || depth > 4) return;
@@ -129,7 +130,7 @@ const LEGACY_CLAIM = {
   sourceId: 42,
   userId: 7,
   referenceHash: UPPER_HASH,
-  referenceHashUpper: UPPER_HASH,
+  legacyReferenceUpperHash: UPPER_HASH,
   fileHash: null,
   qrPayloadHash: null,
 };
@@ -154,12 +155,17 @@ describe("mixed-case protection survives backfill completion", () => {
     const outcome = await claimSlip(replayRequest(), tx);
 
     expect(outcome.claimed).toBe(false);
-    if (!outcome.claimed && outcome.reason === "already_claimed") {
-      expect(outcome.existingSourceType).toBe("order_payment");
-      expect(outcome.existingSourceId).toBe(42);
-      expect(outcome.viaLegacyCompatibility).toBe(true);
+    // NOT already_claimed - that outcome is a dead end for a distinct payment.
+    if (!outcome.claimed) {
+      expect(outcome.reason).toBe("legacy_case_ambiguity");
+      if (outcome.reason === "legacy_case_ambiguity") {
+        expect(outcome.matchedSourceType).toBe("order_payment");
+        expect(outcome.matchedSourceId).toBe(42);
+        expect(outcome.conflictStrength).toBe("advisory");
+        expect(outcome.requiresAdminResolution).toBe(true);
+      }
     }
-    // No value created.
+    // No value created and NO claim inserted.
     expect(tx._claims).toHaveLength(1);
   });
 
@@ -174,7 +180,7 @@ describe("mixed-case protection survives backfill completion", () => {
     // Distinguishing evidence: with the scan off and NO alias on the legacy
     // claim, the replay would succeed - so the alias is what blocks it.
     vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
-    const withoutAlias = { ...LEGACY_CLAIM, referenceHashUpper: null };
+    const withoutAlias = { ...LEGACY_CLAIM, legacyReferenceUpperHash: null };
     const tx = makeRegistry([withoutAlias]);
 
     const outcome = await claimSlip(replayRequest(), tx);
@@ -219,15 +225,67 @@ describe("mixed-case protection survives backfill completion", () => {
     expect(outcome.claimed).toBe(true);
   });
 
-  it("new claims persist their own alias for future replays", async () => {
+  it("MODERN claims never persist an alias - only the backfill sets it", async () => {
     vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
     const tx = makeRegistry();
 
     await claimSlip(replayRequest(1234), tx);
-    expect(tx._claims[0].referenceHashUpper).toBe(UPPER_HASH);
+    // Writing an alias here would manufacture ambiguity that does not exist
+    // and drag unrelated future payments into manual review.
+    expect(tx._claims[0].legacyReferenceUpperHash).toBeNull();
     // The authoritative hash is still the case-preserving one.
     expect(tx._claims[0].referenceHash).toBe(MIXED_HASH);
     expect(tx._claims[0].referenceHash).not.toBe(UPPER_HASH);
+  });
+
+  it("an alias match NEVER returns already_claimed", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeRegistry([LEGACY_CLAIM]);
+    const outcome = await claimSlip(replayRequest(), tx);
+    if (!outcome.claimed) {
+      expect(outcome.reason).not.toBe("already_claimed");
+      expect(outcome.reason).not.toBe("no_strong_identifier");
+    }
+  });
+
+  it("an admin-resolved ambiguity proceeds to the NORMAL atomic claim", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeRegistry([LEGACY_CLAIM]);
+
+    const outcome = await claimSlip(
+      { ...replayRequest(777), legacyCaseAmbiguityResolved: true },
+      tx
+    );
+
+    expect(outcome.claimed).toBe(true);
+    // The exact case-preserving hash is what got claimed; the lossy alias is
+    // never claimed, so other legitimate payments sharing it stay resolvable.
+    expect(tx._claims[1].referenceHash).toBe(MIXED_HASH);
+    expect(tx._claims[1].legacyReferenceUpperHash).toBeNull();
+  });
+
+  it("resolution does NOT bypass a real exact-identifier conflict", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeRegistry([
+      LEGACY_CLAIM,
+      {
+        sourceType: "order_payment",
+        sourceId: 55,
+        userId: 2,
+        referenceHash: MIXED_HASH,
+        legacyReferenceUpperHash: null,
+        fileHash: null,
+        qrPayloadHash: null,
+      },
+    ]);
+
+    const outcome = await claimSlip(
+      { ...replayRequest(888), legacyCaseAmbiguityResolved: true },
+      tx
+    );
+
+    expect(outcome.claimed).toBe(false);
+    if (!outcome.claimed) expect(outcome.reason).toBe("already_claimed");
   });
 
   it("no alias is stored when there is no raw reference evidence", async () => {
@@ -242,27 +300,27 @@ describe("mixed-case protection survives backfill completion", () => {
       },
       tx
     );
-    expect(tx._claims[0].referenceHashUpper).toBeNull();
+    expect(tx._claims[0].legacyReferenceUpperHash).toBeNull();
   });
 });
 
 describe("the alias is a lookup, never a constraint", () => {
   const { indexes, uniqueConstraints } = getTableConfig(paymentSlipClaims);
 
-  it("referenceHashUpper has a NON-unique index", () => {
+  it("legacyReferenceUpperHash has a NON-unique index", () => {
     const idx = indexes.find(
-      (i: any) => i.config.name === "paymentSlipClaims_referenceHashUpper_idx"
+      (i: any) => i.config.name === "paymentSlipClaims_legacyReferenceUpperHash_idx"
     );
     expect(idx).toBeDefined();
     expect(idx?.config.unique).toBeFalsy();
   });
 
-  it("referenceHashUpper is NOT a unique constraint - folding is lossy", () => {
+  it("legacyReferenceUpperHash is NOT a unique constraint - folding is lossy", () => {
     const names = [
       ...indexes.filter((i: any) => i.config.unique).map((i: any) => i.config.name),
       ...(uniqueConstraints ?? []).map((u: any) => u.name),
     ];
-    expect(names.some((n) => String(n).includes("referenceHashUpper"))).toBe(false);
+    expect(names.some((n) => String(n).includes("legacyReferenceUpperHash"))).toBe(false);
   });
 
   it("the case-preserving referenceHash remains UNIQUE - it is the authority", () => {
@@ -276,13 +334,13 @@ describe("the alias is a lookup, never a constraint", () => {
 
 describe("migration 0038 is additive only", () => {
   const sql = fs.readFileSync(
-    path.resolve(process.cwd(), "drizzle/0038_add_slip_claim_reference_alias.sql"),
+    path.resolve(process.cwd(), "drizzle/0038_add_legacy_alias_and_review_resolutions.sql"),
     "utf-8"
   );
 
   it("adds the column and its index, nothing else", () => {
-    expect(sql).toMatch(/ADD `referenceHashUpper` varchar\(64\)/);
-    expect(sql).toMatch(/CREATE INDEX `paymentSlipClaims_referenceHashUpper_idx`/);
+    expect(sql).toMatch(/ADD `legacyReferenceUpperHash` varchar\(64\)/);
+    expect(sql).toMatch(/CREATE INDEX `paymentSlipClaims_legacyReferenceUpperHash_idx`/);
   });
 
   it("contains no destructive statement", () => {
@@ -292,6 +350,76 @@ describe("migration 0038 is additive only", () => {
   });
 
   it("does not add a UNIQUE constraint on the alias", () => {
-    expect(sql).not.toMatch(/UNIQUE[^;]*referenceHashUpper/i);
+    expect(sql).not.toMatch(/UNIQUE[^;]*legacyReferenceUpperHash/i);
+  });
+});
+
+
+describe("concurrent differently-cased replays both stop - no serialization needed", () => {
+  it("two concurrent alias matches BOTH go to review and neither creates value", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+
+    const aliasHash = hashSlipReference("ABC123XYZ")!;
+    const tx = makeRegistry([
+      { ...LEGACY_CLAIM, referenceHash: aliasHash, legacyReferenceUpperHash: aliasHash },
+    ]);
+
+    // Same reference, differently cased reads, different file bytes.
+    const a = {
+      sourceType: "order_payment" as const,
+      sourceId: 1001,
+      userId: 11,
+      identifiers: { referenceHash: hashSlipReference("AbC123XyZ")!, fileHash: "1".repeat(64) },
+      referenceRawForLegacyLookup: "AbC123XyZ",
+    };
+    const b = {
+      sourceType: "wallet_topup" as const,
+      sourceId: 1002,
+      userId: 22,
+      identifiers: { referenceHash: hashSlipReference("aBc123xYz")!, fileHash: "2".repeat(64) },
+      referenceRawForLegacyLookup: "aBc123xYz",
+    };
+
+    const [ra, rb] = await Promise.all([claimSlip(a, tx), claimSlip(b, tx)]);
+
+    expect(ra.claimed).toBe(false);
+    expect(rb.claimed).toBe(false);
+    if (!ra.claimed) expect(ra.reason).toBe("legacy_case_ambiguity");
+    if (!rb.claimed) expect(rb.reason).toBe("legacy_case_ambiguity");
+
+    // Zero new claims - which is why the lossy alias needs no serialization:
+    // neither path can create value in the first place.
+    expect(tx._claims).toHaveLength(1);
+  });
+
+  it("modern references differing only by case, with NO legacy alias, are NOT forced into review", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeRegistry();
+
+    const a = await claimSlip(
+      {
+        sourceType: "order_payment",
+        sourceId: 1,
+        userId: 1,
+        identifiers: { referenceHash: hashSlipReference("AbC999")! },
+        referenceRawForLegacyLookup: "AbC999",
+      },
+      tx
+    );
+    const b = await claimSlip(
+      {
+        sourceType: "order_payment",
+        sourceId: 2,
+        userId: 2,
+        identifiers: { referenceHash: hashSlipReference("aBc999")! },
+        referenceRawForLegacyLookup: "aBc999",
+      },
+      tx
+    );
+
+    // No historical ambiguous row exists, so these are ordinary distinct
+    // references and both claim normally.
+    expect(a.claimed).toBe(true);
+    expect(b.claimed).toBe(true);
   });
 });

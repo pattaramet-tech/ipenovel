@@ -1412,28 +1412,32 @@ export const paymentSlipClaims = mysqlTable(
     /** SHA-256 of the normalized bank transaction reference. */
     referenceHash: varchar("referenceHash", { length: 64 }),
     /**
-     * CASE-FOLDED compatibility alias: SHA-256 of the UPPER-CASED normalized
-     * reference.
+     * ADVISORY legacy ambiguity marker - NOT an anti-replay authority.
      *
-     * Exists solely for pre-migration rows that were persisted with only an
-     * upper-cased `reference` and no `rawText` to reparse. Their true casing
-     * is unrecoverable, so `referenceHash` (deliberately case-preserving)
-     * cannot match a replay whose fresh OCR keeps the original mixed case.
-     * This column gives such a row something the replay CAN match.
+     * Set ONLY on backfilled historical rows whose original reference casing
+     * is unrecoverable: they were persisted with just an upper-cased
+     * `reference` and carry no `referenceRaw`, no stored hash and no
+     * reparsable `rawText`. For those rows the true reference can never be
+     * reconstructed, so a fresh mixed-case read of the same transaction
+     * cannot be matched by `referenceHash`.
      *
-     * Deliberately NON-UNIQUE and INDEXED, never a constraint. Upper-casing
-     * is lossy - two genuinely different references could fold together - so
-     * a hit here is treated as a compatibility signal that routes to human
-     * review, exactly like the historical scan it replaces. The authority
-     * for blocking value creation remains the UNIQUE case-preserving
-     * `referenceHash` above.
+     * NULL for everything else - every modern submission, and every legacy
+     * row whose casing WAS recoverable. A normal new claim must never write
+     * this field.
      *
-     * Being indexed is the point: it makes that compatibility check an O(log n)
-     * lookup, so the O(N) historical scan can be retired after backfill
-     * without reopening the mixed-case gap.
+     * Deliberately NULLABLE, INDEXED and NON-UNIQUE, and deliberately never a
+     * claim: upper-casing is LOSSY, so two genuinely different
+     * case-sensitive references legitimately fold together here. Treating a
+     * hit as ownership would make one of two real transactions permanently
+     * unapprovable. A hit is therefore advisory evidence that STOPS auto
+     * approval and routes to an explicit admin resolution
+     * (LEGACY_REFERENCE_CASE_AMBIGUITY) - it is never
+     * `already_claimed`, never a duplicate verdict, and never auto-rejects.
+     *
+     * The real anti-replay authorities remain the UNIQUE case-preserving
+     * `referenceHash`, `fileHash` and `qrPayloadHash` above.
      */
-    referenceHashUpper: varchar("referenceHashUpper", { length: 64 }),
-    /** SHA-256 of the raw uploaded slip bytes. */
+    legacyReferenceUpperHash: varchar("legacyReferenceUpperHash", { length: 64 }),
     fileHash: varchar("fileHash", { length: 64 }),
     /** SHA-256 of the decoded slip QR payload, when decoding is available. */
     qrPayloadHash: varchar("qrPayloadHash", { length: 64 }),
@@ -1452,9 +1456,10 @@ export const paymentSlipClaims = mysqlTable(
       table.qrPayloadHash
     ),
     // Non-unique: weak evidence is looked up, never enforced.
-    // Non-unique: a compatibility LOOKUP, never an enforced constraint.
-    referenceHashUpperIdx: index("paymentSlipClaims_referenceHashUpper_idx").on(
-      table.referenceHashUpper
+    // Non-unique by design: the alias is a lossy ADVISORY lookup, never an
+    // enforced constraint. Many legitimate rows may share one value.
+    legacyReferenceUpperHashIdx: index("paymentSlipClaims_legacyReferenceUpperHash_idx").on(
+      table.legacyReferenceUpperHash
     ),
     semanticFingerprintIdx: index("paymentSlipClaims_semanticFingerprint_idx").on(
       table.semanticFingerprint
@@ -1548,3 +1553,59 @@ export const ocrVerificationAttempts = mysqlTable(
 
 export type OcrVerificationAttempt = typeof ocrVerificationAttempts.$inferSelect;
 export type InsertOcrVerificationAttempt = typeof ocrVerificationAttempts.$inferInsert;
+
+/**
+ * Audited human resolutions of a LEGACY REFERENCE CASE AMBIGUITY.
+ *
+ * When a new submission's upper-cased reference matches a historical row's
+ * `legacyReferenceUpperHash`, auto-approval stops. The match is lossy, so it
+ * proves nothing: the two may be one replayed transaction, or two genuinely
+ * different references that merely fold together. Only a human can decide.
+ *
+ * This table records that decision explicitly rather than burying it in a
+ * generic approval note, because it is the one place a human overrides an
+ * automated anti-replay signal and that must stay auditable.
+ *
+ * The uniqueness rule is on the SUBJECT, not the alias: multiple legitimate
+ * payments may share one lossy alias and each may be resolved independently.
+ * Constraining the alias would recreate the dead-end this design removes.
+ *
+ * Never stores slip bytes, credentials, or a raw reference belonging to
+ * another user's payment.
+ */
+export const paymentSlipReviewResolutions = mysqlTable(
+  "paymentSlipReviewResolutions",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    subjectType: mysqlEnum("subjectType", ["order_payment", "wallet_topup"]).notNull(),
+    /** payments.id or walletTopups.id. */
+    subjectId: int("subjectId").notNull(),
+    resolutionType: mysqlEnum("resolutionType", [
+      "legacy_case_confirmed_distinct",
+      "legacy_case_confirmed_duplicate",
+    ]).notNull(),
+    /** The historical record the alias matched, for traceability. */
+    matchedSourceType: mysqlEnum("matchedSourceType", ["order_payment", "wallet_topup"]),
+    matchedSourceId: int("matchedSourceId"),
+    /** The lossy alias that triggered the review. Advisory context only. */
+    legacyAliasHash: varchar("legacyAliasHash", { length: 64 }),
+    adminUserId: int("adminUserId").notNull(),
+    /** Mandatory, non-empty operator justification. */
+    reason: text("reason").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    // One resolution per subject: a second attempt must not silently create a
+    // parallel decision. Enforced on the SUBJECT, never on the lossy alias.
+    subjectUnique: uniqueIndex("paymentSlipReviewResolutions_subject_unique").on(
+      table.subjectType,
+      table.subjectId
+    ),
+    adminUserIdIdx: index("paymentSlipReviewResolutions_adminUserId_idx").on(table.adminUserId),
+    createdAtIdx: index("paymentSlipReviewResolutions_createdAt_idx").on(table.createdAt),
+  })
+);
+
+export type PaymentSlipReviewResolution = typeof paymentSlipReviewResolutions.$inferSelect;
+export type InsertPaymentSlipReviewResolution =
+  typeof paymentSlipReviewResolutions.$inferInsert;

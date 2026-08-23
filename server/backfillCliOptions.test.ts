@@ -235,15 +235,17 @@ describe("registry classification is not satisfied by a partial match", () => {
     expect(code).toMatch(/tracker\.collisions\.length === 0/);
   });
 
-  it("persists the case-folded alias so completion cannot lose mixed-case cover", () => {
-    expect(code).toMatch(/referenceHashUpper: derived\.referenceHashUpper/);
+  it("persists the advisory legacy alias under its corrected name", () => {
+    expect(code).toMatch(/legacyReferenceUpperHash: derived\.legacyReferenceUpperHash/);
   });
 
-  it("derives the alias for every row, whichever evidence path wins", () => {
+  it("sets the alias ONLY for unrecoverable legacy_uppercase rows", () => {
     const idx = code.indexOf("function deriveIdentifiers");
-    const block = code.slice(idx, idx + 2200);
+    const block = code.slice(idx, idx + 2600);
     expect(block).toMatch(/getRawReferenceForLegacyLookup/);
-    // Present on all three return shapes.
-    expect((block.match(/referenceHashUpper/g) ?? []).length).toBeGreaterThanOrEqual(4);
+    // Recoverable casing -> explicitly no alias.
+    expect(block).toMatch(/legacyReferenceUpperHash: undefined/);
+    // Only the last-resort branch produces one.
+    expect(block).toMatch(/isLegacyUppercaseOnly \? aliasIfUnrecoverable\(\) : undefined/);
   });
 });

@@ -63,10 +63,18 @@ export interface SlipClaimRequest {
    */
   skipLegacyCheck?: boolean;
   /**
-   * The RAW (case-preserving) reference, used only to widen the legacy
-   * lookup - see referenceHashUpperCandidate. Never used for the claim.
+   * The RAW (case-preserving) reference, used ONLY for the advisory legacy
+   * ambiguity lookup. Never used for the claim, and never upper-cased into
+   * one - the claim always uses the case-preserving hash.
    */
   referenceRawForLegacyLookup?: string;
+  /**
+   * Set by the admin "confirmed distinct" resolution to proceed past a known
+   * legacy case ambiguity that a human has already adjudicated. It skips ONLY
+   * the advisory alias check - every exact UNIQUE identifier is still claimed
+   * atomically, so this can never bypass real anti-replay.
+   */
+  legacyCaseAmbiguityResolved?: boolean;
 }
 
 export type SlipClaimOutcome =
@@ -90,6 +98,32 @@ export type SlipClaimOutcome =
        * that would otherwise have been replayable.
        */
       viaLegacyCompatibility?: boolean;
+    }
+  | {
+      claimed: false;
+      /**
+       * The submission's upper-cased reference matched a HISTORICAL row whose
+       * original casing is unrecoverable.
+       *
+       * This is ADVISORY, not ownership. Upper-casing is lossy, so this may
+       * be one replayed transaction OR two genuinely different references
+       * that merely fold together - the signal cannot tell them apart.
+       *
+       * It therefore STOPS auto-approval (no claim is inserted, no value is
+       * created) and routes to an explicit admin resolution. It is
+       * deliberately NOT `already_claimed`: that outcome makes normal Approve
+       * fail forever, leaving a legitimate distinct payment with nowhere to
+       * go. See admin.orders.resolveLegacyCaseAmbiguity.
+       */
+      reason: "legacy_case_ambiguity";
+      matchedSourceType?: SlipClaimSourceType;
+      matchedSourceId?: number;
+      legacyAliasHashMatched: true;
+      /** Never "strong" - the signal is explicitly lossy. */
+      conflictStrength: "advisory";
+      requiresAdminResolution: true;
+      /** The alias that matched, for the audit record. */
+      legacyAliasHash?: string;
     };
 
 /**
@@ -184,24 +218,24 @@ export async function findExistingClaim(
 }
 
 /**
- * Looks up a claim by the CASE-FOLDED reference alias.
+ * Looks up a HISTORICAL claim by its advisory legacy case alias.
  *
- * Read-only and indexed. Exists for legacy claims whose original reference
- * casing is unrecoverable: they can only ever be matched case-insensitively,
- * and this keeps that possible after the historical scan is retired.
+ * Read-only and indexed. Only backfilled rows whose original casing is
+ * unrecoverable carry this value, so a hit means "a historical record exists
+ * that MIGHT be this same transaction" - never proof.
  *
  * Excludes the caller's own row so re-approving the same record is not
- * mistaken for a replay.
+ * mistaken for an ambiguity.
  */
-export async function findClaimByReferenceAlias(
-  referenceHashUpper: string,
+export async function findClaimByLegacyAlias(
+  legacyAliasHash: string,
   excludeSource: { sourceType: SlipClaimSourceType; sourceId: number },
   tx: any
 ): Promise<{ sourceType: SlipClaimSourceType; sourceId: number } | undefined> {
   const rows = await tx
     .select()
     .from(paymentSlipClaims)
-    .where(eq(paymentSlipClaims.referenceHashUpper, referenceHashUpper))
+    .where(eq(paymentSlipClaims.legacyReferenceUpperHash, legacyAliasHash))
     .limit(5);
 
   for (const row of rows ?? []) {
@@ -320,18 +354,24 @@ export async function claimSlip(
     }
   }
 
-  // ── CASE-FOLDED COMPATIBILITY LOOKUP (always runs) ─────────────────────
-  // Deliberately OUTSIDE the legacyScanRequired branch. Retiring the O(N)
-  // historical scan must not retire mixed-case protection: a legacy claim
-  // holding only an upper-cased reference is matchable ONLY through this
-  // alias, and it is an indexed equality lookup, so keeping it permanently
-  // costs O(log n) rather than a table scan.
+  // ── ADVISORY LEGACY CASE-AMBIGUITY LOOKUP (always runs) ────────────────
+  // Deliberately OUTSIDE the legacyScanRequired branch: retiring the O(N)
+  // historical scan must not retire cover for rows whose original reference
+  // casing is unrecoverable. This is an indexed equality lookup, so keeping
+  // it permanently costs O(log n).
   //
-  // A hit routes to review rather than being proof, because upper-casing is
-  // lossy - two genuinely different references could fold together. The
-  // authority for creating value remains the UNIQUE case-preserving hash.
-  if (referenceHashUpper) {
-    const aliasMatch = await findClaimByReferenceAlias(
+  // The result is ADVISORY, never ownership. Upper-casing is lossy, so a hit
+  // may be one replayed transaction OR two genuinely different references
+  // that fold together. Returning `already_claimed` here (as an earlier
+  // revision did) made normal Approve fail forever for the second, legitimate
+  // payment - a dead end with no admin escape.
+  //
+  // So a hit STOPS auto-approval without inserting any claim and without
+  // creating value, and asks for a human decision. Two concurrent
+  // differently-cased reads therefore BOTH stop, which is why the lossy alias
+  // needs no serialization of its own: neither path can create value.
+  if (referenceHashUpper && !request.legacyCaseAmbiguityResolved) {
+    const aliasMatch = await findClaimByLegacyAlias(
       referenceHashUpper,
       { sourceType: request.sourceType, sourceId: request.sourceId },
       tx
@@ -340,11 +380,13 @@ export async function claimSlip(
     if (aliasMatch) {
       return {
         claimed: false,
-        reason: "already_claimed",
-        conflictKind: "reference",
-        existingSourceType: aliasMatch.sourceType,
-        existingSourceId: aliasMatch.sourceId,
-        viaLegacyCompatibility: true,
+        reason: "legacy_case_ambiguity",
+        matchedSourceType: aliasMatch.sourceType,
+        matchedSourceId: aliasMatch.sourceId,
+        legacyAliasHashMatched: true,
+        conflictStrength: "advisory",
+        requiresAdminResolution: true,
+        legacyAliasHash: referenceHashUpper,
       };
     }
   }
@@ -355,9 +397,12 @@ export async function claimSlip(
       sourceId: request.sourceId,
       userId: request.userId,
       referenceHash: request.identifiers.referenceHash ?? null,
-      // Stored so a FUTURE mixed-case replay of this same reference is
-      // matchable even if this row's own casing is later lost.
-      referenceHashUpper: referenceHashUpper ?? null,
+      // NEVER set here. The alias marks a HISTORICAL row whose casing is
+      // unrecoverable; a modern claim has its exact case-preserving hash, so
+      // writing an alias would manufacture ambiguity that does not exist and
+      // would drag unrelated future payments into manual review.
+      // Only the backfill sets it, and only for legacy_uppercase evidence.
+      legacyReferenceUpperHash: null,
       fileHash: request.identifiers.fileHash ?? null,
       qrPayloadHash: request.identifiers.qrPayloadHash ?? null,
       semanticFingerprint: request.semanticFingerprint ?? null,
@@ -408,6 +453,24 @@ export function describeClaimFailure(outcome: SlipClaimOutcome): string {
       "No strong identifier could be derived from this slip (no readable transaction " +
       "reference, no file hash, no QR payload), so replay cannot be prevented " +
       "automatically. Manual review is required."
+    );
+  }
+
+  if (outcome.reason === "legacy_case_ambiguity") {
+    const where =
+      outcome.matchedSourceType && outcome.matchedSourceId
+        ? outcome.matchedSourceType === "order_payment"
+          ? ` an approved order payment #${outcome.matchedSourceId}`
+          : ` an approved wallet top-up #${outcome.matchedSourceId}`
+        : " an earlier approved record";
+
+    // Deliberately hedged language: the alias is lossy, so this is a question
+    // for a human, not a verdict.
+    return (
+      `This reference matches${where} only after letter casing is ignored. That older ` +
+      `record lost its original casing, so this is NOT proof of a duplicate - the two ` +
+      `references may be genuinely different. An admin must decide whether to reject it ` +
+      `as a duplicate or approve it as a distinct transaction.`
     );
   }
 

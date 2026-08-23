@@ -110,21 +110,30 @@ function deriveIdentifiers(extractedDataJson) {
     parsed = null;
   }
 
-  // Case-folded alias from whatever raw reference the row still has. For a row
-  // persisted with only an upper-cased `reference` this is the ONLY value a
-  // future mixed-case replay can be matched against, so it is computed for
-  // every row regardless of which evidence path wins below.
+  // The advisory legacy alias is ONLY for rows whose original casing is
+  // unrecoverable - persisted with just an upper-cased `reference`, no
+  // referenceRaw, no stored hash, no reparsable rawText. Those are the only
+  // rows a mixed-case replay cannot be matched against by exact hash.
+  //
+  // It is deliberately NOT computed for every row: writing it where casing IS
+  // recoverable would manufacture ambiguity that does not exist and drag
+  // unrelated future payments into manual review.
   const rawReference = identifiers.getRawReferenceForLegacyLookup(extractedDataJson);
-  const referenceHashUpper = rawReference
-    ? identifiers.hashSlipReference(rawReference.toUpperCase())
-    : undefined;
+  const aliasIfUnrecoverable = () =>
+    rawReference ? identifiers.hashSlipReference(rawReference.toUpperCase()) : undefined;
 
   const hasCasePreservingEvidence =
     (typeof parsed?.referenceHash === "string" && parsed.referenceHash.length === 64) ||
     Boolean(parsed?.referenceRaw);
 
   if (hasCasePreservingEvidence && identifiers.hasStrongIdentifier(direct.identifiers)) {
-    return { ...direct, referenceHashUpper, recoveredByReparse: false };
+    // Casing survived - no ambiguity, so no alias.
+    return {
+      ...direct,
+      legacyReferenceUpperHash: undefined,
+      referenceEvidence: parsed?.referenceHash ? "stored_hash" : "reference_raw",
+      recoveredByReparse: false,
+    };
   }
 
   const rawText = parsed?.rawText;
@@ -135,14 +144,13 @@ function deriveIdentifiers(extractedDataJson) {
         reExtracted.referenceRaw ?? reExtracted.reference
       );
       if (reHash) {
+        // Reparsing recovered the TRUE casing, so this row is no longer
+        // ambiguous and must not carry an alias.
         return {
           identifiers: { ...direct.identifiers, referenceHash: reHash },
           semanticFingerprint: direct.semanticFingerprint ?? reExtracted.semanticFingerprint,
-          // Prefer the alias from the REPARSED (true-cased) reference.
-          referenceHashUpper:
-            identifiers.hashSlipReference(
-              String(reExtracted.referenceRaw ?? reExtracted.reference ?? "").toUpperCase()
-            ) ?? referenceHashUpper,
+          legacyReferenceUpperHash: undefined,
+          referenceEvidence: "reparsed_raw_text",
           recoveredByReparse: true,
         };
       }
@@ -151,7 +159,15 @@ function deriveIdentifiers(extractedDataJson) {
     }
   }
 
-  return { ...direct, referenceHashUpper, recoveredByReparse: false };
+  // Last resort: only the upper-cased legacy field survives. THIS is the
+  // ambiguous case, and the ONLY one that receives an advisory alias.
+  const isLegacyUppercaseOnly = Boolean(rawReference) && !hasCasePreservingEvidence;
+  return {
+    ...direct,
+    legacyReferenceUpperHash: isLegacyUppercaseOnly ? aliasIfUnrecoverable() : undefined,
+    referenceEvidence: isLegacyUppercaseOnly ? "legacy_uppercase" : "none",
+    recoveredByReparse: false,
+  };
 }
 
 const stats = {
@@ -172,6 +188,24 @@ const stats = {
  * `referenceHash ?? fileHash` silently missed file collisions.
  */
 const tracker = createCollisionTracker();
+
+/**
+ * Groups of historical rows sharing one advisory legacy alias.
+ *
+ * Reported SEPARATELY from strong-identifier collisions and deliberately not
+ * treated as evidence of a historical duplicate: the alias is lossy, so rows
+ * folding together may be entirely different transactions. Every source row
+ * is retained - no source "wins" ownership of an alias, because doing so
+ * would silently drop protection for the others.
+ */
+const legacyAliasGroups = new Map();
+
+function noteLegacyAlias(aliasHash, current) {
+  if (!aliasHash) return;
+  const existing = legacyAliasGroups.get(aliasHash) ?? [];
+  existing.push(`${current.sourceType}#${current.sourceId}`);
+  legacyAliasGroups.set(aliasHash, existing);
+}
 
 /**
  * Classifies a historical row against the REGISTRY.
@@ -308,6 +342,7 @@ async function processRows(sourceType, rows) {
     if (collidingKinds.length > 0) continue;
 
     tracker.remember(ids, current);
+    noteLegacyAlias(derived.legacyReferenceUpperHash, current);
 
     if (!isLive) {
       stats.wouldClaim += 1;
@@ -320,10 +355,8 @@ async function processRows(sourceType, rows) {
         sourceId: row.id,
         userId: row.userId ?? 0,
         referenceHash: ids.referenceHash ?? null,
-        // Case-folded alias so a legacy row whose true casing is
-        // unrecoverable is still matchable by a mixed-case replay after the
-        // historical scan is retired.
-        referenceHashUpper: derived.referenceHashUpper ?? null,
+        // Advisory alias, set ONLY for legacy_uppercase evidence.
+        legacyReferenceUpperHash: derived.legacyReferenceUpperHash ?? null,
         fileHash: ids.fileHash ?? null,
         qrPayloadHash: ids.qrPayloadHash ?? null,
         semanticFingerprint: derived.semanticFingerprint ?? null,
@@ -425,6 +458,13 @@ try {
       ? `  claims INSERTED          : ${stats.claimed}`
       : `  would insert             : ${stats.wouldClaim}`
   );
+  const ambiguousAliasGroups = [...legacyAliasGroups.entries()].filter(
+    ([, sources]) => sources.length > 1
+  );
+  const legacyAliasesWouldCreate = [...legacyAliasGroups.keys()].length;
+
+  console.log(`  legacy aliases to create : ${legacyAliasesWouldCreate}`);
+  console.log(`  ambiguous alias groups   : ${ambiguousAliasGroups.length}`);
   console.log(`  collisions REPORTED      : ${tracker.collisions.length}`);
   console.log(`  failures                 : ${stats.failures.length}`);
 
@@ -437,6 +477,21 @@ try {
       "\n  A collision means two APPROVED records share one strong identifier.\n" +
         "  That is either a historical double-credit or a parser bug. It has NOT\n" +
         "  been auto-resolved and no financial record was modified."
+    );
+  }
+
+  if (ambiguousAliasGroups.length > 0) {
+    console.log("\n[backfill] AMBIGUOUS_LEGACY_ALIAS_GROUP - advisory, NOT duplicates:");
+    for (const [aliasHash, sources] of ambiguousAliasGroups) {
+      console.log(`  - ${String(aliasHash).slice(0, 12)}...  ${sources.join("  |  ")}`);
+    }
+    console.log(
+      "\n  These historical rows share one reference only after case folding." +
+        " Because upper-casing is lossy this is NOT proof of a duplicate, it is NOT a" +
+        " strong identifier collision, and it does NOT block completion." +
+        " Every listed row keeps its own alias - none takes ownership." +
+        " A future submission folding to one of these values will stop for explicit" +
+        " admin review."
     );
   }
 

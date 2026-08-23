@@ -1,7 +1,7 @@
 {
   "version": "5",
   "dialect": "mysql",
-  "id": "7ae71265-a281-4e6c-acc0-e39981de221d",
+  "id": "490b97ad-c0d4-4fe6-a99e-eacc20f78f17",
   "prevId": "438d114c-ecc8-42cb-8b9f-fec6e212ae45",
   "tables": {
     "accountRecoveryAuditLogs": {
@@ -2752,8 +2752,8 @@
           "notNull": false,
           "autoincrement": false
         },
-        "referenceHashUpper": {
-          "name": "referenceHashUpper",
+        "legacyReferenceUpperHash": {
+          "name": "legacyReferenceUpperHash",
           "type": "varchar(64)",
           "primaryKey": false,
           "notNull": false,
@@ -2811,10 +2811,10 @@
           ],
           "isUnique": true
         },
-        "paymentSlipClaims_referenceHashUpper_idx": {
-          "name": "paymentSlipClaims_referenceHashUpper_idx",
+        "paymentSlipClaims_legacyReferenceUpperHash_idx": {
+          "name": "paymentSlipClaims_legacyReferenceUpperHash_idx",
           "columns": [
-            "referenceHashUpper"
+            "legacyReferenceUpperHash"
           ],
           "isUnique": false
         },
@@ -2845,6 +2845,117 @@
       "compositePrimaryKeys": {
         "paymentSlipClaims_id": {
           "name": "paymentSlipClaims_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraint": {}
+    },
+    "paymentSlipReviewResolutions": {
+      "name": "paymentSlipReviewResolutions",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "subjectType": {
+          "name": "subjectType",
+          "type": "enum('order_payment','wallet_topup')",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "subjectId": {
+          "name": "subjectId",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "resolutionType": {
+          "name": "resolutionType",
+          "type": "enum('legacy_case_confirmed_distinct','legacy_case_confirmed_duplicate')",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "matchedSourceType": {
+          "name": "matchedSourceType",
+          "type": "enum('order_payment','wallet_topup')",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "matchedSourceId": {
+          "name": "matchedSourceId",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "legacyAliasHash": {
+          "name": "legacyAliasHash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "adminUserId": {
+          "name": "adminUserId",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "createdAt": {
+          "name": "createdAt",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(now())"
+        }
+      },
+      "indexes": {
+        "paymentSlipReviewResolutions_subject_unique": {
+          "name": "paymentSlipReviewResolutions_subject_unique",
+          "columns": [
+            "subjectType",
+            "subjectId"
+          ],
+          "isUnique": true
+        },
+        "paymentSlipReviewResolutions_adminUserId_idx": {
+          "name": "paymentSlipReviewResolutions_adminUserId_idx",
+          "columns": [
+            "adminUserId"
+          ],
+          "isUnique": false
+        },
+        "paymentSlipReviewResolutions_createdAt_idx": {
+          "name": "paymentSlipReviewResolutions_createdAt_idx",
+          "columns": [
+            "createdAt"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "paymentSlipReviewResolutions_id": {
+          "name": "paymentSlipReviewResolutions_id",
           "columns": [
             "id"
           ]
