@@ -173,6 +173,12 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     reason: "The ADMIN who approved the top-up, not its own owner.",
   },
   {
+    table: "paymentSlipReviewResolutions",
+    column: "adminUserId",
+    category: "deliberately_ignored",
+    reason: "The ADMIN who resolved a legacy reference case ambiguity, not the owner of the payment being resolved. An admin-actor identity, consistent with the other actor columns above; the payment's own ownership is already covered transitively via payments -> orders.userId.",
+  },
+  {
     table: "ocrVerificationAttempts",
     column: "initiatedByUserId",
     category: "deliberately_ignored",

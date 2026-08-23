@@ -336,11 +336,15 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
             autoApprovalBlockedReason =
               claim.reason === "no_strong_identifier"
                 ? "NO_STRONG_IDENTIFIER"
-                : claim.reason === "already_claimed" && claim.conflictKind === "file"
-                  ? "DUPLICATE_FILE"
-                  : claim.reason === "already_claimed" && claim.conflictKind === "qr"
-                    ? "DUPLICATE_QR"
-                    : "DUPLICATE_REFERENCE";
+                : // Advisory, not a duplicate verdict: stops auto-approval and
+                  // asks a human to resolve. No claim was inserted.
+                  claim.reason === "legacy_case_ambiguity"
+                  ? "LEGACY_REFERENCE_CASE_AMBIGUITY"
+                  : claim.reason === "already_claimed" && claim.conflictKind === "file"
+                    ? "DUPLICATE_FILE"
+                    : claim.reason === "already_claimed" && claim.conflictKind === "qr"
+                      ? "DUPLICATE_QR"
+                      : "DUPLICATE_REFERENCE";
             // Abort the whole auto-approval; nothing financial has committed.
             throw new SlipClaimRejected(describeClaimFailure(claim));
           }

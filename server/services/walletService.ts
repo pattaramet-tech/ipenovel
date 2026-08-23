@@ -157,8 +157,16 @@ export async function adminApproveWalletTopup(topupId: number, adminUserId: numb
       // NO_STRONG_IDENTIFIER is a precondition the admin must resolve (recheck
       // or legacy override); SLIP_ALREADY_CLAIMED is a conflict with another
       // submission. Distinct codes so the UI can say the right thing.
+      // NO_STRONG_IDENTIFIER and an unresolved legacy case ambiguity are both
+      // preconditions the admin must clear; SLIP_ALREADY_CLAIMED and a state
+      // race are conflicts with another actor. Distinct codes so the UI can
+      // say the right thing rather than showing one generic failure.
+      const precondition =
+        error.code === "NO_STRONG_IDENTIFIER" ||
+        error.code === "LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION" ||
+        error.code === "LEGACY_REFERENCE_CASE_AMBIGUITY";
       throw new TRPCError({
-        code: error.code === "NO_STRONG_IDENTIFIER" ? "PRECONDITION_FAILED" : "CONFLICT",
+        code: precondition ? "PRECONDITION_FAILED" : "CONFLICT",
         message: `${error.code}: ${error.message}`,
       });
     }

@@ -307,16 +307,35 @@ export async function createOrderFromCart(
  * points, no recorded coupon usage). No current caller passes a `tx`, so
  * this is a pure internal atomicity fix, not a signature change.
  */
-export async function approvePayment(paymentId: number, approvedBy: string, adminLabel?: string, tx?: any): Promise<{ message: string }> {
+export async function approvePayment(
+  paymentId: number,
+  approvedBy: string,
+  adminLabel?: string,
+  tx?: any,
+  /**
+   * Set ONLY by the audited legacy-case resolution flow. Skips the advisory
+   * alias check a human has already adjudicated - and nothing else. Every
+   * exact UNIQUE identifier is still claimed atomically below.
+   */
+  options?: { legacyCaseAmbiguityResolved?: boolean }
+): Promise<{ message: string }> {
   if (tx) {
-    return approvePaymentInTx(paymentId, approvedBy, adminLabel, tx);
+    return approvePaymentInTx(paymentId, approvedBy, adminLabel, tx, options);
   }
   const database = await db.getDb();
   if (!database) throw new Error("Database not available");
-  return database.transaction((newTx: any) => approvePaymentInTx(paymentId, approvedBy, adminLabel, newTx));
+  return database.transaction((newTx: any) =>
+    approvePaymentInTx(paymentId, approvedBy, adminLabel, newTx, options)
+  );
 }
 
-async function approvePaymentInTx(paymentId: number, approvedBy: string, adminLabel: string | undefined, tx: any): Promise<{ message: string }> {
+async function approvePaymentInTx(
+  paymentId: number,
+  approvedBy: string,
+  adminLabel: string | undefined,
+  tx: any,
+  options?: { legacyCaseAmbiguityResolved?: boolean }
+): Promise<{ message: string }> {
   // Reloaded fresh INSIDE the transaction. The admin's browser may have had
   // this order open for a long time, and the OCR panel it renders is display
   // state, not authority - nothing client-supplied is trusted here.
@@ -374,9 +393,21 @@ async function approvePaymentInTx(paymentId: number, approvedBy: string, adminLa
       semanticFingerprint,
       // Derived from the PERSISTED extraction, for the legacy lookup only.
       referenceRawForLegacyLookup: getRawReferenceForLegacyLookup(persistedExtractedData),
+      legacyCaseAmbiguityResolved: options?.legacyCaseAmbiguityResolved,
     },
     tx
   );
+
+  if (!claim.claimed && claim.reason === "legacy_case_ambiguity") {
+    // Normal Approve must not silently bypass this, and must not treat it as
+    // a duplicate. The alias is lossy, so this is an unresolved question, and
+    // a distinct-but-similar payment must still have somewhere to go: the
+    // explicit resolution flow. Failing with `already_claimed` here made such
+    // a payment permanently unapprovable.
+    throw new Error(
+      `LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION: ${describeClaimFailure(claim)}`
+    );
+  }
 
   if (!claim.claimed && claim.reason === "already_claimed") {
     const ownedByThisPayment =

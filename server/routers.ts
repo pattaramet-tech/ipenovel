@@ -12,6 +12,7 @@ import { ApprovalService } from "./services/approvalService";
 import { submitPaymentSlip } from "./services/slipSubmissionService";
 import { uploadPaymentSlipFile } from "./services/slipFileUploadService";
 import { recheckOrderPaymentOcr } from "./services/ocrRecheckService";
+import { resolveLegacyCaseAmbiguity } from "./services/legacyCaseResolutionService";
 import { getOcrAttemptHistory } from "./services/ocrAttemptService";
 import { findExistingClaim } from "./services/slipClaimService";
 import { findLegacyApprovedDuplicate } from "./services/legacySlipCompatibilityService";
@@ -1292,6 +1293,16 @@ export const appRouter = router({
             if (typeof error?.message === "string" && error.message.startsWith("NO_STRONG_IDENTIFIER")) {
               throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
             }
+            // An unresolved legacy case ambiguity. Distinct from a duplicate:
+            // the admin must choose reject-as-duplicate or approve-as-distinct
+            // via resolveLegacyCaseAmbiguity. Normal Approve must neither
+            // bypass it nor fail forever.
+            if (
+              typeof error?.message === "string" &&
+              error.message.startsWith("LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION")
+            ) {
+              throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
+            }
             throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to approve payment. Please try again." });
           }
         }),
@@ -1548,6 +1559,16 @@ export const appRouter = router({
             if (typeof error?.message === "string" && error.message.startsWith("NO_STRONG_IDENTIFIER")) {
               throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
             }
+            // An unresolved legacy case ambiguity. Distinct from a duplicate:
+            // the admin must choose reject-as-duplicate or approve-as-distinct
+            // via resolveLegacyCaseAmbiguity. Normal Approve must neither
+            // bypass it nor fail forever.
+            if (
+              typeof error?.message === "string" &&
+              error.message.startsWith("LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION")
+            ) {
+              throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
+            }
             throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to approve payment. Please try again." });
           }
           return { success: true };
@@ -1567,6 +1588,34 @@ export const appRouter = router({
           return recheckOrderPaymentOcr({
             paymentId: input.paymentId,
             adminUserId: ctx.user.id,
+          });
+        }),
+
+      /**
+       * Resolves a LEGACY REFERENCE CASE AMBIGUITY - admin only.
+       *
+       * The alias that triggers this is lossy, so no automated path can
+       * decide it. This is the escape route that stops such a payment being
+       * permanently unapprovable. It is NOT a generic override: the ambiguity
+       * is revalidated server-side, a real strong identifier is still
+       * required, the normal atomic claim still runs, and the decision is
+       * permanently audited with a mandatory reason.
+       */
+      resolveLegacyCaseAmbiguity: adminProcedure
+        .input(
+          z.object({
+            paymentId: z.number().int().positive(),
+            decision: z.enum(["confirmed_distinct", "confirmed_duplicate"]),
+            reason: z.string().trim().min(10).max(1000),
+          })
+        )
+        .mutation(async ({ input, ctx }) => {
+          return resolveLegacyCaseAmbiguity({
+            paymentId: input.paymentId,
+            adminUserId: ctx.user.id,
+            adminLabel: ctx.user.name || "Admin",
+            decision: input.decision,
+            reason: input.reason,
           });
         }),
 

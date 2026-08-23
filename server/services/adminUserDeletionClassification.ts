@@ -136,6 +136,14 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
   },
 
   {
+    table: "paymentSlipReviewResolutions",
+    column: "adminUserId",
+    category: "audit_or_actor",
+    reference: "Legacy Case Resolution Actor References",
+    reason:
+      "This account is the ADMIN who resolved a legacy reference case ambiguity - the one place a human deliberately overrides an automated anti-replay signal on a financial record. Exactly the who-did-what identity this category exists to protect, so it blocks deletion; the decision must stay attributable even after a later demotion.",
+  },
+  {
     table: "ocrVerificationAttempts",
     column: "initiatedByUserId",
     category: "audit_or_actor",

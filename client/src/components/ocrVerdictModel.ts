@@ -67,7 +67,7 @@ export interface OcrPanelInput {
   /** Legacy rows carry a fingerprint with no strength information. */
   legacyFingerprint?: string | null;
   duplicate?: {
-    strength?: "strong" | "weak";
+    strength?: "strong" | "weak" | "legacy_case_ambiguity";
     matchedSourceType?: "order_payment" | "wallet_topup";
     matchedSourceId?: number;
     /** True when found in pre-migration approved records, not the registry. */
@@ -198,7 +198,7 @@ export function compareTransactionTime(input: OcrPanelInput): TimeComparison {
 // ─── Duplicate presentation ───────────────────────────────────────────────
 
 export interface DuplicatePresentation {
-  strength: "strong" | "weak" | "legacy" | "none";
+  strength: "strong" | "weak" | "legacy" | "legacy_case_ambiguity" | "none";
   headline: string;
   /** Always present for weak/legacy - the caveat must never be omitted. */
   caveat?: string;
@@ -213,6 +213,33 @@ const WEAK_CAVEAT =
 
 export function describeDuplicate(input: OcrPanelInput): DuplicatePresentation {
   const dup = input.duplicate;
+
+  // A legacy CASE ambiguity is not a duplicate finding at all - it is an
+  // unanswered question. Shown first so it can never be rendered with the
+  // confident language of a strong match.
+  if (
+    input.reviewReason === "LEGACY_REFERENCE_CASE_AMBIGUITY" ||
+    dup?.strength === "legacy_case_ambiguity"
+  ) {
+    const matched =
+      dup?.matchedSourceType && dup?.matchedSourceId
+        ? dup.matchedSourceType === "order_payment"
+          ? { label: `Order payment #${dup.matchedSourceId}`, href: `/admin/orders?paymentId=${dup.matchedSourceId}` }
+          : { label: `Wallet top-up #${dup.matchedSourceId}`, href: `/admin/topup-logs?topupId=${dup.matchedSourceId}` }
+        : undefined;
+
+    return {
+      strength: "legacy_case_ambiguity",
+      headline: "Legacy reference case ambiguity",
+      caveat:
+        "This reference matches an older transaction only when letter casing is ignored. " +
+        "That older record lost its original casing, so this is NOT proof the transaction " +
+        "is duplicated - the two references may be genuinely different. An admin must " +
+        "decide: reject it as a duplicate, or approve it as a distinct transaction.",
+      matchedLabel: matched?.label,
+      matchedHref: matched?.href,
+    };
+  }
 
   if (dup?.strength === "strong") {
     const matched =
@@ -412,6 +439,17 @@ export function buildChecklist(input: OcrPanelInput): ChecklistRow[] {
   });
 
   rows.push({
+    key: "legacy_case_ambiguity",
+    label: "Legacy Case Ambiguity",
+    // WARNING, never FAIL: nothing is proven, and a human decides.
+    state: dup.strength === "legacy_case_ambiguity" ? "warning" : "not_evaluated",
+    detail:
+      dup.strength === "legacy_case_ambiguity"
+        ? "Matches an older reference only after case folding. Requires admin resolution."
+        : undefined,
+  });
+
+  rows.push({
     key: "weak_duplicate",
     label: "Weak Duplicate Risk",
     state: dup.strength === "weak" || dup.strength === "legacy" ? "warning" : "pass",
@@ -555,6 +593,17 @@ export function describeRecipient(input: OcrPanelInput): RecipientVerification {
  * Recheck is offered only where it can do something useful. A finalized
  * payment is excluded because the endpoint deliberately cannot change it.
  */
+/**
+ * True when the panel must offer the explicit resolution actions instead of
+ * the normal Approve button - the normal action is guaranteed to refuse.
+ */
+export function requiresLegacyCaseResolution(input: OcrPanelInput): boolean {
+  return (
+    input.reviewReason === "LEGACY_REFERENCE_CASE_AMBIGUITY" ||
+    input.duplicate?.strength === "legacy_case_ambiguity"
+  );
+}
+
 export function canRecheckOcr(input: OcrPanelInput): boolean {
   const status = input.paymentStatus;
   if (status === "approved" || status === "rejected") return false;

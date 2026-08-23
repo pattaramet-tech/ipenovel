@@ -14,6 +14,7 @@ import { trpc } from "@/lib/trpc";
 import {
   buildChecklist,
   canRecheckOcr,
+  requiresLegacyCaseResolution,
   compareTransactionTime,
   deriveVerdict,
   describeDuplicate,
@@ -137,6 +138,9 @@ function VerdictBanner({ verdict }: { verdict: OcrVerdict }) {
 export function OCRResultPanel({ payment, ocrMeta, onRecheckComplete }: OCRResultPanelProps) {
   const [showRawJson, setShowRawJson] = useState(false);
   const [recheckError, setRecheckError] = useState<string | null>(null);
+  const [resolutionReason, setResolutionReason] = useState("");
+  const [resolutionError, setResolutionError] = useState<string | null>(null);
+  const [resolutionDone, setResolutionDone] = useState<string | null>(null);
   const [recheckResult, setRecheckResult] = useState<any | null>(null);
 
   const extracted = parseExtracted(payment.extractedData);
@@ -147,6 +151,22 @@ export function OCRResultPanel({ payment, ocrMeta, onRecheckComplete }: OCRResul
     { paymentId: payment.id },
     { enabled: Boolean(payment.id) }
   );
+
+  const resolveAmbiguity = (trpc as any).admin?.orders?.resolveLegacyCaseAmbiguity?.useMutation?.({
+    onSuccess: (data: any) => {
+      setResolutionDone(
+        data?.decision === "confirmed_distinct"
+          ? "Approved as a distinct transaction."
+          : "Rejected as a duplicate."
+      );
+      setResolutionError(null);
+      onRecheckComplete?.();
+    },
+    onError: (error: any) => {
+      setResolutionError(error?.message || "Resolution failed. Please try again.");
+      setResolutionDone(null);
+    },
+  });
 
   const recheck = (trpc as any).admin?.orders?.recheckOcr?.useMutation?.({
     onSuccess: (data: any) => {
@@ -264,6 +284,89 @@ export function OCRResultPanel({ payment, ocrMeta, onRecheckComplete }: OCRResul
         </div>
       )}
 
+      {/* Legacy case ambiguity - an unanswered question, not a verdict */}
+      {requiresLegacyCaseResolution(model) && (
+        <div className="rounded-lg border-2 border-yellow-300 bg-yellow-50 p-4 space-y-3">
+          <p className="text-sm font-bold text-yellow-900">⚠ Legacy Reference Case Ambiguity</p>
+          <p className="text-sm text-yellow-900">
+            This reference matches an older transaction only when letter casing is ignored.
+            That older record lost its original casing, so <strong>this is not proof that the
+            transaction is duplicated</strong> — the two references may be genuinely different.
+          </p>
+          {duplicate.matchedLabel && (
+            <p className="text-sm text-yellow-900">
+              <span className="font-semibold">Matched:</span>{" "}
+              {duplicate.matchedHref ? (
+                <a className="underline" href={duplicate.matchedHref}>
+                  {duplicate.matchedLabel}
+                </a>
+              ) : (
+                duplicate.matchedLabel
+              )}
+            </p>
+          )}
+          <p className="text-xs text-yellow-800">
+            The normal Approve action cannot proceed here. Compare the amount, transaction time,
+            bank and file-duplicate status above, then choose one:
+          </p>
+
+          <textarea
+            className="w-full rounded border border-yellow-300 p-2 text-sm"
+            rows={2}
+            placeholder="Reason (required, min 10 characters) - permanently audited"
+            value={resolutionReason}
+            onChange={(e) => setResolutionReason(e.target.value)}
+          />
+
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={resolveAmbiguity?.isPending || resolutionReason.trim().length < 10}
+              onClick={() => {
+                setResolutionError(null);
+                resolveAmbiguity?.mutate?.({
+                  paymentId: payment.id,
+                  decision: "confirmed_duplicate",
+                  reason: resolutionReason.trim(),
+                });
+              }}
+            >
+              Reject as Duplicate
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={resolveAmbiguity?.isPending || resolutionReason.trim().length < 10}
+              onClick={() => {
+                setResolutionError(null);
+                resolveAmbiguity?.mutate?.({
+                  paymentId: payment.id,
+                  decision: "confirmed_distinct",
+                  reason: resolutionReason.trim(),
+                });
+              }}
+            >
+              Approve as Distinct Transaction
+            </Button>
+          </div>
+
+          {resolutionReason.trim().length > 0 && resolutionReason.trim().length < 10 && (
+            <p className="text-xs text-yellow-800">A reason of at least 10 characters is required.</p>
+          )}
+          {resolutionError && (
+            <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
+              {resolutionError}
+            </p>
+          )}
+          {resolutionDone && (
+            <p className="text-sm text-green-800 bg-green-50 border border-green-200 rounded p-2">
+              {resolutionDone}
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Verification checklist */}
       <div>
         <p className="text-sm font-semibold text-slate-700 mb-2">Verification Checklist</p>
@@ -359,12 +462,18 @@ export function OCRResultPanel({ payment, ocrMeta, onRecheckComplete }: OCRResul
               className={
                 duplicate.strength === "strong"
                   ? "bg-red-100 text-red-800"
+                  : duplicate.strength === "legacy_case_ambiguity"
+                    ? "bg-yellow-100 text-yellow-900"
                   : duplicate.strength === "none"
                     ? "bg-slate-100 text-slate-600"
                     : "bg-yellow-100 text-yellow-800"
               }
             >
-              {duplicate.strength === "legacy" ? "LEGACY / WEAK" : duplicate.strength.toUpperCase()}
+              {duplicate.strength === "legacy"
+                ? "LEGACY / WEAK"
+                : duplicate.strength === "legacy_case_ambiguity"
+                  ? "LEGACY CASE AMBIGUITY"
+                  : duplicate.strength.toUpperCase()}
             </Badge>
             <span className="text-slate-700">{duplicate.headline}</span>
           </div>
