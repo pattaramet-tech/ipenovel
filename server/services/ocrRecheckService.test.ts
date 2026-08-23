@@ -303,12 +303,16 @@ describe("Admin Recheck duplicate lookup is READ-ONLY", () => {
   );
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ 	]*\/\/.*$/gm, "");
 
-  it("queries the claim registry", () => {
-    expect(code).toMatch(/findExistingClaim\s*\(/);
+  it("uses the SHARED conflict evaluator rather than its own lookup", () => {
+    // Three near-copies of a financial decision is what let Recheck report
+    // READY for a payment Approve was guaranteed to refuse.
+    expect(code).toMatch(/evaluateSlipConflict\s*\(/);
+    expect(code).not.toMatch(/findExistingClaim\s*\(/);
+    expect(code).not.toMatch(/findLegacyApprovedDuplicate\s*\(/);
   });
 
-  it("queries the legacy approved-record compatibility layer too", () => {
-    expect(code).toMatch(/findLegacyApprovedDuplicate\s*\(/);
+  it("passes the raw reference so the advisory alias is included", () => {
+    expect(code).toMatch(/rawReference: getRawReferenceForLegacyLookup\(/);
   });
 
   it("still never calls claimSlip - Approve remains the only writer", () => {
@@ -319,10 +323,18 @@ describe("Admin Recheck duplicate lookup is READ-ONLY", () => {
     expect(code).not.toMatch(/insert\s*\(/);
   });
 
-  it("refuses READY FOR ADMIN APPROVAL when a duplicate was found", () => {
-    // verificationPassed is ANDed with the absence of a duplicate match, so a
-    // claimed slip can never be presented as ready to approve.
-    expect(code).toMatch(/verificationPassed\s*=\s*verification\.isAutoApproved\s*&&\s*!duplicateMatch/);
+  it("refuses READY for a strong duplicate AND for a legacy ambiguity", () => {
+    // Both must block: Approve returns LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION
+    // for an ambiguity, so presenting it as ready is a guaranteed dead end.
+    expect(code).toMatch(
+      /verificationPassed\s*=\s*verification\.isAutoApproved\s*&&\s*!strongDuplicate\s*&&\s*!legacyAmbiguity/
+    );
+  });
+
+  it("reports an ambiguity as its own reason, not as a duplicate", () => {
+    expect(code).toMatch(/"LEGACY_REFERENCE_CASE_AMBIGUITY"/);
+    expect(code).toMatch(/requiresAdminResolution: Boolean\(legacyAmbiguity\)/);
+    expect(code).toMatch(/strength: "legacy_case_ambiguity"/);
   });
 
   it("returns the matched owner for admin cross-linking", () => {

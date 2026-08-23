@@ -32,6 +32,7 @@ import {
 } from "./ocrDiagnosticsService";
 import {
   deriveStrongIdentifiersFromExtractedData,
+  getRawReferenceForLegacyLookup,
   hasStrongIdentifier,
 } from "./slipIdentifierService";
 import { recordOcrAttempt } from "./ocrAttemptService";
@@ -40,8 +41,8 @@ import {
   describeFileIdentifierStatus,
   type FileIdentifierStatus,
 } from "./slipFileHashService";
-import { findExistingClaim, type SlipClaimSourceType } from "./slipClaimService";
-import { findLegacyApprovedDuplicate } from "./legacySlipCompatibilityService";
+import type { SlipClaimSourceType } from "./slipClaimService";
+import { evaluateSlipConflict, type SlipConflict } from "./slipConflictEvaluator";
 
 /**
  * Carries an already-sanitized provider diagnostic out of the OCR block
@@ -88,9 +89,11 @@ export interface RecheckOcrResult {
    * Nothing was written; the finalized evidence is intact.
    */
   supersededByFinalization?: boolean;
-  /** Read-only duplicate finding. Approve still runs its own atomic claim. */
+  /** True when a legacy case ambiguity needs an explicit admin decision. */
+  requiresAdminResolution?: boolean;
+  /** Read-only conflict finding. Approve still runs its own atomic claim. */
   duplicate?: {
-    strength: "strong";
+    strength: "strong" | "legacy_case_ambiguity";
     kind: string;
     matchedSourceType: SlipClaimSourceType;
     matchedSourceId: number;
@@ -131,6 +134,28 @@ export async function recheckOrderPaymentOcr(
   }
 
   const config = await getEffectiveOCRConfig();
+
+  // ── PRE-OCR: recover and persist the exact-file identifier ────────────
+  // Deliberately ABOVE the OCR-enabled guard. This needs no provider - it
+  // hashes the stored bytes - and when OCR is disabled the guard returns
+  // early, which previously meant a legacy row could never be repaired at
+  // all: normal Approve refused NO_STRONG_IDENTIFIER and told the admin to
+  // run Recheck, but Recheck could not help under that configuration.
+  //
+  // Written CONDITIONALLY, so a payment finalized in the meantime is never
+  // mutated; losing that race stops the recheck before any provider call.
+  const preOcrFileHash = await computeSlipFileHash(payment.slipImageUrl);
+
+  if (preOcrFileHash) {
+    const wrote = await db.updatePaymentIfNotFinalized(payment.id, {
+      extractedData: mergeFileHashInto(payment.extractedData as string | null, preOcrFileHash),
+    });
+
+    if (!wrote) {
+      return await buildSupersededResult(payment, order.id, input.adminUserId, startedAt, config);
+    }
+  }
+
   if (!config.enabled) {
     const summary = summarizeRootCause({ reviewReason: "OCR_DISABLED" });
     const attemptNo = await recordOcrAttempt({
@@ -157,31 +182,14 @@ export async function recheckOrderPaymentOcr(
       category: "CONFIG",
       rootCauseSummary: summary.summary,
       confidenceKnown: false,
-      hasStrongIdentifier: false,
+      // Reported accurately, never fabricated: the identifier is recovered
+      // above without the provider, so a legacy row CAN be repaired while OCR
+      // is disabled - which is what lets the admin's later normal Approve
+      // derive a strong identifier instead of refusing forever.
+      hasStrongIdentifier: Boolean(preOcrFileHash),
       effectiveWindowMinutes: config.maxTimeWindowMinutes,
-      fileIdentifierStatus: "UNAVAILABLE",
+      fileIdentifierStatus: describeFileIdentifierStatus({ fileHash: preOcrFileHash }),
     };
-  }
-
-  // ── PRE-OCR: recover and persist the exact-file identifier ────────────
-  // Done BEFORE the provider call and CONDITIONALLY, for two reasons:
-  //   1. it needs no provider, so an outage never costs us the identifier;
-  //   2. if the payment has already been finalized we learn it here and stop,
-  //      rather than spending a provider call only to discover we may not
-  //      write anything.
-  const preOcrFileHash = await computeSlipFileHash(payment.slipImageUrl);
-
-  if (preOcrFileHash) {
-    const wrote = await db.updatePaymentIfNotFinalized(payment.id, {
-      extractedData: mergeFileHashInto(payment.extractedData as string | null, preOcrFileHash),
-    });
-
-    if (!wrote) {
-      // An admin approved or rejected between our initial read and now.
-      // Change nothing and report the race honestly - a STATE outcome, not an
-      // OCR or provider failure.
-      return await buildSupersededResult(payment, order.id, input.adminUserId, startedAt, config);
-    }
   }
 
   // ── Run OCR against the EXISTING slip ─────────────────────────────────
@@ -316,73 +324,66 @@ export async function recheckOrderPaymentOcr(
   // approved records, and NEVER inserts a claim. Approve remains the sole
   // authority and runs its own atomic claim, so a race opened after this
   // read is still closed there.
-  let duplicateMatch:
-    | { kind: string; sourceType: SlipClaimSourceType; sourceId: number; viaLegacy: boolean }
-    | undefined;
+  // Delegated to the SAME shared evaluator the claim path uses, so Recheck
+  // cannot report READY for a payment Approve is guaranteed to refuse. It
+  // previously consulted the registry and the legacy scan but NOT the
+  // advisory alias, which is exactly how that contradiction arose.
+  let conflict: SlipConflict = { kind: "none" };
 
   if (strongIdentifierPresent) {
     const database = await db.getDb();
     if (database) {
-      const existingClaim = await findExistingClaim(identifiers, database);
-      if (
-        existingClaim &&
-        !(existingClaim.sourceType === "order_payment" && existingClaim.sourceId === payment.id)
-      ) {
-        duplicateMatch = {
-          kind: existingClaim.kind,
-          sourceType: existingClaim.sourceType,
-          sourceId: existingClaim.sourceId,
-          viaLegacy: false,
-        };
-      } else {
-        const legacy = await findLegacyApprovedDuplicate(
+      conflict = await evaluateSlipConflict(
+        {
           identifiers,
-          { sourceType: "order_payment", sourceId: payment.id },
-          database
-        );
-        if (legacy) {
-          duplicateMatch = {
-            kind: legacy.kind,
-            sourceType: legacy.sourceType,
-            sourceId: legacy.sourceId,
-            viaLegacy: true,
-          };
-        }
-      }
+          rawReference: getRawReferenceForLegacyLookup(JSON.stringify(extractedWithFile)),
+          sourceType: "order_payment",
+          sourceId: payment.id,
+        },
+        database
+      );
     }
   }
 
-  // Passing verification is NOT approval. It only means an admin may now
-  // approve with confidence; the Approve action re-runs its own anti-replay
-  // claim independently of anything decided here.
-  const verificationPassed = verification.isAutoApproved && !duplicateMatch;
+  const strongDuplicate = conflict.kind === "strong_duplicate" ? conflict : undefined;
+  const legacyAmbiguity = conflict.kind === "legacy_case_ambiguity" ? conflict : undefined;
+
+  // Passing verification is NOT approval - Approve re-runs its own atomic
+  // claim regardless. An ambiguity blocks READY just as firmly as a duplicate:
+  // Approve would return LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION, so showing
+  // the payment as ready would send the admin into a guaranteed refusal.
+  const verificationPassed = verification.isAutoApproved && !strongDuplicate && !legacyAmbiguity;
   const readyForAdminApproval = verificationPassed && strongIdentifierPresent;
 
-  const duplicateReason =
-    duplicateMatch?.kind === "file"
+  const conflictReason = strongDuplicate
+    ? strongDuplicate.matchedKind === "file"
       ? "DUPLICATE_FILE"
-      : duplicateMatch?.kind === "qr"
+      : strongDuplicate.matchedKind === "qr"
         ? "DUPLICATE_QR"
-        : duplicateMatch
-          ? "DUPLICATE_REFERENCE"
-          : undefined;
+        : "DUPLICATE_REFERENCE"
+    : legacyAmbiguity
+      ? "LEGACY_REFERENCE_CASE_AMBIGUITY"
+      : undefined;
 
   const reviewReason =
-    duplicateReason ??
+    conflictReason ??
     (verification.isAutoApproved
       ? strongIdentifierPresent
         ? undefined
         : "NO_STRONG_IDENTIFIER"
       : verification.reviewReason);
 
+  const matchedConflict = strongDuplicate ?? legacyAmbiguity;
+  const matchedSourceLabel = matchedConflict
+    ? matchedConflict.matchedSourceType === "order_payment"
+      ? `order payment #${matchedConflict.matchedSourceId}`
+      : `wallet top-up #${matchedConflict.matchedSourceId}`
+    : null;
+
   const summary = summarizeRootCause({
     reviewReason,
     readyForAdminApproval,
-    duplicateSourceLabel: duplicateMatch
-      ? duplicateMatch.sourceType === "order_payment"
-        ? `order payment #${duplicateMatch.sourceId}`
-        : `wallet top-up #${duplicateMatch.sourceId}`
-      : null,
+    duplicateSourceLabel: matchedSourceLabel,
   });
 
   // Refresh the DISPLAY metadata only. status/slipSubmittedAt are excluded
@@ -448,17 +449,29 @@ export async function recheckOrderPaymentOcr(
     effectiveWindowMinutes: config.maxTimeWindowMinutes,
     fileIdentifierStatus: describeFileIdentifierStatus({
       fileHash: recomputedFileHash,
-      duplicateFileMatch: duplicateMatch?.kind === "file",
+      duplicateFileMatch: strongDuplicate?.matchedKind === "file",
     }),
-    duplicate: duplicateMatch
+    // Strong duplicate and legacy ambiguity are reported as DIFFERENT
+    // strengths, so the panel can never render an advisory fold with the
+    // confident language of proof.
+    duplicate: strongDuplicate
       ? {
           strength: "strong",
-          kind: duplicateMatch.kind,
-          matchedSourceType: duplicateMatch.sourceType,
-          matchedSourceId: duplicateMatch.sourceId,
-          viaLegacyCompatibility: duplicateMatch.viaLegacy,
+          kind: strongDuplicate.matchedKind,
+          matchedSourceType: strongDuplicate.matchedSourceType,
+          matchedSourceId: strongDuplicate.matchedSourceId,
+          viaLegacyCompatibility: strongDuplicate.viaLegacyCompatibility,
         }
-      : undefined,
+      : legacyAmbiguity
+        ? {
+            strength: "legacy_case_ambiguity",
+            kind: "reference",
+            matchedSourceType: legacyAmbiguity.matchedSourceType,
+            matchedSourceId: legacyAmbiguity.matchedSourceId,
+            viaLegacyCompatibility: true,
+          }
+        : undefined,
+    requiresAdminResolution: Boolean(legacyAmbiguity),
   };
 }
 
