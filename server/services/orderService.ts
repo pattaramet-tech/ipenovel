@@ -344,6 +344,16 @@ export async function approvePayment(
   );
 }
 
+/**
+ * The statuses an approval may still move a payment out of. `approved` and
+ * `rejected` are FINAL - see the guard in approvePaymentInTx.
+ */
+const REVIEWABLE_PAYMENT_STATUSES = ["pending", "pending_review"] as const;
+
+export function isReviewablePaymentStatus(status: string | null | undefined): boolean {
+  return (REVIEWABLE_PAYMENT_STATUSES as readonly string[]).includes(status ?? "");
+}
+
 async function approvePaymentInTx(
   paymentId: number,
   approvedBy: string,
@@ -373,6 +383,29 @@ async function approvePaymentInTx(
   const payment = await db.getPaymentById(paymentId, tx);
   if (!payment) {
     throw new Error("Payment not found");
+  }
+
+  // ── THE LOCKED STATUS IS THE FINANCIAL ARBITER ──────────────────────────
+  // Asserted here, immediately after the lock and reload, and BEFORE any
+  // claim, approval, order update or finalization.
+  //
+  // Callers check reviewability before opening this transaction, but that
+  // check is only fast UX - it can be stale by the time the lock is acquired.
+  // Without this, another admin rejecting in that window was simply
+  // overwritten: the slip got claimed, the payment went from `rejected` back
+  // to `approved`, and finalizeOrderCompletion created purchases and points
+  // for a payment a human had already refused.
+  //
+  // A finalized payment is never resurrected. This lives in the shared
+  // transaction rather than in any one caller, so normal Admin Approve, the
+  // confirmed-distinct legacy resolution, and any future caller are all
+  // covered by ONE rule.
+  if (!isReviewablePaymentStatus(payment.status as string)) {
+    throw new Error(
+      `PAYMENT_NOT_REVIEWABLE: this payment is already ${payment.status}. It was finalized ` +
+        `by another action while this one was in flight, so nothing was claimed, approved ` +
+        `or finalized. Refresh to see the current state.`
+    );
   }
 
   const order = await db.getOrderById(payment.orderId, tx);

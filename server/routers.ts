@@ -14,11 +14,12 @@ import { uploadPaymentSlipFile } from "./services/slipFileUploadService";
 import { recheckOrderPaymentOcr } from "./services/ocrRecheckService";
 import { resolveLegacyCaseAmbiguity } from "./services/legacyCaseResolutionService";
 import { getOcrAttemptHistory } from "./services/ocrAttemptService";
-import { findExistingClaim } from "./services/slipClaimService";
-import { findLegacyApprovedDuplicate } from "./services/legacySlipCompatibilityService";
+import { evaluateSlipConflict } from "./services/slipConflictEvaluator";
+import { resolveMatchedSourceNavigation } from "./services/matchedSourceNavigationService";
 import { describeFileIdentifierStatus } from "./services/slipFileHashService";
 import {
   deriveStrongIdentifiersFromExtractedData,
+  getRawReferenceForLegacyLookup,
   hasStrongIdentifier,
 } from "./services/slipIdentifierService";
 import { getEffectiveOCRConfig } from "./_core/ocr-effective-config";
@@ -1447,13 +1448,18 @@ export const appRouter = router({
           // strength from a legacy fingerprint.
           let duplicate:
             | {
-                strength: "strong";
-                kind: string;
+                strength: "strong" | "legacy_case_ambiguity";
+                kind?: string;
                 matchedSourceType: "order_payment" | "wallet_topup";
                 matchedSourceId: number;
-                viaLegacyCompatibility: boolean;
+                /** Resolved server-side; the client never derives a URL. */
+                matchedOrderId?: number;
+                viaLegacyCompatibility?: boolean;
+                advisory?: true;
+                requiresAdminResolution?: true;
               }
             | undefined;
+          let reviewReasonOverride: string | undefined;
           let fileIdentifierStatus: "AVAILABLE" | "MATCH" | "UNAVAILABLE" = "UNAVAILABLE";
           let recipient: ReturnType<typeof verifyRecipient> | undefined;
 
@@ -1463,32 +1469,62 @@ export const appRouter = router({
             );
             const database = await db.getDb();
             if (database && hasStrongIdentifier(identifiers)) {
-              const claim = await findExistingClaim(identifiers, database);
-              const owned =
-                claim?.sourceType === "order_payment" && claim?.sourceId === rawPayment.id;
-              if (claim && !owned) {
+              // ── THE SAME CLASSIFIER THE CLAIM PATH USES ─────────────────
+              // This query previously ran its own exact-only lookup: no raw
+              // reference, so no uppercase candidate, and no consultation of
+              // the indexed alias. For a mixed-case reference submitted while
+              // auto-approval is disabled or shadowed, NOTHING ever records
+              // the ambiguity - so the panel showed no conflict, hid the
+              // resolution controls, and normal Approve then refused the
+              // payment with no way for the admin to act on it.
+              //
+              // Detail discovery must not be a second implementation of a
+              // financial decision: alias lookup, the historical scan and
+              // exact-over-lossy priority all stay inside the shared
+              // evaluator.
+              const conflict = await evaluateSlipConflict(
+                {
+                  identifiers,
+                  rawReference: getRawReferenceForLegacyLookup(
+                    rawPayment.extractedData as string
+                  ),
+                  sourceType: "order_payment",
+                  sourceId: rawPayment.id,
+                },
+                database
+              );
+
+              if (conflict.kind === "strong_duplicate") {
                 duplicate = {
                   strength: "strong",
-                  kind: claim.kind,
-                  matchedSourceType: claim.sourceType,
-                  matchedSourceId: claim.sourceId,
-                  viaLegacyCompatibility: false,
+                  kind: conflict.matchedKind,
+                  matchedSourceType: conflict.matchedSourceType,
+                  matchedSourceId: conflict.matchedSourceId,
+                  viaLegacyCompatibility: conflict.viaLegacyCompatibility,
                 };
-              } else if (!claim) {
-                const legacy = await findLegacyApprovedDuplicate(
-                  identifiers,
-                  { sourceType: "order_payment", sourceId: rawPayment.id },
+              } else if (conflict.kind === "legacy_case_ambiguity") {
+                // ADVISORY. Never described as a confirmed duplicate: the
+                // fold is lossy, and normal Approve stays blocked until an
+                // admin resolves it explicitly.
+                duplicate = {
+                  strength: "legacy_case_ambiguity",
+                  matchedSourceType: conflict.matchedSourceType,
+                  matchedSourceId: conflict.matchedSourceId,
+                  advisory: true,
+                  requiresAdminResolution: true,
+                };
+                reviewReasonOverride = "LEGACY_REFERENCE_CASE_AMBIGUITY";
+              }
+
+              if (duplicate) {
+                // Navigation is resolved HERE - an order payment id is not an
+                // order id, and the client must never guess one.
+                const nav = await resolveMatchedSourceNavigation(
+                  duplicate.matchedSourceType,
+                  duplicate.matchedSourceId,
                   database
                 );
-                if (legacy) {
-                  duplicate = {
-                    strength: "strong",
-                    kind: legacy.kind,
-                    matchedSourceType: legacy.sourceType,
-                    matchedSourceId: legacy.sourceId,
-                    viaLegacyCompatibility: true,
-                  };
-                }
+                duplicate.matchedOrderId = nav.orderId;
               }
             }
             fileIdentifierStatus = describeFileIdentifierStatus({
@@ -1522,6 +1558,10 @@ export const appRouter = router({
               duplicate,
               fileIdentifierStatus,
               recipient,
+              // Set when the detail query itself discovered an unresolved
+              // legacy case ambiguity, so the panel can render the resolution
+              // controls without an admin having to run Recheck first.
+              reviewReason: reviewReasonOverride ?? (rawPayment?.reviewReason as string | undefined),
             },
           };
         }),

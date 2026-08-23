@@ -70,6 +70,13 @@ export interface OcrPanelInput {
     strength?: "strong" | "weak" | "legacy_case_ambiguity";
     matchedSourceType?: "order_payment" | "wallet_topup";
     matchedSourceId?: number;
+    /**
+     * RESOLVED SERVER-SIDE for an order payment. A matched `order_payment`
+     * id is a PAYMENT id, while the detail route is keyed by ORDER id, so
+     * this cannot be derived on the client - guessing would link confidently
+     * to the wrong order. Absent means "no link", never "invent one".
+     */
+    matchedOrderId?: number;
     /** True when found in pre-migration approved records, not the registry. */
     viaLegacyCompatibility?: boolean;
   } | null;
@@ -206,6 +213,44 @@ export interface DuplicatePresentation {
   matchedHref?: string;
 }
 
+/**
+ * The ONLY place a matched-source link is built.
+ *
+ * Previously each branch wrote its own URL, and both wrote ones that do not
+ * navigate anywhere useful: `/admin/orders?paymentId=` and
+ * `/admin/topup-logs?topupId=` are not the detail routes, and the list pages
+ * ignore those parameters entirely.
+ *
+ * These are the routes actually registered in App.tsx:
+ *   /admin/orders/:orderId
+ *   /admin/wallet-topups/:topupId
+ *
+ * `href` is null when the target cannot be resolved. The panel then shows the
+ * source as plain text - a correct dead end beats a confident wrong link.
+ */
+export function matchedSourceNavigation(dup: {
+  matchedSourceType?: "order_payment" | "wallet_topup";
+  matchedSourceId?: number;
+  matchedOrderId?: number;
+} | null | undefined): { label: string; href: string | null } | undefined {
+  if (!dup?.matchedSourceType || !dup?.matchedSourceId) return undefined;
+
+  if (dup.matchedSourceType === "order_payment") {
+    return {
+      label: `Order payment #${dup.matchedSourceId}`,
+      href:
+        typeof dup.matchedOrderId === "number"
+          ? `/admin/orders/${dup.matchedOrderId}`
+          : null,
+    };
+  }
+
+  return {
+    label: `Wallet top-up #${dup.matchedSourceId}`,
+    href: `/admin/wallet-topups/${dup.matchedSourceId}`,
+  };
+}
+
 const WEAK_CAVEAT =
   "Possible duplicate only - not proof of a duplicate transaction. The same customer " +
   "may legitimately transfer the same amount from the same account more than once on " +
@@ -221,12 +266,7 @@ export function describeDuplicate(input: OcrPanelInput): DuplicatePresentation {
     input.reviewReason === "LEGACY_REFERENCE_CASE_AMBIGUITY" ||
     dup?.strength === "legacy_case_ambiguity"
   ) {
-    const matched =
-      dup?.matchedSourceType && dup?.matchedSourceId
-        ? dup.matchedSourceType === "order_payment"
-          ? { label: `Order payment #${dup.matchedSourceId}`, href: `/admin/orders?paymentId=${dup.matchedSourceId}` }
-          : { label: `Wallet top-up #${dup.matchedSourceId}`, href: `/admin/topup-logs?topupId=${dup.matchedSourceId}` }
-        : undefined;
+    const matched = matchedSourceNavigation(dup);
 
     return {
       strength: "legacy_case_ambiguity",
@@ -237,17 +277,12 @@ export function describeDuplicate(input: OcrPanelInput): DuplicatePresentation {
         "is duplicated - the two references may be genuinely different. An admin must " +
         "decide: reject it as a duplicate, or approve it as a distinct transaction.",
       matchedLabel: matched?.label,
-      matchedHref: matched?.href,
+      matchedHref: matched?.href ?? undefined,
     };
   }
 
   if (dup?.strength === "strong") {
-    const matched =
-      dup.matchedSourceType && dup.matchedSourceId
-        ? dup.matchedSourceType === "order_payment"
-          ? { label: `Order payment #${dup.matchedSourceId}`, href: `/admin/orders?paymentId=${dup.matchedSourceId}` }
-          : { label: `Wallet top-up #${dup.matchedSourceId}`, href: `/admin/topup-logs?topupId=${dup.matchedSourceId}` }
-        : undefined;
+    const matched = matchedSourceNavigation(dup);
 
     return {
       strength: "strong",
@@ -255,7 +290,7 @@ export function describeDuplicate(input: OcrPanelInput): DuplicatePresentation {
         ? "Confirmed duplicate - matched an approved record that predates the claim registry."
         : "Confirmed duplicate - a strong identifier matched an earlier submission.",
       matchedLabel: matched?.label,
-      matchedHref: matched?.href,
+      matchedHref: matched?.href ?? undefined,
     };
   }
 

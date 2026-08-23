@@ -42,6 +42,7 @@ import {
   type FileIdentifierStatus,
 } from "./slipFileHashService";
 import type { SlipClaimSourceType } from "./slipClaimService";
+import { resolveMatchedSourceNavigation } from "./matchedSourceNavigationService";
 import { evaluateSlipConflict, type SlipConflict } from "./slipConflictEvaluator";
 
 /**
@@ -97,6 +98,12 @@ export interface RecheckOcrResult {
     kind: string;
     matchedSourceType: SlipClaimSourceType;
     matchedSourceId: number;
+    /**
+     * Resolved server-side so the panel can link to the real detail route. A
+     * matched order_payment id is a PAYMENT id and the route is keyed by
+     * ORDER id; the client must never guess one from the other.
+     */
+    matchedOrderId?: number;
     viaLegacyCompatibility: boolean;
   };
 }
@@ -397,6 +404,21 @@ export async function recheckOrderPaymentOcr(
   const strongDuplicate = conflict.kind === "strong_duplicate" ? conflict : undefined;
   const legacyAmbiguity = conflict.kind === "legacy_case_ambiguity" ? conflict : undefined;
 
+  // Resolve the matched source to something an admin can actually open. Same
+  // shared helper the detail query uses, so the two cannot disagree.
+  const matchedSource = strongDuplicate ?? legacyAmbiguity;
+  let matchedNavigation: { orderId?: number } = {};
+  if (matchedSource) {
+    const navDb = await db.getDb();
+    if (navDb) {
+      matchedNavigation = await resolveMatchedSourceNavigation(
+        matchedSource.matchedSourceType,
+        matchedSource.matchedSourceId,
+        navDb
+      );
+    }
+  }
+
   // Passing verification is NOT approval - Approve re-runs its own atomic
   // claim regardless. An ambiguity blocks READY just as firmly as a duplicate:
   // Approve would return LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION, so showing
@@ -511,6 +533,7 @@ export async function recheckOrderPaymentOcr(
           kind: strongDuplicate.matchedKind,
           matchedSourceType: strongDuplicate.matchedSourceType,
           matchedSourceId: strongDuplicate.matchedSourceId,
+          matchedOrderId: matchedNavigation.orderId,
           viaLegacyCompatibility: strongDuplicate.viaLegacyCompatibility,
         }
       : legacyAmbiguity
@@ -519,6 +542,7 @@ export async function recheckOrderPaymentOcr(
             kind: "reference",
             matchedSourceType: legacyAmbiguity.matchedSourceType,
             matchedSourceId: legacyAmbiguity.matchedSourceId,
+            matchedOrderId: matchedNavigation.orderId,
             viaLegacyCompatibility: true,
           }
         : undefined,
