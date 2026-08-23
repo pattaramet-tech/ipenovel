@@ -110,12 +110,21 @@ function deriveIdentifiers(extractedDataJson) {
     parsed = null;
   }
 
+  // Case-folded alias from whatever raw reference the row still has. For a row
+  // persisted with only an upper-cased `reference` this is the ONLY value a
+  // future mixed-case replay can be matched against, so it is computed for
+  // every row regardless of which evidence path wins below.
+  const rawReference = identifiers.getRawReferenceForLegacyLookup(extractedDataJson);
+  const referenceHashUpper = rawReference
+    ? identifiers.hashSlipReference(rawReference.toUpperCase())
+    : undefined;
+
   const hasCasePreservingEvidence =
     (typeof parsed?.referenceHash === "string" && parsed.referenceHash.length === 64) ||
     Boolean(parsed?.referenceRaw);
 
   if (hasCasePreservingEvidence && identifiers.hasStrongIdentifier(direct.identifiers)) {
-    return { ...direct, recoveredByReparse: false };
+    return { ...direct, referenceHashUpper, recoveredByReparse: false };
   }
 
   const rawText = parsed?.rawText;
@@ -129,6 +138,11 @@ function deriveIdentifiers(extractedDataJson) {
         return {
           identifiers: { ...direct.identifiers, referenceHash: reHash },
           semanticFingerprint: direct.semanticFingerprint ?? reExtracted.semanticFingerprint,
+          // Prefer the alias from the REPARSED (true-cased) reference.
+          referenceHashUpper:
+            identifiers.hashSlipReference(
+              String(reExtracted.referenceRaw ?? reExtracted.reference ?? "").toUpperCase()
+            ) ?? referenceHashUpper,
           recoveredByReparse: true,
         };
       }
@@ -137,7 +151,7 @@ function deriveIdentifiers(extractedDataJson) {
     }
   }
 
-  return { ...direct, recoveredByReparse: false };
+  return { ...direct, referenceHashUpper, recoveredByReparse: false };
 }
 
 const stats = {
@@ -160,42 +174,87 @@ const stats = {
 const tracker = createCollisionTracker();
 
 /**
- * "Already represented?" against the REGISTRY, across EVERY present
- * identifier - not reference-only.
+ * Classifies a historical row against the REGISTRY.
  *
- * A fileHash-only historical row, or a row whose reference differs but whose
- * fileHash already belongs to a claim, must be recognised as represented so an
- * idempotent re-run does not report it as a fresh collision or attempt a
- * doomed insert.
+ * A row counts as REPRESENTED only when the SAME source already owns EVERY
+ * strong identifier the row carries. Anything else is a collision.
+ *
+ * The looser "any one identifier matched -> represented" rule was unsafe: if
+ * an existing claim shared this row's reference but NOT its distinct
+ * fileHash, the row was skipped, the run could still be marked complete, and
+ * that file hash stayed unclaimed - so a later replay whose OCR missed the
+ * reference could claim the file and create value again. Partial ownership
+ * and cross-source ownership are therefore both reported, never absorbed.
+ *
+ * Returns:
+ *   { kind: "represented" }                    - same source owns all of them
+ *   { kind: "collision", findings: [...] }     - partial and/or foreign owner
+ *   undefined                                  - nothing matched; claimable
  */
-async function findExistingClaimRow(ids) {
-  const conditions = [];
-  if (ids.referenceHash) {
-    conditions.push(eq(schema.paymentSlipClaims.referenceHash, ids.referenceHash));
-  }
-  if (ids.fileHash) {
-    conditions.push(eq(schema.paymentSlipClaims.fileHash, ids.fileHash));
-  }
-  if (ids.qrPayloadHash) {
-    conditions.push(eq(schema.paymentSlipClaims.qrPayloadHash, ids.qrPayloadHash));
-  }
-  if (conditions.length === 0) return undefined;
+async function classifyAgainstRegistry(ids, current) {
+  const fields = [
+    ["reference", "referenceHash"],
+    ["file", "fileHash"],
+    ["qr", "qrPayloadHash"],
+  ];
 
+  const present = fields.filter(([, field]) => Boolean(ids[field]));
+  if (present.length === 0) return undefined;
+
+  const conditions = present.map(([, field]) =>
+    eq(schema.paymentSlipClaims[field], ids[field])
+  );
+
+  // Every matching claim, not just the first - a row can legitimately touch
+  // more than one claim, and that is exactly the case worth reporting.
   const rows = await db
     .select()
     .from(schema.paymentSlipClaims)
     .where(conditions.length === 1 ? conditions[0] : or(...conditions))
-    .limit(1);
+    .limit(20);
 
-  const row = rows?.[0];
-  if (!row) return undefined;
+  if (!rows || rows.length === 0) return undefined;
 
-  let matchedKind = "reference";
-  if (ids.referenceHash && row.referenceHash === ids.referenceHash) matchedKind = "reference";
-  else if (ids.fileHash && row.fileHash === ids.fileHash) matchedKind = "file";
-  else if (ids.qrPayloadHash && row.qrPayloadHash === ids.qrPayloadHash) matchedKind = "qr";
+  const findings = [];
+  let ownedByThisSourceCount = 0;
 
-  return { row, matchedKind };
+  for (const [kind, field] of present) {
+    const owner = rows.find((r) => r[field] && r[field] === ids[field]);
+
+    if (!owner) {
+      // This identifier is NOT in the registry while a sibling identifier is.
+      // Marking the row represented here would leave this hash unclaimed.
+      findings.push({
+        kind,
+        identifier: `${String(ids[field]).slice(0, 12)}...`,
+        first: "(unclaimed)",
+        second: `${current.sourceType}#${current.sourceId}`,
+        detail: "partial: a sibling identifier is claimed but this one is not",
+      });
+      continue;
+    }
+
+    const sameSource =
+      owner.sourceType === current.sourceType && owner.sourceId === current.sourceId;
+
+    if (sameSource) {
+      ownedByThisSourceCount += 1;
+    } else {
+      findings.push({
+        kind,
+        identifier: `${String(ids[field]).slice(0, 12)}...`,
+        first: `${owner.sourceType}#${owner.sourceId}`,
+        second: `${current.sourceType}#${current.sourceId}`,
+        detail: "claimed by a DIFFERENT source",
+      });
+    }
+  }
+
+  if (findings.length === 0 && ownedByThisSourceCount === present.length) {
+    return { kind: "represented" };
+  }
+
+  return { kind: "collision", findings };
 }
 
 async function processRows(sourceType, rows) {
@@ -218,11 +277,12 @@ async function processRows(sourceType, rows) {
 
     const current = { sourceType, sourceId: row.id };
 
-    // Already in the registry (ANY identifier)? Then this row is represented;
-    // it is NOT a collision and must not be re-inserted.
-    let existing;
+    // Registry classification: represented only when THIS source already owns
+    // EVERY identifier this row carries. Partial or foreign ownership is a
+    // reported collision, never a silent skip.
+    let registry;
     try {
-      existing = await findExistingClaimRow(ids);
+      registry = await classifyAgainstRegistry(ids, current);
     } catch (error) {
       stats.failures.push({
         source: `${sourceType}#${row.id}`,
@@ -232,9 +292,14 @@ async function processRows(sourceType, rows) {
       continue;
     }
 
-    if (existing) {
+    if (registry?.kind === "represented") {
       stats.alreadyClaimed += 1;
       tracker.remember(ids, current);
+      continue;
+    }
+
+    if (registry?.kind === "collision") {
+      for (const finding of registry.findings) tracker.collisions.push(finding);
       continue;
     }
 
@@ -255,6 +320,10 @@ async function processRows(sourceType, rows) {
         sourceId: row.id,
         userId: row.userId ?? 0,
         referenceHash: ids.referenceHash ?? null,
+        // Case-folded alias so a legacy row whose true casing is
+        // unrecoverable is still matchable by a mixed-case replay after the
+        // historical scan is retired.
+        referenceHashUpper: derived.referenceHashUpper ?? null,
         fileHash: ids.fileHash ?? null,
         qrPayloadHash: ids.qrPayloadHash ?? null,
         semanticFingerprint: derived.semanticFingerprint ?? null,

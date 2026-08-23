@@ -187,3 +187,63 @@ describe("the backfill script defines its pagination symbols", () => {
     expect(code).toMatch(/reachedEof\[key\] = true/);
   });
 });
+
+
+// ─── P1: "already represented" must require FULL, SAME-SOURCE ownership ──
+
+describe("registry classification is not satisfied by a partial match", () => {
+  const code = fs
+    .readFileSync(path.resolve(process.cwd(), "scripts/backfill-slip-claims.mjs"), "utf-8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ 	]*\/\/.*$/gm, "");
+
+  it("uses a classifier rather than a first-match lookup", () => {
+    expect(code).toMatch(/classifyAgainstRegistry/);
+    expect(code).not.toMatch(/findExistingClaimRow/);
+  });
+
+  it("only counts a row represented when THIS source owns EVERY identifier", () => {
+    expect(code).toMatch(/ownedByThisSourceCount === present\.length/);
+    expect(code).toMatch(/findings\.length === 0/);
+  });
+
+  it("reports an identifier that is unclaimed while a sibling is claimed", () => {
+    expect(code).toMatch(/partial: a sibling identifier is claimed but this one is not/);
+  });
+
+  it("reports an identifier claimed by a DIFFERENT source", () => {
+    expect(code).toMatch(/claimed by a DIFFERENT source/);
+  });
+
+  it("a collision result never counts as represented", () => {
+    const idx = code.indexOf('registry?.kind === "collision"');
+    expect(idx).toBeGreaterThan(-1);
+    const block = code.slice(idx, idx + 300);
+    expect(block).not.toMatch(/alreadyClaimed/);
+    expect(block).toMatch(/tracker\.collisions\.push/);
+  });
+
+  it("fetches every matching claim, not just the first", () => {
+    // limit(1) would hide a second, differently-owned claim.
+    const idx = code.indexOf("classifyAgainstRegistry");
+    const block = code.slice(idx, idx + 1800);
+    expect(block).not.toMatch(/\.limit\(1\)/);
+    expect(block).toMatch(/\.limit\(20\)/);
+  });
+
+  it("collisions from the registry keep the run from being marked complete", () => {
+    expect(code).toMatch(/tracker\.collisions\.length === 0/);
+  });
+
+  it("persists the case-folded alias so completion cannot lose mixed-case cover", () => {
+    expect(code).toMatch(/referenceHashUpper: derived\.referenceHashUpper/);
+  });
+
+  it("derives the alias for every row, whichever evidence path wins", () => {
+    const idx = code.indexOf("function deriveIdentifiers");
+    const block = code.slice(idx, idx + 2200);
+    expect(block).toMatch(/getRawReferenceForLegacyLookup/);
+    // Present on all three return shapes.
+    expect((block.match(/referenceHashUpper/g) ?? []).length).toBeGreaterThanOrEqual(4);
+  });
+});
