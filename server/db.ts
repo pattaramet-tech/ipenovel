@@ -2459,6 +2459,44 @@ export async function updatePaymentIfNotFinalized(
 }
 
 /**
+ * Locks a payment row for the rest of the transaction (SELECT ... FOR UPDATE).
+ *
+ * Approval reads the persisted `extractedData`, decides on it, claims its
+ * identifiers and only THEN writes the status. Without a lock a concurrent
+ * Recheck could rewrite that extraction inside the window, so the money
+ * would be committed against evidence nobody evaluated. Locking first makes
+ * the subject stable from revalidation through commit; the Recheck blocks,
+ * and once this commits its compare-and-set finds a finalized payment and
+ * no-ops - the existing CAS guarantee is unchanged, just no longer racy.
+ *
+ * Always called with an explicit transaction: locking outside one would
+ * release immediately and defeat the purpose. Returns false when the row
+ * does not exist.
+ */
+export async function lockPaymentForUpdate(paymentId: number, tx: any): Promise<boolean> {
+  // mysql2's raw .execute() resolves to a [rows, fields] tuple, not the bare
+  // rows array - unwrapped the same way lockCartForCheckout does.
+  const rawResult: any = await tx.execute(
+    sql`SELECT id FROM payments WHERE id = ${paymentId} FOR UPDATE`
+  );
+  const rows = Array.isArray(rawResult?.[0]) ? rawResult[0] : rawResult;
+  return Boolean(rows && rows.length > 0);
+}
+
+/**
+ * Locks a wallet top-up row for the rest of the transaction. Same reasoning
+ * as lockPaymentForUpdate: the extraction a decision rests on must not change
+ * between revalidation and the credit.
+ */
+export async function lockWalletTopupForUpdate(topupId: number, tx: any): Promise<boolean> {
+  const rawResult: any = await tx.execute(
+    sql`SELECT id FROM walletTopups WHERE id = ${topupId} FOR UPDATE`
+  );
+  const rows = Array.isArray(rawResult?.[0]) ? rawResult[0] : rawResult;
+  return Boolean(rows && rows.length > 0);
+}
+
+/**
  * Conditionally rejects a payment, ONLY while it is still reviewable.
  *
  * Returns true iff THIS call won the race. Used by the audited legacy-case
@@ -4032,7 +4070,11 @@ export async function approveWalletTopup(
    * stuck with no retry path.
    */
   options?: {
-    legacyCaseAmbiguityResolved?: boolean;
+    legacyCaseAmbiguityResolution?: {
+      expectedLegacyAliasHash?: string;
+      expectedMatchedSourceType: "order_payment" | "wallet_topup";
+      expectedMatchedSourceId: number;
+    };
     auditResolution?: (tx: any) => Promise<void>;
   }
 ) {
@@ -4042,6 +4084,11 @@ export async function approveWalletTopup(
   // REAL DATABASE TRANSACTION: All operations succeed or all rollback
   // This prevents double-crediting if approval is retried
   return await db.transaction(async (tx) => {
+    // Step 0: LOCK the subject row before reading the evidence this approval
+    // rests on, so a concurrent Recheck cannot rewrite extractedData between
+    // the anti-replay decision below and the credit.
+    await lockWalletTopupForUpdate(topupId, tx);
+
     // Step 1: Fetch topup INSIDE transaction for consistency
     const topupResult = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
     if (!topupResult || topupResult.length === 0) {
@@ -4087,13 +4134,14 @@ export async function approveWalletTopup(
           // Legacy lookup only - the claim itself still uses the
           // case-preserving hash derived above.
           referenceRawForLegacyLookup: getRawReferenceForLegacyLookup(persistedExtractedData),
-          // Set ONLY by the audited resolution flow. Skips the ADVISORY alias
-          // check a human has adjudicated and nothing else: every exact
-          // UNIQUE identifier below is still claimed atomically, so an exact
-          // reference/file/QR duplicate still blocks. Without forwarding it
-          // the wallet resolver re-hit the same ambiguity and rolled its own
-          // approval back, making the resolution unusable.
-          legacyCaseAmbiguityResolved: options?.legacyCaseAmbiguityResolved === true,
+          // Set ONLY by the audited resolution flow, and BOUND to the exact
+          // ambiguity a human adjudicated - not a bare boolean. claimSlip
+          // waives it only if the fold it finds from transaction-visible
+          // state is identical (same alias, same matched source); anything
+          // else returns legacy_case_ambiguity_changed. Every exact UNIQUE
+          // identifier below is still claimed atomically, so an exact
+          // reference/file/QR duplicate still blocks.
+          legacyCaseAmbiguityResolution: options?.legacyCaseAmbiguityResolution,
         },
         tx
       );
@@ -4104,6 +4152,16 @@ export async function approveWalletTopup(
         // explicit resolution flow instead of failing forever.
         throw new WalletSlipClaimError(
           "LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION",
+          describeClaimFailure(claim)
+        );
+      }
+
+      if (!claim.claimed && claim.reason === "legacy_case_ambiguity_changed") {
+        // The evidence moved after the admin decided. Their decision was
+        // about different evidence, so it is NOT applied: no claim, no
+        // credit, no resolution record.
+        throw new WalletSlipClaimError(
+          "LEGACY_CASE_AMBIGUITY_CHANGED_REVIEW_REQUIRED",
           describeClaimFailure(claim)
         );
       }
@@ -4239,6 +4297,11 @@ export async function rejectWalletTopup(
   if (!db) throw new Error("Database not available");
 
   return await db.transaction(async (tx) => {
+    // Locked before any evidence is read, so an in-transaction resolution
+    // audit cannot be adjudicated against an extraction a concurrent Recheck
+    // is rewriting.
+    await lockWalletTopupForUpdate(topupId, tx);
+
     const topup = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
     if (!topup || topup.length === 0) throw new Error("Wallet top-up not found");
 

@@ -67,12 +67,29 @@ export interface SlipClaimRequest {
    */
   referenceRawForLegacyLookup?: string;
   /**
-   * Set by the admin "confirmed distinct" resolution to proceed past a known
-   * legacy case ambiguity that a human has already adjudicated. It skips ONLY
-   * the advisory alias check - every exact UNIQUE identifier is still claimed
-   * atomically, so this can never bypass real anti-replay.
+   * The EXACT legacy case ambiguity an admin adjudicated as "confirmed
+   * distinct" - not a bare boolean.
+   *
+   * A boolean was too broad: it waived whatever ambiguity happened to be
+   * current at claim time. If a Recheck rewrote `extractedData` between the
+   * admin's decision and this transaction, the new extraction could fold to
+   * a DIFFERENT unrecoverable historical reference and be waived by a
+   * decision that was never about it - approving a replay.
+   *
+   * The waiver therefore applies only when the ambiguity found HERE, from
+   * transaction-visible state, is identical to the one adjudicated: same
+   * alias hash, same matched source. Anything else returns
+   * `legacy_case_ambiguity_changed` and nothing is claimed.
+   *
+   * Every value is derived SERVER-SIDE by the resolution service; none of it
+   * is accepted from a browser.
    */
-  legacyCaseAmbiguityResolved?: boolean;
+  legacyCaseAmbiguityResolution?: {
+    /** Undefined pre-backfill, where the scan finds the row without an alias. */
+    expectedLegacyAliasHash?: string;
+    expectedMatchedSourceType: SlipClaimSourceType;
+    expectedMatchedSourceId: number;
+  };
 }
 
 export type SlipClaimOutcome =
@@ -122,6 +139,24 @@ export type SlipClaimOutcome =
       requiresAdminResolution: true;
       /** The alias that matched, for the audit record. */
       legacyAliasHash?: string;
+    }
+  | {
+      claimed: false;
+      /**
+       * An admin resolution was presented, but the ambiguity visible from
+       * inside this transaction is NOT the one they adjudicated - the
+       * evidence moved underneath the decision.
+       *
+       * Distinct from `legacy_case_ambiguity` so the caller can tell the
+       * admin to refresh and re-adjudicate CURRENT evidence rather than
+       * repeating a decision that no longer applies. Nothing is claimed and
+       * no value is created.
+       */
+      reason: "legacy_case_ambiguity_changed";
+      /** The ambiguity that is actually current, for the refreshed panel. */
+      matchedSourceType?: SlipClaimSourceType;
+      matchedSourceId?: number;
+      requiresAdminResolution: true;
     };
 
 /**
@@ -313,17 +348,47 @@ export async function claimSlip(
       };
     }
 
-    if (conflict.kind === "legacy_case_ambiguity" && !request.legacyCaseAmbiguityResolved) {
-      return {
-        claimed: false,
-        reason: "legacy_case_ambiguity",
-        matchedSourceType: conflict.matchedSourceType,
-        matchedSourceId: conflict.matchedSourceId,
-        legacyAliasHashMatched: true,
-        conflictStrength: "advisory",
-        requiresAdminResolution: true,
-        legacyAliasHash: conflict.legacyAliasHash,
-      };
+    if (conflict.kind === "legacy_case_ambiguity") {
+      const adjudicated = request.legacyCaseAmbiguityResolution;
+
+      if (!adjudicated) {
+        return {
+          claimed: false,
+          reason: "legacy_case_ambiguity",
+          matchedSourceType: conflict.matchedSourceType,
+          matchedSourceId: conflict.matchedSourceId,
+          legacyAliasHashMatched: true,
+          conflictStrength: "advisory",
+          requiresAdminResolution: true,
+          legacyAliasHash: conflict.legacyAliasHash,
+        };
+      }
+
+      // THE WAIVER IS BOUND TO THE EVIDENCE, NOT TO THE SUBJECT.
+      //
+      // `conflict` was just computed from transaction-visible state, so this
+      // comparison IS the in-transaction revalidation: if a Recheck rewrote
+      // the extraction after the admin decided, the current fold differs and
+      // the decision does not apply to it.
+      const matchesAdjudicated =
+        adjudicated.expectedMatchedSourceType === conflict.matchedSourceType &&
+        adjudicated.expectedMatchedSourceId === conflict.matchedSourceId &&
+        (adjudicated.expectedLegacyAliasHash ?? null) === (conflict.legacyAliasHash ?? null);
+
+      if (!matchesAdjudicated) {
+        return {
+          claimed: false,
+          reason: "legacy_case_ambiguity_changed",
+          matchedSourceType: conflict.matchedSourceType,
+          matchedSourceId: conflict.matchedSourceId,
+          requiresAdminResolution: true,
+        };
+      }
+
+      // Waived: THIS ambiguity, and only this one. The exact UNIQUE claim
+      // below is untouched, so a strong duplicate still cannot pass - and a
+      // strong duplicate never reaches here anyway, since the evaluator
+      // reports it as `strong_duplicate` and returns above.
     }
   }
 
@@ -389,6 +454,22 @@ export function describeClaimFailure(outcome: SlipClaimOutcome): string {
       "No strong identifier could be derived from this slip (no readable transaction " +
       "reference, no file hash, no QR payload), so replay cannot be prevented " +
       "automatically. Manual review is required."
+    );
+  }
+
+  if (outcome.reason === "legacy_case_ambiguity_changed") {
+    const where =
+      outcome.matchedSourceType && outcome.matchedSourceId
+        ? outcome.matchedSourceType === "order_payment"
+          ? ` an approved order payment #${outcome.matchedSourceId}`
+          : ` an approved wallet top-up #${outcome.matchedSourceId}`
+        : " an earlier approved record";
+
+    return (
+      `The evidence for this record changed after it was reviewed: it now matches${where} ` +
+      `only after letter casing is ignored, which is not what was adjudicated. The earlier ` +
+      `decision does not apply to the current evidence, so nothing was approved and nothing ` +
+      `was claimed. Refresh and review the current evidence before deciding again.`
     );
   }
 

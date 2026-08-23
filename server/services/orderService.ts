@@ -318,7 +318,11 @@ export async function approvePayment(
    * exact UNIQUE identifier is still claimed atomically below.
    */
   options?: {
-    legacyCaseAmbiguityResolved?: boolean;
+    legacyCaseAmbiguityResolution?: {
+      expectedLegacyAliasHash?: string;
+      expectedMatchedSourceType: "order_payment" | "wallet_topup";
+      expectedMatchedSourceId: number;
+    };
     /**
      * Invoked INSIDE the approval transaction so a successful legacy-case
      * resolution record and the financial finalization commit together or
@@ -344,10 +348,21 @@ async function approvePaymentInTx(
   adminLabel: string | undefined,
   tx: any,
   options?: {
-    legacyCaseAmbiguityResolved?: boolean;
+    legacyCaseAmbiguityResolution?: {
+      expectedLegacyAliasHash?: string;
+      expectedMatchedSourceType: "order_payment" | "wallet_topup";
+      expectedMatchedSourceId: number;
+    };
     auditResolution?: (tx: any) => Promise<void>;
   }
 ): Promise<{ message: string }> {
+  // LOCK the payment row first, so a concurrent Recheck cannot rewrite the
+  // extraction this approval is about to decide on and claim against. The
+  // Recheck blocks here and, once this commits, its compare-and-set finds a
+  // finalized payment and no-ops - the CAS guarantee is unchanged, just no
+  // longer racy.
+  await db.lockPaymentForUpdate(paymentId, tx);
+
   // Reloaded fresh INSIDE the transaction. The admin's browser may have had
   // this order open for a long time, and the OCR panel it renders is display
   // state, not authority - nothing client-supplied is trusted here.
@@ -405,7 +420,10 @@ async function approvePaymentInTx(
       semanticFingerprint,
       // Derived from the PERSISTED extraction, for the legacy lookup only.
       referenceRawForLegacyLookup: getRawReferenceForLegacyLookup(persistedExtractedData),
-      legacyCaseAmbiguityResolved: options?.legacyCaseAmbiguityResolved,
+      // BOUND to the exact ambiguity the admin adjudicated, never a bare
+      // boolean: claimSlip waives it only when the fold it finds from
+      // transaction-visible state is identical.
+      legacyCaseAmbiguityResolution: options?.legacyCaseAmbiguityResolution,
     },
     tx
   );
@@ -418,6 +436,15 @@ async function approvePaymentInTx(
     // a payment permanently unapprovable.
     throw new Error(
       `LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION: ${describeClaimFailure(claim)}`
+    );
+  }
+
+  if (!claim.claimed && claim.reason === "legacy_case_ambiguity_changed") {
+    // The evidence moved after the admin decided - their decision was about
+    // a different fold. It is NOT applied: no claim, no finalization, no
+    // resolution record. The admin must re-adjudicate current evidence.
+    throw new Error(
+      `LEGACY_CASE_AMBIGUITY_CHANGED_REVIEW_REQUIRED: ${describeClaimFailure(claim)}`
     );
   }
 

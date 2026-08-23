@@ -32,7 +32,8 @@
 
 import * as db from "../db";
 import { TRPCError } from "@trpc/server";
-import { paymentSlipReviewResolutions } from "../../drizzle/schema";
+import { paymentSlipReviewResolutions, walletTopups } from "../../drizzle/schema";
+import { eq } from "drizzle-orm";
 import {
   deriveStrongIdentifiersFromExtractedData,
   getRawReferenceForLegacyLookup,
@@ -64,12 +65,26 @@ export interface ResolveLegacyCaseResult {
 
 const MIN_REASON_LENGTH = 10;
 
+/** The exact ambiguity an admin adjudicated. Always derived server-side. */
+export interface AdjudicatedAmbiguity {
+  legacyAliasHash?: string;
+  matchedSourceType: LegacyCaseSubjectType;
+  matchedSourceId: number;
+}
+
 /** Per-subject adapter. Keeps the generic layer free of subject specifics. */
 interface SubjectAdapter {
   load(): Promise<{ status: string; extractedData: string | null } | undefined>;
+  /**
+   * Reloads the subject from state visible INSIDE a transaction, after the
+   * row has been locked. Used to re-derive CURRENT evidence rather than
+   * trusting the pre-transaction read.
+   */
+  loadInTx(tx: any): Promise<{ status: string; extractedData: string | null } | undefined>;
   approveWithResolution(args: {
     adminUserId: number;
     adminLabel?: string;
+    adjudicated: AdjudicatedAmbiguity;
     auditResolution: (tx: any) => Promise<void>;
   }): Promise<void>;
   /**
@@ -97,15 +112,31 @@ function adapterFor(input: ResolveLegacyCaseInput): SubjectAdapter {
           extractedData: (payment.extractedData as string | null) ?? null,
         };
       },
-      async approveWithResolution({ adminUserId, adminLabel, auditResolution }) {
+      async loadInTx(tx: any) {
+        const payment = await db.getPaymentById(input.subjectId, tx);
+        if (!payment) return undefined;
+        return {
+          status: payment.status as string,
+          extractedData: (payment.extractedData as string | null) ?? null,
+        };
+      },
+      async approveWithResolution({ adminUserId, adminLabel, adjudicated, auditResolution }) {
         await orderService.approvePayment(input.subjectId, String(adminUserId), adminLabel, undefined, {
-          legacyCaseAmbiguityResolved: true,
+          legacyCaseAmbiguityResolution: {
+            expectedLegacyAliasHash: adjudicated.legacyAliasHash,
+            expectedMatchedSourceType: adjudicated.matchedSourceType,
+            expectedMatchedSourceId: adjudicated.matchedSourceId,
+          },
           auditResolution,
         });
       },
       async rejectWithResolution({ adminUserId, reason, auditResolution }) {
         const database = await requireDb();
         await database.transaction(async (tx: any) => {
+          // 0. LOCK the subject so the evidence cannot be rewritten by a
+          //    concurrent Recheck between revalidation and commit.
+          await db.lockPaymentForUpdate(input.subjectId, tx);
+
           // 1. Reload INSIDE the transaction - never trust the pre-check.
           const payment = await db.getPaymentById(input.subjectId, tx);
           if (!payment) {
@@ -158,9 +189,26 @@ function adapterFor(input: ResolveLegacyCaseInput): SubjectAdapter {
         extractedData: (topup.extractedData as string | null) ?? null,
       };
     },
-    async approveWithResolution({ adminUserId, auditResolution }) {
+    async loadInTx(tx: any) {
+      const rows = await tx
+        .select()
+        .from(walletTopups)
+        .where(eq(walletTopups.id, input.subjectId))
+        .limit(1);
+      const topup = rows?.[0];
+      if (!topup) return undefined;
+      return {
+        status: topup.status as string,
+        extractedData: (topup.extractedData as string | null) ?? null,
+      };
+    },
+    async approveWithResolution({ adminUserId, adjudicated, auditResolution }) {
       await db.approveWalletTopup(input.subjectId, adminUserId, {
-        legacyCaseAmbiguityResolved: true,
+        legacyCaseAmbiguityResolution: {
+          expectedLegacyAliasHash: adjudicated.legacyAliasHash,
+          expectedMatchedSourceType: adjudicated.matchedSourceType,
+          expectedMatchedSourceId: adjudicated.matchedSourceId,
+        },
         auditResolution,
       });
     },
@@ -225,6 +273,63 @@ export async function describeLegacyCaseAmbiguity(
   };
 }
 
+/** Same alias, same matched source. Anything else is different evidence. */
+function sameAmbiguity(
+  a: AdjudicatedAmbiguity,
+  b: { legacyAliasHash?: string; matchedSourceType: LegacyCaseSubjectType; matchedSourceId: number }
+): boolean {
+  return (
+    (a.legacyAliasHash ?? null) === (b.legacyAliasHash ?? null) &&
+    a.matchedSourceType === b.matchedSourceType &&
+    a.matchedSourceId === b.matchedSourceId
+  );
+}
+
+const CHANGED_EVIDENCE_MESSAGE =
+  "LEGACY_CASE_AMBIGUITY_CHANGED_REVIEW_REQUIRED: the evidence for this record changed " +
+  "after it was reviewed, so the decision you made does not apply to it. Nothing was " +
+  "approved, rejected, claimed or recorded. Refresh and review the current evidence.";
+
+/**
+ * Re-derives the ambiguity from state visible INSIDE the transaction and
+ * requires it to be EXACTLY the one the admin adjudicated.
+ *
+ * Reloading is not enough on its own: "an ambiguity is still present" was
+ * satisfied by a DIFFERENT fold, which is precisely how a decision about
+ * reference A could be applied to reference B after a Recheck rewrote the
+ * extraction.
+ */
+async function requireUnchangedAmbiguityInTx(
+  input: ResolveLegacyCaseInput,
+  adapter: SubjectAdapter,
+  adjudicated: AdjudicatedAmbiguity,
+  tx: any
+): Promise<void> {
+  const current = await adapter.loadInTx(tx);
+  if (!current) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Subject not found" });
+  }
+  if (!isReviewable(current.status)) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: `This record is already ${current.status}. Refresh to see the current decision.`,
+    });
+  }
+
+  const live = await describeLegacyCaseAmbiguity(
+    input.subjectType,
+    input.subjectId,
+    // CURRENT extraction, re-read under the row lock - not the copy captured
+    // before the transaction opened.
+    current.extractedData,
+    tx
+  );
+
+  if (!live.present || !sameAmbiguity(adjudicated, live)) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: CHANGED_EVIDENCE_MESSAGE });
+  }
+}
+
 export async function resolveLegacyCaseAmbiguity(
   input: ResolveLegacyCaseInput
 ): Promise<ResolveLegacyCaseResult> {
@@ -268,6 +373,17 @@ export async function resolveLegacyCaseAmbiguity(
     });
   }
 
+  // THE EVIDENCE THE ADMIN IS ADJUDICATING, captured server-side from
+  // persisted state. Nothing here comes from the browser - the request
+  // carries only the subject, the decision and the reason. Every financial
+  // step below is bound to exactly this, so a decision can never be applied
+  // to evidence it was not about.
+  const adjudicated: AdjudicatedAmbiguity = {
+    legacyAliasHash: ambiguity.legacyAliasHash,
+    matchedSourceType: ambiguity.matchedSourceType,
+    matchedSourceId: ambiguity.matchedSourceId,
+  };
+
   if (input.decision === "confirmed_duplicate") {
     // The RECORD AND THE REJECTION COMMIT TOGETHER.
     //
@@ -281,28 +397,17 @@ export async function resolveLegacyCaseAmbiguity(
       adminUserId: input.adminUserId,
       reason: `Legacy reference case ambiguity confirmed as duplicate: ${reason}`,
       auditResolution: async (tx: any) => {
-        // Revalidate against state visible INSIDE the transaction: a fold
-        // adjudicated on a stale read must not produce a record.
-        const live = await describeLegacyCaseAmbiguity(
-          input.subjectType,
-          input.subjectId,
-          subject.extractedData,
-          tx
-        );
-        if (!live.present) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message:
-              "No legacy case ambiguity is currently present for this record. Use the normal " +
-              "Approve or Reject action instead.",
-          });
-        }
+        // The subject row is already locked by the rejection transaction, so
+        // this re-derives CURRENT evidence and requires it to be EXACTLY what
+        // was adjudicated. A rejection must not rest on a fold that has since
+        // been replaced any more than an approval may.
+        await requireUnchangedAmbiguityInTx(input, adapter, adjudicated, tx);
 
         await insertResolution(tx, {
           subjectType: input.subjectType,
           subjectId: input.subjectId,
           resolutionType: "legacy_case_confirmed_duplicate",
-          ambiguity: live,
+          ambiguity: adjudicated,
           adminUserId: input.adminUserId,
           reason,
         });
@@ -338,12 +443,20 @@ export async function resolveLegacyCaseAmbiguity(
   await adapter.approveWithResolution({
     adminUserId: input.adminUserId,
     adminLabel: input.adminLabel,
+    // The waiver travels with the evidence. claimSlip - running inside the
+    // approval transaction, under the subject row lock - recomputes the fold
+    // and applies the waiver ONLY if it is identical, otherwise the approval
+    // fails with LEGACY_CASE_AMBIGUITY_CHANGED_REVIEW_REQUIRED and this
+    // audit callback never runs.
+    adjudicated,
     auditResolution: async (tx: any) => {
       await insertResolution(tx, {
         subjectType: input.subjectType,
         subjectId: input.subjectId,
         resolutionType: "legacy_case_confirmed_distinct",
-        ambiguity,
+        // Recorded evidence == claimed evidence: the claim above proved they
+        // are the same, so the audit can never describe a different fold.
+        ambiguity: adjudicated,
         adminUserId: input.adminUserId,
         reason,
       });

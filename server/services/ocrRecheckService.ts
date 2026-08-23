@@ -306,8 +306,57 @@ export async function recheckOrderPaymentOcr(
   // This keeps a recheck's identifier set at least as strong as submission's,
   // even when this OCR pass read nothing.
   const recomputedFileHash = await computeSlipFileHash(payment.slipImageUrl);
-  const extractedWithFile = recomputedFileHash
-    ? { ...extracted, fileHash: recomputedFileHash }
+
+  // ── INTEGRITY: the stored bytes must not change mid-recheck ────────────
+  // Two hashes of the SAME stored slip disagreeing means the object was
+  // replaced while this recheck ran. Silently adopting the newer one would
+  // let a substituted image inherit the standing of the one the customer
+  // actually submitted, so this stops and changes nothing: the first hash
+  // stays persisted and is NOT overwritten.
+  if (preOcrFileHash && recomputedFileHash && recomputedFileHash !== preOcrFileHash) {
+    const attemptNo = await recordOcrAttempt({
+      subjectType: "order_payment",
+      subjectId: payment.id,
+      trigger: "admin_recheck",
+      initiatedByUserId: input.adminUserId,
+      startedAt,
+      stage: "completed",
+      result: "needs_review",
+      reviewCategory: "DATA",
+      reviewReason: "SLIP_FILE_HASH_CHANGED_DURING_RECHECK",
+      providerAttemptCount: providerDiagnostic?.providerAttemptCount ?? 1,
+    });
+
+    return {
+      paymentId: payment.id,
+      orderId: order.id,
+      paymentStatus: payment.status,
+      attemptNo,
+      verificationPassed: false,
+      readyForAdminApproval: false,
+      reviewReason: "SLIP_FILE_HASH_CHANGED_DURING_RECHECK",
+      category: "DATA",
+      rootCauseSummary:
+        "The stored slip image changed while this recheck was running. The originally " +
+        "recovered file identifier was kept and nothing was overwritten. A human needs " +
+        "to establish which image this payment actually belongs to.",
+      confidenceKnown,
+      // The identifier recovered BEFORE the change is still persisted.
+      hasStrongIdentifier: true,
+      effectiveWindowMinutes: config.maxTimeWindowMinutes,
+      fileIdentifierStatus: describeFileIdentifierStatus({ fileHash: preOcrFileHash }),
+    };
+  }
+
+  // ── MONOTONIC: a recheck may ADD a strong identifier, never REMOVE one ──
+  // A transient failure of this second fetch left `recomputedFileHash`
+  // undefined, and the conditional update below then rewrote the persisted
+  // extraction WITHOUT the fileHash that the pre-OCR pass had already
+  // recovered and stored - so a recheck could delete an exact-file
+  // identifier and send the payment back to NO_STRONG_IDENTIFIER.
+  const effectiveFileHash = recomputedFileHash ?? preOcrFileHash;
+  const extractedWithFile = effectiveFileHash
+    ? { ...extracted, fileHash: effectiveFileHash }
     : extracted;
 
   const { identifiers } = deriveStrongIdentifiersFromExtractedData(
@@ -448,7 +497,9 @@ export async function recheckOrderPaymentOcr(
     hasStrongIdentifier: strongIdentifierPresent,
     effectiveWindowMinutes: config.maxTimeWindowMinutes,
     fileIdentifierStatus: describeFileIdentifierStatus({
-      fileHash: recomputedFileHash,
+      // The EFFECTIVE hash: reporting UNAVAILABLE after a transient second
+      // fetch failure would contradict the identifier still persisted.
+      fileHash: effectiveFileHash,
       duplicateFileMatch: strongDuplicate?.matchedKind === "file",
     }),
     // Strong duplicate and legacy ambiguity are reported as DIFFERENT

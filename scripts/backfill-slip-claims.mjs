@@ -42,6 +42,10 @@
 import process from "node:process";
 import { BackfillOptionError, parseBackfillOptions } from "./lib/backfillCliOptions.mjs";
 import { createCollisionTracker } from "./lib/backfillCollisionTracker.mjs";
+import {
+  classifyRepresentation,
+  STRONG_FIELDS,
+} from "./lib/backfillRepresentation.mjs";
 
 const TOOL_VERSION = "backfill-slip-claims@2";
 
@@ -177,6 +181,12 @@ const stats = {
   claimed: 0,
   recoveredByReparse: 0,
   noIdentifier: 0,
+  /** Represented rows whose required advisory alias is missing. */
+  wouldEnrichAlias: 0,
+  aliasEnriched: 0,
+  /** Rows still lacking required alias coverage when the run ends. */
+  aliasUncovered: 0,
+  aliasInconsistencies: [],
   failures: [],
   paymentMaxId: 0,
   walletTopupMaxId: 0,
@@ -211,7 +221,10 @@ function noteLegacyAlias(aliasHash, current) {
  * Classifies a historical row against the REGISTRY.
  *
  * A row counts as REPRESENTED only when the SAME source already owns EVERY
- * strong identifier the row carries. Anything else is a collision.
+ * strong identifier the row carries AND, when the row's casing is
+ * unrecoverable, that same-source claim also carries the required advisory
+ * alias. The decision itself lives in scripts/lib/backfillRepresentation.mjs
+ * so the matrix can be tested without a database; this wrapper only fetches.
  *
  * The looser "any one identifier matched -> represented" rule was unsafe: if
  * an existing claim shared this row's reference but NOT its distinct
@@ -219,20 +232,9 @@ function noteLegacyAlias(aliasHash, current) {
  * that file hash stayed unclaimed - so a later replay whose OCR missed the
  * reference could claim the file and create value again. Partial ownership
  * and cross-source ownership are therefore both reported, never absorbed.
- *
- * Returns:
- *   { kind: "represented" }                    - same source owns all of them
- *   { kind: "collision", findings: [...] }     - partial and/or foreign owner
- *   undefined                                  - nothing matched; claimable
  */
-async function classifyAgainstRegistry(ids, current) {
-  const fields = [
-    ["reference", "referenceHash"],
-    ["file", "fileHash"],
-    ["qr", "qrPayloadHash"],
-  ];
-
-  const present = fields.filter(([, field]) => Boolean(ids[field]));
+async function classifyAgainstRegistry(ids, current, expectedAliasHash) {
+  const present = STRONG_FIELDS.filter(([, field]) => Boolean(ids[field]));
   if (present.length === 0) return undefined;
 
   const conditions = present.map(([, field]) =>
@@ -247,48 +249,20 @@ async function classifyAgainstRegistry(ids, current) {
     .where(conditions.length === 1 ? conditions[0] : or(...conditions))
     .limit(20);
 
-  if (!rows || rows.length === 0) return undefined;
+  return classifyRepresentation(ids, current, rows, expectedAliasHash);
+}
 
-  const findings = [];
-  let ownedByThisSourceCount = 0;
-
-  for (const [kind, field] of present) {
-    const owner = rows.find((r) => r[field] && r[field] === ids[field]);
-
-    if (!owner) {
-      // This identifier is NOT in the registry while a sibling identifier is.
-      // Marking the row represented here would leave this hash unclaimed.
-      findings.push({
-        kind,
-        identifier: `${String(ids[field]).slice(0, 12)}...`,
-        first: "(unclaimed)",
-        second: `${current.sourceType}#${current.sourceId}`,
-        detail: "partial: a sibling identifier is claimed but this one is not",
-      });
-      continue;
-    }
-
-    const sameSource =
-      owner.sourceType === current.sourceType && owner.sourceId === current.sourceId;
-
-    if (sameSource) {
-      ownedByThisSourceCount += 1;
-    } else {
-      findings.push({
-        kind,
-        identifier: `${String(ids[field]).slice(0, 12)}...`,
-        first: `${owner.sourceType}#${owner.sourceId}`,
-        second: `${current.sourceType}#${current.sourceId}`,
-        detail: "claimed by a DIFFERENT source",
-      });
-    }
-  }
-
-  if (findings.length === 0 && ownedByThisSourceCount === present.length) {
-    return { kind: "represented" };
-  }
-
-  return { kind: "collision", findings };
+/**
+ * Re-reads one claim and confirms the alias actually landed. An enrichment
+ * that silently affected zero rows must not be counted as coverage.
+ */
+async function verifyAliasPersisted(claimId, expectedAliasHash) {
+  const rows = await db
+    .select()
+    .from(schema.paymentSlipClaims)
+    .where(eq(schema.paymentSlipClaims.id, claimId))
+    .limit(1);
+  return rows?.[0]?.legacyReferenceUpperHash === expectedAliasHash;
 }
 
 async function processRows(sourceType, rows) {
@@ -314,9 +288,13 @@ async function processRows(sourceType, rows) {
     // Registry classification: represented only when THIS source already owns
     // EVERY identifier this row carries. Partial or foreign ownership is a
     // reported collision, never a silent skip.
+    // The alias this row REQUIRES. Undefined whenever the casing survived -
+    // those rows need no advisory coverage and must never be given one.
+    const expectedAlias = derived.legacyReferenceUpperHash;
+
     let registry;
     try {
-      registry = await classifyAgainstRegistry(ids, current);
+      registry = await classifyAgainstRegistry(ids, current, expectedAlias);
     } catch (error) {
       stats.failures.push({
         source: `${sourceType}#${row.id}`,
@@ -329,6 +307,68 @@ async function processRows(sourceType, rows) {
     if (registry?.kind === "represented") {
       stats.alreadyClaimed += 1;
       tracker.remember(ids, current);
+      // Represented rows carry their alias too, so the advisory grouping
+      // report covers the whole corpus rather than just newly claimed rows.
+      noteLegacyAlias(expectedAlias, current);
+      continue;
+    }
+
+    if (registry?.kind === "alias_inconsistent") {
+      // Never overwrite: the recorded alias may be protecting a fold this
+      // derivation no longer produces. An operator decides, and completion
+      // is refused until they do.
+      stats.aliasInconsistencies.push({
+        source: `${sourceType}#${row.id}`,
+        expected: `${String(registry.expected).slice(0, 12)}...`,
+        existing: `${String(registry.existing).slice(0, 12)}...`,
+      });
+      stats.aliasUncovered += 1;
+      tracker.remember(ids, current);
+      continue;
+    }
+
+    if (registry?.kind === "needs_alias") {
+      // Strong identifiers are fully owned by this source, but the required
+      // advisory alias is absent - the exact state that let a mixed-case
+      // replay through after completion. Repair the SAME claim; never insert
+      // a second one, since the alias is lossy and non-unique.
+      tracker.remember(ids, current);
+      noteLegacyAlias(expectedAlias, current);
+
+      if (!isLive) {
+        stats.wouldEnrichAlias += 1;
+        stats.aliasUncovered += 1;
+        console.log(
+          `  WOULD_ENRICH_LEGACY_ALIAS  ${sourceType}#${row.id}  claim#${registry.claim?.id}`
+        );
+        continue;
+      }
+
+      try {
+        await db
+          .update(schema.paymentSlipClaims)
+          .set({ legacyReferenceUpperHash: registry.expected })
+          .where(eq(schema.paymentSlipClaims.id, registry.claim.id));
+
+        // Re-read: an update that affected nothing is not coverage.
+        if (await verifyAliasPersisted(registry.claim.id, registry.expected)) {
+          stats.aliasEnriched += 1;
+        } else {
+          stats.aliasUncovered += 1;
+          stats.failures.push({
+            source: `${sourceType}#${row.id}`,
+            stage: "alias enrichment",
+            error: "alias not present after update",
+          });
+        }
+      } catch (error) {
+        stats.aliasUncovered += 1;
+        stats.failures.push({
+          source: `${sourceType}#${row.id}`,
+          stage: "alias enrichment",
+          error: error?.code ?? error?.message ?? "unknown",
+        });
+      }
       continue;
     }
 
@@ -465,6 +505,13 @@ try {
 
   console.log(`  legacy aliases to create : ${legacyAliasesWouldCreate}`);
   console.log(`  ambiguous alias groups   : ${ambiguousAliasGroups.length}`);
+  console.log(
+    isLive
+      ? `  aliases ENRICHED         : ${stats.aliasEnriched}`
+      : `  would enrich aliases     : ${stats.wouldEnrichAlias}`
+  );
+  console.log(`  alias inconsistencies    : ${stats.aliasInconsistencies.length}`);
+  console.log(`  rows lacking alias cover : ${stats.aliasUncovered}`);
   console.log(`  collisions REPORTED      : ${tracker.collisions.length}`);
   console.log(`  failures                 : ${stats.failures.length}`);
 
@@ -495,6 +542,19 @@ try {
     );
   }
 
+  if (stats.aliasInconsistencies.length > 0) {
+    console.log("\n[backfill] LEGACY_ALIAS_INCONSISTENCY - operator review required:");
+    for (const a of stats.aliasInconsistencies) {
+      console.log(`  - ${a.source}  expected ${a.expected}  but claim holds ${a.existing}`);
+    }
+    console.log(
+      "\n  The claim for this source already records a DIFFERENT advisory alias." +
+        "\n  Nothing was overwritten: the recorded alias may be protecting a fold this" +
+        "\n  derivation no longer produces, and guessing could silently remove coverage." +
+        "\n  Completion is REFUSED until each of these is resolved by hand."
+    );
+  }
+
   if (stats.failures.length > 0) {
     console.log("\n[backfill] FAILURES:");
     for (const f of stats.failures) {
@@ -503,9 +563,17 @@ try {
   }
 
   // ── Completion ─────────────────────────────────────────────────────────
+  // Required ADVISORY coverage counts toward completion just as strong
+  // coverage does. Completion disables the historical scan, so a legacy row
+  // whose claim carries no alias would be left with NO protection at all
+  // against a mixed-case replay - the hole this rule closes.
+  const aliasCoverageComplete =
+    stats.aliasUncovered === 0 && stats.aliasInconsistencies.length === 0;
+
   const cleanRun =
     stats.failures.length === 0 &&
     tracker.collisions.length === 0 &&
+    aliasCoverageComplete &&
     reachedEof.payments &&
     reachedEof.walletTopups;
 
@@ -515,7 +583,8 @@ try {
         "\n[backfill] REFUSING to mark complete. A completion flag disables the legacy\n" +
           "           safety scan, so it is only written after a fully clean run:\n" +
           `             failures=${stats.failures.length} collisions=${tracker.collisions.length} ` +
-          `paymentsEOF=${reachedEof.payments} topupsEOF=${reachedEof.walletTopups}\n` +
+          `aliasUncovered=${stats.aliasUncovered} aliasInconsistencies=${stats.aliasInconsistencies.length}` +
+          ` paymentsEOF=${reachedEof.payments} topupsEOF=${reachedEof.walletTopups}\n` +
           "           Resolve the findings above and re-run."
       );
       process.exitCode = 1;
@@ -544,7 +613,11 @@ try {
     console.log("\n[backfill] DRY-RUN complete. No rows were written. Re-run with --live to apply.");
   }
 
-  if (tracker.collisions.length > 0 || stats.failures.length > 0) {
+  if (
+    tracker.collisions.length > 0 ||
+    stats.failures.length > 0 ||
+    stats.aliasInconsistencies.length > 0
+  ) {
     process.exitCode = 1;
   }
 } finally {
