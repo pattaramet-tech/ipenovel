@@ -83,6 +83,11 @@ export interface RecheckOcrResult {
   effectiveWindowMinutes: number;
   /** Admin-safe file identifier status - never the hash itself. */
   fileIdentifierStatus: FileIdentifierStatus;
+  /**
+   * True when an admin finalized the payment while this recheck was running.
+   * Nothing was written; the finalized evidence is intact.
+   */
+  supersededByFinalization?: boolean;
   /** Read-only duplicate finding. Approve still runs its own atomic claim. */
   duplicate?: {
     strength: "strong";
@@ -158,6 +163,27 @@ export async function recheckOrderPaymentOcr(
     };
   }
 
+  // ── PRE-OCR: recover and persist the exact-file identifier ────────────
+  // Done BEFORE the provider call and CONDITIONALLY, for two reasons:
+  //   1. it needs no provider, so an outage never costs us the identifier;
+  //   2. if the payment has already been finalized we learn it here and stop,
+  //      rather than spending a provider call only to discover we may not
+  //      write anything.
+  const preOcrFileHash = await computeSlipFileHash(payment.slipImageUrl);
+
+  if (preOcrFileHash) {
+    const wrote = await db.updatePaymentIfNotFinalized(payment.id, {
+      extractedData: mergeFileHashInto(payment.extractedData as string | null, preOcrFileHash),
+    });
+
+    if (!wrote) {
+      // An admin approved or rejected between our initial read and now.
+      // Change nothing and report the race honestly - a STATE outcome, not an
+      // OCR or provider failure.
+      return await buildSupersededResult(payment, order.id, input.adminUserId, startedAt, config);
+    }
+  }
+
   // ── Run OCR against the EXISTING slip ─────────────────────────────────
   let ocrText = "";
   let providerConfidence: number | undefined;
@@ -195,39 +221,14 @@ export async function recheckOrderPaymentOcr(
       providerDiagnostic,
     });
 
-    const technicalPathFileHash = await computeSlipFileHash(payment.slipImageUrl);
-
-    // PERSIST the recovered file identifier, do not merely report it.
+    // Already computed AND conditionally persisted before the provider call,
+    // while the payment was still pending - so it is valid historical
+    // evidence and the panel's AVAILABLE status is backed by a real write.
     //
-    // Reporting `fileIdentifierStatus: AVAILABLE` while leaving
-    // payment.extractedData untouched made the panel contradict the action:
-    // Approve reloads the unchanged row, still derives no strong identifier,
-    // and refuses with NO_STRONG_IDENTIFIER - even though the recheck just
-    // said an identifier was available. Merging it makes that Approve work.
-    //
-    // Merged into the EXISTING extraction rather than replacing it, so a
-    // provider failure never destroys previously-read financial evidence.
-    // Only extractedData is written; status and slipSubmittedAt are untouched.
-    if (technicalPathFileHash) {
-      let mergedExtraction: Record<string, unknown> = {};
-      try {
-        const existing = payment.extractedData
-          ? JSON.parse(payment.extractedData as string)
-          : null;
-        if (existing && typeof existing === "object") mergedExtraction = existing;
-      } catch {
-        // A corrupt blob is replaced by the identifier alone - strictly more
-        // useful than an unparseable value, and it cannot lose real data
-        // because nothing could be read out of it anyway.
-        mergedExtraction = {};
-      }
-
-      mergedExtraction.fileHash = technicalPathFileHash;
-
-      await db.updatePayment(payment.id, {
-        extractedData: JSON.stringify(mergedExtraction),
-      });
-    }
+    // Deliberately NO write here. Repeating it unconditionally is precisely
+    // the hazard: an admin may have finalized the payment during the provider
+    // call, and this path must never overwrite approved or rejected evidence.
+    const technicalPathFileHash = preOcrFileHash;
 
     const attemptNo = await recordOcrAttempt({
       subjectType: "order_payment",
@@ -386,12 +387,24 @@ export async function recheckOrderPaymentOcr(
 
   // Refresh the DISPLAY metadata only. status/slipSubmittedAt are excluded
   // by construction - this update names every column it writes.
-  await db.updatePayment(payment.id, {
+  // CONDITIONAL: only while the payment is still non-finalized. An admin may
+  // have approved or rejected it during the provider call, and a late recheck
+  // must never replace finalized evidence - for an approval the persisted
+  // extraction could otherwise disagree with the identifiers already written
+  // to paymentSlipClaims.
+  const wroteFinal = await db.updatePaymentIfNotFinalized(payment.id, {
     extractedData: JSON.stringify(extractedWithFile),
     ocrConfidence: extracted.confidence ?? 0,
     reviewReason: reviewReason ?? null,
     ocrDecision: "needs_review",
   });
+
+  if (!wroteFinal) {
+    // Lost the race. The pre-OCR fileHash write - made while the payment was
+    // still pending - stands as valid historical evidence; nothing else is
+    // touched.
+    return await buildSupersededResult(payment, order.id, input.adminUserId, startedAt, config);
+  }
 
   const attemptNo = await recordOcrAttempt({
     subjectType: "order_payment",
@@ -446,5 +459,86 @@ export async function recheckOrderPaymentOcr(
           viaLegacyCompatibility: duplicateMatch.viaLegacy,
         }
       : undefined,
+  };
+}
+
+
+/**
+ * Merges a server-derived file hash into a persisted extraction WITHOUT
+ * discarding what is already there - a provider failure must never destroy
+ * financial evidence an earlier successful read had stored.
+ *
+ * A corrupt blob falls back to the identifier alone, which cannot lose data
+ * because nothing was readable out of it anyway.
+ */
+export function mergeFileHashInto(
+  existingJson: string | null | undefined,
+  fileHash: string
+): string {
+  let merged: Record<string, unknown> = {};
+  try {
+    const parsed = existingJson ? JSON.parse(existingJson) : null;
+    if (parsed && typeof parsed === "object") merged = parsed;
+  } catch {
+    merged = {};
+  }
+  merged.fileHash = fileHash;
+  return JSON.stringify(merged);
+}
+
+/**
+ * Result for a recheck that finished after an admin already finalized the
+ * payment.
+ *
+ * Classified as STATE, deliberately NOT as a provider/OCR failure or a
+ * duplicate: the provider may have worked perfectly and the slip may be
+ * fine - the only thing that happened is that a human got there first.
+ * Mislabelling it would send an admin chasing an OCR problem that does not
+ * exist.
+ *
+ * Nothing is written here. The attempt is still recorded for diagnostics.
+ */
+async function buildSupersededResult(
+  originalPayment: any,
+  orderId: number,
+  adminUserId: number,
+  startedAt: Date,
+  config: { maxTimeWindowMinutes: number }
+): Promise<RecheckOcrResult> {
+  // Reload so the admin sees the CURRENT state that beat this recheck.
+  const current = await db.getPaymentById(originalPayment.id);
+  const currentStatus = current?.status ?? originalPayment.status;
+
+  const attemptNo = await recordOcrAttempt({
+    subjectType: "order_payment",
+    subjectId: originalPayment.id,
+    trigger: "admin_recheck",
+    initiatedByUserId: adminUserId,
+    startedAt,
+    stage: "completed",
+    // needs_review, not technical_failure: nothing technical went wrong.
+    result: "needs_review",
+    reviewCategory: "STATE",
+    reviewReason: "RECHECK_SUPERSEDED_BY_FINALIZATION",
+    providerAttemptCount: 0,
+  });
+
+  return {
+    paymentId: originalPayment.id,
+    orderId,
+    paymentStatus: currentStatus,
+    attemptNo,
+    verificationPassed: false,
+    readyForAdminApproval: false,
+    reviewReason: "RECHECK_SUPERSEDED_BY_FINALIZATION",
+    category: "DATA",
+    rootCauseSummary:
+      "This recheck finished after the payment was already finalized. No OCR evidence " +
+      "was changed.",
+    confidenceKnown: false,
+    hasStrongIdentifier: false,
+    effectiveWindowMinutes: config.maxTimeWindowMinutes,
+    fileIdentifierStatus: "UNAVAILABLE",
+    supersededByFinalization: true,
   };
 }

@@ -2412,6 +2412,52 @@ export async function deleteBanner(bannerId: number) {
   await db.delete(banners).where(eq(banners.id, bannerId));
 }
 
+/**
+ * Compare-and-set update used ONLY by the OCR recheck path.
+ *
+ * A recheck validates that the payment is pending BEFORE its slow provider
+ * work. An admin can approve or reject during that window, so an
+ * unconditional write afterwards would overwrite finalized evidence - and for
+ * an approval the persisted extraction could then disagree with the
+ * identifiers already written to paymentSlipClaims.
+ *
+ * This only writes while the payment is still non-finalized, and reports
+ * whether it actually did. Callers MUST treat `false` as "the recheck lost
+ * the race" and change nothing.
+ *
+ * `status` and `slipSubmittedAt` are deliberately not writable through this
+ * helper: a recheck is diagnostic and must never move the payment or rewrite
+ * the customer's submission time.
+ */
+export async function updatePaymentIfNotFinalized(
+  paymentId: number,
+  fields: {
+    extractedData?: string | null;
+    ocrConfidence?: number;
+    reviewReason?: string | null;
+    ocrDecision?: "auto_approved" | "needs_review" | "rejected" | "ocr_disabled" | "shadow_auto_approved";
+  },
+  tx?: any
+): Promise<boolean> {
+  const database = tx || (await getDb());
+  if (!database) return false;
+
+  const result = await database
+    .update(payments)
+    .set(fields as any)
+    .where(
+      and(
+        eq(payments.id, paymentId),
+        // The non-finalized set. An approved/rejected payment is excluded, so
+        // its evidence can never be clobbered by a late-finishing recheck.
+        or(eq(payments.status, "pending"), eq(payments.status, "pending_review"))
+      )
+    );
+
+  const header = Array.isArray(result) ? result[0] : result;
+  return ((header as any)?.affectedRows || 0) > 0;
+}
+
 // ============ SETTINGS ============
 
 export async function getSetting(key: string) {
@@ -3989,6 +4035,16 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
         },
         tx
       );
+
+      if (!claim.claimed && claim.reason === "legacy_case_ambiguity") {
+        // Normal Approve must not silently bypass this, and must not call it
+        // a duplicate - it is an unresolved question. Direct the admin to the
+        // explicit resolution flow instead of failing forever.
+        throw new WalletSlipClaimError(
+          "LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION",
+          describeClaimFailure(claim)
+        );
+      }
 
       if (!claim.claimed && claim.reason === "already_claimed") {
         const ownedByThisTopup =
@@ -5953,6 +6009,16 @@ export async function approveWalletTopupWithOCR(
       );
 
       if (!claim.claimed) {
+        // A legacy case ambiguity is NOT a duplicate verdict - the alias is
+        // lossy. Auto-approval simply stops; no claim was inserted and no
+        // value is created. A human decides via the resolution flow.
+        if (claim.reason === "legacy_case_ambiguity") {
+          throw new WalletSlipClaimError(
+            "LEGACY_REFERENCE_CASE_AMBIGUITY",
+            describeClaimFailure(claim)
+          );
+        }
+
         const ownedByThisTopup =
           claim.reason === "already_claimed" &&
           claim.existingSourceType === "wallet_topup" &&
@@ -5962,9 +6028,9 @@ export async function approveWalletTopupWithOCR(
           const code =
             claim.reason === "no_strong_identifier"
               ? "NO_STRONG_IDENTIFIER"
-              : claim.conflictKind === "file"
+              : claim.reason === "already_claimed" && claim.conflictKind === "file"
                 ? "DUPLICATE_FILE"
-                : claim.conflictKind === "qr"
+                : claim.reason === "already_claimed" && claim.conflictKind === "qr"
                   ? "DUPLICATE_QR"
                   : "DUPLICATE_REFERENCE";
           throw new WalletSlipClaimError(code, describeClaimFailure(claim));
@@ -6000,9 +6066,21 @@ export async function approveWalletTopupWithOCR(
       const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
       const affectedRows = (resultHeader as any)?.affectedRows || 0;
       if (affectedRows === 0) {
-        // Already processed - return existing topup without crediting again
-        const existing = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
-        return existing[0];
+        // LOST THE STATE RACE - and this MUST throw, not return.
+        //
+        // The slip claim was already inserted above in this same transaction.
+        // Returning normally here committed that claim while the conditional
+        // update created no approval and no wallet credit, permanently
+        // consuming the transaction reference and file hash for a top-up that
+        // was never funded (e.g. an admin rejected it mid-flight).
+        //
+        // Invariant: A CLAIM MUST NEVER COMMIT WITHOUT THE VALUE CREATION IT
+        // PROTECTS. Throwing rolls the claim back with everything else.
+        throw new WalletSlipClaimError(
+          "TOPUP_STATE_RACE",
+          "This top-up is no longer pending - it was approved, rejected or cancelled while " +
+            "OCR was running. No wallet credit was created and no slip claim was recorded."
+        );
       }
     } else {
       // For pending_review: update regardless of current status (admin review)

@@ -73,14 +73,17 @@ describe("Admin Recheck OCR cannot approve or reject", () => {
     expect(code).not.toMatch(/\bupdateOrder\s*\(/);
   });
 
-  it("the only payment write names display columns explicitly", () => {
-    // updatePayment is allowed, but must not carry status/slipSubmittedAt.
-    const updateCalls = code.match(/updatePayment\([\s\S]*?\}\)/g) ?? [];
+  it("every payment write is conditional and names display columns explicitly", () => {
+    // Writes now go through the compare-and-set helper so a late recheck can
+    // never mutate finalized evidence; none may carry status/slipSubmittedAt.
+    const updateCalls = code.match(/updatePaymentIfNotFinalized\([\s\S]*?\}\)/g) ?? [];
     expect(updateCalls.length).toBeGreaterThan(0);
     for (const call of updateCalls) {
       expect(call).not.toMatch(/\bstatus\b/);
       expect(call).not.toMatch(/slipSubmittedAt/);
     }
+    // No unconditional write remains.
+    expect(code).not.toMatch(/db\.updatePayment\(/);
   });
 
   it("reports readyForAdminApproval instead of approving", () => {
@@ -351,64 +354,59 @@ describe("Admin Recheck duplicate lookup is READ-ONLY", () => {
 
 // ─── P2: a failed recheck must PERSIST the file hash it recovered ────────
 
-describe("a technical-failure recheck persists the recovered file identifier", () => {
+describe("the recovered file identifier is persisted, but only while pending", () => {
   const source = fs.readFileSync(
     path.resolve(process.cwd(), "server/services/ocrRecheckService.ts"),
     "utf-8"
   );
-  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ 	]*\/\/.*$/gm, "");
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
 
-  it("writes extractedData on the technical-failure path, not just the return value", () => {
-    const catchIdx = code.indexOf("const technicalPathFileHash");
-    expect(catchIdx).toBeGreaterThan(-1);
-    const block = code.slice(catchIdx, catchIdx + 1400);
-    expect(block).toMatch(/updatePayment\(/);
-    expect(block).toMatch(/extractedData: JSON\.stringify\(mergedExtraction\)/);
+  it("persists the hash BEFORE the provider call, conditionally", () => {
+    // Written while the payment is still pending, so it is valid historical
+    // evidence no matter what happens to the payment afterwards.
+    const preIdx = code.indexOf("const preOcrFileHash");
+    const providerIdx = code.indexOf("prepareSlipImageForOcr(payment.slipImageUrl)");
+    expect(preIdx).toBeGreaterThan(-1);
+    expect(providerIdx).toBeGreaterThan(preIdx);
+    expect(code).toMatch(/updatePaymentIfNotFinalized\(payment\.id, \{\s*\n\s*extractedData: mergeFileHashInto/);
   });
 
   it("only writes when a hash was actually recovered", () => {
-    expect(code).toMatch(/if \(technicalPathFileHash\) \{/);
+    expect(code).toMatch(/if \(preOcrFileHash\) \{/);
   });
 
   it("MERGES into existing extraction rather than replacing it", () => {
-    // A provider failure must not destroy previously-read financial evidence.
-    const idx = code.indexOf("const technicalPathFileHash");
-    const block = code.slice(idx, idx + 1400);
-    expect(block).toMatch(/JSON\.parse\(payment\.extractedData/);
-    expect(block).toMatch(/mergedExtraction = existing/);
-    expect(block).toMatch(/mergedExtraction\.fileHash = technicalPathFileHash/);
+    // A provider failure must not destroy evidence an earlier read stored.
+    const idx = code.indexOf("export function mergeFileHashInto");
+    const block = code.slice(idx, idx + 700);
+    expect(block).toMatch(/JSON\.parse\(existingJson\)/);
+    expect(block).toMatch(/merged\.fileHash = fileHash/);
   });
 
   it("a corrupt existing blob does not throw", () => {
-    const idx = code.indexOf("const technicalPathFileHash");
-    const block = code.slice(idx, idx + 1400);
+    const idx = code.indexOf("export function mergeFileHashInto");
+    const block = code.slice(idx, idx + 700);
     expect(block).toMatch(/catch \{/);
-    expect(block).toMatch(/mergedExtraction = \{\}/);
+    expect(block).toMatch(/merged = \{\}/);
   });
 
-  it("STILL never writes status or slipSubmittedAt on that path", () => {
-    const idx = code.indexOf("const technicalPathFileHash");
-    const block = code.slice(idx, idx + 1400);
-    const updates = block.match(/updatePayment\([\s\S]*?\}\)/g) ?? [];
-    expect(updates.length).toBeGreaterThan(0);
-    for (const u of updates) {
-      expect(u).not.toMatch(/status/);
-      expect(u).not.toMatch(/slipSubmittedAt/);
-    }
+  it("the technical-failure path performs NO second write", () => {
+    const idx = code.indexOf("const technicalPathFileHash = preOcrFileHash");
+    expect(idx).toBeGreaterThan(-1);
+    const block = code.slice(idx, idx + 900);
+    expect(block).not.toMatch(/updatePayment/);
   });
 
-  it("the panel status and the Approve action can no longer contradict each other", () => {
-    // fileIdentifierStatus is derived from the same hash that is now persisted,
-    // so "AVAILABLE" implies Approve can derive a strong identifier.
-    const idx = code.indexOf("const technicalPathFileHash");
-    const block = code.slice(idx, idx + 2200);
+  it("the panel status and the Approve action still cannot contradict each other", () => {
+    const idx = code.indexOf("const technicalPathFileHash = preOcrFileHash");
+    const block = code.slice(idx, idx + 2400);
     expect(block).toMatch(/describeFileIdentifierStatus\(\{ fileHash: technicalPathFileHash \}\)/);
     expect(block).toMatch(/hasStrongIdentifier: Boolean\(technicalPathFileHash\)/);
   });
 
   it("recheck still never claims, approves or rejects", () => {
-    expect(code).not.toMatch(/claimSlip\s*\(/);
-    expect(code).not.toMatch(/approvePayment\s*\(/);
-    expect(code).not.toMatch(/rejectPayment\s*\(/);
+    expect(code).not.toMatch(/\bclaimSlip\s*\(/);
+    expect(code).not.toMatch(/\bapprovePayment\s*\(/);
+    expect(code).not.toMatch(/\brejectPayment\s*\(/);
   });
 });
