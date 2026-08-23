@@ -113,22 +113,69 @@ describe("describeDuplicate", () => {
   it("a strong match is stated as a confirmed duplicate and links the owner", () => {
     const d = describeDuplicate(
       input({
-        duplicate: { strength: "strong", matchedSourceType: "order_payment", matchedSourceId: 123 },
+        duplicate: {
+          strength: "strong",
+          matchedSourceType: "order_payment",
+          matchedSourceId: 123,
+          // Resolved server-side: a payment id is NOT an order id.
+          matchedOrderId: 77,
+        },
       })
     );
     expect(d.strength).toBe("strong");
     expect(d.headline).toMatch(/Confirmed duplicate/i);
     expect(d.matchedLabel).toBe("Order payment #123");
-    expect(d.matchedHref).toContain("123");
+    // The real detail route, not a list page that ignores the parameter.
+    expect(d.matchedHref).toBe("/admin/orders/77");
   });
 
-  it("links a wallet top-up owner", () => {
+  it("an order payment with no resolved order id gets NO link", () => {
+    // A wrong link is worse than none: the admin would land confidently on
+    // the wrong order while comparing evidence.
+    const d = describeDuplicate(
+      input({
+        duplicate: { strength: "strong", matchedSourceType: "order_payment", matchedSourceId: 123 },
+      })
+    );
+    expect(d.matchedLabel).toBe("Order payment #123");
+    expect(d.matchedHref).toBeUndefined();
+  });
+
+  it("links a wallet top-up owner to its detail route", () => {
     const d = describeDuplicate(
       input({
         duplicate: { strength: "strong", matchedSourceType: "wallet_topup", matchedSourceId: 55 },
       })
     );
     expect(d.matchedLabel).toBe("Wallet top-up #55");
+    expect(d.matchedHref).toBe("/admin/wallet-topups/55");
+  });
+
+  it("a legacy case ambiguity navigates the same correct way", () => {
+    const d = describeDuplicate(
+      input({
+        duplicate: {
+          strength: "legacy_case_ambiguity",
+          matchedSourceType: "order_payment",
+          matchedSourceId: 123,
+          matchedOrderId: 77,
+        },
+      })
+    );
+    expect(d.strength).toBe("legacy_case_ambiguity");
+    expect(d.matchedHref).toBe("/admin/orders/77");
+  });
+
+  it("no link is ever built from a list-page query parameter", () => {
+    for (const dup of [
+      { strength: "strong" as const, matchedSourceType: "order_payment" as const, matchedSourceId: 1, matchedOrderId: 2 },
+      { strength: "strong" as const, matchedSourceType: "wallet_topup" as const, matchedSourceId: 3 },
+    ]) {
+      const d = describeDuplicate(input({ duplicate: dup }));
+      expect(d.matchedHref).not.toContain("?paymentId=");
+      expect(d.matchedHref).not.toContain("?topupId=");
+      expect(d.matchedHref).not.toContain("topup-logs");
+    }
   });
 
   it("a weak match ALWAYS carries the not-proof caveat", () => {
@@ -459,7 +506,7 @@ describe("duplicate panel is driven by server data", () => {
     );
     expect(d.strength).toBe("strong");
     expect(d.matchedLabel).toBe("Wallet top-up #88");
-    expect(d.matchedHref).toContain("88");
+    expect(d.matchedHref).toBe("/admin/wallet-topups/88");
   });
 
   it("a legacy-compatibility match says so explicitly", () => {
