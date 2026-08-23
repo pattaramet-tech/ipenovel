@@ -347,3 +347,68 @@ describe("Admin Recheck duplicate lookup is READ-ONLY", () => {
     expect(code).not.toMatch(/throw new Error\(parsed\.technicalErrorCode/);
   });
 });
+
+
+// ─── P2: a failed recheck must PERSIST the file hash it recovered ────────
+
+describe("a technical-failure recheck persists the recovered file identifier", () => {
+  const source = fs.readFileSync(
+    path.resolve(process.cwd(), "server/services/ocrRecheckService.ts"),
+    "utf-8"
+  );
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ 	]*\/\/.*$/gm, "");
+
+  it("writes extractedData on the technical-failure path, not just the return value", () => {
+    const catchIdx = code.indexOf("const technicalPathFileHash");
+    expect(catchIdx).toBeGreaterThan(-1);
+    const block = code.slice(catchIdx, catchIdx + 1400);
+    expect(block).toMatch(/updatePayment\(/);
+    expect(block).toMatch(/extractedData: JSON\.stringify\(mergedExtraction\)/);
+  });
+
+  it("only writes when a hash was actually recovered", () => {
+    expect(code).toMatch(/if \(technicalPathFileHash\) \{/);
+  });
+
+  it("MERGES into existing extraction rather than replacing it", () => {
+    // A provider failure must not destroy previously-read financial evidence.
+    const idx = code.indexOf("const technicalPathFileHash");
+    const block = code.slice(idx, idx + 1400);
+    expect(block).toMatch(/JSON\.parse\(payment\.extractedData/);
+    expect(block).toMatch(/mergedExtraction = existing/);
+    expect(block).toMatch(/mergedExtraction\.fileHash = technicalPathFileHash/);
+  });
+
+  it("a corrupt existing blob does not throw", () => {
+    const idx = code.indexOf("const technicalPathFileHash");
+    const block = code.slice(idx, idx + 1400);
+    expect(block).toMatch(/catch \{/);
+    expect(block).toMatch(/mergedExtraction = \{\}/);
+  });
+
+  it("STILL never writes status or slipSubmittedAt on that path", () => {
+    const idx = code.indexOf("const technicalPathFileHash");
+    const block = code.slice(idx, idx + 1400);
+    const updates = block.match(/updatePayment\([\s\S]*?\}\)/g) ?? [];
+    expect(updates.length).toBeGreaterThan(0);
+    for (const u of updates) {
+      expect(u).not.toMatch(/status/);
+      expect(u).not.toMatch(/slipSubmittedAt/);
+    }
+  });
+
+  it("the panel status and the Approve action can no longer contradict each other", () => {
+    // fileIdentifierStatus is derived from the same hash that is now persisted,
+    // so "AVAILABLE" implies Approve can derive a strong identifier.
+    const idx = code.indexOf("const technicalPathFileHash");
+    const block = code.slice(idx, idx + 2200);
+    expect(block).toMatch(/describeFileIdentifierStatus\(\{ fileHash: technicalPathFileHash \}\)/);
+    expect(block).toMatch(/hasStrongIdentifier: Boolean\(technicalPathFileHash\)/);
+  });
+
+  it("recheck still never claims, approves or rejects", () => {
+    expect(code).not.toMatch(/claimSlip\s*\(/);
+    expect(code).not.toMatch(/approvePayment\s*\(/);
+    expect(code).not.toMatch(/rejectPayment\s*\(/);
+  });
+});

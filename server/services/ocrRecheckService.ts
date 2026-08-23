@@ -197,6 +197,38 @@ export async function recheckOrderPaymentOcr(
 
     const technicalPathFileHash = await computeSlipFileHash(payment.slipImageUrl);
 
+    // PERSIST the recovered file identifier, do not merely report it.
+    //
+    // Reporting `fileIdentifierStatus: AVAILABLE` while leaving
+    // payment.extractedData untouched made the panel contradict the action:
+    // Approve reloads the unchanged row, still derives no strong identifier,
+    // and refuses with NO_STRONG_IDENTIFIER - even though the recheck just
+    // said an identifier was available. Merging it makes that Approve work.
+    //
+    // Merged into the EXISTING extraction rather than replacing it, so a
+    // provider failure never destroys previously-read financial evidence.
+    // Only extractedData is written; status and slipSubmittedAt are untouched.
+    if (technicalPathFileHash) {
+      let mergedExtraction: Record<string, unknown> = {};
+      try {
+        const existing = payment.extractedData
+          ? JSON.parse(payment.extractedData as string)
+          : null;
+        if (existing && typeof existing === "object") mergedExtraction = existing;
+      } catch {
+        // A corrupt blob is replaced by the identifier alone - strictly more
+        // useful than an unparseable value, and it cannot lose real data
+        // because nothing could be read out of it anyway.
+        mergedExtraction = {};
+      }
+
+      mergedExtraction.fileHash = technicalPathFileHash;
+
+      await db.updatePayment(payment.id, {
+        extractedData: JSON.stringify(mergedExtraction),
+      });
+    }
+
     const attemptNo = await recordOcrAttempt({
       subjectType: "order_payment",
       subjectId: payment.id,
