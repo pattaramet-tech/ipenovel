@@ -192,6 +192,10 @@ describe("the backfill script defines its pagination symbols", () => {
 // ─── P1: "already represented" must require FULL, SAME-SOURCE ownership ──
 
 describe("registry classification is not satisfied by a partial match", () => {
+  const lib = fs
+    .readFileSync(path.resolve(process.cwd(), "scripts/lib/backfillRepresentation.mjs"), "utf-8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ 	]*\/\/.*$/gm, "");
   const code = fs
     .readFileSync(path.resolve(process.cwd(), "scripts/backfill-slip-claims.mjs"), "utf-8")
     .replace(/\/\*[\s\S]*?\*\//g, "")
@@ -202,17 +206,21 @@ describe("registry classification is not satisfied by a partial match", () => {
     expect(code).not.toMatch(/findExistingClaimRow/);
   });
 
+  // The decision itself now lives in scripts/lib/backfillRepresentation.mjs
+  // so its matrix can be tested against real inputs rather than source text -
+  // see server/services/boundResolutionAndAliasCoverage.test.ts. These
+  // assertions moved with it.
   it("only counts a row represented when THIS source owns EVERY identifier", () => {
-    expect(code).toMatch(/ownedByThisSourceCount === present\.length/);
-    expect(code).toMatch(/findings\.length === 0/);
+    expect(lib).toMatch(/ownedByThisSourceCount !== present\.length/);
+    expect(lib).toMatch(/findings\.length > 0/);
   });
 
   it("reports an identifier that is unclaimed while a sibling is claimed", () => {
-    expect(code).toMatch(/partial: a sibling identifier is claimed but this one is not/);
+    expect(lib).toMatch(/partial: a sibling identifier is claimed but this one is not/);
   });
 
   it("reports an identifier claimed by a DIFFERENT source", () => {
-    expect(code).toMatch(/claimed by a DIFFERENT source/);
+    expect(lib).toMatch(/claimed by a DIFFERENT source/);
   });
 
   it("a collision result never counts as represented", () => {
@@ -225,8 +233,8 @@ describe("registry classification is not satisfied by a partial match", () => {
 
   it("fetches every matching claim, not just the first", () => {
     // limit(1) would hide a second, differently-owned claim.
-    const idx = code.indexOf("classifyAgainstRegistry");
-    const block = code.slice(idx, idx + 1800);
+    const idx = code.indexOf("async function classifyAgainstRegistry");
+    const block = code.slice(idx, code.indexOf("async function verifyAliasPersisted", idx));
     expect(block).not.toMatch(/\.limit\(1\)/);
     expect(block).toMatch(/\.limit\(20\)/);
   });

@@ -1,0 +1,636 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import * as dbModule from "../db";
+import { claimSlip } from "./slipClaimService";
+import { hashSlipReference } from "./slipIdentifierService";
+import * as backfillState from "./slipBackfillStateService";
+import { classifyRepresentation } from "../../scripts/lib/backfillRepresentation.mjs";
+
+/**
+ * Round 9. Three findings, all of them "the decision and the thing it was
+ * about drifted apart":
+ *
+ *  1. a confirmed-distinct resolution waived whatever ambiguity happened to
+ *     be current, and recorded the one the admin saw - a Recheck landing in
+ *     between could turn a decision about reference A into an approval of a
+ *     replay of reference B
+ *  2. the backfill counted a legacy row as represented when its claim held
+ *     the strong identifiers but no advisory alias, so completion could
+ *     retire the scan while that row stayed replayable
+ *  3. a transient second fetch failure let Recheck DELETE a file hash it had
+ *     already recovered and persisted
+ *
+ * (1) and (2) are exercised behaviourally; the transaction ORDERING and the
+ * row locking need a live MySQL transaction, which this sandbox does not
+ * have, so those are asserted structurally.
+ */
+
+function readCode(relativePath: string): string {
+  return fs
+    .readFileSync(path.resolve(process.cwd(), relativePath), "utf-8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ \t]*\/\/.*$/gm, "");
+}
+
+const MIXED_A = "202608225ApOyxElgdOo7YVwv";
+const MIXED_B = "202608226BqPzyFmhePp8ZWxw";
+const UPPER_A = MIXED_A.toUpperCase();
+const UPPER_B = MIXED_B.toUpperCase();
+const HASH_A = hashSlipReference(MIXED_A)!;
+const HASH_B = hashSlipReference(MIXED_B)!;
+const ALIAS_A = hashSlipReference(UPPER_A)!;
+const ALIAS_B = hashSlipReference(UPPER_B)!;
+const FILE_A = "a".repeat(64);
+const FILE_B = "b".repeat(64);
+
+// ════════════════════════════════════════════════════════════════════════
+// 1. THE WAIVER IS BOUND TO THE EVIDENCE
+// ════════════════════════════════════════════════════════════════════════
+
+function makeRegistry(claims: any[]) {
+  const inserted: any[] = [];
+  return {
+    inserted,
+    tx: {
+      select() {
+        return {
+          from(table: any) {
+            const name = String(table?.[Symbol.for("drizzle:Name")] ?? "");
+            return {
+              where(cond: any) {
+                const wanted = boundHashes(cond);
+                const cols = targetedColumns(cond);
+                return {
+                  orderBy() {
+                    return { limit: async () => [] };
+                  },
+                  limit: async (n: number) => {
+                    if (name !== "paymentSlipClaims") return [];
+                    if (!wanted.length) return [];
+                    return claims
+                      .filter((c) => cols.some((col) => c[col] && wanted.includes(c[col])))
+                      .slice(0, n);
+                  },
+                };
+              },
+            };
+          },
+        };
+      },
+      insert() {
+        return {
+          values: async (v: any) => {
+            inserted.push(v);
+            return [{ insertId: inserted.length }];
+          },
+        };
+      },
+    },
+  };
+}
+
+function boundHashes(cond: any): string[] {
+  const found: string[] = [];
+  const walk = (n: any, d = 0) => {
+    if (!n || d > 12) return;
+    if (typeof n === "string" && /^[0-9a-f]{64}$/.test(n)) found.push(n);
+    if (Array.isArray(n)) return n.forEach((x) => walk(x, d + 1));
+    if (typeof n === "object") for (const k of Object.keys(n)) walk((n as any)[k], d + 1);
+  };
+  walk(cond);
+  return found;
+}
+
+function targetedColumns(cond: any): string[] {
+  const known = ["referenceHash", "legacyReferenceUpperHash", "fileHash", "qrPayloadHash"];
+  const names = new Set<string>();
+  const visit = (node: any, depth = 0) => {
+    if (!node || typeof node !== "object" || depth > 4) return;
+    for (const chunk of node.queryChunks ?? []) {
+      if (chunk && typeof chunk === "object") {
+        if (typeof chunk.name === "string" && known.includes(chunk.name)) names.add(chunk.name);
+        visit(chunk, depth + 1);
+      }
+    }
+  };
+  visit(cond);
+  return names.size ? [...names] : known;
+}
+
+/** The historical row whose casing is unrecoverable, folding to ALIAS_A. */
+const LEGACY_A = {
+  sourceType: "order_payment",
+  sourceId: 42,
+  userId: 7,
+  referenceHash: null,
+  legacyReferenceUpperHash: ALIAS_A,
+  fileHash: null,
+  qrPayloadHash: null,
+};
+
+const LEGACY_B = {
+  sourceType: "wallet_topup",
+  sourceId: 99,
+  userId: 8,
+  referenceHash: null,
+  legacyReferenceUpperHash: ALIAS_B,
+  fileHash: null,
+  qrPayloadHash: null,
+};
+
+/** What the admin adjudicated: the fold against order payment #42. */
+const ADJUDICATED_A = {
+  expectedLegacyAliasHash: ALIAS_A,
+  expectedMatchedSourceType: "order_payment" as const,
+  expectedMatchedSourceId: 42,
+};
+
+function request(referenceRaw: string, sourceId = 900) {
+  return {
+    sourceType: "order_payment" as const,
+    sourceId,
+    userId: 3,
+    identifiers: { referenceHash: hashSlipReference(referenceRaw)! },
+    referenceRawForLegacyLookup: referenceRaw,
+  };
+}
+
+describe("an admin resolution applies only to the evidence it was about", () => {
+  beforeEach(() => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("F. same alias + same source -> the advisory waiver works and the exact claim runs", async () => {
+    const registry = makeRegistry([LEGACY_A]);
+
+    const outcome = await claimSlip(
+      { ...request(MIXED_A), legacyCaseAmbiguityResolution: ADJUDICATED_A },
+      registry.tx
+    );
+
+    expect(outcome.claimed).toBe(true);
+    expect(registry.inserted).toHaveLength(1);
+    expect(registry.inserted[0].referenceHash).toBe(HASH_A);
+    // A modern claim never writes the lossy alias.
+    expect(registry.inserted[0].legacyReferenceUpperHash).toBeNull();
+  });
+
+  it("B. evidence changed to a DIFFERENT alias -> refused, nothing claimed", async () => {
+    // Recheck rewrote the extraction: the submission now folds to ALIAS_B,
+    // matching a different historical row. The decision was about ALIAS_A.
+    const registry = makeRegistry([LEGACY_A, LEGACY_B]);
+
+    const outcome = await claimSlip(
+      { ...request(MIXED_B), legacyCaseAmbiguityResolution: ADJUDICATED_A },
+      registry.tx
+    );
+
+    expect(outcome.claimed).toBe(false);
+    if (!outcome.claimed) {
+      expect(outcome.reason).toBe("legacy_case_ambiguity_changed");
+    }
+    expect(registry.inserted).toHaveLength(0);
+  });
+
+  it("E. same alias but a DIFFERENT matched source -> refused", async () => {
+    // Same fold value, recorded against wallet_topup#99 rather than #42.
+    const registry = makeRegistry([
+      { ...LEGACY_B, legacyReferenceUpperHash: ALIAS_A },
+    ]);
+
+    const outcome = await claimSlip(
+      { ...request(MIXED_A), legacyCaseAmbiguityResolution: ADJUDICATED_A },
+      registry.tx
+    );
+
+    expect(outcome.claimed).toBe(false);
+    if (!outcome.claimed) expect(outcome.reason).toBe("legacy_case_ambiguity_changed");
+    expect(registry.inserted).toHaveLength(0);
+  });
+
+  it("C. evidence became a STRONG duplicate -> blocked, never waived", async () => {
+    const registry = makeRegistry([
+      LEGACY_A,
+      // An exact, case-preserving claim now owns this reference.
+      { ...LEGACY_A, sourceId: 55, referenceHash: HASH_A, legacyReferenceUpperHash: null },
+    ]);
+
+    const outcome = await claimSlip(
+      { ...request(MIXED_A), legacyCaseAmbiguityResolution: ADJUDICATED_A },
+      registry.tx
+    );
+
+    expect(outcome.claimed).toBe(false);
+    if (!outcome.claimed) expect(outcome.reason).toBe("already_claimed");
+    expect(registry.inserted).toHaveLength(0);
+  });
+
+  it("an exact FILE duplicate is not waived either", async () => {
+    const registry = makeRegistry([
+      LEGACY_A,
+      { ...LEGACY_A, sourceId: 56, legacyReferenceUpperHash: null, fileHash: FILE_A },
+    ]);
+
+    const outcome = await claimSlip(
+      {
+        ...request(MIXED_A),
+        identifiers: { referenceHash: HASH_A, fileHash: FILE_A },
+        legacyCaseAmbiguityResolution: ADJUDICATED_A,
+      },
+      registry.tx
+    );
+
+    expect(outcome.claimed).toBe(false);
+    if (!outcome.claimed) expect(outcome.reason).toBe("already_claimed");
+  });
+
+  it("D. the ambiguity disappeared -> the claim simply proceeds, nothing is waived", async () => {
+    // Nothing matches any more. There is no ambiguity to override, so this
+    // is an ordinary claim - the stale decision grants nothing extra.
+    const registry = makeRegistry([]);
+
+    const outcome = await claimSlip(
+      { ...request(MIXED_A), legacyCaseAmbiguityResolution: ADJUDICATED_A },
+      registry.tx
+    );
+
+    expect(outcome.claimed).toBe(true);
+  });
+
+  it("A. with no resolution at all the ambiguity still stops the claim", async () => {
+    const registry = makeRegistry([LEGACY_A]);
+    const outcome = await claimSlip(request(MIXED_A), registry.tx);
+
+    expect(outcome.claimed).toBe(false);
+    if (!outcome.claimed) expect(outcome.reason).toBe("legacy_case_ambiguity");
+    expect(registry.inserted).toHaveLength(0);
+  });
+});
+
+describe("the resolution service derives the evidence itself", () => {
+  const svc = readCode("server/services/legacyCaseResolutionService.ts");
+  const routers = readCode("server/routers.ts");
+
+  it("the adjudicated evidence is captured server-side, never from the request", () => {
+    expect(svc).toMatch(/const adjudicated: AdjudicatedAmbiguity = \{/);
+    expect(svc).toMatch(/legacyAliasHash: ambiguity\.legacyAliasHash/);
+    // The input type carries no evidence fields at all.
+    const start = svc.indexOf("export interface ResolveLegacyCaseInput {");
+    const body = svc.slice(start, svc.indexOf("}", start));
+    expect(body).not.toMatch(/expectedLegacyAliasHash|matchedSource|aliasHash/i);
+  });
+
+  it("the routers accept only subject, decision and reason", () => {
+    for (const marker of ["resolveLegacyCaseAmbiguity"]) {
+      expect(routers).toMatch(new RegExp(marker));
+    }
+    expect(routers).not.toMatch(/expectedLegacyAliasHash/);
+    expect(routers).not.toMatch(/expectedMatchedSourceId/);
+  });
+
+  it("confirmed_distinct hands the evidence to the approval, not a boolean", () => {
+    expect(svc).toMatch(/adjudicated,\s*\n\s*auditResolution:/);
+    expect(svc).not.toMatch(/legacyCaseAmbiguityResolved/);
+  });
+
+  it("the audit records the ADJUDICATED evidence, which the claim proved current", () => {
+    const start = svc.indexOf('resolutionType: "legacy_case_confirmed_distinct"');
+    const body = svc.slice(start, start + 300);
+    expect(body).toMatch(/ambiguity: adjudicated/);
+  });
+
+  it("G. confirmed_duplicate is bound to the same evidence in-transaction", () => {
+    const start = svc.indexOf('if (input.decision === "confirmed_duplicate")');
+    const body = svc.slice(start, start + 1600);
+    expect(body).toMatch(/await requireUnchangedAmbiguityInTx\(input, adapter, adjudicated, tx\)/);
+    expect(body).toMatch(/ambiguity: adjudicated/);
+  });
+
+  it("the in-transaction guard re-reads CURRENT extraction and demands equality", () => {
+    const start = svc.indexOf("async function requireUnchangedAmbiguityInTx(");
+    const body = svc.slice(start, start + 1600);
+    expect(body).toMatch(/adapter\.loadInTx\(tx\)/);
+    expect(body).toMatch(/current\.extractedData/);
+    expect(body).toMatch(/sameAmbiguity\(adjudicated, live\)/);
+    expect(body).toMatch(/code: "PRECONDITION_FAILED"/);
+    // Presence alone is NOT enough - that was the defect.
+    expect(body).toMatch(/!live\.present \|\| !sameAmbiguity/);
+  });
+
+  it("equality means same alias AND same matched source", () => {
+    const start = svc.indexOf("function sameAmbiguity(");
+    const body = svc.slice(start, start + 600);
+    expect(body).toMatch(/legacyAliasHash \?\? null\) === \(b\.legacyAliasHash \?\? null\)/);
+    expect(body).toMatch(/a\.matchedSourceType === b\.matchedSourceType/);
+    expect(body).toMatch(/a\.matchedSourceId === b\.matchedSourceId/);
+  });
+});
+
+describe("H. the subject is locked across revalidation and commit", () => {
+  const dbCode = readCode("server/db.ts");
+  const orderCode = readCode("server/services/orderService.ts");
+  const svc = readCode("server/services/legacyCaseResolutionService.ts");
+
+  it("both lock helpers use the repo's SELECT ... FOR UPDATE convention", () => {
+    expect(dbCode).toMatch(/export async function lockPaymentForUpdate\(/);
+    expect(dbCode).toMatch(/export async function lockWalletTopupForUpdate\(/);
+    expect(dbCode).toMatch(/SELECT id FROM payments WHERE id = \$\{paymentId\} FOR UPDATE/);
+    expect(dbCode).toMatch(/SELECT id FROM walletTopups WHERE id = \$\{topupId\} FOR UPDATE/);
+  });
+
+  it("the order approval locks BEFORE reading the evidence it decides on", () => {
+    const lockIdx = orderCode.indexOf("await db.lockPaymentForUpdate(paymentId, tx)");
+    const readIdx = orderCode.indexOf("const payment = await db.getPaymentById(paymentId, tx)");
+    const claimIdx = orderCode.indexOf("const claim = await claimSlip(");
+    expect(lockIdx).toBeGreaterThan(-1);
+    expect(readIdx).toBeGreaterThan(lockIdx);
+    expect(claimIdx).toBeGreaterThan(readIdx);
+  });
+
+  it("the wallet approval locks before its in-transaction reload", () => {
+    const start = dbCode.indexOf("export async function approveWalletTopup(");
+    const body = dbCode.slice(start, start + 2500);
+    const lockIdx = body.indexOf("await lockWalletTopupForUpdate(topupId, tx)");
+    const readIdx = body.indexOf("const topupResult = await tx.select()");
+    expect(lockIdx).toBeGreaterThan(-1);
+    expect(readIdx).toBeGreaterThan(lockIdx);
+  });
+
+  it("both rejection transactions lock too", () => {
+    expect(svc).toMatch(/await db\.lockPaymentForUpdate\(input\.subjectId, tx\)/);
+    const start = dbCode.indexOf("export async function rejectWalletTopup(");
+    const body = dbCode.slice(start, start + 1200);
+    expect(body).toMatch(/await lockWalletTopupForUpdate\(topupId, tx\)/);
+  });
+
+  it("the existing recheck CAS guarantee is untouched", () => {
+    const recheck = readCode("server/services/ocrRecheckService.ts");
+    expect(recheck).toMatch(/updatePaymentIfNotFinalized/);
+    expect(dbCode).toMatch(/export async function updatePaymentIfNotFinalized\(/);
+  });
+});
+
+describe("the approval paths report changed evidence distinctly", () => {
+  const dbCode = readCode("server/db.ts");
+  const orderCode = readCode("server/services/orderService.ts");
+
+  it("order approval raises LEGACY_CASE_AMBIGUITY_CHANGED_REVIEW_REQUIRED", () => {
+    expect(orderCode).toMatch(/legacy_case_ambiguity_changed/);
+    expect(orderCode).toMatch(/LEGACY_CASE_AMBIGUITY_CHANGED_REVIEW_REQUIRED/);
+  });
+
+  it("wallet approval raises the same code, distinct from REQUIRES_RESOLUTION", () => {
+    expect(dbCode).toMatch(/"LEGACY_CASE_AMBIGUITY_CHANGED_REVIEW_REQUIRED"/);
+    expect(dbCode).toMatch(/"LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION"/);
+  });
+
+  it("the admin-facing message leaks no hash and says to re-review", () => {
+    const claim = readCode("server/services/slipClaimService.ts");
+    const start = claim.indexOf('if (outcome.reason === "legacy_case_ambiguity_changed")');
+    const body = claim.slice(start, start + 900);
+    expect(body).toMatch(/Refresh and review the current evidence/);
+    expect(body).not.toMatch(/Hash|hash/);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// 2. BACKFILL: REQUIRED ADVISORY ALIAS COVERAGE
+// ════════════════════════════════════════════════════════════════════════
+
+const HERE = { sourceType: "order_payment", sourceId: 42 };
+const IDS = { referenceHash: HASH_A, fileHash: FILE_A };
+
+function ownClaim(overrides: any = {}) {
+  return {
+    id: 1,
+    sourceType: "order_payment",
+    sourceId: 42,
+    referenceHash: HASH_A,
+    fileHash: FILE_A,
+    qrPayloadHash: null,
+    legacyReferenceUpperHash: null,
+    ...overrides,
+  };
+}
+
+describe("a legacy row is represented only when its alias is covered too", () => {
+  it("A. strong identifiers represented AND required alias present -> REPRESENTED", () => {
+    const result = classifyRepresentation(
+      IDS,
+      HERE,
+      [ownClaim({ legacyReferenceUpperHash: ALIAS_A })],
+      ALIAS_A
+    );
+    expect(result).toEqual({ kind: "represented" });
+  });
+
+  it("B. strong identifiers represented but required alias NULL -> needs_alias", () => {
+    const result: any = classifyRepresentation(IDS, HERE, [ownClaim()], ALIAS_A);
+    expect(result.kind).toBe("needs_alias");
+    expect(result.expected).toBe(ALIAS_A);
+    // The SAME claim is targeted - never a second insert.
+    expect(result.claim.id).toBe(1);
+  });
+
+  it("C. after enrichment the same row reads REPRESENTED", () => {
+    const enriched = ownClaim({ legacyReferenceUpperHash: ALIAS_A });
+    expect(classifyRepresentation(IDS, HERE, [enriched], ALIAS_A)).toEqual({
+      kind: "represented",
+    });
+  });
+
+  it("D. a DIFFERENT non-null alias is an inconsistency, never an overwrite", () => {
+    const result: any = classifyRepresentation(
+      IDS,
+      HERE,
+      [ownClaim({ legacyReferenceUpperHash: ALIAS_B })],
+      ALIAS_A
+    );
+    expect(result.kind).toBe("alias_inconsistent");
+    expect(result.existing).toBe(ALIAS_B);
+    expect(result.expected).toBe(ALIAS_A);
+  });
+
+  it("E. recoverable casing needs no alias -> REPRESENTED", () => {
+    // expectedAliasHash undefined: deriveIdentifiers only produces one for
+    // legacy_uppercase evidence.
+    expect(classifyRepresentation(IDS, HERE, [ownClaim()], undefined)).toEqual({
+      kind: "represented",
+    });
+  });
+
+  it("F. a modern claim needs no alias either", () => {
+    expect(
+      classifyRepresentation({ referenceHash: HASH_A }, HERE, [ownClaim()], undefined)
+    ).toEqual({ kind: "represented" });
+  });
+
+  it("G. two sources sharing one lossy alias is not a strong collision", () => {
+    // The other source's claim does not own THIS row's identifiers, so it is
+    // simply not matched here; sharing an alias is advisory grouping only.
+    const other = {
+      id: 2,
+      sourceType: "wallet_topup",
+      sourceId: 99,
+      referenceHash: HASH_B,
+      fileHash: FILE_B,
+      qrPayloadHash: null,
+      legacyReferenceUpperHash: ALIAS_A,
+    };
+    const result = classifyRepresentation(
+      IDS,
+      HERE,
+      [ownClaim({ legacyReferenceUpperHash: ALIAS_A }), other],
+      ALIAS_A
+    );
+    expect(result).toEqual({ kind: "represented" });
+  });
+
+  it("a foreign owner is still a collision, alias or not", () => {
+    const foreign = ownClaim({ id: 3, sourceType: "wallet_topup", sourceId: 99 });
+    const result: any = classifyRepresentation(IDS, HERE, [foreign], ALIAS_A);
+    expect(result.kind).toBe("collision");
+    expect(result.findings.length).toBeGreaterThan(0);
+  });
+
+  it("partial strong ownership is still a collision, checked before the alias", () => {
+    // The claim owns the reference but not this row's distinct file hash.
+    const partial = ownClaim({ fileHash: null, legacyReferenceUpperHash: ALIAS_A });
+    const result: any = classifyRepresentation(IDS, HERE, [partial], ALIAS_A);
+    expect(result.kind).toBe("collision");
+  });
+
+  it("nothing matched at all is claimable, not represented", () => {
+    expect(classifyRepresentation(IDS, HERE, [], ALIAS_A)).toBeUndefined();
+  });
+
+  it("a row with no strong identifier is never represented", () => {
+    expect(classifyRepresentation({}, HERE, [ownClaim()], ALIAS_A)).toBeUndefined();
+  });
+});
+
+describe("H. completion is refused while any required alias is missing", () => {
+  const script = readCode("scripts/backfill-slip-claims.mjs");
+
+  it("alias coverage is part of the clean-run rule", () => {
+    expect(script).toMatch(
+      /const aliasCoverageComplete =\s*\n?\s*stats\.aliasUncovered === 0 && stats\.aliasInconsistencies\.length === 0;/
+    );
+    const start = script.indexOf("const cleanRun =");
+    const body = script.slice(start, start + 400);
+    expect(body).toMatch(/aliasCoverageComplete/);
+  });
+
+  it("the refusal message names the alias counters", () => {
+    expect(script).toMatch(/aliasUncovered=\$\{stats\.aliasUncovered\}/);
+    expect(script).toMatch(/aliasInconsistencies=\$\{stats\.aliasInconsistencies\.length\}/);
+  });
+
+  it("a dry run reports WOULD_ENRICH_LEGACY_ALIAS and counts the row as uncovered", () => {
+    const start = script.indexOf('if (registry?.kind === "needs_alias")');
+    const body = script.slice(start, start + 1800);
+    expect(body).toMatch(/WOULD_ENRICH_LEGACY_ALIAS/);
+    expect(body).toMatch(/stats\.wouldEnrichAlias \+= 1/);
+    expect(body).toMatch(/stats\.aliasUncovered \+= 1/);
+  });
+
+  it("a live run UPDATES the same claim and re-reads to confirm", () => {
+    const start = script.indexOf('if (registry?.kind === "needs_alias")');
+    // Bounded to the branch itself - the normal claim insert lives further down.
+    const body = script.slice(start, script.indexOf('if (registry?.kind === "collision")', start));
+    expect(body).toMatch(/\.update\(schema\.paymentSlipClaims\)/);
+    expect(body).toMatch(/\.set\(\{ legacyReferenceUpperHash: registry\.expected \}\)/);
+    expect(body).toMatch(/await verifyAliasPersisted\(registry\.claim\.id, registry\.expected\)/);
+    // No second claim row is ever inserted for an alias.
+    expect(body).not.toMatch(/\.insert\(schema\.paymentSlipClaims\)/);
+  });
+
+  it("an enrichment that did not land is a failure, not coverage", () => {
+    const start = script.indexOf('if (registry?.kind === "needs_alias")');
+    const body = script.slice(start, start + 1800);
+    expect(body).toMatch(/alias not present after update/);
+  });
+
+  it("an inconsistency is reported and sets a non-zero exit code", () => {
+    expect(script).toMatch(/LEGACY_ALIAS_INCONSISTENCY/);
+    const start = script.indexOf("if (\n    tracker.collisions.length > 0 ||");
+    const body = script.slice(start, start + 300);
+    expect(body).toMatch(/stats\.aliasInconsistencies\.length > 0/);
+  });
+
+  it("the advisory alias grouping still does not block completion", () => {
+    expect(script).toMatch(/AMBIGUOUS_LEGACY_ALIAS_GROUP/);
+    expect(script).toMatch(/does NOT block completion/);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// 3. RECHECK: A STRONG IDENTIFIER IS MONOTONIC
+// ════════════════════════════════════════════════════════════════════════
+
+describe("recheck may add a strong identifier but never remove one", () => {
+  const code = readCode("server/services/ocrRecheckService.ts");
+
+  it("A. a failed second fetch falls back to the hash already recovered", () => {
+    expect(code).toMatch(
+      /const effectiveFileHash = recomputedFileHash \?\? preOcrFileHash;/
+    );
+    expect(code).toMatch(/fileHash: effectiveFileHash/);
+    // The old form dropped it entirely.
+    expect(code).not.toMatch(
+      /const extractedWithFile = recomputedFileHash\s*\n?\s*\? \{ \.\.\.extracted, fileHash: recomputedFileHash \}/
+    );
+  });
+
+  it("the persisted extraction is built from the effective hash", () => {
+    const start = code.indexOf("const effectiveFileHash =");
+    const body = code.slice(start, start + 400);
+    expect(body).toMatch(/const extractedWithFile = effectiveFileHash/);
+  });
+
+  it("C. two different hashes for one stored slip is an integrity stop", () => {
+    const start = code.indexOf(
+      "if (preOcrFileHash && recomputedFileHash && recomputedFileHash !== preOcrFileHash)"
+    );
+    expect(start).toBeGreaterThan(-1);
+    const body = code.slice(start, start + 1800);
+    expect(body).toMatch(/SLIP_FILE_HASH_CHANGED_DURING_RECHECK/);
+    expect(body).toMatch(/readyForAdminApproval: false/);
+    expect(body).toMatch(/verificationPassed: false/);
+    // It returns before the conditional update, so HASH_A is not overwritten.
+    expect(body).toMatch(/return \{/);
+  });
+
+  it("the integrity stop happens BEFORE any persistence of the new extraction", () => {
+    const mismatchIdx = code.indexOf("recomputedFileHash !== preOcrFileHash");
+    const effectiveIdx = code.indexOf("const effectiveFileHash =");
+    expect(mismatchIdx).toBeGreaterThan(-1);
+    expect(effectiveIdx).toBeGreaterThan(mismatchIdx);
+  });
+
+  it("the integrity stop still reports the identifier it kept", () => {
+    const start = code.indexOf("recomputedFileHash !== preOcrFileHash");
+    const body = code.slice(start, start + 1800);
+    expect(body).toMatch(/hasStrongIdentifier: true/);
+    expect(body).toMatch(/fileIdentifierStatus: describeFileIdentifierStatus\(\{ fileHash: preOcrFileHash \}\)/);
+  });
+
+  it("the reported file-identifier status uses the effective hash", () => {
+    expect(code).toMatch(/fileHash: effectiveFileHash,\s*\n\s*duplicateFileMatch/);
+  });
+
+  it("E/F. the pre-OCR recovery still runs above the OCR guard and merges", () => {
+    const preIdx = code.indexOf("const preOcrFileHash = await computeSlipFileHash");
+    const guardIdx = code.indexOf("if (!config.enabled)");
+    expect(preIdx).toBeGreaterThan(-1);
+    expect(guardIdx).toBeGreaterThan(preIdx);
+    expect(code).toMatch(/mergeFileHashInto\(payment\.extractedData as string \| null, preOcrFileHash\)/);
+  });
+
+  it("G. the hash is always computed server-side from the stored bytes", () => {
+    expect(code).toMatch(/computeSlipFileHash\(payment\.slipImageUrl\)/);
+    expect(code).not.toMatch(/input\.fileHash|clientFileHash/);
+  });
+});

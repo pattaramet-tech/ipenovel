@@ -253,7 +253,12 @@ describe("mixed-case protection survives backfill completion", () => {
     const tx = makeRegistry([LEGACY_CLAIM]);
 
     const outcome = await claimSlip(
-      { ...replayRequest(777), legacyCaseAmbiguityResolved: true },
+      // Bound to the EXACT fold the admin adjudicated, not a bare boolean.
+      { ...replayRequest(777), legacyCaseAmbiguityResolution: {
+        expectedLegacyAliasHash: UPPER_HASH,
+        expectedMatchedSourceType: "order_payment" as const,
+        expectedMatchedSourceId: 42,
+      } },
       tx
     );
 
@@ -280,7 +285,11 @@ describe("mixed-case protection survives backfill completion", () => {
     ]);
 
     const outcome = await claimSlip(
-      { ...replayRequest(888), legacyCaseAmbiguityResolved: true },
+      { ...replayRequest(888), legacyCaseAmbiguityResolution: {
+        expectedLegacyAliasHash: UPPER_HASH,
+        expectedMatchedSourceType: "order_payment" as const,
+        expectedMatchedSourceId: 42,
+      } },
       tx
     );
 

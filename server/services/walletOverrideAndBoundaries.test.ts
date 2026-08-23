@@ -56,6 +56,7 @@ function makeFakeDb(options: {
 }) {
   const inserted: Record<string, any[]> = {};
   const updates: Array<{ table: string; values: any }> = [];
+  const locks: string[] = [];
   let topupStatus = options.topup.status;
 
   const record = (table: string, values: any) => {
@@ -65,6 +66,11 @@ function makeFakeDb(options: {
   const tableName = (table: any) => String(table?.[Symbol.for("drizzle:Name")] ?? "");
 
   const tx: any = {
+    // The subject row lock issued before any evidence is read.
+    execute: async (query: any) => {
+      locks.push(String(query?.queryChunks?.map?.((c: any) => c?.value ?? "").join("") ?? "lock"));
+      return [[{ id: options.topup.id }]];
+    },
     select() {
       return {
         from(table: any) {
@@ -137,7 +143,7 @@ function makeFakeDb(options: {
     transaction: async (fn: any) => await fn(tx),
   };
 
-  return { fake, inserted, updates, get status() { return topupStatus; } };
+  return { fake, inserted, updates, locks, get status() { return topupStatus; } };
 }
 
 function boundHashes(cond: any): string[] {
@@ -216,7 +222,13 @@ describe("wallet confirmed-distinct actually completes", () => {
     const audited: string[] = [];
 
     await dbModule.approveWalletTopup(pendingTopup.id, 5, {
-      legacyCaseAmbiguityResolved: true,
+      legacyCaseAmbiguityResolution: {
+        // Bound to the EXACT fold adjudicated - a bare boolean let a Recheck
+        // landing in between redirect the waiver at different evidence.
+        expectedLegacyAliasHash: UPPER_HASH,
+        expectedMatchedSourceType: "order_payment" as const,
+        expectedMatchedSourceId: 11,
+      },
       auditResolution: async () => {
         audited.push("legacy_case_confirmed_distinct");
       },
@@ -238,6 +250,9 @@ describe("wallet confirmed-distinct actually completes", () => {
     expect(balanceUpdate[0].values.balance).toBe("260.00");
     // And the resolution audit ran inside the same transaction.
     expect(audited).toEqual(["legacy_case_confirmed_distinct"]);
+    // The subject row was locked before any of it, so a concurrent Recheck
+    // cannot rewrite the evidence this approval rests on.
+    expect(harness.locks.length).toBeGreaterThan(0);
   });
 
   it("without the override the same top-up still stops at the ambiguity", async () => {
@@ -273,7 +288,11 @@ describe("wallet confirmed-distinct actually completes", () => {
 
     await expect(
       dbModule.approveWalletTopup(pendingTopup.id, 5, {
-        legacyCaseAmbiguityResolved: true,
+        legacyCaseAmbiguityResolution: {
+          expectedLegacyAliasHash: UPPER_HASH,
+          expectedMatchedSourceType: "order_payment" as const,
+          expectedMatchedSourceId: 12,
+        },
         auditResolution: async () => {
           audited.push("should-never-run");
         },
@@ -294,7 +313,13 @@ describe("wallet confirmed-distinct actually completes", () => {
     dbModule.__setDbForTests(harness.fake);
 
     await expect(
-      dbModule.approveWalletTopup(pendingTopup.id, 5, { legacyCaseAmbiguityResolved: true })
+      dbModule.approveWalletTopup(pendingTopup.id, 5, {
+        legacyCaseAmbiguityResolution: {
+          expectedLegacyAliasHash: UPPER_HASH,
+          expectedMatchedSourceType: "order_payment" as const,
+          expectedMatchedSourceId: 11,
+        },
+      })
     ).rejects.toMatchObject({ code: "NO_STRONG_IDENTIFIER" });
     expect(harness.inserted.walletTransactions).toBeUndefined();
   });
@@ -303,21 +328,21 @@ describe("wallet confirmed-distinct actually completes", () => {
 describe("the wallet claim request forwards the override (structural)", () => {
   const code = readCode("server/db.ts");
 
-  it("approveWalletTopup passes legacyCaseAmbiguityResolved into claimSlip", () => {
+  it("approveWalletTopup forwards the adjudicated evidence into claimSlip", () => {
     const start = code.indexOf("export async function approveWalletTopup(");
     const end = code.indexOf("export async function rejectWalletTopup(");
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const body = code.slice(start, end);
     expect(body).toMatch(
-      /legacyCaseAmbiguityResolved:\s*options\?\.legacyCaseAmbiguityResolved === true/
+      /legacyCaseAmbiguityResolution:\s*options\?\.legacyCaseAmbiguityResolution/
     );
   });
 
-  it("the flag is only ever read as an input to claimSlip, never as a global skip", () => {
+  it("the resolution is only ever an input to claimSlip, never a global skip", () => {
     // skipLegacyCheck is the blanket switch; the resolution override must
     // not be wired to it.
-    expect(code).not.toMatch(/skipLegacyCheck:\s*options\?\.legacyCaseAmbiguityResolved/);
+    expect(code).not.toMatch(/skipLegacyCheck:\s*options\?\.legacyCaseAmbiguityResolution/);
   });
 });
 
@@ -637,8 +662,12 @@ describe("a duplicate resolution commits with its rejection", () => {
   it("the audit revalidates the ambiguity against state inside the transaction", () => {
     const start = code.indexOf('if (input.decision === "confirmed_duplicate")');
     const body = code.slice(start, start + 2200);
-    expect(body).toMatch(/describeLegacyCaseAmbiguity\(\s*\n?[\s\S]{0,160}?tx\s*\n?\s*\)/);
-    expect(body).toMatch(/if \(!live\.present\)/);
+    // Re-derived from CURRENT extraction under the row lock, and required to
+    // EQUAL the adjudicated fold - "an ambiguity is still present" was
+    // satisfied by a DIFFERENT one, which is exactly the hole that left.
+    expect(body).toMatch(/requireUnchangedAmbiguityInTx\(input, adapter, adjudicated, tx\)/);
+    expect(code).toMatch(/adapter\.loadInTx\(tx\)/);
+    expect(code).toMatch(/!live\.present \|\| !sameAmbiguity\(adjudicated, live\)/);
   });
 
   it("BOTH subject types expose a transactional rejection", () => {

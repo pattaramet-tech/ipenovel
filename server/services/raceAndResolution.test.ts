@@ -220,7 +220,9 @@ describe("legacy case ambiguity has an audited admin resolution", () => {
 
   it("confirmed_distinct approves through the NORMAL atomic claim", () => {
     expect(svc).toMatch(/orderService\.approvePayment\(/);
-    expect(svc).toMatch(/legacyCaseAmbiguityResolved: true/);
+    // The waiver is bound to the adjudicated evidence, not a bare boolean.
+    expect(svc).toMatch(/legacyCaseAmbiguityResolution: \{/);
+    expect(svc).toMatch(/expectedMatchedSourceId: adjudicated\.matchedSourceId/);
   });
 
   it("confirmed_duplicate reuses the existing reject flow", () => {
@@ -358,7 +360,8 @@ describe("wallet has the SAME audited resolution path as orders", () => {
   });
 
   it("wallet approval accepts the resolution flag and an in-transaction audit", () => {
-    expect(dbCode).toMatch(/legacyCaseAmbiguityResolved\?: boolean;/);
+    expect(dbCode).toMatch(/legacyCaseAmbiguityResolution\?: \{/);
+    expect(dbCode).toMatch(/expectedMatchedSourceType: "order_payment" \| "wallet_topup";/);
     expect(dbCode).toMatch(/auditResolution\?: \(tx: any\) => Promise<void>;/);
     expect(dbCode).toMatch(/await options\.auditResolution\(tx\)/);
   });
@@ -373,8 +376,9 @@ describe("wallet has the SAME audited resolution path as orders", () => {
   });
 
   it("the wallet resolver cannot bypass real anti-replay", () => {
-    // Only the advisory alias is skipped; the exact atomic claim still runs.
-    expect(svc).toMatch(/legacyCaseAmbiguityResolved: true/);
+    // Only the advisory alias is skipped, and only the adjudicated one; the
+    // exact atomic claim still runs.
+    expect(svc).toMatch(/legacyCaseAmbiguityResolution: \{/);
     expect(svc).toMatch(/hasStrongIdentifier\(identifiers\)/);
     expect(svc).toMatch(/NO_STRONG_IDENTIFIER/);
   });
