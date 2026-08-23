@@ -4,21 +4,30 @@
  * ── Why this exists ───────────────────────────────────────────────────────
  * Some pre-migration approvals kept only an upper-cased `reference`, so their
  * true casing is unrecoverable. A new submission whose reference folds to the
- * same value MIGHT be that same transaction replayed - or might be a
- * genuinely different reference that merely folds together, because
- * upper-casing is lossy.
+ * same value MIGHT be that transaction replayed - or might be a genuinely
+ * different reference that merely folds together, because upper-casing is
+ * lossy. Nothing automated can tell those apart, so auto-approval stops and
+ * the decision comes here.
  *
- * Nothing automated can tell those apart. So auto-approval stops and the
- * decision comes here. Without this path the ambiguity was a dead end: normal
- * Approve re-ran the same check and failed forever, leaving a legitimate
- * distinct payment permanently unapprovable.
+ * Without this path the ambiguity is a dead end: normal Approve re-runs the
+ * same check and fails forever, leaving a legitimate distinct payment
+ * permanently unapprovable.
+ *
+ * ── Subject-agnostic ──────────────────────────────────────────────────────
+ * Order payments AND wallet top-ups both reach the ambiguity branch, so both
+ * need the escape route. An earlier revision implemented only the order path
+ * while the wallet path still raised
+ * LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION - pointing admins at a route that
+ * did not exist, which is worse than the original dead end. The generic layer
+ * below therefore hard-codes neither subject; each has a small adapter.
  *
  * ── What this is NOT ──────────────────────────────────────────────────────
- * NOT the generic break-glass override for NO_STRONG_IDENTIFIER. It applies
- * only to a live, server-revalidated legacy case ambiguity, and it still
- * requires a REAL strong identifier and still runs the normal atomic claim.
- * It bypasses exactly one thing: the advisory alias check a human has now
- * adjudicated.
+ * NOT the generic break-glass for NO_STRONG_IDENTIFIER. It applies only to a
+ * live, server-revalidated legacy case ambiguity, still requires a REAL
+ * strong identifier, and still runs the normal atomic claim. It bypasses
+ * exactly one thing: the advisory alias check a human has adjudicated. It can
+ * never bypass DUPLICATE_REFERENCE, DUPLICATE_FILE, DUPLICATE_QR or
+ * NO_STRONG_IDENTIFIER.
  */
 
 import * as db from "../db";
@@ -28,15 +37,16 @@ import {
   deriveStrongIdentifiersFromExtractedData,
   getRawReferenceForLegacyLookup,
   hasStrongIdentifier,
-  hashSlipReference,
 } from "./slipIdentifierService";
-import { findClaimByLegacyAlias } from "./slipClaimService";
+import { evaluateSlipConflict } from "./slipConflictEvaluator";
 import * as orderService from "./orderService";
 
+export type LegacyCaseSubjectType = "order_payment" | "wallet_topup";
 export type LegacyCaseDecision = "confirmed_distinct" | "confirmed_duplicate";
 
 export interface ResolveLegacyCaseInput {
-  paymentId: number;
+  subjectType: LegacyCaseSubjectType;
+  subjectId: number;
   adminUserId: number;
   adminLabel?: string;
   decision: LegacyCaseDecision;
@@ -45,73 +55,121 @@ export interface ResolveLegacyCaseInput {
 }
 
 export interface ResolveLegacyCaseResult {
-  paymentId: number;
+  subjectType: LegacyCaseSubjectType;
+  subjectId: number;
   decision: LegacyCaseDecision;
   resolved: true;
-  /** Present when the decision approved the payment. */
-  approved?: boolean;
+  approved: boolean;
 }
 
 const MIN_REASON_LENGTH = 10;
 
+/** Per-subject adapter. Keeps the generic layer free of subject specifics. */
+interface SubjectAdapter {
+  load(): Promise<{ status: string; extractedData: string | null } | undefined>;
+  approveWithResolution(args: {
+    adminUserId: number;
+    adminLabel?: string;
+    auditResolution: (tx: any) => Promise<void>;
+  }): Promise<void>;
+  reject(args: { adminUserId: number; reason: string }): Promise<void>;
+}
+
+function adapterFor(input: ResolveLegacyCaseInput): SubjectAdapter {
+  if (input.subjectType === "order_payment") {
+    return {
+      async load() {
+        const payment = await db.getPaymentById(input.subjectId);
+        if (!payment) return undefined;
+        return {
+          status: payment.status as string,
+          extractedData: (payment.extractedData as string | null) ?? null,
+        };
+      },
+      async approveWithResolution({ adminUserId, adminLabel, auditResolution }) {
+        await orderService.approvePayment(input.subjectId, String(adminUserId), adminLabel, undefined, {
+          legacyCaseAmbiguityResolved: true,
+          auditResolution,
+        });
+      },
+      async reject({ adminUserId, reason }) {
+        // Reuse the existing reject flow rather than inventing a second one.
+        await orderService.rejectPayment(input.subjectId, String(adminUserId), reason);
+      },
+    };
+  }
+
+  return {
+    async load() {
+      const topup = await db.getWalletTopupById(input.subjectId);
+      if (!topup) return undefined;
+      return {
+        status: topup.status as string,
+        extractedData: (topup.extractedData as string | null) ?? null,
+      };
+    },
+    async approveWithResolution({ adminUserId, auditResolution }) {
+      await db.approveWalletTopup(input.subjectId, adminUserId, {
+        legacyCaseAmbiguityResolved: true,
+        auditResolution,
+      });
+    },
+    async reject({ adminUserId, reason }) {
+      await db.rejectWalletTopup(input.subjectId, adminUserId, reason);
+    },
+  };
+}
+
+/** Statuses from which a subject may still be resolved. */
+function isReviewable(status: string): boolean {
+  return status === "pending" || status === "pending_review";
+}
+
 /**
- * Re-derives the live ambiguity server-side.
+ * Re-derives the live ambiguity SERVER-SIDE.
  *
- * Never trusts the admin's browser: the panel may have been open for a long
- * time, and the matching claim could have changed. Everything below is read
- * from persisted state at decision time.
+ * Never trusts the admin's browser: the panel may have been open a long time
+ * and the matching claim could have changed. Everything is read from
+ * persisted state at decision time.
  */
 export async function describeLegacyCaseAmbiguity(
-  paymentId: number,
+  subjectType: LegacyCaseSubjectType,
+  subjectId: number,
+  extractedData: string | null,
   tx?: any
 ): Promise<
   | {
       present: true;
-      legacyAliasHash: string;
-      matchedSourceType: "order_payment" | "wallet_topup";
+      legacyAliasHash?: string;
+      matchedSourceType: LegacyCaseSubjectType;
       matchedSourceId: number;
     }
   | { present: false }
 > {
-  const payment = await db.getPaymentById(paymentId, tx);
-  if (!payment?.extractedData) return { present: false };
+  if (!extractedData) return { present: false };
 
-  const rawReference = getRawReferenceForLegacyLookup(payment.extractedData as string);
+  const { identifiers } = deriveStrongIdentifiersFromExtractedData(extractedData);
+  const rawReference = getRawReferenceForLegacyLookup(extractedData);
   if (!rawReference) return { present: false };
-
-  const legacyAliasHash = hashSlipReference(rawReference.toUpperCase());
-  if (!legacyAliasHash) return { present: false };
 
   const database = tx ?? (await db.getDb());
   if (!database) return { present: false };
 
-  const match = await findClaimByLegacyAlias(
-    legacyAliasHash,
-    { sourceType: "order_payment", sourceId: paymentId },
+  const conflict = await evaluateSlipConflict(
+    { identifiers, rawReference, sourceType: subjectType, sourceId: subjectId },
     database
   );
-  if (!match) return { present: false };
+
+  if (conflict.kind !== "legacy_case_ambiguity") return { present: false };
 
   return {
     present: true,
-    legacyAliasHash,
-    matchedSourceType: match.sourceType,
-    matchedSourceId: match.sourceId,
+    legacyAliasHash: conflict.legacyAliasHash,
+    matchedSourceType: conflict.matchedSourceType,
+    matchedSourceId: conflict.matchedSourceId,
   };
 }
 
-/**
- * Records an admin decision on a legacy case ambiguity.
- *
- * `confirmed_duplicate` routes to the existing reject flow - no new rejection
- * mechanism is invented here.
- *
- * `confirmed_distinct` approves, but only through the NORMAL atomic claim:
- * the exact referenceHash / fileHash / qrPayloadHash are still claimed inside
- * the financial transaction, so if the real reference or file was taken in the
- * meantime this fails exactly like any other approval. The lossy alias itself
- * is never claimed - many legitimate payments may share one.
- */
 export async function resolveLegacyCaseAmbiguity(
   input: ResolveLegacyCaseInput
 ): Promise<ResolveLegacyCaseResult> {
@@ -125,108 +183,128 @@ export async function resolveLegacyCaseAmbiguity(
     });
   }
 
-  const payment = await db.getPaymentById(input.paymentId);
-  if (!payment) {
-    throw new TRPCError({ code: "NOT_FOUND", message: "Payment not found" });
+  const adapter = adapterFor(input);
+  const subject = await adapter.load();
+  if (!subject) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Subject not found" });
   }
 
-  if (payment.status === "approved" || payment.status === "rejected") {
+  if (!isReviewable(subject.status)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: `This payment is already ${payment.status}. There is nothing to resolve.`,
+      message: `This record is already ${subject.status}. There is nothing to resolve.`,
     });
   }
 
-  // Revalidate the ambiguity SERVER-SIDE. If it has gone away (for example the
-  // matching claim was removed), the normal Approve path is the right tool and
-  // this override must not be used.
-  const ambiguity = await describeLegacyCaseAmbiguity(input.paymentId);
+  // Revalidate the ambiguity SERVER-SIDE. If it has gone away, the normal
+  // Approve/Reject actions are the right tools and this override must not be
+  // used as a shortcut around them.
+  const ambiguity = await describeLegacyCaseAmbiguity(
+    input.subjectType,
+    input.subjectId,
+    subject.extractedData
+  );
   if (!ambiguity.present) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message:
-        "No legacy case ambiguity is currently present for this payment. Use the normal " +
+        "No legacy case ambiguity is currently present for this record. Use the normal " +
         "Approve or Reject action instead.",
     });
   }
 
-  // A distinct-transaction approval still requires a REAL identifier - this is
-  // not a route around NO_STRONG_IDENTIFIER.
-  const { identifiers } = deriveStrongIdentifiersFromExtractedData(
-    payment.extractedData as string | null
-  );
-  if (input.decision === "confirmed_distinct" && !hasStrongIdentifier(identifiers)) {
+  if (input.decision === "confirmed_duplicate") {
+    // A rejection creates no financial value, so there is no finalization to
+    // bind the audit to; record it, then reject through the existing flow.
+    await insertResolution(
+      await requireDb(),
+      {
+        subjectType: input.subjectType,
+        subjectId: input.subjectId,
+        resolutionType: "legacy_case_confirmed_duplicate",
+        ambiguity,
+        adminUserId: input.adminUserId,
+        reason,
+      }
+    );
+
+    await adapter.reject({ adminUserId: input.adminUserId, reason: `Legacy reference case ambiguity confirmed as duplicate: ${reason}` });
+
+    return {
+      subjectType: input.subjectType,
+      subjectId: input.subjectId,
+      decision: input.decision,
+      resolved: true,
+      approved: false,
+    };
+  }
+
+  // confirmed_distinct still requires a REAL identifier - this is not a route
+  // around NO_STRONG_IDENTIFIER.
+  const { identifiers } = deriveStrongIdentifiersFromExtractedData(subject.extractedData);
+  if (!hasStrongIdentifier(identifiers)) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message:
-        "NO_STRONG_IDENTIFIER: this payment has no transaction reference and no readable " +
-        "slip file, so it cannot be protected against replay even after resolving the case " +
-        "ambiguity. Run Recheck OCR first.",
+        "NO_STRONG_IDENTIFIER: this record has no transaction reference and no readable " +
+        "slip file, so it cannot be protected against replay even after resolving the " +
+        "case ambiguity. Run Recheck OCR first.",
     });
   }
 
-  if (input.decision === "confirmed_duplicate") {
-    await recordResolution({
-      subjectId: input.paymentId,
-      resolutionType: "legacy_case_confirmed_duplicate",
-      ambiguity,
-      adminUserId: input.adminUserId,
-      reason,
-    });
-
-    // Reuse the existing reject flow rather than inventing a second one.
-    await orderService.rejectPayment(
-      input.paymentId,
-      String(input.adminUserId),
-      `Legacy reference case ambiguity confirmed as duplicate: ${reason}`
-    );
-
-    return { paymentId: input.paymentId, decision: input.decision, resolved: true, approved: false };
-  }
-
-  // confirmed_distinct: audit FIRST, so the override is recorded even if the
-  // approval then loses a race on a real identifier. The unique index on the
-  // subject makes a second attempt fail rather than double-recording.
-  await recordResolution({
-    subjectId: input.paymentId,
-    resolutionType: "legacy_case_confirmed_distinct",
-    ambiguity,
+  // The audit is written INSIDE the approval transaction, after the exact
+  // atomic claim and the financial finalization. If any of that fails, the
+  // resolution row rolls back with it - so a failed attempt never consumes
+  // the subject-unique slot and the admin can retry.
+  await adapter.approveWithResolution({
     adminUserId: input.adminUserId,
-    reason,
+    adminLabel: input.adminLabel,
+    auditResolution: async (tx: any) => {
+      await insertResolution(tx, {
+        subjectType: input.subjectType,
+        subjectId: input.subjectId,
+        resolutionType: "legacy_case_confirmed_distinct",
+        ambiguity,
+        adminUserId: input.adminUserId,
+        reason,
+      });
+    },
   });
 
-  // Approve through the normal path, passing the resolution so the advisory
-  // alias check is skipped - and ONLY that check. Every exact UNIQUE
-  // identifier is still claimed atomically inside the financial transaction.
-  await orderService.approvePayment(
-    input.paymentId,
-    String(input.adminUserId),
-    input.adminLabel || "Admin",
-    undefined,
-    { legacyCaseAmbiguityResolved: true }
-  );
-
-  return { paymentId: input.paymentId, decision: input.decision, resolved: true, approved: true };
+  return {
+    subjectType: input.subjectType,
+    subjectId: input.subjectId,
+    decision: input.decision,
+    resolved: true,
+    approved: true,
+  };
 }
 
-async function recordResolution(args: {
-  subjectId: number;
-  resolutionType: "legacy_case_confirmed_distinct" | "legacy_case_confirmed_duplicate";
-  ambiguity: { legacyAliasHash: string; matchedSourceType: "order_payment" | "wallet_topup"; matchedSourceId: number };
-  adminUserId: number;
-  reason: string;
-}): Promise<void> {
+async function requireDb(): Promise<any> {
   const database = await db.getDb();
   if (!database) throw new Error("Database not available");
+  return database;
+}
 
+async function insertResolution(
+  executor: any,
+  args: {
+    subjectType: LegacyCaseSubjectType;
+    subjectId: number;
+    resolutionType: "legacy_case_confirmed_distinct" | "legacy_case_confirmed_duplicate";
+    ambiguity: { legacyAliasHash?: string; matchedSourceType: LegacyCaseSubjectType; matchedSourceId: number };
+    adminUserId: number;
+    reason: string;
+  }
+): Promise<void> {
   try {
-    await database.insert(paymentSlipReviewResolutions).values({
-      subjectType: "order_payment",
+    await executor.insert(paymentSlipReviewResolutions).values({
+      subjectType: args.subjectType,
       subjectId: args.subjectId,
       resolutionType: args.resolutionType,
       matchedSourceType: args.ambiguity.matchedSourceType,
       matchedSourceId: args.ambiguity.matchedSourceId,
-      legacyAliasHash: args.ambiguity.legacyAliasHash,
+      legacyAliasHash: args.ambiguity.legacyAliasHash ?? null,
       adminUserId: args.adminUserId,
       reason: args.reason,
     });
@@ -234,12 +312,14 @@ async function recordResolution(args: {
     const duplicate =
       (error as any)?.code === "ER_DUP_ENTRY" || (error as any)?.errno === 1062;
     if (duplicate) {
-      // The subject-level unique index did its job: two concurrent resolution
-      // attempts for the SAME payment cannot both proceed.
+      // The subject-level unique index did its job: two concurrent
+      // resolutions of the SAME subject cannot both commit. Because the
+      // insert runs inside the approval transaction, the loser's claim and
+      // finalization roll back with it.
       throw new TRPCError({
         code: "CONFLICT",
         message:
-          "This payment has already been resolved by another admin. Refresh to see the " +
+          "This record has already been resolved by another admin. Refresh to see the " +
           "current decision.",
       });
     }

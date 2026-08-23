@@ -1611,7 +1611,8 @@ export const appRouter = router({
         )
         .mutation(async ({ input, ctx }) => {
           return resolveLegacyCaseAmbiguity({
-            paymentId: input.paymentId,
+            subjectType: "order_payment",
+            subjectId: input.paymentId,
             adminUserId: ctx.user.id,
             adminLabel: ctx.user.name || "Admin",
             decision: input.decision,
@@ -2923,6 +2924,38 @@ export const appRouter = router({
         .mutation(async ({ ctx, input }) => {
           return walletService.adminApproveWalletTopup(input.topupId, ctx.user.id);
         }),
+      /**
+       * Wallet equivalent of admin.orders.resolveLegacyCaseAmbiguity.
+       *
+       * Wallet auto-approval and normal wallet Approve both stop on a legacy
+       * case ambiguity, so wallet needs the same escape route - without it a
+       * legitimate top-up whose reference differs from a legacy alias only by
+       * case would be permanently unapprovable.
+       *
+       * Resolves ONLY the advisory ambiguity. It can never bypass
+       * DUPLICATE_REFERENCE / DUPLICATE_FILE / DUPLICATE_QR /
+       * NO_STRONG_IDENTIFIER: the exact atomic claim still runs inside the
+       * wallet crediting transaction.
+       */
+      resolveLegacyCaseAmbiguity: adminProcedure
+        .input(
+          z.object({
+            topupId: z.number().int().positive(),
+            decision: z.enum(["confirmed_distinct", "confirmed_duplicate"]),
+            reason: z.string().trim().min(10).max(1000),
+          })
+        )
+        .mutation(async ({ input, ctx }) => {
+          return resolveLegacyCaseAmbiguity({
+            subjectType: "wallet_topup",
+            subjectId: input.topupId,
+            adminUserId: ctx.user.id,
+            adminLabel: ctx.user.name || "Admin",
+            decision: input.decision,
+            reason: input.reason,
+          });
+        }),
+
       rejectTopup: adminProcedure
         .input(z.object({ topupId: z.number(), reason: z.string() }))
         .mutation(async ({ ctx, input }) => {

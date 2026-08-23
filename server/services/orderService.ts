@@ -317,7 +317,16 @@ export async function approvePayment(
    * alias check a human has already adjudicated - and nothing else. Every
    * exact UNIQUE identifier is still claimed atomically below.
    */
-  options?: { legacyCaseAmbiguityResolved?: boolean }
+  options?: {
+    legacyCaseAmbiguityResolved?: boolean;
+    /**
+     * Invoked INSIDE the approval transaction so a successful legacy-case
+     * resolution record and the financial finalization commit together or
+     * roll back together. Writing it separately beforehand permanently
+     * consumed the subject-unique slot when approval then failed.
+     */
+    auditResolution?: (tx: any) => Promise<void>;
+  }
 ): Promise<{ message: string }> {
   if (tx) {
     return approvePaymentInTx(paymentId, approvedBy, adminLabel, tx, options);
@@ -334,7 +343,10 @@ async function approvePaymentInTx(
   approvedBy: string,
   adminLabel: string | undefined,
   tx: any,
-  options?: { legacyCaseAmbiguityResolved?: boolean }
+  options?: {
+    legacyCaseAmbiguityResolved?: boolean;
+    auditResolution?: (tx: any) => Promise<void>;
+  }
 ): Promise<{ message: string }> {
   // Reloaded fresh INSIDE the transaction. The admin's browser may have had
   // this order open for a long time, and the OCR panel it renders is display
@@ -464,6 +476,12 @@ async function approvePaymentInTx(
   // Finalize order completion (points, purchases, coupon usage)
   if (order.userId) {
     await finalizeOrderCompletion(order.id, order.userId, tx);
+  }
+
+  // Audit a legacy-case resolution INSIDE this transaction, after
+  // finalization, so the record and the money commit or roll back together.
+  if (options?.auditResolution) {
+    await options.auditResolution(tx);
   }
 
   return { message: `Payment ${paymentId} approved successfully` };

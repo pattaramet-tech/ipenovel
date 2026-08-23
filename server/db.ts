@@ -3980,7 +3980,25 @@ export async function creditWalletBalance(userId: number, amount: string, refere
   return newBalance;
 }
 
-export async function approveWalletTopup(topupId: number, adminUserId: number) {
+export async function approveWalletTopup(
+  topupId: number,
+  adminUserId: number,
+  /**
+   * Set ONLY by the audited legacy-case resolution flow. Skips the advisory
+   * alias check a human has adjudicated - and nothing else. Every exact
+   * UNIQUE identifier is still claimed atomically below.
+   *
+   * `auditResolution` is invoked INSIDE this transaction so the successful
+   * resolution record and the wallet credit commit together or roll back
+   * together. Writing the audit separately beforehand permanently consumed
+   * the subject-unique slot when approval then failed, leaving the top-up
+   * stuck with no retry path.
+   */
+  options?: {
+    legacyCaseAmbiguityResolved?: boolean;
+    auditResolution?: (tx: any) => Promise<void>;
+  }
+) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
@@ -4145,7 +4163,15 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
       createdAt: new Date(),
     });
 
-    // Step 7: Return updated topup
+    // Step 7: Audit a legacy-case resolution INSIDE this transaction, so the
+    // successful resolution record and the wallet credit commit together or
+    // roll back together. If anything above failed, no resolution row exists
+    // and the admin can retry.
+    if (options?.auditResolution) {
+      await options.auditResolution(tx);
+    }
+
+    // Step 8: Return updated topup
     const updated = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
     return updated[0];
   });
