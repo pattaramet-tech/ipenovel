@@ -1411,6 +1411,28 @@ export const paymentSlipClaims = mysqlTable(
     userId: int("userId").notNull(),
     /** SHA-256 of the normalized bank transaction reference. */
     referenceHash: varchar("referenceHash", { length: 64 }),
+    /**
+     * CASE-FOLDED compatibility alias: SHA-256 of the UPPER-CASED normalized
+     * reference.
+     *
+     * Exists solely for pre-migration rows that were persisted with only an
+     * upper-cased `reference` and no `rawText` to reparse. Their true casing
+     * is unrecoverable, so `referenceHash` (deliberately case-preserving)
+     * cannot match a replay whose fresh OCR keeps the original mixed case.
+     * This column gives such a row something the replay CAN match.
+     *
+     * Deliberately NON-UNIQUE and INDEXED, never a constraint. Upper-casing
+     * is lossy - two genuinely different references could fold together - so
+     * a hit here is treated as a compatibility signal that routes to human
+     * review, exactly like the historical scan it replaces. The authority
+     * for blocking value creation remains the UNIQUE case-preserving
+     * `referenceHash` above.
+     *
+     * Being indexed is the point: it makes that compatibility check an O(log n)
+     * lookup, so the O(N) historical scan can be retired after backfill
+     * without reopening the mixed-case gap.
+     */
+    referenceHashUpper: varchar("referenceHashUpper", { length: 64 }),
     /** SHA-256 of the raw uploaded slip bytes. */
     fileHash: varchar("fileHash", { length: 64 }),
     /** SHA-256 of the decoded slip QR payload, when decoding is available. */
@@ -1430,6 +1452,10 @@ export const paymentSlipClaims = mysqlTable(
       table.qrPayloadHash
     ),
     // Non-unique: weak evidence is looked up, never enforced.
+    // Non-unique: a compatibility LOOKUP, never an enforced constraint.
+    referenceHashUpperIdx: index("paymentSlipClaims_referenceHashUpper_idx").on(
+      table.referenceHashUpper
+    ),
     semanticFingerprintIdx: index("paymentSlipClaims_semanticFingerprint_idx").on(
       table.semanticFingerprint
     ),

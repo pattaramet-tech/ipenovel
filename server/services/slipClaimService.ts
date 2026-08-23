@@ -184,6 +184,39 @@ export async function findExistingClaim(
 }
 
 /**
+ * Looks up a claim by the CASE-FOLDED reference alias.
+ *
+ * Read-only and indexed. Exists for legacy claims whose original reference
+ * casing is unrecoverable: they can only ever be matched case-insensitively,
+ * and this keeps that possible after the historical scan is retired.
+ *
+ * Excludes the caller's own row so re-approving the same record is not
+ * mistaken for a replay.
+ */
+export async function findClaimByReferenceAlias(
+  referenceHashUpper: string,
+  excludeSource: { sourceType: SlipClaimSourceType; sourceId: number },
+  tx: any
+): Promise<{ sourceType: SlipClaimSourceType; sourceId: number } | undefined> {
+  const rows = await tx
+    .select()
+    .from(paymentSlipClaims)
+    .where(eq(paymentSlipClaims.referenceHashUpper, referenceHashUpper))
+    .limit(5);
+
+  for (const row of rows ?? []) {
+    if (row.sourceType === excludeSource.sourceType && row.sourceId === excludeSource.sourceId) {
+      continue;
+    }
+    return {
+      sourceType: row.sourceType as SlipClaimSourceType,
+      sourceId: row.sourceId as number,
+    };
+  }
+  return undefined;
+}
+
+/**
  * Atomically claims a slip's strong identifiers.
  *
  * MUST be called with `tx` being the SAME transaction that creates the
@@ -235,6 +268,22 @@ export async function claimSlip(
     ? false
     : await isLegacyScanRequired();
 
+  // CASE-FOLDED compatibility alias for the incoming reference.
+  //
+  // Some pre-migration rows were persisted with only an UPPER-CASED
+  // `reference` and no `rawText` to reparse, so their true casing is
+  // unrecoverable and the backfill can only ever store the upper-case hash.
+  // A replay whose fresh OCR preserves the original mixed case therefore has
+  // a DIFFERENT case-preserving hash and would not collide with that claim.
+  //
+  // This alias is what those rows can be matched on. It is checked against an
+  // INDEXED, non-unique registry column below, so the protection survives the
+  // historical scan being retired - without it, --mark-complete would silently
+  // reopen the mixed-case gap.
+  const referenceHashUpper = request.referenceRawForLegacyLookup
+    ? hashSlipReference(request.referenceRawForLegacyLookup.toUpperCase())
+    : undefined;
+
   if (legacyScanRequired) {
     try {
       const legacyMatch = await findLegacyApprovedDuplicate(
@@ -247,9 +296,7 @@ export async function claimSlip(
           // upper-cased form gives that row something to match against.
           // Matching only - the claim itself always uses the case-preserving
           // hash, and a false positive here routes to review, never a block.
-          referenceHashUpperCandidate: request.referenceRawForLegacyLookup
-            ? hashSlipReference(request.referenceRawForLegacyLookup.toUpperCase())
-            : undefined,
+          referenceHashUpperCandidate: referenceHashUpper,
         },
         { sourceType: request.sourceType, sourceId: request.sourceId },
         tx
@@ -273,12 +320,44 @@ export async function claimSlip(
     }
   }
 
+  // ── CASE-FOLDED COMPATIBILITY LOOKUP (always runs) ─────────────────────
+  // Deliberately OUTSIDE the legacyScanRequired branch. Retiring the O(N)
+  // historical scan must not retire mixed-case protection: a legacy claim
+  // holding only an upper-cased reference is matchable ONLY through this
+  // alias, and it is an indexed equality lookup, so keeping it permanently
+  // costs O(log n) rather than a table scan.
+  //
+  // A hit routes to review rather than being proof, because upper-casing is
+  // lossy - two genuinely different references could fold together. The
+  // authority for creating value remains the UNIQUE case-preserving hash.
+  if (referenceHashUpper) {
+    const aliasMatch = await findClaimByReferenceAlias(
+      referenceHashUpper,
+      { sourceType: request.sourceType, sourceId: request.sourceId },
+      tx
+    );
+
+    if (aliasMatch) {
+      return {
+        claimed: false,
+        reason: "already_claimed",
+        conflictKind: "reference",
+        existingSourceType: aliasMatch.sourceType,
+        existingSourceId: aliasMatch.sourceId,
+        viaLegacyCompatibility: true,
+      };
+    }
+  }
+
   try {
     const inserted = await tx.insert(paymentSlipClaims).values({
       sourceType: request.sourceType,
       sourceId: request.sourceId,
       userId: request.userId,
       referenceHash: request.identifiers.referenceHash ?? null,
+      // Stored so a FUTURE mixed-case replay of this same reference is
+      // matchable even if this row's own casing is later lost.
+      referenceHashUpper: referenceHashUpper ?? null,
       fileHash: request.identifiers.fileHash ?? null,
       qrPayloadHash: request.identifiers.qrPayloadHash ?? null,
       semanticFingerprint: request.semanticFingerprint ?? null,
