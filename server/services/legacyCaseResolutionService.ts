@@ -72,7 +72,18 @@ interface SubjectAdapter {
     adminLabel?: string;
     auditResolution: (tx: any) => Promise<void>;
   }): Promise<void>;
-  reject(args: { adminUserId: number; reason: string }): Promise<void>;
+  /**
+   * Rejects the subject and writes the resolution record in ONE transaction.
+   *
+   * `auditResolution` is invoked only AFTER a CONDITIONAL rejection has been
+   * confirmed to have won the race, and inside the same transaction - so the
+   * record can never outlive a rejection that did not happen.
+   */
+  rejectWithResolution(args: {
+    adminUserId: number;
+    reason: string;
+    auditResolution: (tx: any) => Promise<void>;
+  }): Promise<void>;
 }
 
 function adapterFor(input: ResolveLegacyCaseInput): SubjectAdapter {
@@ -92,9 +103,48 @@ function adapterFor(input: ResolveLegacyCaseInput): SubjectAdapter {
           auditResolution,
         });
       },
-      async reject({ adminUserId, reason }) {
-        // Reuse the existing reject flow rather than inventing a second one.
-        await orderService.rejectPayment(input.subjectId, String(adminUserId), reason);
+      async rejectWithResolution({ adminUserId, reason, auditResolution }) {
+        const database = await requireDb();
+        await database.transaction(async (tx: any) => {
+          // 1. Reload INSIDE the transaction - never trust the pre-check.
+          const payment = await db.getPaymentById(input.subjectId, tx);
+          if (!payment) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "Payment not found" });
+          }
+
+          // 2. Still reviewable?
+          if (!isReviewable(payment.status as string)) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: `This payment is already ${payment.status}. Refresh to see the current decision.`,
+            });
+          }
+
+          // 3. The conditional rejection is the ARBITER of the race. Losing
+          //    it rolls the resolution record back with everything else.
+          const won = await db.rejectPaymentIfReviewable(
+            input.subjectId,
+            adminUserId,
+            reason,
+            tx
+          );
+          if (!won) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "This payment was finalized by another action while you were deciding. " +
+                "Nothing was changed - refresh to see the current state.",
+            });
+          }
+
+          // 4. Reuse the existing rejection flow for its side effects (order
+          //    status, order history, approval metadata) rather than
+          //    inventing a second one - inside THIS transaction.
+          await orderService.rejectPayment(input.subjectId, String(adminUserId), reason, tx);
+
+          // 5. Audit last, same transaction.
+          await auditResolution(tx);
+        });
       },
     };
   }
@@ -114,8 +164,13 @@ function adapterFor(input: ResolveLegacyCaseInput): SubjectAdapter {
         auditResolution,
       });
     },
-    async reject({ adminUserId, reason }) {
-      await db.rejectWalletTopup(input.subjectId, adminUserId, reason);
+    async rejectWithResolution({ adminUserId, reason, auditResolution }) {
+      // rejectWalletTopup already reloads inside its own transaction and
+      // rejects CONDITIONALLY, throwing when it loses the race. The audit
+      // callback runs inside that same transaction, after the win.
+      await db.rejectWalletTopup(input.subjectId, adminUserId, reason, {
+        auditResolution,
+      });
     },
   };
 }
@@ -214,21 +269,45 @@ export async function resolveLegacyCaseAmbiguity(
   }
 
   if (input.decision === "confirmed_duplicate") {
-    // A rejection creates no financial value, so there is no finalization to
-    // bind the audit to; record it, then reject through the existing flow.
-    await insertResolution(
-      await requireDb(),
-      {
-        subjectType: input.subjectType,
-        subjectId: input.subjectId,
-        resolutionType: "legacy_case_confirmed_duplicate",
-        ambiguity,
-        adminUserId: input.adminUserId,
-        reason,
-      }
-    );
+    // The RECORD AND THE REJECTION COMMIT TOGETHER.
+    //
+    // Writing the record first meant a rejection that then lost a status
+    // race or failed transiently left the subject reviewable while the
+    // subject-unique row was permanently committed - so retrying returned
+    // CONFLICT and the record was stuck exactly as before. The audit is now
+    // a callback invoked inside the rejection transaction, after the
+    // conditional rejection has been confirmed to have won.
+    await adapter.rejectWithResolution({
+      adminUserId: input.adminUserId,
+      reason: `Legacy reference case ambiguity confirmed as duplicate: ${reason}`,
+      auditResolution: async (tx: any) => {
+        // Revalidate against state visible INSIDE the transaction: a fold
+        // adjudicated on a stale read must not produce a record.
+        const live = await describeLegacyCaseAmbiguity(
+          input.subjectType,
+          input.subjectId,
+          subject.extractedData,
+          tx
+        );
+        if (!live.present) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "No legacy case ambiguity is currently present for this record. Use the normal " +
+              "Approve or Reject action instead.",
+          });
+        }
 
-    await adapter.reject({ adminUserId: input.adminUserId, reason: `Legacy reference case ambiguity confirmed as duplicate: ${reason}` });
+        await insertResolution(tx, {
+          subjectType: input.subjectType,
+          subjectId: input.subjectId,
+          resolutionType: "legacy_case_confirmed_duplicate",
+          ambiguity: live,
+          adminUserId: input.adminUserId,
+          reason,
+        });
+      },
+    });
 
     return {
       subjectType: input.subjectType,

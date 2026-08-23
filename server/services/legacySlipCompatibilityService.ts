@@ -243,7 +243,15 @@ async function scanApproved<T>(
       .orderBy(asc(idColumn))
       .limit(SCAN_PAGE_SIZE);
 
-    if (!page || page.length === 0) return undefined;
+    // TERMINAL EMPTY PAGE. Reached when the eligible row count is an exact
+    // multiple of SCAN_PAGE_SIZE, so the previous page was full and this one
+    // is empty. Returning `undefined` here threw away a lossy match already
+    // held in `fallback`: a mixed-case replay of an unrecoverable legacy
+    // uppercase reference was then reported as conflict-free and could
+    // create value. EOF means "nothing stronger exists", not "nothing was
+    // found" - so the accumulated result is returned, exactly as the
+    // short-page exit below does.
+    if (!page || page.length === 0) return fallback;
 
     for (const row of page) {
       const hit = onRow(row);
@@ -256,6 +264,8 @@ async function scanApproved<T>(
     }
 
     cursor = page[page.length - 1].id;
+    // Short page: this source is exhausted. Both exits return `fallback`, so
+    // the terminal-empty-page and short-page boundaries behave identically.
     if (page.length < SCAN_PAGE_SIZE) return fallback;
   }
 }

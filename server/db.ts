@@ -2458,6 +2458,43 @@ export async function updatePaymentIfNotFinalized(
   return ((header as any)?.affectedRows || 0) > 0;
 }
 
+/**
+ * Conditionally rejects a payment, ONLY while it is still reviewable.
+ *
+ * Returns true iff THIS call won the race. Used by the audited legacy-case
+ * resolution flow, where the rejection and its resolution record must commit
+ * together: an unconditional rejection could not tell "I rejected it" from
+ * "someone else already finalized it", so a resolution row was committed for
+ * a state this call never created.
+ */
+export async function rejectPaymentIfReviewable(
+  paymentId: number,
+  reviewedByUserId: number,
+  rejectionReason: string,
+  tx: any
+): Promise<boolean> {
+  const database = tx || (await getDb());
+  if (!database) return false;
+
+  const result = await database
+    .update(payments)
+    .set({
+      status: "rejected",
+      rejectionReason,
+      reviewedByUserId,
+      reviewedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(payments.id, paymentId),
+        or(eq(payments.status, "pending"), eq(payments.status, "pending_review"))
+      )
+    );
+
+  const header = Array.isArray(result) ? result[0] : result;
+  return ((header as any)?.affectedRows || 0) > 0;
+}
+
 // ============ SETTINGS ============
 
 export async function getSetting(key: string) {
@@ -4050,6 +4087,13 @@ export async function approveWalletTopup(
           // Legacy lookup only - the claim itself still uses the
           // case-preserving hash derived above.
           referenceRawForLegacyLookup: getRawReferenceForLegacyLookup(persistedExtractedData),
+          // Set ONLY by the audited resolution flow. Skips the ADVISORY alias
+          // check a human has adjudicated and nothing else: every exact
+          // UNIQUE identifier below is still claimed atomically, so an exact
+          // reference/file/QR duplicate still blocks. Without forwarding it
+          // the wallet resolver re-hit the same ambiguity and rolled its own
+          // approval back, making the resolution unusable.
+          legacyCaseAmbiguityResolved: options?.legacyCaseAmbiguityResolved === true,
         },
         tx
       );
@@ -4177,7 +4221,20 @@ export async function approveWalletTopup(
   });
 }
 
-export async function rejectWalletTopup(topupId: number, adminUserId: number, reason: string) {
+export async function rejectWalletTopup(
+  topupId: number,
+  adminUserId: number,
+  reason: string,
+  /**
+   * `auditResolution` is invoked INSIDE this transaction, after the
+   * conditional rejection has been confirmed to have won. The audit row and
+   * the rejection therefore commit together or roll back together: writing
+   * the audit first permanently consumed the subject-unique resolution slot
+   * when the rejection then lost a race or failed, leaving the top-up
+   * reviewable but unresolvable.
+   */
+  options?: { auditResolution?: (tx: any) => Promise<void> }
+) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
@@ -4228,6 +4285,10 @@ export async function rejectWalletTopup(topupId: number, adminUserId: number, re
       createdBy: adminUserId,
       createdAt: new Date(),
     });
+
+    if (options?.auditResolution) {
+      await options.auditResolution(tx);
+    }
 
     return tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1).then(r => r[0]);
   });
@@ -5850,7 +5911,27 @@ export async function markDailyCheckinCouponUsed(couponId: number, userId: numbe
 /**
  * Update wallet top-up with OCR results and approval
  */
-export async function updateWalletTopupWithOCRApproval(
+/**
+ * Statuses a wallet top-up may still be moved out of. `approved` and
+ * `rejected` are FINAL: no OCR write may ever bring one back.
+ */
+const REVIEWABLE_TOPUP_STATUSES = ["pending", "pending_review"] as const;
+
+/**
+ * Applies an OCR-derived update to a wallet top-up.
+ *
+ * DEFENSE IN DEPTH: any update that moves a top-up INTO `pending_review` is
+ * conditional on the row still being reviewable. An unconditional
+ * `WHERE id = ?` let a late-finishing OCR pass reopen a top-up an admin had
+ * already approved or rejected - and a reopened, already-credited top-up
+ * could be approved a second time. The guard is applied by the destination
+ * status rather than by an opt-in flag so a future caller cannot forget it.
+ *
+ * Returns `applied: false` when the guard rejected the write; the row is then
+ * returned UNCHANGED so the caller can reflect the authoritative current
+ * state instead of asserting one it did not create.
+ */
+export async function applyWalletTopupOcrUpdate(
   topupId: number,
   updates: {
     status?: string;
@@ -5889,9 +5970,39 @@ export async function updateWalletTopupWithOCRApproval(
   if (updates.approvedAt) updateData.approvedAt = updates.approvedAt;
   if (updates.creditedAmount) updateData.creditedAmount = updates.creditedAmount;
 
-  await db.update(walletTopups).set(updateData).where(eq(walletTopups.id, topupId));
+  const guarded = updates.status === "pending_review";
+  const whereClause = guarded
+    ? and(
+        eq(walletTopups.id, topupId),
+        or(
+          eq(walletTopups.status, REVIEWABLE_TOPUP_STATUSES[0] as any),
+          eq(walletTopups.status, REVIEWABLE_TOPUP_STATUSES[1] as any)
+        )
+      )
+    : eq(walletTopups.id, topupId);
 
-  return (await db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1))[0];
+  const result = await db.update(walletTopups).set(updateData).where(whereClause);
+  const header = Array.isArray(result) ? result[0] : result;
+  const affectedRows = (header as any)?.affectedRows || 0;
+
+  const topup = (
+    await db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1)
+  )[0];
+
+  return { applied: !guarded || affectedRows > 0, topup };
+}
+
+/**
+ * Backwards-compatible wrapper. Carries the same reopen guard as
+ * `applyWalletTopupOcrUpdate` - callers that need to know whether the write
+ * actually landed should use that function directly.
+ */
+export async function updateWalletTopupWithOCRApproval(
+  topupId: number,
+  updates: Parameters<typeof applyWalletTopupOcrUpdate>[1]
+) {
+  const { topup } = await applyWalletTopupOcrUpdate(topupId, updates);
+  return topup;
 }
 
 /**
@@ -6109,8 +6220,14 @@ export async function approveWalletTopupWithOCR(
         );
       }
     } else {
-      // For pending_review: update regardless of current status (admin review)
-      await tx
+      // For pending_review: ONLY while the top-up is still reviewable.
+      //
+      // This previously updated regardless of current status, so an OCR pass
+      // finishing after an admin approved or rejected the top-up moved a
+      // FINAL record back to pending_review - and an already-credited top-up
+      // could then be approved and credited a second time. A losing write is
+      // a no-op: the persisted state is authoritative and is returned as-is.
+      const reviewUpdate = await tx
         .update(walletTopups)
         .set({
           status: "pending_review" as any,
@@ -6126,8 +6243,28 @@ export async function approveWalletTopupWithOCR(
           approvalSource: ocrData.approvalSource as any,
           updatedAt: new Date(),
         })
-        .where(eq(walletTopups.id, topupId));
-      
+        .where(
+          and(
+            eq(walletTopups.id, topupId),
+            or(
+              eq(walletTopups.status, "pending" as any),
+              eq(walletTopups.status, "pending_review" as any)
+            )
+          )
+        );
+
+      const reviewHeader = Array.isArray(reviewUpdate) ? reviewUpdate[0] : reviewUpdate;
+      const reviewAffected = (reviewHeader as any)?.affectedRows || 0;
+      if (reviewAffected === 0) {
+        // Lost the race to a human decision. Nothing was mutated; surface the
+        // finalized row rather than pretending this call set it.
+        throw new WalletSlipClaimError(
+          "TOPUP_STATE_RACE",
+          "This top-up is no longer pending - it was approved, rejected or cancelled while " +
+            "OCR was running. Nothing was changed."
+        );
+      }
+
       const updated = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
       return updated[0];
     }

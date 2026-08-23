@@ -26,14 +26,25 @@ import { recordOcrAttempt } from "./ocrAttemptService";
 
 export interface WalletTopupSubmissionResult {
   topupId: number;
-  status: "pending_review" | "approved";
+  /**
+   * `rejected` is reachable ONLY by reporting a state an admin already set -
+   * this service never rejects anything.
+   */
+  status: "pending_review" | "approved" | "rejected" | "cancelled";
   ocrDecision: "approved" | "needs_review" | "rejected";
   reviewReason?: string;
+  /** TECHNICAL | DATA | CONFIG | STATE. */
+  reviewCategory?: string;
   ocrConfidence?: number;
   finalConfidence?: number;
   duplicateStatus?: any;
   userMessage: string;
   creditedAmount?: string;
+  /**
+   * True when an admin finalized this top-up while OCR was still running.
+   * The persisted state is authoritative and NOTHING was written.
+   */
+  supersededByFinalization?: boolean;
 }
 
 /**
@@ -360,6 +371,30 @@ export async function submitWalletTopupSlip(
         const claimCode =
           approvalError instanceof db.WalletSlipClaimError ? approvalError.code : undefined;
 
+        // A LOST STATE RACE IS NOT A REVIEW OUTCOME. Checked BEFORE the
+        // generic claim handling below, which routes everything to
+        // handlePendingReview.
+        //
+        // An admin approved or rejected this top-up while OCR was running.
+        // The claim already rolled back with the transaction, so there is
+        // nothing to record and nothing to undo - and writing pending_review
+        // here reopened the finalized record, making an already-credited
+        // top-up manually approvable a second time. The persisted state is
+        // authoritative: report it and write NOTHING.
+        if (claimCode === "TOPUP_STATE_RACE") {
+          await recordWalletAttempt(
+            // The attempt-history enum has no state-race member and adding
+            // one needs a migration; the reason/category pair below is what
+            // identifies this outcome, and it is neither a provider failure
+            // nor a duplicate.
+            "needs_review",
+            "TOPUP_SUPERSEDED_BY_FINALIZATION",
+            "STATE",
+            finalConfidence
+          );
+          return await buildSupersededResult(topupId);
+        }
+
         if (claimCode) {
           const duplicateReason =
             claimCode === "NO_STRONG_IDENTIFIER" ? "NO_STRONG_IDENTIFIER" : claimCode;
@@ -508,6 +543,34 @@ async function autoApproveWalletTopup(
 }
 
 /**
+ * Reports the CURRENT persisted state of a top-up without mutating anything.
+ *
+ * Used when an admin finalized the record while OCR was still running. The
+ * database is the single authority here: this function never approves,
+ * rejects, reopens, claims or credits.
+ */
+async function buildSupersededResult(topupId: number): Promise<WalletTopupSubmissionResult> {
+  const current = await db.getWalletTopupById(topupId);
+  const status = (current?.status as WalletTopupSubmissionResult["status"]) ?? "pending_review";
+
+  return {
+    topupId,
+    status,
+    ocrDecision: "needs_review",
+    reviewReason: "TOPUP_SUPERSEDED_BY_FINALIZATION",
+    reviewCategory: "STATE",
+    supersededByFinalization: true,
+    userMessage:
+      status === "approved"
+        ? "รายการนี้ได้รับการอนุมัติโดยแอดมินแล้ว"
+        : status === "rejected"
+          ? "รายการนี้ถูกปฏิเสธโดยแอดมินแล้ว"
+          : "สถานะรายการถูกอัปเดตโดยแอดมินแล้ว",
+    creditedAmount: undefined,
+  };
+}
+
+/**
  * Handle pending review with OCR data
  */
 async function handlePendingReview(
@@ -549,13 +612,20 @@ async function handlePendingReview(
     });
   }
 
-  const updatedTopup = await db.updateWalletTopupWithOCRApproval(topupId, updateData);
+  const { applied, topup: updatedTopup } = await db.applyWalletTopupOcrUpdate(topupId, updateData);
 
   if (!updatedTopup) {
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
       message: "Failed to update wallet top-up",
     });
+  }
+
+  // The write was refused because an admin had already finalized this
+  // top-up. Report the authoritative state instead of claiming a review that
+  // did not happen - and do not notify, since nothing needs reviewing.
+  if (!applied) {
+    return await buildSupersededResult(topupId);
   }
 
   // Send Discord notification for OCR review (non-blocking)
@@ -623,13 +693,19 @@ async function handleDuplicate(
     approvalSource: "manual",
   };
 
-  const updatedTopup = await db.updateWalletTopupWithOCRApproval(topupId, updateData);
+  const { applied, topup: updatedTopup } = await db.applyWalletTopupOcrUpdate(topupId, updateData);
 
   if (!updatedTopup) {
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
       message: "Failed to update wallet top-up",
     });
+  }
+
+  // Refused: the top-up was finalized by an admin first. A duplicate finding
+  // must not reopen a decided record.
+  if (!applied) {
+    return await buildSupersededResult(topupId);
   }
 
   // Send Discord notification for duplicate detection (non-blocking)
@@ -695,13 +771,18 @@ async function handleOCRError(
     updateData.extractedData = JSON.stringify(extractedData);
   }
 
-  const updatedTopup = await db.updateWalletTopupWithOCRApproval(topupId, updateData);
+  const { applied, topup: updatedTopup } = await db.applyWalletTopupOcrUpdate(topupId, updateData);
 
   if (!updatedTopup) {
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
       message: "Failed to update wallet top-up",
     });
+  }
+
+  // Refused: an OCR failure arriving after a human decision must not undo it.
+  if (!applied) {
+    return await buildSupersededResult(topupId);
   }
 
   // Send Discord notification for OCR error (non-blocking)
