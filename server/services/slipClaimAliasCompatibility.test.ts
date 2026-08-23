@@ -258,6 +258,7 @@ describe("mixed-case protection survives backfill completion", () => {
         expectedLegacyAliasHash: UPPER_HASH,
         expectedMatchedSourceType: "order_payment" as const,
         expectedMatchedSourceId: 42,
+        expectedIncomingReferenceHash: MIXED_HASH,
       } },
       tx
     );
@@ -289,6 +290,7 @@ describe("mixed-case protection survives backfill completion", () => {
         expectedLegacyAliasHash: UPPER_HASH,
         expectedMatchedSourceType: "order_payment" as const,
         expectedMatchedSourceId: 42,
+        expectedIncomingReferenceHash: MIXED_HASH,
       } },
       tx
     );

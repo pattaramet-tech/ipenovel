@@ -144,6 +144,9 @@ const ADJUDICATED_A = {
   expectedLegacyAliasHash: ALIAS_A,
   expectedMatchedSourceType: "order_payment" as const,
   expectedMatchedSourceId: 42,
+  // The exact case-preserving reference reviewed. Without this the waiver
+  // named only the fold, and a casing-only change slipped past it.
+  expectedIncomingReferenceHash: HASH_A,
 };
 
 function request(referenceRaw: string, sourceId = 900) {

@@ -228,6 +228,7 @@ describe("wallet confirmed-distinct actually completes", () => {
         expectedLegacyAliasHash: UPPER_HASH,
         expectedMatchedSourceType: "order_payment" as const,
         expectedMatchedSourceId: 11,
+        expectedIncomingReferenceHash: MIXED_HASH,
       },
       auditResolution: async () => {
         audited.push("legacy_case_confirmed_distinct");
@@ -292,6 +293,7 @@ describe("wallet confirmed-distinct actually completes", () => {
           expectedLegacyAliasHash: UPPER_HASH,
           expectedMatchedSourceType: "order_payment" as const,
           expectedMatchedSourceId: 12,
+          expectedIncomingReferenceHash: MIXED_HASH,
         },
         auditResolution: async () => {
           audited.push("should-never-run");
@@ -318,6 +320,7 @@ describe("wallet confirmed-distinct actually completes", () => {
           expectedLegacyAliasHash: UPPER_HASH,
           expectedMatchedSourceType: "order_payment" as const,
           expectedMatchedSourceId: 11,
+          expectedIncomingReferenceHash: MIXED_HASH,
         },
       })
     ).rejects.toMatchObject({ code: "NO_STRONG_IDENTIFIER" });
@@ -677,25 +680,33 @@ describe("a duplicate resolution commits with its rejection", () => {
     expect(code).toMatch(/await db\.rejectPaymentIfReviewable\(/);
     expect(code).toMatch(/orderService\.rejectPayment\(input\.subjectId, String\(adminUserId\), reason, tx\)/);
     // Wallet: reuses the existing conditional rejection transaction.
-    expect(code).toMatch(/db\.rejectWalletTopup\(input\.subjectId, adminUserId, reason, \{\s*\n?\s*auditResolution,\s*\n?\s*\}\)/);
+    expect(code).toMatch(/db\.rejectWalletTopup\(input\.subjectId, adminUserId, reason, \{/);
+    // Revalidation runs before the status change; the audit after it.
+    expect(code).toMatch(/revalidate,[\s\S]{0,40}?auditResolution,/);
   });
 
   it("the order rejection reloads and re-checks reviewability inside the transaction", () => {
-    const start = code.indexOf("async rejectWithResolution({ adminUserId, reason, auditResolution })");
+    const start = code.indexOf(
+      "async rejectWithResolution({ adminUserId, reason, revalidate, auditResolution })"
+    );
     const body = code.slice(start, start + 2200);
     expect(body).toMatch(/db\.getPaymentById\(input\.subjectId, tx\)/);
     expect(body).toMatch(/isReviewable\(payment\.status as string\)/);
   });
 
   it("losing the conditional rejection raises CONFLICT so the record rolls back", () => {
-    const start = code.indexOf("async rejectWithResolution({ adminUserId, reason, auditResolution })");
+    const start = code.indexOf(
+      "async rejectWithResolution({ adminUserId, reason, revalidate, auditResolution })"
+    );
     const body = code.slice(start, start + 2200);
     expect(body).toMatch(/if \(!won\) \{/);
     expect(body).toMatch(/code: "CONFLICT"/);
   });
 
   it("the audit runs LAST, after the rejection has been confirmed to have won", () => {
-    const start = code.indexOf("async rejectWithResolution({ adminUserId, reason, auditResolution })");
+    const start = code.indexOf(
+      "async rejectWithResolution({ adminUserId, reason, revalidate, auditResolution })"
+    );
     const body = code.slice(start, start + 2200);
     const wonIdx = body.indexOf("rejectPaymentIfReviewable");
     const auditIdx = body.indexOf("await auditResolution(tx)");
