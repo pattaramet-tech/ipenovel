@@ -15,6 +15,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../db", () => ({
   getWalletTopupById: vi.fn(),
+  // The review handlers now go through the guarded variant, which
+  // reports whether the write was allowed to land.
+  applyWalletTopupOcrUpdate: vi.fn(),
   updateWalletTopupWithOCRApproval: vi.fn(),
   approveWalletTopupWithOCR: vi.fn(),
   creditWalletBalance: vi.fn(),
@@ -59,11 +62,14 @@ describe("submitWalletTopupSlip - OCR_DISABLED guard occurs before any provider 
       createdAt: new Date(),
       slipSubmittedAt: null,
     });
-    (db.updateWalletTopupWithOCRApproval as any).mockResolvedValue({
+    (db.applyWalletTopupOcrUpdate as any).mockResolvedValue({
+      applied: true,
+      topup: {
       id: 42,
       status: "pending_review",
       ocrDecision: "needs_review",
       reviewReason: "OCR_DISABLED",
+      },
     });
     (getEffectiveOCRConfig as any).mockResolvedValue({
       enabled: false,
@@ -93,8 +99,8 @@ describe("submitWalletTopupSlip - OCR_DISABLED guard occurs before any provider 
 
     // The only DB write on this path is the pending_review status update,
     // with approvalSource=manual (existing safe pending-review contract).
-    expect(db.updateWalletTopupWithOCRApproval).toHaveBeenCalledTimes(1);
-    const [, updateData] = (db.updateWalletTopupWithOCRApproval as any).mock.calls[0];
+    expect(db.applyWalletTopupOcrUpdate).toHaveBeenCalledTimes(1);
+    const [, updateData] = (db.applyWalletTopupOcrUpdate as any).mock.calls[0];
     expect(updateData.status).toBe("pending_review");
     expect(updateData.ocrDecision).toBe("needs_review");
     expect(updateData.reviewReason).toBe("OCR_DISABLED");
@@ -112,11 +118,14 @@ describe("submitWalletTopupSlip - OCR_DISABLED guard occurs before any provider 
       createdAt: new Date(),
       slipSubmittedAt: null,
     });
-    (db.updateWalletTopupWithOCRApproval as any).mockResolvedValue({
+    (db.applyWalletTopupOcrUpdate as any).mockResolvedValue({
+      applied: true,
+      topup: {
       id: 43,
       status: "pending_review",
       ocrDecision: "needs_review",
       reviewReason: "SHADOW_MODE",
+      },
     });
     (getEffectiveOCRConfig as any).mockResolvedValue({
       enabled: true,
