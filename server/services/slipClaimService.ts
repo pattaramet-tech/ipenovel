@@ -42,9 +42,7 @@
 
 import { paymentSlipClaims } from "../../drizzle/schema";
 import { eq, or } from "drizzle-orm";
-import { findLegacyApprovedDuplicate } from "./legacySlipCompatibilityService";
-import { hashSlipReference } from "./slipIdentifierService";
-import { isLegacyScanRequired } from "./slipBackfillStateService";
+import { evaluateSlipConflict } from "./slipConflictEvaluator";
 import type { SlipStrongIdentifiers, StrongDuplicateKind } from "./slipIdentifierService";
 
 export type SlipClaimSourceType = "order_payment" | "wallet_topup";
@@ -279,114 +277,52 @@ export async function claimSlip(
     return { claimed: false, reason: "no_strong_identifier" };
   }
 
-  // ── LEGACY COMPATIBILITY GATE ───────────────────────────────────────────
-  // The claim registry starts EMPTY at migration time, so every payment and
-  // top-up approved before it existed has no claim row and its reference is
-  // unprotected by the UNIQUE constraints. Without this check, a slip that
-  // already created value last week would sail through: no conflicting
-  // claim exists, the INSERT succeeds, and value is created a second time.
+  // ── CONFLICT PREFLIGHT ──────────────────────────────────────────────────
+  // Delegated to the single shared evaluator so the claim path, Admin Recheck
+  // and the admin detail query cannot drift apart on a financial decision.
   //
-  // So before claiming, the already-approved financial record set is
-  // consulted GLOBALLY (all users, both sources) - never the old user-scoped
-  // or pending-only lookups that made replay possible in the first place.
+  // It distinguishes the two kinds of evidence, which is the whole point:
+  //   STRONG (exact reference/file/qr)  -> already_claimed, may hard-block
+  //   LOSSY  (uppercase fold of a legacy row) -> legacy_case_ambiguity
   //
-  // This runs inside the caller's transaction and is read-only. Once the
-  // backfill has populated claims for historical rows this becomes redundant
-  // belt-and-braces, but until then the registry must not be sole authority.
-  // The scan is skipped once a verified backfill has written a claim for every
-  // historical approval - at that point the UNIQUE registry is sufficient and
-  // this O(N) scan is pure cost on every approval. The switch is read from the
-  // DATABASE and fails safe: any read problem, malformed value, or missing
-  // record keeps the scan enabled.
-  const legacyScanRequired = request.skipLegacyCheck
-    ? false
-    : await isLegacyScanRequired();
-
-  // CASE-FOLDED compatibility alias for the incoming reference.
+  // An earlier revision collapsed both into already_claimed, which
+  // hard-blocked a legitimate case-sensitive reference as a duplicate and
+  // left no admin escape. Exact always wins over lossy.
   //
-  // Some pre-migration rows were persisted with only an UPPER-CASED
-  // `reference` and no `rawText` to reparse, so their true casing is
-  // unrecoverable and the backfill can only ever store the upper-case hash.
-  // A replay whose fresh OCR preserves the original mixed case therefore has
-  // a DIFFERENT case-preserving hash and would not collide with that claim.
-  //
-  // This alias is what those rows can be matched on. It is checked against an
-  // INDEXED, non-unique registry column below, so the protection survives the
-  // historical scan being retired - without it, --mark-complete would silently
-  // reopen the mixed-case gap.
-  const referenceHashUpper = request.referenceRawForLegacyLookup
-    ? hashSlipReference(request.referenceRawForLegacyLookup.toUpperCase())
-    : undefined;
-
-  if (legacyScanRequired) {
-    try {
-      const legacyMatch = await findLegacyApprovedDuplicate(
-        {
-          referenceHash: request.identifiers.referenceHash,
-          fileHash: request.identifiers.fileHash,
-          // Covers the reverse casing gap: a legacy row persisted only as an
-          // UPPER-CASED reference, with no rawText to reparse, cannot match a
-          // fresh mixed-case read. Hashing the incoming reference in its
-          // upper-cased form gives that row something to match against.
-          // Matching only - the claim itself always uses the case-preserving
-          // hash, and a false positive here routes to review, never a block.
-          referenceHashUpperCandidate: referenceHashUpper,
-        },
-        { sourceType: request.sourceType, sourceId: request.sourceId },
-        tx
-      );
-
-      if (legacyMatch) {
-        return {
-          claimed: false,
-          reason: "already_claimed",
-          conflictKind: legacyMatch.kind,
-          existingSourceType: legacyMatch.sourceType,
-          existingSourceId: legacyMatch.sourceId,
-          viaLegacyCompatibility: true,
-        };
-      }
-    } catch (error) {
-      // A failed legacy lookup must NOT be treated as "no duplicate" - that
-      // would silently reopen the very hole this closes. Propagate so the
-      // surrounding transaction rolls back and the slip goes to review.
-      throw error;
-    }
-  }
-
-  // ── ADVISORY LEGACY CASE-AMBIGUITY LOOKUP (always runs) ────────────────
-  // Deliberately OUTSIDE the legacyScanRequired branch: retiring the O(N)
-  // historical scan must not retire cover for rows whose original reference
-  // casing is unrecoverable. This is an indexed equality lookup, so keeping
-  // it permanently costs O(log n).
-  //
-  // The result is ADVISORY, never ownership. Upper-casing is lossy, so a hit
-  // may be one replayed transaction OR two genuinely different references
-  // that fold together. Returning `already_claimed` here (as an earlier
-  // revision did) made normal Approve fail forever for the second, legitimate
-  // payment - a dead end with no admin escape.
-  //
-  // So a hit STOPS auto-approval without inserting any claim and without
-  // creating value, and asks for a human decision. Two concurrent
-  // differently-cased reads therefore BOTH stop, which is why the lossy alias
-  // needs no serialization of its own: neither path can create value.
-  if (referenceHashUpper && !request.legacyCaseAmbiguityResolved) {
-    const aliasMatch = await findClaimByLegacyAlias(
-      referenceHashUpper,
-      { sourceType: request.sourceType, sourceId: request.sourceId },
+  // Read-only and advisory: the UNIQUE INSERT below remains the authority,
+  // because any read here can be invalidated by a concurrent commit.
+  if (!request.skipLegacyCheck) {
+    const conflict = await evaluateSlipConflict(
+      {
+        identifiers: request.identifiers,
+        rawReference: request.referenceRawForLegacyLookup,
+        sourceType: request.sourceType,
+        sourceId: request.sourceId,
+      },
       tx
     );
 
-    if (aliasMatch) {
+    if (conflict.kind === "strong_duplicate") {
+      return {
+        claimed: false,
+        reason: "already_claimed",
+        conflictKind: conflict.matchedKind,
+        existingSourceType: conflict.matchedSourceType,
+        existingSourceId: conflict.matchedSourceId,
+        viaLegacyCompatibility: conflict.viaLegacyCompatibility,
+      };
+    }
+
+    if (conflict.kind === "legacy_case_ambiguity" && !request.legacyCaseAmbiguityResolved) {
       return {
         claimed: false,
         reason: "legacy_case_ambiguity",
-        matchedSourceType: aliasMatch.sourceType,
-        matchedSourceId: aliasMatch.sourceId,
+        matchedSourceType: conflict.matchedSourceType,
+        matchedSourceId: conflict.matchedSourceId,
         legacyAliasHashMatched: true,
         conflictStrength: "advisory",
         requiresAdminResolution: true,
-        legacyAliasHash: referenceHashUpper,
+        legacyAliasHash: conflict.legacyAliasHash,
       };
     }
   }

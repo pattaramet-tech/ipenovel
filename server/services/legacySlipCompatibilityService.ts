@@ -41,10 +41,28 @@ import { extractSlipData } from "../ocr-slip-verification-v2";
 
 export type LegacySourceType = "order_payment" | "wallet_topup";
 
+export type LegacyMatchedBy =
+  | "reference_exact"
+  | "file_exact"
+  | "qr_exact"
+  /**
+   * Matched ONLY by folding the incoming reference to uppercase against a
+   * historical row whose original casing is unrecoverable. Lossy: two
+   * genuinely different case-sensitive references fold together here, so this
+   * is advisory ambiguity, never a duplicate verdict.
+   */
+  | "legacy_uppercase_only";
+
 export interface LegacyDuplicateMatch {
   sourceType: LegacySourceType;
   sourceId: number;
   kind: "reference" | "file";
+  /**
+   * How the match was obtained. Callers MUST branch on this: collapsing an
+   * uppercase-only match into a duplicate hard-blocks a legitimate
+   * case-sensitive reference with no admin escape.
+   */
+  matchedBy: LegacyMatchedBy;
   /** How the legacy row's reference was recovered, for operator insight. */
   evidence?: "stored_hash" | "reference_raw" | "reparsed_raw_text" | "legacy_uppercase";
 }
@@ -162,19 +180,35 @@ export interface LegacyLookupIdentifiers {
 function referenceMatches(
   candidates: Array<{ hash: string; evidence: NonNullable<LegacyDuplicateMatch["evidence"]> }>,
   identifiers: LegacyLookupIdentifiers
-): NonNullable<LegacyDuplicateMatch["evidence"]> | undefined {
-  for (const candidate of candidates) {
-    if (identifiers.referenceHash && candidate.hash === identifiers.referenceHash) {
-      return candidate.evidence;
-    }
-    if (
-      identifiers.referenceHashUpperCandidate &&
-      candidate.hash === identifiers.referenceHashUpperCandidate
-    ) {
-      return candidate.evidence;
+):
+  | { matchedBy: "reference_exact" | "legacy_uppercase_only"; evidence: NonNullable<LegacyDuplicateMatch["evidence"]> }
+  | undefined {
+  // EXACT first, across ALL candidates. A case-preserving hit is
+  // authoritative and must win over any lossy fold, even if the lossy
+  // candidate appears earlier in the list.
+  if (identifiers.referenceHash) {
+    for (const candidate of candidates) {
+      if (candidate.hash === identifiers.referenceHash) {
+        return { matchedBy: "reference_exact", evidence: candidate.evidence };
+      }
     }
   }
+
+  // Lossy fallback: only reachable when nothing matched exactly.
+  if (identifiers.referenceHashUpperCandidate) {
+    for (const candidate of candidates) {
+      if (candidate.hash === identifiers.referenceHashUpperCandidate) {
+        return { matchedBy: "legacy_uppercase_only", evidence: candidate.evidence };
+      }
+    }
+  }
+
   return undefined;
+}
+
+/** Strong matches stop the scan; a lossy one is only a fallback. */
+function isStrongMatch(match: LegacyDuplicateMatch): boolean {
+  return match.matchedBy !== "legacy_uppercase_only";
 }
 
 /**
@@ -190,8 +224,11 @@ async function scanApproved<T>(
   statusColumn: any,
   idColumn: any,
   extractedDataColumn: any,
-  onRow: (row: { id: number; extractedData: string | null }) => T | undefined
+  onRow: (row: { id: number; extractedData: string | null }) => T | undefined,
+  /** Return false to keep scanning (a lossy fallback), true to stop now. */
+  shouldStop: (hit: T) => boolean = () => true
 ): Promise<T | undefined> {
+  let fallback: T | undefined;
   let cursor = 0;
 
   // Unbounded in coverage, bounded in memory: each iteration reads at most
@@ -210,11 +247,16 @@ async function scanApproved<T>(
 
     for (const row of page) {
       const hit = onRow(row);
-      if (hit !== undefined) return hit;
+      if (hit !== undefined) {
+        if (shouldStop(hit)) return hit;
+        // Remember the weaker match but keep looking for a stronger one, so
+        // an exact duplicate later in the table still wins.
+        fallback = fallback ?? hit;
+      }
     }
 
     cursor = page[page.length - 1].id;
-    if (page.length < SCAN_PAGE_SIZE) return undefined;
+    if (page.length < SCAN_PAGE_SIZE) return fallback;
   }
 }
 
@@ -222,8 +264,13 @@ async function scanApproved<T>(
  * Finds an APPROVED order payment or wallet top-up that already used this
  * slip, GLOBALLY - any user, either source, every row.
  *
- * Read-only. Returns the first match found, or undefined. Any query failure
- * propagates so the caller fails closed.
+ * Read-only. Any query failure propagates so the caller fails closed.
+ *
+ * PRIORITY: an EXACT match (file or case-preserving reference) always wins
+ * over a lossy uppercase-only fold, even when the lossy one is found first or
+ * lives in the other table. Collapsing the two would hard-block a legitimate
+ * case-sensitive reference as a duplicate, with no admin escape - so callers
+ * must branch on `matchedBy`, not merely on "something matched".
  */
 export async function findLegacyApprovedDuplicate(
   identifiers: LegacyLookupIdentifiers,
@@ -239,19 +286,33 @@ export async function findLegacyApprovedDuplicate(
         return undefined;
       }
 
-      const evidence = referenceMatches(
-        referenceHashCandidatesFromExtractedData(row.extractedData),
-        identifiers
-      );
-      if (evidence) {
-        return { sourceType, sourceId: row.id, kind: "reference", evidence };
-      }
-
+      // An exact FILE match outranks a lossy reference fold, so it is checked
+      // before falling back to an uppercase-only reference hit.
       if (
         identifiers.fileHash &&
         fileHashFromExtractedData(row.extractedData) === identifiers.fileHash
       ) {
-        return { sourceType, sourceId: row.id, kind: "file", evidence: "stored_hash" };
+        return {
+          sourceType,
+          sourceId: row.id,
+          kind: "file",
+          matchedBy: "file_exact",
+          evidence: "stored_hash",
+        };
+      }
+
+      const referenceHit = referenceMatches(
+        referenceHashCandidatesFromExtractedData(row.extractedData),
+        identifiers
+      );
+      if (referenceHit) {
+        return {
+          sourceType,
+          sourceId: row.id,
+          kind: "reference",
+          matchedBy: referenceHit.matchedBy,
+          evidence: referenceHit.evidence,
+        };
       }
 
       return undefined;
@@ -263,18 +324,28 @@ export async function findLegacyApprovedDuplicate(
     payments.status,
     payments.id,
     payments.extractedData,
-    inspect("order_payment")
+    inspect("order_payment"),
+    isStrongMatch
   );
-  if (paymentHit) return paymentHit;
+  // Only a STRONG payment hit short-circuits. A lossy one is held back so an
+  // exact duplicate in the wallet table can still outrank it.
+  if (paymentHit && isStrongMatch(paymentHit)) return paymentHit;
 
-  return scanApproved(
+  const topupHit = await scanApproved(
     tx,
     walletTopups,
     walletTopups.status,
     walletTopups.id,
     walletTopups.extractedData,
-    inspect("wallet_topup")
+    inspect("wallet_topup"),
+    isStrongMatch
   );
+
+  if (topupHit && isStrongMatch(topupHit)) return topupHit;
+
+  // Neither source produced an exact match. Surface whichever lossy hit
+  // exists, if any - it is advisory ambiguity, not a duplicate.
+  return paymentHit ?? topupHit;
 }
 
 /** Admin-safe description of a legacy match. Never leaks a hash. */

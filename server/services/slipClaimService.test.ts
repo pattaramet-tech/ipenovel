@@ -22,6 +22,40 @@ import {
  * sequencing - is what serializes concurrent claimants.
  */
 
+/** Every 64-hex value bound into a drizzle condition tree. */
+function boundHashes(cond: any): string[] {
+  const found: string[] = [];
+  const walk = (n: any, d = 0) => {
+    if (!n || d > 6) return;
+    if (typeof n === "string" && /^[0-9a-f]{64}$/.test(n)) found.push(n);
+    if (Array.isArray(n)) return n.forEach((x) => walk(x, d + 1));
+    if (typeof n === "object") for (const k of Object.keys(n)) walk((n as any)[k], d + 1);
+  };
+  walk(cond);
+  return found;
+}
+
+/**
+ * The claim columns a condition actually targets. Read from `queryChunks`
+ * rather than by walking the whole tree, because each condition embeds the
+ * entire table object and a naive walk would report every column.
+ */
+function targetedColumns(cond: any): string[] {
+  const known = ["referenceHash", "legacyReferenceUpperHash", "fileHash", "qrPayloadHash"];
+  const names = new Set<string>();
+  const visit = (node: any, depth = 0) => {
+    if (!node || typeof node !== "object" || depth > 4) return;
+    for (const chunk of node.queryChunks ?? []) {
+      if (chunk && typeof chunk === "object") {
+        if (typeof chunk.name === "string" && known.includes(chunk.name)) names.add(chunk.name);
+        visit(chunk, depth + 1);
+      }
+    }
+  };
+  visit(cond);
+  return names.size ? [...names] : known;
+}
+
 class FakeDupError extends Error {
   code = "ER_DUP_ENTRY";
   errno = 1062;
@@ -75,13 +109,28 @@ function makeFakeTx() {
         from(table: any) {
           const name = String(table?.[Symbol.for("drizzle:Name")] ?? "");
           return {
-            where() {
+            where(cond: any) {
               // The legacy compatibility scan pages with .orderBy().limit();
               // the claim registry lookup uses .limit() directly. This fake
               // has no historical records, so the legacy scan finds none -
               // those paths are covered in
               // legacySlipCompatibilityService.test.ts.
               const emptyLegacyPage = () => Promise.resolve([]);
+
+              // Registry lookups must FILTER, not return everything: the
+              // conflict evaluator now performs a registry preflight on every
+              // claim, so a fake that ignores the predicate would report any
+              // unrelated existing claim as a duplicate.
+              const wanted = boundHashes(cond);
+              const cols = targetedColumns(cond);
+              const matching = () =>
+                rows.filter((r) =>
+                  cols.some((c) => {
+                    const v = (r as any)[c];
+                    return v && wanted.includes(v);
+                  })
+                );
+
               return {
                 orderBy() {
                   return { limit: emptyLegacyPage };
@@ -90,7 +139,8 @@ function makeFakeTx() {
                   if (name === "payments" || name === "walletTopups") {
                     return emptyLegacyPage();
                   }
-                  return Promise.resolve(rows.slice(0, n));
+                  if (wanted.length === 0) return Promise.resolve([]);
+                  return Promise.resolve(matching().slice(0, n));
                 },
               };
             },
