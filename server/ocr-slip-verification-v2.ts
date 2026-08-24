@@ -114,15 +114,28 @@ export function verifyRecipient(extracted: ExtractedSlipData): RecipientVerifica
     };
   }
 
-  // Fallback: an approved shop/receiver alias. Compared case-insensitively
-  // on a whitespace-collapsed value, because OCR spacing around Thai and
-  // Latin names is not stable.
+  // ── FIELD-BOUND, EXACT RECIPIENT IDENTITY ─────────────────────────────
+  // EXACT match against an explicit allowlist, never a substring.
+  //
+  // `includes(alias)` made this gate satisfiable by any value that merely
+  // CONTAINED an approved name: "Ipe Novel Fake", "Fake Ipe Novel" and
+  // "Ipe Novel Shop 2" all verified as the shop. Recipient verification
+  // participates in AUTO_APPROVE, so that was a financial authority bug -
+  // a transfer to a different recipient could fund an order.
+  //
+  // Normalization is limited to what OCR genuinely perturbs: Unicode form,
+  // surrounding whitespace, internal whitespace runs, and Latin case. It must
+  // never discard a prefix or a suffix, because that is precisely how an
+  // impostor value would be reshaped into an approved one.
   const normalize = (value?: string) =>
-    (value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
-  const aliases = MERCHANT_CONFIG.shopNameAliases.map(normalize).filter(Boolean);
+    (value ?? "").normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
+
+  const allowedIdentities = new Set(
+    MERCHANT_CONFIG.shopNameAliases.map(normalize).filter(Boolean)
+  );
 
   const shopName = normalize(extracted.shopName);
-  if (shopName && aliases.some((alias) => shopName.includes(alias))) {
+  if (shopName && allowedIdentities.has(shopName)) {
     return {
       recipientVerified: true,
       recipientEvidenceType: "shop_alias",
@@ -131,7 +144,7 @@ export function verifyRecipient(extracted: ExtractedSlipData): RecipientVerifica
   }
 
   const receiverName = normalize(extracted.receiverName);
-  if (receiverName && aliases.some((alias) => receiverName.includes(alias))) {
+  if (receiverName && allowedIdentities.has(receiverName)) {
     return {
       recipientVerified: true,
       recipientEvidenceType: "receiver_name",
@@ -139,6 +152,10 @@ export function verifyRecipient(extracted: ExtractedSlipData): RecipientVerifica
     };
   }
 
+  // A bare mention of the shop somewhere in the OCR text is NOT recipient
+  // evidence - it can come from a note, a memo, the sender field, or a
+  // footer. It is carried for display only (see recipientRawTextMention) and
+  // deliberately cannot reach this point as verification.
   return {
     recipientVerified: false,
     recipientEvidenceType: "insufficient",
@@ -264,6 +281,12 @@ export interface ExtractedSlipData {
   merchantCode?: string;
   merchantTransactionCode?: string;
   receiverAccountOrId?: string; // KBank receiver account or biller ID
+  /**
+   * DIAGNOSTIC ONLY. An approved shop alias appears somewhere in the OCR text
+   * without being bound to a recipient field. Never financial evidence - see
+   * detectRecipientRawTextMention.
+   */
+  recipientRawTextMention?: boolean;
   confidence?: number;
   visionConfidence?: number;
   structuredConfidence?: number;
@@ -710,14 +733,34 @@ function extractShopName(flattened: Record<string, any>, text: string): string |
     }
   }
 
-  // Fallback: Check if any merchant alias appears in the text
-  for (const alias of MERCHANT_CONFIG.shopNameAliases) {
-    if (text.includes(alias)) {
-      return "Ipe Novel"; // Normalize to canonical name
-    }
-  }
-
+  // NO WHOLE-TEXT FALLBACK.
+  //
+  // This function previously scanned the ENTIRE OCR text for an approved
+  // alias and, on a hit, returned the canonical "Ipe Novel" - synthesizing a
+  // recipient identity from text that may have been a note, a memo, the
+  // SENDER field, or an unrelated footer. verifyRecipient then matched that
+  // synthesized value exactly and marked the recipient verified, so a
+  // transfer to someone else could satisfy a financial gate and auto-approve.
+  //
+  // A shop name is only recipient evidence when it came from a recipient
+  // field. Raw-text mentions are surfaced separately by
+  // detectRecipientRawTextMention() for display, and carry no authority.
   return undefined;
+}
+
+/**
+ * DIAGNOSTIC ONLY - never financial evidence.
+ *
+ * True when an approved shop alias appears anywhere in the OCR text without
+ * being bound to a recipient field. Useful to an admin ("the shop is
+ * mentioned, but not as the recipient"), and deliberately incapable of
+ * setting recipientVerified or making a slip auto-approvable.
+ */
+export function detectRecipientRawTextMention(text: string): boolean {
+  const haystack = (text ?? "").normalize("NFKC").toLowerCase();
+  return MERCHANT_CONFIG.shopNameAliases.some((alias) =>
+    haystack.includes(alias.normalize("NFKC").toLowerCase())
+  );
 }
 
 function extractMaskedAccount(flattened: Record<string, any>, text: string): string | undefined {
@@ -768,7 +811,11 @@ function extractMerchantCode(flattened: Record<string, any>, text: string): stri
     /รหัสร้านค้า\s*[:：]\s*([A-Z0-9]+)/i,
     /merchant\s*code\s*[:：]\s*([A-Z0-9]+)/i,
     /merchant\s*id\s*[:：]\s*([A-Z0-9]+)/i,
-    /([A-Z]{2}\d{12})/,
+    // BOUNDED. Unanchored, this captured a merchant code out of the MIDDLE of
+    // a longer token: "KB000002283068XYZ" yielded "KB000002283068", which then
+    // compared equal to the configured merchant code. A financial identifier
+    // must match in full or not at all.
+    /(?<![A-Z0-9])([A-Z]{2}\d{12})(?![A-Z0-9])/,
   ];
 
   for (const pattern of patterns) {
@@ -1165,6 +1212,9 @@ export function extractSlipData(ocrText: string, visionConfidence?: number): Ext
   const merchantCode = extractMerchantCode(flattened, text);
   const merchantTransactionCode = extractMerchantTransactionCode(flattened, text);
   const receiverAccountOrId = extractBillerId(flattened, text);
+  // Presentation only. Deliberately NOT fed into shopName/receiverName, which
+  // are the fields verifyRecipient treats as authority.
+  const recipientRawTextMention = detectRecipientRawTextMention(text);
   const { code: detectedBank, name: detectedBankName } = detectBank(flattened, text);
 
   // ─── Confidence scoring ─────────────────────────────────────────────────
@@ -1198,6 +1248,7 @@ export function extractSlipData(ocrText: string, visionConfidence?: number): Ext
   );
 
   return {
+    recipientRawTextMention,
     amount,
     transactionDate,
     transactionDateTime,

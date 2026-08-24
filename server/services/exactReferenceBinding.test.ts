@@ -638,22 +638,28 @@ describe("the duplicate flow revalidates before it mutates", () => {
 describe("the finalization race still produces attempt history", () => {
   const code = readCode("server/services/slipSubmissionService.ts");
 
-  it("the early superseded return records an attempt first", () => {
-    const guardIdx = code.indexOf(
-      'if (currentPayment?.status === "approved" || currentPayment?.status === "rejected")'
-    );
-    expect(guardIdx).toBeGreaterThan(-1);
-    const returnIdx = code.indexOf("return {", guardIdx);
-    const recordIdx = code.indexOf("await recordOcrAttempt({", guardIdx);
-    expect(recordIdx).toBeGreaterThan(-1);
-    expect(recordIdx).toBeLessThan(returnIdx);
+  // IPE-001 P1-A refactor: the pre-transaction preflight and the in-
+  // transaction locked check are now BOTH races for the SAME terminal
+  // outcome, so the single recording call moved into one shared helper,
+  // supersededByFinalization(), that each race site calls through rather
+  // than each carrying its own copy. See
+  // server/services/orderAutoApprovalStateRace.test.ts for the behavioural
+  // proof that both race sites actually reach it.
+
+  it("supersededByFinalization records an attempt before its own return", () => {
+    const start = code.indexOf("const supersededByFinalization = async (currentStatus: string) => {");
+    expect(start).toBeGreaterThan(-1);
+    const returnIdx = code.indexOf("return {", start);
+    const recordIdx = code.indexOf("await recordOcrAttempt({", start);
+    expect(recordIdx).toBeGreaterThan(start);
+    expect(returnIdx).toBeGreaterThan(recordIdx);
   });
 
   it("it is classified STATE, not technical and not a duplicate", () => {
-    const guardIdx = code.indexOf(
-      'if (currentPayment?.status === "approved" || currentPayment?.status === "rejected")'
-    );
-    const body = code.slice(guardIdx, code.indexOf("return {", guardIdx));
+    const start = code.indexOf("const supersededByFinalization = async (currentStatus: string) => {");
+    // Up to the return, not through it - the same precise boundary used
+    // throughout this describe block.
+    const body = code.slice(start, code.indexOf("return {", start));
     expect(body).toMatch(/reviewReason: "OCR_SUPERSEDED_BY_FINALIZATION"/);
     expect(body).toMatch(/reviewCategory: "STATE"/);
     expect(body).toMatch(/trigger: "automatic"/);
@@ -661,36 +667,52 @@ describe("the finalization race still produces attempt history", () => {
   });
 
   it("it preserves sanitized provider diagnostics and no raw response", () => {
-    const guardIdx = code.indexOf(
-      'if (currentPayment?.status === "approved" || currentPayment?.status === "rejected")'
-    );
-    const body = code.slice(guardIdx, code.indexOf("return {", guardIdx));
+    const start = code.indexOf("const supersededByFinalization = async (currentStatus: string) => {");
+    // Only the recordOcrAttempt() call, NOT the terminal `return { ... }`
+    // object below it - that return legitimately echoes back
+    // payment.slipImageUrl for the API response shape, which is not the raw
+    // diagnostic leak this assertion guards against.
+    const recordCallEnd = code.indexOf("return {", start);
+    const body = code.slice(start, recordCallEnd);
     expect(body).toMatch(/providerMode: providerDiagnostic\?\.providerMode/);
     expect(body).toMatch(/providerHttpStatus: providerDiagnostic\?\.providerHttpStatus/);
     expect(body).toMatch(/providerAttemptCount/);
-    // Never the raw text, the image URL, or the thrown message.
-    expect(body).not.toMatch(/ocrText|slipImageUrl|rawText|apiKey/);
+    // Never the raw OCR text or the thrown message leaking into diagnostics.
+    expect(body).not.toMatch(/ocrText|rawText|apiKey/);
   });
 
-  it("exactly one attempt per automatic run: the race path returns immediately", () => {
-    // Two recording sites, on mutually exclusive paths - the race branch
-    // returns before the terminal one can be reached.
+  it("exactly one attempt per automatic run: both race sites call the SAME single recorder", () => {
+    // ONE recordOcrAttempt call for every superseded outcome (shared), plus
+    // ONE terminal call for a completed automatic run (auto_approved /
+    // needs_review / technical_failure / config_blocked) - never two for the
+    // same invocation, because both race sites route through the same
+    // helper rather than each recording independently.
     const occurrences = code.split("await recordOcrAttempt({").length - 1;
     expect(occurrences).toBe(2);
-    const guardIdx = code.indexOf(
+
+    const preflightGuardIdx = code.indexOf(
       'if (currentPayment?.status === "approved" || currentPayment?.status === "rejected")'
     );
-    const raceRecord = code.indexOf("await recordOcrAttempt({", guardIdx);
-    const raceReturn = code.indexOf("return {", raceRecord);
-    const terminalRecord = code.lastIndexOf("await recordOcrAttempt({");
-    expect(raceReturn).toBeLessThan(terminalRecord);
+    const preflightReturnIdx = code.indexOf("return await supersededByFinalization(", preflightGuardIdx);
+    expect(preflightReturnIdx).toBeGreaterThan(preflightGuardIdx);
+
+    const catchGuardIdx = code.indexOf("} catch (claimError) {");
+    const catchReturnIdx = code.indexOf(
+      "return await supersededByFinalization(claimError.currentStatus)",
+      catchGuardIdx
+    );
+    expect(catchReturnIdx).toBeGreaterThan(catchGuardIdx);
+
+    // Neither race site has its own recordOcrAttempt call - both delegate.
+    const preflightBody = code.slice(preflightGuardIdx, preflightReturnIdx);
+    expect(preflightBody).not.toMatch(/await recordOcrAttempt/);
+    const catchBody = code.slice(catchGuardIdx, catchReturnIdx);
+    expect(catchBody).not.toMatch(/await recordOcrAttempt/);
   });
 
-  it("the race path still mutates nothing", () => {
-    const guardIdx = code.indexOf(
-      'if (currentPayment?.status === "approved" || currentPayment?.status === "rejected")'
-    );
-    const body = code.slice(guardIdx, code.indexOf("return {", guardIdx));
+  it("the shared superseded outcome mutates nothing", () => {
+    const start = code.indexOf("const supersededByFinalization = async (currentStatus: string) => {");
+    const body = code.slice(start, code.indexOf("return {", start));
     expect(body).not.toMatch(/updatePayment|approvePayment|claimSlip|finalizeOrderCompletion/);
   });
 

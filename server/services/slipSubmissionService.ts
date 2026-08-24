@@ -262,6 +262,68 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
   // Use effective config for all OCR decisions (already fetched above)
   const config = effectiveConfig;
 
+  /**
+   * The ONE terminal outcome for "an admin finalized this while OCR ran".
+   *
+   * Records exactly one sanitized automatic attempt and returns a result that
+   * mutates nothing: no status change, no claim, no credit, no finalization.
+   * Both race sites - the pre-transaction preflight and the locked check
+   * inside the financial transaction - return through here, so an automatic
+   * run still leaves exactly one attempt row and one classification.
+   *
+   * Classified STATE, not TECHNICAL and not a duplicate: nothing failed and
+   * nothing was replayed - a human simply got there first. The attempt
+   * `result` enum has no state member and adding one would need a migration,
+   * so `needs_review` carries it, matching the wallet
+   * TOPUP_SUPERSEDED_BY_FINALIZATION trade-off.
+   */
+  const supersededByFinalization = async (currentStatus: string) => {
+    await recordOcrAttempt({
+      subjectType: "order_payment",
+      subjectId: payment.id,
+      trigger: "automatic",
+      initiatedByUserId: null,
+      startedAt: ocrStartedAt,
+      stage: "completed",
+      result: "needs_review",
+      reviewCategory: "STATE",
+      reviewReason: "OCR_SUPERSEDED_BY_FINALIZATION",
+      confidence:
+        verificationResult?.extractedData?.confidenceKnown === false
+          ? null
+          : (verificationResult?.ocrConfidence ?? null),
+      // Sanitized diagnostics only - mode, status and count. Never a URL, a
+      // credential, or a raw provider response.
+      providerMode: providerDiagnostic?.providerMode ?? null,
+      providerHttpStatus: providerDiagnostic?.providerHttpStatus ?? null,
+      providerAttemptCount: providerDiagnostic?.providerAttemptCount ?? (ocrEnabled ? 1 : 0),
+      verificationSnapshot: JSON.stringify({
+        amountMatched: verificationResult?.breakdown?.amountMatched,
+        datePresent: verificationResult?.breakdown?.datePresent,
+        dateWithinWindow: verificationResult?.breakdown?.dateWithinWindow,
+        referencePresent: verificationResult?.breakdown?.referencePresent,
+        recipientVerified: verificationResult?.breakdown?.recipientVerified,
+        recipientEvidenceType: verificationResult?.breakdown?.recipientEvidenceType,
+        confidenceKnown: verificationResult?.breakdown?.confidenceKnown,
+        fileHashAvailable: Boolean(slipFileHash),
+        supersededByFinalization: true,
+      }),
+    });
+
+    return {
+      success: true,
+      message: `Payment already ${currentStatus}`,
+      orderId: order.id,
+      paymentId: payment.id,
+      status: currentStatus,
+      slipImageUrl: payment.slipImageUrl,
+      isAutoApproved: false,
+      isShadowMode: false,
+      reviewReason: "OCR_SUPERSEDED_BY_FINALIZATION",
+      supersededByFinalization: true,
+    };
+  };
+
   // Sync order status based on verification result
   if (shouldApprove) {
     // ── GUARD: Check if payment is already approved or rejected ──────────────────────
@@ -269,64 +331,9 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
     if (currentPayment?.status === "approved" || currentPayment?.status === "rejected") {
       console.log(`[OCR] Payment ${payment.id} is already ${currentPayment.status}, skipping re-approval`);
 
-      // ── ATTEMPT HISTORY SURVIVES THE RACE ─────────────────────────────
-      // This early return skips the recording at the end of the function, so
-      // an OCR run that did all its provider and verification work vanished
-      // from history exactly when an admin most needs to explain what
-      // happened - a concurrent approval or rejection. Recorded HERE, before
-      // returning, so every automatic run leaves exactly one row: this path
-      // returns immediately afterwards and can never also reach the terminal
-      // recording below.
-      //
-      // Classified STATE, not TECHNICAL and not a duplicate: nothing failed
-      // and nothing was replayed - a human simply got there first. The
-      // attempt `result` enum has no state member and adding one would need a
-      // migration, so `needs_review` carries it, matching the wallet
-      // TOPUP_SUPERSEDED_BY_FINALIZATION trade-off.
-      await recordOcrAttempt({
-        subjectType: "order_payment",
-        subjectId: payment.id,
-        trigger: "automatic",
-        initiatedByUserId: null,
-        startedAt: ocrStartedAt,
-        stage: "completed",
-        result: "needs_review",
-        reviewCategory: "STATE",
-        reviewReason: "OCR_SUPERSEDED_BY_FINALIZATION",
-        confidence:
-          verificationResult?.extractedData?.confidenceKnown === false
-            ? null
-            : (verificationResult?.ocrConfidence ?? null),
-        // Sanitized diagnostics only - mode, status and count. Never a URL,
-        // a credential, or a raw provider response.
-        providerMode: providerDiagnostic?.providerMode ?? null,
-        providerHttpStatus: providerDiagnostic?.providerHttpStatus ?? null,
-        providerAttemptCount: providerDiagnostic?.providerAttemptCount ?? (ocrEnabled ? 1 : 0),
-        verificationSnapshot: JSON.stringify({
-          amountMatched: verificationResult?.breakdown?.amountMatched,
-          datePresent: verificationResult?.breakdown?.datePresent,
-          dateWithinWindow: verificationResult?.breakdown?.dateWithinWindow,
-          referencePresent: verificationResult?.breakdown?.referencePresent,
-          recipientVerified: verificationResult?.breakdown?.recipientVerified,
-          recipientEvidenceType: verificationResult?.breakdown?.recipientEvidenceType,
-          confidenceKnown: verificationResult?.breakdown?.confidenceKnown,
-          fileHashAvailable: Boolean(slipFileHash),
-          supersededByFinalization: true,
-        }),
-      });
-
-      // Return safe no-op result. NOTHING is mutated: the persisted status is
-      // authoritative and this run creates no claim and no value.
-      return {
-        success: true,
-        message: `Payment already ${currentPayment.status}`,
-        orderId: order.id,
-        paymentId: payment.id,
-        status: currentPayment.status,
-        slipImageUrl: payment.slipImageUrl,
-        isAutoApproved: false,
-        isShadowMode: false,
-      };
+      // Terminal STATE outcome: records exactly one automatic attempt and
+      // mutates nothing. See supersededByFinalization() below.
+      return await supersededByFinalization(currentPayment.status);
     }
 
     // Auto-approve, save metadata, mark the order approved, record history,
@@ -352,6 +359,21 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
 
     try {
       await dbConnection.transaction(async (tx: any) => {
+        // ── THE ORDER APPROVAL INVARIANT ─────────────────────────────────
+        // Lock, reload, require reviewable - BEFORE the claim and before any
+        // value. The preflight above is UX only: it reads outside this
+        // transaction and cannot serialize against an admin acting in the
+        // window between that read and this lock. Without this, an admin
+        // rejecting mid-OCR was overwritten - the slip got claimed, the
+        // payment went from `rejected` back to `approved`, and
+        // finalizeOrderCompletion created purchases and points for a payment
+        // a human had already refused.
+        //
+        // Shared with the manual admin approval path rather than
+        // reimplemented here; that duplication is exactly how the guard added
+        // to one path left this one unprotected.
+        await orderService.lockAndRequireReviewablePayment(payment.id, tx);
+
         const extractedJson = verificationResult.extractedData
           ? JSON.stringify(verificationResult.extractedData)
           : null;
@@ -453,6 +475,18 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
         await orderService.finalizeOrderCompletion(order.id, input.userId, tx);
       });
     } catch (claimError) {
+      // LOST THE STATE RACE. The transaction rolled back, so no claim, no
+      // approval, no order update, no purchases and no points committed - the
+      // "a claim must never commit without the value it protects" invariant
+      // holds by rollback. Report the persisted state; mutate nothing.
+      if (claimError instanceof orderService.PaymentNotReviewableError) {
+        console.warn(
+          `[OCR] auto-approval lost the state race for payment ${payment.id}: ` +
+            `now ${claimError.currentStatus}`
+        );
+        return await supersededByFinalization(claimError.currentStatus);
+      }
+
       if (!(claimError instanceof SlipClaimRejected)) {
         // A genuine failure (DB error, finalization race). Preserve the
         // pre-existing contract: callers treat a throw here as "processing

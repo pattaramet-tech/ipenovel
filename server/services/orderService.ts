@@ -354,6 +354,56 @@ export function isReviewablePaymentStatus(status: string | null | undefined): bo
   return (REVIEWABLE_PAYMENT_STATUSES as readonly string[]).includes(status ?? "");
 }
 
+/**
+ * Raised when a payment is no longer reviewable at the moment its approval
+ * transaction acquires the row lock. Typed so callers can tell a lost STATE
+ * race apart from a provider fault or a duplicate.
+ */
+export class PaymentNotReviewableError extends Error {
+  readonly code = "PAYMENT_NOT_REVIEWABLE";
+  readonly currentStatus: string;
+  constructor(paymentId: number, currentStatus: string) {
+    super(
+      `PAYMENT_NOT_REVIEWABLE: payment ${paymentId} is already ${currentStatus}. It was ` +
+        `finalized by another action while this one was in flight, so nothing was claimed, ` +
+        `approved or finalized.`
+    );
+    this.name = "PaymentNotReviewableError";
+    this.currentStatus = currentStatus;
+  }
+}
+
+/**
+ * THE ONE ORDER FINANCIAL APPROVAL INVARIANT: lock, reload, require reviewable.
+ *
+ * Every path that can move an order payment to `approved` must call this
+ * FIRST, inside the transaction that will claim the slip and create value, and
+ * before any of it. A reviewability check taken outside the transaction is UX
+ * only - it cannot serialize against an admin acting in the same window.
+ *
+ * Shared deliberately rather than reimplemented per caller: the manual admin
+ * approval and the OCR automatic approval each grew their own transaction, and
+ * the guard added to one did nothing for the other. One rule, one
+ * implementation, one place to get it right.
+ *
+ * Returns the payment as reloaded UNDER the lock - callers must use this row,
+ * not one they read earlier.
+ */
+export async function lockAndRequireReviewablePayment(paymentId: number, tx: any) {
+  await db.lockPaymentForUpdate(paymentId, tx);
+
+  const payment = await db.getPaymentById(paymentId, tx);
+  if (!payment) {
+    throw new Error("Payment not found");
+  }
+
+  if (!isReviewablePaymentStatus(payment.status as string)) {
+    throw new PaymentNotReviewableError(paymentId, String(payment.status));
+  }
+
+  return payment;
+}
+
 async function approvePaymentInTx(
   paymentId: number,
   approvedBy: string,
@@ -370,43 +420,11 @@ async function approvePaymentInTx(
     auditResolution?: (tx: any) => Promise<void>;
   }
 ): Promise<{ message: string }> {
-  // LOCK the payment row first, so a concurrent Recheck cannot rewrite the
-  // extraction this approval is about to decide on and claim against. The
-  // Recheck blocks here and, once this commits, its compare-and-set finds a
-  // finalized payment and no-ops - the CAS guarantee is unchanged, just no
-  // longer racy.
-  await db.lockPaymentForUpdate(paymentId, tx);
-
-  // Reloaded fresh INSIDE the transaction. The admin's browser may have had
-  // this order open for a long time, and the OCR panel it renders is display
-  // state, not authority - nothing client-supplied is trusted here.
-  const payment = await db.getPaymentById(paymentId, tx);
-  if (!payment) {
-    throw new Error("Payment not found");
-  }
-
-  // ── THE LOCKED STATUS IS THE FINANCIAL ARBITER ──────────────────────────
-  // Asserted here, immediately after the lock and reload, and BEFORE any
-  // claim, approval, order update or finalization.
-  //
-  // Callers check reviewability before opening this transaction, but that
-  // check is only fast UX - it can be stale by the time the lock is acquired.
-  // Without this, another admin rejecting in that window was simply
-  // overwritten: the slip got claimed, the payment went from `rejected` back
-  // to `approved`, and finalizeOrderCompletion created purchases and points
-  // for a payment a human had already refused.
-  //
-  // A finalized payment is never resurrected. This lives in the shared
-  // transaction rather than in any one caller, so normal Admin Approve, the
-  // confirmed-distinct legacy resolution, and any future caller are all
-  // covered by ONE rule.
-  if (!isReviewablePaymentStatus(payment.status as string)) {
-    throw new Error(
-      `PAYMENT_NOT_REVIEWABLE: this payment is already ${payment.status}. It was finalized ` +
-        `by another action while this one was in flight, so nothing was claimed, approved ` +
-        `or finalized. Refresh to see the current state.`
-    );
-  }
+  // LOCK, RELOAD, REQUIRE REVIEWABLE - the shared order approval invariant,
+  // before any claim, approval, order update or finalization. The admin's
+  // browser may have had this order open for a long time and the OCR panel it
+  // renders is display state, not authority; the locked row is.
+  const payment = await lockAndRequireReviewablePayment(paymentId, tx);
 
   const order = await db.getOrderById(payment.orderId, tx);
   if (!order) {

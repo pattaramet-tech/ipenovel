@@ -334,34 +334,84 @@ describe("a finalized payment can never be resurrected by an approval", () => {
   });
 });
 
-describe("the guard is shared, not per-caller", () => {
-  const code = readCode("server/services/orderService.ts");
+describe("the guard is ONE shared primitive, not per-caller", () => {
+  const orderCode = readCode("server/services/orderService.ts");
+  const slipCode = readCode("server/services/slipSubmissionService.ts");
 
-  it("it lives in approvePaymentInTx, so every caller inherits it", () => {
-    const start = code.indexOf("async function approvePaymentInTx(");
-    const body = code.slice(start, start + 3000);
-    expect(body).toMatch(/isReviewablePaymentStatus\(payment\.status as string\)/);
-    expect(body).toMatch(/PAYMENT_NOT_REVIEWABLE/);
+  // IPE-001 P1-A: approvePaymentInTx originally reimplemented lock+reload+
+  // guard inline, and that inline copy was the ONLY implementation - so when
+  // OCR auto-approval grew its own transaction in slipSubmissionService.ts,
+  // it inherited nothing. The fix extracts ONE exported primitive,
+  // lockAndRequireReviewablePayment, and requires every approval transaction
+  // to call it - never to reimplement it.
+
+  it("lockAndRequireReviewablePayment is the single implementation: lock, reload, require reviewable", () => {
+    const start = orderCode.indexOf("export async function lockAndRequireReviewablePayment(");
+    expect(start).toBeGreaterThan(-1);
+    const body = orderCode.slice(start, start + 700);
+    const lockIdx = body.indexOf("await db.lockPaymentForUpdate(paymentId, tx)");
+    const reloadIdx = body.indexOf("await db.getPaymentById(paymentId, tx)");
+    const guardIdx = body.indexOf("isReviewablePaymentStatus(payment.status as string)");
+    const throwIdx = body.indexOf("throw new PaymentNotReviewableError(paymentId, String(payment.status))");
+    expect(lockIdx).toBeGreaterThan(-1);
+    expect(reloadIdx).toBeGreaterThan(lockIdx);
+    expect(guardIdx).toBeGreaterThan(reloadIdx);
+    expect(throwIdx).toBeGreaterThan(guardIdx);
   });
 
-  it("it is asserted immediately after the lock and reload, before any value", () => {
-    const lockIdx = code.indexOf("await db.lockPaymentForUpdate(paymentId, tx)");
-    const guardIdx = code.indexOf("isReviewablePaymentStatus(payment.status as string)");
-    const claimIdx = code.indexOf("const claim = await claimSlip(");
-    const approveIdx = code.indexOf("ApprovalService.approvePaymentWithSource");
-    const finalizeIdx = code.indexOf("await finalizeOrderCompletion(");
-    expect(guardIdx).toBeGreaterThan(lockIdx);
-    expect(claimIdx).toBeGreaterThan(guardIdx);
-    expect(approveIdx).toBeGreaterThan(guardIdx);
-    expect(finalizeIdx).toBeGreaterThan(guardIdx);
+  it("approvePaymentInTx calls the shared primitive rather than reimplementing it", () => {
+    const start = orderCode.indexOf("async function approvePaymentInTx(");
+    const body = orderCode.slice(start, start + 3000);
+    expect(body).toMatch(/await lockAndRequireReviewablePayment\(paymentId, tx\)/);
+    // It must NOT contain its own copy of the guard - only ONE call site.
+    expect(body).not.toMatch(/isReviewablePaymentStatus\(payment\.status as string\)/);
+  });
+
+  it("the OCR automatic approval transaction ALSO calls the shared primitive - this is the P1-A fix", () => {
+    const txIdx = slipCode.indexOf("await dbConnection.transaction(async (tx: any) => {");
+    expect(txIdx).toBeGreaterThan(-1);
+    const body = slipCode.slice(txIdx, txIdx + 700);
+    expect(body).toMatch(/await orderService\.lockAndRequireReviewablePayment\(payment\.id, tx\)/);
+  });
+
+  it("in BOTH callers, the guard runs before any claim, approval mutation or finalization", () => {
+    // Manual/legacy-resolution approval.
+    const orderStart = orderCode.indexOf("async function approvePaymentInTx(");
+    const orderBody = orderCode.slice(orderStart, orderStart + 4800);
+    const orderGuardIdx = orderBody.indexOf("await lockAndRequireReviewablePayment(paymentId, tx)");
+    const orderClaimIdx = orderBody.indexOf("const claim = await claimSlip(");
+    const orderApproveIdx = orderBody.indexOf("ApprovalService.approvePaymentWithSource");
+    const orderFinalizeIdx = orderBody.indexOf("await finalizeOrderCompletion(");
+    expect(orderClaimIdx).toBeGreaterThan(orderGuardIdx);
+    expect(orderApproveIdx).toBeGreaterThan(orderGuardIdx);
+    expect(orderFinalizeIdx).toBeGreaterThan(orderGuardIdx);
+
+    // OCR automatic approval.
+    const txIdx = slipCode.indexOf("await dbConnection.transaction(async (tx: any) => {");
+    const slipGuardIdx = slipCode.indexOf(
+      "await orderService.lockAndRequireReviewablePayment(payment.id, tx)",
+      txIdx
+    );
+    const slipClaimIdx = slipCode.indexOf("const claim = await claimSlip(", txIdx);
+    const slipApproveIdx = slipCode.indexOf("ApprovalService.approvePaymentWithSource", txIdx);
+    const slipFinalizeIdx = slipCode.indexOf("await orderService.finalizeOrderCompletion(", txIdx);
+    expect(slipClaimIdx).toBeGreaterThan(slipGuardIdx);
+    expect(slipApproveIdx).toBeGreaterThan(slipGuardIdx);
+    expect(slipFinalizeIdx).toBeGreaterThan(slipGuardIdx);
+  });
+
+  it("a lost race is a typed error a caller can distinguish from a provider fault or a duplicate", () => {
+    expect(orderCode).toMatch(/export class PaymentNotReviewableError extends Error/);
+    expect(orderCode).toMatch(/readonly code = "PAYMENT_NOT_REVIEWABLE"/);
+    expect(orderCode).toMatch(/readonly currentStatus: string/);
   });
 
   it("the reviewable set contains no final status", () => {
-    expect(code).toMatch(
+    expect(orderCode).toMatch(
       /const REVIEWABLE_PAYMENT_STATUSES = \["pending", "pending_review"\] as const/
     );
-    const start = code.indexOf("const REVIEWABLE_PAYMENT_STATUSES");
-    const line = code.slice(start, code.indexOf("\n", start));
+    const start = orderCode.indexOf("const REVIEWABLE_PAYMENT_STATUSES");
+    const line = orderCode.slice(start, orderCode.indexOf("\n", start));
     expect(line).not.toMatch(/approved|rejected|cancelled/);
   });
 });
