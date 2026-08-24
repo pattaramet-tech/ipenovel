@@ -371,7 +371,7 @@ describe("the guard is ONE shared primitive, not per-caller", () => {
     const txIdx = slipCode.indexOf("await dbConnection.transaction(async (tx: any) => {");
     expect(txIdx).toBeGreaterThan(-1);
     const body = slipCode.slice(txIdx, txIdx + 700);
-    expect(body).toMatch(/await orderService\.lockAndRequireReviewablePayment\(payment\.id, tx\)/);
+    expect(body).toMatch(/await orderService\.lockAndRequireReviewablePayment\(payment\.id, tx, publishedSlipVersion\)/);
   });
 
   it("in BOTH callers, the guard runs before any claim, approval mutation or finalization", () => {
@@ -389,7 +389,7 @@ describe("the guard is ONE shared primitive, not per-caller", () => {
     // OCR automatic approval.
     const txIdx = slipCode.indexOf("await dbConnection.transaction(async (tx: any) => {");
     const slipGuardIdx = slipCode.indexOf(
-      "await orderService.lockAndRequireReviewablePayment(payment.id, tx)",
+      "await orderService.lockAndRequireReviewablePayment(payment.id, tx, publishedSlipVersion)",
       txIdx
     );
     const slipClaimIdx = slipCode.indexOf("const claim = await claimSlip(", txIdx);

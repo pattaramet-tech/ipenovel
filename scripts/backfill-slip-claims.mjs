@@ -32,11 +32,32 @@
  * scanned. No single transaction spans the run: pages commit independently,
  * so a crash mid-run leaves the state incomplete and the safety scan enabled.
  *
- * Usage:
- *   node scripts/backfill-slip-claims.mjs --dry-run
- *   node scripts/backfill-slip-claims.mjs --dry-run --page-size 500
- *   node scripts/backfill-slip-claims.mjs --live --page-size 500
- *   node scripts/backfill-slip-claims.mjs --live --mark-complete
+ * ── Running this script ──────────────────────────────────────────────────
+ * This is a .mjs file, but it dynamically imports real application modules
+ * written in TypeScript (drizzle/schema.ts, server/services/
+ * slipIdentifierService.ts, server/ocr-slip-verification-v2.ts) using
+ * extensionless imports and this project's tsconfig.json path aliases
+ * (@shared/*, @/*). Plain `node` has no built-in understanding of either -
+ * it resolves ESM imports strictly by exact file extension and knows
+ * nothing about tsconfig `paths` - so `node scripts/backfill-slip-claims.mjs`
+ * fails the moment it reaches one of those imports (ERR_MODULE_NOT_FOUND),
+ * every time DATABASE_URL is actually configured. This is NOT a missing-file
+ * bug; it is the wrong loader for this dependency graph.
+ *
+ * `tsx` (already a devDependency, already the loader `pnpm dev`/`pnpm
+ * test:ci`/`pnpm migrate:media` use for the same reason) resolves both
+ * correctly. Always invoke this script through it - use ONE of:
+ *
+ *   pnpm backfill:slip-claims -- --dry-run
+ *   pnpm backfill:slip-claims -- --dry-run --page-size 500
+ *   pnpm backfill:slip-claims -- --live --page-size 500
+ *   pnpm backfill:slip-claims -- --live --mark-complete
+ *
+ * or the equivalent direct form:
+ *
+ *   npx tsx scripts/backfill-slip-claims.mjs --dry-run
+ *
+ * Never invoke this script with plain `node`.
  */
 
 import process from "node:process";
@@ -87,9 +108,26 @@ console.log(
 const { default: mysql } = await import("mysql2/promise");
 const { drizzle } = await import("drizzle-orm/mysql2");
 const { and, asc, eq, gt, isNotNull, or } = await import("drizzle-orm");
-const schema = await import("../drizzle/schema.ts");
-const identifiers = await import("../server/services/slipIdentifierService.ts");
-const parser = await import("../server/ocr-slip-verification-v2.ts");
+let schema, identifiers, parser;
+try {
+  schema = await import("../drizzle/schema.ts");
+  identifiers = await import("../server/services/slipIdentifierService.ts");
+  parser = await import("../server/ocr-slip-verification-v2.ts");
+} catch (error) {
+  if (error instanceof Error && error.code === "ERR_MODULE_NOT_FOUND") {
+    console.error(
+      "[backfill] Failed to load a TypeScript application module: " +
+        `${error.message}\n` +
+        "           This script must be run through tsx, not plain node - it dynamically\n" +
+        "           imports .ts files using extensionless imports and tsconfig path\n" +
+        "           aliases (@shared/*, @/*) that node's own ESM resolver cannot follow.\n" +
+        "           Re-run with: pnpm backfill:slip-claims -- <same flags>\n" +
+        "           or:          npx tsx scripts/backfill-slip-claims.mjs <same flags>"
+    );
+    process.exit(2);
+  }
+  throw error;
+}
 
 const connection = await mysql.createConnection(databaseUrl);
 const db = drizzle(connection);

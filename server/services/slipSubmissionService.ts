@@ -92,7 +92,9 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
     throw new TRPCError({ code: "NOT_FOUND", message: "Payment not found for order" });
   }
 
-  // P0-1 FIX: Prevent re-uploading on finalized payments
+  // P0-1 FIX: Prevent re-uploading on finalized payments (fast preflight -
+  // the atomic publish below is the authoritative check against a
+  // concurrent finalization in this same window).
   // Do not allow resetting approved or rejected payments back to pending
   if (payment.status === "approved" || payment.status === "rejected") {
     throw new TRPCError({
@@ -101,12 +103,51 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
     });
   }
 
-  // Update payment with slip URL and submission time
-  await db.updatePayment(payment.id, {
+  // ── EXACT-FILE IDENTIFIER ───────────────────────────────────────────────
+  // Computed from the bytes actually stored in the private bucket, BEFORE
+  // publishing this upload as the payment's current slip, so the SAME
+  // atomic write that makes this slip current also seeds ITS OWN strong
+  // identifier - a slip still carries a strong identifier when OCR fails
+  // completely (provider outage, rate limit, unreadable image), and the
+  // window where slipImageUrl pointed at this slip while extractedData
+  // still described whatever it replaced never opens.
+  //
+  // Never client-supplied: computeSlipFileHash takes only the server-held
+  // storage reference, so there is no parameter through which a caller could
+  // inject a forged hash.
+  const slipFileHash = await computeSlipFileHash(input.slipImageUrl);
+  const slipSubmittedAt = new Date();
+
+  // ── PUBLISH THE REPLACEMENT SLIP (ATOMIC) ───────────────────────────────
+  // The same write that makes this slip current invalidates whatever
+  // extraction belonged to the slip it replaces (or to nothing, on a first
+  // upload) and seeds this slip's own fileHash - never leaving
+  // `slipImageUrl = new, extractedData = old` as an approvable state, even
+  // momentarily. Conditioned on the payment still being reviewable: if it
+  // was finalized between the preflight above and this write, the
+  // replacement is refused rather than reopening a finalized payment.
+  const published = await db.publishReplacementSlipIfReviewable(payment.id, {
     slipImageUrl: input.slipImageUrl,
-    slipSubmittedAt: new Date(),
-    status: "pending",
+    slipSubmittedAt,
+    extractedData: slipFileHash ? JSON.stringify({ fileHash: slipFileHash }) : null,
   });
+
+  if (!published) {
+    const current = await db.getPaymentById(payment.id);
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `Cannot upload slip for ${current?.status ?? "approved"} payment. Payment is finalized.`,
+    });
+  }
+
+  // Re-read the row this call just published so later slip-version
+  // comparisons compare against exactly what the database stored (e.g. its
+  // own timestamp precision), not the pre-write JS Date.
+  const publishedPayment = await db.getPaymentById(payment.id);
+  const publishedSlipVersion = {
+    slipImageUrl: (publishedPayment?.slipImageUrl as string | null) ?? input.slipImageUrl,
+    slipSubmittedAt: (publishedPayment?.slipSubmittedAt as Date | null) ?? slipSubmittedAt,
+  };
 
   // Check if OCR is enabled using effective config (Phase 4)
   const effectiveConfig = await getEffectiveOCRConfig();
@@ -116,18 +157,6 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
   let shouldApprove = false;
   const ocrStartedAt = new Date();
   let providerDiagnostic: ProviderDiagnostic | undefined;
-
-  // ── EXACT-FILE IDENTIFIER ───────────────────────────────────────────────
-  // Computed from the bytes actually stored in the private bucket, BEFORE
-  // and independently of any OCR call, so a slip still carries a strong
-  // identifier when OCR fails completely (provider outage, rate limit,
-  // unreadable image). Without it such a slip would have no identifier at
-  // all and nothing could stop it being submitted again.
-  //
-  // Never client-supplied: computeSlipFileHash takes only the server-held
-  // storage reference, so there is no parameter through which a caller could
-  // inject a forged hash.
-  const slipFileHash = await computeSlipFileHash(input.slipImageUrl);
 
   if (ocrEnabled) {
     // OCR is enabled: run OCR processing with error handling
@@ -263,21 +292,33 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
   const config = effectiveConfig;
 
   /**
-   * The ONE terminal outcome for "an admin finalized this while OCR ran".
+   * The ONE terminal outcome for "this automatic run's evidence is no
+   * longer current by the time it tried to write".
    *
-   * Records exactly one sanitized automatic attempt and returns a result that
-   * mutates nothing: no status change, no claim, no credit, no finalization.
-   * Both race sites - the pre-transaction preflight and the locked check
-   * inside the financial transaction - return through here, so an automatic
-   * run still leaves exactly one attempt row and one classification.
+   * Two distinct causes share this shape: an admin finalized the payment
+   * while OCR ran (`OCR_SUPERSEDED_BY_FINALIZATION`), or the customer
+   * uploaded a replacement slip while OCR for the OLD one was still running
+   * (`OCR_SUPERSEDED_BY_SLIP_REPLACEMENT` - the payment is still reviewable,
+   * but the identifiers this run computed belong to a slip that is no
+   * longer displayed). Both leave the row exactly as the winning action left
+   * it: no status change, no claim, no credit, no finalization, no stale
+   * extraction written. Every race site - the pre-transaction preflight, the
+   * locked check inside the financial transaction, and the guarded
+   * send-to-review write - returns through here, so an automatic run still
+   * leaves exactly one attempt row and one classification.
    *
    * Classified STATE, not TECHNICAL and not a duplicate: nothing failed and
-   * nothing was replayed - a human simply got there first. The attempt
+   * nothing was replayed - something else won the row first. The attempt
    * `result` enum has no state member and adding one would need a migration,
    * so `needs_review` carries it, matching the wallet
    * TOPUP_SUPERSEDED_BY_FINALIZATION trade-off.
    */
-  const supersededByFinalization = async (currentStatus: string) => {
+  const superseded = async (
+    reason: "OCR_SUPERSEDED_BY_FINALIZATION" | "OCR_SUPERSEDED_BY_SLIP_REPLACEMENT"
+  ) => {
+    const current = await db.getPaymentById(payment.id);
+    const currentStatus = current?.status ?? payment.status;
+
     await recordOcrAttempt({
       subjectType: "order_payment",
       subjectId: payment.id,
@@ -287,7 +328,7 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
       stage: "completed",
       result: "needs_review",
       reviewCategory: "STATE",
-      reviewReason: "OCR_SUPERSEDED_BY_FINALIZATION",
+      reviewReason: reason,
       confidence:
         verificationResult?.extractedData?.confidenceKnown === false
           ? null
@@ -306,34 +347,55 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
         recipientEvidenceType: verificationResult?.breakdown?.recipientEvidenceType,
         confidenceKnown: verificationResult?.breakdown?.confidenceKnown,
         fileHashAvailable: Boolean(slipFileHash),
-        supersededByFinalization: true,
+        supersededReason: reason,
       }),
     });
 
     return {
       success: true,
-      message: `Payment already ${currentStatus}`,
+      message:
+        reason === "OCR_SUPERSEDED_BY_FINALIZATION"
+          ? `Payment already ${currentStatus}`
+          : `This slip was replaced by a newer upload before automatic processing finished`,
       orderId: order.id,
       paymentId: payment.id,
       status: currentStatus,
-      slipImageUrl: payment.slipImageUrl,
+      // The CURRENT slip, re-read above - never the pre-write local
+      // `payment`, which may describe a slip this row no longer shows.
+      slipImageUrl: current?.slipImageUrl ?? input.slipImageUrl,
       isAutoApproved: false,
       isShadowMode: false,
-      reviewReason: "OCR_SUPERSEDED_BY_FINALIZATION",
-      supersededByFinalization: true,
+      reviewReason: reason,
+      supersededByFinalization: reason === "OCR_SUPERSEDED_BY_FINALIZATION",
     };
   };
 
   // Sync order status based on verification result
   if (shouldApprove) {
-    // ── GUARD: Check if payment is already approved or rejected ──────────────────────
+    // ── GUARD: Check if payment is already approved/rejected, or its slip
+    // was replaced by another upload while this OCR run was in flight ──────
     const currentPayment = await db.getPaymentById(payment.id);
     if (currentPayment?.status === "approved" || currentPayment?.status === "rejected") {
       console.log(`[OCR] Payment ${payment.id} is already ${currentPayment.status}, skipping re-approval`);
 
       // Terminal STATE outcome: records exactly one automatic attempt and
-      // mutates nothing. See supersededByFinalization() below.
-      return await supersededByFinalization(currentPayment.status);
+      // mutates nothing. See superseded() above.
+      return await superseded("OCR_SUPERSEDED_BY_FINALIZATION");
+    }
+    if (
+      currentPayment &&
+      !orderService.sameSlipVersion(publishedSlipVersion, {
+        slipImageUrl: currentPayment.slipImageUrl as string | null,
+        slipSubmittedAt: currentPayment.slipSubmittedAt as Date | null,
+      })
+    ) {
+      // A later upload already replaced the slip this OCR run processed.
+      // The row is still reviewable, so the status guard above would not
+      // have caught this - the in-transaction slip-version check below
+      // would still refuse the claim, but failing fast here skips a
+      // pointless transaction/claim attempt.
+      console.log(`[OCR] Payment ${payment.id}'s slip was replaced, skipping approval for the superseded upload`);
+      return await superseded("OCR_SUPERSEDED_BY_SLIP_REPLACEMENT");
     }
 
     // Auto-approve, save metadata, mark the order approved, record history,
@@ -372,7 +434,16 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
         // Shared with the manual admin approval path rather than
         // reimplemented here; that duplication is exactly how the guard added
         // to one path left this one unprotected.
-        await orderService.lockAndRequireReviewablePayment(payment.id, tx);
+        //
+        // `publishedSlipVersion` is passed because, unlike manual admin
+        // approval, `identifiers` below come from `verificationResult` - OCR
+        // run against a slip snapshot captured BEFORE this lock - rather
+        // than from the row reloaded fresh under it. Without this check, a
+        // slip replacement that lands between that snapshot and this lock
+        // would pass the reviewability check above (a replacement sets
+        // status back to "pending") while still claiming identifiers that
+        // belong to the slip it replaced.
+        await orderService.lockAndRequireReviewablePayment(payment.id, tx, publishedSlipVersion);
 
         const extractedJson = verificationResult.extractedData
           ? JSON.stringify(verificationResult.extractedData)
@@ -479,12 +550,19 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
       // approval, no order update, no purchases and no points committed - the
       // "a claim must never commit without the value it protects" invariant
       // holds by rollback. Report the persisted state; mutate nothing.
+      if (claimError instanceof orderService.SlipVersionChangedError) {
+        console.warn(
+          `[OCR] auto-approval lost the state race for payment ${payment.id}: slip was replaced`
+        );
+        return await superseded("OCR_SUPERSEDED_BY_SLIP_REPLACEMENT");
+      }
+
       if (claimError instanceof orderService.PaymentNotReviewableError) {
         console.warn(
           `[OCR] auto-approval lost the state race for payment ${payment.id}: ` +
             `now ${claimError.currentStatus}`
         );
-        return await supersededByFinalization(claimError.currentStatus);
+        return await superseded("OCR_SUPERSEDED_BY_FINALIZATION");
       }
 
       if (!(claimError instanceof SlipClaimRejected)) {
@@ -511,14 +589,31 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
   }
 
   if (!shouldApprove) {
-    // Pending review: update payment record with OCR metadata
-    await ApprovalService.sendToReview(
+    // Pending review: update payment record with OCR metadata.
+    //
+    // Guarded by publishedSlipVersion: this OCR run's extractedData was
+    // computed against the slip THIS request published, so the write must
+    // be refused if a later upload has already replaced it - otherwise a
+    // slow OCR run for slip B could publish B's extraction after the
+    // customer moved on to slip C. Also refused if the payment was
+    // finalized in the meantime, so a late OCR result can never reopen it.
+    const publishedReview = await ApprovalService.sendToReview(
       payment.id,
       verificationResult.reviewReason || "MANUAL_REVIEW_REQUIRED",
       verificationResult.extractedData,
-      verificationResult.fingerprint || null
+      verificationResult.fingerprint || null,
+      publishedSlipVersion
     );
-    
+
+    if (!publishedReview) {
+      const current = await db.getPaymentById(payment.id);
+      const reason =
+        current && (current.status === "approved" || current.status === "rejected")
+          ? "OCR_SUPERSEDED_BY_FINALIZATION"
+          : "OCR_SUPERSEDED_BY_SLIP_REPLACEMENT";
+      return await superseded(reason);
+    }
+
     const ocrDecision = verificationResult.ocrDecision
       || (verificationResult.reviewReason === "OCR_DISABLED"
         ? "ocr_disabled"

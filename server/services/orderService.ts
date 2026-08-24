@@ -374,6 +374,43 @@ export class PaymentNotReviewableError extends Error {
 }
 
 /**
+ * Whether two slip versions - the `(slipImageUrl, slipSubmittedAt)` pair -
+ * refer to the exact same upload. Used to bind a computation done against
+ * one slip snapshot to a write that must only land while that snapshot is
+ * still the current one.
+ */
+export function sameSlipVersion(
+  a: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+  b: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
+): boolean {
+  if (a.slipImageUrl !== b.slipImageUrl) return false;
+  const aTime = a.slipSubmittedAt ? a.slipSubmittedAt.getTime() : null;
+  const bTime = b.slipSubmittedAt ? b.slipSubmittedAt.getTime() : null;
+  return aTime === bTime;
+}
+
+/**
+ * Raised when a payment's slip was replaced between the moment identifiers
+ * were computed against it and the moment this operation acquired the row
+ * lock. Distinct from PaymentNotReviewableError: the payment is still
+ * reviewable (a replacement upload sets status back to "pending"), but the
+ * identifiers being claimed belong to a slip that is no longer displayed.
+ */
+export class SlipVersionChangedError extends Error {
+  readonly code = "SLIP_VERSION_CHANGED";
+  readonly currentStatus: string;
+  constructor(paymentId: number, currentStatus: string) {
+    super(
+      `SLIP_VERSION_CHANGED: payment ${paymentId}'s slip was replaced while this operation was ` +
+        `in flight (status is ${currentStatus}). The identifiers this operation computed belong ` +
+        `to a slip that is no longer current, so nothing was claimed, approved or written.`
+    );
+    this.name = "SlipVersionChangedError";
+    this.currentStatus = currentStatus;
+  }
+}
+
+/**
  * THE ONE ORDER FINANCIAL APPROVAL INVARIANT: lock, reload, require reviewable.
  *
  * Every path that can move an order payment to `approved` must call this
@@ -386,10 +423,23 @@ export class PaymentNotReviewableError extends Error {
  * the guard added to one did nothing for the other. One rule, one
  * implementation, one place to get it right.
  *
+ * `expectedSlipVersion`, when passed, additionally requires the reloaded
+ * row's slip identity to still match it - for callers (OCR auto-approval)
+ * whose identifiers were computed against a specific slip snapshot BEFORE
+ * this lock was acquired, rather than derived fresh from the reloaded row
+ * the way manual admin approval always is. Without this, a slip replacement
+ * racing the same window as PaymentNotReviewableError guards against would
+ * pass the status check (a replacement re-opens status to "pending") while
+ * still claiming identifiers that belong to the slip it replaced.
+ *
  * Returns the payment as reloaded UNDER the lock - callers must use this row,
  * not one they read earlier.
  */
-export async function lockAndRequireReviewablePayment(paymentId: number, tx: any) {
+export async function lockAndRequireReviewablePayment(
+  paymentId: number,
+  tx: any,
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
+) {
   await db.lockPaymentForUpdate(paymentId, tx);
 
   const payment = await db.getPaymentById(paymentId, tx);
@@ -399,6 +449,16 @@ export async function lockAndRequireReviewablePayment(paymentId: number, tx: any
 
   if (!isReviewablePaymentStatus(payment.status as string)) {
     throw new PaymentNotReviewableError(paymentId, String(payment.status));
+  }
+
+  if (
+    expectedSlipVersion &&
+    !sameSlipVersion(expectedSlipVersion, {
+      slipImageUrl: payment.slipImageUrl as string | null,
+      slipSubmittedAt: payment.slipSubmittedAt as Date | null,
+    })
+  ) {
+    throw new SlipVersionChangedError(paymentId, String(payment.status));
   }
 
   return payment;

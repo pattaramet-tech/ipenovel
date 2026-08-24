@@ -44,6 +44,7 @@ import {
 import type { SlipClaimSourceType } from "./slipClaimService";
 import { resolveMatchedSourceNavigation } from "./matchedSourceNavigationService";
 import { evaluateSlipConflict, type SlipConflict } from "./slipConflictEvaluator";
+import { sameSlipVersion } from "./orderService";
 
 /**
  * Carries an already-sanitized provider diagnostic out of the OCR block
@@ -130,6 +131,18 @@ export async function recheckOrderPaymentOcr(
     });
   }
 
+  // Captured once, up front. Every conditional write this recheck makes
+  // below - the pre-OCR fileHash recovery and the final extraction write -
+  // requires the row to still carry THIS exact slip, not just still be
+  // non-finalized. A customer replacing the slip mid-recheck does not
+  // change status (a replacement re-opens it to "pending"), so a status-only
+  // CAS would let this recheck of the OLD slip land its result on the NEW
+  // one; binding to the version closes that.
+  const slipVersionAtStart = {
+    slipImageUrl: payment.slipImageUrl as string | null,
+    slipSubmittedAt: payment.slipSubmittedAt as Date | null,
+  };
+
   // A finalized payment is not rechecked. Re-running OCR against an approved
   // or rejected payment could only mislead - the money decision is already
   // made and this endpoint is explicitly unable to change it.
@@ -156,10 +169,10 @@ export async function recheckOrderPaymentOcr(
   if (preOcrFileHash) {
     const wrote = await db.updatePaymentIfNotFinalized(payment.id, {
       extractedData: mergeFileHashInto(payment.extractedData as string | null, preOcrFileHash),
-    });
+    }, undefined, slipVersionAtStart);
 
     if (!wrote) {
-      return await buildSupersededResult(payment, order.id, input.adminUserId, startedAt, config);
+      return await buildSupersededResult(payment, slipVersionAtStart, order.id, input.adminUserId, startedAt, config);
     }
   }
 
@@ -469,13 +482,13 @@ export async function recheckOrderPaymentOcr(
     ocrConfidence: extracted.confidence ?? 0,
     reviewReason: reviewReason ?? null,
     ocrDecision: "needs_review",
-  });
+  }, undefined, slipVersionAtStart);
 
   if (!wroteFinal) {
     // Lost the race. The pre-OCR fileHash write - made while the payment was
     // still pending - stands as valid historical evidence; nothing else is
     // touched.
-    return await buildSupersededResult(payment, order.id, input.adminUserId, startedAt, config);
+    return await buildSupersededResult(payment, slipVersionAtStart, order.id, input.adminUserId, startedAt, config);
   }
 
   const attemptNo = await recordOcrAttempt({
@@ -588,6 +601,7 @@ export function mergeFileHashInto(
  */
 async function buildSupersededResult(
   originalPayment: any,
+  slipVersionAtStart: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
   orderId: number,
   adminUserId: number,
   startedAt: Date,
@@ -596,6 +610,26 @@ async function buildSupersededResult(
   // Reload so the admin sees the CURRENT state that beat this recheck.
   const current = await db.getPaymentById(originalPayment.id);
   const currentStatus = current?.status ?? originalPayment.status;
+  const isFinalized = currentStatus === "approved" || currentStatus === "rejected";
+
+  // Two distinct causes lose this CAS: an admin finalized the payment while
+  // this recheck ran, or the customer replaced the slip this recheck
+  // started against (which does NOT change status - a replacement re-opens
+  // it to "pending"). Comparing the reloaded row's slip identity against the
+  // one this recheck was bound to tells them apart, so the admin is told
+  // which one actually happened rather than always being told "finalized"
+  // when the payment may still be sitting in pending_review on a new slip.
+  const slipReplaced =
+    !isFinalized &&
+    current != null &&
+    !sameSlipVersion(slipVersionAtStart, {
+      slipImageUrl: current.slipImageUrl as string | null,
+      slipSubmittedAt: current.slipSubmittedAt as Date | null,
+    });
+
+  const reviewReason = slipReplaced
+    ? "RECHECK_SUPERSEDED_BY_SLIP_REPLACEMENT"
+    : "RECHECK_SUPERSEDED_BY_FINALIZATION";
 
   const attemptNo = await recordOcrAttempt({
     subjectType: "order_payment",
@@ -607,7 +641,7 @@ async function buildSupersededResult(
     // needs_review, not technical_failure: nothing technical went wrong.
     result: "needs_review",
     reviewCategory: "STATE",
-    reviewReason: "RECHECK_SUPERSEDED_BY_FINALIZATION",
+    reviewReason,
     providerAttemptCount: 0,
   });
 
@@ -618,15 +652,18 @@ async function buildSupersededResult(
     attemptNo,
     verificationPassed: false,
     readyForAdminApproval: false,
-    reviewReason: "RECHECK_SUPERSEDED_BY_FINALIZATION",
+    reviewReason,
     category: "DATA",
-    rootCauseSummary:
-      "This recheck finished after the payment was already finalized. No OCR evidence " +
-      "was changed.",
+    rootCauseSummary: slipReplaced
+      ? "This recheck finished after the customer had already replaced the slip it started " +
+        "against. No OCR evidence was written - the new slip is untouched and needs its own " +
+        "recheck."
+      : "This recheck finished after the payment was already finalized. No OCR evidence " +
+        "was changed.",
     confidenceKnown: false,
     hasStrongIdentifier: false,
     effectiveWindowMinutes: config.maxTimeWindowMinutes,
     fileIdentifierStatus: "UNAVAILABLE",
-    supersededByFinalization: true,
+    supersededByFinalization: !slipReplaced,
   };
 }

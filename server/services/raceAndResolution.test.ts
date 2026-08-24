@@ -83,10 +83,25 @@ describe("recheck writes are conditional on the payment still being reviewable",
   });
 
   it("the helper cannot be used to move status or rewrite slipSubmittedAt", () => {
+    // Scoped to the WRITABLE `fields` parameter only - not the whole
+    // signature, which also carries an optional `expectedSlipVersion` guard.
+    // That guard legitimately mentions slipSubmittedAt (it compares against
+    // it in the WHERE clause), but must never appear in what gets written.
     const idx = dbCode.indexOf("export async function updatePaymentIfNotFinalized");
-    const signature = dbCode.slice(idx, idx + 700);
-    expect(signature).not.toMatch(/status\?:/);
-    expect(signature).not.toMatch(/slipSubmittedAt/);
+    const fieldsIdx = dbCode.indexOf("fields: {", idx);
+    const fieldsEndIdx = dbCode.indexOf("},", fieldsIdx);
+    expect(fieldsIdx).toBeGreaterThan(-1);
+    expect(fieldsEndIdx).toBeGreaterThan(fieldsIdx);
+    const fieldsBlock = dbCode.slice(fieldsIdx, fieldsEndIdx);
+    expect(fieldsBlock).not.toMatch(/status\?:/);
+    expect(fieldsBlock).not.toMatch(/slipSubmittedAt/);
+
+    // The slip-version guard exists but is read-only comparison state - it
+    // narrows the WHERE clause, and is never passed to `.set()`.
+    const signature = dbCode.slice(idx, fieldsEndIdx + 500);
+    expect(signature).toMatch(/expectedSlipVersion\?:/);
+    const setIdx = dbCode.indexOf(".set(fields as any)", fieldsEndIdx);
+    expect(setIdx).toBeGreaterThan(-1);
   });
 
   it("EVERY recheck payment write goes through the conditional helper", () => {
@@ -125,10 +140,18 @@ describe("recheck writes are conditional on the payment still being reviewable",
 
   it("the superseded result reports the CURRENT status, not the stale one", () => {
     const idx = recheck.indexOf("async function buildSupersededResult");
-    const block = recheck.slice(idx, idx + 1600);
+    const endIdx = recheck.indexOf("\n}", idx);
+    const block = recheck.slice(idx, endIdx);
     expect(block).toMatch(/db\.getPaymentById\(originalPayment\.id\)/);
     expect(block).toMatch(/readyForAdminApproval: false/);
-    expect(block).toMatch(/supersededByFinalization: true/);
+    // Dynamic, not a fixed literal: a lost CAS is either an admin
+    // finalization or a slip replacement, distinguished by comparing the
+    // reloaded row's slip identity against the one this recheck was bound
+    // to (IPE-001 P1-C) - so supersededByFinalization must be computed, not
+    // hardcoded true.
+    expect(block).toMatch(/supersededByFinalization: !slipReplaced/);
+    expect(block).toMatch(/RECHECK_SUPERSEDED_BY_SLIP_REPLACEMENT/);
+    expect(block).toMatch(/sameSlipVersion\(slipVersionAtStart, \{/);
   });
 
   it("the technical-failure path no longer writes a second time", () => {

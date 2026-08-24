@@ -409,15 +409,69 @@ describe("automatic OCR approval cannot resurrect a finalized payment", () => {
     expect(harness.store.purchases).toHaveLength(0);
   });
 
-  it("F. the state-race attempt is classified STATE/superseded, never a provider fault", async () => {
+  it("F. slip replaced while THIS OCR run's lock is being acquired -> refused, never overwrites the newer slip (IPE-001 P1-B/C)", async () => {
+    // Customer uploads slip B -> submitPaymentSlip publishes B and starts
+    // processing it. Before its auto-approval transaction acquires the row
+    // lock, a THIRD upload (C) lands and commits (a second, faster
+    // submitPaymentSlip call for the same payment). B's identifiers must
+    // never be claimed/approved onto a row that now shows C.
+    mockAutoApprovingOcrPipeline();
+    const C_URL = "r2p:payment-slips/11/slip-C.png";
+    const harness = makeDb(orderRows("pending"), (store) => {
+      // Fires when B's transaction locks the row - stands for C's
+      // replacement having already committed by then.
+      store.payments[0].slipImageUrl = C_URL;
+      store.payments[0].slipSubmittedAt = new Date("2026-06-01T00:00:00Z");
+      store.payments[0].extractedData = JSON.stringify({ fileHash: "c".repeat(64) });
+      // status stays "pending" - a replacement re-opens it, never changes it.
+    });
+    dbModule.__setDbForTests(harness.fake);
+
+    const result = await submitPaymentSlip({
+      orderId: 90,
+      slipImageUrl: "r2p:payment-slips/11/slip.png", // "B"
+      userId: 11,
+    });
+
+    expect(result.reviewReason).toBe("OCR_SUPERSEDED_BY_SLIP_REPLACEMENT");
+    expect(result.isAutoApproved).toBe(false);
+    expect((result as any).supersededByFinalization).toBe(false);
+    // Reports C - the CURRENT slip - not B, which this run processed.
+    expect(result.slipImageUrl).toBe(C_URL);
+
+    // C's row stands completely untouched by B's (superseded) processing.
+    expect(harness.store.payments[0].slipImageUrl).toBe(C_URL);
+    expect(harness.store.payments[0].status).toBe("pending");
+    expect(JSON.parse(harness.store.payments[0].extractedData)).toEqual({
+      fileHash: "c".repeat(64),
+    });
+    // B's identifiers (REFERENCE/HASH from mockAutoApprovingOcrPipeline)
+    // were never claimed, and nothing was approved or finalized for it.
+    expect(harness.store.paymentSlipClaims).toHaveLength(0);
+    expect(harness.store.purchases).toHaveLength(0);
+    expect(harness.store.pointsTransactions).toHaveLength(0);
+    expect(harness.store.orderHistory).toHaveLength(0);
+    expect(harness.store.orders[0].status).toBe("pending");
+  });
+
+  it("the classification helper is the STATE one, not a provider fault", async () => {
     // Covered functionally by test A/B (reviewReason assertions); this test
     // pins the classification vocabulary itself is the STATE one, not a
     // technical/duplicate one, directly against the source.
+    //
+    // IPE-001 P1-B/C: the helper is now `superseded(reason)`, taking either
+    // OCR_SUPERSEDED_BY_FINALIZATION or OCR_SUPERSEDED_BY_SLIP_REPLACEMENT -
+    // an admin finalizing mid-OCR and a customer replacing the slip mid-OCR
+    // share this one terminal outcome, distinguished by which reason the
+    // caller passes rather than by two separate hardcoded functions.
     const code = readCode("server/services/slipSubmissionService.ts");
-    const start = code.indexOf("const supersededByFinalization = async");
-    const body = code.slice(start, start + 1600);
+    const start = code.indexOf("const superseded = async (");
+    const endIdx = code.indexOf("\n  };", start);
+    expect(start).toBeGreaterThan(-1);
+    const body = code.slice(start, endIdx);
     expect(body).toMatch(/reviewCategory: "STATE"/);
-    expect(body).toMatch(/reviewReason: "OCR_SUPERSEDED_BY_FINALIZATION"/);
+    expect(body).toMatch(/reviewReason: reason/);
+    expect(body).toMatch(/"OCR_SUPERSEDED_BY_FINALIZATION" \| "OCR_SUPERSEDED_BY_SLIP_REPLACEMENT"/);
     expect(body).not.toMatch(/TECHNICAL|DUPLICATE_/);
   });
 });
@@ -426,16 +480,25 @@ describe("the auto-approval race handler never lets a claim survive without valu
   it("PaymentNotReviewableError is caught and routed through the shared terminal outcome, not swallowed", () => {
     const code = readCode("server/services/slipSubmissionService.ts");
     const catchIdx = code.indexOf("} catch (claimError) {");
-    const body = code.slice(catchIdx, catchIdx + 700);
+    const body = code.slice(catchIdx, catchIdx + 900);
     expect(body).toMatch(/claimError instanceof orderService\.PaymentNotReviewableError/);
-    expect(body).toMatch(/return await supersededByFinalization\(claimError\.currentStatus\)/);
+    expect(body).toMatch(/return await superseded\("OCR_SUPERSEDED_BY_FINALIZATION"\)/);
+    // IPE-001 P1-B: a slip replaced mid-flight is a DIFFERENT typed error
+    // from a finalized payment (the row is still reviewable), and it must be
+    // caught FIRST - both are handled here, neither swallowed by the other.
+    expect(body).toMatch(/claimError instanceof orderService\.SlipVersionChangedError/);
+    expect(body).toMatch(/return await superseded\("OCR_SUPERSEDED_BY_SLIP_REPLACEMENT"\)/);
+    const versionIdx = body.indexOf("SlipVersionChangedError");
+    const reviewableIdx = body.indexOf("PaymentNotReviewableError");
+    expect(versionIdx).toBeGreaterThan(-1);
+    expect(reviewableIdx).toBeGreaterThan(versionIdx);
   });
 
   it("the guard runs INSIDE the transaction, before claimSlip, so a lost race rolls back", () => {
     const code = readCode("server/services/slipSubmissionService.ts");
     const txIdx = code.indexOf("await dbConnection.transaction(async (tx: any) => {");
     const guardIdx = code.indexOf(
-      "await orderService.lockAndRequireReviewablePayment(payment.id, tx)"
+      "await orderService.lockAndRequireReviewablePayment(payment.id, tx, publishedSlipVersion)"
     );
     const claimIdx = code.indexOf("const claim = await claimSlip(", txIdx);
     expect(guardIdx).toBeGreaterThan(txIdx);

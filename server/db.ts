@@ -2437,19 +2437,96 @@ export async function updatePaymentIfNotFinalized(
     reviewReason?: string | null;
     ocrDecision?: "auto_approved" | "needs_review" | "rejected" | "ocr_disabled" | "shadow_auto_approved";
   },
-  tx?: any
+  tx?: any,
+  /**
+   * When provided, the write also requires `slipImageUrl`/`slipSubmittedAt`
+   * to still match this exact pair. A recheck captures the slip version it
+   * started against; if the customer replaces the slip while the recheck is
+   * still running, the version no longer matches and this write is refused -
+   * a status-only CAS would have let a recheck of the OLD slip land its
+   * result on the NEW one, since replacing a slip does not change status.
+   */
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
 ): Promise<boolean> {
   const database = tx || (await getDb());
   if (!database) return false;
 
+  const conditions = [
+    eq(payments.id, paymentId),
+    // The non-finalized set. An approved/rejected payment is excluded, so
+    // its evidence can never be clobbered by a late-finishing recheck.
+    or(eq(payments.status, "pending"), eq(payments.status, "pending_review")),
+  ];
+
+  if (expectedSlipVersion) {
+    conditions.push(
+      expectedSlipVersion.slipImageUrl === null
+        ? isNull(payments.slipImageUrl)
+        : eq(payments.slipImageUrl, expectedSlipVersion.slipImageUrl)
+    );
+    conditions.push(
+      expectedSlipVersion.slipSubmittedAt === null
+        ? isNull(payments.slipSubmittedAt)
+        : eq(payments.slipSubmittedAt, expectedSlipVersion.slipSubmittedAt)
+    );
+  }
+
   const result = await database
     .update(payments)
     .set(fields as any)
+    .where(and(...conditions));
+
+  const header = Array.isArray(result) ? result[0] : result;
+  return ((header as any)?.affectedRows || 0) > 0;
+}
+
+/**
+ * Atomically publishes a replacement slip upload. The SAME write that makes
+ * the new slip current also invalidates whatever OCR evidence belonged to
+ * the slip it replaces, so `slipImageUrl = B` can never be paired with
+ * `extractedData` still describing A - not even for the instant between two
+ * separate statements.
+ *
+ * `fields.extractedData` should already be seeded with the NEW slip's own
+ * server-derived identifier (fileHash) when available, so a replacement
+ * slip is never left with zero anti-replay protection while OCR is still
+ * running against it.
+ *
+ * Conditioned on the payment still being reviewable (pending/pending_review):
+ * an approved/rejected payment can never be reopened by a replacement
+ * upload that was being prepared while it got finalized. Returns false when
+ * that race was lost; callers MUST treat false as "nothing published" and
+ * must not proceed to run OCR or any further write against this upload.
+ */
+export async function publishReplacementSlipIfReviewable(
+  paymentId: number,
+  fields: {
+    slipImageUrl: string;
+    slipSubmittedAt: Date;
+    extractedData: string | null;
+  }
+): Promise<boolean> {
+  const database = await getDb();
+  if (!database) return false;
+
+  const result = await database
+    .update(payments)
+    .set({
+      slipImageUrl: fields.slipImageUrl,
+      slipSubmittedAt: fields.slipSubmittedAt,
+      status: "pending",
+      extractedData: fields.extractedData,
+      // Stale OCR verdicts from the replaced slip must not linger next to
+      // the new one - a leftover confidence/decision/reason would describe
+      // evidence for a slip that is no longer even displayed.
+      ocrConfidence: 0,
+      ocrDecision: "needs_review",
+      reviewReason: null,
+      fingerprint: null,
+    })
     .where(
       and(
         eq(payments.id, paymentId),
-        // The non-finalized set. An approved/rejected payment is excluded, so
-        // its evidence can never be clobbered by a late-finishing recheck.
         or(eq(payments.status, "pending"), eq(payments.status, "pending_review"))
       )
     );
