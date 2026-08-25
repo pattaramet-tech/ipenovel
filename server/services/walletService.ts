@@ -6,6 +6,7 @@
 import * as db from "../db";
 import { TRPCError } from "@trpc/server";
 import { submitWalletTopupSlip } from "./walletTopupSubmissionService";
+import { computeSlipFileHash } from "./slipFileHashService";
 
 export async function createWalletTopupRequest(userId: number, requestedAmount: string, slipImageUrl?: string) {
   // STRICT validation: must be a valid positive number only
@@ -110,6 +111,8 @@ export async function uploadWalletTopupSlip(topupId: number, userId: number, sli
     });
   }
 
+  // Fast preflight - the atomic publish below is the authoritative check
+  // against a concurrent finalization in this same window.
   if (topup.status !== "pending") {
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -117,7 +120,68 @@ export async function uploadWalletTopupSlip(topupId: number, userId: number, sli
     });
   }
 
-  return db.updateWalletTopupSlip(topupId, slipImageUrl);
+  // ── EXACT-FILE IDENTIFIER ────────────────────────────────────────────
+  // Computed BEFORE publishing this upload as the top-up's current slip, so
+  // the SAME atomic write that makes this slip current also seeds ITS OWN
+  // strong identifier - mirrors submitPaymentSlip's order-side replacement
+  // publish (IPE-001 P1-B, extended to wallet this round).
+  const slipFileHash = await computeSlipFileHash(slipImageUrl);
+  const slipSubmittedAt = new Date();
+
+  // ── PUBLISH THE REPLACEMENT SLIP (ATOMIC) ────────────────────────────
+  // The same write that makes this slip current invalidates whatever
+  // extraction belonged to the slip it replaces and seeds this slip's own
+  // fileHash - never leaving `slipImageUrl = new, extractedData = old` as
+  // an approvable state, even momentarily. Conditioned on the top-up still
+  // being reviewable: if it was finalized between the preflight above and
+  // this write, the replacement is refused rather than reopening it.
+  const published = await db.publishWalletTopupReplacementIfReviewable(topupId, {
+    slipImageUrl,
+    slipSubmittedAt,
+    extractedData: slipFileHash ? JSON.stringify({ fileHash: slipFileHash }) : null,
+  });
+
+  if (!published) {
+    const current = await db.getWalletTopupById(topupId);
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `Cannot upload slip for a ${current?.status ?? "approved"} top-up request`,
+    });
+  }
+
+  // Re-run OCR for the newly published slip, exactly like a fresh
+  // submission. Previously this deprecated endpoint left the row with a new
+  // slipImageUrl and never ran OCR against it again at all, so the old
+  // extraction sat there mismatched forever - this closes that in addition
+  // to the version-binding race (see submitWalletTopupSlip/
+  // approveWalletTopupWithOCR/applyWalletTopupOcrUpdate's expectedSlipVersion).
+  try {
+    const ocrResult = await submitWalletTopupSlip(userId, topupId, topup.requestedAmount, slipImageUrl);
+    const updated = await db.getWalletTopupById(topupId);
+    return {
+      ...updated,
+      ocrStatus: ocrResult.status,
+      ocrDecision: ocrResult.ocrDecision,
+      ocrConfidence: ocrResult.ocrConfidence,
+      finalConfidence: ocrResult.finalConfidence,
+      reviewReason: ocrResult.reviewReason,
+      duplicateStatus: ocrResult.duplicateStatus,
+      userMessage: ocrResult.userMessage,
+      creditedAmount: ocrResult.creditedAmount,
+    };
+  } catch (ocrError) {
+    // OCR error should not crash the upload - the slip is already published
+    // and safely version-bound; the row surfaces as pending_review to a
+    // recheck/admin path, mirroring createWalletTopupRequest's same
+    // best-effort handling.
+    console.error("[Wallet OCR] Replacement submission error:", {
+      message: ocrError instanceof Error ? ocrError.message : String(ocrError),
+      topupId,
+      userId,
+      error: ocrError,
+    });
+    return await db.getWalletTopupById(topupId);
+  }
 }
 
 export async function adminApproveWalletTopup(topupId: number, adminUserId: number) {

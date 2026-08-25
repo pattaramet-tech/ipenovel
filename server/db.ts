@@ -4036,6 +4036,15 @@ export async function listPendingWalletTopups(limit: number = 20, offset: number
   return result;
 }
 
+/**
+ * @deprecated Legacy replace-slip write. Left in place ONLY because
+ * legacyManusAssetMigrationService's URL-rewrite helper (`updateWalletTopupSlipUrlIfUnchanged`,
+ * a same-bytes storage-key rewrite, not a customer re-upload) is intentionally
+ * separate. A genuine customer-facing slip REPLACEMENT must go through
+ * `publishWalletTopupReplacementIfReviewable` below - this bare setter leaves
+ * `extractedData` describing whatever slip preceded it, which is exactly the
+ * IPE-001 wallet finding.
+ */
 export async function updateWalletTopupSlip(topupId: number, slipImageUrl: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -4043,6 +4052,62 @@ export async function updateWalletTopupSlip(topupId: number, slipImageUrl: strin
   await db.update(walletTopups).set({ slipImageUrl }).where(eq(walletTopups.id, topupId));
 
   return (await db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1))[0];
+}
+
+/**
+ * Atomically publishes a replacement slip for a wallet top-up - the wallet
+ * sibling of `publishReplacementSlipIfReviewable`. The SAME conditional
+ * UPDATE that makes the new slip current also invalidates whatever OCR
+ * evidence belonged to the slip it replaces (or to nothing, on a first
+ * upload) and seeds the new slip's own server-derived fileHash, so
+ * `slipImageUrl = B` can never be paired with `extractedData` still
+ * describing A - not even for the instant between two statements.
+ *
+ * Conditioned on the top-up still being reviewable (pending/pending_review):
+ * an approved/rejected/cancelled top-up can never be reopened by a
+ * replacement upload that was being prepared while it got finalized.
+ * Returns false when that race was lost; callers MUST treat false as
+ * "nothing published" and must not proceed to run OCR or any further write
+ * against this upload.
+ */
+export async function publishWalletTopupReplacementIfReviewable(
+  topupId: number,
+  fields: {
+    slipImageUrl: string;
+    slipSubmittedAt: Date;
+    extractedData: string | null;
+  }
+): Promise<boolean> {
+  const database = await getDb();
+  if (!database) return false;
+
+  const result = await database
+    .update(walletTopups)
+    .set({
+      slipImageUrl: fields.slipImageUrl,
+      slipSubmittedAt: fields.slipSubmittedAt,
+      status: "pending",
+      extractedData: fields.extractedData,
+      // Stale OCR verdicts from the replaced slip must not linger next to
+      // the new one - a leftover confidence/decision/reason/duplicate flag
+      // would describe evidence for a slip that is no longer even displayed.
+      ocrConfidence: null,
+      visionConfidence: null,
+      structuredConfidence: null,
+      finalConfidence: null,
+      duplicateStatus: null,
+      ocrDecision: "needs_review",
+      reviewReason: null,
+    })
+    .where(
+      and(
+        eq(walletTopups.id, topupId),
+        or(eq(walletTopups.status, "pending"), eq(walletTopups.status, "pending_review"))
+      )
+    );
+
+  const header = Array.isArray(result) ? result[0] : result;
+  return ((header as any)?.affectedRows || 0) > 0;
 }
 
 export async function createWalletTransaction(
@@ -6103,7 +6168,17 @@ export async function applyWalletTopupOcrUpdate(
     approvalSource?: string;
     approvedAt?: Date;
     creditedAmount?: string;
-  }
+  },
+  /**
+   * When provided (alongside a "pending_review" write), the write also
+   * requires `slipImageUrl`/`slipSubmittedAt` to still match this exact
+   * pair. This OCR run's extractedData was computed against a specific slip
+   * snapshot; if the customer replaces the slip while the run is still in
+   * flight, the version no longer matches and the write is refused - a
+   * status-only CAS would have let a run for the OLD slip land its result
+   * on the NEW one, since replacing a slip does not change status.
+   */
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
 ) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -6127,15 +6202,26 @@ export async function applyWalletTopupOcrUpdate(
   if (updates.creditedAmount) updateData.creditedAmount = updates.creditedAmount;
 
   const guarded = updates.status === "pending_review";
-  const whereClause = guarded
-    ? and(
-        eq(walletTopups.id, topupId),
-        or(
-          eq(walletTopups.status, REVIEWABLE_TOPUP_STATUSES[0] as any),
-          eq(walletTopups.status, REVIEWABLE_TOPUP_STATUSES[1] as any)
-        )
-      )
-    : eq(walletTopups.id, topupId);
+  const guardConditions = [
+    eq(walletTopups.id, topupId),
+    or(
+      eq(walletTopups.status, REVIEWABLE_TOPUP_STATUSES[0] as any),
+      eq(walletTopups.status, REVIEWABLE_TOPUP_STATUSES[1] as any)
+    ),
+  ];
+  if (expectedSlipVersion) {
+    guardConditions.push(
+      expectedSlipVersion.slipImageUrl === null
+        ? isNull(walletTopups.slipImageUrl)
+        : eq(walletTopups.slipImageUrl, expectedSlipVersion.slipImageUrl)
+    );
+    guardConditions.push(
+      expectedSlipVersion.slipSubmittedAt === null
+        ? isNull(walletTopups.slipSubmittedAt)
+        : eq(walletTopups.slipSubmittedAt, expectedSlipVersion.slipSubmittedAt)
+    );
+  }
+  const whereClause = guarded ? and(...guardConditions) : eq(walletTopups.id, topupId);
 
   const result = await db.update(walletTopups).set(updateData).where(whereClause);
   const header = Array.isArray(result) ? result[0] : result;
@@ -6246,7 +6332,18 @@ export async function approveWalletTopupWithOCR(
     approvedAt?: Date;
     creditedAmount: string;
   },
-  adminUserId?: number
+  adminUserId?: number,
+  /**
+   * The slip version this OCR run actually processed, captured before it
+   * started. `ocrData` was computed against that snapshot BEFORE this
+   * transaction opened; if the customer published a replacement slip while
+   * the run was still in flight, the reloaded row's slip identity no longer
+   * matches it, and claiming/writing now would attribute the OLD slip's
+   * evidence to a row that now displays a different one. Mirrors the
+   * order-side SlipVersionChangedError check inside
+   * lockAndRequireReviewablePayment.
+   */
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
 ) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -6259,6 +6356,27 @@ export async function approveWalletTopupWithOCR(
       throw new Error("Wallet top-up not found");
     }
     const topup = topupResult[0];
+
+    // Step 1a: SLIP-VERSION GATE - before any claim or write, and before the
+    // status-only CAS below, since a replacement re-opens status to
+    // "pending" and would otherwise pass that check while still describing
+    // the slip it replaced.
+    if (expectedSlipVersion) {
+      const currentSlipImageUrl = topup.slipImageUrl as string | null;
+      const currentSlipSubmittedAt = topup.slipSubmittedAt as Date | null;
+      const versionMatches =
+        currentSlipImageUrl === expectedSlipVersion.slipImageUrl &&
+        (currentSlipSubmittedAt?.getTime() ?? null) ===
+          (expectedSlipVersion.slipSubmittedAt?.getTime() ?? null);
+      if (!versionMatches) {
+        throw new WalletSlipClaimError(
+          "TOPUP_SLIP_VERSION_CHANGED",
+          "This top-up's slip was replaced while this OCR run was in flight. The " +
+            "identifiers/extraction this run computed belong to a slip that is no longer " +
+            "current, so nothing was claimed, approved or written."
+        );
+      }
+    }
 
     // Step 1b: ANTI-REPLAY GATE.
     //

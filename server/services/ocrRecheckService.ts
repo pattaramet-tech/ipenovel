@@ -44,7 +44,7 @@ import {
 import type { SlipClaimSourceType } from "./slipClaimService";
 import { resolveMatchedSourceNavigation } from "./matchedSourceNavigationService";
 import { evaluateSlipConflict, type SlipConflict } from "./slipConflictEvaluator";
-import { sameSlipVersion } from "./orderService";
+import { sameSlipVersion, SLIP_INTEGRITY_BLOCK_REASON } from "./orderService";
 
 /**
  * Carries an already-sanitized provider diagnostic out of the OCR block
@@ -331,9 +331,30 @@ export async function recheckOrderPaymentOcr(
   // Two hashes of the SAME stored slip disagreeing means the object was
   // replaced while this recheck ran. Silently adopting the newer one would
   // let a substituted image inherit the standing of the one the customer
-  // actually submitted, so this stops and changes nothing: the first hash
-  // stays persisted and is NOT overwritten.
+  // actually submitted, so this stops and changes nothing to the extraction:
+  // the first hash stays persisted and is NOT overwritten.
+  //
+  // The mismatch itself IS durably persisted (reviewReason), not just
+  // returned in this transient response - a same-URL byte change must
+  // block normal Approve until integrity is re-established, not merely be
+  // logged and forgotten the moment this HTTP response is sent. Guarded by
+  // slipVersionAtStart exactly like the other writes below: if the customer
+  // has already published an actual replacement slip, THAT write already
+  // cleared reviewReason as part of publishing (see
+  // publishReplacementSlipIfReviewable), so this stale finding must not be
+  // persisted onto a row that has moved on - `wroteBlock` false in that case
+  // means exactly that, and this returns the superseded-by-slip-replacement
+  // outcome instead.
   if (preOcrFileHash && recomputedFileHash && recomputedFileHash !== preOcrFileHash) {
+    const wroteBlock = await db.updatePaymentIfNotFinalized(payment.id, {
+      reviewReason: SLIP_INTEGRITY_BLOCK_REASON,
+      ocrDecision: "needs_review",
+    }, undefined, slipVersionAtStart);
+
+    if (!wroteBlock) {
+      return await buildSupersededResult(payment, slipVersionAtStart, order.id, input.adminUserId, startedAt, config);
+    }
+
     const attemptNo = await recordOcrAttempt({
       subjectType: "order_payment",
       subjectId: payment.id,
@@ -343,7 +364,7 @@ export async function recheckOrderPaymentOcr(
       stage: "completed",
       result: "needs_review",
       reviewCategory: "DATA",
-      reviewReason: "SLIP_FILE_HASH_CHANGED_DURING_RECHECK",
+      reviewReason: SLIP_INTEGRITY_BLOCK_REASON,
       providerAttemptCount: providerDiagnostic?.providerAttemptCount ?? 1,
     });
 
@@ -354,12 +375,14 @@ export async function recheckOrderPaymentOcr(
       attemptNo,
       verificationPassed: false,
       readyForAdminApproval: false,
-      reviewReason: "SLIP_FILE_HASH_CHANGED_DURING_RECHECK",
+      reviewReason: SLIP_INTEGRITY_BLOCK_REASON,
       category: "DATA",
       rootCauseSummary:
         "The stored slip image changed while this recheck was running. The originally " +
-        "recovered file identifier was kept and nothing was overwritten. A human needs " +
-        "to establish which image this payment actually belongs to.",
+        "recovered file identifier was kept and nothing was overwritten. Normal Approve is " +
+        "now blocked until a stable Recheck re-establishes integrity for this exact slip, or " +
+        "the customer uploads a genuine replacement. A human needs to establish which image " +
+        "this payment actually belongs to.",
       confidenceKnown,
       // The identifier recovered BEFORE the change is still persisted.
       hasStrongIdentifier: true,

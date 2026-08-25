@@ -368,7 +368,13 @@ describe("TOPUP_STATE_RACE is a state outcome, not a review outcome", () => {
     const raceIdx = code.indexOf('claimCode === "TOPUP_STATE_RACE"');
     const genericIdx = code.indexOf("if (claimCode) {");
     const branch = code.slice(raceIdx, genericIdx);
-    expect(branch).toMatch(/return await buildSupersededResult\(topupId\)/);
+    // IPE-001 wallet round: TOPUP_STATE_RACE (finalization) and
+    // TOPUP_SLIP_VERSION_CHANGED (slip replaced mid-flight) share this one
+    // terminal outcome, distinguished by which reason gets recorded rather
+    // than by two separate branches - buildSupersededResult itself then
+    // re-derives which actually happened from the persisted row.
+    expect(branch).toMatch(/claimCode === "TOPUP_SLIP_VERSION_CHANGED"/);
+    expect(branch).toMatch(/return await buildSupersededResult\(topupId, expectedSlipVersion\)/);
     expect(branch).not.toMatch(/handlePendingReview/);
   });
 
@@ -408,11 +414,17 @@ describe("pending-review writes cannot reopen a finalized top-up", () => {
   it("the OCR update is conditional on a reviewable status when it targets pending_review", () => {
     const start = dbCode.indexOf("export async function applyWalletTopupOcrUpdate(");
     expect(start).toBeGreaterThan(-1);
-    const body = dbCode.slice(start, start + 2600);
+    const end = dbCode.indexOf("return { applied:", start);
+    expect(end).toBeGreaterThan(start);
+    const body = dbCode.slice(start, end + 200);
     expect(body).toMatch(/const guarded = updates\.status === "pending_review"/);
     expect(body).toMatch(/REVIEWABLE_TOPUP_STATUSES/);
     expect(body).toMatch(/affectedRows/);
     expect(body).toMatch(/return \{ applied: !guarded \|\| affectedRows > 0, topup \}/);
+    // The version guard is READ-only comparison state that narrows the
+    // guarded WHERE clause - never applied to the write itself.
+    expect(body).toMatch(/expectedSlipVersion\?:/);
+    expect(body).toMatch(/if \(expectedSlipVersion\) \{/);
   });
 
   it("the reviewable set excludes every final status", () => {

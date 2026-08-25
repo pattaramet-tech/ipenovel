@@ -79,6 +79,18 @@ export async function submitWalletTopupSlip(
     });
   }
 
+  // Captured once, up front. Every downstream write this run makes - the
+  // auto-approval claim/credit, and every non-auto-approve pending_review
+  // write - requires the top-up to still carry THIS exact slip. A customer
+  // replacing the slip mid-run does not change status (a replacement
+  // re-opens status to "pending"), so a status-only guard would let this
+  // run's result land on a slip it never actually processed (IPE-001,
+  // wallet parity with the order-side slip-version binding).
+  const expectedSlipVersion = {
+    slipImageUrl: topup.slipImageUrl as string | null,
+    slipSubmittedAt: topup.slipSubmittedAt as Date | null,
+  };
+
   const ocrConfig = await getEffectiveOCRConfig();
   const requestedAmountNum = parseFloat(requestedAmount);
 
@@ -160,7 +172,8 @@ export async function submitWalletTopupSlip(
       undefined,
       undefined,
       undefined,
-      topup
+      topup,
+      expectedSlipVersion
     );
   }
 
@@ -218,7 +231,8 @@ export async function submitWalletTopupSlip(
         // Persist the server-derived identifier: OCR failed, but the stored
         // bytes are still uniquely identifying, and without this the top-up
         // would be unapprovable.
-        fileHashOnlyExtraction
+        fileHashOnlyExtraction,
+        expectedSlipVersion
       );
     }
 
@@ -234,7 +248,8 @@ export async function submitWalletTopupSlip(
         undefined,
         undefined,
         undefined,
-        topup
+        topup,
+        expectedSlipVersion
       );
     }
 
@@ -290,7 +305,8 @@ export async function submitWalletTopupSlip(
         verificationResult,
         "พบความเสี่ยงสลิปซ้ำ รอแอดมินตรวจสอบ",
         parseResult,
-        topup
+        topup,
+        expectedSlipVersion
       );
     }
 
@@ -306,7 +322,8 @@ export async function submitWalletTopupSlip(
         fingerprint,
         verificationResult,
         parseResult,
-        topup
+        topup,
+        expectedSlipVersion
       );
     }
 
@@ -322,7 +339,8 @@ export async function submitWalletTopupSlip(
         fingerprint,
         verificationResult,
         parseResult,
-        topup
+        topup,
+        expectedSlipVersion
       );
     }
 
@@ -338,7 +356,8 @@ export async function submitWalletTopupSlip(
         fingerprint,
         verificationResult,
         parseResult,
-        topup
+        topup,
+        expectedSlipVersion
       );
     }
 
@@ -359,7 +378,8 @@ export async function submitWalletTopupSlip(
           extractedData,
           fingerprint,
           verificationResult,
-          parseResult
+          parseResult,
+          expectedSlipVersion
         );
         await recordWalletAttempt("auto_approved", null, null, finalConfidence);
         return approved;
@@ -375,24 +395,30 @@ export async function submitWalletTopupSlip(
         // generic claim handling below, which routes everything to
         // handlePendingReview.
         //
-        // An admin approved or rejected this top-up while OCR was running.
-        // The claim already rolled back with the transaction, so there is
-        // nothing to record and nothing to undo - and writing pending_review
-        // here reopened the finalized record, making an already-credited
-        // top-up manually approvable a second time. The persisted state is
+        // Two distinct causes share this shape: an admin approved or
+        // rejected this top-up while OCR was running (TOPUP_STATE_RACE), or
+        // the customer replaced the slip while THIS run's OCR was still in
+        // flight (TOPUP_SLIP_VERSION_CHANGED - the row is still reviewable,
+        // but the identifiers this run computed belong to a slip that is no
+        // longer current). Either way the claim already rolled back with the
+        // transaction, so there is nothing to record and nothing to undo -
+        // and writing pending_review here would reopen a finalized record or
+        // stomp a newer slip's evidence. The persisted state is
         // authoritative: report it and write NOTHING.
-        if (claimCode === "TOPUP_STATE_RACE") {
+        if (claimCode === "TOPUP_STATE_RACE" || claimCode === "TOPUP_SLIP_VERSION_CHANGED") {
           await recordWalletAttempt(
             // The attempt-history enum has no state-race member and adding
             // one needs a migration; the reason/category pair below is what
             // identifies this outcome, and it is neither a provider failure
             // nor a duplicate.
             "needs_review",
-            "TOPUP_SUPERSEDED_BY_FINALIZATION",
+            claimCode === "TOPUP_SLIP_VERSION_CHANGED"
+              ? "TOPUP_SUPERSEDED_BY_SLIP_REPLACEMENT"
+              : "TOPUP_SUPERSEDED_BY_FINALIZATION",
             "STATE",
             finalConfidence
           );
-          return await buildSupersededResult(topupId);
+          return await buildSupersededResult(topupId, expectedSlipVersion);
         }
 
         if (claimCode) {
@@ -408,7 +434,8 @@ export async function submitWalletTopupSlip(
             fingerprint,
             verificationResult,
             parseResult,
-            topup
+            topup,
+            expectedSlipVersion
           );
         }
 
@@ -442,7 +469,8 @@ export async function submitWalletTopupSlip(
       fingerprint,
       verificationResult,
       parseResult,
-      topup
+      topup,
+      expectedSlipVersion
     );
   } catch (error: any) {
     // Sanitized classification only - the thrown error's own message may
@@ -463,7 +491,8 @@ export async function submitWalletTopupSlip(
       walletProviderDiagnostic.code,
       "ส่งสลิปแล้ว แต่ระบบ OCR ขัดข้อง แอดมินจะตรวจสอบให้",
       topup,
-      fileHashOnlyExtraction
+      fileHashOnlyExtraction,
+      expectedSlipVersion
     );
   }
 }
@@ -478,7 +507,8 @@ async function autoApproveWalletTopup(
   extractedData: ExtractedSlipData,
   fingerprint: string,
   verificationResult: VerificationResult,
-  parseResult?: any
+  parseResult?: any,
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
 ): Promise<WalletTopupSubmissionResult> {
   // Fetch topup to get bonus amount
   const topup = await db.getWalletTopupById(topupId);
@@ -504,25 +534,30 @@ async function autoApproveWalletTopup(
   
   // Phase 2: Use transactional approveWalletTopupWithOCR for approval + wallet credit in one transaction
   // This ensures atomicity: if approval succeeds, wallet is credited; if either fails, both rollback
-  const updatedTopup = await db.approveWalletTopupWithOCR(topupId, {
-    status: "approved",
-    slipSubmittedAt: new Date(),
-    extractedData: JSON.stringify(extractedData),
-    ocrConfidence: ocrConfidenceValue,
-    visionConfidence: visionConfidenceValue,
-    structuredConfidence: structuredConfidenceValue,
-    finalConfidence: finalConfidenceValue,
-    duplicateStatus: JSON.stringify({
-      isDuplicate: false,
-      type: null,
-      reference: null,
-      fingerprint,
-    }),
-    ocrDecision: "approved",
-    approvalSource: "ocr_auto",
-    approvedAt: new Date(),
-    creditedAmount: creditedAmountStr,
-  });
+  const updatedTopup = await db.approveWalletTopupWithOCR(
+    topupId,
+    {
+      status: "approved",
+      slipSubmittedAt: new Date(),
+      extractedData: JSON.stringify(extractedData),
+      ocrConfidence: ocrConfidenceValue,
+      visionConfidence: visionConfidenceValue,
+      structuredConfidence: structuredConfidenceValue,
+      finalConfidence: finalConfidenceValue,
+      duplicateStatus: JSON.stringify({
+        isDuplicate: false,
+        type: null,
+        reference: null,
+        fingerprint,
+      }),
+      ocrDecision: "approved",
+      approvalSource: "ocr_auto",
+      approvedAt: new Date(),
+      creditedAmount: creditedAmountStr,
+    },
+    undefined,
+    expectedSlipVersion
+  );
 
   if (!updatedTopup) {
     throw new TRPCError({
@@ -545,23 +580,48 @@ async function autoApproveWalletTopup(
 /**
  * Reports the CURRENT persisted state of a top-up without mutating anything.
  *
- * Used when an admin finalized the record while OCR was still running. The
- * database is the single authority here: this function never approves,
- * rejects, reopens, claims or credits.
+ * Two distinct causes reach here: an admin finalized the record while OCR
+ * was still running, or the customer replaced the slip this run started
+ * against (the top-up is still reviewable - a replacement re-opens status to
+ * "pending" - but the identifiers this run computed belong to a slip that is
+ * no longer current). Passing `expectedSlipVersion` lets this distinguish
+ * them by comparing the reloaded row's slip identity against it, mirroring
+ * ocrRecheckService.ts's buildSupersededResult. The database is the single
+ * authority here either way: this function never approves, rejects,
+ * reopens, claims or credits.
  */
-async function buildSupersededResult(topupId: number): Promise<WalletTopupSubmissionResult> {
+async function buildSupersededResult(
+  topupId: number,
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
+): Promise<WalletTopupSubmissionResult> {
   const current = await db.getWalletTopupById(topupId);
   const status = (current?.status as WalletTopupSubmissionResult["status"]) ?? "pending_review";
+  const isFinalized = status === "approved" || status === "rejected" || status === "cancelled";
+
+  const slipReplaced =
+    !isFinalized &&
+    expectedSlipVersion !== undefined &&
+    current != null &&
+    !(
+      (current.slipImageUrl as string | null) === expectedSlipVersion.slipImageUrl &&
+      ((current.slipSubmittedAt as Date | null)?.getTime() ?? null) ===
+        (expectedSlipVersion.slipSubmittedAt?.getTime() ?? null)
+    );
+
+  const reviewReason = slipReplaced
+    ? "TOPUP_SUPERSEDED_BY_SLIP_REPLACEMENT"
+    : "TOPUP_SUPERSEDED_BY_FINALIZATION";
 
   return {
     topupId,
     status,
     ocrDecision: "needs_review",
-    reviewReason: "TOPUP_SUPERSEDED_BY_FINALIZATION",
+    reviewReason,
     reviewCategory: "STATE",
-    supersededByFinalization: true,
-    userMessage:
-      status === "approved"
+    supersededByFinalization: !slipReplaced,
+    userMessage: slipReplaced
+      ? "สลิปนี้ถูกแทนที่ด้วยการอัปโหลดใหม่ก่อนที่ระบบจะประมวลผลเสร็จ"
+      : status === "approved"
         ? "รายการนี้ได้รับการอนุมัติโดยแอดมินแล้ว"
         : status === "rejected"
           ? "รายการนี้ถูกปฏิเสธโดยแอดมินแล้ว"
@@ -582,7 +642,8 @@ async function handlePendingReview(
   fingerprint?: string,
   verificationResult?: VerificationResult,
   parseResult?: any,
-  topup?: any // Topup object for Discord notification
+  topup?: any, // Topup object for Discord notification
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
 ): Promise<WalletTopupSubmissionResult> {
   const updateData: any = {
     status: "pending_review",
@@ -612,7 +673,11 @@ async function handlePendingReview(
     });
   }
 
-  const { applied, topup: updatedTopup } = await db.applyWalletTopupOcrUpdate(topupId, updateData);
+  const { applied, topup: updatedTopup } = await db.applyWalletTopupOcrUpdate(
+    topupId,
+    updateData,
+    expectedSlipVersion
+  );
 
   if (!updatedTopup) {
     throw new TRPCError({
@@ -621,11 +686,12 @@ async function handlePendingReview(
     });
   }
 
-  // The write was refused because an admin had already finalized this
-  // top-up. Report the authoritative state instead of claiming a review that
-  // did not happen - and do not notify, since nothing needs reviewing.
+  // The write was refused - either an admin had already finalized this
+  // top-up, or the customer replaced its slip while this run was in flight.
+  // Report the authoritative state instead of claiming a review that did not
+  // happen - and do not notify, since nothing needs reviewing.
   if (!applied) {
-    return await buildSupersededResult(topupId);
+    return await buildSupersededResult(topupId, expectedSlipVersion);
   }
 
   // Send Discord notification for OCR review (non-blocking)
@@ -671,7 +737,8 @@ async function handleDuplicate(
   verificationResult: VerificationResult,
   userMessage: string,
   parseResult?: any,
-  topup?: any // Topup object for Discord notification
+  topup?: any, // Topup object for Discord notification
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
 ): Promise<WalletTopupSubmissionResult> {
   const duplicateType = verificationResult.reviewReason?.replace("DUPLICATE_", "") || "UNKNOWN";
   const updateData = {
@@ -693,7 +760,11 @@ async function handleDuplicate(
     approvalSource: "manual",
   };
 
-  const { applied, topup: updatedTopup } = await db.applyWalletTopupOcrUpdate(topupId, updateData);
+  const { applied, topup: updatedTopup } = await db.applyWalletTopupOcrUpdate(
+    topupId,
+    updateData,
+    expectedSlipVersion
+  );
 
   if (!updatedTopup) {
     throw new TRPCError({
@@ -702,10 +773,11 @@ async function handleDuplicate(
     });
   }
 
-  // Refused: the top-up was finalized by an admin first. A duplicate finding
-  // must not reopen a decided record.
+  // Refused: the top-up was finalized by an admin first, or its slip was
+  // replaced while this run was in flight. A duplicate finding must not
+  // reopen a decided record or stomp a newer slip's evidence.
   if (!applied) {
-    return await buildSupersededResult(topupId);
+    return await buildSupersededResult(topupId, expectedSlipVersion);
   }
 
   // Send Discord notification for duplicate detection (non-blocking)
@@ -757,7 +829,8 @@ async function handleOCRError(
    * Without this the top-up would carry NO strong identifier and manual
    * approval - which now refuses such records - could never clear it.
    */
-  extractedData?: ExtractedSlipData
+  extractedData?: ExtractedSlipData,
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
 ): Promise<WalletTopupSubmissionResult> {
   const updateData: any = {
     status: "pending_review",
@@ -771,7 +844,11 @@ async function handleOCRError(
     updateData.extractedData = JSON.stringify(extractedData);
   }
 
-  const { applied, topup: updatedTopup } = await db.applyWalletTopupOcrUpdate(topupId, updateData);
+  const { applied, topup: updatedTopup } = await db.applyWalletTopupOcrUpdate(
+    topupId,
+    updateData,
+    expectedSlipVersion
+  );
 
   if (!updatedTopup) {
     throw new TRPCError({
@@ -780,9 +857,10 @@ async function handleOCRError(
     });
   }
 
-  // Refused: an OCR failure arriving after a human decision must not undo it.
+  // Refused: an OCR failure arriving after a human decision must not undo
+  // it, and must not overwrite a slip the customer has already replaced.
   if (!applied) {
-    return await buildSupersededResult(topupId);
+    return await buildSupersededResult(topupId, expectedSlipVersion);
   }
 
   // Send Discord notification for OCR error (non-blocking)

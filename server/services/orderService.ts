@@ -411,6 +411,41 @@ export class SlipVersionChangedError extends Error {
 }
 
 /**
+ * The persisted reviewReason a Recheck durably writes when it detects the
+ * SAME stored slip URL yielding two different byte hashes mid-run (the
+ * object was mutated in place, not replaced). See
+ * ocrRecheckService.ts's "INTEGRITY: the stored bytes must not change
+ * mid-recheck" block. Exported so approval enforcement and its tests share
+ * one literal rather than two copies drifting apart.
+ */
+export const SLIP_INTEGRITY_BLOCK_REASON = "SLIP_FILE_HASH_CHANGED_DURING_RECHECK";
+
+/**
+ * Raised when a payment is reviewable and its slip version matches, but a
+ * prior Recheck durably flagged that this exact slip's stored bytes changed
+ * mid-run (SLIP_INTEGRITY_BLOCK_REASON). Approving now would let identifiers
+ * recovered from the OLD bytes be claimed while the URL currently serves
+ * DIFFERENT bytes - the same "stale identifiers, current display" shape as
+ * SlipVersionChangedError, just reached via in-place mutation instead of a
+ * new upload. Cleared only by publishing a genuine replacement slip (which
+ * already clears reviewReason as part of its atomic publish) or by a later
+ * stable Recheck of this same slip (two matching hashes), whose final write
+ * overwrites reviewReason with its own fresh value.
+ */
+export class SlipIntegrityBlockedError extends Error {
+  readonly code = "SLIP_INTEGRITY_BLOCKED";
+  constructor(paymentId: number) {
+    super(
+      `SLIP_INTEGRITY_BLOCKED: payment ${paymentId}'s slip was found to have changed bytes at ` +
+        `the same URL during a prior Recheck, and that finding has not yet been cleared. ` +
+        `Approval is refused until a stable Recheck re-establishes integrity for this exact ` +
+        `slip, or the customer uploads a genuine replacement.`
+    );
+    this.name = "SlipIntegrityBlockedError";
+  }
+}
+
+/**
  * THE ONE ORDER FINANCIAL APPROVAL INVARIANT: lock, reload, require reviewable.
  *
  * Every path that can move an order payment to `approved` must call this
@@ -449,6 +484,14 @@ export async function lockAndRequireReviewablePayment(
 
   if (!isReviewablePaymentStatus(payment.status as string)) {
     throw new PaymentNotReviewableError(paymentId, String(payment.status));
+  }
+
+  // Durable slip-integrity block: refused BEFORE deriving/claiming anything,
+  // exactly where the reviewable check sits - a same-URL byte mutation is
+  // the same class of "current display vs. claimable identifiers" mismatch
+  // as a slip replacement, just detected a different way.
+  if (payment.reviewReason === SLIP_INTEGRITY_BLOCK_REASON) {
+    throw new SlipIntegrityBlockedError(paymentId);
   }
 
   if (

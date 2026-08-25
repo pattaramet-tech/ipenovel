@@ -598,12 +598,43 @@ describe("recheck may add a strong identifier but never remove one", () => {
       "if (preOcrFileHash && recomputedFileHash && recomputedFileHash !== preOcrFileHash)"
     );
     expect(start).toBeGreaterThan(-1);
-    const body = code.slice(start, start + 1800);
-    expect(body).toMatch(/SLIP_FILE_HASH_CHANGED_DURING_RECHECK/);
+    const body = code.slice(start, start + 2200);
+    expect(body).toMatch(/SLIP_INTEGRITY_BLOCK_REASON/);
     expect(body).toMatch(/readyForAdminApproval: false/);
     expect(body).toMatch(/verificationPassed: false/);
-    // It returns before the conditional update, so HASH_A is not overwritten.
+    // It returns before the EXTRACTION update further down (effectiveFileHash/
+    // extractedWithFile), so HASH_A's persisted extraction is not overwritten.
     expect(body).toMatch(/return \{/);
+    expect(code.indexOf("const effectiveFileHash =")).toBeGreaterThan(
+      code.indexOf("return {", start)
+    );
+  });
+
+  it("the mismatch is durably persisted, not just returned - IPE-001 P2", () => {
+    // A same-URL byte mutation must block normal Approve until integrity is
+    // re-established, not merely be logged and forgotten with this response.
+    const start = code.indexOf(
+      "if (preOcrFileHash && recomputedFileHash && recomputedFileHash !== preOcrFileHash)"
+    );
+    const returnIdx = code.indexOf("return {", start);
+    const body = code.slice(start, returnIdx);
+    expect(body).toMatch(/const wroteBlock = await db\.updatePaymentIfNotFinalized\(/);
+    expect(body).toMatch(/reviewReason: SLIP_INTEGRITY_BLOCK_REASON/);
+    // Guarded by the same slip-version binding as every other conditional
+    // write in this function - a genuine replacement (which already clears
+    // reviewReason on publish) must not have this stale block written onto it.
+    expect(body).toMatch(/slipVersionAtStart/);
+    expect(body).toMatch(/if \(!wroteBlock\) \{/);
+    expect(body).toMatch(/return await buildSupersededResult\(/);
+  });
+
+  it("the shared block reason is exported from orderService, not duplicated as a literal", () => {
+    const orderCode = readCode("server/services/orderService.ts");
+    expect(orderCode).toMatch(
+      /export const SLIP_INTEGRITY_BLOCK_REASON = "SLIP_FILE_HASH_CHANGED_DURING_RECHECK";/
+    );
+    expect(code).toMatch(/import \{ sameSlipVersion, SLIP_INTEGRITY_BLOCK_REASON \} from "\.\/orderService"/);
+    expect(code).not.toMatch(/"SLIP_FILE_HASH_CHANGED_DURING_RECHECK"/);
   });
 
   it("the integrity stop happens BEFORE any persistence of the new extraction", () => {
