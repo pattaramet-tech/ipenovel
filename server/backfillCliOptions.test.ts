@@ -211,8 +211,21 @@ describe("registry classification is not satisfied by a partial match", () => {
   // see server/services/boundResolutionAndAliasCoverage.test.ts. These
   // assertions moved with it.
   it("only counts a row represented when THIS source owns EVERY identifier", () => {
-    expect(lib).toMatch(/ownedByThisSourceCount !== present\.length/);
-    expect(lib).toMatch(/findings\.length > 0/);
+    // IPE-001-C01: a missing fileHash on an otherwise same-source claim is no
+    // longer folded into this same "any unclaimed field -> collision" rule -
+    // it is a dedicated, repairable state (see the needs_file_hash test
+    // below) so a claim already covering another identifier isn't dragged
+    // into manual review purely for a gap the tool itself can safely fill.
+    // Every OTHER field still requires full same-source ownership.
+    expect(lib).toMatch(/if \(findings\.length > 0\) \{/);
+    expect(lib).toMatch(/return \{ kind: "collision", findings \};/);
+  });
+
+  it("a same-source claim missing only this row's fileHash is repairable, not a collision", () => {
+    expect(lib).toMatch(/missingFileHashOnSameSource/);
+    expect(lib).toMatch(
+      /return \{ kind: "needs_file_hash", claim: sameSourceClaim, expected: ids\.fileHash \};/
+    );
   });
 
   it("reports an identifier that is unclaimed while a sibling is claimed", () => {

@@ -40,8 +40,27 @@ export const STRONG_FIELDS = [
  *   undefined                                   nothing matched; claimable
  *   { kind: "represented" }                     fully covered, alias included
  *   { kind: "needs_alias", claim, expected }    strong IDs covered, alias absent
+ *   { kind: "needs_file_hash", claim, expected } same-source claim covered by
+ *                                                 another strong identifier,
+ *                                                 but is missing this row's
+ *                                                 exact fileHash - repairable
  *   { kind: "alias_inconsistent", claim, expected, existing }
  *   { kind: "collision", findings: [...] }
+ *
+ * ── Why fileHash gets its own repair path, not a collision report ─────────
+ * A row already owning its claim via referenceHash/qrPayloadHash, but whose
+ * extractedData carried no fileHash at the time an EARLIER backfill run
+ * wrote the claim, is not a foreign or partial-ownership problem - nobody
+ * else owns that fileHash, it simply was never captured. Reporting it as a
+ * generic "(unclaimed)" collision would force manual review for something
+ * mechanically repairable, and worse, a rerun that never repairs it would
+ * happily consider the row "represented" via its other identifiers forever,
+ * silently leaving the file axis with no replay coverage at all - exactly
+ * the gap that let a same-image replay through when OCR could not recover a
+ * reference. So a fileHash that is unclaimed ANYWHERE, while every OTHER
+ * present identifier this row carries is already owned by THIS source, is
+ * classified as a repair, not a collision - mirroring `needs_alias` below.
+ * A fileHash claimed by a DIFFERENT source is still a genuine collision.
  */
 export function classifyRepresentation(ids, current, claimRows, expectedAliasHash) {
   const present = STRONG_FIELDS.filter(([, field]) => Boolean(ids[field]));
@@ -51,13 +70,19 @@ export function classifyRepresentation(ids, current, claimRows, expectedAliasHas
   if (rows.length === 0) return undefined;
 
   const findings = [];
-  let ownedByThisSourceCount = 0;
   let sameSourceClaim;
+  let missingFileHashOnSameSource = false;
 
   for (const [kind, field] of present) {
     const owner = rows.find((r) => r[field] && r[field] === ids[field]);
 
     if (!owner) {
+      if (field === "fileHash") {
+        // Deferred: only a genuine repair if every OTHER present identifier
+        // resolves to this same source - decided once the loop completes.
+        missingFileHashOnSameSource = true;
+        continue;
+      }
       // This identifier is NOT in the registry while a sibling identifier is.
       // Marking the row represented here would leave this hash unclaimed.
       findings.push({
@@ -74,7 +99,6 @@ export function classifyRepresentation(ids, current, claimRows, expectedAliasHas
       owner.sourceType === current.sourceType && owner.sourceId === current.sourceId;
 
     if (sameSource) {
-      ownedByThisSourceCount += 1;
       sameSourceClaim = owner;
     } else {
       findings.push({
@@ -87,8 +111,18 @@ export function classifyRepresentation(ids, current, claimRows, expectedAliasHas
     }
   }
 
-  if (findings.length > 0 || ownedByThisSourceCount !== present.length) {
+  if (findings.length > 0) {
     return { kind: "collision", findings };
+  }
+
+  if (missingFileHashOnSameSource) {
+    if (!sameSourceClaim) {
+      // No other present identifier resolved to a same-source claim either -
+      // this row is not represented by anything yet; the normal insert path
+      // (which already carries fileHash) claims it fresh.
+      return undefined;
+    }
+    return { kind: "needs_file_hash", claim: sameSourceClaim, expected: ids.fileHash };
   }
 
   // Strong coverage is complete. Now the ADVISORY coverage.

@@ -162,9 +162,12 @@ const stats = {
    *  extractedData carried no strong identifier at all (NULL or otherwise). */
   fileHashRecovered: 0,
   /**
-   * Approved rows that, even after fileHash recovery was attempted, still
-   * have NO strong identifier. UNRESOLVED - never silently skipped, never
-   * counted as coverage, and this alone blocks --mark-complete.
+   * Approved rows left with NO exact identifier at all: either extractedData
+   * carried none and fileHash recovery also failed, OR extractedData carried
+   * another exact identifier (reference/QR) but exact fileHash coverage could
+   * not be established. Reference/QR presence never excuses missing file-byte
+   * replay coverage - either way this is UNRESOLVED, never silently skipped,
+   * never counted as coverage, and alone blocks --mark-complete.
    */
   noIdentifier: 0,
   unresolvedRows: [],
@@ -174,6 +177,14 @@ const stats = {
   /** Rows still lacking required alias coverage when the run ends. */
   aliasUncovered: 0,
   aliasInconsistencies: [],
+  /**
+   * Rows already represented via another strong identifier whose same-source
+   * claim was missing exact fileHash coverage - repaired by adding it.
+   */
+  wouldAddFileHash: 0,
+  fileHashCoverageAdded: 0,
+  /** Rows still lacking required fileHash coverage when the run ends. */
+  fileHashUncovered: 0,
   failures: [],
   paymentMaxId: 0,
   walletTopupMaxId: 0,
@@ -252,6 +263,20 @@ async function verifyAliasPersisted(claimId, expectedAliasHash) {
   return rows?.[0]?.legacyReferenceUpperHash === expectedAliasHash;
 }
 
+/**
+ * Re-reads one claim and confirms the recovered fileHash actually landed. An
+ * enrichment that silently affected zero rows must not be counted as
+ * coverage.
+ */
+async function verifyFileHashPersisted(claimId, expectedFileHash) {
+  const rows = await db
+    .select()
+    .from(schema.paymentSlipClaims)
+    .where(eq(schema.paymentSlipClaims.id, claimId))
+    .limit(1);
+  return rows?.[0]?.fileHash === expectedFileHash;
+}
+
 async function processRows(sourceType, rows) {
   for (const row of rows) {
     stats.scanned += 1;
@@ -265,11 +290,15 @@ async function processRows(sourceType, rows) {
     if (derived.recoveredByReparse) stats.recoveredByReparse += 1;
 
     let ids = derived.identifiers;
-    if (!identifiers.hasStrongIdentifier(ids)) {
-      // extractedData carried no strong identifier - which includes the case
-      // where it is NULL entirely. Before giving up, try to recover the
-      // exact-file identifier server-side from this row's OWN stored slip
-      // bytes, exactly as a live submission would.
+    if (!ids.fileHash) {
+      // extractedData carried no exact fileHash - whether or not it carried
+      // another exact identifier (reference/QR), and whether or not it is
+      // NULL entirely. A pre-existing reference/QR must never silently
+      // excuse missing file-byte replay coverage: replaying the same image
+      // when OCR is disabled or fails could otherwise present only a
+      // fileHash and evade a claim that only ever recorded the reference.
+      // Recover it server-side from this row's OWN stored slip bytes,
+      // exactly as a live submission would.
       const recovery = await recoverFileHashIdentifier({
         slipImageUrl: row.slipImageUrl,
         computeSlipFileHash: fileHashService.computeSlipFileHash,
@@ -278,10 +307,22 @@ async function processRows(sourceType, rows) {
       if (recovery.fileHash) {
         ids = { ...ids, fileHash: recovery.fileHash };
         stats.fileHashRecovered += 1;
-      } else {
+      } else if (!identifiers.hasStrongIdentifier(ids)) {
         // UNRESOLVED: no identifier in extractedData AND no recoverable file
         // hash. This row has NO claim and remains replayable - it must block
         // --mark-complete, never be silently skipped.
+        stats.noIdentifier += 1;
+        stats.unresolvedRows.push({
+          source: `${sourceType}#${row.id}`,
+          reason: recovery.unresolvedReason,
+        });
+        continue;
+      } else {
+        // UNRESOLVED: another exact identifier (reference/QR) exists, but
+        // exact fileHash coverage could not be established for this row. Per
+        // the invariant above, that identifier does NOT excuse the gap - this
+        // row is still unresolved and still blocks --mark-complete, even
+        // though it "has" a strong identifier.
         stats.noIdentifier += 1;
         stats.unresolvedRows.push({
           source: `${sourceType}#${row.id}`,
@@ -376,6 +417,66 @@ async function processRows(sourceType, rows) {
           stage: "alias enrichment",
           error: error?.code ?? error?.message ?? "unknown",
         });
+      }
+      continue;
+    }
+
+    if (registry?.kind === "needs_file_hash") {
+      // Another strong identifier is fully owned by this source, but the
+      // exact fileHash this row now carries (recovered above, or already
+      // present) is absent from that same-source claim - the exact state
+      // that let a same-image replay through when its reference/QR could not
+      // be recovered. Repair the SAME claim; never insert a second one.
+      tracker.remember(ids, current);
+      noteLegacyAlias(expectedAlias, current);
+
+      if (!isLive) {
+        stats.wouldAddFileHash += 1;
+        stats.fileHashUncovered += 1;
+        console.log(
+          `  WOULD_ADD_FILE_HASH  ${sourceType}#${row.id}  claim#${registry.claim?.id}`
+        );
+        continue;
+      }
+
+      try {
+        await db
+          .update(schema.paymentSlipClaims)
+          .set({ fileHash: registry.expected })
+          .where(eq(schema.paymentSlipClaims.id, registry.claim.id));
+
+        // Re-read: an update that affected nothing is not coverage.
+        if (await verifyFileHashPersisted(registry.claim.id, registry.expected)) {
+          stats.fileHashCoverageAdded += 1;
+        } else {
+          stats.fileHashUncovered += 1;
+          stats.failures.push({
+            source: `${sourceType}#${row.id}`,
+            stage: "file hash enrichment",
+            error: "fileHash not present after update",
+          });
+        }
+      } catch (error) {
+        // A duplicate-key error here means this exact fileHash is ALREADY
+        // claimed by a different source - a genuine collision the pre-check
+        // (a targeted equality lookup, not a live race) missed because it
+        // only ran once at classification time.
+        const isDuplicate = error?.code === "ER_DUP_ENTRY" || error?.errno === 1062;
+        if (isDuplicate) {
+          tracker.collisions.push({
+            kind: "file",
+            identifier: "(unique index)",
+            first: "existing claim",
+            second: `${sourceType}#${row.id}`,
+          });
+        } else {
+          stats.fileHashUncovered += 1;
+          stats.failures.push({
+            source: `${sourceType}#${row.id}`,
+            stage: "file hash enrichment",
+            error: error?.code ?? error?.message ?? "unknown",
+          });
+        }
       }
       continue;
     }
@@ -506,7 +607,13 @@ try {
   console.log(`  already represented      : ${stats.alreadyClaimed}`);
   console.log(`  recovered by re-parse    : ${stats.recoveredByReparse}`);
   console.log(`  file hash recovered      : ${stats.fileHashRecovered}`);
-  console.log(`  UNRESOLVED (no identifier): ${stats.noIdentifier}`);
+  console.log(`  UNRESOLVED (no exact fileHash coverage): ${stats.noIdentifier}`);
+  console.log(
+    isLive
+      ? `  file hash coverage added : ${stats.fileHashCoverageAdded}`
+      : `  would add file hash cover: ${stats.wouldAddFileHash}`
+  );
+  console.log(`  rows lacking file hash cover : ${stats.fileHashUncovered}`);
   console.log(
     isLive
       ? `  claims INSERTED          : ${stats.claimed}`
@@ -578,7 +685,9 @@ try {
 
   if (stats.unresolvedRows.length > 0) {
     console.log(
-      "\n[backfill] UNRESOLVED - no strong identifier in extractedData, and no fileHash could be recovered:"
+      "\n[backfill] UNRESOLVED - no exact fileHash could be established for this row " +
+        "(a reference/QR identifier, if present, does not excuse missing file-byte " +
+        "replay coverage):"
     );
     for (const u of stats.unresolvedRows) {
       // Only sourceType/sourceId and a fixed reason code - never a slip URL,
@@ -586,9 +695,10 @@ try {
       console.log(`  - ${u.source}  (${u.reason})`);
     }
     console.log(
-      "\n  This approved record has NO claim in the registry and remains replayable.\n" +
-        "  It has NOT been skipped silently: it blocks --mark-complete until an\n" +
-        "  operator resolves it (e.g. by locating the original slip bytes)."
+      "\n  This approved record is missing exact fileHash replay coverage and remains\n" +
+        "  replayable on the file axis. It has NOT been skipped silently: it blocks\n" +
+        "  --mark-complete until an operator resolves it (e.g. by locating the\n" +
+        "  original slip bytes)."
     );
   }
 
@@ -596,18 +706,24 @@ try {
   // Required ADVISORY coverage counts toward completion just as strong
   // coverage does. Completion disables the historical scan, so a legacy row
   // whose claim carries no alias would be left with NO protection at all
-  // against a mixed-case replay - the hole this rule closes.
+  // against a mixed-case replay - the hole this rule closes. Required exact
+  // fileHash coverage is the same idea for the file axis: a row already
+  // represented via reference/QR whose same-source claim never captured its
+  // exact fileHash would be left with no file-byte replay protection.
   const aliasCoverageComplete =
     stats.aliasUncovered === 0 && stats.aliasInconsistencies.length === 0;
+  const fileHashCoverageComplete = stats.fileHashUncovered === 0;
 
-  // Every APPROVED row must land in one of: represented/claimed, claimable
-  // via a recovered identifier, or explicitly UNRESOLVED (stats.noIdentifier
-  // > 0) - which blocks completion. There is no fourth state where a row is
-  // silently skipped but completion is still allowed.
+  // Every APPROVED row must land in one of: represented/claimed with full
+  // exact fileHash coverage, claimable via a recovered identifier, or
+  // explicitly UNRESOLVED (stats.noIdentifier > 0) - which blocks
+  // completion. There is no fourth state where a row is silently skipped but
+  // completion is still allowed.
   const cleanRun =
     stats.failures.length === 0 &&
     tracker.collisions.length === 0 &&
     aliasCoverageComplete &&
+    fileHashCoverageComplete &&
     stats.noIdentifier === 0 &&
     reachedEof.payments &&
     reachedEof.walletTopups;
@@ -619,6 +735,7 @@ try {
           "           safety scan, so it is only written after a fully clean run:\n" +
           `             failures=${stats.failures.length} collisions=${tracker.collisions.length} ` +
           `aliasUncovered=${stats.aliasUncovered} aliasInconsistencies=${stats.aliasInconsistencies.length} ` +
+          `fileHashUncovered=${stats.fileHashUncovered} ` +
           `noIdentifier=${stats.noIdentifier}` +
           ` paymentsEOF=${reachedEof.payments} topupsEOF=${reachedEof.walletTopups}\n` +
           "           Resolve the findings above and re-run."

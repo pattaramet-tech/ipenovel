@@ -265,9 +265,14 @@ describe("E/F. unresolved rows fail closed, never silently pass as 'no conflict'
     expect(computeSpy).not.toHaveBeenCalled();
   });
 
-  it("an unresolved row never blocks a submission that carries no fileHash at all", async () => {
-    // Nothing to compare on the file axis, so the row is fully resolved by
-    // the (non-matching) reference check alone.
+  it("IPE-001-C01: a row this scan cannot evaluate at all is STILL unresolved, even when the incoming submission carries no fileHash to compare", async () => {
+    // Previously, an incoming submission with no fileHash short-circuited
+    // straight to "no conflict" before this row's own resolvability was even
+    // considered - so a transient failure computing the INCOMING fileHash
+    // (or any flow that never carries one) let a row with a totally unknown
+    // file identity slide through as clean. The row's own resolvability is
+    // what must decide: no persisted hash, no slipImageUrl to recover from ->
+    // genuinely unknown -> fails closed, regardless of the incoming side.
     const computeSpy = vi.spyOn(slipFileHashService, "computeSlipFileHash");
     const tx = makeFakeTx({
       approvedPayments: [{ id: 33, extractedData: null, slipImageUrl: null }],
@@ -275,6 +280,76 @@ describe("E/F. unresolved rows fail closed, never silently pass as 'no conflict'
 
     const outcome = await claimSlip(
       { sourceType: "wallet_topup", sourceId: 504, userId: 1, identifiers: { referenceHash: REF_HASH } },
+      tx
+    );
+
+    expect(outcome.claimed).toBe(false);
+    if (!outcome.claimed) {
+      expect(outcome.reason).toBe("legacy_scan_unresolved");
+    }
+    // No network/recovery call was even attempted - there is no slipImageUrl
+    // for this row to recover from, independent of the incoming fileHash gap.
+    expect(computeSpy).not.toHaveBeenCalled();
+  });
+
+  it("IPE-001-C01: when the row's OWN identity IS resolvable, recovery is now attempted even without an incoming fileHash - and a failure there still fails closed", async () => {
+    vi.spyOn(slipFileHashService, "computeSlipFileHash").mockResolvedValue(undefined);
+    const tx = makeFakeTx({
+      approvedPayments: [{ id: 34, extractedData: null, slipImageUrl: "r2p:payment-slips/gone" }],
+    });
+
+    const outcome = await claimSlip(
+      { sourceType: "wallet_topup", sourceId: 505, userId: 1, identifiers: { referenceHash: REF_HASH } },
+      tx
+    );
+
+    expect(outcome.claimed).toBe(false);
+    if (!outcome.claimed) {
+      expect(outcome.reason).toBe("legacy_scan_unresolved");
+    }
+    expect(slipFileHashService.computeSlipFileHash).toHaveBeenCalledWith("r2p:payment-slips/gone");
+  });
+
+  it("F. a row that IS fully evaluable via its own persisted fileHash is NOT converted to unresolved merely because the incoming submission lacks one", async () => {
+    // A merely missing incoming fileHash must not, by itself, turn every
+    // fully evaluable nonmatch into unresolved - only a row whose OWN
+    // identity cannot be established does that.
+    const computeSpy = vi.spyOn(slipFileHashService, "computeSlipFileHash");
+    const tx = makeFakeTx({
+      approvedPayments: [
+        { id: 35, extractedData: JSON.stringify({ fileHash: FILE_B }), slipImageUrl: null },
+      ],
+    });
+
+    const outcome = await claimSlip(
+      { sourceType: "wallet_topup", sourceId: 506, userId: 1, identifiers: { referenceHash: REF_HASH } },
+      tx
+    );
+
+    expect(outcome.claimed).toBe(true);
+    expect(computeSpy).not.toHaveBeenCalled();
+  });
+
+  it("F2. a row with reference evidence that simply does NOT match is a resolved nonmatch, not unresolved - even with no incoming fileHash and no recoverable image", async () => {
+    // The row has SOME reference evidence (it just isn't this submission's).
+    // That already independently proves it is not a match; the file axis
+    // being unknown on top of that must not convert it to unresolved -
+    // otherwise every approved historical row with an unrelated reference
+    // and no stored image would fail-close every unrelated new submission
+    // whose own fileHash happens to be unavailable.
+    const computeSpy = vi.spyOn(slipFileHashService, "computeSlipFileHash");
+    const tx = makeFakeTx({
+      approvedPayments: [
+        {
+          id: 36,
+          extractedData: JSON.stringify({ reference: "SOME-OTHER-REFERENCE", amount: 1 }),
+          slipImageUrl: null,
+        },
+      ],
+    });
+
+    const outcome = await claimSlip(
+      { sourceType: "wallet_topup", sourceId: 507, userId: 1, identifiers: { referenceHash: REF_HASH } },
       tx
     );
 
@@ -359,8 +434,11 @@ describe("H. an exact match still outranks BOTH a lossy fold and an unresolved r
     if (!outcome.claimed && outcome.reason === "already_claimed") {
       expect(outcome.existingSourceId).toBe(2);
     }
-    // No fileHash was ever supplied, so recovery is never attempted for the
-    // unresolved-looking row - the reference check alone already resolves it.
+    // Row 1 has no reference match and no slipImageUrl to recover from, so it
+    // is unresolved WITHOUT a network call (independent of the incoming
+    // fileHash gap - see IPE-001-C01 tests above); the later exact reference
+    // match still outranks that unresolved fallback, exactly as it outranks
+    // a lossy fold.
     expect(computeSpy).not.toHaveBeenCalled();
   });
 });

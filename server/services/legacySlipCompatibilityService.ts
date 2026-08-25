@@ -362,10 +362,8 @@ export async function findLegacyApprovedDuplicate(
         };
       }
 
-      const referenceHit = referenceMatches(
-        referenceHashCandidatesFromExtractedData(row.extractedData),
-        identifiers
-      );
+      const referenceCandidates = referenceHashCandidatesFromExtractedData(row.extractedData);
+      const referenceHit = referenceMatches(referenceCandidates, identifiers);
       if (referenceHit) {
         return {
           sourceType,
@@ -376,51 +374,62 @@ export async function findLegacyApprovedDuplicate(
         };
       }
 
-      // Neither the reference nor a PERSISTED file hash matched. If the
-      // incoming submission has nothing to compare on the file axis at all,
-      // this row is fully resolved by the checks above - genuinely no
-      // conflict, nothing more to know.
+      // Neither the reference nor a PERSISTED file hash matched. If this row
+      // carried SOME reference evidence, that already independently resolves
+      // it as NOT a match on its own terms - a fully evaluable nonmatch, even
+      // though none of it happened to match the incoming submission. The
+      // file axis being unknown on top of that does not need to fail closed;
+      // only a row with NO usable extraction at all leaves genuinely no
+      // evidence to rule out replay.
+      if (referenceCandidates.length > 0) return undefined;
+
+      // Establish THIS ROW's own file identity now, regardless of whether
+      // the incoming submission happens to carry a fileHash to compare it
+      // to. Gating recovery on the incoming side used to mean: whenever the
+      // incoming submission's own fileHash computation failed for any reason
+      // (fetch failure, timeout, missing bytes), every historical row with
+      // no usable extraction and no recoverable stored image was silently
+      // treated as "no conflict" - even though its identity was completely
+      // unknown. We do not know whether that row IS this submission, and a
+      // transient failure on the incoming side is not evidence that it
+      // isn't - so the row's own resolvability is what decides, not what
+      // happened to be available for this particular comparison.
+      let resolvedFileHash = storedFileHash;
+      if (!resolvedFileHash) {
+        if (!row.slipImageUrl) {
+          // No persisted hash AND nothing to recover from. This row's file
+          // identity is completely unknown - fail closed rather than
+          // silently treating an unverifiable historical row as resolved.
+          return { sourceType, sourceId: row.id, kind: "unresolved", matchedBy: "unresolved" };
+        }
+
+        // Recover it, server-side, from the row's OWN stored bytes - never a
+        // client value, URL text, filename, or weak fingerprint.
+        resolvedFileHash = await computeSlipFileHash(row.slipImageUrl);
+        if (!resolvedFileHash) {
+          // Recovery was attempted and failed (missing bytes, fetch/timeout,
+          // oversized, not a private ref). Still unknown - fail closed.
+          return { sourceType, sourceId: row.id, kind: "unresolved", matchedBy: "unresolved" };
+        }
+      }
+
+      // The row's own file identity is now known (persisted or recovered).
+      // If the incoming submission has nothing to compare it to, this row is
+      // still fully resolved ON ITS OWN TERMS - genuinely no conflict,
+      // nothing more to know from this row.
       if (!identifiers.fileHash) return undefined;
 
-      // The incoming submission DOES carry a fileHash, and this row has no
-      // persisted one to compare it against. We cannot conclude "no match"
-      // without knowing this row's actual file identity - a re-upload of the
-      // exact same bytes would otherwise slip through simply because an
-      // older OCR-disabled/manual-approval flow never wrote extractedData.
-      // Recover it, server-side, from the row's OWN stored bytes - never a
-      // client value, URL text, filename, or weak fingerprint.
-      if (storedFileHash) {
-        // A persisted hash existed but did not equal the incoming one
-        // (checked above) - this row IS resolved, just not a match.
-        return undefined;
-      }
-
-      if (!row.slipImageUrl) {
-        // No persisted hash AND nothing to recover from. This row's file
-        // identity is completely unknown - fail closed rather than silently
-        // treating an unverifiable historical row as "no conflict".
-        return { sourceType, sourceId: row.id, kind: "unresolved", matchedBy: "unresolved" };
-      }
-
-      const recovered = await computeSlipFileHash(row.slipImageUrl);
-      if (!recovered) {
-        // Recovery was attempted and failed (missing bytes, fetch/timeout,
-        // oversized, not a private ref). Still unknown - fail closed.
-        return { sourceType, sourceId: row.id, kind: "unresolved", matchedBy: "unresolved" };
-      }
-
-      if (recovered === identifiers.fileHash) {
+      if (resolvedFileHash === identifiers.fileHash) {
         return {
           sourceType,
           sourceId: row.id,
           kind: "file",
           matchedBy: "file_exact",
-          evidence: "recovered_from_bytes",
+          evidence: storedFileHash ? "stored_hash" : "recovered_from_bytes",
         };
       }
 
-      // Recovery succeeded and definitively proved this row is a DIFFERENT
-      // file. Fully resolved, no conflict.
+      // Definitively a DIFFERENT file. Fully resolved, no conflict.
       return undefined;
     };
 

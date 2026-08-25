@@ -498,11 +498,44 @@ describe("a legacy row is represented only when its alias is covered too", () =>
     expect(result.findings.length).toBeGreaterThan(0);
   });
 
-  it("partial strong ownership is still a collision, checked before the alias", () => {
-    // The claim owns the reference but not this row's distinct file hash.
-    const partial = ownClaim({ fileHash: null, legacyReferenceUpperHash: ALIAS_A });
+  it("partial ownership of a NON-file identifier is still a collision, checked before the alias", () => {
+    // The claim owns the file hash but not this row's distinct reference.
+    const partial = ownClaim({ referenceHash: null, legacyReferenceUpperHash: ALIAS_A });
     const result: any = classifyRepresentation(IDS, HERE, [partial], ALIAS_A);
     expect(result.kind).toBe("collision");
+  });
+
+  it("IPE-001-C01: a same-source claim missing ONLY the fileHash is a repair, not a collision", () => {
+    // The claim owns the reference but not this row's exact fileHash - the
+    // exact gap Codex flagged: a row already represented via reference/QR
+    // whose earlier backfill run never captured its exact fileHash. This
+    // must be mechanically repairable (needs_file_hash), never a hard
+    // collision requiring manual review - reference/QR presence never
+    // excuses missing file-byte replay coverage, but neither does it block
+    // the tool from filling the gap itself.
+    const partial = ownClaim({ fileHash: null, legacyReferenceUpperHash: ALIAS_A });
+    const result: any = classifyRepresentation(IDS, HERE, [partial], ALIAS_A);
+    expect(result.kind).toBe("needs_file_hash");
+    expect(result.expected).toBe(FILE_A);
+    expect(result.claim.id).toBe(1);
+  });
+
+  it("a fileHash claimed by a DIFFERENT source is still a genuine collision", () => {
+    const own = ownClaim({ fileHash: null, legacyReferenceUpperHash: ALIAS_A });
+    const foreignFile = {
+      id: 4,
+      sourceType: "wallet_topup",
+      sourceId: 77,
+      referenceHash: HASH_B,
+      fileHash: FILE_A,
+      qrPayloadHash: null,
+      legacyReferenceUpperHash: null,
+    };
+    const result: any = classifyRepresentation(IDS, HERE, [own, foreignFile], ALIAS_A);
+    expect(result.kind).toBe("collision");
+    expect(result.findings.some((f: any) => f.detail === "claimed by a DIFFERENT source")).toBe(
+      true
+    );
   });
 
   it("nothing matched at all is claimable, not represented", () => {
@@ -566,6 +599,83 @@ describe("H. completion is refused while any required alias is missing", () => {
   it("the advisory alias grouping still does not block completion", () => {
     expect(script).toMatch(/AMBIGUOUS_LEGACY_ALIAS_GROUP/);
     expect(script).toMatch(/does NOT block completion/);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// 2b. BACKFILL: MANDATORY EXACT fileHash COVERAGE (IPE-001-C01)
+// ════════════════════════════════════════════════════════════════════════
+//
+// Codex P1: a row already carrying a reference/QR could be marked complete
+// without ever owning its exact file hash, so replaying the same image when
+// OCR is disabled/fails could present only a fileHash and evade the
+// historical claim entirely. Mirrors the alias-coverage matrix above, but
+// for the file axis.
+
+describe("I. completion is refused while any required exact fileHash coverage is missing", () => {
+  const script = readCode("scripts/backfill-slip-claims.mjs");
+
+  it("fileHash coverage is part of the clean-run rule", () => {
+    expect(script).toMatch(
+      /const fileHashCoverageComplete = stats\.fileHashUncovered === 0;/
+    );
+    const start = script.indexOf("const cleanRun =");
+    const body = script.slice(start, start + 400);
+    expect(body).toMatch(/fileHashCoverageComplete/);
+  });
+
+  it("the refusal message names the fileHash coverage counter", () => {
+    expect(script).toMatch(/fileHashUncovered=\$\{stats\.fileHashUncovered\}/);
+  });
+
+  it("a dry run reports WOULD_ADD_FILE_HASH and counts the row as uncovered", () => {
+    const start = script.indexOf('if (registry?.kind === "needs_file_hash")');
+    expect(start).toBeGreaterThan(-1);
+    const body = script.slice(start, start + 1800);
+    expect(body).toMatch(/WOULD_ADD_FILE_HASH/);
+    expect(body).toMatch(/stats\.wouldAddFileHash \+= 1/);
+    expect(body).toMatch(/stats\.fileHashUncovered \+= 1/);
+  });
+
+  it("a live run UPDATES the same claim and re-reads to confirm", () => {
+    const start = script.indexOf('if (registry?.kind === "needs_file_hash")');
+    const body = script.slice(start, script.indexOf('if (registry?.kind === "collision")', start));
+    expect(body).toMatch(/\.update\(schema\.paymentSlipClaims\)/);
+    expect(body).toMatch(/\.set\(\{ fileHash: registry\.expected \}\)/);
+    expect(body).toMatch(/await verifyFileHashPersisted\(registry\.claim\.id, registry\.expected\)/);
+    // No second claim row is ever inserted for a fileHash repair.
+    expect(body).not.toMatch(/\.insert\(schema\.paymentSlipClaims\)/);
+  });
+
+  it("an enrichment that did not land is a failure, not coverage", () => {
+    const start = script.indexOf('if (registry?.kind === "needs_file_hash")');
+    const body = script.slice(start, start + 1800);
+    expect(body).toMatch(/fileHash not present after update/);
+  });
+
+  it("a duplicate-key error during fileHash enrichment is reported as a genuine collision, never swallowed", () => {
+    const start = script.indexOf('if (registry?.kind === "needs_file_hash")');
+    const body = script.slice(start, script.indexOf('if (registry?.kind === "collision")', start));
+    expect(body).toMatch(/ER_DUP_ENTRY/);
+    expect(body).toMatch(/tracker\.collisions\.push/);
+  });
+
+  it("--mark-complete is refused while fileHash coverage is incomplete", () => {
+    const start = script.indexOf("if (!cleanRun) {");
+    const body = script.slice(start, start + 700);
+    expect(body).toMatch(/fileHashUncovered=\$\{stats\.fileHashUncovered\}/);
+  });
+});
+
+describe("required fileHash coverage via classifyRepresentation", () => {
+  it("a fresh row with nothing claimed yet is claimable, not repairable - the normal insert already carries fileHash", () => {
+    expect(classifyRepresentation(IDS, HERE, [], undefined)).toBeUndefined();
+  });
+
+  it("a row with no fileHash identifier at all never triggers file-hash repair", () => {
+    expect(
+      classifyRepresentation({ referenceHash: HASH_A }, HERE, [ownClaim({ fileHash: null })], undefined)
+    ).toEqual({ kind: "represented" });
   });
 });
 

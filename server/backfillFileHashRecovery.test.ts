@@ -93,14 +93,35 @@ describe("the backfill script wires recovery in for every row with no strong ide
   });
 
   it("E/F. recovery is attempted before a row is ever counted unresolved", () => {
-    const start = script.indexOf("if (!identifiers.hasStrongIdentifier(ids)) {");
+    // IPE-001-C01: recovery is no longer gated on "no strong identifier at
+    // all" - a pre-existing reference/QR must not excuse missing exact
+    // fileHash coverage, so recovery is attempted whenever fileHash itself is
+    // absent, regardless of what else the row carries.
+    const start = script.indexOf("if (!ids.fileHash) {");
     expect(start).toBeGreaterThan(-1);
-    const body = script.slice(start, start + 1200);
+    const body = script.slice(start, start + 2000);
     expect(body).toMatch(/const recovery = await recoverFileHashIdentifier\(/);
     expect(body).toMatch(/slipImageUrl: row\.slipImageUrl/);
     expect(body).toMatch(/computeSlipFileHash: fileHashService\.computeSlipFileHash/);
     expect(body).toMatch(/stats\.fileHashRecovered \+= 1/);
-    expect(body).toMatch(/stats\.noIdentifier \+= 1/);
+    // Two distinct unresolved branches - no identifier at all, and another
+    // identifier present but fileHash still unrecoverable - both count.
+    expect(body.match(/stats\.noIdentifier \+= 1/g)?.length).toBe(2);
+    expect(body).toMatch(/else if \(!identifiers\.hasStrongIdentifier\(ids\)\) \{/);
+  });
+
+  it("a reference/QR identifier does not excuse missing fileHash coverage - still unresolved", () => {
+    // readCode() strips comments, so this checks the executable branch shape
+    // directly: recovery failure with ANOTHER identifier present takes the
+    // `else` arm (not the `hasStrongIdentifier` arm) and still lands on the
+    // same unresolved bookkeeping - see the previous test for the count.
+    const start = script.indexOf("if (!ids.fileHash) {");
+    const body = script.slice(start, start + 2000);
+    const elseIdx = body.indexOf("} else {", body.indexOf("else if (!identifiers.hasStrongIdentifier(ids)) {"));
+    expect(elseIdx).toBeGreaterThan(-1);
+    const elseBody = body.slice(elseIdx, elseIdx + 300);
+    expect(elseBody).toMatch(/stats\.noIdentifier \+= 1/);
+    expect(elseBody).toMatch(/stats\.unresolvedRows\.push/);
   });
 
   it("G. the scan predicate no longer requires extractedData IS NOT NULL", () => {
