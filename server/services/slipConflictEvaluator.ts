@@ -30,9 +30,10 @@
  * exactly why the UNIQUE constraint remains the authority.
  */
 
-import { findExistingClaim, findClaimByLegacyAlias } from "./slipClaimService";
+import { findExistingClaim, findClaimsByLegacyAlias } from "./slipClaimService";
 import {
   findLegacyApprovedDuplicate,
+  findLegacyAliasGroupMembers,
   isLegacyStrongMatch,
 } from "./legacySlipCompatibilityService";
 import { isLegacyScanRequired } from "./slipBackfillStateService";
@@ -58,6 +59,27 @@ export type SlipConflict =
       /** Always true - this evidence is advisory, never proof. */
       advisory: true;
       requiresAdminResolution: true;
+      legacyAliasHash?: string;
+    }
+  | {
+      /**
+       * MORE THAN ONE historical source shares this lossy alias. A human
+       * resolution must never waive it by adjudicating just one arbitrary
+       * member - the incoming submission could equally be a replay of a
+       * DIFFERENT member the admin never saw. This is a distinct state from
+       * `legacy_case_ambiguity` (exactly one member) precisely because it has
+       * no audited "confirm distinct" escape: it fails closed and requires
+       * manual/operator investigation of the complete group, never an
+       * automated or single-click waiver.
+       */
+      kind: "legacy_case_ambiguity_group";
+      /** One representative member, for admin-safe display/navigation only - never implies it is the ONLY one. */
+      matchedSourceType: SlipConflictSourceType;
+      matchedSourceId: number;
+      /** Always true - never a duplicate verdict. */
+      advisory: true;
+      /** Always false - there is no single-member waiver to grant here. */
+      requiresAdminResolution: false;
       legacyAliasHash?: string;
     }
   | {
@@ -174,13 +196,31 @@ export async function evaluateSlipConflict(
   // ── 3. Lossy legacy case fold ──────────────────────────────────────────
   // Checked AFTER every exact avenue, and evaluated whether or not the scan
   // is enabled, so pre- and post-backfill produce the same verdict.
+  //
+  // COMPLETE ALIAS GROUP FIRST. A human resolution must never waive this
+  // alias by adjudicating just one arbitrary historical source: if a SECOND
+  // source also folds to it, the incoming submission could equally be a
+  // replay of the one the admin never saw. Cardinality is therefore checked
+  // BEFORE surfacing any single member, in both the post-backfill (indexed)
+  // and pre-backfill (live scan) mechanisms - they must produce the SAME
+  // semantic verdict for the same underlying data.
   if (legacyAliasHash) {
-    const aliasMatch = await findClaimByLegacyAlias(legacyAliasHash, self, tx);
-    if (aliasMatch) {
+    const aliasMatches = await findClaimsByLegacyAlias(legacyAliasHash, self, tx);
+    if (aliasMatches.length > 1) {
+      return {
+        kind: "legacy_case_ambiguity_group",
+        matchedSourceType: aliasMatches[0].sourceType,
+        matchedSourceId: aliasMatches[0].sourceId,
+        advisory: true,
+        requiresAdminResolution: false,
+        legacyAliasHash,
+      };
+    }
+    if (aliasMatches.length === 1) {
       return {
         kind: "legacy_case_ambiguity",
-        matchedSourceType: aliasMatch.sourceType,
-        matchedSourceId: aliasMatch.sourceId,
+        matchedSourceType: aliasMatches[0].sourceType,
+        matchedSourceId: aliasMatches[0].sourceId,
         advisory: true,
         requiresAdminResolution: true,
         legacyAliasHash,
@@ -189,8 +229,22 @@ export async function evaluateSlipConflict(
   }
 
   // The scan's uppercase-only hit, held back above, is the pre-backfill
-  // equivalent of the indexed alias lookup - same verdict, different mechanism.
-  if (scanHit && scanHit.matchedBy === "legacy_uppercase_only") {
+  // equivalent of the indexed alias lookup - same verdict, different
+  // mechanism. Before surfacing it as a single-member ambiguity, check
+  // whether a SECOND historical row (in either table) also folds to the same
+  // alias - findLegacyApprovedDuplicate only ever reports the one it found.
+  if (scanHit && scanHit.matchedBy === "legacy_uppercase_only" && legacyAliasHash) {
+    const groupMembers = await findLegacyAliasGroupMembers(legacyAliasHash, self, tx);
+    if (groupMembers.length > 1) {
+      return {
+        kind: "legacy_case_ambiguity_group",
+        matchedSourceType: groupMembers[0].sourceType,
+        matchedSourceId: groupMembers[0].sourceId,
+        advisory: true,
+        requiresAdminResolution: false,
+        legacyAliasHash,
+      };
+    }
     return {
       kind: "legacy_case_ambiguity",
       matchedSourceType: scanHit.sourceType,
@@ -228,6 +282,17 @@ export function describeSlipConflict(conflict: SlipConflict): string {
       `verified server-side, so historical replay protection for it is incomplete. This is ` +
       `NOT a proven duplicate - it cannot be confirmed either way. An admin must review the ` +
       `historical record manually before this can be approved.`
+    );
+  }
+
+  if (conflict.kind === "legacy_case_ambiguity_group") {
+    return (
+      `This reference matches MORE THAN ONE approved historical record - including ${where} - ` +
+      `only after letter casing is ignored. Because more than one older record shares this ` +
+      `fold, no single one of them can be safely adjudicated as "distinct": this submission ` +
+      `could be a replay of any member of that group. This is NOT proof of a duplicate. An ` +
+      `admin must manually investigate the complete group of matching historical records ` +
+      `before this can be approved.`
     );
   }
 

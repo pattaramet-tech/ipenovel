@@ -1448,7 +1448,7 @@ export const appRouter = router({
           // strength from a legacy fingerprint.
           let duplicate:
             | {
-                strength: "strong" | "legacy_case_ambiguity" | "unresolved";
+                strength: "strong" | "legacy_case_ambiguity" | "unresolved" | "legacy_case_ambiguity_group";
                 kind?: string;
                 matchedSourceType: "order_payment" | "wallet_topup";
                 matchedSourceId: number;
@@ -1535,6 +1535,24 @@ export const appRouter = router({
                   advisory: true,
                 };
                 reviewReasonOverride = "LEGACY_APPROVED_SLIP_UNRESOLVED";
+              } else if (conflict.kind === "legacy_case_ambiguity_group") {
+                // MORE THAN ONE historical source shares this alias. Reflects
+                // the SAME state normal Approve and Recheck see: Approve
+                // refuses with LEGACY_ALIAS_GROUP_AMBIGUITY
+                // (server/services/slipClaimService.ts) and never consults a
+                // resolution, since any such resolution could only ever have
+                // adjudicated one arbitrary member of the group.
+                //
+                // Deliberately NOT `requiresAdminResolution: true` - the
+                // single-member "confirm distinct" flow does not apply here;
+                // the group needs manual investigation as a whole.
+                duplicate = {
+                  strength: "legacy_case_ambiguity_group",
+                  matchedSourceType: conflict.matchedSourceType,
+                  matchedSourceId: conflict.matchedSourceId,
+                  advisory: true,
+                };
+                reviewReasonOverride = "LEGACY_ALIAS_GROUP_AMBIGUITY";
               }
 
               if (duplicate) {

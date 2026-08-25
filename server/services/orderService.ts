@@ -594,6 +594,15 @@ async function approvePaymentInTx(
     throw new Error(`LEGACY_APPROVED_SLIP_UNRESOLVED: ${describeClaimFailure(claim)}`);
   }
 
+  if (!claim.claimed && claim.reason === "legacy_alias_group_ambiguity") {
+    // MORE THAN ONE historical source shares this alias. Never a duplicate
+    // verdict and never resolvable by the single-member "confirm distinct"
+    // flow - claimSlip refused to consult any resolution for exactly this
+    // reason. Normal Approve must fail closed and direct the admin to
+    // investigate the whole group manually.
+    throw new Error(`LEGACY_ALIAS_GROUP_AMBIGUITY: ${describeClaimFailure(claim)}`);
+  }
+
   if (!claim.claimed && claim.reason === "legacy_case_ambiguity") {
     // Normal Approve must not silently bypass this, and must not treat it as
     // a duplicate. The alias is lossy, so this is an unresolved question, and

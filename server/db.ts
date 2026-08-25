@@ -4300,6 +4300,15 @@ export async function approveWalletTopup(
         );
       }
 
+      if (!claim.claimed && claim.reason === "legacy_alias_group_ambiguity") {
+        // MORE THAN ONE historical source shares this alias - never
+        // resolvable by the single-member "confirm distinct" flow.
+        throw new WalletSlipClaimError(
+          "LEGACY_ALIAS_GROUP_AMBIGUITY",
+          describeClaimFailure(claim)
+        );
+      }
+
       if (!claim.claimed && claim.reason === "legacy_case_ambiguity") {
         // Normal Approve must not silently bypass this, and must not call it
         // a duplicate - it is an unresolved question. Direct the admin to the
@@ -6462,6 +6471,15 @@ export async function approveWalletTopupWithOCR(
         if (claim.reason === "legacy_scan_unresolved") {
           throw new WalletSlipClaimError(
             "LEGACY_APPROVED_SLIP_UNRESOLVED",
+            describeClaimFailure(claim)
+          );
+        }
+
+        // MORE THAN ONE historical source shares this alias - never
+        // resolvable by the single-member "confirm distinct" flow.
+        if (claim.reason === "legacy_alias_group_ambiguity") {
+          throw new WalletSlipClaimError(
+            "LEGACY_ALIAS_GROUP_AMBIGUITY",
             describeClaimFailure(claim)
           );
         }

@@ -95,7 +95,7 @@ export interface RecheckOcrResult {
   requiresAdminResolution?: boolean;
   /** Read-only conflict finding. Approve still runs its own atomic claim. */
   duplicate?: {
-    strength: "strong" | "legacy_case_ambiguity" | "unresolved";
+    strength: "strong" | "legacy_case_ambiguity" | "unresolved" | "legacy_case_ambiguity_group";
     kind: string;
     matchedSourceType: SlipClaimSourceType;
     matchedSourceId: number;
@@ -446,10 +446,16 @@ export async function recheckOrderPaymentOcr(
   // LEGACY_APPROVED_SLIP_UNRESOLVED (server/services/slipClaimService.ts),
   // and reporting READY here would send the admin into that refusal.
   const unresolvedLegacy = conflict.kind === "unresolved" ? conflict : undefined;
+  // MORE THAN ONE historical source shares the alias this submission folds
+  // to. Distinct from a single-member legacyAmbiguity: there is no audited
+  // "confirm distinct" escape for this state, since any such resolution
+  // could only ever have adjudicated one arbitrary member of the group.
+  const aliasGroupAmbiguity =
+    conflict.kind === "legacy_case_ambiguity_group" ? conflict : undefined;
 
   // Resolve the matched source to something an admin can actually open. Same
   // shared helper the detail query uses, so the two cannot disagree.
-  const matchedSource = strongDuplicate ?? legacyAmbiguity ?? unresolvedLegacy;
+  const matchedSource = strongDuplicate ?? legacyAmbiguity ?? unresolvedLegacy ?? aliasGroupAmbiguity;
   let matchedNavigation: { orderId?: number } = {};
   if (matchedSource) {
     const navDb = await db.getDb();
@@ -469,7 +475,11 @@ export async function recheckOrderPaymentOcr(
   // respectively, so showing the payment as ready would send the admin into
   // a guaranteed refusal either way.
   const verificationPassed =
-    verification.isAutoApproved && !strongDuplicate && !legacyAmbiguity && !unresolvedLegacy;
+    verification.isAutoApproved &&
+    !strongDuplicate &&
+    !legacyAmbiguity &&
+    !unresolvedLegacy &&
+    !aliasGroupAmbiguity;
   const readyForAdminApproval = verificationPassed && strongIdentifierPresent;
 
   const conflictReason = strongDuplicate
@@ -482,7 +492,9 @@ export async function recheckOrderPaymentOcr(
       ? "LEGACY_REFERENCE_CASE_AMBIGUITY"
       : unresolvedLegacy
         ? "LEGACY_APPROVED_SLIP_UNRESOLVED"
-        : undefined;
+        : aliasGroupAmbiguity
+          ? "LEGACY_ALIAS_GROUP_AMBIGUITY"
+          : undefined;
 
   const reviewReason =
     conflictReason ??
@@ -492,7 +504,7 @@ export async function recheckOrderPaymentOcr(
         : "NO_STRONG_IDENTIFIER"
       : verification.reviewReason);
 
-  const matchedConflict = strongDuplicate ?? legacyAmbiguity ?? unresolvedLegacy;
+  const matchedConflict = strongDuplicate ?? legacyAmbiguity ?? unresolvedLegacy ?? aliasGroupAmbiguity;
   const matchedSourceLabel = matchedConflict
     ? matchedConflict.matchedSourceType === "order_payment"
       ? `order payment #${matchedConflict.matchedSourceId}`
@@ -607,11 +619,26 @@ export async function recheckOrderPaymentOcr(
               matchedOrderId: matchedNavigation.orderId,
               viaLegacyCompatibility: true,
             }
-          : undefined,
-    // Only a legacy-case ambiguity has an audited "confirm distinct" escape.
-    // An unresolved row is not that state - it means an admin must
-    // investigate manually, not adjudicate a casing fold - so it must never
-    // route into that resolution UI.
+          : aliasGroupAmbiguity
+            ? {
+                // A FOURTH, distinct strength - MORE THAN ONE historical
+                // source shares this alias. Never "legacy_case_ambiguity":
+                // that state's audited "confirm distinct" resolution can only
+                // ever adjudicate ONE member, which is exactly what this
+                // state exists to refuse.
+                strength: "legacy_case_ambiguity_group",
+                kind: "reference",
+                matchedSourceType: aliasGroupAmbiguity.matchedSourceType,
+                matchedSourceId: aliasGroupAmbiguity.matchedSourceId,
+                matchedOrderId: matchedNavigation.orderId,
+                viaLegacyCompatibility: true,
+              }
+            : undefined,
+    // Only a single-member legacy-case ambiguity has an audited "confirm
+    // distinct" escape. An unresolved row and an alias GROUP ambiguity are
+    // not that state - both mean an admin must investigate manually rather
+    // than adjudicate a single casing fold - so neither may route into that
+    // resolution UI.
     requiresAdminResolution: Boolean(legacyAmbiguity),
   };
 }

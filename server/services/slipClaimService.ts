@@ -185,6 +185,23 @@ export type SlipClaimOutcome =
       matchedSourceType?: SlipClaimSourceType;
       matchedSourceId?: number;
       requiresAdminResolution: true;
+    }
+  | {
+      claimed: false;
+      /**
+       * MORE THAN ONE historical source shares the alias this submission
+       * folds to. NEVER waived, regardless of any `legacyCaseAmbiguityResolution`
+       * presented - a resolution can only ever have adjudicated ONE member
+       * of the group, and this submission could equally be a replay of a
+       * DIFFERENT member. There is deliberately no audited path that grants
+       * this: it requires manual/operator investigation of the complete
+       * group, not a single-click waiver.
+       */
+      reason: "legacy_alias_group_ambiguity";
+      matchedSourceType?: SlipClaimSourceType;
+      matchedSourceId?: number;
+      requiresAdminResolution: false;
+      legacyAliasHash?: string;
     };
 
 /**
@@ -279,36 +296,44 @@ export async function findExistingClaim(
 }
 
 /**
- * Looks up a HISTORICAL claim by its advisory legacy case alias.
+ * Looks up EVERY historical claim sharing one advisory legacy case alias.
  *
  * Read-only and indexed. Only backfilled rows whose original casing is
  * unrecoverable carry this value, so a hit means "a historical record exists
  * that MIGHT be this same transaction" - never proof.
  *
- * Excludes the caller's own row so re-approving the same record is not
- * mistaken for an ambiguity.
+ * Returns ALL matching claims (excluding the caller's own row), not just the
+ * first: the alias is lossy, so more than one historical source can
+ * legitimately share it. Callers MUST check the returned count before
+ * treating a single member as adjudicable - waiving the alias against one
+ * arbitrary member while a SECOND historical source shares the same fold
+ * would let a replay of that second source through an admin decision that
+ * was never about it. See evaluateSlipConflict's `legacy_case_ambiguity`
+ * (exactly one member) vs `legacy_case_ambiguity_group` (more than one)
+ * split.
  */
-export async function findClaimByLegacyAlias(
+export async function findClaimsByLegacyAlias(
   legacyAliasHash: string,
   excludeSource: { sourceType: SlipClaimSourceType; sourceId: number },
   tx: any
-): Promise<{ sourceType: SlipClaimSourceType; sourceId: number } | undefined> {
+): Promise<Array<{ sourceType: SlipClaimSourceType; sourceId: number }>> {
   const rows = await tx
     .select()
     .from(paymentSlipClaims)
     .where(eq(paymentSlipClaims.legacyReferenceUpperHash, legacyAliasHash))
-    .limit(5);
+    .limit(20);
 
+  const members: Array<{ sourceType: SlipClaimSourceType; sourceId: number }> = [];
   for (const row of rows ?? []) {
     if (row.sourceType === excludeSource.sourceType && row.sourceId === excludeSource.sourceId) {
       continue;
     }
-    return {
+    members.push({
       sourceType: row.sourceType as SlipClaimSourceType,
       sourceId: row.sourceId as number,
-    };
+    });
   }
-  return undefined;
+  return members;
 }
 
 /**
@@ -387,6 +412,23 @@ export async function claimSlip(
         matchedSourceType: conflict.matchedSourceType,
         matchedSourceId: conflict.matchedSourceId,
         requiresAdminResolution: true,
+      };
+    }
+
+    if (conflict.kind === "legacy_case_ambiguity_group") {
+      // MORE THAN ONE historical source shares this alias. NEVER consult
+      // request.legacyCaseAmbiguityResolution here, even if one was
+      // presented: any such resolution can only ever have adjudicated ONE
+      // member of the group, and this submission could equally be a replay
+      // of a different member the admin never reviewed. There is
+      // deliberately no waiver path for this state.
+      return {
+        claimed: false,
+        reason: "legacy_alias_group_ambiguity",
+        matchedSourceType: conflict.matchedSourceType,
+        matchedSourceId: conflict.matchedSourceId,
+        requiresAdminResolution: false,
+        legacyAliasHash: conflict.legacyAliasHash,
       };
     }
 
@@ -517,6 +559,22 @@ export function describeClaimFailure(outcome: SlipClaimOutcome): string {
       `verified server-side, so replay protection for it is incomplete. This is NOT a proven ` +
       `duplicate - it cannot be confirmed either way from stored data. Manual review is ` +
       `required until the historical backfill resolves this record.`
+    );
+  }
+
+  if (outcome.reason === "legacy_alias_group_ambiguity") {
+    const where =
+      outcome.matchedSourceType && outcome.matchedSourceId
+        ? outcome.matchedSourceType === "order_payment"
+          ? ` order payment #${outcome.matchedSourceId}`
+          : ` wallet top-up #${outcome.matchedSourceId}`
+        : " an earlier approved record";
+
+    return (
+      `This reference matches MORE THAN ONE approved historical record - including${where} - ` +
+      `only after letter casing is ignored. No single one of them can be safely confirmed as ` +
+      `distinct: this submission could be a replay of any member of that group. Manual ` +
+      `investigation of the complete group of matching historical records is required.`
     );
   }
 

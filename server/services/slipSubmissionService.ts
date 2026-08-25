@@ -486,11 +486,16 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
                     // must not guess either way.
                     claim.reason === "legacy_scan_unresolved"
                     ? "LEGACY_APPROVED_SLIP_UNRESOLVED"
-                    : claim.reason === "already_claimed" && claim.conflictKind === "file"
-                      ? "DUPLICATE_FILE"
-                      : claim.reason === "already_claimed" && claim.conflictKind === "qr"
-                        ? "DUPLICATE_QR"
-                        : "DUPLICATE_REFERENCE";
+                    : // MORE THAN ONE historical source shares this alias -
+                      // never resolvable by the single-member "confirm
+                      // distinct" flow.
+                      claim.reason === "legacy_alias_group_ambiguity"
+                      ? "LEGACY_ALIAS_GROUP_AMBIGUITY"
+                      : claim.reason === "already_claimed" && claim.conflictKind === "file"
+                        ? "DUPLICATE_FILE"
+                        : claim.reason === "already_claimed" && claim.conflictKind === "qr"
+                          ? "DUPLICATE_QR"
+                          : "DUPLICATE_REFERENCE";
             // Abort the whole auto-approval; nothing financial has committed.
             throw new SlipClaimRejected(describeClaimFailure(claim));
           }

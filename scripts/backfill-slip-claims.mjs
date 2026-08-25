@@ -68,6 +68,7 @@ import {
   STRONG_FIELDS,
 } from "./lib/backfillRepresentation.mjs";
 import { recoverFileHashIdentifier } from "./lib/backfillFileHashRecovery.mjs";
+import { deriveIdentifiers as deriveIdentifiersPure } from "./lib/backfillIdentifierDerivation.mjs";
 
 const TOOL_VERSION = "backfill-slip-claims@2";
 
@@ -135,83 +136,20 @@ const connection = await mysql.createConnection(databaseUrl);
 const db = drizzle(connection);
 
 /**
- * Derives strong identifiers from a stored row.
- *
- * CASING ORDER MATTERS. hashSlipReference is case-preserving, but
- * pre-migration rows stored only the OLD upper-cased `reference`; hashing
- * that produces a value a fresh mixed-case read can never match. So a stored
- * hash or referenceRaw is used when present, otherwise the stored rawText is
- * re-parsed with the LOCAL parser (recovering the original casing from the
- * OCR evidence), and only then the upper-cased field.
+ * Derives strong identifiers from a stored row. Thin wrapper around the pure
+ * decision in scripts/lib/backfillIdentifierDerivation.mjs (see there for the
+ * casing-recovery order and why legacy_uppercase evidence never becomes
+ * exact referenceHash authority) - injecting the real TS-module functions so
+ * this stays the only place they are wired together.
  */
 function deriveIdentifiers(extractedDataJson) {
-  const direct = identifiers.deriveStrongIdentifiersFromExtractedData(extractedDataJson);
-
-  let parsed;
-  try {
-    parsed = extractedDataJson ? JSON.parse(extractedDataJson) : null;
-  } catch {
-    parsed = null;
-  }
-
-  // The advisory legacy alias is ONLY for rows whose original casing is
-  // unrecoverable - persisted with just an upper-cased `reference`, no
-  // referenceRaw, no stored hash, no reparsable rawText. Those are the only
-  // rows a mixed-case replay cannot be matched against by exact hash.
-  //
-  // It is deliberately NOT computed for every row: writing it where casing IS
-  // recoverable would manufacture ambiguity that does not exist and drag
-  // unrelated future payments into manual review.
-  const rawReference = identifiers.getRawReferenceForLegacyLookup(extractedDataJson);
-  const aliasIfUnrecoverable = () =>
-    rawReference ? identifiers.hashSlipReference(rawReference.toUpperCase()) : undefined;
-
-  const hasCasePreservingEvidence =
-    (typeof parsed?.referenceHash === "string" && parsed.referenceHash.length === 64) ||
-    Boolean(parsed?.referenceRaw);
-
-  if (hasCasePreservingEvidence && identifiers.hasStrongIdentifier(direct.identifiers)) {
-    // Casing survived - no ambiguity, so no alias.
-    return {
-      ...direct,
-      legacyReferenceUpperHash: undefined,
-      referenceEvidence: parsed?.referenceHash ? "stored_hash" : "reference_raw",
-      recoveredByReparse: false,
-    };
-  }
-
-  const rawText = parsed?.rawText;
-  if (typeof rawText === "string" && rawText.trim().length > 0) {
-    try {
-      const reExtracted = parser.extractSlipData(rawText);
-      const reHash = identifiers.hashSlipReference(
-        reExtracted.referenceRaw ?? reExtracted.reference
-      );
-      if (reHash) {
-        // Reparsing recovered the TRUE casing, so this row is no longer
-        // ambiguous and must not carry an alias.
-        return {
-          identifiers: { ...direct.identifiers, referenceHash: reHash },
-          semanticFingerprint: direct.semanticFingerprint ?? reExtracted.semanticFingerprint,
-          legacyReferenceUpperHash: undefined,
-          referenceEvidence: "reparsed_raw_text",
-          recoveredByReparse: true,
-        };
-      }
-    } catch {
-      // Fall through - a parser failure loses only the best-quality evidence.
-    }
-  }
-
-  // Last resort: only the upper-cased legacy field survives. THIS is the
-  // ambiguous case, and the ONLY one that receives an advisory alias.
-  const isLegacyUppercaseOnly = Boolean(rawReference) && !hasCasePreservingEvidence;
-  return {
-    ...direct,
-    legacyReferenceUpperHash: isLegacyUppercaseOnly ? aliasIfUnrecoverable() : undefined,
-    referenceEvidence: isLegacyUppercaseOnly ? "legacy_uppercase" : "none",
-    recoveredByReparse: false,
-  };
+  return deriveIdentifiersPure(extractedDataJson, {
+    deriveStrongIdentifiersFromExtractedData: identifiers.deriveStrongIdentifiersFromExtractedData,
+    getRawReferenceForLegacyLookup: identifiers.getRawReferenceForLegacyLookup,
+    hashSlipReference: identifiers.hashSlipReference,
+    hasStrongIdentifier: identifiers.hasStrongIdentifier,
+    extractSlipData: parser.extractSlipData,
+  });
 }
 
 const stats = {

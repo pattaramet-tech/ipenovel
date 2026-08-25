@@ -460,6 +460,93 @@ export async function findLegacyApprovedDuplicate(
   return paymentHit ?? topupHit;
 }
 
+export interface LegacyAliasGroupMember {
+  sourceType: LegacySourceType;
+  sourceId: number;
+}
+
+/**
+ * Finds every APPROVED historical row (across both tables, excluding the
+ * caller's own) whose reference folds to the given upper-cased alias hash -
+ * PRE-backfill equivalent of `findClaimsByLegacyAlias`
+ * (server/services/slipClaimService.ts), which does the same job against the
+ * indexed registry once claims exist.
+ *
+ * ── Why this exists ────────────────────────────────────────────────────────
+ * The live scan's uppercase-only match (`findLegacyApprovedDuplicate`)
+ * reports only ONE historical row - the first found, or the highest-ranked
+ * fallback. If a SECOND historical row also folds to the same alias, that
+ * second source is invisible to the caller entirely. An admin adjudicating
+ * "confirmed distinct" against the one row they were shown would then waive
+ * an ambiguity that could equally describe a replay of the row they never
+ * saw. This function exists solely to answer "is more than one historical
+ * source represented by this alias", which evaluateSlipConflict uses to
+ * decide between `legacy_case_ambiguity` (one member - the existing,
+ * resolvable path) and `legacy_case_ambiguity_group` (more than one - fails
+ * closed, no waiver).
+ *
+ * Stops as soon as TWO distinct members are found: the only decision this
+ * feeds is a boolean (group or not), never the exact total, and that
+ * decision cannot change once a second member is confirmed. This keeps the
+ * common case (no group) cheap while remaining deterministic - the group/
+ * no-group verdict never depends on row id or which table happens to be
+ * scanned first, only on whether a second matching row EXISTS at all.
+ */
+export async function findLegacyAliasGroupMembers(
+  aliasHash: string,
+  excludeSource: { sourceType: LegacySourceType; sourceId: number } | undefined,
+  tx: any
+): Promise<LegacyAliasGroupMember[]> {
+  const members: LegacyAliasGroupMember[] = [];
+
+  async function scanTable(
+    sourceType: LegacySourceType,
+    table: typeof payments | typeof walletTopups,
+    statusColumn: any,
+    idColumn: any,
+    extractedDataColumn: any
+  ): Promise<void> {
+    let cursor = 0;
+    for (;;) {
+      const page = await tx
+        .select({ id: idColumn, extractedData: extractedDataColumn })
+        .from(table)
+        .where(and(eq(statusColumn, "approved"), gt(idColumn, cursor)))
+        .orderBy(asc(idColumn))
+        .limit(SCAN_PAGE_SIZE);
+
+      if (!page || page.length === 0) return;
+
+      for (const row of page) {
+        if (excludeSource?.sourceType === sourceType && excludeSource.sourceId === row.id) {
+          continue;
+        }
+        const candidates = referenceHashCandidatesFromExtractedData(row.extractedData);
+        if (candidates.some((c) => c.hash === aliasHash)) {
+          members.push({ sourceType, sourceId: row.id });
+          if (members.length >= 2) return;
+        }
+      }
+
+      cursor = page[page.length - 1].id;
+      if (page.length < SCAN_PAGE_SIZE) return;
+    }
+  }
+
+  await scanTable("order_payment", payments, payments.status, payments.id, payments.extractedData);
+  if (members.length < 2) {
+    await scanTable(
+      "wallet_topup",
+      walletTopups,
+      walletTopups.status,
+      walletTopups.id,
+      walletTopups.extractedData
+    );
+  }
+
+  return members;
+}
+
 /** Admin-safe description of a legacy match. Never leaks a hash. */
 export function describeLegacyMatch(match: LegacyDuplicateMatch): string {
   const what = match.kind === "file" ? "This exact slip image" : "This bank transaction reference";

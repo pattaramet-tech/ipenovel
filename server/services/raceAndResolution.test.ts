@@ -318,18 +318,34 @@ describe("migration 0038 is additive only", () => {
 
 describe("the backfill sets the alias ONLY for unrecoverable legacy rows", () => {
   const code = readCode("scripts/backfill-slip-claims.mjs");
+  // Identifier derivation now lives in its own pure, testable module (IPE-001:
+  // "legacy uppercase must not become exact ownership") - see
+  // server/backfillIdentifierDerivation.test.ts for full behavioural coverage.
+  const derivation = readCode("scripts/lib/backfillIdentifierDerivation.mjs");
 
   it("case-preserving evidence yields NO alias", () => {
-    expect(code).toMatch(/legacyReferenceUpperHash: undefined,\s*\n\s*referenceEvidence: parsed\?\.referenceHash/);
+    expect(derivation).toMatch(
+      /legacyReferenceUpperHash: undefined,\s*\n\s*referenceEvidence: parsed\?\.referenceHash/
+    );
   });
 
   it("a reparsed rawText recovers casing, so it yields NO alias", () => {
-    expect(code).toMatch(/legacyReferenceUpperHash: undefined,\s*\n\s*referenceEvidence: "reparsed_raw_text"/);
+    expect(derivation).toMatch(/legacyReferenceUpperHash: undefined,\s*\n\s*referenceEvidence: "reparsed_raw_text"/);
   });
 
-  it("only legacy_uppercase evidence receives one", () => {
-    expect(code).toMatch(/isLegacyUppercaseOnly \? aliasIfUnrecoverable\(\) : undefined/);
-    expect(code).toMatch(/referenceEvidence: isLegacyUppercaseOnly \? "legacy_uppercase"/);
+  it("only legacy_uppercase evidence receives one, and referenceHash is stripped alongside it", () => {
+    const start = derivation.indexOf("if (isLegacyUppercaseOnly) {");
+    expect(start).toBeGreaterThan(-1);
+    const block = derivation.slice(start, start + 500);
+    expect(block).toMatch(/referenceHash: undefined/);
+    expect(block).toMatch(/legacyReferenceUpperHash: aliasIfUnrecoverable\(\)/);
+    expect(block).toMatch(/referenceEvidence: "legacy_uppercase"/);
+  });
+
+  it("the main script delegates to the pure module rather than deriving inline", () => {
+    expect(code).toMatch(
+      /import \{ deriveIdentifiers as deriveIdentifiersPure \} from "\.\/lib\/backfillIdentifierDerivation\.mjs"/
+    );
   });
 
   it("alias groups are reported SEPARATELY from strong collisions", () => {

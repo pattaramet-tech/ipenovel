@@ -247,13 +247,32 @@ describe("registry classification is not satisfied by a partial match", () => {
     expect(code).toMatch(/legacyReferenceUpperHash: derived\.legacyReferenceUpperHash/);
   });
 
-  it("sets the alias ONLY for unrecoverable legacy_uppercase rows", () => {
-    const idx = code.indexOf("function deriveIdentifiers");
-    const block = code.slice(idx, idx + 2600);
-    expect(block).toMatch(/getRawReferenceForLegacyLookup/);
+  it("delegates identifier derivation to the pure, testable module", () => {
+    expect(code).toMatch(
+      /import \{ deriveIdentifiers as deriveIdentifiersPure \} from "\.\/lib\/backfillIdentifierDerivation\.mjs"/
+    );
+    const idx = code.indexOf("function deriveIdentifiers(extractedDataJson)");
+    const block = code.slice(idx, idx + 400);
+    expect(block).toMatch(/deriveIdentifiersPure\(extractedDataJson, \{/);
+  });
+
+  it("sets the alias ONLY for unrecoverable legacy_uppercase rows, and never carries the same value into referenceHash", () => {
+    const derivation = fs
+      .readFileSync(
+        path.resolve(process.cwd(), "scripts/lib/backfillIdentifierDerivation.mjs"),
+        "utf-8"
+      )
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^[ \t]*\/\/.*$/gm, "");
+    expect(derivation).toMatch(/getRawReferenceForLegacyLookup/);
     // Recoverable casing -> explicitly no alias.
-    expect(block).toMatch(/legacyReferenceUpperHash: undefined/);
-    // Only the last-resort branch produces one.
-    expect(block).toMatch(/isLegacyUppercaseOnly \? aliasIfUnrecoverable\(\) : undefined/);
+    expect(derivation).toMatch(/legacyReferenceUpperHash: undefined/);
+    // Only the last-resort branch produces one, and it strips referenceHash
+    // rather than carrying through the lossy value `direct` computed.
+    const start = derivation.indexOf("if (isLegacyUppercaseOnly) {");
+    expect(start).toBeGreaterThan(-1);
+    const block = derivation.slice(start, start + 500);
+    expect(block).toMatch(/referenceHash: undefined/);
+    expect(block).toMatch(/legacyReferenceUpperHash: aliasIfUnrecoverable\(\)/);
   });
 });
