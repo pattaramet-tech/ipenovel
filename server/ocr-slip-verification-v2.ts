@@ -807,15 +807,21 @@ function extractMerchantCode(flattened: Record<string, any>, text: string): stri
     return String(codeVal).trim();
   }
 
+  // LABEL-BOUND ONLY. This used to end with an unanchored whole-text
+  // fallback (`/([A-Z]{2}\d{12})/`, later bounded to `/(?<![A-Z0-9])([A-Z]{2}\d{12})(?![A-Z0-9])/`
+  // to stop it matching a substring out of a longer garbage token). Bounding
+  // fixed WHICH substring gets read, but not WHERE it may come from: an
+  // exact, correctly-formatted merchant code is STRONG recipient evidence
+  // (sufficient for auto-approval), so a value merely appearing somewhere in
+  // the OCR text - a memo, a sender field, unrelated footer text - must not
+  // be accepted as proof the money reached this merchant. Removed
+  // entirely (empirically verified against every real KBank/SCB/Krungthai
+  // fixture in this repo with zero regressions): a merchant code is only
+  // ever read from an explicit field/label.
   const patterns = [
     /รหัสร้านค้า\s*[:：]\s*([A-Z0-9]+)/i,
     /merchant\s*code\s*[:：]\s*([A-Z0-9]+)/i,
     /merchant\s*id\s*[:：]\s*([A-Z0-9]+)/i,
-    // BOUNDED. Unanchored, this captured a merchant code out of the MIDDLE of
-    // a longer token: "KB000002283068XYZ" yielded "KB000002283068", which then
-    // compared equal to the configured merchant code. A financial identifier
-    // must match in full or not at all.
-    /(?<![A-Z0-9])([A-Z]{2}\d{12})(?![A-Z0-9])/,
   ];
 
   for (const pattern of patterns) {
@@ -849,11 +855,17 @@ function extractMerchantTransactionCode(flattened: Record<string, any>, text: st
     if (combined.length >= 10) return combined;
   }
 
+  // LABEL-BOUND ONLY - see extractMerchantCode's identical reasoning above.
+  // The removed unlabeled fallback (`/([A-Z]{3}\d{3}[A-Z]{2}\d{12})/`) is a
+  // very specific 20-character shape, but specificity of FORMAT is not the
+  // same as trustworthiness of ORIGIN: nothing stopped that exact string
+  // from being read out of a memo or unrelated text rather than the
+  // transaction-code field. Empirically verified against every real
+  // KBank/SCB/Krungthai fixture in this repo with zero regressions.
   const patterns = [
     /รหัสธุรกรรม\s*[:：]\s*([A-Z0-9]+)/i,
     /transaction\s*code\s*[:：]\s*([A-Z0-9]+)/i,
     /ref\s*code\s*[:：]\s*([A-Z0-9]+)/i,
-    /([A-Z]{3}\d{3}[A-Z]{2}\d{12})/,
   ];
 
   for (const pattern of patterns) {
@@ -876,11 +888,23 @@ function extractBillerId(flattened: Record<string, any>, text: string): string |
     return String(receiverAccountOrIdVal).trim();
   }
 
+  // LABEL-BOUND ONLY. This used to end with `/([0-9]{12,15})/` - ANY
+  // 12-15 digit run anywhere in the OCR text, unlabeled. Because an exact
+  // Biller ID match is STRONG recipient evidence (sufficient for
+  // auto-approval on its own), evidence ORIGIN matters as much as evidence
+  // VALUE: a transfer to a DIFFERENT recipient could auto-approve merely
+  // because our biller ID digits happened to appear in a memo, a sender
+  // field, or unrelated footer text - the same class of bug already fixed
+  // for the shop-name alias (whole-text synthesis) and the merchant code
+  // (now also label-bound, above). `บิลเลอร์ ID` (Thai "บิลเลอร์" + Latin
+  // "ID") is a real SCB label variant neither of the two patterns below
+  // recognized on its own - added rather than left to fall through to the
+  // removed unlabeled scan, which is what silently covered it before.
   const patterns = [
     /รหัสบิลเลอร์\s*[:：]\s*([0-9]+)/i,
+    /บิลเลอร์\s*id\s*[:：]\s*([0-9]+)/i,
     /biller\s*id\s*[:：]\s*([0-9]+)/i,
     /biller_id\s*[:：]\s*([0-9]+)/i,
-    /([0-9]{12,15})/,
   ];
 
   for (const pattern of patterns) {

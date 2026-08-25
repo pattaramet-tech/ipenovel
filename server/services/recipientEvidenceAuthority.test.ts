@@ -289,14 +289,184 @@ describe("H. merchant/biller identifiers require full-length exact match", () =>
     const extracted = extractSlipData(text, 90);
     expect(extracted.merchantCode).toBe(MERCHANT_CODE);
   });
+});
 
-  it("the fallback pattern in extractMerchantCode is boundary-anchored", () => {
-    const code = readCode("server/ocr-slip-verification-v2.ts");
-    const start = code.indexOf("function extractMerchantCode(");
+// ════════════════════════════════════════════════════════════════════════
+// IPE-001 (fourth authority-origin round): "Require labeled evidence for
+// the biller ID"
+//
+// ── The bug ─────────────────────────────────────────────────────────────
+// extractBillerId ended with an UNLABELED fallback, `/([0-9]{12,15})/` -
+// any 12-15 digit run anywhere in the OCR text, with no requirement that it
+// follow a biller-id label. Because an exact Biller ID match is STRONG
+// recipient evidence (verifyRecipient treats it as sufficient proof on its
+// own, no other signal required), a transfer to a DIFFERENT recipient could
+// auto-approve merely because IpeNovel's public biller ID digits happened
+// to appear in a memo, a sender field, a reference, or unrelated footer
+// text. Same class as the whole-text shop-alias synthesis and the
+// unbounded merchant-code regex above - evidence VALUE was exact, but
+// evidence ORIGIN was never checked.
+//
+// extractMerchantCode and extractMerchantTransactionCode had the identical
+// gap (their fallbacks were unlabeled too, just format-narrower). All three
+// are now label-bound only - empirically verified against every real
+// KBank/SCB/Krungthai fixture in this repo (server/ocr-slip-verification-v2.test.ts,
+// server/ocr-slip-hardening.test.ts, server/ocr-slip-e2e.test.ts,
+// server/ocr-slip-integration.test.ts) with zero regressions before this
+// fix was written - see the extractBillerId/extractMerchantCode/
+// extractMerchantTransactionCode source comments for the exact audit note.
+// ════════════════════════════════════════════════════════════════════════
+
+describe("no unlabeled whole-text fallback remains in ANY strong recipient identifier extractor", () => {
+  const code = readCode("server/ocr-slip-verification-v2.ts");
+
+  function patternsBlockOf(fn: string): string {
+    const start = code.indexOf(`function ${fn}(`);
+    expect(start, fn).toBeGreaterThan(-1);
     const end = code.indexOf("\n}", start);
     const body = code.slice(start, end);
-    expect(body).toMatch(/\(\?<!\[A-Z0-9\]\)/);
-    expect(body).toMatch(/\(\?!\[A-Z0-9\]\)/);
+    const patternsStart = body.indexOf("const patterns = [");
+    expect(patternsStart, fn).toBeGreaterThan(-1);
+    const patternsEnd = body.indexOf("];", patternsStart);
+    return body.slice(patternsStart, patternsEnd);
+  }
+
+  it("extractMerchantCode's patterns list contains no bare, label-less regex", () => {
+    const block = patternsBlockOf("extractMerchantCode");
+    // The specific unlabeled fallback this round removed - must never come back.
+    expect(block).not.toMatch(/\(\?<!\[A-Z0-9\]\)/);
+    expect(block).not.toMatch(/^\s*\/\(\[A-Z\]/m);
+    // Every remaining alternative requires a label/value separator.
+    for (const line of block.split("\n").filter((l) => l.trim().startsWith("/"))) {
+      expect(line, line).toMatch(/\[:：\]/);
+    }
+  });
+
+  it("extractMerchantTransactionCode's patterns list contains no bare, label-less regex", () => {
+    const block = patternsBlockOf("extractMerchantTransactionCode");
+    expect(block).not.toMatch(/\/\(\[A-Z\]\{3\}/);
+    for (const line of block.split("\n").filter((l) => l.trim().startsWith("/"))) {
+      expect(line, line).toMatch(/\[:：\]/);
+    }
+  });
+
+  it("extractBillerId's patterns list contains no bare, label-less regex", () => {
+    const block = patternsBlockOf("extractBillerId");
+    // The specific unlabeled fallback this round removed - must never come back.
+    expect(block).not.toMatch(/\/\(\[0-9\]\{12,15\}\)\//);
+    for (const line of block.split("\n").filter((l) => l.trim().startsWith("/"))) {
+      expect(line, line).toMatch(/\[:：\]/);
+    }
+  });
+});
+
+describe("extractBillerId: label-bound only (IPE-001 biller-id authority-origin fix)", () => {
+  // ── MUST-FAIL: the exact biller ID appearing WITHOUT a label ───────────
+  it("A. biller ID in a memo does not extract, and does not verify the recipient", () => {
+    const text = `โอนเงินสำเร็จ\nไปยัง: Some Other Shop\nmemo: ${BILLER_ID}\nจำนวนเงิน 100.00`;
+    const extracted = extractSlipData(text, 90);
+    expect(extracted.receiverAccountOrId).not.toBe(BILLER_ID);
+    const verification = verifyRecipient({ ...extracted, shopName: "Some Other Shop" });
+    expect(verification.recipientVerified).toBe(false);
+  });
+
+  it("B. biller ID in the sender field does not extract", () => {
+    const text = `จาก: ${BILLER_ID}\nไปยัง: Some Other Shop\nจำนวนเงิน 100.00`;
+    const extracted = extractSlipData(text, 90);
+    expect(extracted.receiverAccountOrId).not.toBe(BILLER_ID);
+  });
+
+  it("C. biller ID inside a transaction reference does not extract", () => {
+    const text = `Reference: TXN-${BILLER_ID}-END\nไปยัง: Some Other Shop\nจำนวนเงิน 100.00`;
+    const extracted = extractSlipData(text, 90);
+    expect(extracted.receiverAccountOrId).not.toBe(BILLER_ID);
+  });
+
+  it("D. biller ID as bare digits with no field at all does not extract", () => {
+    const text = `โอนเงินสำเร็จ\n${BILLER_ID}\nไปยัง: Some Other Shop\nจำนวนเงิน 100.00`;
+    const extracted = extractSlipData(text, 90);
+    expect(extracted.receiverAccountOrId).not.toBe(BILLER_ID);
+  });
+
+  it("E. biller ID in unrelated footer text does not extract", () => {
+    const text = `ไปยัง: Some Other Shop\nจำนวนเงิน 100.00\nCustomer service: ${BILLER_ID}`;
+    const extracted = extractSlipData(text, 90);
+    expect(extracted.receiverAccountOrId).not.toBe(BILLER_ID);
+  });
+
+  it("F. an unrelated 12-15 digit number never becomes receiverAccountOrId authority", () => {
+    const text = `ไปยัง: Some Other Shop\nจำนวนเงิน 100.00\nAccount ref: 999888777666555`;
+    const extracted = extractSlipData(text, 90);
+    expect(extracted.receiverAccountOrId).toBeUndefined();
+  });
+
+  // ── MUST-PASS: the exact biller ID with an explicit field/label ────────
+  it("A. explicit English 'Biller ID:' label extracts", () => {
+    const text = `ไปยัง: Ipe Novel\nBiller ID: ${BILLER_ID}\nจำนวนเงิน 100.00`;
+    const extracted = extractSlipData(text, 90);
+    expect(extracted.receiverAccountOrId).toBe(BILLER_ID);
+  });
+
+  it("B. explicit Thai 'รหัสบิลเลอร์:' label extracts", () => {
+    const text = `ไปยัง: Ipe Novel\nรหัสบิลเลอร์: ${BILLER_ID}\nจำนวนเงิน 100.00`;
+    const extracted = extractSlipData(text, 90);
+    expect(extracted.receiverAccountOrId).toBe(BILLER_ID);
+  });
+
+  it("B2. the real SCB label variant 'บิลเลอร์ ID:' (Thai + Latin 'ID') extracts - a genuine production fixture depends on this", () => {
+    const text = `ไปยัง: Ipe Novel\nบิลเลอร์ ID: ${BILLER_ID}\nจำนวนเงิน 100.00`;
+    const extracted = extractSlipData(text, 90);
+    expect(extracted.receiverAccountOrId).toBe(BILLER_ID);
+  });
+
+  it("C. structured biller_id field (JSON-style OCR block) extracts", () => {
+    // extractSlipData flattens a JSON-style block itself; exercised more
+    // fully by the structured-fixture tests in ocr-slip-verification-v2.test.ts
+    // (the "```json ... biller_id ..." fixtures) - this proves the
+    // structured path is untouched by the raw-text fallback removal.
+    const jsonText = `\`\`\`json\n{"biller_id": "${BILLER_ID}", "receiver_name": "Ipe Novel"}\n\`\`\``;
+    const extracted = extractSlipData(jsonText, 90);
+    expect(extracted.receiverAccountOrId).toBe(BILLER_ID);
+  });
+
+  it("does not verify the recipient when the biller ID belongs to a DIFFERENT slip's raw text than the current shop field", () => {
+    // Exact value, explicit label - but for a shop that isn't the approved
+    // one. Only the LABEL requirement is this describe block's concern;
+    // verifyRecipient's own exact-match gate (tested elsewhere) is what
+    // ultimately decides recipientVerified for a mismatched shop name. This
+    // proves the two gates compose correctly rather than one silently
+    // overriding the other.
+    const extracted = extractSlipData(
+      `ไปยัง: Some Other Shop\nBiller ID: 999999999999999\nจำนวนเงิน 100.00`,
+      90
+    );
+    expect(extracted.receiverAccountOrId).toBe("999999999999999");
+    const verification = verifyRecipient({ ...extracted, shopName: "Some Other Shop" });
+    expect(verification.recipientVerified).toBe(false);
+  });
+});
+
+describe("real production SCB/KTB bill-payment fixtures still extract and auto-approve (regression)", () => {
+  // The exhaustive field-by-field assertions for these exact fixtures
+  // already live in server/ocr-slip-verification-v2.test.ts ("Real SCB slip
+  // from production" describe blocks) and are re-measured as part of the
+  // standard gate; this is a focused proof that this round's label-bound
+  // biller-id/merchant-code/transaction-code fix specifically does not
+  // regress the two real production texts that motivated it.
+  it("the 00:26 fixture's exact recipient evidence still extracts", () => {
+    const text = `SCB+\nจ่ายเงินสำเร็จ\n25 พ.ค. 2569 - 00:26\nรหัสอ้างอิง: 2026052560P28bjxEWJQmsbB5\n\nจาก\nนาย ทัชชกร ป.\nxxx-xxx791-1\n\nไปยัง\nIpe Novel\nBiller ID: ${BILLER_ID}\nรหัสร้านค้า : ${MERCHANT_CODE}\nรหัสธุรกรรม : ${MERCHANT_TXN_CODE}\n\nจำนวนเงิน\n100.00`;
+    const extracted = extractSlipData(text, 98);
+    expect(extracted.receiverAccountOrId).toBe(BILLER_ID);
+    expect(extracted.merchantCode).toBe(MERCHANT_CODE);
+    expect(extracted.merchantTransactionCode).toBe(MERCHANT_TXN_CODE);
+  });
+
+  it("the 09:22 fixture's exact recipient evidence still extracts (บิลเลอร์ ID Thai/Latin label)", () => {
+    const text = `SCB+\nจ่ายบิลสำเร็จ\n25 พ.ค. 2569 - 09:22\nรหัสอ้างอิง: 202605253xbL9Yu73dw4SaAnz\n\nจาก\nนาย วีระศักดิ์ เ.\nxxx-xxx244-1\n\nไปยัง\nอิปี นิยายแปล\nบิลเลอร์ ID: ${BILLER_ID}\nรหัสร้านค้า : ${MERCHANT_CODE}\nรหัสธุรกรรม : ${MERCHANT_TXN_CODE}\n\nจำนวนเงิน\n100.00`;
+    const extracted = extractSlipData(text, 98);
+    expect(extracted.receiverAccountOrId).toBe(BILLER_ID);
+    expect(extracted.merchantCode).toBe(MERCHANT_CODE);
+    expect(extracted.merchantTransactionCode).toBe(MERCHANT_TXN_CODE);
   });
 });
 
