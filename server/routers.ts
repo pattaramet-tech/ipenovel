@@ -1448,7 +1448,7 @@ export const appRouter = router({
           // strength from a legacy fingerprint.
           let duplicate:
             | {
-                strength: "strong" | "legacy_case_ambiguity";
+                strength: "strong" | "legacy_case_ambiguity" | "unresolved";
                 kind?: string;
                 matchedSourceType: "order_payment" | "wallet_topup";
                 matchedSourceId: number;
@@ -1514,6 +1514,27 @@ export const appRouter = router({
                   requiresAdminResolution: true,
                 };
                 reviewReasonOverride = "LEGACY_REFERENCE_CASE_AMBIGUITY";
+              } else if (conflict.kind === "unresolved") {
+                // An approved historical row exists that could not be
+                // verified at all - not a proven duplicate, not provably
+                // clean. Reflects the SAME state normal Approve and Recheck
+                // see: Approve refuses with LEGACY_APPROVED_SLIP_UNRESOLVED
+                // (server/services/slipClaimService.ts), so the panel must
+                // never show this as READY or as a confirmed duplicate.
+                //
+                // Deliberately NOT `requiresAdminResolution: true` - that
+                // flag drives the audited "confirm distinct" resolution flow
+                // built specifically for the lossy legacy-case fold, which
+                // this state is not. An unresolved row needs manual
+                // investigation (e.g. recovering the historical slip image),
+                // not a casing-fold adjudication.
+                duplicate = {
+                  strength: "unresolved",
+                  matchedSourceType: conflict.matchedSourceType,
+                  matchedSourceId: conflict.matchedSourceId,
+                  advisory: true,
+                };
+                reviewReasonOverride = "LEGACY_APPROVED_SLIP_UNRESOLVED";
               }
 
               if (duplicate) {

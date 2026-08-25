@@ -6360,7 +6360,23 @@ export async function approveWalletTopupWithOCR(
 
   // REAL DATABASE TRANSACTION: All operations succeed or all rollback
   return await db.transaction(async (tx) => {
-    // Step 1: Fetch topup INSIDE transaction for consistency
+    // Step 0: LOCK the subject row BEFORE reading the version this run
+    // validates against - same reasoning as approveWalletTopup's Step 0.
+    //
+    // Without this, the version check below reads an UNLOCKED row: a
+    // concurrent publishWalletTopupReplacementIfReviewable can commit a
+    // replacement to slip B in the window between that read and the
+    // status-only CAS further down, which does not itself check slip
+    // identity. Because a replacement re-opens status to "pending" without
+    // changing it further, the status-only CAS would still match - claiming
+    // and crediting slip A's evidence onto a row whose current slip is B,
+    // leaving B completely unclaimed and reusable. Locking first serializes
+    // this transaction against the replacement publisher, which also takes
+    // this same lock (mirrors lockPaymentForUpdate on the order side).
+    await lockWalletTopupForUpdate(topupId, tx);
+
+    // Step 1: Fetch topup INSIDE transaction for consistency - now
+    // guaranteed to be the current row, not a pre-lock snapshot.
     const topupResult = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
     if (!topupResult || topupResult.length === 0) {
       throw new Error("Wallet top-up not found");
@@ -6471,7 +6487,24 @@ export async function approveWalletTopupWithOCR(
 
     // Step 2: Only proceed if status is pending or pending_review (idempotency)
     if (ocrData.status === "approved") {
-      // For auto-approval: only update if still pending
+      // For auto-approval: only update if still pending. The row lock above
+      // already makes this safe on its own - nothing can change slip
+      // identity while it is held - but the WHERE clause also re-binds the
+      // expected slip version as defense-in-depth: this write must never
+      // depend solely on a pre-lock read remaining correct.
+      const approveConditions = [eq(walletTopups.id, topupId), eq(walletTopups.status, "pending" as any)];
+      if (expectedSlipVersion) {
+        approveConditions.push(
+          expectedSlipVersion.slipImageUrl === null
+            ? isNull(walletTopups.slipImageUrl)
+            : eq(walletTopups.slipImageUrl, expectedSlipVersion.slipImageUrl)
+        );
+        approveConditions.push(
+          expectedSlipVersion.slipSubmittedAt === null
+            ? isNull(walletTopups.slipSubmittedAt)
+            : eq(walletTopups.slipSubmittedAt, expectedSlipVersion.slipSubmittedAt)
+        );
+      }
       const updateResult = await tx
         .update(walletTopups)
         .set({
@@ -6492,7 +6525,7 @@ export async function approveWalletTopupWithOCR(
           reviewedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(and(eq(walletTopups.id, topupId), eq(walletTopups.status, "pending" as any)));
+        .where(and(...approveConditions));
 
       const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
       const affectedRows = (resultHeader as any)?.affectedRows || 0;

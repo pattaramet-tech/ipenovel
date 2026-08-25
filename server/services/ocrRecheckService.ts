@@ -95,7 +95,7 @@ export interface RecheckOcrResult {
   requiresAdminResolution?: boolean;
   /** Read-only conflict finding. Approve still runs its own atomic claim. */
   duplicate?: {
-    strength: "strong" | "legacy_case_ambiguity";
+    strength: "strong" | "legacy_case_ambiguity" | "unresolved";
     kind: string;
     matchedSourceType: SlipClaimSourceType;
     matchedSourceId: number;
@@ -439,10 +439,17 @@ export async function recheckOrderPaymentOcr(
 
   const strongDuplicate = conflict.kind === "strong_duplicate" ? conflict : undefined;
   const legacyAmbiguity = conflict.kind === "legacy_case_ambiguity" ? conflict : undefined;
+  // An approved historical row that could not be verified at all - no
+  // persisted fileHash, none recoverable from its own stored bytes. Not a
+  // proven duplicate and not provably clean, so it must block READY exactly
+  // as firmly as a duplicate: normal Approve is guaranteed to refuse with
+  // LEGACY_APPROVED_SLIP_UNRESOLVED (server/services/slipClaimService.ts),
+  // and reporting READY here would send the admin into that refusal.
+  const unresolvedLegacy = conflict.kind === "unresolved" ? conflict : undefined;
 
   // Resolve the matched source to something an admin can actually open. Same
   // shared helper the detail query uses, so the two cannot disagree.
-  const matchedSource = strongDuplicate ?? legacyAmbiguity;
+  const matchedSource = strongDuplicate ?? legacyAmbiguity ?? unresolvedLegacy;
   let matchedNavigation: { orderId?: number } = {};
   if (matchedSource) {
     const navDb = await db.getDb();
@@ -456,10 +463,13 @@ export async function recheckOrderPaymentOcr(
   }
 
   // Passing verification is NOT approval - Approve re-runs its own atomic
-  // claim regardless. An ambiguity blocks READY just as firmly as a duplicate:
-  // Approve would return LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION, so showing
-  // the payment as ready would send the admin into a guaranteed refusal.
-  const verificationPassed = verification.isAutoApproved && !strongDuplicate && !legacyAmbiguity;
+  // claim regardless. An ambiguity or an unresolved legacy row blocks READY
+  // just as firmly as a duplicate: Approve would return
+  // LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION or LEGACY_APPROVED_SLIP_UNRESOLVED
+  // respectively, so showing the payment as ready would send the admin into
+  // a guaranteed refusal either way.
+  const verificationPassed =
+    verification.isAutoApproved && !strongDuplicate && !legacyAmbiguity && !unresolvedLegacy;
   const readyForAdminApproval = verificationPassed && strongIdentifierPresent;
 
   const conflictReason = strongDuplicate
@@ -470,7 +480,9 @@ export async function recheckOrderPaymentOcr(
         : "DUPLICATE_REFERENCE"
     : legacyAmbiguity
       ? "LEGACY_REFERENCE_CASE_AMBIGUITY"
-      : undefined;
+      : unresolvedLegacy
+        ? "LEGACY_APPROVED_SLIP_UNRESOLVED"
+        : undefined;
 
   const reviewReason =
     conflictReason ??
@@ -480,7 +492,7 @@ export async function recheckOrderPaymentOcr(
         : "NO_STRONG_IDENTIFIER"
       : verification.reviewReason);
 
-  const matchedConflict = strongDuplicate ?? legacyAmbiguity;
+  const matchedConflict = strongDuplicate ?? legacyAmbiguity ?? unresolvedLegacy;
   const matchedSourceLabel = matchedConflict
     ? matchedConflict.matchedSourceType === "order_payment"
       ? `order payment #${matchedConflict.matchedSourceId}`
@@ -581,7 +593,25 @@ export async function recheckOrderPaymentOcr(
             matchedOrderId: matchedNavigation.orderId,
             viaLegacyCompatibility: true,
           }
-        : undefined,
+        : unresolvedLegacy
+          ? {
+              // A THIRD, distinct strength - never "strong" (it is not proof)
+              // and never "legacy_case_ambiguity" (that has its own audited
+              // admin resolution flow this state does not support; an
+              // unresolved row means the evidence needed to evaluate it is
+              // missing, not that two references happen to fold together).
+              strength: "unresolved",
+              kind: "unresolved",
+              matchedSourceType: unresolvedLegacy.matchedSourceType,
+              matchedSourceId: unresolvedLegacy.matchedSourceId,
+              matchedOrderId: matchedNavigation.orderId,
+              viaLegacyCompatibility: true,
+            }
+          : undefined,
+    // Only a legacy-case ambiguity has an audited "confirm distinct" escape.
+    // An unresolved row is not that state - it means an admin must
+    // investigate manually, not adjudicate a casing fold - so it must never
+    // route into that resolution UI.
     requiresAdminResolution: Boolean(legacyAmbiguity),
   };
 }
