@@ -4290,6 +4290,16 @@ export async function approveWalletTopup(
         tx
       );
 
+      if (!claim.claimed && claim.reason === "legacy_scan_unresolved") {
+        // An approved historical row exists that could not be verified - not
+        // a proven duplicate, not provably clean. Normal Approve must not
+        // treat this as an ordinary review outcome or silently proceed.
+        throw new WalletSlipClaimError(
+          "LEGACY_APPROVED_SLIP_UNRESOLVED",
+          describeClaimFailure(claim)
+        );
+      }
+
       if (!claim.claimed && claim.reason === "legacy_case_ambiguity") {
         // Normal Approve must not silently bypass this, and must not call it
         // a duplicate - it is an unresolved question. Direct the admin to the
@@ -6426,6 +6436,16 @@ export async function approveWalletTopupWithOCR(
         if (claim.reason === "legacy_case_ambiguity") {
           throw new WalletSlipClaimError(
             "LEGACY_REFERENCE_CASE_AMBIGUITY",
+            describeClaimFailure(claim)
+          );
+        }
+
+        // An approved historical row exists that could not be verified - not
+        // a proven duplicate, not provably clean. Auto-approval must not
+        // guess either way; it stops and asks for manual review.
+        if (claim.reason === "legacy_scan_unresolved") {
+          throw new WalletSlipClaimError(
+            "LEGACY_APPROVED_SLIP_UNRESOLVED",
             describeClaimFailure(claim)
           );
         }

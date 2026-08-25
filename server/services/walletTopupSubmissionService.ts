@@ -24,6 +24,16 @@ import { computeSlipFileHash } from "./slipFileHashService";
 import { describeProviderFailure, type ProviderDiagnostic } from "./ocrDiagnosticsService";
 import { recordOcrAttempt } from "./ocrAttemptService";
 
+/** The shape of `recordWalletAttempt`, threaded into the guarded-write
+ *  handlers so they can record the TERMINAL outcome themselves, only once
+ *  they know whether their write actually landed. */
+type WalletAttemptRecorder = (
+  result: "auto_approved" | "needs_review" | "technical_failure" | "config_blocked",
+  reviewReason: string | null,
+  category: string | null,
+  confidence: number | null
+) => Promise<void>;
+
 export interface WalletTopupSubmissionResult {
   topupId: number;
   /**
@@ -120,6 +130,16 @@ export async function submitWalletTopupSlip(
    * wallet crediting. Records automatic runs that previously left no trace at
    * all, so history reflects the real sequence rather than starting at the
    * first admin recheck.
+   *
+   * CALLED ONLY AFTER a guarded write's outcome is known (or after a run that
+   * performs no persistence at all, like OCR-disabled/shadow-mode config
+   * blocks). handlePendingReview/handleDuplicate/handleOCRError take the
+   * INTENDED (result, reason, category, confidence) and record it themselves
+   * once `applied` is known - the intended DATA/CONFIG/TECHNICAL result if
+   * the write landed, or exactly one STATE result if a slip
+   * replacement/finalization refused it. Recording before that point (the
+   * previous shape) could commit a stale DATA/CONFIG/TECHNICAL row for a
+   * slip version this run no longer owns.
    */
   const recordWalletAttempt = async (
     result: "auto_approved" | "needs_review" | "technical_failure" | "config_blocked",
@@ -161,7 +181,6 @@ export async function submitWalletTopupSlip(
   // observation while preventing auto-approval (see the shadow-mode check
   // further down, unchanged).
   if (!ocrConfig.enabled) {
-    await recordWalletAttempt("config_blocked", "OCR_DISABLED", "CONFIG", null);
     return await handlePendingReview(
       topupId,
       userId,
@@ -173,7 +192,11 @@ export async function submitWalletTopupSlip(
       undefined,
       undefined,
       topup,
-      expectedSlipVersion
+      expectedSlipVersion,
+      recordWalletAttempt,
+      "config_blocked",
+      "CONFIG",
+      null
     );
   }
 
@@ -216,12 +239,6 @@ export async function submitWalletTopupSlip(
     // admin can distinguish a provider outage from a bad slip.
     if (parseResult.technicalError) {
       walletProviderDiagnostic = parseResult.providerDiagnostic;
-      await recordWalletAttempt(
-        "technical_failure",
-        parseResult.technicalErrorCode ?? "OCR_PROCESSING_ERROR",
-        "TECHNICAL",
-        null
-      );
       return await handleOCRError(
         topupId,
         userId,
@@ -232,13 +249,13 @@ export async function submitWalletTopupSlip(
         // bytes are still uniquely identifying, and without this the top-up
         // would be unapprovable.
         fileHashOnlyExtraction,
-        expectedSlipVersion
+        expectedSlipVersion,
+        recordWalletAttempt
       );
     }
 
     // Handle shadow mode
     if (ocrConfig.shadowModeEnabled) {
-      await recordWalletAttempt("needs_review", "SHADOW_MODE", "CONFIG", null);
       return await handlePendingReview(
         topupId,
         userId,
@@ -249,7 +266,11 @@ export async function submitWalletTopupSlip(
         undefined,
         undefined,
         topup,
-        expectedSlipVersion
+        expectedSlipVersion,
+        recordWalletAttempt,
+        "needs_review",
+        "CONFIG",
+        null
       );
     }
 
@@ -296,7 +317,6 @@ export async function submitWalletTopupSlip(
 
     // Step 4: Check for duplicates (if reviewReason indicates duplicate)
     if (verificationResult.reviewReason?.includes("DUPLICATE")) {
-      await recordWalletAttempt("needs_review", "WEAK_DUPLICATE_RISK", "DATA", null);
       return await handleDuplicate(
         topupId,
         userId,
@@ -306,13 +326,16 @@ export async function submitWalletTopupSlip(
         "พบความเสี่ยงสลิปซ้ำ รอแอดมินตรวจสอบ",
         parseResult,
         topup,
-        expectedSlipVersion
+        expectedSlipVersion,
+        recordWalletAttempt,
+        "WEAK_DUPLICATE_RISK",
+        "DATA",
+        null
       );
     }
 
     // Step 5: Check confidence level
     if (finalConfidence < ocrConfig.minConfidence) {
-      await recordWalletAttempt("needs_review", "LOW_CONFIDENCE", "DATA", null);
       return await handlePendingReview(
         topupId,
         userId,
@@ -323,13 +346,16 @@ export async function submitWalletTopupSlip(
         verificationResult,
         parseResult,
         topup,
-        expectedSlipVersion
+        expectedSlipVersion,
+        recordWalletAttempt,
+        "needs_review",
+        "DATA",
+        null
       );
     }
 
     // Step 6: Check amount match
     if (!verificationResult.breakdown?.amountMatched) {
-      await recordWalletAttempt("needs_review", "AMOUNT_MISMATCH", "DATA", null);
       return await handlePendingReview(
         topupId,
         userId,
@@ -340,13 +366,16 @@ export async function submitWalletTopupSlip(
         verificationResult,
         parseResult,
         topup,
-        expectedSlipVersion
+        expectedSlipVersion,
+        recordWalletAttempt,
+        "needs_review",
+        "DATA",
+        null
       );
     }
 
     // Step 7: Check missing required fields
     if (!verificationResult.breakdown?.referencePresent) {
-      await recordWalletAttempt("needs_review", "MISSING_FIELDS", "DATA", null);
       return await handlePendingReview(
         topupId,
         userId,
@@ -357,7 +386,11 @@ export async function submitWalletTopupSlip(
         verificationResult,
         parseResult,
         topup,
-        expectedSlipVersion
+        expectedSlipVersion,
+        recordWalletAttempt,
+        "needs_review",
+        "DATA",
+        null
       );
     }
 
@@ -424,7 +457,6 @@ export async function submitWalletTopupSlip(
         if (claimCode) {
           const duplicateReason =
             claimCode === "NO_STRONG_IDENTIFIER" ? "NO_STRONG_IDENTIFIER" : claimCode;
-          await recordWalletAttempt("needs_review", duplicateReason, "DATA", finalConfidence);
           return await handlePendingReview(
             topupId,
             userId,
@@ -435,7 +467,11 @@ export async function submitWalletTopupSlip(
             verificationResult,
             parseResult,
             topup,
-            expectedSlipVersion
+            expectedSlipVersion,
+            recordWalletAttempt,
+            "needs_review",
+            "DATA",
+            finalConfidence
           );
         }
 
@@ -459,7 +495,6 @@ export async function submitWalletTopupSlip(
       : (verificationResult.reviewReason ?? "MANUAL_REVIEW_REQUIRED");
     const step9Category = verificationPassed ? "CONFIG" : "DATA";
 
-    await recordWalletAttempt("needs_review", step9Reason, step9Category, finalConfidence);
     return await handlePendingReview(
       topupId,
       userId,
@@ -470,7 +505,11 @@ export async function submitWalletTopupSlip(
       verificationResult,
       parseResult,
       topup,
-      expectedSlipVersion
+      expectedSlipVersion,
+      recordWalletAttempt,
+      "needs_review",
+      step9Category,
+      finalConfidence
     );
   } catch (error: any) {
     // Sanitized classification only - the thrown error's own message may
@@ -479,12 +518,6 @@ export async function submitWalletTopupSlip(
     console.error(
       `[Wallet OCR] technical failure for topup ${topupId}: ${walletProviderDiagnostic.code} status=${walletProviderDiagnostic.providerHttpStatus ?? "n/a"} attempts=${walletProviderDiagnostic.providerAttemptCount}`
     );
-    await recordWalletAttempt(
-      "technical_failure",
-      walletProviderDiagnostic.code,
-      "TECHNICAL",
-      null
-    );
     return await handleOCRError(
       topupId,
       userId,
@@ -492,7 +525,8 @@ export async function submitWalletTopupSlip(
       "ส่งสลิปแล้ว แต่ระบบ OCR ขัดข้อง แอดมินจะตรวจสอบให้",
       topup,
       fileHashOnlyExtraction,
-      expectedSlipVersion
+      expectedSlipVersion,
+      recordWalletAttempt
     );
   }
 }
@@ -592,7 +626,16 @@ async function autoApproveWalletTopup(
  */
 async function buildSupersededResult(
   topupId: number,
-  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+  /**
+   * When supplied, records exactly ONE STATE attempt for this run - the
+   * terminal outcome now that the guarded write's refusal is known. Omitted
+   * by the one call site that already recorded this same STATE outcome
+   * itself (the auto-approval claim race, which learns the refusal directly
+   * from the rolled-back transaction rather than from a guarded write here).
+   */
+  recordAttempt?: WalletAttemptRecorder,
+  attemptConfidence: number | null = null
 ): Promise<WalletTopupSubmissionResult> {
   const current = await db.getWalletTopupById(topupId);
   const status = (current?.status as WalletTopupSubmissionResult["status"]) ?? "pending_review";
@@ -611,6 +654,13 @@ async function buildSupersededResult(
   const reviewReason = slipReplaced
     ? "TOPUP_SUPERSEDED_BY_SLIP_REPLACEMENT"
     : "TOPUP_SUPERSEDED_BY_FINALIZATION";
+
+  // Exactly ONE terminal attempt for this run: the STATE outcome that
+  // actually landed, never the DATA/CONFIG/TECHNICAL result the caller had
+  // intended before discovering its write was refused.
+  if (recordAttempt) {
+    await recordAttempt("needs_review", reviewReason, "STATE", attemptConfidence);
+  }
 
   return {
     topupId,
@@ -643,7 +693,18 @@ async function handlePendingReview(
   verificationResult?: VerificationResult,
   parseResult?: any,
   topup?: any, // Topup object for Discord notification
-  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+  /**
+   * The attempt history recorder and the OUTCOME this call intended, passed
+   * through rather than recorded by the caller before this write runs. Only
+   * once `applied` is known below do we know whether to record this intended
+   * result or the STATE outcome a refused write actually produced - see the
+   * module-level doc on recordWalletAttempt.
+   */
+  recordAttempt?: WalletAttemptRecorder,
+  intendedResult: "needs_review" | "config_blocked" = "needs_review",
+  intendedCategory: string | null = "DATA",
+  intendedConfidence: number | null = null
 ): Promise<WalletTopupSubmissionResult> {
   const updateData: any = {
     status: "pending_review",
@@ -689,9 +750,22 @@ async function handlePendingReview(
   // The write was refused - either an admin had already finalized this
   // top-up, or the customer replaced its slip while this run was in flight.
   // Report the authoritative state instead of claiming a review that did not
-  // happen - and do not notify, since nothing needs reviewing.
+  // happen - and do not notify, since nothing needs reviewing. Recording
+  // happens INSIDE buildSupersededResult, now that the refusal is known:
+  // never the intended DATA/CONFIG result above, which never actually landed.
   if (!applied) {
-    return await buildSupersededResult(topupId, expectedSlipVersion);
+    return await buildSupersededResult(
+      topupId,
+      expectedSlipVersion,
+      recordAttempt,
+      intendedConfidence
+    );
+  }
+
+  // The write landed for the exact slip version this run processed - safe to
+  // record the intended outcome now.
+  if (recordAttempt) {
+    await recordAttempt(intendedResult, reviewReason, intendedCategory, intendedConfidence);
   }
 
   // Send Discord notification for OCR review (non-blocking)
@@ -738,7 +812,11 @@ async function handleDuplicate(
   userMessage: string,
   parseResult?: any,
   topup?: any, // Topup object for Discord notification
-  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+  recordAttempt?: WalletAttemptRecorder,
+  intendedReason: string = "WEAK_DUPLICATE_RISK",
+  intendedCategory: string | null = "DATA",
+  intendedConfidence: number | null = null
 ): Promise<WalletTopupSubmissionResult> {
   const duplicateType = verificationResult.reviewReason?.replace("DUPLICATE_", "") || "UNKNOWN";
   const updateData = {
@@ -775,9 +853,22 @@ async function handleDuplicate(
 
   // Refused: the top-up was finalized by an admin first, or its slip was
   // replaced while this run was in flight. A duplicate finding must not
-  // reopen a decided record or stomp a newer slip's evidence.
+  // reopen a decided record or stomp a newer slip's evidence. Recording
+  // happens INSIDE buildSupersededResult - never the intended
+  // WEAK_DUPLICATE_RISK result above, which never actually landed.
   if (!applied) {
-    return await buildSupersededResult(topupId, expectedSlipVersion);
+    return await buildSupersededResult(
+      topupId,
+      expectedSlipVersion,
+      recordAttempt,
+      intendedConfidence
+    );
+  }
+
+  // The write landed for the exact slip version this run processed - safe to
+  // record the intended outcome now.
+  if (recordAttempt) {
+    await recordAttempt("needs_review", intendedReason, intendedCategory, intendedConfidence);
   }
 
   // Send Discord notification for duplicate detection (non-blocking)
@@ -830,7 +921,8 @@ async function handleOCRError(
    * approval - which now refuses such records - could never clear it.
    */
   extractedData?: ExtractedSlipData,
-  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+  recordAttempt?: WalletAttemptRecorder
 ): Promise<WalletTopupSubmissionResult> {
   const updateData: any = {
     status: "pending_review",
@@ -859,8 +951,16 @@ async function handleOCRError(
 
   // Refused: an OCR failure arriving after a human decision must not undo
   // it, and must not overwrite a slip the customer has already replaced.
+  // Recording happens INSIDE buildSupersededResult - never a stale TECHNICAL
+  // result attributed to a slip this run no longer owns.
   if (!applied) {
-    return await buildSupersededResult(topupId, expectedSlipVersion);
+    return await buildSupersededResult(topupId, expectedSlipVersion, recordAttempt, null);
+  }
+
+  // The write landed for the exact slip version this run processed - safe to
+  // record the intended technical-failure outcome now.
+  if (recordAttempt) {
+    await recordAttempt("technical_failure", reviewReason, "TECHNICAL", null);
   }
 
   // Send Discord notification for OCR error (non-blocking)

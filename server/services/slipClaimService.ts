@@ -169,6 +169,22 @@ export type SlipClaimOutcome =
       matchedSourceType?: SlipClaimSourceType;
       matchedSourceId?: number;
       requiresAdminResolution: true;
+    }
+  | {
+      claimed: false;
+      /**
+       * The live legacy scan hit an approved historical row it could not
+       * evaluate: no persisted fileHash, and none could be recovered from
+       * its own stored slip bytes. We do not know whether that row IS this
+       * submission, so this is neither a proven duplicate nor "no conflict"
+       * - it fails closed. Possible only while the legacy scan is required;
+       * a completed backfill has already resolved (or refused to complete
+       * over) every approved row.
+       */
+      reason: "legacy_scan_unresolved";
+      matchedSourceType?: SlipClaimSourceType;
+      matchedSourceId?: number;
+      requiresAdminResolution: true;
     };
 
 /**
@@ -360,6 +376,20 @@ export async function claimSlip(
       };
     }
 
+    if (conflict.kind === "unresolved") {
+      // An approved historical row exists that could not be verified - not a
+      // proven duplicate, not provably clean. Never claimed, never treated
+      // as ordinary review; the caller must tell the admin replay protection
+      // is incomplete for this record.
+      return {
+        claimed: false,
+        reason: "legacy_scan_unresolved",
+        matchedSourceType: conflict.matchedSourceType,
+        matchedSourceId: conflict.matchedSourceId,
+        requiresAdminResolution: true,
+      };
+    }
+
     if (conflict.kind === "legacy_case_ambiguity") {
       const adjudicated = request.legacyCaseAmbiguityResolution;
 
@@ -471,6 +501,22 @@ export function describeClaimFailure(outcome: SlipClaimOutcome): string {
       "No strong identifier could be derived from this slip (no readable transaction " +
       "reference, no file hash, no QR payload), so replay cannot be prevented " +
       "automatically. Manual review is required."
+    );
+  }
+
+  if (outcome.reason === "legacy_scan_unresolved") {
+    const where =
+      outcome.matchedSourceType && outcome.matchedSourceId
+        ? outcome.matchedSourceType === "order_payment"
+          ? ` order payment #${outcome.matchedSourceId}`
+          : ` wallet top-up #${outcome.matchedSourceId}`
+        : " an earlier approved record";
+
+    return (
+      `An approved${where} predates the claim registry and its slip image could not be ` +
+      `verified server-side, so replay protection for it is incomplete. This is NOT a proven ` +
+      `duplicate - it cannot be confirmed either way from stored data. Manual review is ` +
+      `required until the historical backfill resolves this record.`
     );
   }
 

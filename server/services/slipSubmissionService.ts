@@ -481,11 +481,16 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
                   // asks a human to resolve. No claim was inserted.
                   claim.reason === "legacy_case_ambiguity"
                   ? "LEGACY_REFERENCE_CASE_AMBIGUITY"
-                  : claim.reason === "already_claimed" && claim.conflictKind === "file"
-                    ? "DUPLICATE_FILE"
-                    : claim.reason === "already_claimed" && claim.conflictKind === "qr"
-                      ? "DUPLICATE_QR"
-                      : "DUPLICATE_REFERENCE";
+                  : // An approved historical row could not be verified - not
+                    // a proven duplicate, not provably clean. Auto-approval
+                    // must not guess either way.
+                    claim.reason === "legacy_scan_unresolved"
+                    ? "LEGACY_APPROVED_SLIP_UNRESOLVED"
+                    : claim.reason === "already_claimed" && claim.conflictKind === "file"
+                      ? "DUPLICATE_FILE"
+                      : claim.reason === "already_claimed" && claim.conflictKind === "qr"
+                        ? "DUPLICATE_QR"
+                        : "DUPLICATE_REFERENCE";
             // Abort the whole auto-approval; nothing financial has committed.
             throw new SlipClaimRejected(describeClaimFailure(claim));
           }

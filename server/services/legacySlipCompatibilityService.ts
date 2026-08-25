@@ -35,9 +35,10 @@
  */
 
 import { payments, walletTopups } from "../../drizzle/schema";
-import { and, asc, eq, gt, isNotNull } from "drizzle-orm";
+import { and, asc, eq, gt } from "drizzle-orm";
 import { hashSlipReference } from "./slipIdentifierService";
 import { extractSlipData } from "../ocr-slip-verification-v2";
+import { computeSlipFileHash } from "./slipFileHashService";
 
 export type LegacySourceType = "order_payment" | "wallet_topup";
 
@@ -51,20 +52,48 @@ export type LegacyMatchedBy =
    * genuinely different case-sensitive references fold together here, so this
    * is advisory ambiguity, never a duplicate verdict.
    */
-  | "legacy_uppercase_only";
+  | "legacy_uppercase_only"
+  /**
+   * This approved row could NOT be evaluated: the incoming submission carries
+   * a fileHash to compare, this row has no persisted fileHash, and no exact
+   * fileHash could be recovered from its own stored slipImageUrl (missing,
+   * unreadable, or the fetch/hash primitive failed). We genuinely do not know
+   * whether this historical row IS the current submission, so it must never
+   * be silently treated as "no conflict" - see findLegacyApprovedDuplicate.
+   */
+  | "unresolved";
 
 export interface LegacyDuplicateMatch {
   sourceType: LegacySourceType;
   sourceId: number;
-  kind: "reference" | "file";
+  kind: "reference" | "file" | "unresolved";
   /**
    * How the match was obtained. Callers MUST branch on this: collapsing an
    * uppercase-only match into a duplicate hard-blocks a legitimate
-   * case-sensitive reference with no admin escape.
+   * case-sensitive reference with no admin escape, and collapsing an
+   * `unresolved` row into "no conflict" reopens replay for exactly the rows
+   * this scan exists to protect.
    */
   matchedBy: LegacyMatchedBy;
   /** How the legacy row's reference was recovered, for operator insight. */
-  evidence?: "stored_hash" | "reference_raw" | "reparsed_raw_text" | "legacy_uppercase";
+  evidence?:
+    | "stored_hash"
+    | "reference_raw"
+    | "reparsed_raw_text"
+    | "legacy_uppercase"
+    | "recovered_from_bytes";
+}
+
+/**
+ * Relative severity of a non-strong scan hit, highest first. Used so that
+ * when a single table scan encounters BOTH an unresolved row and a lossy
+ * legacy-case fold (on different rows), the more cautious signal - we don't
+ * know vs. we know it's ambiguous - is the one callers see, and so the two
+ * tables can be combined the same way. A strong match always wins over both
+ * regardless of this ranking; see isStrongMatch.
+ */
+function fallbackRank(match: LegacyDuplicateMatch): number {
+  return match.matchedBy === "unresolved" ? 2 : 1;
 }
 
 /** Page size for the complete scan. Bounded memory, unbounded coverage. */
@@ -206,10 +235,18 @@ function referenceMatches(
   return undefined;
 }
 
-/** Strong matches stop the scan; a lossy one is only a fallback. */
-function isStrongMatch(match: LegacyDuplicateMatch): boolean {
-  return match.matchedBy !== "legacy_uppercase_only";
+/**
+ * Strong matches stop the scan; a lossy fold or an unresolved row are only
+ * held as a fallback while the scan keeps looking for something conclusive.
+ */
+function isStrongMatch(
+  match: LegacyDuplicateMatch
+): match is LegacyDuplicateMatch & { kind: "file" | "reference" } {
+  return match.matchedBy !== "legacy_uppercase_only" && match.matchedBy !== "unresolved";
 }
+
+/** Exported so evaluateSlipConflict can branch without duplicating the rule. */
+export { isStrongMatch as isLegacyStrongMatch };
 
 /**
  * Pages through every approved row of one table, ordered by primary key.
@@ -218,14 +255,19 @@ function isStrongMatch(match: LegacyDuplicateMatch): boolean {
  * both the offset-drift problem and any arbitrary cap. `onRow` returning a
  * value stops the scan early with that value.
  */
-async function scanApproved<T>(
+async function scanApproved<T extends LegacyDuplicateMatch>(
   tx: any,
   table: typeof payments | typeof walletTopups,
   statusColumn: any,
   idColumn: any,
   extractedDataColumn: any,
-  onRow: (row: { id: number; extractedData: string | null }) => T | undefined,
-  /** Return false to keep scanning (a lossy fallback), true to stop now. */
+  slipImageUrlColumn: any,
+  onRow: (row: {
+    id: number;
+    extractedData: string | null;
+    slipImageUrl: string | null;
+  }) => Promise<T | undefined>,
+  /** Return false to keep scanning (a fallback), true to stop now. */
   shouldStop: (hit: T) => boolean = () => true
 ): Promise<T | undefined> {
   let fallback: T | undefined;
@@ -233,33 +275,40 @@ async function scanApproved<T>(
 
   // Unbounded in coverage, bounded in memory: each iteration reads at most
   // SCAN_PAGE_SIZE rows and advances the cursor past them.
+  //
+  // NOT filtered on extractedData being non-NULL. An approved row from an
+  // older OCR-disabled/manual-approval flow can legitimately have NULL
+  // extraction; excluding it here made it invisible to live anti-replay
+  // protection even though the row genuinely created value. onRow below is
+  // what decides whether such a row is comparable (via a recovered file
+  // hash) or must be reported unresolved - the scan predicate's only job is
+  // completeness.
   for (;;) {
     const page = await tx
-      .select({ id: idColumn, extractedData: extractedDataColumn })
+      .select({ id: idColumn, extractedData: extractedDataColumn, slipImageUrl: slipImageUrlColumn })
       .from(table)
-      .where(
-        and(eq(statusColumn, "approved"), isNotNull(extractedDataColumn), gt(idColumn, cursor))
-      )
+      .where(and(eq(statusColumn, "approved"), gt(idColumn, cursor)))
       .orderBy(asc(idColumn))
       .limit(SCAN_PAGE_SIZE);
 
     // TERMINAL EMPTY PAGE. Reached when the eligible row count is an exact
     // multiple of SCAN_PAGE_SIZE, so the previous page was full and this one
-    // is empty. Returning `undefined` here threw away a lossy match already
-    // held in `fallback`: a mixed-case replay of an unrecoverable legacy
-    // uppercase reference was then reported as conflict-free and could
-    // create value. EOF means "nothing stronger exists", not "nothing was
-    // found" - so the accumulated result is returned, exactly as the
-    // short-page exit below does.
+    // is empty. Returning `undefined` here threw away a fallback already
+    // held (a lossy legacy-case fold, or an unresolved row): a mixed-case
+    // replay, or a replay of a row we could not evaluate, was then reported
+    // as conflict-free and could create value. EOF means "nothing stronger
+    // exists", not "nothing was found" - so the accumulated result is
+    // returned, exactly as the short-page exit below does.
     if (!page || page.length === 0) return fallback;
 
     for (const row of page) {
-      const hit = onRow(row);
+      const hit = await onRow(row);
       if (hit !== undefined) {
         if (shouldStop(hit)) return hit;
-        // Remember the weaker match but keep looking for a stronger one, so
-        // an exact duplicate later in the table still wins.
-        fallback = fallback ?? hit;
+        // Remember the more cautious fallback but keep looking for a
+        // stronger, conclusive match, so an exact duplicate later in the
+        // table still wins over an earlier lossy fold or unresolved row.
+        if (!fallback || fallbackRank(hit) > fallbackRank(fallback)) fallback = hit;
       }
     }
 
@@ -291,17 +340,19 @@ export async function findLegacyApprovedDuplicate(
 
   const inspect =
     (sourceType: LegacySourceType) =>
-    (row: { id: number; extractedData: string | null }): LegacyDuplicateMatch | undefined => {
+    async (row: {
+      id: number;
+      extractedData: string | null;
+      slipImageUrl: string | null;
+    }): Promise<LegacyDuplicateMatch | undefined> => {
       if (excludeSource?.sourceType === sourceType && excludeSource.sourceId === row.id) {
         return undefined;
       }
 
       // An exact FILE match outranks a lossy reference fold, so it is checked
       // before falling back to an uppercase-only reference hit.
-      if (
-        identifiers.fileHash &&
-        fileHashFromExtractedData(row.extractedData) === identifiers.fileHash
-      ) {
+      const storedFileHash = fileHashFromExtractedData(row.extractedData);
+      if (identifiers.fileHash && storedFileHash === identifiers.fileHash) {
         return {
           sourceType,
           sourceId: row.id,
@@ -325,6 +376,51 @@ export async function findLegacyApprovedDuplicate(
         };
       }
 
+      // Neither the reference nor a PERSISTED file hash matched. If the
+      // incoming submission has nothing to compare on the file axis at all,
+      // this row is fully resolved by the checks above - genuinely no
+      // conflict, nothing more to know.
+      if (!identifiers.fileHash) return undefined;
+
+      // The incoming submission DOES carry a fileHash, and this row has no
+      // persisted one to compare it against. We cannot conclude "no match"
+      // without knowing this row's actual file identity - a re-upload of the
+      // exact same bytes would otherwise slip through simply because an
+      // older OCR-disabled/manual-approval flow never wrote extractedData.
+      // Recover it, server-side, from the row's OWN stored bytes - never a
+      // client value, URL text, filename, or weak fingerprint.
+      if (storedFileHash) {
+        // A persisted hash existed but did not equal the incoming one
+        // (checked above) - this row IS resolved, just not a match.
+        return undefined;
+      }
+
+      if (!row.slipImageUrl) {
+        // No persisted hash AND nothing to recover from. This row's file
+        // identity is completely unknown - fail closed rather than silently
+        // treating an unverifiable historical row as "no conflict".
+        return { sourceType, sourceId: row.id, kind: "unresolved", matchedBy: "unresolved" };
+      }
+
+      const recovered = await computeSlipFileHash(row.slipImageUrl);
+      if (!recovered) {
+        // Recovery was attempted and failed (missing bytes, fetch/timeout,
+        // oversized, not a private ref). Still unknown - fail closed.
+        return { sourceType, sourceId: row.id, kind: "unresolved", matchedBy: "unresolved" };
+      }
+
+      if (recovered === identifiers.fileHash) {
+        return {
+          sourceType,
+          sourceId: row.id,
+          kind: "file",
+          matchedBy: "file_exact",
+          evidence: "recovered_from_bytes",
+        };
+      }
+
+      // Recovery succeeded and definitively proved this row is a DIFFERENT
+      // file. Fully resolved, no conflict.
       return undefined;
     };
 
@@ -334,11 +430,12 @@ export async function findLegacyApprovedDuplicate(
     payments.status,
     payments.id,
     payments.extractedData,
+    payments.slipImageUrl,
     inspect("order_payment"),
     isStrongMatch
   );
-  // Only a STRONG payment hit short-circuits. A lossy one is held back so an
-  // exact duplicate in the wallet table can still outrank it.
+  // Only a STRONG payment hit short-circuits. A lossy/unresolved one is held
+  // back so an exact duplicate in the wallet table can still outrank it.
   if (paymentHit && isStrongMatch(paymentHit)) return paymentHit;
 
   const topupHit = await scanApproved(
@@ -347,14 +444,19 @@ export async function findLegacyApprovedDuplicate(
     walletTopups.status,
     walletTopups.id,
     walletTopups.extractedData,
+    walletTopups.slipImageUrl,
     inspect("wallet_topup"),
     isStrongMatch
   );
 
   if (topupHit && isStrongMatch(topupHit)) return topupHit;
 
-  // Neither source produced an exact match. Surface whichever lossy hit
-  // exists, if any - it is advisory ambiguity, not a duplicate.
+  // Neither source produced an exact match. Surface whichever fallback is
+  // more cautious - unresolved outranks a lossy fold, since "we don't know"
+  // is a stronger reason to stop than a recognised, lossy ambiguity.
+  if (paymentHit && topupHit) {
+    return fallbackRank(topupHit) > fallbackRank(paymentHit) ? topupHit : paymentHit;
+  }
   return paymentHit ?? topupHit;
 }
 

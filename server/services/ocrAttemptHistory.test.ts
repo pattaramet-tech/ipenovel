@@ -70,7 +70,9 @@ describe("automatic wallet OCR records an attempt", () => {
   });
 
   it("records the technical-failure path", () => {
-    expect(code).toMatch(/recordWalletAttempt\(\s*\n?\s*"technical_failure"/);
+    // Recorded by handleOCRError itself, only once its guarded write's
+    // outcome is known (IPE-001 P2) - never by the caller beforehand.
+    expect(code).toMatch(/await recordAttempt\("technical_failure", reviewReason, "TECHNICAL", null\)/);
   });
 
   it("records the auto-approved path", () => {
@@ -78,13 +80,23 @@ describe("automatic wallet OCR records an attempt", () => {
   });
 
   it("records config-blocked when OCR is disabled entirely", () => {
-    expect(code).toMatch(/recordWalletAttempt\("config_blocked",\s*"OCR_DISABLED"/);
+    // The intended (result, reason) travel together into handlePendingReview
+    // as explicit arguments rather than being recorded by the caller first.
+    const idx = code.indexOf("if (!ocrConfig.enabled) {");
+    const block = code.slice(idx, idx + 500);
+    expect(block).toMatch(/handlePendingReview\(/);
+    expect(block).toMatch(/"OCR_DISABLED",/);
+    expect(block).toMatch(/recordWalletAttempt,\s*\n\s*"config_blocked"/);
   });
 
   it("records each data-review reason rather than one generic entry", () => {
     for (const reason of ["LOW_CONFIDENCE", "AMOUNT_MISMATCH", "MISSING_FIELDS"]) {
-      expect(code).toMatch(new RegExp(`recordWalletAttempt\\("needs_review", "${reason}"`));
+      // Each reason is the reviewReason argument to handlePendingReview,
+      // which itself records ("needs_review", reviewReason, ...) only after
+      // its guarded write succeeds for the current slip version.
+      expect(code).toMatch(new RegExp(`return await handlePendingReview\\(\\s*\\n\\s*topupId,\\s*\\n\\s*userId,\\s*\\n\\s*"${reason}"`));
     }
+    expect(code).toMatch(/await recordAttempt\(intendedResult, reviewReason, intendedCategory, intendedConfidence\)/);
   });
 });
 

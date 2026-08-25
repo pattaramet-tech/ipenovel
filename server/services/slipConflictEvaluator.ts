@@ -31,7 +31,10 @@
  */
 
 import { findExistingClaim, findClaimByLegacyAlias } from "./slipClaimService";
-import { findLegacyApprovedDuplicate } from "./legacySlipCompatibilityService";
+import {
+  findLegacyApprovedDuplicate,
+  isLegacyStrongMatch,
+} from "./legacySlipCompatibilityService";
 import { isLegacyScanRequired } from "./slipBackfillStateService";
 import { hashSlipReference, type SlipStrongIdentifiers } from "./slipIdentifierService";
 
@@ -56,6 +59,21 @@ export type SlipConflict =
       advisory: true;
       requiresAdminResolution: true;
       legacyAliasHash?: string;
+    }
+  | {
+      /**
+       * The live legacy scan encountered an approved historical row it could
+       * not evaluate: no persisted fileHash, and no exact fileHash could be
+       * recovered from its own stored slip bytes. We do not know whether
+       * that row IS this submission, so this is neither "no conflict" nor a
+       * proven duplicate - it fails closed and requires a human decision.
+       * Possible only while the legacy scan is required; a completed
+       * backfill has already resolved (or refused to complete over) every
+       * approved row, so this cannot occur post-backfill.
+       */
+      kind: "unresolved";
+      matchedSourceType: SlipConflictSourceType;
+      matchedSourceId: number;
     };
 
 export interface EvaluateSlipConflictInput {
@@ -124,16 +142,31 @@ export async function evaluateSlipConflict(
       tx
     );
 
-    // Only an EXACT historical hit is a duplicate. An uppercase-only hit is
-    // handled below as ambiguity - collapsing it here is precisely the bug
-    // that hard-blocked legitimate case-sensitive references.
-    if (scanHit && scanHit.matchedBy !== "legacy_uppercase_only") {
+    // Only an EXACT historical hit is a duplicate. An uppercase-only hit and
+    // an unresolved row are handled below - collapsing either one here would
+    // be the same bug class: hard-blocking a legitimate reference (lossy
+    // fold) or silently approving an unverifiable historical row (unresolved)
+    // as though it were proven clean.
+    if (scanHit && isLegacyStrongMatch(scanHit)) {
       return {
         kind: "strong_duplicate",
         matchedKind: scanHit.kind,
         matchedSourceType: scanHit.sourceType,
         matchedSourceId: scanHit.sourceId,
         viaLegacyCompatibility: true,
+      };
+    }
+
+    // An approved historical row could not be evaluated at all - no
+    // persisted fileHash and no recoverable one. We do not know if it IS
+    // this submission, so this fails closed ahead of the lossy legacy-case
+    // fold below: "we don't know" is a stronger reason to stop than a
+    // recognised, lossy ambiguity.
+    if (scanHit && scanHit.matchedBy === "unresolved") {
+      return {
+        kind: "unresolved",
+        matchedSourceType: scanHit.sourceType,
+        matchedSourceId: scanHit.sourceId,
       };
     }
   }
@@ -186,6 +219,15 @@ export function describeSlipConflict(conflict: SlipConflict): string {
       `That older record lost its original casing, so this is NOT proof of a duplicate - ` +
       `the two references may be genuinely different. An admin must decide whether to ` +
       `reject it as a duplicate or approve it as a distinct transaction.`
+    );
+  }
+
+  if (conflict.kind === "unresolved") {
+    return (
+      `An approved ${where} predates the claim registry and its slip image could not be ` +
+      `verified server-side, so historical replay protection for it is incomplete. This is ` +
+      `NOT a proven duplicate - it cannot be confirmed either way. An admin must review the ` +
+      `historical record manually before this can be approved.`
     );
   }
 

@@ -150,7 +150,14 @@ describe("auto_approved history is written only after the money commits", () => 
 
   it("a claim conflict is classified as DATA, not TECHNICAL", () => {
     expect(code).toMatch(/instanceof db\.WalletSlipClaimError/);
-    expect(code).toMatch(/recordWalletAttempt\("needs_review", duplicateReason, "DATA"/);
+    // The intended (result, category) for this outcome are passed into
+    // handlePendingReview, which records them itself only once its guarded
+    // write's outcome is known (IPE-001 P2) - never recorded directly here.
+    const idx = code.indexOf("if (claimCode) {");
+    const block = code.slice(idx, idx + 600);
+    expect(block).toMatch(/handlePendingReview\(/);
+    expect(block).toMatch(/duplicateReason,/);
+    expect(block).toMatch(/recordWalletAttempt,\s*\n\s*"needs_review",\s*\n\s*"DATA"/);
   });
 
   it("a claim conflict does NOT record a technical/provider failure", () => {
