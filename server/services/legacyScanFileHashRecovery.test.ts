@@ -358,6 +358,114 @@ describe("E/F. unresolved rows fail closed, never silently pass as 'no conflict'
   });
 });
 
+describe("IPE-001-C02: a nonmatching reference must never suppress exact-file replay detection when the incoming submission HAS a fileHash", () => {
+  // C01's fix skipped file-axis recovery entirely whenever a historical row
+  // carried ANY reference evidence, even if none of it matched the incoming
+  // submission. That is only safe when there is nothing on the incoming side
+  // to compare (see F2 above) - when the incoming submission DOES carry a
+  // fileHash, a stale, incorrect, or merely unrelated reference field must
+  // never suppress a real same-image comparison.
+
+  it("1. reference evidence present but mismatched, no persisted fileHash, recoverable image matches incoming fileHash -> strong duplicate, no value created", async () => {
+    vi.spyOn(slipFileHashService, "computeSlipFileHash").mockResolvedValue(FILE_A);
+    const tx = makeFakeTx({
+      approvedPayments: [
+        {
+          id: 40,
+          extractedData: JSON.stringify({ reference: "UNRELATED-REFERENCE", amount: 1 }),
+          slipImageUrl: "r2p:payment-slips/replay",
+        },
+      ],
+    });
+
+    const outcome = await claimSlip(
+      {
+        sourceType: "wallet_topup",
+        sourceId: 508,
+        userId: 1,
+        identifiers: { referenceHash: REF_HASH, fileHash: FILE_A },
+      },
+      tx
+    );
+
+    expect(outcome.claimed).toBe(false);
+    if (!outcome.claimed && outcome.reason === "already_claimed") {
+      expect(outcome.existingSourceId).toBe(40);
+      expect(outcome.viaLegacyCompatibility).toBe(true);
+    }
+    expect(tx._claims).toHaveLength(0);
+  });
+
+  it("2. same as (1) but the incoming submission has NO reference at all - the file axis alone still catches the replay", async () => {
+    vi.spyOn(slipFileHashService, "computeSlipFileHash").mockResolvedValue(FILE_A);
+    const tx = makeFakeTx({
+      approvedPayments: [
+        {
+          id: 41,
+          extractedData: JSON.stringify({ reference: "UNRELATED-REFERENCE", amount: 1 }),
+          slipImageUrl: "r2p:payment-slips/replay2",
+        },
+      ],
+    });
+
+    const outcome = await claimSlip(
+      { sourceType: "wallet_topup", sourceId: 509, userId: 1, identifiers: { fileHash: FILE_A } },
+      tx
+    );
+
+    expect(outcome.claimed).toBe(false);
+    if (!outcome.claimed && outcome.reason === "already_claimed") {
+      expect(outcome.existingSourceId).toBe(41);
+    }
+  });
+
+  it("3. recovered fileHash genuinely differs -> no conflict, the reference-based reasoning is not needed to prove it", async () => {
+    vi.spyOn(slipFileHashService, "computeSlipFileHash").mockResolvedValue(FILE_B);
+    const tx = makeFakeTx({
+      approvedPayments: [
+        {
+          id: 42,
+          extractedData: JSON.stringify({ reference: "UNRELATED-REFERENCE", amount: 1 }),
+          slipImageUrl: "r2p:payment-slips/different",
+        },
+      ],
+    });
+
+    const outcome = await claimSlip(
+      {
+        sourceType: "wallet_topup",
+        sourceId: 510,
+        userId: 1,
+        identifiers: { referenceHash: REF_HASH, fileHash: FILE_A },
+      },
+      tx
+    );
+
+    expect(outcome.claimed).toBe(true);
+  });
+
+  it("4. incoming fileHash unavailable + independent nonmatching exact reference -> retains the C01 non-overblocking behavior (regression guard for F2)", async () => {
+    const computeSpy = vi.spyOn(slipFileHashService, "computeSlipFileHash");
+    const tx = makeFakeTx({
+      approvedPayments: [
+        {
+          id: 43,
+          extractedData: JSON.stringify({ reference: "UNRELATED-REFERENCE", amount: 1 }),
+          slipImageUrl: "r2p:payment-slips/never-fetched",
+        },
+      ],
+    });
+
+    const outcome = await claimSlip(
+      { sourceType: "wallet_topup", sourceId: 511, userId: 1, identifiers: { referenceHash: REF_HASH } },
+      tx
+    );
+
+    expect(outcome.claimed).toBe(true);
+    expect(computeSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe("G. pagination boundary: unresolved/recoverable rows are not skipped across pages", () => {
   const filler = (n: number, imageUrl: string | null = null) =>
     Array.from({ length: n }, (_, i) => ({

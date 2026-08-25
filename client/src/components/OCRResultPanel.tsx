@@ -55,11 +55,16 @@ interface OCRResultPanelProps {
     effectiveWindowMinutes?: number;
     minConfidence?: number;
     duplicate?: {
-      strength: "strong";
-      kind: string;
-      matchedSourceType: "order_payment" | "wallet_topup";
-      matchedSourceId: number;
-      viaLegacyCompatibility: boolean;
+      strength:
+        | "strong"
+        | "legacy_case_ambiguity"
+        | "unresolved"
+        | "legacy_case_ambiguity_group";
+      kind?: string;
+      matchedSourceType?: "order_payment" | "wallet_topup";
+      matchedSourceId?: number;
+      matchedOrderId?: number;
+      viaLegacyCompatibility?: boolean;
     } | null;
     fileIdentifierStatus?: "AVAILABLE" | "MATCH" | "UNAVAILABLE";
     recipient?: {

@@ -69,6 +69,10 @@ import {
 } from "./lib/backfillRepresentation.mjs";
 import { recoverFileHashIdentifier } from "./lib/backfillFileHashRecovery.mjs";
 import { deriveIdentifiers as deriveIdentifiersPure } from "./lib/backfillIdentifierDerivation.mjs";
+import {
+  detectStaleReferenceClaim,
+  buildStaleReferenceMigrationPatch,
+} from "./lib/backfillStaleReferenceMigration.mjs";
 
 const TOOL_VERSION = "backfill-slip-claims@2";
 
@@ -185,6 +189,15 @@ const stats = {
   fileHashCoverageAdded: 0,
   /** Rows still lacking required fileHash coverage when the run ends. */
   fileHashUncovered: 0,
+  /**
+   * Claims written by an OLDER backfill version that stored lossy
+   * legacy-uppercase evidence as EXACT referenceHash ownership - repaired in
+   * place (obsolete exact reference cleared, alias/fileHash retained/added).
+   */
+  wouldRepairStaleClaim: 0,
+  staleClaimsRepaired: 0,
+  /** Stale claims not yet repaired when the run ends - blocks completion. */
+  staleClaimsUncovered: 0,
   failures: [],
   paymentMaxId: 0,
   walletTopupMaxId: 0,
@@ -277,6 +290,120 @@ async function verifyFileHashPersisted(claimId, expectedFileHash) {
   return rows?.[0]?.fileHash === expectedFileHash;
 }
 
+/**
+ * The one existing claim for a source, looked up directly by
+ * (sourceType, sourceId) rather than by any hash value.
+ *
+ * Needed specifically for stale-claim migration: a claim written by an OLDER
+ * backfill version may hold, as its EXACT `referenceHash`, a value today's
+ * derivation would never produce again (see migrateStaleReferenceClaim) -
+ * that claim is therefore invisible to classifyAgainstRegistry's hash-based
+ * lookup, which only ever queries by values `ids` currently holds.
+ */
+async function findSameSourceClaim(current) {
+  const rows = await db
+    .select()
+    .from(schema.paymentSlipClaims)
+    .where(
+      and(
+        eq(schema.paymentSlipClaims.sourceType, current.sourceType),
+        eq(schema.paymentSlipClaims.sourceId, current.sourceId)
+      )
+    )
+    .limit(1);
+  return rows?.[0];
+}
+
+/**
+ * Repairs a claim an OLDER backfill version wrote before this codebase
+ * stopped treating lossy legacy-uppercase evidence as EXACT reference
+ * ownership (see scripts/lib/backfillIdentifierDerivation.mjs). That old
+ * claim's `referenceHash` hard-blocks any future, genuinely distinct
+ * transaction that happens to fold to the same upper-cased value - exactly
+ * the bug this closed for NEW backfill runs, except the wrong ownership
+ * already written by an OLD run survives untouched by them.
+ *
+ * ── Provenance, not a guess ─────────────────────────────────────────────
+ * Only ever called when TODAY's derivation, run against this row's own
+ * stored `extractedData`, independently computes the SAME lossy hash as the
+ * claim's stored `referenceHash` (checked by the caller before invoking
+ * this). That value could only ever have come from this exact row's own
+ * upper-cased reference field via the old buggy code path - never a
+ * legitimate exact reference, which would be case-preserving and therefore
+ * a DIFFERENT hash. A claim whose referenceHash does not match is left
+ * completely untouched.
+ *
+ * ── What changes ──────────────────────────────────────────────────────────
+ * The SAME claim row is migrated in place - never a second INSERT for this
+ * source. The obsolete exact `referenceHash` is cleared (it was never
+ * legitimate authority), the required advisory alias is ensured, and a
+ * freshly recovered exact fileHash is folded in ONLY into an empty slot -
+ * an existing fileHash on the claim is never overwritten by this repair.
+ */
+async function migrateStaleReferenceClaim(staleClaim, ids, expectedAlias, sourceType, rowId) {
+  const patch = buildStaleReferenceMigrationPatch(staleClaim, ids, expectedAlias);
+
+  if (!isLive) {
+    stats.wouldRepairStaleClaim += 1;
+    stats.staleClaimsUncovered += 1;
+    console.log(
+      `  WOULD_MIGRATE_STALE_LEGACY_CLAIM  ${sourceType}#${rowId}  claim#${staleClaim.id}`
+    );
+    return;
+  }
+
+  try {
+    await db
+      .update(schema.paymentSlipClaims)
+      .set(patch)
+      .where(eq(schema.paymentSlipClaims.id, staleClaim.id));
+
+    const rows = await db
+      .select()
+      .from(schema.paymentSlipClaims)
+      .where(eq(schema.paymentSlipClaims.id, staleClaim.id))
+      .limit(1);
+    const persisted = rows?.[0];
+    // Re-read: an update that affected nothing (or landed only partially) is
+    // not coverage.
+    const ok =
+      persisted &&
+      persisted.referenceHash === null &&
+      persisted.legacyReferenceUpperHash === expectedAlias &&
+      (!patch.fileHash || persisted.fileHash === patch.fileHash);
+
+    if (ok) {
+      stats.staleClaimsRepaired += 1;
+    } else {
+      stats.staleClaimsUncovered += 1;
+      stats.failures.push({
+        source: `${sourceType}#${rowId}`,
+        stage: "stale claim migration",
+        error: "claim not in expected state after update",
+      });
+    }
+  } catch (error) {
+    // A duplicate-key error means the freshly recovered fileHash is ALREADY
+    // claimed by a different source - a genuine collision, never swallowed.
+    const isDuplicate = error?.code === "ER_DUP_ENTRY" || error?.errno === 1062;
+    if (isDuplicate) {
+      tracker.collisions.push({
+        kind: "file",
+        identifier: "(unique index)",
+        first: "existing claim",
+        second: `${sourceType}#${rowId}`,
+      });
+    } else {
+      stats.staleClaimsUncovered += 1;
+      stats.failures.push({
+        source: `${sourceType}#${rowId}`,
+        stage: "stale claim migration",
+        error: error?.code ?? error?.message ?? "unknown",
+      });
+    }
+  }
+}
+
 async function processRows(sourceType, rows) {
   for (const row of rows) {
     stats.scanned += 1;
@@ -290,6 +417,26 @@ async function processRows(sourceType, rows) {
     if (derived.recoveredByReparse) stats.recoveredByReparse += 1;
 
     let ids = derived.identifiers;
+    const current = { sourceType, sourceId: row.id };
+    // The alias this row REQUIRES. Undefined whenever the casing survived -
+    // those rows need no advisory coverage and must never be given one.
+    // Truthy ONLY for legacy_uppercase evidence (see deriveIdentifiers).
+    const expectedAlias = derived.legacyReferenceUpperHash;
+
+    // Detect a claim an OLDER backfill version wrote for THIS SAME source,
+    // before this codebase stopped treating lossy legacy-uppercase evidence
+    // as exact reference ownership. Looked up by SOURCE, not by hash: today's
+    // derivation has already (correctly) stripped this value from `ids`, so
+    // the hash-based registry lookup below can never find it - leaving that
+    // wrong ownership to survive every rerun, and a later fresh insert to
+    // create a SECOND claim for the same source. See
+    // migrateStaleReferenceClaim for the provenance proof this depends on.
+    let staleClaim;
+    if (expectedAlias) {
+      const sameSource = await findSameSourceClaim(current);
+      staleClaim = detectStaleReferenceClaim(sameSource, expectedAlias);
+    }
+
     if (!ids.fileHash) {
       // extractedData carried no exact fileHash - whether or not it carried
       // another exact identifier (reference/QR), and whether or not it is
@@ -307,10 +454,24 @@ async function processRows(sourceType, rows) {
       if (recovery.fileHash) {
         ids = { ...ids, fileHash: recovery.fileHash };
         stats.fileHashRecovered += 1;
+        if (staleClaim) {
+          // The stale claim can be fully repaired with this freshly
+          // recovered fileHash - migrate it in place and stop; there is
+          // nothing left for the normal registry/insert path to do.
+          await migrateStaleReferenceClaim(staleClaim, ids, expectedAlias, sourceType, row.id);
+          continue;
+        }
       } else if (!identifiers.hasStrongIdentifier(ids)) {
         // UNRESOLVED: no identifier in extractedData AND no recoverable file
         // hash. This row has NO claim and remains replayable - it must block
         // --mark-complete, never be silently skipped.
+        if (staleClaim) {
+          // Still repair the obsolete EXACT ownership even without a
+          // replacement fileHash - it must never survive a rerun, since it
+          // wrongly hard-blocks any future distinct transaction sharing the
+          // same fold. The row itself remains correctly unresolved below.
+          await migrateStaleReferenceClaim(staleClaim, ids, expectedAlias, sourceType, row.id);
+        }
         stats.noIdentifier += 1;
         stats.unresolvedRows.push({
           source: `${sourceType}#${row.id}`,
@@ -323,6 +484,9 @@ async function processRows(sourceType, rows) {
         // the invariant above, that identifier does NOT excuse the gap - this
         // row is still unresolved and still blocks --mark-complete, even
         // though it "has" a strong identifier.
+        if (staleClaim) {
+          await migrateStaleReferenceClaim(staleClaim, ids, expectedAlias, sourceType, row.id);
+        }
         stats.noIdentifier += 1;
         stats.unresolvedRows.push({
           source: `${sourceType}#${row.id}`,
@@ -332,14 +496,17 @@ async function processRows(sourceType, rows) {
       }
     }
 
-    const current = { sourceType, sourceId: row.id };
+    if (staleClaim) {
+      // ids.fileHash was already present before recovery was even
+      // considered (extractedData carried it directly) - the stale claim can
+      // still be migrated using it.
+      await migrateStaleReferenceClaim(staleClaim, ids, expectedAlias, sourceType, row.id);
+      continue;
+    }
 
     // Registry classification: represented only when THIS source already owns
     // EVERY identifier this row carries. Partial or foreign ownership is a
     // reported collision, never a silent skip.
-    // The alias this row REQUIRES. Undefined whenever the casing survived -
-    // those rows need no advisory coverage and must never be given one.
-    const expectedAlias = derived.legacyReferenceUpperHash;
 
     let registry;
     try {
@@ -616,6 +783,12 @@ try {
   console.log(`  rows lacking file hash cover : ${stats.fileHashUncovered}`);
   console.log(
     isLive
+      ? `  stale legacy claims repaired : ${stats.staleClaimsRepaired}`
+      : `  would repair stale claims    : ${stats.wouldRepairStaleClaim}`
+  );
+  console.log(`  stale claims still uncovered : ${stats.staleClaimsUncovered}`);
+  console.log(
+    isLive
       ? `  claims INSERTED          : ${stats.claimed}`
       : `  would insert             : ${stats.wouldClaim}`
   );
@@ -713,6 +886,10 @@ try {
   const aliasCoverageComplete =
     stats.aliasUncovered === 0 && stats.aliasInconsistencies.length === 0;
   const fileHashCoverageComplete = stats.fileHashUncovered === 0;
+  // A stale claim still exact-blocks future distinct transactions with its
+  // obsolete lossy referenceHash until it is migrated - completion must wait
+  // for every one of them to be repaired, exactly like alias/fileHash gaps.
+  const staleClaimsCoverageComplete = stats.staleClaimsUncovered === 0;
 
   // Every APPROVED row must land in one of: represented/claimed with full
   // exact fileHash coverage, claimable via a recovered identifier, or
@@ -724,6 +901,7 @@ try {
     tracker.collisions.length === 0 &&
     aliasCoverageComplete &&
     fileHashCoverageComplete &&
+    staleClaimsCoverageComplete &&
     stats.noIdentifier === 0 &&
     reachedEof.payments &&
     reachedEof.walletTopups;
@@ -736,6 +914,7 @@ try {
           `             failures=${stats.failures.length} collisions=${tracker.collisions.length} ` +
           `aliasUncovered=${stats.aliasUncovered} aliasInconsistencies=${stats.aliasInconsistencies.length} ` +
           `fileHashUncovered=${stats.fileHashUncovered} ` +
+          `staleClaimsUncovered=${stats.staleClaimsUncovered} ` +
           `noIdentifier=${stats.noIdentifier}` +
           ` paymentsEOF=${reachedEof.payments} topupsEOF=${reachedEof.walletTopups}\n` +
           "           Resolve the findings above and re-run."

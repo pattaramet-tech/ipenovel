@@ -6,6 +6,7 @@ import {
   deriveVerdict,
   describeDuplicate,
   describeRecipient,
+  requiresLegacyCaseResolution,
   verdictLabel,
   type OcrPanelInput,
 } from "./ocrVerdictModel";
@@ -207,6 +208,119 @@ describe("describeDuplicate", () => {
   it("no signal reads as none", () => {
     expect(describeDuplicate(input({ duplicate: null })).strength).toBe("none");
   });
+
+  // IPE-001-C02: the server can now emit two more blocker states -
+  // "unresolved" and "legacy_case_ambiguity_group" - that previously had no
+  // branch here and silently fell through to "No duplicate signal", hiding a
+  // real blocker (Approve refuses server-side either way).
+
+  it("an unresolved legacy record is presented as a distinct blocker, never 'No duplicate signal'", () => {
+    const d = describeDuplicate(
+      input({
+        duplicate: {
+          strength: "unresolved",
+          matchedSourceType: "wallet_topup",
+          matchedSourceId: 44,
+        },
+      })
+    );
+    expect(d.strength).toBe("unresolved");
+    expect(d.headline).not.toMatch(/no duplicate signal/i);
+    expect(d.headline).toMatch(/could not be verified/i);
+    expect(d.caveat).toMatch(/NOT a proven duplicate/i);
+    expect(d.matchedLabel).toBe("Wallet top-up #44");
+    expect(d.matchedHref).toBe("/admin/wallet-topups/44");
+  });
+
+  it("LEGACY_APPROVED_SLIP_UNRESOLVED alone (no duplicate object) still renders the unresolved state", () => {
+    const d = describeDuplicate(
+      input({ reviewReason: "LEGACY_APPROVED_SLIP_UNRESOLVED", duplicate: null })
+    );
+    expect(d.strength).toBe("unresolved");
+    expect(d.headline).not.toMatch(/no duplicate signal/i);
+  });
+
+  it("a legacy alias group ambiguity is presented as a distinct blocker, never 'No duplicate signal'", () => {
+    const d = describeDuplicate(
+      input({
+        duplicate: {
+          strength: "legacy_case_ambiguity_group",
+          matchedSourceType: "order_payment",
+          matchedSourceId: 91,
+          matchedOrderId: 12,
+        },
+      })
+    );
+    expect(d.strength).toBe("legacy_case_ambiguity_group");
+    expect(d.headline).not.toMatch(/no duplicate signal/i);
+    expect(d.headline).toMatch(/multiple historical records/i);
+    expect(d.caveat).toMatch(/NOT proof of a duplicate/i);
+    expect(d.caveat).toMatch(/complete.*group/i);
+    expect(d.matchedLabel).toBe("Order payment #91");
+    expect(d.matchedHref).toBe("/admin/orders/12");
+  });
+
+  it("LEGACY_ALIAS_GROUP_AMBIGUITY alone (no duplicate object) still renders the group state", () => {
+    const d = describeDuplicate(
+      input({ reviewReason: "LEGACY_ALIAS_GROUP_AMBIGUITY", duplicate: null })
+    );
+    expect(d.strength).toBe("legacy_case_ambiguity_group");
+    expect(d.headline).not.toMatch(/no duplicate signal/i);
+  });
+
+  it("unresolved and group states are checked ahead of strong/weak, so they can never be masked", () => {
+    // Server states are mutually exclusive in practice, but the branch order
+    // itself is what guarantees neither can ever read as a confident match.
+    const unresolved = describeDuplicate(
+      input({ duplicate: { strength: "unresolved" } })
+    );
+    const group = describeDuplicate(
+      input({ duplicate: { strength: "legacy_case_ambiguity_group" } })
+    );
+    expect(unresolved.strength).not.toBe("strong");
+    expect(unresolved.strength).not.toBe("weak");
+    expect(group.strength).not.toBe("strong");
+    expect(group.strength).not.toBe("weak");
+  });
+});
+
+describe("requiresLegacyCaseResolution never fires for unresolved or group ambiguity", () => {
+  // Both states need manual investigation, not the single-member "confirm
+  // distinct" resolution flow built specifically for the lossy case fold -
+  // offering that action here would let an admin waive a state it was never
+  // designed to adjudicate.
+  it("an unresolved legacy record does not trigger the resolution flow", () => {
+    expect(
+      requiresLegacyCaseResolution(
+        input({
+          reviewReason: "LEGACY_APPROVED_SLIP_UNRESOLVED",
+          duplicate: { strength: "unresolved" },
+        })
+      )
+    ).toBe(false);
+  });
+
+  it("a legacy alias group ambiguity does not trigger the resolution flow", () => {
+    expect(
+      requiresLegacyCaseResolution(
+        input({
+          reviewReason: "LEGACY_ALIAS_GROUP_AMBIGUITY",
+          duplicate: { strength: "legacy_case_ambiguity_group" },
+        })
+      )
+    ).toBe(false);
+  });
+
+  it("the genuine single-member case ambiguity still does trigger it", () => {
+    expect(
+      requiresLegacyCaseResolution(
+        input({
+          reviewReason: "LEGACY_REFERENCE_CASE_AMBIGUITY",
+          duplicate: { strength: "legacy_case_ambiguity" },
+        })
+      )
+    ).toBe(true);
+  });
 });
 
 describe("describeRecipient - graded by evidence strength", () => {
@@ -369,6 +483,30 @@ describe("buildChecklist", () => {
       (r) => r.key === "final"
     )!;
     expect(row.state).toBe("pass");
+  });
+
+  it("the legacy-unresolved row warns explicitly and is not_evaluated otherwise", () => {
+    const warned = buildChecklist(
+      input({ duplicate: { strength: "unresolved" } })
+    ).find((r) => r.key === "legacy_unresolved")!;
+    expect(warned.state).toBe("warning");
+    expect(warned.detail).toMatch(/could not be verified/i);
+
+    const clear = buildChecklist(input()).find((r) => r.key === "legacy_unresolved")!;
+    expect(clear.state).toBe("not_evaluated");
+    expect(clear.detail).toBeUndefined();
+  });
+
+  it("the legacy-alias-group row warns explicitly and is not_evaluated otherwise", () => {
+    const warned = buildChecklist(
+      input({ duplicate: { strength: "legacy_case_ambiguity_group" } })
+    ).find((r) => r.key === "legacy_alias_group")!;
+    expect(warned.state).toBe("warning");
+    expect(warned.detail).toMatch(/MORE THAN ONE/i);
+
+    const clear = buildChecklist(input()).find((r) => r.key === "legacy_alias_group")!;
+    expect(clear.state).toBe("not_evaluated");
+    expect(clear.detail).toBeUndefined();
   });
 });
 

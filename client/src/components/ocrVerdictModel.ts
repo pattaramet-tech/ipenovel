@@ -67,7 +67,12 @@ export interface OcrPanelInput {
   /** Legacy rows carry a fingerprint with no strength information. */
   legacyFingerprint?: string | null;
   duplicate?: {
-    strength?: "strong" | "weak" | "legacy_case_ambiguity";
+    strength?:
+      | "strong"
+      | "weak"
+      | "legacy_case_ambiguity"
+      | "unresolved"
+      | "legacy_case_ambiguity_group";
     matchedSourceType?: "order_payment" | "wallet_topup";
     matchedSourceId?: number;
     /**
@@ -205,7 +210,14 @@ export function compareTransactionTime(input: OcrPanelInput): TimeComparison {
 // ─── Duplicate presentation ───────────────────────────────────────────────
 
 export interface DuplicatePresentation {
-  strength: "strong" | "weak" | "legacy" | "legacy_case_ambiguity" | "none";
+  strength:
+    | "strong"
+    | "weak"
+    | "legacy"
+    | "legacy_case_ambiguity"
+    | "unresolved"
+    | "legacy_case_ambiguity_group"
+    | "none";
   headline: string;
   /** Always present for weak/legacy - the caveat must never be omitted. */
   caveat?: string;
@@ -276,6 +288,58 @@ export function describeDuplicate(input: OcrPanelInput): DuplicatePresentation {
         "That older record lost its original casing, so this is NOT proof the transaction " +
         "is duplicated - the two references may be genuinely different. An admin must " +
         "decide: reject it as a duplicate, or approve it as a distinct transaction.",
+      matchedLabel: matched?.label,
+      matchedHref: matched?.href ?? undefined,
+    };
+  }
+
+  // An approved historical record could not be verified at all - not a
+  // proven duplicate, not provably clean. Shown before "strong"/"weak" so it
+  // can never be silently swallowed by a later, more confident-sounding
+  // branch, and never falls through to "No duplicate signal": that would
+  // hide a real blocker from the admin (Approve refuses server-side with
+  // LEGACY_APPROVED_SLIP_UNRESOLVED regardless of what the panel shows).
+  if (
+    input.reviewReason === "LEGACY_APPROVED_SLIP_UNRESOLVED" ||
+    dup?.strength === "unresolved"
+  ) {
+    const matched = matchedSourceNavigation(dup);
+
+    return {
+      strength: "unresolved",
+      headline: "Historical record could not be verified",
+      caveat:
+        "An approved record predates the claim registry and its slip image could not be " +
+        "verified server-side, so historical replay protection for it is incomplete. This " +
+        "is NOT a proven duplicate - it cannot be confirmed either way. An admin must " +
+        "review the historical record manually before this can be approved.",
+      matchedLabel: matched?.label,
+      matchedHref: matched?.href ?? undefined,
+    };
+  }
+
+  // MORE THAN ONE historical source shares this lossy alias - never a
+  // duplicate verdict, and never safely waivable by adjudicating just one
+  // arbitrary member (Approve refuses server-side with
+  // LEGACY_ALIAS_GROUP_AMBIGUITY and never consults a single-member
+  // resolution for this state). Shown before "strong"/"weak" for the same
+  // reason as above - it must never read as "No duplicate signal".
+  if (
+    input.reviewReason === "LEGACY_ALIAS_GROUP_AMBIGUITY" ||
+    dup?.strength === "legacy_case_ambiguity_group"
+  ) {
+    const matched = matchedSourceNavigation(dup);
+
+    return {
+      strength: "legacy_case_ambiguity_group",
+      headline: "Multiple historical records share this reference (case-folded)",
+      caveat:
+        "This reference matches MORE THAN ONE approved historical record - including the " +
+        "one shown below, if any - only after letter casing is ignored. Because more than " +
+        "one older record shares this fold, no single one of them can be safely confirmed " +
+        "as distinct: this submission could be a replay of any member of that group. This " +
+        "is NOT proof of a duplicate. An admin must manually investigate the complete " +
+        "group of matching historical records before this can be approved.",
       matchedLabel: matched?.label,
       matchedHref: matched?.href ?? undefined,
     };
@@ -481,6 +545,30 @@ export function buildChecklist(input: OcrPanelInput): ChecklistRow[] {
     detail:
       dup.strength === "legacy_case_ambiguity"
         ? "Matches an older reference only after case folding. Requires admin resolution."
+        : undefined,
+  });
+
+  rows.push({
+    key: "legacy_unresolved",
+    label: "Legacy Record Unresolved",
+    // WARNING, never FAIL: not a proven duplicate, but never silently PASS -
+    // Approve refuses server-side until this is resolved manually.
+    state: dup.strength === "unresolved" ? "warning" : "not_evaluated",
+    detail:
+      dup.strength === "unresolved"
+        ? "An approved historical record predates the claim registry and could not be " +
+          "verified server-side. Requires manual investigation - not a resolvable ambiguity."
+        : undefined,
+  });
+
+  rows.push({
+    key: "legacy_alias_group",
+    label: "Legacy Alias Group Ambiguity",
+    state: dup.strength === "legacy_case_ambiguity_group" ? "warning" : "not_evaluated",
+    detail:
+      dup.strength === "legacy_case_ambiguity_group"
+        ? "Matches MORE THAN ONE historical record after case folding. Requires manual " +
+          "investigation of the complete group - no single-member resolution applies."
         : undefined,
   });
 

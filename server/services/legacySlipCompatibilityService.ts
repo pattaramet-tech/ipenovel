@@ -374,14 +374,21 @@ export async function findLegacyApprovedDuplicate(
         };
       }
 
-      // Neither the reference nor a PERSISTED file hash matched. If this row
-      // carried SOME reference evidence, that already independently resolves
-      // it as NOT a match on its own terms - a fully evaluable nonmatch, even
-      // though none of it happened to match the incoming submission. The
-      // file axis being unknown on top of that does not need to fail closed;
-      // only a row with NO usable extraction at all leaves genuinely no
-      // evidence to rule out replay.
-      if (referenceCandidates.length > 0) return undefined;
+      // Neither the reference nor a PERSISTED file hash matched. If the
+      // incoming submission has NOTHING to compare on the file axis at all,
+      // and this row carried SOME reference evidence, that already
+      // independently resolves it as NOT a match on its own terms - a fully
+      // evaluable nonmatch, even though none of it happened to match the
+      // incoming submission. This shortcut is ONLY safe when there is no
+      // incoming fileHash to compare: when one exists, a stale, incorrect,
+      // or merely unrelated reference field on this row must never suppress
+      // exact-file replay detection - the two axes are independent, and only
+      // a real file-hash comparison can rule out a same-image replay whose
+      // OCR happened to extract (or previously extracted) an unrelated
+      // reference. So this row's OWN file identity is still established and
+      // compared below whenever the incoming side has a fileHash, regardless
+      // of what its reference evidence says.
+      if (!identifiers.fileHash && referenceCandidates.length > 0) return undefined;
 
       // Establish THIS ROW's own file identity now, regardless of whether
       // the incoming submission happens to carry a fileHash to compare it
