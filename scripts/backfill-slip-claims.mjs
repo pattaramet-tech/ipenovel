@@ -67,6 +67,7 @@ import {
   classifyRepresentation,
   STRONG_FIELDS,
 } from "./lib/backfillRepresentation.mjs";
+import { recoverFileHashIdentifier } from "./lib/backfillFileHashRecovery.mjs";
 
 const TOOL_VERSION = "backfill-slip-claims@2";
 
@@ -107,12 +108,13 @@ console.log(
 
 const { default: mysql } = await import("mysql2/promise");
 const { drizzle } = await import("drizzle-orm/mysql2");
-const { and, asc, eq, gt, isNotNull, or } = await import("drizzle-orm");
-let schema, identifiers, parser;
+const { and, asc, eq, gt, or } = await import("drizzle-orm");
+let schema, identifiers, parser, fileHashService;
 try {
   schema = await import("../drizzle/schema.ts");
   identifiers = await import("../server/services/slipIdentifierService.ts");
   parser = await import("../server/ocr-slip-verification-v2.ts");
+  fileHashService = await import("../server/services/slipFileHashService.ts");
 } catch (error) {
   if (error instanceof Error && error.code === "ERR_MODULE_NOT_FOUND") {
     console.error(
@@ -218,7 +220,16 @@ const stats = {
   wouldClaim: 0,
   claimed: 0,
   recoveredByReparse: 0,
+  /** Server-side fileHash recovered from stored slip bytes for a row whose
+   *  extractedData carried no strong identifier at all (NULL or otherwise). */
+  fileHashRecovered: 0,
+  /**
+   * Approved rows that, even after fileHash recovery was attempted, still
+   * have NO strong identifier. UNRESOLVED - never silently skipped, never
+   * counted as coverage, and this alone blocks --mark-complete.
+   */
   noIdentifier: 0,
+  unresolvedRows: [],
   /** Represented rows whose required advisory alias is missing. */
   wouldEnrichAlias: 0,
   aliasEnriched: 0,
@@ -315,10 +326,31 @@ async function processRows(sourceType, rows) {
     const derived = deriveIdentifiers(row.extractedData);
     if (derived.recoveredByReparse) stats.recoveredByReparse += 1;
 
-    const ids = derived.identifiers;
+    let ids = derived.identifiers;
     if (!identifiers.hasStrongIdentifier(ids)) {
-      stats.noIdentifier += 1;
-      continue;
+      // extractedData carried no strong identifier - which includes the case
+      // where it is NULL entirely. Before giving up, try to recover the
+      // exact-file identifier server-side from this row's OWN stored slip
+      // bytes, exactly as a live submission would.
+      const recovery = await recoverFileHashIdentifier({
+        slipImageUrl: row.slipImageUrl,
+        computeSlipFileHash: fileHashService.computeSlipFileHash,
+      });
+
+      if (recovery.fileHash) {
+        ids = { ...ids, fileHash: recovery.fileHash };
+        stats.fileHashRecovered += 1;
+      } else {
+        // UNRESOLVED: no identifier in extractedData AND no recoverable file
+        // hash. This row has NO claim and remains replayable - it must block
+        // --mark-complete, never be silently skipped.
+        stats.noIdentifier += 1;
+        stats.unresolvedRows.push({
+          source: `${sourceType}#${row.id}`,
+          reason: recovery.unresolvedReason,
+        });
+        continue;
+      }
     }
 
     const current = { sourceType, sourceId: row.id };
@@ -466,17 +498,22 @@ async function processRows(sourceType, rows) {
 const reachedEof = { payments: false, walletTopups: false };
 
 try {
-  // GLOBAL scans - every user, approved rows only (approval is the evidence
-  // that value was created), paged by ascending primary key so coverage is
-  // COMPLETE and deterministic. Deliberately NOT a fixed row cap: an arbitrary
-  // limit would silently leave later rows unbackfilled and replayable.
+  // GLOBAL scans - every APPROVED row, full stop. Deliberately NOT filtered
+  // on extractedData being non-NULL: an approved row from an older
+  // OCR-disabled/manual-approval flow can have NULL extraction and still
+  // represents real value created, so it must be scanned like any other -
+  // deriveIdentifiers/recoverFileHashIdentifier below are what decide
+  // whether it is claimable, not the scan predicate. Paged by ascending
+  // primary key so coverage is COMPLETE and deterministic. Deliberately NOT
+  // a fixed row cap: an arbitrary limit would silently leave later rows
+  // unbackfilled and replayable.
   async function scanAll(key, table, statusCol, idCol, extractedCol, extraCols, onPage) {
     let cursor = 0;
     for (;;) {
       const page = await db
         .select({ id: idCol, extractedData: extractedCol, ...extraCols })
         .from(table)
-        .where(and(eq(statusCol, "approved"), isNotNull(extractedCol), gt(idCol, cursor)))
+        .where(and(eq(statusCol, "approved"), gt(idCol, cursor)))
         .orderBy(asc(idCol))
         .limit(pageSize);
 
@@ -499,7 +536,7 @@ try {
     schema.payments.status,
     schema.payments.id,
     schema.payments.extractedData,
-    { orderId: schema.payments.orderId },
+    { orderId: schema.payments.orderId, slipImageUrl: schema.payments.slipImageUrl },
     async (page) => {
       // payments has no userId; resolve via the parent order for the claim row.
       for (const p of page) {
@@ -520,7 +557,7 @@ try {
     schema.walletTopups.status,
     schema.walletTopups.id,
     schema.walletTopups.extractedData,
-    { userId: schema.walletTopups.userId },
+    { userId: schema.walletTopups.userId, slipImageUrl: schema.walletTopups.slipImageUrl },
     async (page) => {
       await processRows("wallet_topup", page);
     }
@@ -530,7 +567,8 @@ try {
   console.log(`  scanned approved records : ${stats.scanned}`);
   console.log(`  already represented      : ${stats.alreadyClaimed}`);
   console.log(`  recovered by re-parse    : ${stats.recoveredByReparse}`);
-  console.log(`  no strong identifier     : ${stats.noIdentifier}`);
+  console.log(`  file hash recovered      : ${stats.fileHashRecovered}`);
+  console.log(`  UNRESOLVED (no identifier): ${stats.noIdentifier}`);
   console.log(
     isLive
       ? `  claims INSERTED          : ${stats.claimed}`
@@ -600,6 +638,22 @@ try {
     }
   }
 
+  if (stats.unresolvedRows.length > 0) {
+    console.log(
+      "\n[backfill] UNRESOLVED - no strong identifier in extractedData, and no fileHash could be recovered:"
+    );
+    for (const u of stats.unresolvedRows) {
+      // Only sourceType/sourceId and a fixed reason code - never a slip URL,
+      // secret, or hash.
+      console.log(`  - ${u.source}  (${u.reason})`);
+    }
+    console.log(
+      "\n  This approved record has NO claim in the registry and remains replayable.\n" +
+        "  It has NOT been skipped silently: it blocks --mark-complete until an\n" +
+        "  operator resolves it (e.g. by locating the original slip bytes)."
+    );
+  }
+
   // ── Completion ─────────────────────────────────────────────────────────
   // Required ADVISORY coverage counts toward completion just as strong
   // coverage does. Completion disables the historical scan, so a legacy row
@@ -608,10 +662,15 @@ try {
   const aliasCoverageComplete =
     stats.aliasUncovered === 0 && stats.aliasInconsistencies.length === 0;
 
+  // Every APPROVED row must land in one of: represented/claimed, claimable
+  // via a recovered identifier, or explicitly UNRESOLVED (stats.noIdentifier
+  // > 0) - which blocks completion. There is no fourth state where a row is
+  // silently skipped but completion is still allowed.
   const cleanRun =
     stats.failures.length === 0 &&
     tracker.collisions.length === 0 &&
     aliasCoverageComplete &&
+    stats.noIdentifier === 0 &&
     reachedEof.payments &&
     reachedEof.walletTopups;
 
@@ -621,7 +680,8 @@ try {
         "\n[backfill] REFUSING to mark complete. A completion flag disables the legacy\n" +
           "           safety scan, so it is only written after a fully clean run:\n" +
           `             failures=${stats.failures.length} collisions=${tracker.collisions.length} ` +
-          `aliasUncovered=${stats.aliasUncovered} aliasInconsistencies=${stats.aliasInconsistencies.length}` +
+          `aliasUncovered=${stats.aliasUncovered} aliasInconsistencies=${stats.aliasInconsistencies.length} ` +
+          `noIdentifier=${stats.noIdentifier}` +
           ` paymentsEOF=${reachedEof.payments} topupsEOF=${reachedEof.walletTopups}\n` +
           "           Resolve the findings above and re-run."
       );
@@ -654,7 +714,8 @@ try {
   if (
     tracker.collisions.length > 0 ||
     stats.failures.length > 0 ||
-    stats.aliasInconsistencies.length > 0
+    stats.aliasInconsistencies.length > 0 ||
+    stats.noIdentifier > 0
   ) {
     process.exitCode = 1;
   }

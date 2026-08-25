@@ -209,7 +209,7 @@ describe("extractSlipData: whole-text alias mention synthesizes NOTHING authorit
     // The field-bound label ("ผู้รับ:") extracted the REAL recipient, not
     // the merchant alias mentioned in the note.
     expect(extracted.shopName).toBeDefined();
-    expect(extracted.shopName?.toLowerCase()).not.toContain("ipe novel");
+    expect((extracted.shopName ?? "").toLowerCase()).not.toContain("ipe novel");
     expect(verifyRecipient(extracted).recipientVerified).toBe(false);
     // But the mention is still visible to an admin as a diagnostic.
     expect(extracted.recipientRawTextMention).toBe(true);
@@ -223,7 +223,7 @@ describe("extractSlipData: whole-text alias mention synthesizes NOTHING authorit
       "ผู้รับ: บริษัท อื่น จำกัด",
     ].join("\n");
     const extracted = extractSlipData(text, 90);
-    expect(extracted.shopName?.toLowerCase()).not.toContain("ipe novel");
+    expect((extracted.shopName ?? "").toLowerCase()).not.toContain("ipe novel");
     expect(verifyRecipient(extracted).recipientVerified).toBe(false);
     expect(extracted.recipientRawTextMention).toBe(true);
   });
@@ -443,6 +443,144 @@ describe("extractBillerId: label-bound only (IPE-001 biller-id authority-origin 
     expect(extracted.receiverAccountOrId).toBe("999999999999999");
     const verification = verifyRecipient({ ...extracted, shopName: "Some Other Shop" });
     expect(verification.recipientVerified).toBe(false);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// IPE-001 (fifth authority-origin round): "Require recipient-bound
+// provenance for shop aliases"
+//
+// ── The bug ─────────────────────────────────────────────────────────────
+// extractShopName's regex fallback included GENERIC raw-text labels -
+// "ชื่อ:" (bare "name:"), "shop name:", "merchant name:", "ร้านค้า:", and
+// "shop:" - none of which prove the value is bound to the RECIPIENT. A
+// slip paying someone else could carry "ชื่อ: Ipe Novel" inside a
+// sender/memo/unrelated section; extractShopName still returned it as the
+// authoritative shopName, and verifyRecipient's exact-allowlist match (the
+// P1-B fix from the previous round) then verified it - because the VALUE
+// was exact even though the ORIGIN was never checked. Same bug class as
+// the whole-text alias synthesis and the unbound biller/merchant-code
+// fallbacks fixed in earlier rounds, found in a different fallback path.
+//
+// ── The fix ────────────────────────────────────────────────────────────
+// The five generic patterns are removed from extractShopName entirely.
+// Only explicit receiver/payee-bound labels remain: "ชื่อร้านค้า:" (the
+// only generic-shaped label with a real fixture proving it means shop
+// name, not any arbitrary name), "ชื่อผู้รับ:", "ผู้รับ:", "receiver:".
+// A generic-label mention is still visible to an admin via
+// detectRecipientRawTextMention() - diagnostic only.
+// ════════════════════════════════════════════════════════════════════════
+
+describe("extractShopName: generic raw-text labels grant no recipient authority (IPE-001 P1-B round 2)", () => {
+  // ── §14 MUST-FAIL ────────────────────────────────────────────────────
+  it("A. sender section labeled with generic 'ชื่อ:' does not extract or verify", () => {
+    const text = [
+      "ไปยัง: Other Person",
+      "จาก",
+      "ชื่อ: Ipe Novel",
+      "จำนวนเงิน 100.00",
+    ].join("\n");
+    const extracted = extractSlipData(text, 90);
+    expect((extracted.shopName ?? "").toLowerCase()).not.toContain("ipe novel");
+    expect(verifyRecipient({ ...extracted, shopName: "Other Person" }).recipientVerified).toBe(
+      false
+    );
+  });
+
+  it("B. a memo labeled 'ชื่อ:' does not extract or verify", () => {
+    const text = ["ไปยัง: Other Person", "หมายเหตุ", "ชื่อ: Ipe Novel", "จำนวนเงิน 100.00"].join(
+      "\n"
+    );
+    const extracted = extractSlipData(text, 90);
+    expect((extracted.shopName ?? "").toLowerCase()).not.toContain("ipe novel");
+    expect(verifyRecipient({ ...extracted, shopName: "Other Person" }).recipientVerified).toBe(
+      false
+    );
+  });
+
+  it("C. an unrelated section labeled 'shop name:' does not extract or verify", () => {
+    const text = "ไปยัง: Other Person\nshop name: Ipe Novel\njamnwn 100.00";
+    const extracted = extractSlipData(text, 90);
+    expect((extracted.shopName ?? "").toLowerCase()).not.toContain("ipe novel");
+    expect(verifyRecipient({ ...extracted, shopName: "Other Person" }).recipientVerified).toBe(
+      false
+    );
+  });
+
+  it("D. an unrelated section labeled 'merchant name:' does not extract or verify", () => {
+    const text = "ไปยัง: Other Person\nmerchant name: Ipe Novel\namount 100.00";
+    const extracted = extractSlipData(text, 90);
+    expect((extracted.shopName ?? "").toLowerCase()).not.toContain("ipe novel");
+    expect(verifyRecipient({ ...extracted, shopName: "Other Person" }).recipientVerified).toBe(
+      false
+    );
+  });
+
+  it("E. generic raw text 'ชื่อ: Ipe Novel' with no receiver/payee context anywhere is not verified", () => {
+    const text = "ชื่อ: Ipe Novel\njamnwn 100.00";
+    const extracted = extractSlipData(text, 90);
+    expect((extracted.shopName ?? "").toLowerCase()).not.toContain("ipe novel");
+    expect(verifyRecipient(extracted).recipientVerified).toBe(false);
+    // Still visible diagnostically.
+    expect(extracted.recipientRawTextMention).toBe(true);
+  });
+
+  it("F. sender: Ipe Novel / receiver: Other Person -> the sender value is never taken as the recipient", () => {
+    const text = ["ผู้โอน: Ipe Novel", "ผู้รับ: Other Person", "จำนวนเงิน 100.00"].join("\n");
+    const extracted = extractSlipData(text, 90);
+    expect(extracted.shopName).toBe("Other Person");
+    expect(verifyRecipient(extracted).recipientVerified).toBe(false);
+  });
+
+  it("removed generic patterns no longer appear in extractShopName's fallback list", () => {
+    const code = readCode("server/ocr-slip-verification-v2.ts");
+    const start = code.indexOf("function extractShopName(");
+    const end = code.indexOf("\nfunction ", start + 10);
+    const body = code.slice(start, end);
+    expect(body).not.toMatch(/\/ชื่อ\\s\*\[:：\]/);
+    expect(body).not.toMatch(/shop\\s\*name\\s\*\[:：\]/);
+    expect(body).not.toMatch(/merchant\\s\*name\\s\*\[:：\]/);
+    // The bare "ร้านค้า:" fallback (with its รหัส negative-lookbehind guard)
+    // is gone; the kept "ชื่อร้านค้า:" pattern is a different, receiver-bound
+    // label and deliberately still present.
+    expect(body).not.toMatch(/\(\?<!รหัส\)ร้านค้า/);
+    expect(body).not.toMatch(/\/shop\\s\*\[:：\]/);
+    const patternsStart = body.indexOf("const patterns = [");
+    const patternsEnd = body.indexOf("];", patternsStart);
+    const patternLines = body
+      .slice(patternsStart, patternsEnd)
+      .split("\n")
+      .filter((l) => l.trim().startsWith("/"));
+    expect(patternLines).toHaveLength(4);
+  });
+
+  // ── §15 MUST-PASS: legitimate receiver/payee-bound forms still work ────
+  it("structured receiver_shop_name still field-binds and verifies", () => {
+    const json = JSON.stringify({ receiver_shop_name: "Ipe Novel", amount: "100.00" });
+    const extracted = extractSlipData(json, 90);
+    expect(extracted.shopName).toBe("Ipe Novel");
+    expect(verifyRecipient(extracted).recipientVerified).toBe(true);
+  });
+
+  it("explicit Thai payee label 'ชื่อผู้รับ:' still extracts and verifies", () => {
+    const text = "ชื่อผู้รับ: Ipe Novel\nจำนวนเงิน 100.00";
+    const extracted = extractSlipData(text, 90);
+    expect(extracted.shopName).toBe("Ipe Novel");
+    expect(verifyRecipient(extracted).recipientVerified).toBe(true);
+  });
+
+  it("explicit English 'receiver:' label still extracts and verifies", () => {
+    const text = "receiver: Ipe Novel\namount 100.00";
+    const extracted = extractSlipData(text, 90);
+    expect(extracted.shopName).toBe("Ipe Novel");
+    expect(verifyRecipient(extracted).recipientVerified).toBe(true);
+  });
+
+  it("the explicit shop-name label 'ชื่อร้านค้า:' (the real KBank/SCB fixture form) still extracts and verifies", () => {
+    const text = "ชื่อร้านค้า: Ipe Novel\nรหัสร้านค้า: KB000002283068";
+    const extracted = extractSlipData(text, 90);
+    expect(extracted.shopName).toBe("Ipe Novel");
+    expect(verifyRecipient(extracted).recipientVerified).toBe(true);
   });
 });
 

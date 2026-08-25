@@ -711,18 +711,25 @@ function extractShopName(flattened: Record<string, any>, text: string): string |
     if (val.length > 2) return val;
   }
 
-  // Fallback to regex
+  // Fallback to regex - EVERY pattern below must be an explicit
+  // receiver/payee-bound label. Generic labels such as "ชื่อ:" (bare
+  // "name:"), "shop name:", "merchant name:", "ร้านค้า:" and "shop:" were
+  // removed here (IPE-001 P1-B): none of them prove the value is bound to
+  // the RECIPIENT - a sender field, a memo, or an unrelated section can
+  // carry the exact same label text. Their extracted value could then match
+  // the approved-alias allowlist exactly and satisfy recipient verification
+  // for a transfer to someone else. No real fixture in this repo depends on
+  // any of the removed labels (audited: server/ocr-slip-e2e.test.ts,
+  // server/ocr-slip-hardening.test.ts, server/ocr-slip-integration.test.ts,
+  // server/ocr-slip-verification-v2.test.ts all use the explicit
+  // "ชื่อร้านค้า:" label, never the bare generic ones). A raw-text mention
+  // via one of the removed labels is still visible to an admin through
+  // detectRecipientRawTextMention() - diagnostic only, no authority.
   const patterns = [
     /ชื่อร้านค้า\s*[:：]\s*([^\n]+)/i,
-    /ชื่อ\s*[:：]\s*([^\n]+)/i,
-    /shop\s*name\s*[:：]\s*([^\n]+)/i,
-    /merchant\s*name\s*[:：]\s*([^\n]+)/i,
-    /(?<!รหัส)ร้านค้า\s*[:：]\s*([^\n]+)/i,
-    /shop\s*[:：]\s*([^\n]+)/i,
     /ชื่อผู้รับ\s*[:：]\s*([^\n]+)/i,
     /ผู้รับ\s*[:：]\s*([^\n]+)/i,
     /receiver\s*[:：]\s*([^\n]+)/i,
-    /to\s*[:：]\s*([^\n]+)/i,
   ];
 
   for (const pattern of patterns) {
