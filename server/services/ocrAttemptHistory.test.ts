@@ -82,8 +82,13 @@ describe("automatic wallet OCR records an attempt", () => {
   it("records config-blocked when OCR is disabled entirely", () => {
     // The intended (result, reason) travel together into handlePendingReview
     // as explicit arguments rather than being recorded by the caller first.
+    // IPE-001-C06: this gate now leads with a stable-file re-check (its own
+    // SLIP_INTEGRITY_MISMATCH handlePendingReview call) before the
+    // OCR_DISABLED write below, so the search window has to span both.
     const idx = code.indexOf("if (!ocrConfig.enabled) {");
-    const block = code.slice(idx, idx + 500);
+    const ocrDisabledIdx = code.indexOf('"OCR_DISABLED",', idx);
+    expect(ocrDisabledIdx).toBeGreaterThan(idx);
+    const block = code.slice(ocrDisabledIdx - 200, ocrDisabledIdx + 300);
     expect(block).toMatch(/handlePendingReview\(/);
     expect(block).toMatch(/"OCR_DISABLED",/);
     expect(block).toMatch(/recordWalletAttempt,\s*\n\s*"config_blocked"/);

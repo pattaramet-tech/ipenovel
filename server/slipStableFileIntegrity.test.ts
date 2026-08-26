@@ -88,7 +88,7 @@ describe("slipSubmissionService.ts (order auto-submission) re-hashes before publ
   });
 });
 
-describe("walletTopupSubmissionService.ts (wallet auto-submission) re-hashes before publishing anything OCR-derived", () => {
+describe("walletTopupSubmissionService.ts (wallet auto-submission): class-wide stable-file verification, IPE-001-C06", () => {
   const code = readCode("server/services/walletTopupSubmissionService.ts");
 
   it("computes the pre-OCR hash from the stored bytes, not from any client input", () => {
@@ -97,45 +97,106 @@ describe("walletTopupSubmissionService.ts (wallet auto-submission) re-hashes bef
     );
   });
 
-  it("re-hashes the SAME slip URL after OCR extraction, before duplicate/confidence/amount checks or auto-approval", () => {
-    const rehashIdx = code.indexOf("const walletRehash = await computeSlipFileHash(");
-    expect(rehashIdx).toBeGreaterThan(-1);
-    expect(code.slice(rehashIdx, rehashIdx + 60)).toMatch(
-      /computeSlipFileHash\(slipImageUrl\)/
-    );
+  it("defines ONE shared stability check, reused at every terminal path - not five independent copies", () => {
+    const idx = code.indexOf("async function verifyWalletSlipStillStable(");
+    expect(idx).toBeGreaterThan(-1);
+    const body = code.slice(idx, idx + 400);
+    expect(body).toMatch(/if \(!baselineHash\) return true;/);
+    expect(body).toMatch(/const rehash = await computeSlipFileHash\(slipImageUrl\);/);
+    expect(body).toMatch(/return rehash === baselineHash;/);
+  });
 
+  it("is called at all FIVE terminal paths that could otherwise publish a stale baseline hash", () => {
+    const calls = code.match(/await verifyWalletSlipStillStable\(slipImageUrl, walletSlipFileHash\)/g);
+    // OCR disabled, technical error, shadow mode, post-extraction (the
+    // original C05 checkpoint), and the outer catch.
+    expect(calls?.length).toBe(5);
+  });
+
+  it("OCR-disabled path: mismatch is checked before the OCR_DISABLED write", () => {
+    const gateIdx = code.indexOf("if (!ocrConfig.enabled) {");
+    const checkIdx = code.indexOf("verifyWalletSlipStillStable(slipImageUrl, walletSlipFileHash)", gateIdx);
+    const ocrDisabledIdx = code.indexOf('"OCR_DISABLED"', gateIdx);
+    expect(checkIdx).toBeGreaterThan(gateIdx);
+    expect(checkIdx).toBeLessThan(ocrDisabledIdx);
+    const mismatchBody = code.slice(checkIdx, ocrDisabledIdx);
+    expect(mismatchBody).toMatch(/"SLIP_INTEGRITY_MISMATCH"/);
+  });
+
+  it("technical-error path: mismatch is checked before handleOCRError persists the stale fallback", () => {
+    const gateIdx = code.indexOf("if (parseResult.technicalError) {");
+    const checkIdx = code.indexOf("verifyWalletSlipStillStable(slipImageUrl, walletSlipFileHash)", gateIdx);
+    const handleOCRErrorIdx = code.indexOf("return await handleOCRError(", gateIdx);
+    expect(checkIdx).toBeGreaterThan(gateIdx);
+    expect(checkIdx).toBeLessThan(handleOCRErrorIdx);
+    const mismatchBody = code.slice(checkIdx, handleOCRErrorIdx);
+    expect(mismatchBody).toMatch(/"SLIP_INTEGRITY_MISMATCH"/);
+  });
+
+  it("shadow-mode path: mismatch is checked before the SHADOW_MODE write", () => {
+    const gateIdx = code.indexOf("if (ocrConfig.shadowModeEnabled) {");
+    const checkIdx = code.indexOf("verifyWalletSlipStillStable(slipImageUrl, walletSlipFileHash)", gateIdx);
+    const shadowIdx = code.indexOf('"SHADOW_MODE"', gateIdx);
+    expect(checkIdx).toBeGreaterThan(gateIdx);
+    expect(checkIdx).toBeLessThan(shadowIdx);
+    const mismatchBody = code.slice(checkIdx, shadowIdx);
+    expect(mismatchBody).toMatch(/"SLIP_INTEGRITY_MISMATCH"/);
+  });
+
+  it("post-extraction path (the original checkpoint): still runs before duplicate/confidence/amount checks or auto-approval", () => {
+    const checkIdx = code.indexOf(
+      'if (!(await verifyWalletSlipStillStable(slipImageUrl, walletSlipFileHash))) {\n      console.error(\n        `[OCR] slip integrity mismatch for wallet top-up ${topupId}: stored bytes changed during OCR processing`'
+    );
+    expect(checkIdx).toBeGreaterThan(-1);
     const duplicateCheckIdx = code.indexOf('verificationResult.reviewReason?.includes("DUPLICATE")');
     const autoApproveIdx = code.indexOf("await autoApproveWalletTopup(");
-    expect(rehashIdx).toBeLessThan(duplicateCheckIdx);
-    expect(rehashIdx).toBeLessThan(autoApproveIdx);
+    expect(checkIdx).toBeLessThan(duplicateCheckIdx);
+    expect(checkIdx).toBeLessThan(autoApproveIdx);
   });
 
-  it("a mismatch routes to pending review with NO extraction published - not even the fileHash-only fallback", () => {
-    const rehashIdx = code.indexOf("const walletRehash = await computeSlipFileHash(");
-    const body = code.slice(rehashIdx, rehashIdx + 1200);
-    expect(body).toMatch(/if \(walletRehash !== walletSlipFileHash\) \{/);
-    expect(body).toMatch(/"SLIP_INTEGRITY_MISMATCH"/);
-    expect(body).toMatch(/return await handlePendingReview\(/);
-    // The call must NOT pass extractedData or the fileHash-only fallback -
-    // both positional args after the reason/message are undefined.
-    const callIdx = body.indexOf("return await handlePendingReview(");
-    const callBody = body.slice(callIdx, callIdx + 300);
-    // readCode() strips comments, so the arg list is: reason, message, then
-    // (blank lines where the comment was) three `undefined,` args in a row -
-    // extractedData, fingerprint, verificationResult all deliberately absent.
-    expect(callBody).toMatch(
-      /"SLIP_INTEGRITY_MISMATCH",[\s\S]*?"ส่งสลิปแล้ว รอแอดมินตรวจสอบ",[\s\S]*?undefined,\s*\n\s*undefined,\s*\n\s*undefined,/
-    );
+  it("outer-catch path: mismatch is checked before handleOCRError persists the stale fallback, regardless of what threw", () => {
+    const gateIdx = code.indexOf("} catch (error: any) {");
+    expect(gateIdx).toBeGreaterThan(-1);
+    const checkIdx = code.indexOf("verifyWalletSlipStillStable(slipImageUrl, walletSlipFileHash)", gateIdx);
+    const handleOCRErrorIdx = code.indexOf("return await handleOCRError(", gateIdx);
+    expect(checkIdx).toBeGreaterThan(gateIdx);
+    expect(checkIdx).toBeLessThan(handleOCRErrorIdx);
+    const mismatchBody = code.slice(checkIdx, handleOCRErrorIdx);
+    expect(mismatchBody).toMatch(/"SLIP_INTEGRITY_MISMATCH"/);
   });
 
-  it("the re-hash only runs when a baseline hash actually exists - never a false mismatch from two absent hashes", () => {
-    expect(code).toMatch(/if \(walletSlipFileHash\) \{\s*\n\s*const walletRehash/);
+  it("every mismatch branch routes through handlePendingReview with NO extraction published - not even the fileHash-only fallback", () => {
+    let searchFrom = 0;
+    let occurrences = 0;
+    for (;;) {
+      const reasonIdx = code.indexOf('"SLIP_INTEGRITY_MISMATCH"', searchFrom);
+      if (reasonIdx === -1) break;
+      occurrences += 1;
+      // handlePendingReview( must open shortly BEFORE this reason string.
+      const callOpenIdx = code.lastIndexOf("return await handlePendingReview(", reasonIdx);
+      expect(reasonIdx - callOpenIdx).toBeLessThan(120);
+      // Every SLIP_INTEGRITY_MISMATCH call passes undefined for
+      // extractedData/fingerprint/verificationResult - never
+      // fileHashOnlyExtraction or a partial extraction.
+      const argsBody = code.slice(reasonIdx, reasonIdx + 300);
+      expect(argsBody).toMatch(/undefined,\s*\n\s*undefined,\s*\n\s*undefined,/);
+      expect(argsBody).not.toMatch(/fileHashOnlyExtraction/);
+      searchFrom = reasonIdx + 1;
+    }
+    expect(occurrences).toBe(5);
   });
 
-  it("the pre-existing slip-version guard (expectedSlipVersion) is threaded into the integrity-mismatch review write too", () => {
-    const rehashIdx = code.indexOf("const walletRehash = await computeSlipFileHash(");
-    const body = code.slice(rehashIdx, rehashIdx + 1200);
-    expect(body).toMatch(/expectedSlipVersion,/);
+  it("every mismatch branch threads the pre-existing expectedSlipVersion guard", () => {
+    const mismatchBlocks = code.split('"SLIP_INTEGRITY_MISMATCH"').slice(1);
+    for (const block of mismatchBlocks) {
+      expect(block.slice(0, 500)).toMatch(/expectedSlipVersion,/);
+    }
+  });
+
+  it("the shared check only runs when a baseline hash actually exists - never a false mismatch from two absent hashes", () => {
+    const idx = code.indexOf("async function verifyWalletSlipStillStable(");
+    const body = code.slice(idx, idx + 200);
+    expect(body).toMatch(/if \(!baselineHash\) return true;/);
   });
 });
 
@@ -154,10 +215,17 @@ describe("both services fail closed identically - same reviewReason, same 'never
     const orderMismatchBody = orderCode.slice(orderMismatchIdx, orderMismatchEnd + 40);
     expect(orderMismatchBody).not.toMatch(/claimSlip/);
 
-    const walletMismatchIdx = walletCode.indexOf("if (walletRehash !== walletSlipFileHash) {");
-    const walletMismatchEnd = walletCode.indexOf("return await handlePendingReview(", walletMismatchIdx);
-    const walletMismatchCallEnd = walletCode.indexOf(");", walletMismatchEnd);
-    const walletMismatchBody = walletCode.slice(walletMismatchIdx, walletMismatchCallEnd);
-    expect(walletMismatchBody).not.toMatch(/autoApproveWalletTopup/);
+    // None of the wallet service's five SLIP_INTEGRITY_MISMATCH call sites
+    // ever reach autoApproveWalletTopup - each is a `return` before it.
+    const walletMismatchBlocks = walletCode.split('"SLIP_INTEGRITY_MISMATCH"').slice(1);
+    expect(walletMismatchBlocks.length).toBe(5);
+    for (const block of walletMismatchBlocks) {
+      expect(block.slice(0, 400)).not.toMatch(/autoApproveWalletTopup/);
+    }
+  });
+
+  it("both services define exactly one shared stability-check function - not one copy per call site", () => {
+    expect(orderCode.match(/computeSlipFileHash\(publishedSlipVersion\.slipImageUrl\)/g)?.length).toBe(1);
+    expect(walletCode.match(/async function verifyWalletSlipStillStable\(/g)?.length).toBe(1);
   });
 });

@@ -58,6 +58,35 @@ export interface WalletTopupSubmissionResult {
 }
 
 /**
+ * Re-hashes the SAME stored slip and reports whether it still matches the
+ * baseline computed at the start of this run.
+ *
+ * IPE-001-C06: the original stable-file fix only re-verified once, right
+ * before Step 3 (after a successful OCR extraction) - every EARLIER exit
+ * (OCR disabled, a parse technical error, shadow mode, or the outer catch)
+ * persisted `walletSlipFileHash`/`fileHashOnlyExtraction` straight from the
+ * pre-OCR baseline, with no re-check at all. Between that baseline and
+ * whichever guarded write actually commits, the object behind the SAME
+ * URL/key can still be mutated - same key, different bytes - and every one
+ * of those earlier paths would still bind stale file identity to the
+ * top-up, exactly the gap the later checkpoint was meant to close. This
+ * helper is called at EVERY terminal path that would otherwise persist a
+ * baseline-derived hash, not only the one after successful extraction.
+ *
+ * Returns `true` (stable) whenever there is no baseline to compare at all -
+ * that is not this check's job; `hasStrongIdentifier`/manual review already
+ * handle a top-up with no identifier.
+ */
+async function verifyWalletSlipStillStable(
+  slipImageUrl: string,
+  baselineHash: string | undefined
+): Promise<boolean> {
+  if (!baselineHash) return true;
+  const rehash = await computeSlipFileHash(slipImageUrl);
+  return rehash === baselineHash;
+}
+
+/**
  * Submit wallet top-up slip for OCR verification and auto-approval
  */
 export async function submitWalletTopupSlip(
@@ -181,6 +210,30 @@ export async function submitWalletTopupSlip(
   // observation while preventing auto-approval (see the shadow-mode check
   // further down, unchanged).
   if (!ocrConfig.enabled) {
+    // IPE-001-C06: re-verify immediately before persisting the baseline
+    // hash - even this early exit has a (small but real) window between
+    // computing walletSlipFileHash and this write actually committing.
+    if (!(await verifyWalletSlipStillStable(slipImageUrl, walletSlipFileHash))) {
+      console.error(
+        `[OCR] slip integrity mismatch for wallet top-up ${topupId}: stored bytes changed before persistence (OCR disabled)`
+      );
+      return await handlePendingReview(
+        topupId,
+        userId,
+        "SLIP_INTEGRITY_MISMATCH",
+        "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        topup,
+        expectedSlipVersion,
+        recordWalletAttempt,
+        "needs_review",
+        "TECHNICAL",
+        null
+      );
+    }
     return await handlePendingReview(
       topupId,
       userId,
@@ -239,6 +292,31 @@ export async function submitWalletTopupSlip(
     // admin can distinguish a provider outage from a bad slip.
     if (parseResult.technicalError) {
       walletProviderDiagnostic = parseResult.providerDiagnostic;
+      // IPE-001-C06: OCR already independently re-fetched the stored bytes
+      // by this point (prepareSlipImageForOcr) - re-verify against the SAME
+      // baseline before persisting it, exactly like the post-extraction
+      // checkpoint further below.
+      if (!(await verifyWalletSlipStillStable(slipImageUrl, walletSlipFileHash))) {
+        console.error(
+          `[OCR] slip integrity mismatch for wallet top-up ${topupId}: stored bytes changed before persistence (technical error path)`
+        );
+        return await handlePendingReview(
+          topupId,
+          userId,
+          "SLIP_INTEGRITY_MISMATCH",
+          "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          topup,
+          expectedSlipVersion,
+          recordWalletAttempt,
+          "needs_review",
+          "TECHNICAL",
+          null
+        );
+      }
       return await handleOCRError(
         topupId,
         userId,
@@ -256,6 +334,29 @@ export async function submitWalletTopupSlip(
 
     // Handle shadow mode
     if (ocrConfig.shadowModeEnabled) {
+      // IPE-001-C06: OCR already ran (this branch is reached only after a
+      // successful parse) - re-verify the same baseline before persisting.
+      if (!(await verifyWalletSlipStillStable(slipImageUrl, walletSlipFileHash))) {
+        console.error(
+          `[OCR] slip integrity mismatch for wallet top-up ${topupId}: stored bytes changed before persistence (shadow mode)`
+        );
+        return await handlePendingReview(
+          topupId,
+          userId,
+          "SLIP_INTEGRITY_MISMATCH",
+          "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          topup,
+          expectedSlipVersion,
+          recordWalletAttempt,
+          "needs_review",
+          "TECHNICAL",
+          null
+        );
+      }
       return await handlePendingReview(
         topupId,
         userId,
@@ -300,32 +401,32 @@ export async function submitWalletTopupSlip(
     // describe bytes that no longer exist. Re-verify right after OCR
     // extraction, before ANY branch below can publish it - a mismatch fails
     // closed uniformly, whether this run would have auto-approved or only
-    // gone to manual review.
-    if (walletSlipFileHash) {
-      const walletRehash = await computeSlipFileHash(slipImageUrl);
-      if (walletRehash !== walletSlipFileHash) {
-        console.error(
-          `[OCR] slip integrity mismatch for wallet top-up ${topupId}: stored bytes changed during OCR processing`
-        );
-        return await handlePendingReview(
-          topupId,
-          userId,
-          "SLIP_INTEGRITY_MISMATCH",
-          "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
-          // Nothing OCR derived from the stale bytes is trustworthy - not
-          // even the fileHash-only fallback other error paths use.
-          undefined,
-          undefined,
-          undefined,
-          parseResult,
-          topup,
-          expectedSlipVersion,
-          recordWalletAttempt,
-          "needs_review",
-          "TECHNICAL",
-          null
-        );
-      }
+    // gone to manual review. This is ONE of several checkpoints
+    // (verifyWalletSlipStillStable) - every earlier exit above (OCR
+    // disabled, a parse technical error, shadow mode, and the outer catch)
+    // carries its own, so no terminal path can publish a stale baseline.
+    if (!(await verifyWalletSlipStillStable(slipImageUrl, walletSlipFileHash))) {
+      console.error(
+        `[OCR] slip integrity mismatch for wallet top-up ${topupId}: stored bytes changed during OCR processing`
+      );
+      return await handlePendingReview(
+        topupId,
+        userId,
+        "SLIP_INTEGRITY_MISMATCH",
+        "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
+        // Nothing OCR derived from the stale bytes is trustworthy - not
+        // even the fileHash-only fallback other error paths use.
+        undefined,
+        undefined,
+        undefined,
+        parseResult,
+        topup,
+        expectedSlipVersion,
+        recordWalletAttempt,
+        "needs_review",
+        "TECHNICAL",
+        null
+      );
     }
 
     // Step 3: Verify slip data
@@ -557,6 +658,30 @@ export async function submitWalletTopupSlip(
     console.error(
       `[Wallet OCR] technical failure for topup ${topupId}: ${walletProviderDiagnostic.code} status=${walletProviderDiagnostic.providerHttpStatus ?? "n/a"} attempts=${walletProviderDiagnostic.providerAttemptCount}`
     );
+    // IPE-001-C06: this outer catch is the last exit before publishing the
+    // baseline fileHashOnlyExtraction - re-verify here too, regardless of
+    // which line inside the try block actually threw.
+    if (!(await verifyWalletSlipStillStable(slipImageUrl, walletSlipFileHash))) {
+      console.error(
+        `[OCR] slip integrity mismatch for wallet top-up ${topupId}: stored bytes changed before persistence (outer catch)`
+      );
+      return await handlePendingReview(
+        topupId,
+        userId,
+        "SLIP_INTEGRITY_MISMATCH",
+        "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        topup,
+        expectedSlipVersion,
+        recordWalletAttempt,
+        "needs_review",
+        "TECHNICAL",
+        null
+      );
+    }
     return await handleOCRError(
       topupId,
       userId,
