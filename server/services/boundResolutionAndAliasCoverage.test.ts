@@ -686,46 +686,44 @@ describe("required fileHash coverage via classifyRepresentation", () => {
 describe("recheck may add a strong identifier but never remove one", () => {
   const code = readCode("server/services/ocrRecheckService.ts");
 
-  it("A. a failed second fetch falls back to the hash already recovered", () => {
-    expect(code).toMatch(
-      /const effectiveFileHash = recomputedFileHash \?\? preOcrFileHash;/
-    );
-    expect(code).toMatch(/fileHash: effectiveFileHash/);
-    // The old form dropped it entirely.
-    expect(code).not.toMatch(
-      /const extractedWithFile = recomputedFileHash\s*\n?\s*\? \{ \.\.\.extracted, fileHash: recomputedFileHash \}/
-    );
-  });
+  // IPE-001-C08: A failed second fetch used to silently fall back to the
+  // pre-OCR hash (`recomputedFileHash ?? preOcrFileHash`), treating an
+  // UNPROVEN second read as if it were confirmed stability - exactly the P1
+  // this round closed. It is now routed through the same verifyStableOrBlock
+  // checkpoint as a genuine mismatch (see server/recheckFileIntegrityDurability.test.ts
+  // for the dedicated coverage of that helper); this block keeps only the
+  // invariants specific to the "add, never remove" monotonic promise itself.
 
   it("the persisted extraction is built from the effective hash", () => {
-    const start = code.indexOf("const effectiveFileHash =");
-    const body = code.slice(start, start + 400);
+    const start = code.indexOf("let effectiveFileHash:");
+    expect(start).toBeGreaterThan(-1);
+    const body = code.slice(start, start + 700);
     expect(body).toMatch(/const extractedWithFile = effectiveFileHash/);
   });
 
-  it("C. two different hashes for one stored slip is an integrity stop", () => {
-    const start = code.indexOf(
-      "if (preOcrFileHash && recomputedFileHash && recomputedFileHash !== preOcrFileHash)"
-    );
+  it("C. two different hashes for one stored slip is an integrity stop, via the shared checkpoint", () => {
+    const start = code.indexOf("async function verifyStableOrBlock(");
     expect(start).toBeGreaterThan(-1);
     const body = code.slice(start, start + 2200);
     expect(body).toMatch(/SLIP_INTEGRITY_BLOCK_REASON/);
     expect(body).toMatch(/readyForAdminApproval: false/);
     expect(body).toMatch(/verificationPassed: false/);
-    // It returns before the EXTRACTION update further down (effectiveFileHash/
-    // extractedWithFile), so HASH_A's persisted extraction is not overwritten.
-    expect(body).toMatch(/return \{/);
-    expect(code.indexOf("const effectiveFileHash =")).toBeGreaterThan(
-      code.indexOf("return {", start)
+    // The post-extraction call site returns the block result immediately -
+    // before the EXTRACTION update further down - so HASH_A's persisted
+    // extraction is not overwritten.
+    const postExtractCallIdx = code.indexOf(
+      "let effectiveFileHash: string | undefined = preOcrFileHash || undefined;"
     );
+    const blockedReturnIdx = code.indexOf("if (blocked) return blocked;", postExtractCallIdx);
+    const finalWriteIdx = code.indexOf("const wroteFinal = await db.updatePaymentIfNotFinalized(");
+    expect(blockedReturnIdx).toBeGreaterThan(postExtractCallIdx);
+    expect(blockedReturnIdx).toBeLessThan(finalWriteIdx);
   });
 
   it("the mismatch is durably persisted, not just returned - IPE-001 P2", () => {
     // A same-URL byte mutation must block normal Approve until integrity is
     // re-established, not merely be logged and forgotten with this response.
-    const start = code.indexOf(
-      "if (preOcrFileHash && recomputedFileHash && recomputedFileHash !== preOcrFileHash)"
-    );
+    const start = code.indexOf("async function verifyStableOrBlock(");
     const returnIdx = code.indexOf("return {", start);
     const body = code.slice(start, returnIdx);
     expect(body).toMatch(/const wroteBlock = await db\.updatePaymentIfNotFinalized\(/);
@@ -748,17 +746,19 @@ describe("recheck may add a strong identifier but never remove one", () => {
   });
 
   it("the integrity stop happens BEFORE any persistence of the new extraction", () => {
-    const mismatchIdx = code.indexOf("recomputedFileHash !== preOcrFileHash");
-    const effectiveIdx = code.indexOf("const effectiveFileHash =");
-    expect(mismatchIdx).toBeGreaterThan(-1);
-    expect(effectiveIdx).toBeGreaterThan(mismatchIdx);
+    const checkpointIdx = code.indexOf(
+      "let effectiveFileHash: string | undefined = preOcrFileHash || undefined;"
+    );
+    const finalWriteIdx = code.indexOf("const wroteFinal = await db.updatePaymentIfNotFinalized(");
+    expect(checkpointIdx).toBeGreaterThan(-1);
+    expect(finalWriteIdx).toBeGreaterThan(checkpointIdx);
   });
 
   it("the integrity stop still reports the identifier it kept", () => {
-    const start = code.indexOf("recomputedFileHash !== preOcrFileHash");
-    const body = code.slice(start, start + 1800);
+    const start = code.indexOf("async function verifyStableOrBlock(");
+    const body = code.slice(start, start + 2800);
     expect(body).toMatch(/hasStrongIdentifier: true/);
-    expect(body).toMatch(/fileIdentifierStatus: describeFileIdentifierStatus\(\{ fileHash: preOcrFileHash \}\)/);
+    expect(body).toMatch(/fileIdentifierStatus: describeFileIdentifierStatus\(\{ fileHash: baselineHash \}\)/);
   });
 
   it("the reported file-identifier status uses the effective hash", () => {

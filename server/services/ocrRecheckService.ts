@@ -109,6 +109,93 @@ export interface RecheckOcrResult {
   };
 }
 
+/**
+ * Re-hashes the SAME stored slip against a baseline established earlier in
+ * THIS recheck and, on a mismatch OR an unavailable second hash, durably
+ * blocks approval - never returns a terminal result that would let normal
+ * Approve use the baseline as current file identity for bytes that were
+ * never confirmed stable.
+ *
+ * IPE-001-C08: this checkpoint used to run ONLY after successful OCR
+ * (`recomputedFileHash ?? preOcrFileHash` - a missing second hash silently
+ * fell back to being treated as stable). The provider/image-preparation
+ * failure path had no re-check at all: it terminalized with
+ * `technicalPathFileHash = preOcrFileHash` straight from the baseline,
+ * regardless of how long the (possibly retried) provider call took or
+ * whether the object at that URL changed underneath it. Both are the same
+ * class of bug this helper closes uniformly: a hash computed once, before
+ * slow work, must never become approval authority without being re-verified
+ * immediately before the terminal write that would let it be used.
+ *
+ * Returns `undefined` when the baseline is confirmed stable (A->A) and the
+ * caller should proceed using `baselineHash` as current file identity.
+ * Returns a terminal `RecheckOcrResult` (the durable block, or a superseded
+ * result if the CAS lost the race) when the caller must return immediately.
+ */
+async function verifyStableOrBlock(
+  payment: any,
+  order: any,
+  slipVersionAtStart: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+  adminUserId: number,
+  startedAt: Date,
+  config: { maxTimeWindowMinutes: number },
+  baselineHash: string,
+  providerAttemptCount: number,
+  confidenceKnown: boolean
+): Promise<RecheckOcrResult | undefined> {
+  const rehash = await computeSlipFileHash(payment.slipImageUrl);
+  if (rehash === baselineHash) return undefined;
+
+  const wroteBlock = await db.updatePaymentIfNotFinalized(
+    payment.id,
+    {
+      reviewReason: SLIP_INTEGRITY_BLOCK_REASON,
+      ocrDecision: "needs_review",
+    },
+    undefined,
+    slipVersionAtStart
+  );
+
+  if (!wroteBlock) {
+    return await buildSupersededResult(payment, slipVersionAtStart, order.id, adminUserId, startedAt, config);
+  }
+
+  const attemptNo = await recordOcrAttempt({
+    subjectType: "order_payment",
+    subjectId: payment.id,
+    trigger: "admin_recheck",
+    initiatedByUserId: adminUserId,
+    startedAt,
+    stage: "completed",
+    result: "needs_review",
+    reviewCategory: "DATA",
+    reviewReason: SLIP_INTEGRITY_BLOCK_REASON,
+    providerAttemptCount,
+  });
+
+  return {
+    paymentId: payment.id,
+    orderId: order.id,
+    paymentStatus: payment.status,
+    attemptNo,
+    verificationPassed: false,
+    readyForAdminApproval: false,
+    reviewReason: SLIP_INTEGRITY_BLOCK_REASON,
+    category: "DATA",
+    rootCauseSummary:
+      "The stored slip image changed while this recheck was running. The originally " +
+      "recovered file identifier was kept and nothing was overwritten. Normal Approve is " +
+      "now blocked until a stable Recheck re-establishes integrity for this exact slip, or " +
+      "the customer uploads a genuine replacement. A human needs to establish which image " +
+      "this payment actually belongs to.",
+    confidenceKnown,
+    // The identifier recovered BEFORE the change is still persisted.
+    hasStrongIdentifier: true,
+    effectiveWindowMinutes: config.maxTimeWindowMinutes,
+    fileIdentifierStatus: describeFileIdentifierStatus({ fileHash: baselineHash }),
+  };
+}
+
 export async function recheckOrderPaymentOcr(
   input: RecheckOcrInput
 ): Promise<RecheckOcrResult> {
@@ -176,6 +263,16 @@ export async function recheckOrderPaymentOcr(
     }
   }
 
+  // IPE-001-C08 consistency audit: this early exit persists preOcrFileHash
+  // then returns with NO provider call, NO OCR, and no other await between
+  // the hash write above and this return - unlike the technical-failure and
+  // post-extraction paths, there is no slow work here for the same-URL
+  // object to change during, so there is no second boundary to re-verify
+  // against. The hash write itself (guarded by slipVersionAtStart, like
+  // every other write in this function) IS the terminal boundary, exactly
+  // like any first-time hash establishment elsewhere in the codebase - not
+  // an instance of the "use a hash after slow work without re-checking it"
+  // class verifyStableOrBlock exists to close.
   if (!config.enabled) {
     const summary = summarizeRootCause({ reviewReason: "OCR_DISABLED" });
     const attemptNo = await recordOcrAttempt({
@@ -253,6 +350,27 @@ export async function recheckOrderPaymentOcr(
     // while the payment was still pending - so it is valid historical
     // evidence and the panel's AVAILABLE status is backed by a real write.
     //
+    // IPE-001-C08: the provider call (or image preparation) that just failed
+    // can itself take long enough for the stored object to change underneath
+    // it. Re-verify against the SAME baseline right here, before this path
+    // can terminalize using it - a mismatch, or an unavailable second hash,
+    // durably blocks approval instead of silently trusting a hash that was
+    // only ever proven true BEFORE the slow work that just failed.
+    if (preOcrFileHash) {
+      const blocked = await verifyStableOrBlock(
+        payment,
+        order,
+        slipVersionAtStart,
+        input.adminUserId,
+        startedAt,
+        config,
+        preOcrFileHash,
+        providerDiagnostic.providerAttemptCount ?? 1,
+        false
+      );
+      if (blocked) return blocked;
+    }
+
     // Deliberately NO write here. Repeating it unconditionally is precisely
     // the hazard: an admin may have finalized the payment during the provider
     // call, and this path must never overwrite approved or rejected evidence.
@@ -321,83 +439,38 @@ export async function recheckOrderPaymentOcr(
     config.maxTimeWindowMinutes
   );
 
-  // The exact-file identifier is RECOMPUTED from the stored bytes, never
-  // carried over from the browser or from whatever the previous run wrote.
-  // This keeps a recheck's identifier set at least as strong as submission's,
-  // even when this OCR pass read nothing.
-  const recomputedFileHash = await computeSlipFileHash(payment.slipImageUrl);
-
   // ── INTEGRITY: the stored bytes must not change mid-recheck ────────────
-  // Two hashes of the SAME stored slip disagreeing means the object was
-  // replaced while this recheck ran. Silently adopting the newer one would
-  // let a substituted image inherit the standing of the one the customer
-  // actually submitted, so this stops and changes nothing to the extraction:
-  // the first hash stays persisted and is NOT overwritten.
-  //
-  // The mismatch itself IS durably persisted (reviewReason), not just
-  // returned in this transient response - a same-URL byte change must
-  // block normal Approve until integrity is re-established, not merely be
-  // logged and forgotten the moment this HTTP response is sent. Guarded by
-  // slipVersionAtStart exactly like the other writes below: if the customer
-  // has already published an actual replacement slip, THAT write already
-  // cleared reviewReason as part of publishing (see
-  // publishReplacementSlipIfReviewable), so this stale finding must not be
-  // persisted onto a row that has moved on - `wroteBlock` false in that case
-  // means exactly that, and this returns the superseded-by-slip-replacement
-  // outcome instead.
-  if (preOcrFileHash && recomputedFileHash && recomputedFileHash !== preOcrFileHash) {
-    const wroteBlock = await db.updatePaymentIfNotFinalized(payment.id, {
-      reviewReason: SLIP_INTEGRITY_BLOCK_REASON,
-      ocrDecision: "needs_review",
-    }, undefined, slipVersionAtStart);
-
-    if (!wroteBlock) {
-      return await buildSupersededResult(payment, slipVersionAtStart, order.id, input.adminUserId, startedAt, config);
-    }
-
-    const attemptNo = await recordOcrAttempt({
-      subjectType: "order_payment",
-      subjectId: payment.id,
-      trigger: "admin_recheck",
-      initiatedByUserId: input.adminUserId,
+  // Re-verify against the SAME baseline established before OCR ran. A
+  // mismatch, OR an unavailable second hash (IPE-001-C08 - a transient
+  // re-fetch failure must never be mistaken for stability), durably blocks
+  // approval via the shared checkpoint: the first hash stays persisted and is
+  // NOT overwritten, nothing OCR-derived from unverifiable bytes is
+  // published, and Approve is blocked until a stable Recheck or a genuine
+  // replacement re-establishes integrity. Guarded by slipVersionAtStart
+  // exactly like the other writes below - see verifyStableOrBlock's own doc.
+  let effectiveFileHash: string | undefined = preOcrFileHash || undefined;
+  if (preOcrFileHash) {
+    const blocked = await verifyStableOrBlock(
+      payment,
+      order,
+      slipVersionAtStart,
+      input.adminUserId,
       startedAt,
-      stage: "completed",
-      result: "needs_review",
-      reviewCategory: "DATA",
-      reviewReason: SLIP_INTEGRITY_BLOCK_REASON,
-      providerAttemptCount: providerDiagnostic?.providerAttemptCount ?? 1,
-    });
-
-    return {
-      paymentId: payment.id,
-      orderId: order.id,
-      paymentStatus: payment.status,
-      attemptNo,
-      verificationPassed: false,
-      readyForAdminApproval: false,
-      reviewReason: SLIP_INTEGRITY_BLOCK_REASON,
-      category: "DATA",
-      rootCauseSummary:
-        "The stored slip image changed while this recheck was running. The originally " +
-        "recovered file identifier was kept and nothing was overwritten. Normal Approve is " +
-        "now blocked until a stable Recheck re-establishes integrity for this exact slip, or " +
-        "the customer uploads a genuine replacement. A human needs to establish which image " +
-        "this payment actually belongs to.",
-      confidenceKnown,
-      // The identifier recovered BEFORE the change is still persisted.
-      hasStrongIdentifier: true,
-      effectiveWindowMinutes: config.maxTimeWindowMinutes,
-      fileIdentifierStatus: describeFileIdentifierStatus({ fileHash: preOcrFileHash }),
-    };
+      config,
+      preOcrFileHash,
+      providerDiagnostic?.providerAttemptCount ?? 1,
+      confidenceKnown
+    );
+    if (blocked) return blocked;
+  } else {
+    // ── MONOTONIC: a recheck may ADD a strong identifier, never REMOVE one ──
+    // No pre-OCR baseline existed at all (the very first hash attempt
+    // failed), so there is nothing to verify against - but this second
+    // attempt, taken from the SAME stored bytes, may still succeed and give
+    // this payment an identifier it never had.
+    effectiveFileHash = await computeSlipFileHash(payment.slipImageUrl);
   }
 
-  // ── MONOTONIC: a recheck may ADD a strong identifier, never REMOVE one ──
-  // A transient failure of this second fetch left `recomputedFileHash`
-  // undefined, and the conditional update below then rewrote the persisted
-  // extraction WITHOUT the fileHash that the pre-OCR pass had already
-  // recovered and stored - so a recheck could delete an exact-file
-  // identifier and send the payment back to NO_STRONG_IDENTIFIER.
-  const effectiveFileHash = recomputedFileHash ?? preOcrFileHash;
   const extractedWithFile = effectiveFileHash
     ? { ...extracted, fileHash: effectiveFileHash }
     : extracted;
