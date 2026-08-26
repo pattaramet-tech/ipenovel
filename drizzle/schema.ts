@@ -1364,3 +1364,262 @@ export const adminUserAuditLogs = mysqlTable(
 
 export type AdminUserAuditLog = typeof adminUserAuditLogs.$inferSelect;
 export type InsertAdminUserAuditLog = typeof adminUserAuditLogs.$inferInsert;
+
+/**
+ * Global anti-replay claim registry for payment slips.
+ *
+ * INVARIANT: ONE REAL BANK TRANSACTION CAN CREATE FINANCIAL VALUE ONCE.
+ *
+ * Before this table, duplicate detection was a SELECT-then-decide read over
+ * per-user, pending-only data, which was unsafe in three separate ways:
+ *   1. Wallet duplicate lookups were scoped to a single userId, so the same
+ *      slip could be replayed by a DIFFERENT user.
+ *   2. Order-payment lookups scanned only PENDING payments, so a slip that
+ *      had already been APPROVED was invisible and could be reused.
+ *   3. A read followed by a write is a race: two concurrent submissions can
+ *      both observe "no duplicate" and both create value.
+ *
+ * A row here is a CLAIM on a strong identifier, inserted inside the SAME
+ * transaction that finalizes the money. Uniqueness is enforced by the
+ * DATABASE, so concurrency is resolved by the engine rather than by
+ * application timing: of two racing claimants exactly one commits and the
+ * other gets a duplicate-key error and is routed to manual review.
+ *
+ * Only STRONG identifiers appear here. `semanticFingerprint` is deliberately
+ * NOT unique and NOT a claim - a customer may legitimately send the same
+ * amount from the same account twice in one day, so treating that shape as
+ * proof would block real payments. It is stored purely as a review signal.
+ *
+ * NULL handling: MySQL/MariaDB UNIQUE indexes permit multiple NULLs, which
+ * is exactly the behavior needed - a slip with no readable reference simply
+ * does not claim the reference slot, and never collides with other
+ * reference-less slips.
+ *
+ * Append-only in practice: rows are inserted when value is created and are
+ * never rewritten. There is no FK to users/orders/walletTopups because the
+ * registry must outlive and span both financial sources.
+ */
+export const paymentSlipClaims = mysqlTable(
+  "paymentSlipClaims",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    /** Which financial flow consumed the slip. */
+    sourceType: mysqlEnum("sourceType", ["order_payment", "wallet_topup"]).notNull(),
+    /** payments.id or walletTopups.id, depending on sourceType. */
+    sourceId: int("sourceId").notNull(),
+    /** Owner of the claiming submission - for admin traceability only. */
+    userId: int("userId").notNull(),
+    /** SHA-256 of the normalized bank transaction reference. */
+    referenceHash: varchar("referenceHash", { length: 64 }),
+    /**
+     * ADVISORY legacy ambiguity marker - NOT an anti-replay authority.
+     *
+     * Set ONLY on backfilled historical rows whose original reference casing
+     * is unrecoverable: they were persisted with just an upper-cased
+     * `reference` and carry no `referenceRaw`, no stored hash and no
+     * reparsable `rawText`. For those rows the true reference can never be
+     * reconstructed, so a fresh mixed-case read of the same transaction
+     * cannot be matched by `referenceHash`.
+     *
+     * NULL for everything else - every modern submission, and every legacy
+     * row whose casing WAS recoverable. A normal new claim must never write
+     * this field.
+     *
+     * Deliberately NULLABLE, INDEXED and NON-UNIQUE, and deliberately never a
+     * claim: upper-casing is LOSSY, so two genuinely different
+     * case-sensitive references legitimately fold together here. Treating a
+     * hit as ownership would make one of two real transactions permanently
+     * unapprovable. A hit is therefore advisory evidence that STOPS auto
+     * approval and routes to an explicit admin resolution
+     * (LEGACY_REFERENCE_CASE_AMBIGUITY) - it is never
+     * `already_claimed`, never a duplicate verdict, and never auto-rejects.
+     *
+     * The real anti-replay authorities remain the UNIQUE case-preserving
+     * `referenceHash`, `fileHash` and `qrPayloadHash` above.
+     */
+    legacyReferenceUpperHash: varchar("legacyReferenceUpperHash", { length: 64 }),
+    fileHash: varchar("fileHash", { length: 64 }),
+    /** SHA-256 of the decoded slip QR payload, when decoding is available. */
+    qrPayloadHash: varchar("qrPayloadHash", { length: 64 }),
+    /** WEAK signal. Indexed for lookup, deliberately NOT unique. */
+    semanticFingerprint: varchar("semanticFingerprint", { length: 64 }),
+    claimedAt: timestamp("claimedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    // The three strong-identifier locks. These are what actually enforce
+    // "once", globally across orders AND wallet top-ups AND users.
+    referenceHashUnique: uniqueIndex("paymentSlipClaims_referenceHash_unique").on(
+      table.referenceHash
+    ),
+    fileHashUnique: uniqueIndex("paymentSlipClaims_fileHash_unique").on(table.fileHash),
+    qrPayloadHashUnique: uniqueIndex("paymentSlipClaims_qrPayloadHash_unique").on(
+      table.qrPayloadHash
+    ),
+    // Non-unique: weak evidence is looked up, never enforced.
+    // Non-unique by design: the alias is a lossy ADVISORY lookup, never an
+    // enforced constraint. Many legitimate rows may share one value.
+    legacyReferenceUpperHashIdx: index("paymentSlipClaims_legacyReferenceUpperHash_idx").on(
+      table.legacyReferenceUpperHash
+    ),
+    semanticFingerprintIdx: index("paymentSlipClaims_semanticFingerprint_idx").on(
+      table.semanticFingerprint
+    ),
+    // "Which submission consumed this slip?" for the admin duplicate panel.
+    sourceIdx: index("paymentSlipClaims_source_idx").on(table.sourceType, table.sourceId),
+    userIdIdx: index("paymentSlipClaims_userId_idx").on(table.userId),
+  })
+);
+
+export type PaymentSlipClaim = typeof paymentSlipClaims.$inferSelect;
+export type InsertPaymentSlipClaim = typeof paymentSlipClaims.$inferInsert;
+
+/**
+ * Persistent OCR attempt history (automatic submissions + admin rechecks).
+ *
+ * Answers the question an admin previously could not answer from the UI:
+ * "did this fail because the OCR provider broke, or because the slip data
+ * was genuinely wrong?" Each attempt records which stage it reached and a
+ * typed result, so a provider outage is never mistaken for a bad slip.
+ *
+ * SANITIZED DIAGNOSTICS ONLY. This table must never receive an API key, an
+ * Authorization header, an LLM endpoint carrying credentials, a signed R2
+ * URL, base64 image data, or a raw upstream error body. `providerHttpStatus`
+ * and `providerAttemptCount` are the only provider-side facts kept, which is
+ * enough to distinguish a 503-after-3-retries from a 401 misconfiguration.
+ *
+ * Raw OCR text is intentionally NOT duplicated here - payments.extractedData
+ * already stores the extracted financial evidence, and copying PII-bearing
+ * slip text per attempt would multiply the sensitive footprint for no
+ * diagnostic gain.
+ *
+ * subjectType is an enum rather than an order-only column so wallet top-up
+ * rechecks can be added later without a schema migration.
+ */
+export const ocrVerificationAttempts = mysqlTable(
+  "ocrVerificationAttempts",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    subjectType: mysqlEnum("subjectType", ["order_payment", "wallet_topup"]).notNull(),
+    /** payments.id or walletTopups.id. */
+    subjectId: int("subjectId").notNull(),
+    /** 1-based, monotonically increasing per subject. */
+    attemptNo: int("attemptNo").notNull().default(1),
+    trigger: mysqlEnum("trigger", ["automatic", "admin_recheck"]).notNull(),
+    /** Admin who requested a recheck; NULL for automatic submissions. */
+    initiatedByUserId: int("initiatedByUserId"),
+    startedAt: timestamp("startedAt").notNull(),
+    completedAt: timestamp("completedAt"),
+    /** "generic" | "legacy_forge" - runtime mode only, never an endpoint. */
+    providerMode: varchar("providerMode", { length: 32 }),
+    providerModel: varchar("providerModel", { length: 128 }),
+    providerHttpStatus: int("providerHttpStatus"),
+    providerAttemptCount: int("providerAttemptCount").notNull().default(0),
+    /** How far the pipeline got before stopping. */
+    stage: mysqlEnum("stage", [
+      "image_preparation",
+      "provider_call",
+      "response_parse",
+      "field_extraction",
+      "verification",
+      "completed",
+    ]).notNull(),
+    result: mysqlEnum("result", [
+      "auto_approved",
+      "needs_review",
+      "technical_failure",
+      "config_blocked",
+    ]).notNull(),
+    /** TECHNICAL | DATA | CONFIG - see OcrDiagnosticCategory. */
+    reviewCategory: varchar("reviewCategory", { length: 32 }),
+    /** Stable reason code, e.g. MISSING_REFERENCE / PROVIDER_RATE_LIMIT. */
+    reviewReason: varchar("reviewReason", { length: 64 }),
+    /** NULL means the provider never reported one - distinct from 0. */
+    confidence: int("confidence"),
+    /** Sanitized JSON snapshot of the verification checklist. No raw text. */
+    verificationSnapshot: text("verificationSnapshot"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    subjectIdx: index("ocrVerificationAttempts_subject_idx").on(
+      table.subjectType,
+      table.subjectId
+    ),
+    createdAtIdx: index("ocrVerificationAttempts_createdAt_idx").on(table.createdAt),
+    initiatedByIdx: index("ocrVerificationAttempts_initiatedByUserId_idx").on(
+      table.initiatedByUserId
+    ),
+  })
+);
+
+export type OcrVerificationAttempt = typeof ocrVerificationAttempts.$inferSelect;
+export type InsertOcrVerificationAttempt = typeof ocrVerificationAttempts.$inferInsert;
+
+/**
+ * Audited human resolutions of a LEGACY REFERENCE CASE AMBIGUITY.
+ *
+ * When a new submission's upper-cased reference matches a historical row's
+ * `legacyReferenceUpperHash`, auto-approval stops. The match is lossy, so it
+ * proves nothing: the two may be one replayed transaction, or two genuinely
+ * different references that merely fold together. Only a human can decide.
+ *
+ * This table records that decision explicitly rather than burying it in a
+ * generic approval note, because it is the one place a human overrides an
+ * automated anti-replay signal and that must stay auditable.
+ *
+ * The uniqueness rule is on the SUBJECT, not the alias: multiple legitimate
+ * payments may share one lossy alias and each may be resolved independently.
+ * Constraining the alias would recreate the dead-end this design removes.
+ *
+ * Never stores slip bytes, credentials, or a raw reference belonging to
+ * another user's payment.
+ */
+export const paymentSlipReviewResolutions = mysqlTable(
+  "paymentSlipReviewResolutions",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    subjectType: mysqlEnum("subjectType", ["order_payment", "wallet_topup"]).notNull(),
+    /** payments.id or walletTopups.id. */
+    subjectId: int("subjectId").notNull(),
+    resolutionType: mysqlEnum("resolutionType", [
+      "legacy_case_confirmed_distinct",
+      "legacy_case_confirmed_duplicate",
+    ]).notNull(),
+    /** The historical record the alias matched, for traceability. */
+    matchedSourceType: mysqlEnum("matchedSourceType", ["order_payment", "wallet_topup"]),
+    matchedSourceId: int("matchedSourceId"),
+    /** The lossy alias that triggered the review. Advisory context only. */
+    legacyAliasHash: varchar("legacyAliasHash", { length: 64 }),
+    /**
+     * The EXACT case-preserving reference hash the admin adjudicated.
+     *
+     * The alias above identifies only the historical FOLD, and folding is
+     * lossy: `abc123` and `AbC123` share it. Without this, a resolution row
+     * cannot say WHICH case-preserving reference a human actually approved,
+     * and a casing-only change between review and approval was
+     * indistinguishable from no change at all.
+     *
+     * Nullable for rows written before this field existed. Never a secret -
+     * a salted-free SHA of a bank reference, exactly like every other hash
+     * in this schema.
+     */
+    adjudicatedReferenceHash: varchar("adjudicatedReferenceHash", { length: 64 }),
+    adminUserId: int("adminUserId").notNull(),
+    /** Mandatory, non-empty operator justification. */
+    reason: text("reason").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    // One resolution per subject: a second attempt must not silently create a
+    // parallel decision. Enforced on the SUBJECT, never on the lossy alias.
+    subjectUnique: uniqueIndex("paymentSlipReviewResolutions_subject_unique").on(
+      table.subjectType,
+      table.subjectId
+    ),
+    adminUserIdIdx: index("paymentSlipReviewResolutions_adminUserId_idx").on(table.adminUserId),
+    createdAtIdx: index("paymentSlipReviewResolutions_createdAt_idx").on(table.createdAt),
+  })
+);
+
+export type PaymentSlipReviewResolution = typeof paymentSlipReviewResolutions.$inferSelect;
+export type InsertPaymentSlipReviewResolution =
+  typeof paymentSlipReviewResolutions.$inferInsert;

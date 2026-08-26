@@ -11,6 +11,18 @@ import * as walletService from "./services/walletService";
 import { ApprovalService } from "./services/approvalService";
 import { submitPaymentSlip } from "./services/slipSubmissionService";
 import { uploadPaymentSlipFile } from "./services/slipFileUploadService";
+import { recheckOrderPaymentOcr } from "./services/ocrRecheckService";
+import { resolveLegacyCaseAmbiguity } from "./services/legacyCaseResolutionService";
+import { getOcrAttemptHistory } from "./services/ocrAttemptService";
+import { evaluateSlipConflict } from "./services/slipConflictEvaluator";
+import { resolveMatchedSourceNavigation } from "./services/matchedSourceNavigationService";
+import { describeFileIdentifierStatus } from "./services/slipFileHashService";
+import {
+  deriveStrongIdentifiersFromExtractedData,
+  getRawReferenceForLegacyLookup,
+  hasStrongIdentifier,
+} from "./services/slipIdentifierService";
+import { getEffectiveOCRConfig } from "./_core/ocr-effective-config";
 import {
   assertCheckoutAvailable,
   assertSlipCheckoutAvailable,
@@ -24,7 +36,7 @@ import { fileRouter } from "./routers/fileRouter";
 import { ocrMetricsRouter } from "./routers/ocrMetricsRouter";
 import { r2Put, R2StorageError } from "./services/r2Storage";
 import { optimizeImageToWebp, ImageOptimizeError, SPORTS_MATCH_IMAGE_PRESET } from "./services/imageOptimizer";
-import { parseSlipImage } from "./ocr-slip-verification-v2";
+import { parseSlipImage, verifyRecipient } from "./ocr-slip-verification-v2";
 import { processSlipVerificationStaging } from "./ocr-slip-integration-staging";
 import { getOCRConfig } from "./_core/ocr-config";
 import {
@@ -1268,6 +1280,30 @@ export const appRouter = router({
             await orderService.approvePayment(input.paymentId, String(ctx.user.id));
             return { success: true };
           } catch (error: any) {
+            // Anti-replay refusal: the slip was claimed by another
+            // submission, possibly after this admin loaded the page. CONFLICT
+            // (not BAD_REQUEST) so the UI can tell "stale page, refresh and
+            // recheck" apart from "this request was malformed".
+            if (typeof error?.message === "string" && error.message.startsWith("SLIP_ALREADY_CLAIMED")) {
+              throw new TRPCError({ code: "CONFLICT", message: error.message });
+            }
+            // No strong identifier: normal Approve must not silently bypass
+            // anti-replay. PRECONDITION_FAILED so the UI can distinguish
+            // "someone else owns this slip" from "this slip cannot be
+            // protected at all and needs the legacy override".
+            if (typeof error?.message === "string" && error.message.startsWith("NO_STRONG_IDENTIFIER")) {
+              throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
+            }
+            // An unresolved legacy case ambiguity. Distinct from a duplicate:
+            // the admin must choose reject-as-duplicate or approve-as-distinct
+            // via resolveLegacyCaseAmbiguity. Normal Approve must neither
+            // bypass it nor fail forever.
+            if (
+              typeof error?.message === "string" &&
+              error.message.startsWith("LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION")
+            ) {
+              throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
+            }
             throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to approve payment. Please try again." });
           }
         }),
@@ -1399,7 +1435,174 @@ export const appRouter = router({
 
           const payment = await withResolvedSlipUrl(rawPayment, "admin.orders.detail");
 
-          return { order, items, payment, history, approvalMetadata, formattedApprovalSource };
+          // ── ONE SOURCE OF TRUTH FOR THE FRESHNESS WINDOW ────────────────
+          // The admin panel previously recomputed freshness against a
+          // hard-coded 120 minutes while the server verified against the
+          // EFFECTIVE config, so any deployment with a different window saw a
+          // checklist that disagreed with the actual decision. The effective
+          // value is now returned and the panel renders THIS number.
+          const ocrConfig = await getEffectiveOCRConfig();
+
+          // ── DUPLICATE STATE (read-only, admin-only) ─────────────────────
+          // Derived server-side so the panel never has to infer duplicate
+          // strength from a legacy fingerprint.
+          let duplicate:
+            | {
+                strength: "strong" | "legacy_case_ambiguity" | "unresolved" | "legacy_case_ambiguity_group";
+                kind?: string;
+                matchedSourceType: "order_payment" | "wallet_topup";
+                matchedSourceId: number;
+                /** Resolved server-side; the client never derives a URL. */
+                matchedOrderId?: number;
+                viaLegacyCompatibility?: boolean;
+                advisory?: true;
+                requiresAdminResolution?: true;
+              }
+            | undefined;
+          let reviewReasonOverride: string | undefined;
+          let fileIdentifierStatus: "AVAILABLE" | "MATCH" | "UNAVAILABLE" = "UNAVAILABLE";
+          let recipient: ReturnType<typeof verifyRecipient> | undefined;
+
+          if (rawPayment?.extractedData) {
+            const { identifiers } = deriveStrongIdentifiersFromExtractedData(
+              rawPayment.extractedData as string
+            );
+            const database = await db.getDb();
+            if (database && hasStrongIdentifier(identifiers)) {
+              // ── THE SAME CLASSIFIER THE CLAIM PATH USES ─────────────────
+              // This query previously ran its own exact-only lookup: no raw
+              // reference, so no uppercase candidate, and no consultation of
+              // the indexed alias. For a mixed-case reference submitted while
+              // auto-approval is disabled or shadowed, NOTHING ever records
+              // the ambiguity - so the panel showed no conflict, hid the
+              // resolution controls, and normal Approve then refused the
+              // payment with no way for the admin to act on it.
+              //
+              // Detail discovery must not be a second implementation of a
+              // financial decision: alias lookup, the historical scan and
+              // exact-over-lossy priority all stay inside the shared
+              // evaluator.
+              const conflict = await evaluateSlipConflict(
+                {
+                  identifiers,
+                  rawReference: getRawReferenceForLegacyLookup(
+                    rawPayment.extractedData as string
+                  ),
+                  sourceType: "order_payment",
+                  sourceId: rawPayment.id,
+                },
+                database
+              );
+
+              if (conflict.kind === "strong_duplicate") {
+                duplicate = {
+                  strength: "strong",
+                  kind: conflict.matchedKind,
+                  matchedSourceType: conflict.matchedSourceType,
+                  matchedSourceId: conflict.matchedSourceId,
+                  viaLegacyCompatibility: conflict.viaLegacyCompatibility,
+                };
+              } else if (conflict.kind === "legacy_case_ambiguity") {
+                // ADVISORY. Never described as a confirmed duplicate: the
+                // fold is lossy, and normal Approve stays blocked until an
+                // admin resolves it explicitly.
+                duplicate = {
+                  strength: "legacy_case_ambiguity",
+                  matchedSourceType: conflict.matchedSourceType,
+                  matchedSourceId: conflict.matchedSourceId,
+                  advisory: true,
+                  requiresAdminResolution: true,
+                };
+                reviewReasonOverride = "LEGACY_REFERENCE_CASE_AMBIGUITY";
+              } else if (conflict.kind === "unresolved") {
+                // An approved historical row exists that could not be
+                // verified at all - not a proven duplicate, not provably
+                // clean. Reflects the SAME state normal Approve and Recheck
+                // see: Approve refuses with LEGACY_APPROVED_SLIP_UNRESOLVED
+                // (server/services/slipClaimService.ts), so the panel must
+                // never show this as READY or as a confirmed duplicate.
+                //
+                // Deliberately NOT `requiresAdminResolution: true` - that
+                // flag drives the audited "confirm distinct" resolution flow
+                // built specifically for the lossy legacy-case fold, which
+                // this state is not. An unresolved row needs manual
+                // investigation (e.g. recovering the historical slip image),
+                // not a casing-fold adjudication.
+                duplicate = {
+                  strength: "unresolved",
+                  matchedSourceType: conflict.matchedSourceType,
+                  matchedSourceId: conflict.matchedSourceId,
+                  advisory: true,
+                };
+                reviewReasonOverride = "LEGACY_APPROVED_SLIP_UNRESOLVED";
+              } else if (conflict.kind === "legacy_case_ambiguity_group") {
+                // MORE THAN ONE historical source shares this alias. Reflects
+                // the SAME state normal Approve and Recheck see: Approve
+                // refuses with LEGACY_ALIAS_GROUP_AMBIGUITY
+                // (server/services/slipClaimService.ts) and never consults a
+                // resolution, since any such resolution could only ever have
+                // adjudicated one arbitrary member of the group.
+                //
+                // Deliberately NOT `requiresAdminResolution: true` - the
+                // single-member "confirm distinct" flow does not apply here;
+                // the group needs manual investigation as a whole.
+                duplicate = {
+                  strength: "legacy_case_ambiguity_group",
+                  matchedSourceType: conflict.matchedSourceType,
+                  matchedSourceId: conflict.matchedSourceId,
+                  advisory: true,
+                };
+                reviewReasonOverride = "LEGACY_ALIAS_GROUP_AMBIGUITY";
+              }
+
+              if (duplicate) {
+                // Navigation is resolved HERE - an order payment id is not an
+                // order id, and the client must never guess one.
+                const nav = await resolveMatchedSourceNavigation(
+                  duplicate.matchedSourceType,
+                  duplicate.matchedSourceId,
+                  database
+                );
+                duplicate.matchedOrderId = nav.orderId;
+              }
+            }
+            fileIdentifierStatus = describeFileIdentifierStatus({
+              fileHash: identifiers.fileHash,
+              duplicateFileMatch: duplicate?.kind === "file",
+            });
+
+            // Recipient verdict recomputed SERVER-SIDE from the stored
+            // extraction, using the same function verifySlipData gates on.
+            // Recomputing (rather than reading a persisted flag) means legacy
+            // rows written before the gate existed are graded correctly too,
+            // and the panel never re-decides this in client constants.
+            try {
+              const parsedExtracted = JSON.parse(rawPayment.extractedData as string);
+              recipient = verifyRecipient(parsedExtracted);
+            } catch {
+              recipient = undefined;
+            }
+          }
+
+          return {
+            order,
+            items,
+            payment,
+            history,
+            approvalMetadata,
+            formattedApprovalSource,
+            ocrMeta: {
+              effectiveWindowMinutes: ocrConfig.maxTimeWindowMinutes,
+              minConfidence: ocrConfig.minConfidence,
+              duplicate,
+              fileIdentifierStatus,
+              recipient,
+              // Set when the detail query itself discovered an unresolved
+              // legacy case ambiguity, so the panel can render the resolution
+              // controls without an admin having to run Recheck first.
+              reviewReason: reviewReasonOverride ?? (rawPayment?.reviewReason as string | undefined),
+            },
+          };
         }),
 
          approve: adminProcedure
@@ -1423,10 +1626,86 @@ export const appRouter = router({
               ctx.user.name || "Admin"
             );
           } catch (error: any) {
+            // See admin.payments.approve above - a claimed slip is a
+            // CONFLICT the admin can act on, not a malformed request.
+            if (typeof error?.message === "string" && error.message.startsWith("SLIP_ALREADY_CLAIMED")) {
+              throw new TRPCError({ code: "CONFLICT", message: error.message });
+            }
+            // No strong identifier: normal Approve must not silently bypass
+            // anti-replay. PRECONDITION_FAILED so the UI can distinguish
+            // "someone else owns this slip" from "this slip cannot be
+            // protected at all and needs the legacy override".
+            if (typeof error?.message === "string" && error.message.startsWith("NO_STRONG_IDENTIFIER")) {
+              throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
+            }
+            // An unresolved legacy case ambiguity. Distinct from a duplicate:
+            // the admin must choose reject-as-duplicate or approve-as-distinct
+            // via resolveLegacyCaseAmbiguity. Normal Approve must neither
+            // bypass it nor fail forever.
+            if (
+              typeof error?.message === "string" &&
+              error.message.startsWith("LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION")
+            ) {
+              throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
+            }
             throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to approve payment. Please try again." });
           }
           return { success: true };
         }),
+      /**
+       * Re-runs OCR + verification against the slip already on file.
+       *
+       * Diagnostic ONLY. It cannot approve, cannot reject, and cannot change
+       * payment or order status - see ocrRecheckService for the guarantees
+       * and the tests that enforce them. When verification passes it reports
+       * readyForAdminApproval so an admin can then press Approve, which runs
+       * its own independent anti-replay claim.
+       */
+      recheckOcr: adminProcedure
+        .input(z.object({ paymentId: z.number().int().positive() }))
+        .mutation(async ({ input, ctx }) => {
+          return recheckOrderPaymentOcr({
+            paymentId: input.paymentId,
+            adminUserId: ctx.user.id,
+          });
+        }),
+
+      /**
+       * Resolves a LEGACY REFERENCE CASE AMBIGUITY - admin only.
+       *
+       * The alias that triggers this is lossy, so no automated path can
+       * decide it. This is the escape route that stops such a payment being
+       * permanently unapprovable. It is NOT a generic override: the ambiguity
+       * is revalidated server-side, a real strong identifier is still
+       * required, the normal atomic claim still runs, and the decision is
+       * permanently audited with a mandatory reason.
+       */
+      resolveLegacyCaseAmbiguity: adminProcedure
+        .input(
+          z.object({
+            paymentId: z.number().int().positive(),
+            decision: z.enum(["confirmed_distinct", "confirmed_duplicate"]),
+            reason: z.string().trim().min(10).max(1000),
+          })
+        )
+        .mutation(async ({ input, ctx }) => {
+          return resolveLegacyCaseAmbiguity({
+            subjectType: "order_payment",
+            subjectId: input.paymentId,
+            adminUserId: ctx.user.id,
+            adminLabel: ctx.user.name || "Admin",
+            decision: input.decision,
+            reason: input.reason,
+          });
+        }),
+
+      /** Sanitized OCR attempt history for the admin detail panel. */
+      ocrAttempts: adminProcedure
+        .input(z.object({ paymentId: z.number().int().positive() }))
+        .query(async ({ input }) => {
+          return getOcrAttemptHistory("order_payment", input.paymentId);
+        }),
+
       reject: adminProcedure
         .input(z.object({ orderId: z.number(), rejectionReason: z.string() }))
         .mutation(async ({ input, ctx }) => {
@@ -2713,10 +2992,118 @@ export const appRouter = router({
 
           const topup = await withResolvedSlipUrl(rawTopup, "wallet.admin.detail");
 
+          const ocrConfig = await getEffectiveOCRConfig();
+
+          // ── DUPLICATE STATE (read-only, admin-only) ─────────────────────
+          // Mirrors admin.orders.detail EXACTLY: the same shared classifier,
+          // so an admin viewing a wallet top-up sees the SAME conflict a
+          // wallet Approve attempt will enforce, before ever attempting one.
+          // Without this, a mixed-case reference (or any other advisory
+          // ambiguity) was invisible until Approve failed - normal Approve
+          // was the discovery mechanism, not the detail page.
+          let duplicate:
+            | {
+                strength: "strong" | "legacy_case_ambiguity" | "unresolved" | "legacy_case_ambiguity_group";
+                kind?: string;
+                matchedSourceType: "order_payment" | "wallet_topup";
+                matchedSourceId: number;
+                matchedOrderId?: number;
+                viaLegacyCompatibility?: boolean;
+                advisory?: true;
+                requiresAdminResolution?: true;
+              }
+            | undefined;
+          let reviewReasonOverride: string | undefined;
+          let fileIdentifierStatus: "AVAILABLE" | "MATCH" | "UNAVAILABLE" = "UNAVAILABLE";
+          let recipient: ReturnType<typeof verifyRecipient> | undefined;
+
+          if (rawTopup?.extractedData) {
+            const { identifiers } = deriveStrongIdentifiersFromExtractedData(
+              rawTopup.extractedData as string
+            );
+            const database = await db.getDb();
+            if (database && hasStrongIdentifier(identifiers)) {
+              const conflict = await evaluateSlipConflict(
+                {
+                  identifiers,
+                  rawReference: getRawReferenceForLegacyLookup(
+                    rawTopup.extractedData as string
+                  ),
+                  sourceType: "wallet_topup",
+                  sourceId: rawTopup.id,
+                },
+                database
+              );
+
+              if (conflict.kind === "strong_duplicate") {
+                duplicate = {
+                  strength: "strong",
+                  kind: conflict.matchedKind,
+                  matchedSourceType: conflict.matchedSourceType,
+                  matchedSourceId: conflict.matchedSourceId,
+                  viaLegacyCompatibility: conflict.viaLegacyCompatibility,
+                };
+              } else if (conflict.kind === "legacy_case_ambiguity") {
+                duplicate = {
+                  strength: "legacy_case_ambiguity",
+                  matchedSourceType: conflict.matchedSourceType,
+                  matchedSourceId: conflict.matchedSourceId,
+                  advisory: true,
+                  requiresAdminResolution: true,
+                };
+                reviewReasonOverride = "LEGACY_REFERENCE_CASE_AMBIGUITY";
+              } else if (conflict.kind === "unresolved") {
+                duplicate = {
+                  strength: "unresolved",
+                  matchedSourceType: conflict.matchedSourceType,
+                  matchedSourceId: conflict.matchedSourceId,
+                  advisory: true,
+                };
+                reviewReasonOverride = "LEGACY_APPROVED_SLIP_UNRESOLVED";
+              } else if (conflict.kind === "legacy_case_ambiguity_group") {
+                duplicate = {
+                  strength: "legacy_case_ambiguity_group",
+                  matchedSourceType: conflict.matchedSourceType,
+                  matchedSourceId: conflict.matchedSourceId,
+                  advisory: true,
+                };
+                reviewReasonOverride = "LEGACY_ALIAS_GROUP_AMBIGUITY";
+              }
+
+              if (duplicate) {
+                const nav = await resolveMatchedSourceNavigation(
+                  duplicate.matchedSourceType,
+                  duplicate.matchedSourceId,
+                  database
+                );
+                duplicate.matchedOrderId = nav.orderId;
+              }
+            }
+            fileIdentifierStatus = describeFileIdentifierStatus({
+              fileHash: identifiers.fileHash,
+              duplicateFileMatch: duplicate?.kind === "file",
+            });
+
+            try {
+              const parsedExtracted = JSON.parse(rawTopup.extractedData as string);
+              recipient = verifyRecipient(parsedExtracted);
+            } catch {
+              recipient = undefined;
+            }
+          }
+
           return {
             topup,
             user,
             logs: logs || [],
+            ocrMeta: {
+              effectiveWindowMinutes: ocrConfig.maxTimeWindowMinutes,
+              minConfidence: ocrConfig.minConfidence,
+              duplicate,
+              fileIdentifierStatus,
+              recipient,
+              reviewReason: reviewReasonOverride ?? (rawTopup?.reviewReason as string | undefined),
+            },
           };
         }),
       approveTopup: adminProcedure
@@ -2724,6 +3111,38 @@ export const appRouter = router({
         .mutation(async ({ ctx, input }) => {
           return walletService.adminApproveWalletTopup(input.topupId, ctx.user.id);
         }),
+      /**
+       * Wallet equivalent of admin.orders.resolveLegacyCaseAmbiguity.
+       *
+       * Wallet auto-approval and normal wallet Approve both stop on a legacy
+       * case ambiguity, so wallet needs the same escape route - without it a
+       * legitimate top-up whose reference differs from a legacy alias only by
+       * case would be permanently unapprovable.
+       *
+       * Resolves ONLY the advisory ambiguity. It can never bypass
+       * DUPLICATE_REFERENCE / DUPLICATE_FILE / DUPLICATE_QR /
+       * NO_STRONG_IDENTIFIER: the exact atomic claim still runs inside the
+       * wallet crediting transaction.
+       */
+      resolveLegacyCaseAmbiguity: adminProcedure
+        .input(
+          z.object({
+            topupId: z.number().int().positive(),
+            decision: z.enum(["confirmed_distinct", "confirmed_duplicate"]),
+            reason: z.string().trim().min(10).max(1000),
+          })
+        )
+        .mutation(async ({ input, ctx }) => {
+          return resolveLegacyCaseAmbiguity({
+            subjectType: "wallet_topup",
+            subjectId: input.topupId,
+            adminUserId: ctx.user.id,
+            adminLabel: ctx.user.name || "Admin",
+            decision: input.decision,
+            reason: input.reason,
+          });
+        }),
+
       rejectTopup: adminProcedure
         .input(z.object({ topupId: z.number(), reason: z.string() }))
         .mutation(async ({ ctx, input }) => {

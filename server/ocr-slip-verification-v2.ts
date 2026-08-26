@@ -1,6 +1,20 @@
 import { invokeLLM, LLMInvokeError, type InvokeParams, type InvokeResult } from "./_core/llm";
 import crypto from "crypto";
 import { formatMoney } from "./helpers/moneyNormalizer";
+import {
+  buildSemanticFingerprint,
+  hashSlipReference,
+  normalizeOcrTextForParsing,
+  normalizeSlipReference,
+} from "./services/slipIdentifierService";
+import {
+  describeProviderFailure,
+  type ProviderDiagnostic,
+} from "./services/ocrDiagnosticsService";
+import {
+  effectiveFreshnessWindowMinutes,
+  isWithinFreshnessWindow,
+} from "@shared/slipFreshness";
 
 /**
  * OCR Slip Verification System — Production Hardened
@@ -31,7 +45,123 @@ const MERCHANT_CONFIG = {
   ],
   merchantCode: "KB000002283068",
   merchantTransactionCode: "KPS004KB000002283068",
+  /** Bill-payment slips (SCB/KTB) print this instead of a merchant code. */
+  billerId: "010753600031501",
 };
+
+export type RecipientEvidenceType =
+  | "merchant_transaction_code"
+  | "merchant_code"
+  | "biller_id"
+  | "shop_alias"
+  | "receiver_name"
+  | "insufficient";
+
+export type RecipientEvidenceStrength = "strong" | "fallback" | "none";
+
+export interface RecipientVerificationResult {
+  recipientVerified: boolean;
+  recipientEvidenceType: RecipientEvidenceType;
+  recipientEvidenceStrength: RecipientEvidenceStrength;
+}
+
+/**
+ * SERVER-SIDE recipient verification - the authority for whether the money
+ * actually reached IpeNovel.
+ *
+ * This deliberately lives beside verifySlipData rather than in the admin
+ * panel: the panel is a renderer, and a financial gate implemented only in
+ * client constants would let auto-approval proceed without ever proving the
+ * recipient. The UI now renders THIS result.
+ *
+ * Evidence is GRADED rather than requiring one identical field from every
+ * bank, because Thai banks genuinely print different things - a KBank
+ * transfer slip carries a receiver name and no merchant code, while an
+ * SCB/KTB bill-payment slip carries merchant/biller codes. Demanding a
+ * merchant code from every bank would reject legitimate transfers.
+ *
+ *   strong   - an exact match on merchantTransactionCode, merchantCode or
+ *              billerId. Unambiguous: these identify our merchant account.
+ *   fallback - an approved shop/receiver alias ("Ipe Novel"/"Ipenovel").
+ *              Documented, weaker, and sufficient only because plain
+ *              transfer slips expose nothing stronger.
+ *   none     - insufficient evidence -> RECIPIENT_NOT_VERIFIED -> review.
+ *
+ * Never rejects. Insufficient evidence routes to a human.
+ */
+export function verifyRecipient(extracted: ExtractedSlipData): RecipientVerificationResult {
+  if (extracted.merchantTransactionCode === MERCHANT_CONFIG.merchantTransactionCode) {
+    return {
+      recipientVerified: true,
+      recipientEvidenceType: "merchant_transaction_code",
+      recipientEvidenceStrength: "strong",
+    };
+  }
+
+  if (extracted.merchantCode === MERCHANT_CONFIG.merchantCode) {
+    return {
+      recipientVerified: true,
+      recipientEvidenceType: "merchant_code",
+      recipientEvidenceStrength: "strong",
+    };
+  }
+
+  if (extracted.receiverAccountOrId === MERCHANT_CONFIG.billerId) {
+    return {
+      recipientVerified: true,
+      recipientEvidenceType: "biller_id",
+      recipientEvidenceStrength: "strong",
+    };
+  }
+
+  // ── FIELD-BOUND, EXACT RECIPIENT IDENTITY ─────────────────────────────
+  // EXACT match against an explicit allowlist, never a substring.
+  //
+  // `includes(alias)` made this gate satisfiable by any value that merely
+  // CONTAINED an approved name: "Ipe Novel Fake", "Fake Ipe Novel" and
+  // "Ipe Novel Shop 2" all verified as the shop. Recipient verification
+  // participates in AUTO_APPROVE, so that was a financial authority bug -
+  // a transfer to a different recipient could fund an order.
+  //
+  // Normalization is limited to what OCR genuinely perturbs: Unicode form,
+  // surrounding whitespace, internal whitespace runs, and Latin case. It must
+  // never discard a prefix or a suffix, because that is precisely how an
+  // impostor value would be reshaped into an approved one.
+  const normalize = (value?: string) =>
+    (value ?? "").normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
+
+  const allowedIdentities = new Set(
+    MERCHANT_CONFIG.shopNameAliases.map(normalize).filter(Boolean)
+  );
+
+  const shopName = normalize(extracted.shopName);
+  if (shopName && allowedIdentities.has(shopName)) {
+    return {
+      recipientVerified: true,
+      recipientEvidenceType: "shop_alias",
+      recipientEvidenceStrength: "fallback",
+    };
+  }
+
+  const receiverName = normalize(extracted.receiverName);
+  if (receiverName && allowedIdentities.has(receiverName)) {
+    return {
+      recipientVerified: true,
+      recipientEvidenceType: "receiver_name",
+      recipientEvidenceStrength: "fallback",
+    };
+  }
+
+  // A bare mention of the shop somewhere in the OCR text is NOT recipient
+  // evidence - it can come from a note, a memo, the sender field, or a
+  // footer. It is carried for display only (see recipientRawTextMention) and
+  // deliberately cannot reach this point as verification.
+  return {
+    recipientVerified: false,
+    recipientEvidenceType: "insufficient",
+    recipientEvidenceStrength: "none",
+  };
+}
 
 // ─── Thai month mapping ───────────────────────────────────────────────────────
 const THAI_MONTHS: Record<string, number> = {
@@ -127,7 +257,22 @@ export interface ExtractedSlipData {
   amount?: number;
   transactionDate?: Date;
   transactionDateTime?: Date;
+  /** Upper-cased reference. Legacy contract - kept for existing rows/tests. */
   reference?: string;
+  /** Reference exactly as printed, original casing intact. For admin display. */
+  referenceRaw?: string;
+  /** Whitespace-stripped, case-preserving reference used for comparison. */
+  referenceNormalized?: string;
+  /** SHA-256 of referenceNormalized. STRONG anti-replay identifier. */
+  referenceHash?: string;
+  /** Coarse bank/account/amount/date hash. WEAK risk signal only, never proof. */
+  semanticFingerprint?: string;
+  /**
+   * False when neither the caller nor the model supplied a confidence.
+   * Unknown confidence MUST NOT auto-approve - see verifySlipData's
+   * UNKNOWN_CONFIDENCE gate.
+   */
+  confidenceKnown?: boolean;
   detectedBank?: string;
   detectedBankName?: string;
   shopName?: string;
@@ -136,6 +281,12 @@ export interface ExtractedSlipData {
   merchantCode?: string;
   merchantTransactionCode?: string;
   receiverAccountOrId?: string; // KBank receiver account or biller ID
+  /**
+   * DIAGNOSTIC ONLY. An approved shop alias appears somewhere in the OCR text
+   * without being bound to a recipient field. Never financial evidence - see
+   * detectRecipientRawTextMention.
+   */
+  recipientRawTextMention?: boolean;
   confidence?: number;
   visionConfidence?: number;
   structuredConfidence?: number;
@@ -161,6 +312,23 @@ export interface VerificationBreakdown {
   duplicateFingerprint: boolean;
   bankDetected: boolean;
   ocrConfidence: number;
+  /**
+   * How much the duplicate signal is actually worth. "weak" must never be
+   * presented to an admin as a confirmed duplicate.
+   */
+  duplicateEvidenceStrength?: "strong" | "weak";
+  /** SERVER-side proof the money reached IpeNovel. See verifyRecipient. */
+  recipientVerified?: boolean;
+  recipientEvidenceType?: RecipientEvidenceType;
+  recipientEvidenceStrength?: RecipientEvidenceStrength;
+  /** False when no confidence was reported at all (distinct from a low one). */
+  confidenceKnown?: boolean;
+  /**
+   * The allowance actually applied to THIS result - the configured window,
+   * or at least a day when only a calendar date could be read. Surfaced so
+   * the admin panel shows the number the server really judged against.
+   */
+  effectiveWindowMinutes?: number;
   finalDecision: "approved" | "pending_review";
   failureReason?: string;
 }
@@ -179,8 +347,22 @@ export interface VerificationResult {
 export interface ParseSlipImageResult {
   text: string;
   ocrConfidence: number;
+  /**
+   * False when the provider never reported a confidence. `ocrConfidence` is
+   * then 0 as a placeholder ONLY - it must not be read as "0% confident",
+   * and it must never satisfy an auto-approval threshold.
+   */
+  confidenceKnown?: boolean;
   warnings: string[];
   technicalError?: boolean; // true if OCR/LLM technical error occurred
+  /** Stable technical failure code (see OcrTechnicalFailureCode). */
+  technicalErrorCode?: string;
+  /**
+   * Sanitized provider metadata for the failure - HTTP status, runtime mode
+   * and attempt count only. Present whenever technicalError is true so the
+   * caller can record and display WHY, instead of "an OCR error occurred".
+   */
+  providerDiagnostic?: ProviderDiagnostic;
 }
 
 // ─── Fenced JSON parsing with trailing text support ────────────────────────────
@@ -268,6 +450,113 @@ function flattenObject(obj: any, prefix = ""): Record<string, any> {
   return result;
 }
 
+/**
+ * The ONLY container path segments that MAY carry FINANCIAL RECIPIENT
+ * AUTHORITY (biller ID, merchant code, merchant transaction code, shop /
+ * receiver name) - fields whose exact value can, on its own, satisfy
+ * recipient verification and permit auto-approval. Everything else is
+ * rejected by default (allowlist, not a blocklist): a suffix match on the
+ * TERMINAL key alone is not enough - `memo.biller_id`, `sender.receiver_name`,
+ * `foo.biller_id`, `debug.receiver_name`, `payload.merchant_code` would all
+ * satisfy a plain suffix match despite living under a container that has
+ * nothing established about the recipient. Trusting every container except a
+ * finite deny-list cannot close this: the set of possible unrelated
+ * container names is unbounded, so only a positive allowlist - grown ONLY
+ * from real, evidenced fixture shapes - keeps an arbitrary/unaudited path
+ * from becoming financial authority.
+ *
+ * Two distinct, evidenced categories, both verified against the real bank
+ * fixtures in server/ocr-slip-verification-v2.test.ts:
+ *
+ *   - GENERIC ENVELOPES: a container that wraps the ENTIRE parsed slip, not
+ *     a cherry-picked section - `extracted_text` (KBANK_NESTED_JSON_SAMPLE)
+ *     and `extracted_data` (KBANK_THAI_LABELS_SAMPLE). Trusting these adds
+ *     no risk: an attacker who controls the WHOLE OCR JSON already controls
+ *     every path in it, envelope or not - the envelope name itself carries
+ *     no additional claim of authenticity to exploit.
+ *   - EXPLICIT RECIPIENT SECTIONS: a container whose own name unambiguously
+ *     means "this is the recipient's information" - `ผู้รับ` (Thai
+ *     "recipient", KBANK_THAI_LABELS_SAMPLE) plus the English equivalents
+ *     (`receiver`/`recipient`/`payee`/`merchant`/`biller`) named directly in
+ *     this repo's own field vocabulary (`receiver_name`, `merchant_code`,
+ *     `biller_id`, ...). A container actually NAMED this way is unambiguous
+ *     positive evidence, unlike `sender`/`memo`/`note`/`metadata`/an
+ *     arbitrary unaudited name, which say nothing about the recipient (or,
+ *     for `sender`, actively contradict it).
+ *
+ * A path may chain ONLY through these two categories (e.g. the real
+ * `extracted_data.ผู้รับ.*` fixture: envelope then explicit section) - a
+ * SINGLE untrusted segment anywhere in the path, however deep, still
+ * rejects the whole key. If a future supported fixture needs a genuinely
+ * new container, add it here with the SAME evidence bar (a real fixture in
+ * this test file) - never widen this by guessing.
+ */
+const RECIPIENT_TRUSTED_CONTAINERS = new Set([
+  "extracted_text",
+  "extracted_data",
+  "ผู้รับ",
+  "receiver",
+  "recipient",
+  "payee",
+  "merchant",
+  "biller",
+]);
+
+/**
+ * Restricted to keys whose full path chains ONLY through trusted containers
+ * - for FINANCIAL RECIPIENT AUTHORITY lookups only (see
+ * RECIPIENT_TRUSTED_CONTAINERS).
+ *
+ * A ROOT-level key (no container at all) is always container-trusted; a
+ * nested key is container-trusted only when EVERY intermediate segment is
+ * itself an allowlisted container. This is a positive allowlist, not a
+ * denylist: an unaudited container name (`foo`, `debug`, `payload`,
+ * `customer`, ...) is rejected by default, exactly like a known-adversarial
+ * one (`sender`, `memo`).
+ */
+function isRecipientTrustedContainerPath(key: string): boolean {
+  const segments = key.split(".");
+  segments.pop(); // the terminal key itself carries no container risk
+  return segments.every((s) => RECIPIENT_TRUSTED_CONTAINERS.has(s.toLowerCase()));
+}
+
+/**
+ * FINANCIAL RECIPIENT AUTHORITY lookup - EXACT approved field paths only.
+ *
+ * Deliberately NOT a suffix or substring match, unlike getFieldBySuffixMatch:
+ * a root-level key is NOT automatically trusted merely for being at the
+ * root - `sender_biller_id` and `memo_merchant_code` are both root-level
+ * (no `.` at all) and both END WITH an authoritative suffix, so the earlier
+ * endsWith-based check accepted them as if they were the real `biller_id`/
+ * `merchant_code` field. The terminal key must equal one of `exactKeys`
+ * CHARACTER FOR CHARACTER - a prefixed, suffixed, or otherwise decorated
+ * variant of a real field name is a DIFFERENT field, not the same field
+ * merely spelled differently, and must fail.
+ *
+ * `exactKeys` is a closed, repository-evidenced list (see the call sites):
+ * every entry is a literal key this file's own real bank fixtures use for
+ * this piece of data (server/ocr-slip-verification-v2.test.ts). A container
+ * check (see isRecipientTrustedContainerPath) still applies on top of the
+ * exact terminal match, so `memo.biller_id` fails on the container even
+ * though `biller_id` alone is an approved terminal key.
+ */
+function getRecipientFieldByExactPath(
+  flattened: Record<string, any>,
+  exactKeys: string[]
+): any {
+  for (const exactKey of exactKeys) {
+    for (const key in flattened) {
+      const segments = key.split(".");
+      const terminal = segments[segments.length - 1];
+      if (terminal === exactKey && isRecipientTrustedContainerPath(key)) {
+        return flattened[key];
+      }
+    }
+  }
+
+  return undefined;
+}
+
 function getFieldBySuffixMatch(flattened: Record<string, any>, suffixes: string[]): any {
   // Try exact suffix match first
   for (const suffix of suffixes) {
@@ -303,30 +592,63 @@ function getFieldBySuffixMatch(flattened: Record<string, any>, suffixes: string[
   return undefined;
 }
 
-function extractOcrConfidence(text: string): number {
+/**
+ * Parses a self-reported OCR confidence out of the model's text.
+ *
+ * Returns `undefined` when NO confidence statement is present. That is a
+ * meaningfully different state from "0%" and callers must keep it distinct:
+ * an unknown confidence must route to review (UNKNOWN_CONFIDENCE), never be
+ * back-filled with an invented number. See parseSlipImage(), which used to
+ * substitute a hard-coded 85 here.
+ *
+ * The label alternation covers every phrasing observed from the provider:
+ * "OCR Confidence Score", "Estimated OCR Confidence" and "OCR Confidence
+ * Estimation", each in both `99%` and `99/100` forms, with or without
+ * markdown emphasis around the label or the value.
+ */
+export function parseOcrConfidence(text: string): number | undefined {
+  if (!text) return undefined;
+
+  // Markdown emphasis is stripped first so a single label alternation covers
+  // "**OCR Confidence Score:** 99%" and "OCR Confidence Score: 99%" alike.
+  const flat = text.replace(/[*_`]+/g, "");
+
+  const label = String.raw`(?:Estimated\s*OCR\s*Confidence(?:\s*(?:Score|Estimation))?|OCR\s*Confidence\s*(?:Score|Estimation|Level)?|OCR[_\s]*Confidence[_\s]*Score)`;
+
   const patterns = [
-    /\*\*OCR\s*Confidence\s*Score\s*:\s*\*\*\s*(\d+)\/100/i,
-    /\*\*OCR\s*Confidence\s*Score\s*:\s*\*\*\s*(\d+)/i,
-    /OCR\s*Confidence\s*Score\s*:\s*(\d+)\s*\/\s*100/i,
-    /OCR\s*Confidence\s*Score\s*:\s*(\d+)/i,
-    /"ocr_confidence"\s*:\s*(\d+)/i,
-    /ocr_confidence\s*[:=]\s*(\d+)/i,
-    /"OCR_Confidence_Score"\s*:\s*(\d+)/i,
-    /OCR_Confidence_Score\s*[:=]\s*(\d+)/i,
-    /confidence\s*[:=]\s*(\d+)/i,
+    // "<label>: 99/100" - the /100 form must be tried before the bare form
+    // so the denominator is never mistaken for the score.
+    new RegExp(String.raw`${label}\s*[:=]?\s*(\d{1,3})\s*/\s*100`, "i"),
+    // "<label>: 99%" / "<label>: 99"
+    new RegExp(String.raw`${label}\s*[:=]?\s*(\d{1,3})\s*%?`, "i"),
+    // JSON-ish shapes emitted inside the fenced block.
+    /"?ocr[_\s]*confidence(?:[_\s]*score)?"?\s*[:=]\s*"?(\d{1,3})\s*\/\s*100"?/i,
+    /"?ocr[_\s]*confidence(?:[_\s]*score)?"?\s*[:=]\s*"?(\d{1,3})"?/i,
+    /"?confidence"?\s*[:=]\s*"?(\d{1,3})\s*\/\s*100"?/i,
+    /"?confidence"?\s*[:=]\s*"?(\d{1,3})\s*%/i,
+    /"?confidence"?\s*[:=]\s*"?(\d{1,3})"?/i,
   ];
 
   for (const pattern of patterns) {
-    const match = text.match(pattern);
+    const match = flat.match(pattern);
     if (match?.[1]) {
-      const parsed = parseInt(match[1]);
+      const parsed = parseInt(match[1], 10);
       if (!isNaN(parsed) && parsed >= 0 && parsed <= 100) {
         return parsed;
       }
     }
   }
 
-  return 0;
+  return undefined;
+}
+
+/**
+ * Backward-compatible wrapper: existing callers that need a plain number
+ * still get 0 for "not stated". New code should prefer parseOcrConfidence()
+ * so it can tell "unknown" apart from a genuine zero.
+ */
+function extractOcrConfidence(text: string): number {
+  return parseOcrConfidence(text) ?? 0;
 }
 
 function extractAmount(flattened: Record<string, any>, text: string): number | undefined {
@@ -385,13 +707,50 @@ function extractAmount(flattened: Record<string, any>, text: string): number | u
   return undefined;
 }
 
-function extractReference(flattened: Record<string, any>, text: string): string | undefined {
+/**
+ * Thai/English labels that introduce a real BANK TRANSACTION REFERENCE.
+ *
+ * `เลขที่รายการ` / `เลขรายการ` are included because KBank prints the
+ * transaction reference under exactly that label (e.g.
+ * `เลขที่รายการ: 016234222922AQR05745`). Their absence here is what produced
+ * a false MISSING_REFERENCE on otherwise perfectly readable KBank slips.
+ *
+ * Deliberately EXCLUDES receiver-account/biller labels. A KBank bill-payment
+ * slip also carries a receiver id such as `202608223588503`, and silently
+ * promoting that to "the transaction reference" would give two different
+ * transfers to the same merchant the same identifier - the exact false-match
+ * class the strong/weak split exists to prevent. Receiver ids are captured
+ * separately by extractBillerId().
+ */
+const REFERENCE_LABEL_PATTERN = String.raw`(?:เลขที่รายการ|เลขรายการ|เลขที่อ้างอิง|เลขอ้างอิง|รหัสอ้างอิง|หมายเลขอ้างอิง|รหัสรายการ|Transaction\s*(?:ID|Reference|No\.?|Number)|Reference\s*(?:No\.?|Number|Code|#)?|Ref\.?(?:\s*No\.?)?|Txn\s*(?:ID|Code|No\.?)?)`;
+
+/**
+ * Reference token charset.
+ *
+ * Case-SENSITIVE on purpose: SCB emits mixed-case references such as
+ * `202608225ApOyxElgdOo7YVwv`, so the raw casing must survive extraction to
+ * be shown to an admin and to be normalized/hashed without collisions. The
+ * legacy `.toUpperCase()` applied here is preserved for the returned
+ * `reference` field only (see extractSlipData, which also records the
+ * untouched raw value).
+ */
+const REFERENCE_TOKEN = String.raw`([A-Za-z0-9][A-Za-z0-9\-/]{3,63})`;
+
+/**
+ * Extracts the RAW transaction reference exactly as printed - original
+ * casing preserved, no upper-casing. Callers decide how to normalize.
+ */
+export function extractReferenceRaw(
+  flattened: Record<string, any>,
+  text: string
+): string | undefined {
   let refVal = getFieldBySuffixMatch(flattened, [
     "transaction_id_or_reference_number.value",
     "transaction_id_or_reference_number",
     "reference",
     "reference_number",
     "เลขที่รายการ",
+    "เลขรายการ",
     "รหัสรายการ",
     "รหัสอ้างอิง",
     "หมายเลขอ้างอิง",
@@ -403,36 +762,27 @@ function extractReference(flattened: Record<string, any>, text: string): string 
     if (typeof refVal === "object" && refVal !== null && "value" in refVal) {
       refVal = refVal.value;
     }
-    const val = String(refVal).trim().toUpperCase();
+    const val = String(refVal).trim();
     if (val.length >= 4) return val;
   }
 
-  // Fallback to regex
+  // Regex fallback over the raw text. Two passes: an explicit separator
+  // (`:` / `：` / `-` / `=`) first, then the "label on one line, value on the
+  // next" layout, so a labelled value is always preferred over a positional
+  // guess.
   const patterns = [
-    // Reference with colon separator
-    /เลขที่อ้างอิง\s*[:：]\s*([A-Z0-9]+)/i,
-    /หมายเลขอ้างอิง\s*[:：]\s*([A-Z0-9]+)/i,
-    /เลขที่รายการ\s*[:：]\s*([A-Z0-9]+)/i,
-    /รหัสรายการ\s*[:：]\s*([A-Z0-9]+)/i,
-    /รหัสอ้างอิง\s*[:：]\s*([A-Z0-9]+)/i,
-    /reference\s*(?:number|#|code)?\s*[:：]\s*([A-Z0-9]+)/i,
-    /ref\s*[:：]\s*([A-Z0-9]+)/i,
-    /transaction\s*id\s*[:：]\s*([A-Z0-9]+)/i,
-    /txn\s*(?:id|code)?\s*[:：]\s*([A-Z0-9]+)/i,
-    // KTB/BAY/GSB newline patterns: label on one line, value on next
-    /เลขที่อ้างอิง[\s\n]+([A-Z0-9]+)/i,
-    /หมายเลขอ้างอิง[\s\n]+([A-Z0-9]+)/i,
-    /เลขที่รายการ[\s\n]+([A-Z0-9]+)/i,
-    /รหัสรายการ[\s\n]+([A-Z0-9]+)/i,
-    /รหัสอ้างอิง[\s\n]+([A-Z0-9]+)/i,
-    /reference\s*(?:number|#|code)?[\s\n]+([A-Z0-9]+)/i,
-    /transaction\s*id[\s\n]+([A-Z0-9]+)/i,
+    new RegExp(
+      String.raw`${REFERENCE_LABEL_PATTERN}\s*[:：=-]\s*${REFERENCE_TOKEN}`,
+      "i"
+    ),
+    new RegExp(String.raw`${REFERENCE_LABEL_PATTERN}[ \t]*\n[ \t]*${REFERENCE_TOKEN}`, "i"),
+    new RegExp(String.raw`${REFERENCE_LABEL_PATTERN}\s+${REFERENCE_TOKEN}`, "i"),
   ];
 
   for (const pattern of patterns) {
     const match = text.match(pattern);
     if (match?.[1]) {
-      const extracted = match[1].trim().toUpperCase();
+      const extracted = match[1].trim().replace(/[.,;]+$/, "");
       if (extracted.length >= 4) return extracted;
     }
   }
@@ -440,10 +790,22 @@ function extractReference(flattened: Record<string, any>, text: string): string 
   return undefined;
 }
 
+function extractReference(flattened: Record<string, any>, text: string): string | undefined {
+  const raw = extractReferenceRaw(flattened, text);
+  // Legacy contract: the `reference` field has always been upper-cased, and
+  // historical rows/tests depend on that. The untouched value is surfaced
+  // separately as `referenceRaw`.
+  return raw ? raw.toUpperCase() : undefined;
+}
+
 function extractShopName(flattened: Record<string, any>, text: string): string | undefined {
-  let shopVal = getFieldBySuffixMatch(flattened, [
+  let shopVal = getRecipientFieldByExactPath(flattened, [
     "receiver_shop_name",
     "ชื่อร้านค้า_หรือ_ชื่อผู้รับ",
+    // Real KBANK_SIMPLE_SAMPLE fixture spelling - spaces/slash, not
+    // underscores. A DIFFERENT literal key from the line above, not a fuzzy
+    // match of it.
+    "ชื่อร้านค้า / ชื่อผู้รับ",
     "ชื่อร้านค้า",
     "receiver_name",
     "ผู้รับ",
@@ -460,18 +822,25 @@ function extractShopName(flattened: Record<string, any>, text: string): string |
     if (val.length > 2) return val;
   }
 
-  // Fallback to regex
+  // Fallback to regex - EVERY pattern below must be an explicit
+  // receiver/payee-bound label. Generic labels such as "ชื่อ:" (bare
+  // "name:"), "shop name:", "merchant name:", "ร้านค้า:" and "shop:" were
+  // removed here (IPE-001 P1-B): none of them prove the value is bound to
+  // the RECIPIENT - a sender field, a memo, or an unrelated section can
+  // carry the exact same label text. Their extracted value could then match
+  // the approved-alias allowlist exactly and satisfy recipient verification
+  // for a transfer to someone else. No real fixture in this repo depends on
+  // any of the removed labels (audited: server/ocr-slip-e2e.test.ts,
+  // server/ocr-slip-hardening.test.ts, server/ocr-slip-integration.test.ts,
+  // server/ocr-slip-verification-v2.test.ts all use the explicit
+  // "ชื่อร้านค้า:" label, never the bare generic ones). A raw-text mention
+  // via one of the removed labels is still visible to an admin through
+  // detectRecipientRawTextMention() - diagnostic only, no authority.
   const patterns = [
     /ชื่อร้านค้า\s*[:：]\s*([^\n]+)/i,
-    /ชื่อ\s*[:：]\s*([^\n]+)/i,
-    /shop\s*name\s*[:：]\s*([^\n]+)/i,
-    /merchant\s*name\s*[:：]\s*([^\n]+)/i,
-    /(?<!รหัส)ร้านค้า\s*[:：]\s*([^\n]+)/i,
-    /shop\s*[:：]\s*([^\n]+)/i,
     /ชื่อผู้รับ\s*[:：]\s*([^\n]+)/i,
     /ผู้รับ\s*[:：]\s*([^\n]+)/i,
     /receiver\s*[:：]\s*([^\n]+)/i,
-    /to\s*[:：]\s*([^\n]+)/i,
   ];
 
   for (const pattern of patterns) {
@@ -482,14 +851,34 @@ function extractShopName(flattened: Record<string, any>, text: string): string |
     }
   }
 
-  // Fallback: Check if any merchant alias appears in the text
-  for (const alias of MERCHANT_CONFIG.shopNameAliases) {
-    if (text.includes(alias)) {
-      return "Ipe Novel"; // Normalize to canonical name
-    }
-  }
-
+  // NO WHOLE-TEXT FALLBACK.
+  //
+  // This function previously scanned the ENTIRE OCR text for an approved
+  // alias and, on a hit, returned the canonical "Ipe Novel" - synthesizing a
+  // recipient identity from text that may have been a note, a memo, the
+  // SENDER field, or an unrelated footer. verifyRecipient then matched that
+  // synthesized value exactly and marked the recipient verified, so a
+  // transfer to someone else could satisfy a financial gate and auto-approve.
+  //
+  // A shop name is only recipient evidence when it came from a recipient
+  // field. Raw-text mentions are surfaced separately by
+  // detectRecipientRawTextMention() for display, and carry no authority.
   return undefined;
+}
+
+/**
+ * DIAGNOSTIC ONLY - never financial evidence.
+ *
+ * True when an approved shop alias appears anywhere in the OCR text without
+ * being bound to a recipient field. Useful to an admin ("the shop is
+ * mentioned, but not as the recipient"), and deliberately incapable of
+ * setting recipientVerified or making a slip auto-approvable.
+ */
+export function detectRecipientRawTextMention(text: string): boolean {
+  const haystack = (text ?? "").normalize("NFKC").toLowerCase();
+  return MERCHANT_CONFIG.shopNameAliases.some((alias) =>
+    haystack.includes(alias.normalize("NFKC").toLowerCase())
+  );
 }
 
 function extractMaskedAccount(flattened: Record<string, any>, text: string): string | undefined {
@@ -526,7 +915,7 @@ function extractMaskedAccount(flattened: Record<string, any>, text: string): str
 }
 
 function extractMerchantCode(flattened: Record<string, any>, text: string): string | undefined {
-  let codeVal = getFieldBySuffixMatch(flattened, [
+  let codeVal = getRecipientFieldByExactPath(flattened, [
     "merchant_code",
     "รหัสร้านค้า",
     "merchantCode",
@@ -536,11 +925,21 @@ function extractMerchantCode(flattened: Record<string, any>, text: string): stri
     return String(codeVal).trim();
   }
 
+  // LABEL-BOUND ONLY. This used to end with an unanchored whole-text
+  // fallback (`/([A-Z]{2}\d{12})/`, later bounded to `/(?<![A-Z0-9])([A-Z]{2}\d{12})(?![A-Z0-9])/`
+  // to stop it matching a substring out of a longer garbage token). Bounding
+  // fixed WHICH substring gets read, but not WHERE it may come from: an
+  // exact, correctly-formatted merchant code is STRONG recipient evidence
+  // (sufficient for auto-approval), so a value merely appearing somewhere in
+  // the OCR text - a memo, a sender field, unrelated footer text - must not
+  // be accepted as proof the money reached this merchant. Removed
+  // entirely (empirically verified against every real KBank/SCB/Krungthai
+  // fixture in this repo with zero regressions): a merchant code is only
+  // ever read from an explicit field/label.
   const patterns = [
     /รหัสร้านค้า\s*[:：]\s*([A-Z0-9]+)/i,
     /merchant\s*code\s*[:：]\s*([A-Z0-9]+)/i,
     /merchant\s*id\s*[:：]\s*([A-Z0-9]+)/i,
-    /([A-Z]{2}\d{12})/,
   ];
 
   for (const pattern of patterns) {
@@ -552,7 +951,7 @@ function extractMerchantCode(flattened: Record<string, any>, text: string): stri
 }
 
 function extractMerchantTransactionCode(flattened: Record<string, any>, text: string): string | undefined {
-  let txnCodeVal = getFieldBySuffixMatch(flattened, [
+  let txnCodeVal = getRecipientFieldByExactPath(flattened, [
     "transaction_code",
     "รหัสธุรกรรม",
     "merchantTransactionCode",
@@ -574,11 +973,17 @@ function extractMerchantTransactionCode(flattened: Record<string, any>, text: st
     if (combined.length >= 10) return combined;
   }
 
+  // LABEL-BOUND ONLY - see extractMerchantCode's identical reasoning above.
+  // The removed unlabeled fallback (`/([A-Z]{3}\d{3}[A-Z]{2}\d{12})/`) is a
+  // very specific 20-character shape, but specificity of FORMAT is not the
+  // same as trustworthiness of ORIGIN: nothing stopped that exact string
+  // from being read out of a memo or unrelated text rather than the
+  // transaction-code field. Empirically verified against every real
+  // KBank/SCB/Krungthai fixture in this repo with zero regressions.
   const patterns = [
     /รหัสธุรกรรม\s*[:：]\s*([A-Z0-9]+)/i,
     /transaction\s*code\s*[:：]\s*([A-Z0-9]+)/i,
     /ref\s*code\s*[:：]\s*([A-Z0-9]+)/i,
-    /([A-Z]{3}\d{3}[A-Z]{2}\d{12})/,
   ];
 
   for (const pattern of patterns) {
@@ -590,7 +995,7 @@ function extractMerchantTransactionCode(flattened: Record<string, any>, text: st
 }
 
 function extractBillerId(flattened: Record<string, any>, text: string): string | undefined {
-  let receiverAccountOrIdVal = getFieldBySuffixMatch(flattened, [
+  let receiverAccountOrIdVal = getRecipientFieldByExactPath(flattened, [
     "biller_id",
     "receiverAccountOrId",
     "รหัสบิลเลอร์",
@@ -601,11 +1006,23 @@ function extractBillerId(flattened: Record<string, any>, text: string): string |
     return String(receiverAccountOrIdVal).trim();
   }
 
+  // LABEL-BOUND ONLY. This used to end with `/([0-9]{12,15})/` - ANY
+  // 12-15 digit run anywhere in the OCR text, unlabeled. Because an exact
+  // Biller ID match is STRONG recipient evidence (sufficient for
+  // auto-approval on its own), evidence ORIGIN matters as much as evidence
+  // VALUE: a transfer to a DIFFERENT recipient could auto-approve merely
+  // because our biller ID digits happened to appear in a memo, a sender
+  // field, or unrelated footer text - the same class of bug already fixed
+  // for the shop-name alias (whole-text synthesis) and the merchant code
+  // (now also label-bound, above). `บิลเลอร์ ID` (Thai "บิลเลอร์" + Latin
+  // "ID") is a real SCB label variant neither of the two patterns below
+  // recognized on its own - added rather than left to fall through to the
+  // removed unlabeled scan, which is what silently covered it before.
   const patterns = [
     /รหัสบิลเลอร์\s*[:：]\s*([0-9]+)/i,
+    /บิลเลอร์\s*id\s*[:：]\s*([0-9]+)/i,
     /biller\s*id\s*[:：]\s*([0-9]+)/i,
     /biller_id\s*[:：]\s*([0-9]+)/i,
-    /([0-9]{12,15})/,
   ];
 
   for (const pattern of patterns) {
@@ -914,19 +1331,32 @@ export function extractSlipData(ocrText: string, visionConfidence?: number): Ext
   // Extract JSON and confidence from fenced text
   const jsonResult = extractJsonFromText(ocrText);
   const flattened = jsonResult ? flattenObject(jsonResult.json) : {};
-  const extractedConfidence = jsonResult?.confidence ?? extractOcrConfidence(ocrText);
+  // `undefined` here means the model never stated a confidence at all. That
+  // is preserved (never coerced to a number) so verifySlipData can raise
+  // UNKNOWN_CONFIDENCE instead of auto-approving on an invented value.
+  const statedConfidence = parseOcrConfidence(ocrText);
 
-  const text = normalizeThaiNumerals(ocrText);
+  // Markdown emphasis/bullets/headings are stripped BEFORE field parsing.
+  // A real SCB slip renders its amount as "**จำนวนเงิน**\n100.00", which the
+  // label patterns could not match across the trailing `**` - producing a
+  // false MISSING_AMOUNT on a slip whose text was read perfectly. Only
+  // formatting markers are removed; digits, separators and reference tokens
+  // are untouched (see normalizeOcrTextForParsing).
+  const text = normalizeOcrTextForParsing(normalizeThaiNumerals(ocrText));
 
   const amount = extractAmount(flattened, text);
   const transactionDateResult = extractTransactionDate(flattened, text);
   const { date: transactionDate, dateTime: transactionDateTime } = transactionDateResult || {};
   const reference = extractReference(flattened, text);
+  const referenceRaw = extractReferenceRaw(flattened, text);
   const shopName = extractShopName(flattened, text);
   const maskedAccount = extractMaskedAccount(flattened, text);
   const merchantCode = extractMerchantCode(flattened, text);
   const merchantTransactionCode = extractMerchantTransactionCode(flattened, text);
   const receiverAccountOrId = extractBillerId(flattened, text);
+  // Presentation only. Deliberately NOT fed into shopName/receiverName, which
+  // are the fields verifyRecipient treats as authority.
+  const recipientRawTextMention = detectRecipientRawTextMention(text);
   const { code: detectedBank, name: detectedBankName } = detectBank(flattened, text);
 
   // ─── Confidence scoring ─────────────────────────────────────────────────
@@ -942,9 +1372,17 @@ export function extractSlipData(ocrText: string, visionConfidence?: number): Ext
   if (maskedAccount) structuredConfidence += 5;
   structuredConfidence = Math.min(structuredConfidence, 100);
 
+  // A confidence is "known" only if the caller supplied a real vision score
+  // or the model actually stated one. When neither exists the score below is
+  // still computed (so the structured signal is visible to an admin), but
+  // `confidenceKnown: false` travels with it and blocks auto-approval.
+  const effectiveVisionConfidence =
+    typeof visionConfidence === "number" ? visionConfidence : statedConfidence;
+  const confidenceKnown = typeof effectiveVisionConfidence === "number";
+
   const normalizedVisionConfidence = Math.max(
     0,
-    Math.min(100, typeof visionConfidence === "number" ? visionConfidence : extractedConfidence)
+    Math.min(100, effectiveVisionConfidence ?? 0)
   );
 
   const finalConfidence = Math.round(
@@ -952,10 +1390,20 @@ export function extractSlipData(ocrText: string, visionConfidence?: number): Ext
   );
 
   return {
+    recipientRawTextMention,
     amount,
     transactionDate,
     transactionDateTime,
     reference,
+    referenceRaw,
+    referenceNormalized: normalizeSlipReference(referenceRaw),
+    referenceHash: hashSlipReference(referenceRaw),
+    semanticFingerprint: buildSemanticFingerprint({
+      detectedBank,
+      maskedAccount,
+      amount,
+      transactionDate,
+    }),
     detectedBank,
     detectedBankName,
     receiverAccountOrId,
@@ -964,6 +1412,7 @@ export function extractSlipData(ocrText: string, visionConfidence?: number): Ext
     merchantCode,
     merchantTransactionCode,
     confidence: finalConfidence,
+    confidenceKnown,
     visionConfidence: normalizedVisionConfidence,
     structuredConfidence,
     finalConfidence,
@@ -1030,6 +1479,7 @@ export function verifySlipData(
     duplicateFingerprint: false,
     bankDetected: !!extracted.detectedBank,
     ocrConfidence: extracted.confidence ?? 0,
+    confidenceKnown: extracted.confidenceKnown !== false,
     finalDecision: "pending_review",
   };
 
@@ -1088,22 +1538,21 @@ export function verifySlipData(
   const transactionTime = (extracted.transactionDateTime ?? extracted.transactionDate)!.getTime();
   const verificationTime = (context.slipSubmittedAt ?? context.paymentCreatedAt).getTime();
   const timeDiffMs = verificationTime - transactionTime;
-  const clockSkewMs = 5 * 60 * 1000;
+  const timeDiffMinutes = timeDiffMs / 60000;
 
-  const safeMaxWindowMinutes = Number.isFinite(maxTimeWindowMinutes)
-    ? Math.max(5, maxTimeWindowMinutes)
-    : 120;
+  // The allowance now comes from the SHARED rule in shared/slipFreshness.ts,
+  // which the admin panel imports too. Previously this date-only floor lived
+  // only here, so the panel judged a date-only slip against the configured
+  // window and displayed FAIL for slips the server had accepted.
+  const effectiveWindowMinutes = effectiveFreshnessWindowMinutes(
+    maxTimeWindowMinutes,
+    Boolean(extracted.transactionDateTime)
+  );
+  breakdown.effectiveWindowMinutes = effectiveWindowMinutes;
 
-  let maxAgeMs: number;
-  if (extracted.transactionDateTime) {
-    maxAgeMs = safeMaxWindowMinutes * 60 * 1000;
-  } else {
-    maxAgeMs = Math.max(safeMaxWindowMinutes, 24 * 60) * 60 * 1000;
-  }
-
-  if (timeDiffMs > maxAgeMs || timeDiffMs < -clockSkewMs) {
+  if (!isWithinFreshnessWindow(timeDiffMinutes, effectiveWindowMinutes)) {
     result.reviewReason = "TRANSACTION_OUTSIDE_TIME_WINDOW";
-    breakdown.failureReason = `Transaction outside time window: ${timeDiffMs}ms (max: ${maxAgeMs}ms)`;
+    breakdown.failureReason = `Transaction outside time window: ${Math.round(timeDiffMinutes)} min (allowed: ${effectiveWindowMinutes} min)`;
     return result;
   }
   breakdown.dateWithinWindow = true;
@@ -1118,18 +1567,62 @@ export function verifySlipData(
   if (existingReferences.has(extracted.reference)) {
     result.reviewReason = "DUPLICATE_REFERENCE";
     breakdown.duplicateReference = true;
+    breakdown.duplicateEvidenceStrength = "strong";
     breakdown.failureReason = "Reference already used in another payment";
     return result;
   }
 
+  // WEAK evidence only.
+  //
+  // This fingerprint's fallback branch hashes bank|account|amount|date, so a
+  // customer legitimately transferring 100 THB twice from one account on one
+  // day collides with themselves. It is therefore recorded as a RISK SIGNAL
+  // that routes to human review - never reported as a confirmed duplicate,
+  // and never used to block financial value on its own. Strong proof comes
+  // only from referenceHash / fileHash / qrPayloadHash via the claim
+  // registry (see slipClaimService).
   if (existingFingerprints.has(fingerprint)) {
-    result.reviewReason = "DUPLICATE_FINGERPRINT";
+    result.reviewReason = "WEAK_DUPLICATE_RISK";
     breakdown.duplicateFingerprint = true;
-    breakdown.failureReason = "Duplicate payment detected (fingerprint match)";
+    breakdown.duplicateEvidenceStrength = "weak";
+    breakdown.failureReason =
+      "Possible duplicate only - same bank, account, amount and date as an earlier " +
+      "submission. NOT proof of a duplicate transaction; needs human review.";
+    return result;
+  }
+
+  // ===== RECIPIENT GATE =====================================================
+
+  // Proves the money actually reached IpeNovel before any auto-approval.
+  // Previously nothing on the server checked this: a slip could match on
+  // amount, date and reference while having been paid to someone else
+  // entirely, and only the admin panel described the recipient - too late
+  // to stop auto-approval.
+  const recipient = verifyRecipient(extracted);
+  breakdown.recipientVerified = recipient.recipientVerified;
+  breakdown.recipientEvidenceType = recipient.recipientEvidenceType;
+  breakdown.recipientEvidenceStrength = recipient.recipientEvidenceStrength;
+
+  if (!recipient.recipientVerified) {
+    result.reviewReason = "RECIPIENT_NOT_VERIFIED";
+    breakdown.failureReason =
+      "Could not confirm from the slip that this payment was made to IpeNovel " +
+      "(no matching merchant code, biller ID, or approved shop/receiver name).";
     return result;
   }
 
   // ===== CONFIDENCE AND STRUCTURED DATA GATE ================================
+
+  // Unknown != low. A slip whose confidence was never reported has no
+  // evidence of quality at all, so it can never satisfy the threshold - and
+  // must not be silently treated as 0% "low" either, because the two need
+  // different admin explanations.
+  if (extracted.confidenceKnown === false) {
+    result.reviewReason = "UNKNOWN_CONFIDENCE";
+    breakdown.failureReason =
+      "OCR confidence was not reported by the provider - cannot auto-approve without it";
+    return result;
+  }
 
   if ((extracted.confidence ?? 0) < minConfidence) {
     result.reviewReason = "LOW_CONFIDENCE";
@@ -1201,10 +1694,13 @@ export interface ParseSlipImageDeps {
 async function invokeLLMWithOcrRetry(
   params: InvokeParams,
   invokeLLMFn: InvokeLLMFn,
-  sleepFn: SleepFn
+  sleepFn: SleepFn,
+  /** Mutated so the caller learns how many provider calls actually happened. */
+  attemptCounter?: { count: number }
 ): Promise<InvokeResult> {
   for (let attempt = 1; attempt <= MAX_LLM_ATTEMPTS; attempt++) {
     try {
+      if (attemptCounter) attemptCounter.count = attempt;
       return await invokeLLMFn(params);
     } catch (error) {
       const isRetryableTransientFailure =
@@ -1234,6 +1730,10 @@ export async function parseSlipImage(
 ): Promise<ParseSlipImageResult> {
   const invokeLLMFn = deps.invokeLLMFn ?? invokeLLM;
   const sleepFn = deps.sleepFn ?? defaultSleep;
+  // Tracks how many provider invocations actually occurred so a
+  // 503-after-3-retries can be told apart from a single blip. Without this
+  // the caller could only ever report "one unspecified attempt".
+  const attemptCounter = { count: 0 };
   try {
     const response = await invokeLLMWithOcrRetry({
       messages: [
@@ -1270,7 +1770,7 @@ Do NOT translate or interpret — just extract the raw text.`,
           ],
         },
       ],
-    }, invokeLLMFn, sleepFn);
+    }, invokeLLMFn, sleepFn, attemptCounter);
 
     const content = response.choices[0]?.message?.content;
     if (typeof content !== "string") {
@@ -1281,14 +1781,22 @@ Do NOT translate or interpret — just extract the raw text.`,
       };
     }
 
-    // Extract OCR confidence using improved parser
-    let ocrConfidence = extractOcrConfidence(content);
-    if (ocrConfidence === 0) {
-      ocrConfidence = 85; // Default reasonable confidence
-    }
+    // Extract OCR confidence. `undefined` means the model never stated one.
+    //
+    // This previously substituted a hard-coded 85 whenever parsing failed,
+    // which manufactured a passing score out of nothing: an unreadable slip
+    // could clear the >=85 auto-approval gate purely because the provider
+    // omitted a confidence line. Unknown now stays unknown and travels as
+    // confidenceKnown:false, which verifySlipData turns into
+    // UNKNOWN_CONFIDENCE -> manual review.
+    const statedConfidence = parseOcrConfidence(content);
+    const confidenceKnown = statedConfidence !== undefined;
+    const ocrConfidence = statedConfidence ?? 0;
 
     const warnings: string[] = [];
-    if (ocrConfidence < 70) {
+    if (!confidenceKnown) {
+      warnings.push("OCR confidence not reported by provider - manual review required");
+    } else if (ocrConfidence < 70) {
       warnings.push("Low OCR confidence - manual review recommended");
     }
     if (content.length < 50) {
@@ -1298,15 +1806,37 @@ Do NOT translate or interpret — just extract the raw text.`,
     return {
       text: content,
       ocrConfidence,
+      confidenceKnown,
       warnings,
     };
   } catch (error) {
-    console.error("[OCR] Error parsing slip image:", error);
+    // Sanitized provider metadata is preserved instead of being flattened to
+    // a bare `technicalError: true`. Previously an LLMInvokeError's HTTP
+    // status, runtime mode and retry count were all discarded here, so every
+    // failure - a 503 after three retries, a 401 misconfiguration, a rate
+    // limit - was reported and recorded identically as one unspecified
+    // error, and an admin could not tell a provider outage from a bad slip.
+    //
+    // describeProviderFailure returns only a fixed code, an HTTP status, a
+    // runtime mode and an attempt count. It never carries the endpoint, the
+    // API key, an Authorization header, the upstream body, a signed URL, or
+    // base64 image data - see its own tests.
+    const diagnostic = describeProviderFailure(error, Math.max(1, attemptCounter.count));
+
+    // Logged with the safe code only, never the raw error object (whose
+    // message may embed a URL or credential).
+    console.error(
+      `[OCR] slip parse failed: ${diagnostic.code} status=${diagnostic.providerHttpStatus ?? "n/a"} attempts=${diagnostic.providerAttemptCount}`
+    );
+
     return {
       text: "",
       ocrConfidence: 0,
+      confidenceKnown: false,
       warnings: ["Error parsing image - check URL and image format"],
       technicalError: true, // Flag OCR/LLM technical failure
+      technicalErrorCode: diagnostic.code,
+      providerDiagnostic: diagnostic,
     };
   }
 }

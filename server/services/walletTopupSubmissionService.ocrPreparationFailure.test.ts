@@ -19,6 +19,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../db", () => ({
   getWalletTopupById: vi.fn(),
+  // The review handlers now go through the guarded variant, which
+  // reports whether the write was allowed to land.
+  applyWalletTopupOcrUpdate: vi.fn(),
   updateWalletTopupWithOCRApproval: vi.fn(),
   approveWalletTopupWithOCR: vi.fn(),
   creditWalletBalance: vi.fn(),
@@ -63,11 +66,14 @@ describe("submitWalletTopupSlip - OCR image preparation failure (H)", () => {
       createdAt: new Date(),
       slipSubmittedAt: null,
     });
-    (db.updateWalletTopupWithOCRApproval as any).mockResolvedValue({
+    (db.applyWalletTopupOcrUpdate as any).mockResolvedValue({
+      applied: true,
+      topup: {
       id: 42,
       status: "pending_review",
       ocrDecision: "needs_review",
-      reviewReason: "OCR_PROCESSING_ERROR",
+      reviewReason: "OCR_IMAGE_PREPARATION_FAILED",
+      },
     });
     (getEffectiveOCRConfig as any).mockResolvedValue({
       enabled: true,
@@ -105,7 +111,8 @@ describe("submitWalletTopupSlip - OCR image preparation failure (H)", () => {
 
     expect(result.status).toBe("pending_review");
     expect(result.ocrDecision).toBe("needs_review");
-    expect(result.reviewReason).toBe("OCR_PROCESSING_ERROR");
+    // Specific code now - see the identical change on the order path.
+    expect(result.reviewReason).toBe("OCR_IMAGE_PREPARATION_FAILED");
 
     // No auto-approval or crediting function was ever reached.
     expect(db.approveWalletTopupWithOCR).not.toHaveBeenCalled();
@@ -113,10 +120,10 @@ describe("submitWalletTopupSlip - OCR image preparation failure (H)", () => {
     expect(db.getWalletTransactionByReference).not.toHaveBeenCalled();
 
     // The only DB write on this path is the pending_review status update.
-    expect(db.updateWalletTopupWithOCRApproval).toHaveBeenCalledTimes(1);
-    const [, updateData] = (db.updateWalletTopupWithOCRApproval as any).mock.calls[0];
+    expect(db.applyWalletTopupOcrUpdate).toHaveBeenCalledTimes(1);
+    const [, updateData] = (db.applyWalletTopupOcrUpdate as any).mock.calls[0];
     expect(updateData.status).toBe("pending_review");
     expect(updateData.ocrDecision).toBe("needs_review");
-    expect(updateData.reviewReason).toBe("OCR_PROCESSING_ERROR");
+    expect(updateData.reviewReason).toBe("OCR_IMAGE_PREPARATION_FAILED");
   });
 });

@@ -85,10 +85,11 @@ export default function AdminOrderDetailPage() {
   const [showSlipPreview, setShowSlipPreview] = useState(false);
   const [showRejectDialog, setShowRejectDialog] = useState(false);
   const [rejectionReason, setRejectionReason] = useState("");
+  const [approveError, setApproveError] = useState<string | null>(null);
   const [isApproving, setIsApproving] = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
 
-  const { data: order, isLoading } = trpc.admin.orders.detail.useQuery(
+  const { data: order, isLoading, refetch: refetchOrder } = trpc.admin.orders.detail.useQuery(
     { orderId: parseInt(orderId || "0", 10) },
     { enabled: !!orderId }
   );
@@ -98,8 +99,16 @@ export default function AdminOrderDetailPage() {
       setIsApproving(false);
       setLocation("/admin/orders");
     },
-    onError: () => {
+    onError: (error: any) => {
       setIsApproving(false);
+      // The failure was previously swallowed, leaving the admin with a button
+      // that silently did nothing - most damagingly for a legacy case
+      // ambiguity, whose whole point is that a human must choose. The message
+      // is a server-authored, admin-safe sentence; no stack trace is shown.
+      setApproveError(error?.message || "Approval failed.");
+      // Refetch so the panel can render whatever the detail query now
+      // reports - including resolution controls it did not have before.
+      void refetchOrder();
     },
   });
 
@@ -116,6 +125,7 @@ export default function AdminOrderDetailPage() {
 
   const handleApprove = () => {
     if (!orderId) return;
+    setApproveError(null);
     setIsApproving(true);
     approveMutation.mutate({ orderId: parseInt(orderId, 10), reason: "" });
   };
@@ -170,6 +180,15 @@ export default function AdminOrderDetailPage() {
   return (
     <AdminLayout>
       <div className="space-y-6">
+        {/* A failed Approve must never be silent - most of all when it failed
+            because a human decision is required. */}
+        {approveError && (
+          <div className="rounded-lg border-2 border-amber-300 bg-amber-50 p-4">
+            <p className="text-sm font-bold text-amber-900">Approval was not applied</p>
+            <p className="mt-1 text-sm text-amber-900">{approveError}</p>
+          </div>
+        )}
+
         {/* Header */}
         <div className="flex items-center gap-4">
           <Button variant="outline" size="sm" onClick={() => setLocation("/admin/orders")}>
@@ -348,7 +367,16 @@ export default function AdminOrderDetailPage() {
             {/* OCR Result Panel - Show OCR metadata if available */}
             {!isWalletPayment && order.payment && (
               <div className="mt-6">
-                <OCRResultPanel payment={order.payment} />
+                <OCRResultPanel
+                  payment={order.payment}
+                  // Server-derived: effective freshness window + duplicate
+                  // finding. The panel must not recompute either locally.
+                  ocrMeta={(order as any).ocrMeta}
+                  // A recheck rewrites the payment's OCR display metadata
+                  // server-side, so the detail query is refetched to show the
+                  // fresh snapshot rather than the pre-recheck one.
+                  onRecheckComplete={() => { void refetchOrder(); }}
+                />
               </div>
             )}
           </Card>

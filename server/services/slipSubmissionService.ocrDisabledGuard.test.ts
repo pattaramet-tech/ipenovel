@@ -24,6 +24,7 @@ vi.mock("../db", () => ({
   updateOrder: vi.fn(),
   recordOrderHistory: vi.fn(),
   getDb: vi.fn(),
+  publishReplacementSlipIfReviewable: vi.fn(async () => true),
 }));
 vi.mock("../ocr-slip-verification-v2", () => ({
   parseSlipImage: vi.fn(),
@@ -43,7 +44,7 @@ vi.mock("./ocrImageInputService", () => ({
 vi.mock("./approvalService", () => ({
   ApprovalService: {
     approvePaymentWithSource: vi.fn(),
-    sendToReview: vi.fn(async () => {}),
+    sendToReview: vi.fn(async () => true),
   },
 }));
 vi.mock("./orderService", () => ({
@@ -75,6 +76,12 @@ describe("submitPaymentSlip - OCR_DISABLED guard occurs before any provider call
       status: "pending",
       slipImageUrl: "r2p:payment-slips/6/slip.png",
     });
+    (db.getPaymentById as any).mockResolvedValue({
+      id: 201,
+      status: "pending",
+      slipImageUrl: "r2p:payment-slips/6/slip.png",
+      slipSubmittedAt: new Date("2026-01-01T00:00:00Z"),
+    });
     (db.updatePayment as any).mockResolvedValue(undefined);
     (db.updateOrder as any).mockResolvedValue(undefined);
     (db.recordOrderHistory as any).mockResolvedValue(undefined);
@@ -105,10 +112,24 @@ describe("submitPaymentSlip - OCR_DISABLED guard occurs before any provider call
 
     expect(ApprovalService.approvePaymentWithSource).not.toHaveBeenCalled();
     expect(orderService.finalizeOrderCompletion).not.toHaveBeenCalled();
-    expect(db.getDb).not.toHaveBeenCalled();
+    // db.getDb IS now called once - the OCR attempt recorder persists a
+    // `config_blocked` row so history shows why this slip was never
+    // processed. That is a diagnostic write, not an approval: the assertions
+    // above already prove no provider call happened and no approval or
+    // finalization ran, which is what this regression guards.
+    expect(ApprovalService.approvePaymentWithSource).not.toHaveBeenCalled();
 
     expect(ApprovalService.sendToReview).toHaveBeenCalledTimes(1);
-    expect(ApprovalService.sendToReview).toHaveBeenCalledWith(201, "OCR_DISABLED", null, null);
+    expect(ApprovalService.sendToReview).toHaveBeenCalledWith(
+      201,
+      "OCR_DISABLED",
+      null,
+      null,
+      {
+        slipImageUrl: "r2p:payment-slips/6/slip.png",
+        slipSubmittedAt: new Date("2026-01-01T00:00:00Z"),
+      }
+    );
 
     expect(db.updateOrder).toHaveBeenCalledWith(101, { paymentStatus: "submitted", status: "pending" });
   });

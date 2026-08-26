@@ -1,0 +1,184 @@
+/**
+ * IPE-001-C09 P1: "Rehash the current slip during manual approval."
+ *
+ * ── The bug ────────────────────────────────────────────────────────────────
+ * Manual admin approval (orderService.ts's approvePaymentInTx, db.ts's
+ * approveWalletTopup) locks and reloads the row, then derives strong
+ * identifiers from `persistedExtractedData` - the extraction written by the
+ * LAST successful OCR/Recheck. It never re-reads the bytes currently served
+ * at `slipImageUrl`. The row lock and the slip-version/status/
+ * SLIP_INTEGRITY_BLOCK_REASON guards all serialize concurrent WRITES to this
+ * row; none of them serialize an external object-store mutation of the same
+ * storage key. So if the bytes behind the same URL change after the last
+ * stable OCR/Recheck but before an admin clicks Approve, the persisted
+ * fileHash still describes the OLD bytes, and this code claimed it anyway -
+ * approving the payment while displaying NEW bytes whose actual hash was
+ * never claimed and remained reusable.
+ *
+ * ── The fix ────────────────────────────────────────────────────────────────
+ * Both approval paths now recompute the current slip's hash INSIDE the
+ * approval transaction, immediately before claimSlip:
+ *   - A persisted fileHash exists and disagrees with the current hash ->
+ *     fail closed (SLIP_INTEGRITY_MISMATCH_AT_APPROVAL), zero claim/value.
+ *   - The current hash cannot be computed at all -> fail closed
+ *     (SLIP_CURRENT_BYTES_UNAVAILABLE) - unavailability is uncertainty,
+ *     never proof of stability.
+ *   - Otherwise the freshly confirmed current hash is bound into the
+ *     identifiers this SAME transaction claims, enriching a reference-only
+ *     record and re-confirming one that already had a hash. A reference
+ *     match alone never bypasses this when a slip file exists.
+ *
+ * Order and wallet are structurally identical fixes; wallet's
+ * `approveWalletTopup` runs inside a real DB transaction and requires
+ * TEST_DATABASE_URL (the `.integration.test.ts` project, unavailable in this
+ * sandbox), so both are pinned structurally here, matching this codebase's
+ * established pattern for other DB-transaction-heavy files.
+ */
+import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+
+function readCode(relativePath: string): string {
+  return fs
+    .readFileSync(path.resolve(process.cwd(), relativePath), "utf-8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ \t]*\/\/.*$/gm, "");
+}
+
+describe("orderService.ts approvePaymentInTx: current-byte integrity before claim, IPE-001-C09", () => {
+  const code = readCode("server/services/orderService.ts");
+
+  it("recomputes the current hash from slipImageUrl, not from persisted extraction", () => {
+    const fnIdx = code.indexOf("async function approvePaymentInTx(");
+    expect(fnIdx).toBeGreaterThan(-1);
+    const checkIdx = code.indexOf(
+      "const currentFileHash = await computeSlipFileHash(payment.slipImageUrl);",
+      fnIdx
+    );
+    expect(checkIdx).toBeGreaterThan(fnIdx);
+  });
+
+  it("runs AFTER the strong-identifier check but BEFORE claimSlip - even a reference-only record is checked when a slip exists", () => {
+    const fnIdx = code.indexOf("async function approvePaymentInTx(");
+    const strongIdIdx = code.indexOf("if (!hasStrongIdentifier(identifiers)) {", fnIdx);
+    const checkIdx = code.indexOf(
+      "const currentFileHash = await computeSlipFileHash(payment.slipImageUrl);",
+      fnIdx
+    );
+    const claimIdx = code.indexOf("const claim = await claimSlip(", fnIdx);
+    expect(strongIdIdx).toBeGreaterThan(fnIdx);
+    expect(checkIdx).toBeGreaterThan(strongIdIdx);
+    expect(checkIdx).toBeLessThan(claimIdx);
+  });
+
+  it("fails closed when the current hash is unavailable - unavailability is never treated as stability", () => {
+    const idx = code.indexOf("const currentFileHash = await computeSlipFileHash(payment.slipImageUrl);");
+    const body = code.slice(idx, idx + 700);
+    expect(body).toMatch(/if \(!currentFileHash\) \{/);
+    expect(body).toMatch(/throw new Error\(\s*\n\s*"SLIP_CURRENT_BYTES_UNAVAILABLE:/);
+  });
+
+  it("fails closed when a persisted fileHash disagrees with the current hash", () => {
+    const idx = code.indexOf("const currentFileHash = await computeSlipFileHash(payment.slipImageUrl);");
+    const body = code.slice(idx, idx + 1400);
+    expect(body).toMatch(/if \(persistedFileHash && currentFileHash !== persistedFileHash\) \{/);
+    expect(body).toMatch(/throw new Error\(\s*\n\s*"SLIP_INTEGRITY_MISMATCH_AT_APPROVAL:/);
+  });
+
+  it("binds the freshly confirmed hash into identifiers.fileHash before claimSlip runs", () => {
+    const idx = code.indexOf("const currentFileHash = await computeSlipFileHash(payment.slipImageUrl);");
+    const claimIdx = code.indexOf("const claim = await claimSlip(", idx);
+    const body = code.slice(idx, claimIdx);
+    expect(body).toMatch(/identifiers\.fileHash = currentFileHash;/);
+  });
+
+  it("only runs when a slip actually exists - guarded by payment.slipImageUrl", () => {
+    const idx = code.indexOf("if (payment.slipImageUrl) {");
+    expect(idx).toBeGreaterThan(-1);
+    const checkIdx = code.indexOf("const currentFileHash = await computeSlipFileHash", idx);
+    expect(checkIdx - idx).toBeLessThan(400);
+  });
+});
+
+describe("db.ts approveWalletTopup: current-byte integrity before claim, IPE-001-C09", () => {
+  const code = readCode("server/db.ts");
+
+  it("recomputes the current hash from slipImageUrl, not from persisted extraction", () => {
+    const fnIdx = code.indexOf("export async function approveWalletTopup(");
+    expect(fnIdx).toBeGreaterThan(-1);
+    const checkIdx = code.indexOf(
+      "const currentFileHash = await computeSlipFileHash(topup.slipImageUrl as string);",
+      fnIdx
+    );
+    expect(checkIdx).toBeGreaterThan(fnIdx);
+  });
+
+  it("runs AFTER the strong-identifier check but BEFORE claimSlip", () => {
+    const fnIdx = code.indexOf("export async function approveWalletTopup(");
+    const strongIdIdx = code.indexOf("if (!hasStrongIdentifier(identifiers)) {", fnIdx);
+    const checkIdx = code.indexOf(
+      "const currentFileHash = await computeSlipFileHash(topup.slipImageUrl as string);",
+      fnIdx
+    );
+    const claimIdx = code.indexOf("const claim = await claimSlip(", fnIdx);
+    expect(strongIdIdx).toBeGreaterThan(fnIdx);
+    expect(checkIdx).toBeGreaterThan(strongIdIdx);
+    expect(checkIdx).toBeLessThan(claimIdx);
+  });
+
+  it("fails closed when the current hash is unavailable", () => {
+    const idx = code.indexOf("const currentFileHash = await computeSlipFileHash(topup.slipImageUrl as string);");
+    const body = code.slice(idx, idx + 700);
+    expect(body).toMatch(/if \(!currentFileHash\) \{/);
+    expect(body).toMatch(/"SLIP_CURRENT_BYTES_UNAVAILABLE",/);
+  });
+
+  it("fails closed when a persisted fileHash disagrees with the current hash", () => {
+    const idx = code.indexOf("const currentFileHash = await computeSlipFileHash(topup.slipImageUrl as string);");
+    const body = code.slice(idx, idx + 1400);
+    expect(body).toMatch(/if \(persistedFileHash && currentFileHash !== persistedFileHash\) \{/);
+    expect(body).toMatch(/"SLIP_INTEGRITY_MISMATCH_AT_APPROVAL",/);
+  });
+
+  it("binds the freshly confirmed hash into identifiers.fileHash before claimSlip runs", () => {
+    const idx = code.indexOf("const currentFileHash = await computeSlipFileHash(topup.slipImageUrl as string);");
+    const claimIdx = code.indexOf("const claim = await claimSlip(", idx);
+    const body = code.slice(idx, claimIdx);
+    expect(body).toMatch(/identifiers\.fileHash = currentFileHash;/);
+  });
+
+  it("the new error codes are treated as admin preconditions, not actor conflicts", () => {
+    const walletServiceCode = readCode("server/services/walletService.ts");
+    const idx = walletServiceCode.indexOf("const precondition =");
+    expect(idx).toBeGreaterThan(-1);
+    const body = walletServiceCode.slice(idx, idx + 500);
+    expect(body).toMatch(/error\.code === "SLIP_CURRENT_BYTES_UNAVAILABLE"/);
+    expect(body).toMatch(/error\.code === "SLIP_INTEGRITY_MISMATCH_AT_APPROVAL"/);
+  });
+});
+
+describe("confirmed-distinct legacy-case resolution routes through the same current-byte gate, IPE-001-C09", () => {
+  it("order: resolveLegacyCaseAmbiguity's approval call goes through approvePayment -> approvePaymentInTx", () => {
+    const resolutionCode = readCode("server/services/legacyCaseResolutionService.ts");
+    expect(resolutionCode).toMatch(/orderService\.approvePayment\(/);
+
+    const orderCode = readCode("server/services/orderService.ts");
+    const exportedIdx = orderCode.indexOf("export async function approvePayment(");
+    expect(exportedIdx).toBeGreaterThan(-1);
+    const body = orderCode.slice(exportedIdx, exportedIdx + 900);
+    expect(body).toMatch(/return approvePaymentInTx\(/);
+  });
+
+  it("wallet: resolveLegacyCaseAmbiguity's approval call goes directly through db.approveWalletTopup - the same function with the new gate", () => {
+    const resolutionCode = readCode("server/services/legacyCaseResolutionService.ts");
+    expect(resolutionCode).toMatch(/db\.approveWalletTopup\(/);
+  });
+
+  it("neither resolution path can skip the current-byte gate via legacyCaseAmbiguityResolution - that option only waives the advisory alias check inside claimSlip, never this pre-claim gate", () => {
+    const orderCode = readCode("server/services/orderService.ts");
+    const gateIdx = orderCode.indexOf("if (payment.slipImageUrl) {");
+    const claimIdx = orderCode.indexOf("const claim = await claimSlip(", gateIdx);
+    const gateBody = orderCode.slice(gateIdx, claimIdx);
+    expect(gateBody).not.toMatch(/legacyCaseAmbiguityResolution/);
+  });
+});

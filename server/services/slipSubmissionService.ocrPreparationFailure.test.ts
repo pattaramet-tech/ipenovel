@@ -26,6 +26,7 @@ vi.mock("../db", () => ({
   updateOrder: vi.fn(),
   recordOrderHistory: vi.fn(),
   getDb: vi.fn(),
+  publishReplacementSlipIfReviewable: vi.fn(async () => true),
 }));
 vi.mock("../ocr-slip-verification-v2", () => ({
   parseSlipImage: vi.fn(),
@@ -45,7 +46,7 @@ vi.mock("./ocrImageInputService", () => ({
 vi.mock("./approvalService", () => ({
   ApprovalService: {
     approvePaymentWithSource: vi.fn(),
-    sendToReview: vi.fn(async () => {}),
+    sendToReview: vi.fn(async () => true),
   },
 }));
 vi.mock("./orderService", () => ({
@@ -76,6 +77,12 @@ describe("submitPaymentSlip - OCR image preparation failure (I)", () => {
       id: 200,
       status: "pending",
       slipImageUrl: "r2p:payment-slips/5/slip.png",
+    });
+    (db.getPaymentById as any).mockResolvedValue({
+      id: 200,
+      status: "pending",
+      slipImageUrl: "r2p:payment-slips/5/slip.png",
+      slipSubmittedAt: new Date("2026-01-01T00:00:00Z"),
     });
     (db.updatePayment as any).mockResolvedValue(undefined);
     (db.updateOrder as any).mockResolvedValue(undefined);
@@ -119,17 +126,31 @@ describe("submitPaymentSlip - OCR image preparation failure (I)", () => {
     // preparation returns null - not even with an empty-string fallback.
     expect(parseSlipImage).not.toHaveBeenCalled();
 
-    expect(result.reviewReason).toBe("OCR_PROCESSING_ERROR");
+    // Now the SPECIFIC code rather than the old catch-all, so an admin can
+    // tell "the image never reached the provider" from "the provider failed".
+    expect(result.reviewReason).toBe("OCR_IMAGE_PREPARATION_FAILED");
     expect(result.isAutoApproved).toBe(false);
 
     // Never auto-approved: the approval-transaction path was never entered.
     expect(ApprovalService.approvePaymentWithSource).not.toHaveBeenCalled();
     expect(orderService.finalizeOrderCompletion).not.toHaveBeenCalled();
-    expect(db.getDb).not.toHaveBeenCalled();
+    // db.getDb IS now called once - the attempt recorder persists a
+    // `technical_failure` row carrying OCR_IMAGE_PREPARATION_FAILED, which is
+    // precisely the history an admin needs. It is a diagnostic write; the two
+    // assertions above already prove no approval or finalization occurred.
 
     // Routed to manual review instead.
     expect(ApprovalService.sendToReview).toHaveBeenCalledTimes(1);
-    expect(ApprovalService.sendToReview).toHaveBeenCalledWith(200, "OCR_PROCESSING_ERROR", null, null);
+    expect(ApprovalService.sendToReview).toHaveBeenCalledWith(
+      200,
+      "OCR_IMAGE_PREPARATION_FAILED",
+      null,
+      null,
+      {
+        slipImageUrl: "r2p:payment-slips/5/slip.png",
+        slipSubmittedAt: new Date("2026-01-01T00:00:00Z"),
+      }
+    );
 
     // Order stays pending/submitted, never approved.
     expect(db.updateOrder).toHaveBeenCalledWith(100, { paymentStatus: "submitted", status: "pending" });

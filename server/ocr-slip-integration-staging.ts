@@ -125,7 +125,16 @@ export async function processSlipVerificationStaging(
   const order = orderResult[0];
 
   // ── Extract slip data ─────────────────────────────────────────────────────
-  const extracted = extractSlipData(slipOcrResult.text, slipOcrResult.ocrConfidence);
+  // `undefined`, NOT the numeric 0 placeholder, when the provider never
+  // reported a confidence. Passing 0 here would be read by extractSlipData as
+  // "the provider said 0%", collapsing UNKNOWN_CONFIDENCE into LOW_CONFIDENCE
+  // and losing the distinction between "we have no evidence of quality" and
+  // "we have evidence the quality is bad". Only the former is a provider
+  // problem; only the latter is the slip's fault.
+  const extracted = extractSlipData(
+    slipOcrResult.text,
+    slipOcrResult.confidenceKnown === false ? undefined : slipOcrResult.ocrConfidence
+  );
 
   if (!extracted || Object.keys(extracted).length === 0) {
     OCRMetrics.recordFailedExtraction();

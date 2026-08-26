@@ -1,5 +1,29 @@
 import { createHash } from "node:crypto";
+import {
+  deriveStrongIdentifiersFromExtractedData,
+  getRawReferenceForLegacyLookup,
+  hasStrongIdentifier,
+} from "./services/slipIdentifierService";
+import { claimSlip, describeClaimFailure } from "./services/slipClaimService";
+import { computeSlipFileHash } from "./services/slipFileHashService";
+import { fileHashFromExtractedData } from "./services/legacySlipCompatibilityService";
 import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql, gt, lt, ne, like } from "drizzle-orm";
+
+/**
+ * Raised when a wallet top-up cannot claim its slip's strong identifiers.
+ *
+ * Carries a stable `code` so callers can map it to an admin-facing message
+ * (SLIP_ALREADY_CLAIMED / NO_STRONG_IDENTIFIER) without string-matching, and
+ * so an anti-replay refusal is never confused with a database fault.
+ */
+export class WalletSlipClaimError extends Error {
+  readonly code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "WalletSlipClaimError";
+    this.code = code;
+  }
+}
 import { alias } from "drizzle-orm/mysql-core";
 import { getTableColumns } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
@@ -2390,6 +2414,204 @@ export async function deleteBanner(bannerId: number) {
   await db.delete(banners).where(eq(banners.id, bannerId));
 }
 
+/**
+ * Compare-and-set update used ONLY by the OCR recheck path.
+ *
+ * A recheck validates that the payment is pending BEFORE its slow provider
+ * work. An admin can approve or reject during that window, so an
+ * unconditional write afterwards would overwrite finalized evidence - and for
+ * an approval the persisted extraction could then disagree with the
+ * identifiers already written to paymentSlipClaims.
+ *
+ * This only writes while the payment is still non-finalized, and reports
+ * whether it actually did. Callers MUST treat `false` as "the recheck lost
+ * the race" and change nothing.
+ *
+ * `status` and `slipSubmittedAt` are deliberately not writable through this
+ * helper: a recheck is diagnostic and must never move the payment or rewrite
+ * the customer's submission time.
+ */
+export async function updatePaymentIfNotFinalized(
+  paymentId: number,
+  fields: {
+    extractedData?: string | null;
+    ocrConfidence?: number;
+    reviewReason?: string | null;
+    ocrDecision?: "auto_approved" | "needs_review" | "rejected" | "ocr_disabled" | "shadow_auto_approved";
+  },
+  tx?: any,
+  /**
+   * When provided, the write also requires `slipImageUrl`/`slipSubmittedAt`
+   * to still match this exact pair. A recheck captures the slip version it
+   * started against; if the customer replaces the slip while the recheck is
+   * still running, the version no longer matches and this write is refused -
+   * a status-only CAS would have let a recheck of the OLD slip land its
+   * result on the NEW one, since replacing a slip does not change status.
+   */
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
+): Promise<boolean> {
+  const database = tx || (await getDb());
+  if (!database) return false;
+
+  const conditions = [
+    eq(payments.id, paymentId),
+    // The non-finalized set. An approved/rejected payment is excluded, so
+    // its evidence can never be clobbered by a late-finishing recheck.
+    or(eq(payments.status, "pending"), eq(payments.status, "pending_review")),
+  ];
+
+  if (expectedSlipVersion) {
+    conditions.push(
+      expectedSlipVersion.slipImageUrl === null
+        ? isNull(payments.slipImageUrl)
+        : eq(payments.slipImageUrl, expectedSlipVersion.slipImageUrl)
+    );
+    conditions.push(
+      expectedSlipVersion.slipSubmittedAt === null
+        ? isNull(payments.slipSubmittedAt)
+        : eq(payments.slipSubmittedAt, expectedSlipVersion.slipSubmittedAt)
+    );
+  }
+
+  const result = await database
+    .update(payments)
+    .set(fields as any)
+    .where(and(...conditions));
+
+  const header = Array.isArray(result) ? result[0] : result;
+  return ((header as any)?.affectedRows || 0) > 0;
+}
+
+/**
+ * Atomically publishes a replacement slip upload. The SAME write that makes
+ * the new slip current also invalidates whatever OCR evidence belonged to
+ * the slip it replaces, so `slipImageUrl = B` can never be paired with
+ * `extractedData` still describing A - not even for the instant between two
+ * separate statements.
+ *
+ * `fields.extractedData` should already be seeded with the NEW slip's own
+ * server-derived identifier (fileHash) when available, so a replacement
+ * slip is never left with zero anti-replay protection while OCR is still
+ * running against it.
+ *
+ * Conditioned on the payment still being reviewable (pending/pending_review):
+ * an approved/rejected payment can never be reopened by a replacement
+ * upload that was being prepared while it got finalized. Returns false when
+ * that race was lost; callers MUST treat false as "nothing published" and
+ * must not proceed to run OCR or any further write against this upload.
+ */
+export async function publishReplacementSlipIfReviewable(
+  paymentId: number,
+  fields: {
+    slipImageUrl: string;
+    slipSubmittedAt: Date;
+    extractedData: string | null;
+  }
+): Promise<boolean> {
+  const database = await getDb();
+  if (!database) return false;
+
+  const result = await database
+    .update(payments)
+    .set({
+      slipImageUrl: fields.slipImageUrl,
+      slipSubmittedAt: fields.slipSubmittedAt,
+      status: "pending",
+      extractedData: fields.extractedData,
+      // Stale OCR verdicts from the replaced slip must not linger next to
+      // the new one - a leftover confidence/decision/reason would describe
+      // evidence for a slip that is no longer even displayed.
+      ocrConfidence: 0,
+      ocrDecision: "needs_review",
+      reviewReason: null,
+      fingerprint: null,
+    })
+    .where(
+      and(
+        eq(payments.id, paymentId),
+        or(eq(payments.status, "pending"), eq(payments.status, "pending_review"))
+      )
+    );
+
+  const header = Array.isArray(result) ? result[0] : result;
+  return ((header as any)?.affectedRows || 0) > 0;
+}
+
+/**
+ * Locks a payment row for the rest of the transaction (SELECT ... FOR UPDATE).
+ *
+ * Approval reads the persisted `extractedData`, decides on it, claims its
+ * identifiers and only THEN writes the status. Without a lock a concurrent
+ * Recheck could rewrite that extraction inside the window, so the money
+ * would be committed against evidence nobody evaluated. Locking first makes
+ * the subject stable from revalidation through commit; the Recheck blocks,
+ * and once this commits its compare-and-set finds a finalized payment and
+ * no-ops - the existing CAS guarantee is unchanged, just no longer racy.
+ *
+ * Always called with an explicit transaction: locking outside one would
+ * release immediately and defeat the purpose. Returns false when the row
+ * does not exist.
+ */
+export async function lockPaymentForUpdate(paymentId: number, tx: any): Promise<boolean> {
+  // mysql2's raw .execute() resolves to a [rows, fields] tuple, not the bare
+  // rows array - unwrapped the same way lockCartForCheckout does.
+  const rawResult: any = await tx.execute(
+    sql`SELECT id FROM payments WHERE id = ${paymentId} FOR UPDATE`
+  );
+  const rows = Array.isArray(rawResult?.[0]) ? rawResult[0] : rawResult;
+  return Boolean(rows && rows.length > 0);
+}
+
+/**
+ * Locks a wallet top-up row for the rest of the transaction. Same reasoning
+ * as lockPaymentForUpdate: the extraction a decision rests on must not change
+ * between revalidation and the credit.
+ */
+export async function lockWalletTopupForUpdate(topupId: number, tx: any): Promise<boolean> {
+  const rawResult: any = await tx.execute(
+    sql`SELECT id FROM walletTopups WHERE id = ${topupId} FOR UPDATE`
+  );
+  const rows = Array.isArray(rawResult?.[0]) ? rawResult[0] : rawResult;
+  return Boolean(rows && rows.length > 0);
+}
+
+/**
+ * Conditionally rejects a payment, ONLY while it is still reviewable.
+ *
+ * Returns true iff THIS call won the race. Used by the audited legacy-case
+ * resolution flow, where the rejection and its resolution record must commit
+ * together: an unconditional rejection could not tell "I rejected it" from
+ * "someone else already finalized it", so a resolution row was committed for
+ * a state this call never created.
+ */
+export async function rejectPaymentIfReviewable(
+  paymentId: number,
+  reviewedByUserId: number,
+  rejectionReason: string,
+  tx: any
+): Promise<boolean> {
+  const database = tx || (await getDb());
+  if (!database) return false;
+
+  const result = await database
+    .update(payments)
+    .set({
+      status: "rejected",
+      rejectionReason,
+      reviewedByUserId,
+      reviewedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(payments.id, paymentId),
+        or(eq(payments.status, "pending"), eq(payments.status, "pending_review"))
+      )
+    );
+
+  const header = Array.isArray(result) ? result[0] : result;
+  return ((header as any)?.affectedRows || 0) > 0;
+}
+
 // ============ SETTINGS ============
 
 export async function getSetting(key: string) {
@@ -3816,6 +4038,15 @@ export async function listPendingWalletTopups(limit: number = 20, offset: number
   return result;
 }
 
+/**
+ * @deprecated Legacy replace-slip write. Left in place ONLY because
+ * legacyManusAssetMigrationService's URL-rewrite helper (`updateWalletTopupSlipUrlIfUnchanged`,
+ * a same-bytes storage-key rewrite, not a customer re-upload) is intentionally
+ * separate. A genuine customer-facing slip REPLACEMENT must go through
+ * `publishWalletTopupReplacementIfReviewable` below - this bare setter leaves
+ * `extractedData` describing whatever slip preceded it, which is exactly the
+ * IPE-001 wallet finding.
+ */
 export async function updateWalletTopupSlip(topupId: number, slipImageUrl: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -3823,6 +4054,62 @@ export async function updateWalletTopupSlip(topupId: number, slipImageUrl: strin
   await db.update(walletTopups).set({ slipImageUrl }).where(eq(walletTopups.id, topupId));
 
   return (await db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1))[0];
+}
+
+/**
+ * Atomically publishes a replacement slip for a wallet top-up - the wallet
+ * sibling of `publishReplacementSlipIfReviewable`. The SAME conditional
+ * UPDATE that makes the new slip current also invalidates whatever OCR
+ * evidence belonged to the slip it replaces (or to nothing, on a first
+ * upload) and seeds the new slip's own server-derived fileHash, so
+ * `slipImageUrl = B` can never be paired with `extractedData` still
+ * describing A - not even for the instant between two statements.
+ *
+ * Conditioned on the top-up still being reviewable (pending/pending_review):
+ * an approved/rejected/cancelled top-up can never be reopened by a
+ * replacement upload that was being prepared while it got finalized.
+ * Returns false when that race was lost; callers MUST treat false as
+ * "nothing published" and must not proceed to run OCR or any further write
+ * against this upload.
+ */
+export async function publishWalletTopupReplacementIfReviewable(
+  topupId: number,
+  fields: {
+    slipImageUrl: string;
+    slipSubmittedAt: Date;
+    extractedData: string | null;
+  }
+): Promise<boolean> {
+  const database = await getDb();
+  if (!database) return false;
+
+  const result = await database
+    .update(walletTopups)
+    .set({
+      slipImageUrl: fields.slipImageUrl,
+      slipSubmittedAt: fields.slipSubmittedAt,
+      status: "pending",
+      extractedData: fields.extractedData,
+      // Stale OCR verdicts from the replaced slip must not linger next to
+      // the new one - a leftover confidence/decision/reason/duplicate flag
+      // would describe evidence for a slip that is no longer even displayed.
+      ocrConfidence: null,
+      visionConfidence: null,
+      structuredConfidence: null,
+      finalConfidence: null,
+      duplicateStatus: null,
+      ocrDecision: "needs_review",
+      reviewReason: null,
+    })
+    .where(
+      and(
+        eq(walletTopups.id, topupId),
+        or(eq(walletTopups.status, "pending"), eq(walletTopups.status, "pending_review"))
+      )
+    );
+
+  const header = Array.isArray(result) ? result[0] : result;
+  return ((header as any)?.affectedRows || 0) > 0;
 }
 
 export async function createWalletTransaction(
@@ -3912,20 +4199,224 @@ export async function creditWalletBalance(userId: number, amount: string, refere
   return newBalance;
 }
 
-export async function approveWalletTopup(topupId: number, adminUserId: number) {
+export async function approveWalletTopup(
+  topupId: number,
+  adminUserId: number,
+  /**
+   * Set ONLY by the audited legacy-case resolution flow. Skips the advisory
+   * alias check a human has adjudicated - and nothing else. Every exact
+   * UNIQUE identifier is still claimed atomically below.
+   *
+   * `auditResolution` is invoked INSIDE this transaction so the successful
+   * resolution record and the wallet credit commit together or roll back
+   * together. Writing the audit separately beforehand permanently consumed
+   * the subject-unique slot when approval then failed, leaving the top-up
+   * stuck with no retry path.
+   */
+  options?: {
+    legacyCaseAmbiguityResolution?: {
+      expectedLegacyAliasHash?: string;
+      expectedMatchedSourceType: "order_payment" | "wallet_topup";
+      expectedMatchedSourceId: number;
+      /** The exact case-preserving reference the admin adjudicated. */
+      expectedIncomingReferenceHash?: string;
+    };
+    auditResolution?: (tx: any) => Promise<void>;
+  }
+) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
   // REAL DATABASE TRANSACTION: All operations succeed or all rollback
   // This prevents double-crediting if approval is retried
   return await db.transaction(async (tx) => {
+    // Step 0: LOCK the subject row before reading the evidence this approval
+    // rests on, so a concurrent Recheck cannot rewrite extractedData between
+    // the anti-replay decision below and the credit.
+    await lockWalletTopupForUpdate(topupId, tx);
+
     // Step 1: Fetch topup INSIDE transaction for consistency
     const topupResult = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
     if (!topupResult || topupResult.length === 0) {
       throw new Error("Wallet top-up not found");
     }
     const topup = topupResult[0];
-    
+
+    // Step 1a: DURABLE SLIP-INTEGRITY BLOCK (IPE-001-C07).
+    //
+    // walletTopupSubmissionService.ts's automatic-submission checkpoints
+    // durably clear `extractedData` to null the moment they detect the
+    // stored bytes changed mid-run (SLIP_INTEGRITY_MISMATCH), so the
+    // strong-identifier check in Step 1b below already refuses an approval
+    // with nothing to claim. This is a second, independent gate on the
+    // reviewReason itself - wallet parity with orderService's
+    // lockAndRequireReviewablePayment/SLIP_INTEGRITY_BLOCK_REASON check -
+    // so approval stays refused even if some OTHER path (present or future,
+    // including the deprecated wallet.uploadTopupSlip flow) re-seeds
+    // extractedData without re-verifying the slip is stable. Cleared only by
+    // a genuine replacement upload - publishWalletTopupReplacementIfReviewable
+    // accepts this row's "pending_review" status precisely so a customer is
+    // not permanently stuck, and its single atomic write unconditionally
+    // resets reviewReason to null alongside the fresh slip/extractedData -
+    // never a partial clear that could leave this guard on while a new,
+    // unrelated hash sits underneath it.
+    if (topup.reviewReason === "SLIP_INTEGRITY_MISMATCH") {
+      throw new WalletSlipClaimError(
+        "SLIP_INTEGRITY_MISMATCH_BLOCKED",
+        `Wallet top-up ${topupId}'s slip was found to have changed bytes at the same URL ` +
+          `during a prior automatic check, and that finding has not yet been cleared. Approval ` +
+          `is refused until a stable re-submission re-establishes integrity for this exact slip, ` +
+          `or the customer uploads a genuine replacement.`
+      );
+    }
+
+    // Step 1b: ANTI-REPLAY GATE (manual admin approval).
+    //
+    // The admin's browser is never trusted: identifiers are recomputed
+    // server-side from the persisted extractedData and claimed inside THIS
+    // transaction, so a slip claimed by another submission between page load
+    // and the click cannot credit a second wallet.
+    //
+    // A top-up with NO strong identifier cannot be protected against replay,
+    // so normal Approve must not quietly proceed - that would make ordinary
+    // admin approval a silent bypass of the registry. After server-side
+    // fileHash wiring every NEW slip carries at least an exact-file
+    // identifier even when OCR fails, so reaching this branch means a legacy
+    // row or unreadable bytes: a deliberate human decision, not a default.
+    {
+      // Reloaded inside the transaction; nothing from the admin's browser.
+      const persistedExtractedData = topup.extractedData as string | null;
+      const { identifiers, semanticFingerprint } =
+        deriveStrongIdentifiersFromExtractedData(persistedExtractedData);
+
+      if (!hasStrongIdentifier(identifiers)) {
+        throw new WalletSlipClaimError(
+          "NO_STRONG_IDENTIFIER",
+          "This top-up has no transaction reference and no readable slip file, so it cannot " +
+            "be protected against replay. It needs the legacy override path (not yet " +
+            "available) rather than a normal approval."
+        );
+      }
+
+      // ── CURRENT-BYTE INTEGRITY (IPE-001-C09) ────────────────────────────
+      // `topup` is reloaded and row-locked above, but `persistedExtractedData`
+      // - and any fileHash within it - describes bytes from an EARLIER
+      // moment: the last successful automatic submission or admin-facing
+      // resubmission, not necessarily what slipImageUrl serves RIGHT NOW.
+      // Row locks and the SLIP_INTEGRITY_MISMATCH_BLOCKED reviewReason guard
+      // above serialize concurrent writes to THIS row; neither serializes an
+      // external object-store mutation of the same key. Recompute the
+      // current bytes' hash here, inside this transaction, immediately
+      // before claiming - wallet parity with orderService.ts's
+      // approvePaymentInTx. Applies whenever a slip exists, even for a
+      // reference-only identifier set: a reference match alone must never
+      // bypass current-file integrity when a file is right there to check.
+      if (topup.slipImageUrl) {
+        const currentFileHash = await computeSlipFileHash(topup.slipImageUrl as string);
+        const persistedFileHash = fileHashFromExtractedData(persistedExtractedData);
+
+        if (!currentFileHash) {
+          // Unavailability is uncertainty, never proof of stability - fail
+          // closed exactly as a proven mismatch would.
+          throw new WalletSlipClaimError(
+            "SLIP_CURRENT_BYTES_UNAVAILABLE",
+            "The stored slip's current bytes could not be read at approval time, so this " +
+              "approval cannot be bound to what is actually being displayed. Nothing was " +
+              "claimed or approved. Try again, or run Recheck OCR first."
+          );
+        }
+
+        if (persistedFileHash && currentFileHash !== persistedFileHash) {
+          throw new WalletSlipClaimError(
+            "SLIP_INTEGRITY_MISMATCH_AT_APPROVAL",
+            "The stored slip's bytes changed after the last successful check and before this " +
+              "approval. Nothing was claimed or approved. Run Recheck OCR again to " +
+              "re-establish integrity for the exact bytes now on file."
+          );
+        }
+
+        // Bind the freshly confirmed current hash into what THIS approval
+        // actually claims - re-confirms an identifier that already had one,
+        // and enriches a reference-only record with one now, atomically
+        // inside the SAME transaction that commits the claim and the credit.
+        identifiers.fileHash = currentFileHash;
+      }
+
+      const claim = await claimSlip(
+        {
+          sourceType: "wallet_topup",
+          sourceId: topupId,
+          userId: topup.userId,
+          identifiers,
+          semanticFingerprint,
+          // Legacy lookup only - the claim itself still uses the
+          // case-preserving hash derived above.
+          referenceRawForLegacyLookup: getRawReferenceForLegacyLookup(persistedExtractedData),
+          // Set ONLY by the audited resolution flow, and BOUND to the exact
+          // ambiguity a human adjudicated - not a bare boolean. claimSlip
+          // waives it only if the fold it finds from transaction-visible
+          // state is identical (same alias, same matched source); anything
+          // else returns legacy_case_ambiguity_changed. Every exact UNIQUE
+          // identifier below is still claimed atomically, so an exact
+          // reference/file/QR duplicate still blocks.
+          legacyCaseAmbiguityResolution: options?.legacyCaseAmbiguityResolution,
+        },
+        tx
+      );
+
+      if (!claim.claimed && claim.reason === "legacy_scan_unresolved") {
+        // An approved historical row exists that could not be verified - not
+        // a proven duplicate, not provably clean. Normal Approve must not
+        // treat this as an ordinary review outcome or silently proceed.
+        throw new WalletSlipClaimError(
+          "LEGACY_APPROVED_SLIP_UNRESOLVED",
+          describeClaimFailure(claim)
+        );
+      }
+
+      if (!claim.claimed && claim.reason === "legacy_alias_group_ambiguity") {
+        // MORE THAN ONE historical source shares this alias - never
+        // resolvable by the single-member "confirm distinct" flow.
+        throw new WalletSlipClaimError(
+          "LEGACY_ALIAS_GROUP_AMBIGUITY",
+          describeClaimFailure(claim)
+        );
+      }
+
+      if (!claim.claimed && claim.reason === "legacy_case_ambiguity") {
+        // Normal Approve must not silently bypass this, and must not call it
+        // a duplicate - it is an unresolved question. Direct the admin to the
+        // explicit resolution flow instead of failing forever.
+        throw new WalletSlipClaimError(
+          "LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION",
+          describeClaimFailure(claim)
+        );
+      }
+
+      if (!claim.claimed && claim.reason === "legacy_case_ambiguity_changed") {
+        // The evidence moved after the admin decided. Their decision was
+        // about different evidence, so it is NOT applied: no claim, no
+        // credit, no resolution record.
+        throw new WalletSlipClaimError(
+          "LEGACY_CASE_AMBIGUITY_CHANGED_REVIEW_REQUIRED",
+          describeClaimFailure(claim)
+        );
+      }
+
+      if (!claim.claimed && claim.reason === "already_claimed") {
+        const ownedByThisTopup =
+          claim.existingSourceType === "wallet_topup" &&
+          claim.existingSourceId === topupId;
+
+        if (!ownedByThisTopup) {
+          throw new WalletSlipClaimError(
+            "SLIP_ALREADY_CLAIMED",
+            describeClaimFailure(claim)
+          );
+        }
+      }
+    }
+
     // Step 2: Conditional status update - ONLY update if still pending or pending_review (idempotency)
     // CRITICAL: Only the winning concurrent request may proceed
     // Losing requests will have 0 rows affected and must abort immediately
@@ -4011,19 +4502,59 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
       createdAt: new Date(),
     });
 
-    // Step 7: Return updated topup
+    // Step 7: Audit a legacy-case resolution INSIDE this transaction, so the
+    // successful resolution record and the wallet credit commit together or
+    // roll back together. If anything above failed, no resolution row exists
+    // and the admin can retry.
+    if (options?.auditResolution) {
+      await options.auditResolution(tx);
+    }
+
+    // Step 8: Return updated topup
     const updated = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
     return updated[0];
   });
 }
 
-export async function rejectWalletTopup(topupId: number, adminUserId: number, reason: string) {
+export async function rejectWalletTopup(
+  topupId: number,
+  adminUserId: number,
+  reason: string,
+  /**
+   * `auditResolution` is invoked INSIDE this transaction, after the
+   * conditional rejection has been confirmed to have won. The audit row and
+   * the rejection therefore commit together or roll back together: writing
+   * the audit first permanently consumed the subject-unique resolution slot
+   * when the rejection then lost a race or failed, leaving the top-up
+   * reviewable but unresolvable.
+   */
+  options?: {
+    /**
+     * Runs under the row lock while the top-up is STILL REVIEWABLE, before
+     * the status changes. Evidence revalidation belongs here: running it
+     * after the rejection meant it saw `rejected` and always refused.
+     */
+    revalidate?: (tx: any) => Promise<void>;
+    auditResolution?: (tx: any) => Promise<void>;
+  }
+) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
   return await db.transaction(async (tx) => {
+    // Locked before any evidence is read, so an in-transaction resolution
+    // audit cannot be adjudicated against an extraction a concurrent Recheck
+    // is rewriting.
+    await lockWalletTopupForUpdate(topupId, tx);
+
     const topup = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
     if (!topup || topup.length === 0) throw new Error("Wallet top-up not found");
+
+    // Locked, reloaded, and still reviewable: the only correct point to
+    // revalidate the evidence a resolution rests on.
+    if (options?.revalidate) {
+      await options.revalidate(tx);
+    }
 
     // Conditional update - only reject if still pending or pending_review (idempotency)
     const updateResult = await tx
@@ -4068,6 +4599,10 @@ export async function rejectWalletTopup(topupId: number, adminUserId: number, re
       createdBy: adminUserId,
       createdAt: new Date(),
     });
+
+    if (options?.auditResolution) {
+      await options.auditResolution(tx);
+    }
 
     return tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1).then(r => r[0]);
   });
@@ -5690,7 +6225,27 @@ export async function markDailyCheckinCouponUsed(couponId: number, userId: numbe
 /**
  * Update wallet top-up with OCR results and approval
  */
-export async function updateWalletTopupWithOCRApproval(
+/**
+ * Statuses a wallet top-up may still be moved out of. `approved` and
+ * `rejected` are FINAL: no OCR write may ever bring one back.
+ */
+const REVIEWABLE_TOPUP_STATUSES = ["pending", "pending_review"] as const;
+
+/**
+ * Applies an OCR-derived update to a wallet top-up.
+ *
+ * DEFENSE IN DEPTH: any update that moves a top-up INTO `pending_review` is
+ * conditional on the row still being reviewable. An unconditional
+ * `WHERE id = ?` let a late-finishing OCR pass reopen a top-up an admin had
+ * already approved or rejected - and a reopened, already-credited top-up
+ * could be approved a second time. The guard is applied by the destination
+ * status rather than by an opt-in flag so a future caller cannot forget it.
+ *
+ * Returns `applied: false` when the guard rejected the write; the row is then
+ * returned UNCHANGED so the caller can reflect the authoritative current
+ * state instead of asserting one it did not create.
+ */
+export async function applyWalletTopupOcrUpdate(
   topupId: number,
   updates: {
     status?: string;
@@ -5706,7 +6261,17 @@ export async function updateWalletTopupWithOCRApproval(
     approvalSource?: string;
     approvedAt?: Date;
     creditedAmount?: string;
-  }
+  },
+  /**
+   * When provided (alongside a "pending_review" write), the write also
+   * requires `slipImageUrl`/`slipSubmittedAt` to still match this exact
+   * pair. This OCR run's extractedData was computed against a specific slip
+   * snapshot; if the customer replaces the slip while the run is still in
+   * flight, the version no longer matches and the write is refused - a
+   * status-only CAS would have let a run for the OLD slip land its result
+   * on the NEW one, since replacing a slip does not change status.
+   */
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
 ) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -5729,9 +6294,50 @@ export async function updateWalletTopupWithOCRApproval(
   if (updates.approvedAt) updateData.approvedAt = updates.approvedAt;
   if (updates.creditedAmount) updateData.creditedAmount = updates.creditedAmount;
 
-  await db.update(walletTopups).set(updateData).where(eq(walletTopups.id, topupId));
+  const guarded = updates.status === "pending_review";
+  const guardConditions = [
+    eq(walletTopups.id, topupId),
+    or(
+      eq(walletTopups.status, REVIEWABLE_TOPUP_STATUSES[0] as any),
+      eq(walletTopups.status, REVIEWABLE_TOPUP_STATUSES[1] as any)
+    ),
+  ];
+  if (expectedSlipVersion) {
+    guardConditions.push(
+      expectedSlipVersion.slipImageUrl === null
+        ? isNull(walletTopups.slipImageUrl)
+        : eq(walletTopups.slipImageUrl, expectedSlipVersion.slipImageUrl)
+    );
+    guardConditions.push(
+      expectedSlipVersion.slipSubmittedAt === null
+        ? isNull(walletTopups.slipSubmittedAt)
+        : eq(walletTopups.slipSubmittedAt, expectedSlipVersion.slipSubmittedAt)
+    );
+  }
+  const whereClause = guarded ? and(...guardConditions) : eq(walletTopups.id, topupId);
 
-  return (await db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1))[0];
+  const result = await db.update(walletTopups).set(updateData).where(whereClause);
+  const header = Array.isArray(result) ? result[0] : result;
+  const affectedRows = (header as any)?.affectedRows || 0;
+
+  const topup = (
+    await db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1)
+  )[0];
+
+  return { applied: !guarded || affectedRows > 0, topup };
+}
+
+/**
+ * Backwards-compatible wrapper. Carries the same reopen guard as
+ * `applyWalletTopupOcrUpdate` - callers that need to know whether the write
+ * actually landed should use that function directly.
+ */
+export async function updateWalletTopupWithOCRApproval(
+  topupId: number,
+  updates: Parameters<typeof applyWalletTopupOcrUpdate>[1]
+) {
+  const { topup } = await applyWalletTopupOcrUpdate(topupId, updates);
+  return topup;
 }
 
 /**
@@ -5819,23 +6425,178 @@ export async function approveWalletTopupWithOCR(
     approvedAt?: Date;
     creditedAmount: string;
   },
-  adminUserId?: number
+  adminUserId?: number,
+  /**
+   * The slip version this OCR run actually processed, captured before it
+   * started. `ocrData` was computed against that snapshot BEFORE this
+   * transaction opened; if the customer published a replacement slip while
+   * the run was still in flight, the reloaded row's slip identity no longer
+   * matches it, and claiming/writing now would attribute the OLD slip's
+   * evidence to a row that now displays a different one. Mirrors the
+   * order-side SlipVersionChangedError check inside
+   * lockAndRequireReviewablePayment.
+   */
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
 ) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
   // REAL DATABASE TRANSACTION: All operations succeed or all rollback
   return await db.transaction(async (tx) => {
-    // Step 1: Fetch topup INSIDE transaction for consistency
+    // Step 0: LOCK the subject row BEFORE reading the version this run
+    // validates against - same reasoning as approveWalletTopup's Step 0.
+    //
+    // Without this, the version check below reads an UNLOCKED row: a
+    // concurrent publishWalletTopupReplacementIfReviewable can commit a
+    // replacement to slip B in the window between that read and the
+    // status-only CAS further down, which does not itself check slip
+    // identity. Because a replacement re-opens status to "pending" without
+    // changing it further, the status-only CAS would still match - claiming
+    // and crediting slip A's evidence onto a row whose current slip is B,
+    // leaving B completely unclaimed and reusable. Locking first serializes
+    // this transaction against the replacement publisher, which also takes
+    // this same lock (mirrors lockPaymentForUpdate on the order side).
+    await lockWalletTopupForUpdate(topupId, tx);
+
+    // Step 1: Fetch topup INSIDE transaction for consistency - now
+    // guaranteed to be the current row, not a pre-lock snapshot.
     const topupResult = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
     if (!topupResult || topupResult.length === 0) {
       throw new Error("Wallet top-up not found");
     }
     const topup = topupResult[0];
 
+    // Step 1a: SLIP-VERSION GATE - before any claim or write, and before the
+    // status-only CAS below, since a replacement re-opens status to
+    // "pending" and would otherwise pass that check while still describing
+    // the slip it replaced.
+    if (expectedSlipVersion) {
+      const currentSlipImageUrl = topup.slipImageUrl as string | null;
+      const currentSlipSubmittedAt = topup.slipSubmittedAt as Date | null;
+      const versionMatches =
+        currentSlipImageUrl === expectedSlipVersion.slipImageUrl &&
+        (currentSlipSubmittedAt?.getTime() ?? null) ===
+          (expectedSlipVersion.slipSubmittedAt?.getTime() ?? null);
+      if (!versionMatches) {
+        throw new WalletSlipClaimError(
+          "TOPUP_SLIP_VERSION_CHANGED",
+          "This top-up's slip was replaced while this OCR run was in flight. The " +
+            "identifiers/extraction this run computed belong to a slip that is no longer " +
+            "current, so nothing was claimed, approved or written."
+        );
+      }
+    }
+
+    // Step 1b: ANTI-REPLAY GATE.
+    //
+    // Claimed in THIS transaction, immediately before any wallet credit, so
+    // one bank transaction can create value exactly once - across wallet
+    // top-ups AND order payments AND users.
+    //
+    // This closes three concrete holes in the previous read-then-decide
+    // duplicate check: it was scoped to a single userId (so another user
+    // could replay the same slip), it scanned only PENDING order payments
+    // (so an already-APPROVED slip was invisible), and being a plain SELECT
+    // it could not stop two concurrent submissions from both passing.
+    //
+    // A slip with no strong identifier cannot be claimed, and therefore must
+    // not auto-approve; it is routed to manual review instead. Rejection is
+    // never performed here - only an admin may reject.
+    if (ocrData.status === "approved") {
+      const { identifiers, semanticFingerprint } = deriveStrongIdentifiersFromExtractedData(
+        ocrData.extractedData
+      );
+      const autoRawReference = getRawReferenceForLegacyLookup(ocrData.extractedData);
+
+      if (!hasStrongIdentifier(identifiers)) {
+        throw new WalletSlipClaimError(
+          "NO_STRONG_IDENTIFIER",
+          "This slip has no readable transaction reference, so replay cannot be prevented automatically."
+        );
+      }
+
+      const claim = await claimSlip(
+        {
+          sourceType: "wallet_topup",
+          sourceId: topupId,
+          userId: topup.userId,
+          identifiers,
+          semanticFingerprint,
+          // Legacy lookup only - never used for the claim itself.
+          referenceRawForLegacyLookup: autoRawReference,
+        },
+        tx
+      );
+
+      if (!claim.claimed) {
+        // A legacy case ambiguity is NOT a duplicate verdict - the alias is
+        // lossy. Auto-approval simply stops; no claim was inserted and no
+        // value is created. A human decides via the resolution flow.
+        if (claim.reason === "legacy_case_ambiguity") {
+          throw new WalletSlipClaimError(
+            "LEGACY_REFERENCE_CASE_AMBIGUITY",
+            describeClaimFailure(claim)
+          );
+        }
+
+        // An approved historical row exists that could not be verified - not
+        // a proven duplicate, not provably clean. Auto-approval must not
+        // guess either way; it stops and asks for manual review.
+        if (claim.reason === "legacy_scan_unresolved") {
+          throw new WalletSlipClaimError(
+            "LEGACY_APPROVED_SLIP_UNRESOLVED",
+            describeClaimFailure(claim)
+          );
+        }
+
+        // MORE THAN ONE historical source shares this alias - never
+        // resolvable by the single-member "confirm distinct" flow.
+        if (claim.reason === "legacy_alias_group_ambiguity") {
+          throw new WalletSlipClaimError(
+            "LEGACY_ALIAS_GROUP_AMBIGUITY",
+            describeClaimFailure(claim)
+          );
+        }
+
+        const ownedByThisTopup =
+          claim.reason === "already_claimed" &&
+          claim.existingSourceType === "wallet_topup" &&
+          claim.existingSourceId === topupId;
+
+        if (!ownedByThisTopup) {
+          const code =
+            claim.reason === "no_strong_identifier"
+              ? "NO_STRONG_IDENTIFIER"
+              : claim.reason === "already_claimed" && claim.conflictKind === "file"
+                ? "DUPLICATE_FILE"
+                : claim.reason === "already_claimed" && claim.conflictKind === "qr"
+                  ? "DUPLICATE_QR"
+                  : "DUPLICATE_REFERENCE";
+          throw new WalletSlipClaimError(code, describeClaimFailure(claim));
+        }
+      }
+    }
+
     // Step 2: Only proceed if status is pending or pending_review (idempotency)
     if (ocrData.status === "approved") {
-      // For auto-approval: only update if still pending
+      // For auto-approval: only update if still pending. The row lock above
+      // already makes this safe on its own - nothing can change slip
+      // identity while it is held - but the WHERE clause also re-binds the
+      // expected slip version as defense-in-depth: this write must never
+      // depend solely on a pre-lock read remaining correct.
+      const approveConditions = [eq(walletTopups.id, topupId), eq(walletTopups.status, "pending" as any)];
+      if (expectedSlipVersion) {
+        approveConditions.push(
+          expectedSlipVersion.slipImageUrl === null
+            ? isNull(walletTopups.slipImageUrl)
+            : eq(walletTopups.slipImageUrl, expectedSlipVersion.slipImageUrl)
+        );
+        approveConditions.push(
+          expectedSlipVersion.slipSubmittedAt === null
+            ? isNull(walletTopups.slipSubmittedAt)
+            : eq(walletTopups.slipSubmittedAt, expectedSlipVersion.slipSubmittedAt)
+        );
+      }
       const updateResult = await tx
         .update(walletTopups)
         .set({
@@ -5856,18 +6617,36 @@ export async function approveWalletTopupWithOCR(
           reviewedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(and(eq(walletTopups.id, topupId), eq(walletTopups.status, "pending" as any)));
+        .where(and(...approveConditions));
 
       const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
       const affectedRows = (resultHeader as any)?.affectedRows || 0;
       if (affectedRows === 0) {
-        // Already processed - return existing topup without crediting again
-        const existing = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
-        return existing[0];
+        // LOST THE STATE RACE - and this MUST throw, not return.
+        //
+        // The slip claim was already inserted above in this same transaction.
+        // Returning normally here committed that claim while the conditional
+        // update created no approval and no wallet credit, permanently
+        // consuming the transaction reference and file hash for a top-up that
+        // was never funded (e.g. an admin rejected it mid-flight).
+        //
+        // Invariant: A CLAIM MUST NEVER COMMIT WITHOUT THE VALUE CREATION IT
+        // PROTECTS. Throwing rolls the claim back with everything else.
+        throw new WalletSlipClaimError(
+          "TOPUP_STATE_RACE",
+          "This top-up is no longer pending - it was approved, rejected or cancelled while " +
+            "OCR was running. No wallet credit was created and no slip claim was recorded."
+        );
       }
     } else {
-      // For pending_review: update regardless of current status (admin review)
-      await tx
+      // For pending_review: ONLY while the top-up is still reviewable.
+      //
+      // This previously updated regardless of current status, so an OCR pass
+      // finishing after an admin approved or rejected the top-up moved a
+      // FINAL record back to pending_review - and an already-credited top-up
+      // could then be approved and credited a second time. A losing write is
+      // a no-op: the persisted state is authoritative and is returned as-is.
+      const reviewUpdate = await tx
         .update(walletTopups)
         .set({
           status: "pending_review" as any,
@@ -5883,8 +6662,28 @@ export async function approveWalletTopupWithOCR(
           approvalSource: ocrData.approvalSource as any,
           updatedAt: new Date(),
         })
-        .where(eq(walletTopups.id, topupId));
-      
+        .where(
+          and(
+            eq(walletTopups.id, topupId),
+            or(
+              eq(walletTopups.status, "pending" as any),
+              eq(walletTopups.status, "pending_review" as any)
+            )
+          )
+        );
+
+      const reviewHeader = Array.isArray(reviewUpdate) ? reviewUpdate[0] : reviewUpdate;
+      const reviewAffected = (reviewHeader as any)?.affectedRows || 0;
+      if (reviewAffected === 0) {
+        // Lost the race to a human decision. Nothing was mutated; surface the
+        // finalized row rather than pretending this call set it.
+        throw new WalletSlipClaimError(
+          "TOPUP_STATE_RACE",
+          "This top-up is no longer pending - it was approved, rejected or cancelled while " +
+            "OCR was running. Nothing was changed."
+        );
+      }
+
       const updated = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
       return updated[0];
     }

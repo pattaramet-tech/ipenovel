@@ -1,6 +1,6 @@
 import { getDb } from "../db";
 import { payments } from "../../drizzle/schema";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 
 /**
  * Approval metadata types
@@ -116,8 +116,24 @@ export class ApprovalService {
   }
 
   /**
-   * Send payment to manual review
-   * Does NOT set approval metadata
+   * Send payment to manual review.
+   * Does NOT set approval metadata.
+   *
+   * Conditioned on the payment still being reviewable, so a late-finishing
+   * automatic OCR run can never resurrect an already-finalized payment back
+   * to "pending_review".
+   *
+   * `expectedSlipVersion`, when passed, additionally requires the row's
+   * current `(slipImageUrl, slipSubmittedAt)` to still match it. Callers
+   * pass this when `extractedData` was computed against a specific slip
+   * snapshot (an automatic OCR run) rather than being read fresh from the
+   * row inside this same call - without it, OCR started for slip B could
+   * still publish B's extraction after the customer replaced B with C.
+   *
+   * Returns whether this call actually won the write. Callers MUST treat
+   * `false` as "nothing was published" and must not proceed with any
+   * further write that assumes this one landed.
+   *
    * @param tx - Optional transaction context for atomic operations
    */
   static async sendToReview(
@@ -125,12 +141,31 @@ export class ApprovalService {
     reviewReason: string,
     extractedData?: any,
     fingerprint?: string,
+    expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
     tx?: any
-  ) {
+  ): Promise<boolean> {
     const db = tx || (await getDb());
     if (!db) throw new Error("Database connection failed");
 
-    await db
+    const conditions = [
+      eq(payments.id, paymentId),
+      or(eq(payments.status, "pending"), eq(payments.status, "pending_review")),
+    ];
+
+    if (expectedSlipVersion) {
+      conditions.push(
+        expectedSlipVersion.slipImageUrl === null
+          ? isNull(payments.slipImageUrl)
+          : eq(payments.slipImageUrl, expectedSlipVersion.slipImageUrl)
+      );
+      conditions.push(
+        expectedSlipVersion.slipSubmittedAt === null
+          ? isNull(payments.slipSubmittedAt)
+          : eq(payments.slipSubmittedAt, expectedSlipVersion.slipSubmittedAt)
+      );
+    }
+
+    const result = await db
       .update(payments)
       .set({
         status: "pending_review",
@@ -139,7 +174,10 @@ export class ApprovalService {
         fingerprint: fingerprint || null,
         // DO NOT set approval fields
       })
-      .where(eq(payments.id, paymentId));
+      .where(and(...conditions));
+
+    const header = Array.isArray(result) ? result[0] : result;
+    return ((header as any)?.affectedRows || 0) > 0;
   }
 
   /**

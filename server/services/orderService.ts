@@ -2,6 +2,14 @@ import * as db from "../db";
 
 import { ApprovalService } from "./approvalService";
 import { normalizeMoneyAmount, formatMoney } from "../helpers/moneyNormalizer";
+import {
+  deriveStrongIdentifiersFromExtractedData,
+  getRawReferenceForLegacyLookup,
+  hasStrongIdentifier,
+} from "./slipIdentifierService";
+import { claimSlip, describeClaimFailure } from "./slipClaimService";
+import { computeSlipFileHash } from "./slipFileHashService";
+import { fileHashFromExtractedData } from "./legacySlipCompatibilityService";
 
 const COUPON_OWNERSHIP_DENIAL_PATTERNS = [/^coupon not found$/i, /belongs to another user/i];
 
@@ -301,24 +309,379 @@ export async function createOrderFromCart(
  * points, no recorded coupon usage). No current caller passes a `tx`, so
  * this is a pure internal atomicity fix, not a signature change.
  */
-export async function approvePayment(paymentId: number, approvedBy: string, adminLabel?: string, tx?: any): Promise<{ message: string }> {
+export async function approvePayment(
+  paymentId: number,
+  approvedBy: string,
+  adminLabel?: string,
+  tx?: any,
+  /**
+   * Set ONLY by the audited legacy-case resolution flow. Skips the advisory
+   * alias check a human has already adjudicated - and nothing else. Every
+   * exact UNIQUE identifier is still claimed atomically below.
+   */
+  options?: {
+    legacyCaseAmbiguityResolution?: {
+      expectedLegacyAliasHash?: string;
+      expectedMatchedSourceType: "order_payment" | "wallet_topup";
+      expectedMatchedSourceId: number;
+      /** The exact case-preserving reference the admin adjudicated. */
+      expectedIncomingReferenceHash?: string;
+    };
+    /**
+     * Invoked INSIDE the approval transaction so a successful legacy-case
+     * resolution record and the financial finalization commit together or
+     * roll back together. Writing it separately beforehand permanently
+     * consumed the subject-unique slot when approval then failed.
+     */
+    auditResolution?: (tx: any) => Promise<void>;
+  }
+): Promise<{ message: string }> {
   if (tx) {
-    return approvePaymentInTx(paymentId, approvedBy, adminLabel, tx);
+    return approvePaymentInTx(paymentId, approvedBy, adminLabel, tx, options);
   }
   const database = await db.getDb();
   if (!database) throw new Error("Database not available");
-  return database.transaction((newTx: any) => approvePaymentInTx(paymentId, approvedBy, adminLabel, newTx));
+  return database.transaction((newTx: any) =>
+    approvePaymentInTx(paymentId, approvedBy, adminLabel, newTx, options)
+  );
 }
 
-async function approvePaymentInTx(paymentId: number, approvedBy: string, adminLabel: string | undefined, tx: any): Promise<{ message: string }> {
+/**
+ * The statuses an approval may still move a payment out of. `approved` and
+ * `rejected` are FINAL - see the guard in approvePaymentInTx.
+ */
+const REVIEWABLE_PAYMENT_STATUSES = ["pending", "pending_review"] as const;
+
+export function isReviewablePaymentStatus(status: string | null | undefined): boolean {
+  return (REVIEWABLE_PAYMENT_STATUSES as readonly string[]).includes(status ?? "");
+}
+
+/**
+ * Raised when a payment is no longer reviewable at the moment its approval
+ * transaction acquires the row lock. Typed so callers can tell a lost STATE
+ * race apart from a provider fault or a duplicate.
+ */
+export class PaymentNotReviewableError extends Error {
+  readonly code = "PAYMENT_NOT_REVIEWABLE";
+  readonly currentStatus: string;
+  constructor(paymentId: number, currentStatus: string) {
+    super(
+      `PAYMENT_NOT_REVIEWABLE: payment ${paymentId} is already ${currentStatus}. It was ` +
+        `finalized by another action while this one was in flight, so nothing was claimed, ` +
+        `approved or finalized.`
+    );
+    this.name = "PaymentNotReviewableError";
+    this.currentStatus = currentStatus;
+  }
+}
+
+/**
+ * Whether two slip versions - the `(slipImageUrl, slipSubmittedAt)` pair -
+ * refer to the exact same upload. Used to bind a computation done against
+ * one slip snapshot to a write that must only land while that snapshot is
+ * still the current one.
+ */
+export function sameSlipVersion(
+  a: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+  b: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
+): boolean {
+  if (a.slipImageUrl !== b.slipImageUrl) return false;
+  const aTime = a.slipSubmittedAt ? a.slipSubmittedAt.getTime() : null;
+  const bTime = b.slipSubmittedAt ? b.slipSubmittedAt.getTime() : null;
+  return aTime === bTime;
+}
+
+/**
+ * Raised when a payment's slip was replaced between the moment identifiers
+ * were computed against it and the moment this operation acquired the row
+ * lock. Distinct from PaymentNotReviewableError: the payment is still
+ * reviewable (a replacement upload sets status back to "pending"), but the
+ * identifiers being claimed belong to a slip that is no longer displayed.
+ */
+export class SlipVersionChangedError extends Error {
+  readonly code = "SLIP_VERSION_CHANGED";
+  readonly currentStatus: string;
+  constructor(paymentId: number, currentStatus: string) {
+    super(
+      `SLIP_VERSION_CHANGED: payment ${paymentId}'s slip was replaced while this operation was ` +
+        `in flight (status is ${currentStatus}). The identifiers this operation computed belong ` +
+        `to a slip that is no longer current, so nothing was claimed, approved or written.`
+    );
+    this.name = "SlipVersionChangedError";
+    this.currentStatus = currentStatus;
+  }
+}
+
+/**
+ * The persisted reviewReason a Recheck durably writes when it detects the
+ * SAME stored slip URL yielding two different byte hashes mid-run (the
+ * object was mutated in place, not replaced). See
+ * ocrRecheckService.ts's "INTEGRITY: the stored bytes must not change
+ * mid-recheck" block. Exported so approval enforcement and its tests share
+ * one literal rather than two copies drifting apart.
+ */
+export const SLIP_INTEGRITY_BLOCK_REASON = "SLIP_FILE_HASH_CHANGED_DURING_RECHECK";
+
+/**
+ * Raised when a payment is reviewable and its slip version matches, but a
+ * prior Recheck durably flagged that this exact slip's stored bytes changed
+ * mid-run (SLIP_INTEGRITY_BLOCK_REASON). Approving now would let identifiers
+ * recovered from the OLD bytes be claimed while the URL currently serves
+ * DIFFERENT bytes - the same "stale identifiers, current display" shape as
+ * SlipVersionChangedError, just reached via in-place mutation instead of a
+ * new upload. Cleared only by publishing a genuine replacement slip (which
+ * already clears reviewReason as part of its atomic publish) or by a later
+ * stable Recheck of this same slip (two matching hashes), whose final write
+ * overwrites reviewReason with its own fresh value.
+ */
+export class SlipIntegrityBlockedError extends Error {
+  readonly code = "SLIP_INTEGRITY_BLOCKED";
+  constructor(paymentId: number) {
+    super(
+      `SLIP_INTEGRITY_BLOCKED: payment ${paymentId}'s slip was found to have changed bytes at ` +
+        `the same URL during a prior Recheck, and that finding has not yet been cleared. ` +
+        `Approval is refused until a stable Recheck re-establishes integrity for this exact ` +
+        `slip, or the customer uploads a genuine replacement.`
+    );
+    this.name = "SlipIntegrityBlockedError";
+  }
+}
+
+/**
+ * THE ONE ORDER FINANCIAL APPROVAL INVARIANT: lock, reload, require reviewable.
+ *
+ * Every path that can move an order payment to `approved` must call this
+ * FIRST, inside the transaction that will claim the slip and create value, and
+ * before any of it. A reviewability check taken outside the transaction is UX
+ * only - it cannot serialize against an admin acting in the same window.
+ *
+ * Shared deliberately rather than reimplemented per caller: the manual admin
+ * approval and the OCR automatic approval each grew their own transaction, and
+ * the guard added to one did nothing for the other. One rule, one
+ * implementation, one place to get it right.
+ *
+ * `expectedSlipVersion`, when passed, additionally requires the reloaded
+ * row's slip identity to still match it - for callers (OCR auto-approval)
+ * whose identifiers were computed against a specific slip snapshot BEFORE
+ * this lock was acquired, rather than derived fresh from the reloaded row
+ * the way manual admin approval always is. Without this, a slip replacement
+ * racing the same window as PaymentNotReviewableError guards against would
+ * pass the status check (a replacement re-opens status to "pending") while
+ * still claiming identifiers that belong to the slip it replaced.
+ *
+ * Returns the payment as reloaded UNDER the lock - callers must use this row,
+ * not one they read earlier.
+ */
+export async function lockAndRequireReviewablePayment(
+  paymentId: number,
+  tx: any,
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
+) {
+  await db.lockPaymentForUpdate(paymentId, tx);
+
   const payment = await db.getPaymentById(paymentId, tx);
   if (!payment) {
     throw new Error("Payment not found");
   }
 
+  if (!isReviewablePaymentStatus(payment.status as string)) {
+    throw new PaymentNotReviewableError(paymentId, String(payment.status));
+  }
+
+  // Durable slip-integrity block: refused BEFORE deriving/claiming anything,
+  // exactly where the reviewable check sits - a same-URL byte mutation is
+  // the same class of "current display vs. claimable identifiers" mismatch
+  // as a slip replacement, just detected a different way.
+  if (payment.reviewReason === SLIP_INTEGRITY_BLOCK_REASON) {
+    throw new SlipIntegrityBlockedError(paymentId);
+  }
+
+  if (
+    expectedSlipVersion &&
+    !sameSlipVersion(expectedSlipVersion, {
+      slipImageUrl: payment.slipImageUrl as string | null,
+      slipSubmittedAt: payment.slipSubmittedAt as Date | null,
+    })
+  ) {
+    throw new SlipVersionChangedError(paymentId, String(payment.status));
+  }
+
+  return payment;
+}
+
+async function approvePaymentInTx(
+  paymentId: number,
+  approvedBy: string,
+  adminLabel: string | undefined,
+  tx: any,
+  options?: {
+    legacyCaseAmbiguityResolution?: {
+      expectedLegacyAliasHash?: string;
+      expectedMatchedSourceType: "order_payment" | "wallet_topup";
+      expectedMatchedSourceId: number;
+      /** The exact case-preserving reference the admin adjudicated. */
+      expectedIncomingReferenceHash?: string;
+    };
+    auditResolution?: (tx: any) => Promise<void>;
+  }
+): Promise<{ message: string }> {
+  // LOCK, RELOAD, REQUIRE REVIEWABLE - the shared order approval invariant,
+  // before any claim, approval, order update or finalization. The admin's
+  // browser may have had this order open for a long time and the OCR panel it
+  // renders is display state, not authority; the locked row is.
+  const payment = await lockAndRequireReviewablePayment(paymentId, tx);
+
   const order = await db.getOrderById(payment.orderId, tx);
   if (!order) {
     throw new Error("Order not found");
+  }
+
+  // ── ANTI-REPLAY GATE ────────────────────────────────────────────────────
+  // Strong identifiers are recomputed server-side from persisted data and
+  // claimed in THIS transaction, so the claim and the money commit together.
+  // A slip claimed by someone else between page load and this click fails
+  // here rather than creating a second helping of value from one transfer.
+  //
+  // Nothing from the admin's browser is trusted: the OCR panel it renders is
+  // display state, and `payment` was reloaded fresh above.
+  // Reloaded server-side above; nothing here comes from the admin's browser.
+  const persistedExtractedData = payment.extractedData as string | null;
+  const { identifiers, semanticFingerprint } =
+    deriveStrongIdentifiersFromExtractedData(persistedExtractedData);
+
+  if (!hasStrongIdentifier(identifiers)) {
+    // A payment with NO strong identifier cannot be protected against replay
+    // at all, so normal Approve must NOT quietly proceed - doing so would
+    // make ordinary admin approval a silent bypass of the whole registry.
+    //
+    // After server-side fileHash wiring, every NEW slip carries at least an
+    // exact-file identifier even when OCR fails completely, so reaching this
+    // branch means either a genuinely legacy row or a slip whose bytes could
+    // not be read. Both need a deliberate human decision, not a default.
+    //
+    // A dedicated break-glass path for such legacy rows (admin-only, typed
+    // confirmation, mandatory reason, audit record, never reachable from OCR
+    // auto-approval) is documented as follow-up rather than implemented here;
+    // until it exists this fails loudly and states what is required.
+    throw new Error(
+      "NO_STRONG_IDENTIFIER: This payment has no transaction reference and no readable " +
+        "slip file, so it cannot be protected against replay. Run Recheck OCR first; if the " +
+        "slip still yields no identifier, this record needs the legacy override path " +
+        "(not yet available) rather than a normal approval."
+    );
+  }
+
+  // ── CURRENT-BYTE INTEGRITY (IPE-001-C09) ────────────────────────────────
+  // `payment` is reloaded fresh above, but `persistedExtractedData` - and any
+  // fileHash within it - describes bytes from an EARLIER moment: the last
+  // successful OCR/Recheck, not necessarily what slipImageUrl serves RIGHT
+  // NOW. The row lock and lockAndRequireReviewablePayment's slip-version/
+  // status/SLIP_INTEGRITY_BLOCK_REASON guards all serialize concurrent
+  // writes to THIS row; none of them serialize an external object-store
+  // mutation of the same key. Recompute the current bytes' hash here, inside
+  // this transaction, immediately before claiming - the only way to know
+  // what this approval is actually about to claim value for. Applies
+  // whenever a slip exists, even for a reference-only identifier set: a
+  // reference match alone must never bypass current-file integrity when a
+  // file is right there to check.
+  if (payment.slipImageUrl) {
+    const currentFileHash = await computeSlipFileHash(payment.slipImageUrl);
+    const persistedFileHash = fileHashFromExtractedData(persistedExtractedData);
+
+    if (!currentFileHash) {
+      // Unavailability is uncertainty, never proof of stability - fail
+      // closed exactly as a proven mismatch would.
+      throw new Error(
+        "SLIP_CURRENT_BYTES_UNAVAILABLE: The stored slip's current bytes could not be read at " +
+          "approval time, so this approval cannot be bound to what is actually being displayed. " +
+          "Nothing was claimed or approved. Try again, or run Recheck OCR first."
+      );
+    }
+
+    if (persistedFileHash && currentFileHash !== persistedFileHash) {
+      throw new Error(
+        "SLIP_INTEGRITY_MISMATCH_AT_APPROVAL: The stored slip's bytes changed after the last " +
+          "successful OCR/Recheck and before this approval. Nothing was claimed or approved. " +
+          "Run Recheck OCR again to re-establish integrity for the exact bytes now on file."
+      );
+    }
+
+    // Bind the freshly confirmed current hash into what THIS approval
+    // actually claims - re-confirms an identifier that already had one, and
+    // enriches a reference-only record (whose persisted extraction never
+    // carried a fileHash) with one now, atomically inside the SAME
+    // transaction that commits the claim and the money.
+    identifiers.fileHash = currentFileHash;
+  }
+
+  const claim = await claimSlip(
+    {
+      sourceType: "order_payment",
+      sourceId: payment.id,
+      userId: order.userId,
+      identifiers,
+      semanticFingerprint,
+      // Derived from the PERSISTED extraction, for the legacy lookup only.
+      referenceRawForLegacyLookup: getRawReferenceForLegacyLookup(persistedExtractedData),
+      // BOUND to the exact ambiguity the admin adjudicated, never a bare
+      // boolean: claimSlip waives it only when the fold it finds from
+      // transaction-visible state is identical.
+      legacyCaseAmbiguityResolution: options?.legacyCaseAmbiguityResolution,
+    },
+    tx
+  );
+
+  if (!claim.claimed && claim.reason === "legacy_scan_unresolved") {
+    // An approved historical row exists that could not be verified - not a
+    // proven duplicate, not provably clean. Normal Approve must not treat
+    // this as an ordinary review outcome or silently proceed: replay
+    // protection for this record is genuinely incomplete.
+    throw new Error(`LEGACY_APPROVED_SLIP_UNRESOLVED: ${describeClaimFailure(claim)}`);
+  }
+
+  if (!claim.claimed && claim.reason === "legacy_alias_group_ambiguity") {
+    // MORE THAN ONE historical source shares this alias. Never a duplicate
+    // verdict and never resolvable by the single-member "confirm distinct"
+    // flow - claimSlip refused to consult any resolution for exactly this
+    // reason. Normal Approve must fail closed and direct the admin to
+    // investigate the whole group manually.
+    throw new Error(`LEGACY_ALIAS_GROUP_AMBIGUITY: ${describeClaimFailure(claim)}`);
+  }
+
+  if (!claim.claimed && claim.reason === "legacy_case_ambiguity") {
+    // Normal Approve must not silently bypass this, and must not treat it as
+    // a duplicate. The alias is lossy, so this is an unresolved question, and
+    // a distinct-but-similar payment must still have somewhere to go: the
+    // explicit resolution flow. Failing with `already_claimed` here made such
+    // a payment permanently unapprovable.
+    throw new Error(
+      `LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION: ${describeClaimFailure(claim)}`
+    );
+  }
+
+  if (!claim.claimed && claim.reason === "legacy_case_ambiguity_changed") {
+    // The evidence moved after the admin decided - their decision was about
+    // a different fold. It is NOT applied: no claim, no finalization, no
+    // resolution record. The admin must re-adjudicate current evidence.
+    throw new Error(
+      `LEGACY_CASE_AMBIGUITY_CHANGED_REVIEW_REQUIRED: ${describeClaimFailure(claim)}`
+    );
+  }
+
+  if (!claim.claimed && claim.reason === "already_claimed") {
+    const ownedByThisPayment =
+      claim.existingSourceType === "order_payment" && claim.existingSourceId === payment.id;
+
+    if (!ownedByThisPayment) {
+      // Surfaced to the admin UI as SLIP_ALREADY_CLAIMED so it can prompt a
+      // refresh/recheck and link to the submission that owns the slip. This
+      // also fires for a pre-migration approved record found by the legacy
+      // compatibility lookup, which is what stops historical slips being
+      // replayed while the claim registry is still being backfilled.
+      throw new Error(`SLIP_ALREADY_CLAIMED: ${describeClaimFailure(claim)}`);
+    }
+    // Already claimed by THIS payment - a retried approval of work that
+    // partially committed earlier. Not a replay; continue.
   }
 
   // Use ApprovalService for manual approval with metadata
@@ -360,6 +723,12 @@ async function approvePaymentInTx(paymentId: number, approvedBy: string, adminLa
   // Finalize order completion (points, purchases, coupon usage)
   if (order.userId) {
     await finalizeOrderCompletion(order.id, order.userId, tx);
+  }
+
+  // Audit a legacy-case resolution INSIDE this transaction, after
+  // finalization, so the record and the money commit or roll back together.
+  if (options?.auditResolution) {
+    await options.auditResolution(tx);
   }
 
   return { message: `Payment ${paymentId} approved successfully` };

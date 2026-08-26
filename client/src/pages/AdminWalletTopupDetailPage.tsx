@@ -9,6 +9,11 @@ import { Loader2, ArrowLeft, Image as ImageIcon, FileText, ExternalLink, Eye, In
 import { useLanguage } from "@/contexts/LanguageContext";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  describeDuplicate,
+  requiresLegacyCaseResolution,
+  type OcrPanelInput,
+} from "@/components/ocrVerdictModel";
 
 /** Derive a color class for a topup status string */
 function topupStatusColor(status: string | undefined | null): string {
@@ -58,6 +63,9 @@ export default function AdminWalletTopupDetailPage() {
   const [showRejectDialog, setShowRejectDialog] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
   const [showSlipPreview, setShowSlipPreview] = useState(false);
+  const [legacyReason, setLegacyReason] = useState("");
+  const [legacyError, setLegacyError] = useState<string | null>(null);
+  const [approveError, setApproveError] = useState<string | null>(null);
 
   // Fetch topup detail
   const { data, isLoading } = trpc.wallet.admin.detail.useQuery(
@@ -69,6 +77,25 @@ export default function AdminWalletTopupDetailPage() {
   const approveMutation = trpc.wallet.admin.approveTopup.useMutation({
     onSuccess: () => {
       navigate("/admin/wallet-topups");
+    },
+    onError: (error: any) => {
+      setApproveError(error?.message || "Approval failed.");
+    },
+  });
+
+  /**
+   * Wallet equivalent of the order page's legacy-case resolution.
+   *
+   * Wallet approval also stops on a legacy case ambiguity, so without this the
+   * admin would be told to use a resolution route that did not exist for
+   * wallet top-ups.
+   */
+  const resolveLegacy = (trpc as any).wallet?.admin?.resolveLegacyCaseAmbiguity?.useMutation?.({
+    onSuccess: () => {
+      navigate("/admin/wallet-topups");
+    },
+    onError: (error: any) => {
+      setLegacyError(error?.message || "Resolution failed. Please try again.");
     },
   });
 
@@ -141,9 +168,137 @@ export default function AdminWalletTopupDetailPage() {
   const canApproveOrReject =
     topup.status === "pending" || topup.status === "pending_review";
 
+  // Server-derived duplicate finding (evaluateSlipConflict, run read-only by
+  // wallet.admin.detail) - the SAME classifier normal wallet Approve will
+  // enforce. Built from the initial page load / refetch, not from a failed
+  // Approve attempt: previously this ambiguity was invisible until an admin
+  // clicked Approve and it failed, so normal Approve WAS the discovery
+  // mechanism instead of the detail page.
+  const ocrMeta = (data as any).ocrMeta;
+  const model: OcrPanelInput = {
+    reviewReason: ocrMeta?.reviewReason,
+    duplicate: ocrMeta?.duplicate ?? null,
+  };
+  const duplicate = describeDuplicate(model);
+
+  // requiresLegacyCaseResolution checks strict equality on the single-member
+  // `legacy_case_ambiguity` state only - never `unresolved` or
+  // `legacy_case_ambiguity_group`, which need manual investigation instead
+  // of the audited "confirm distinct" resolution this offers.
+  const legacyCaseAmbiguity =
+    requiresLegacyCaseResolution(model) ||
+    (typeof approveError === "string" &&
+      (approveError.includes("LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION") ||
+        approveError.includes("LEGACY_REFERENCE_CASE_AMBIGUITY")));
+
+  // Every OTHER duplicate state, surfaced read-only with matched-source
+  // navigation - `legacy_case_ambiguity` gets its own actionable box below
+  // instead, so it is excluded here to avoid showing the same finding twice.
+  const showGeneralDuplicateBanner =
+    duplicate.strength !== "none" && duplicate.strength !== "legacy_case_ambiguity";
+
   return (
     <AdminLayout>
       <div className="space-y-6">
+        {showGeneralDuplicateBanner && (
+          <div
+            className={`rounded-lg border-2 p-4 space-y-2 ${
+              duplicate.strength === "strong"
+                ? "border-red-300 bg-red-50"
+                : "border-yellow-300 bg-yellow-50"
+            }`}
+          >
+            <p
+              className={`text-sm font-bold ${
+                duplicate.strength === "strong" ? "text-red-900" : "text-yellow-900"
+              }`}
+            >
+              {duplicate.strength === "strong" ? "⚠ Confirmed Duplicate" : `⚠ ${duplicate.headline}`}
+            </p>
+            {duplicate.caveat && (
+              <p className={duplicate.strength === "strong" ? "text-sm text-red-900" : "text-sm text-yellow-900"}>
+                {duplicate.caveat}
+              </p>
+            )}
+            {duplicate.matchedLabel && (
+              <p className="text-sm text-slate-700">
+                <span className="font-semibold">Matched:</span>{" "}
+                {duplicate.matchedHref ? (
+                  <a className="text-blue-700 underline" href={duplicate.matchedHref}>
+                    {duplicate.matchedLabel}
+                  </a>
+                ) : (
+                  duplicate.matchedLabel
+                )}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Legacy case ambiguity - an unanswered question, not a verdict */}
+        {legacyCaseAmbiguity && canApproveOrReject && (
+          <div className="rounded-lg border-2 border-yellow-300 bg-yellow-50 p-4 space-y-3">
+            <p className="text-sm font-bold text-yellow-900">
+              ⚠ Legacy Reference Case Ambiguity
+            </p>
+            <p className="text-sm text-yellow-900">
+              This only matches an older transaction when letter casing is ignored. That older
+              record lost its original casing, so <strong>it is not proof of a duplicate</strong> —
+              the two references may be genuinely different.
+            </p>
+            <textarea
+              className="w-full rounded border border-yellow-300 p-2 text-sm"
+              rows={2}
+              placeholder="Reason (required, min 10 characters) - permanently audited"
+              value={legacyReason}
+              onChange={(e) => setLegacyReason(e.target.value)}
+            />
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={resolveLegacy?.isPending || legacyReason.trim().length < 10}
+                onClick={() => {
+                  setLegacyError(null);
+                  resolveLegacy?.mutate?.({
+                    topupId: parseInt(topupId || "0", 10),
+                    decision: "confirmed_duplicate",
+                    reason: legacyReason.trim(),
+                  });
+                }}
+              >
+                Reject as Duplicate
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={resolveLegacy?.isPending || legacyReason.trim().length < 10}
+                onClick={() => {
+                  setLegacyError(null);
+                  resolveLegacy?.mutate?.({
+                    topupId: parseInt(topupId || "0", 10),
+                    decision: "confirmed_distinct",
+                    reason: legacyReason.trim(),
+                  });
+                }}
+              >
+                Approve as Distinct Transaction
+              </Button>
+            </div>
+            {legacyError && (
+              <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
+                {legacyError}
+              </p>
+            )}
+          </div>
+        )}
+
+        {approveError && !legacyCaseAmbiguity && (
+          <div className="rounded border border-red-200 bg-red-50 p-3">
+            <p className="text-sm text-red-700">{approveError}</p>
+          </div>
+        )}
+
         {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">

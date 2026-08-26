@@ -20,17 +20,70 @@ import { getEffectiveOCRConfig } from "../_core/ocr-effective-config";
 import { formatMoney } from "../helpers/moneyNormalizer";
 import { sendOCRReviewNotification } from "./discordNotificationService";
 import { prepareSlipImageForOcr } from "./ocrImageInputService";
+import { computeSlipFileHash } from "./slipFileHashService";
+import { describeProviderFailure, type ProviderDiagnostic } from "./ocrDiagnosticsService";
+import { recordOcrAttempt } from "./ocrAttemptService";
+
+/** The shape of `recordWalletAttempt`, threaded into the guarded-write
+ *  handlers so they can record the TERMINAL outcome themselves, only once
+ *  they know whether their write actually landed. */
+type WalletAttemptRecorder = (
+  result: "auto_approved" | "needs_review" | "technical_failure" | "config_blocked",
+  reviewReason: string | null,
+  category: string | null,
+  confidence: number | null
+) => Promise<void>;
 
 export interface WalletTopupSubmissionResult {
   topupId: number;
-  status: "pending_review" | "approved";
+  /**
+   * `rejected` is reachable ONLY by reporting a state an admin already set -
+   * this service never rejects anything.
+   */
+  status: "pending_review" | "approved" | "rejected" | "cancelled";
   ocrDecision: "approved" | "needs_review" | "rejected";
   reviewReason?: string;
+  /** TECHNICAL | DATA | CONFIG | STATE. */
+  reviewCategory?: string;
   ocrConfidence?: number;
   finalConfidence?: number;
   duplicateStatus?: any;
   userMessage: string;
   creditedAmount?: string;
+  /**
+   * True when an admin finalized this top-up while OCR was still running.
+   * The persisted state is authoritative and NOTHING was written.
+   */
+  supersededByFinalization?: boolean;
+}
+
+/**
+ * Re-hashes the SAME stored slip and reports whether it still matches the
+ * baseline computed at the start of this run.
+ *
+ * IPE-001-C06: the original stable-file fix only re-verified once, right
+ * before Step 3 (after a successful OCR extraction) - every EARLIER exit
+ * (OCR disabled, a parse technical error, shadow mode, or the outer catch)
+ * persisted `walletSlipFileHash`/`fileHashOnlyExtraction` straight from the
+ * pre-OCR baseline, with no re-check at all. Between that baseline and
+ * whichever guarded write actually commits, the object behind the SAME
+ * URL/key can still be mutated - same key, different bytes - and every one
+ * of those earlier paths would still bind stale file identity to the
+ * top-up, exactly the gap the later checkpoint was meant to close. This
+ * helper is called at EVERY terminal path that would otherwise persist a
+ * baseline-derived hash, not only the one after successful extraction.
+ *
+ * Returns `true` (stable) whenever there is no baseline to compare at all -
+ * that is not this check's job; `hasStrongIdentifier`/manual review already
+ * handle a top-up with no identifier.
+ */
+async function verifyWalletSlipStillStable(
+  slipImageUrl: string,
+  baselineHash: string | undefined
+): Promise<boolean> {
+  if (!baselineHash) return true;
+  const rehash = await computeSlipFileHash(slipImageUrl);
+  return rehash === baselineHash;
 }
 
 /**
@@ -65,8 +118,87 @@ export async function submitWalletTopupSlip(
     });
   }
 
+  // Captured once, up front. Every downstream write this run makes - the
+  // auto-approval claim/credit, and every non-auto-approve pending_review
+  // write - requires the top-up to still carry THIS exact slip. A customer
+  // replacing the slip mid-run does not change status (a replacement
+  // re-opens status to "pending"), so a status-only guard would let this
+  // run's result land on a slip it never actually processed (IPE-001,
+  // wallet parity with the order-side slip-version binding).
+  const expectedSlipVersion = {
+    slipImageUrl: topup.slipImageUrl as string | null,
+    slipSubmittedAt: topup.slipSubmittedAt as Date | null,
+  };
+
   const ocrConfig = await getEffectiveOCRConfig();
   const requestedAmountNum = parseFloat(requestedAmount);
+
+  // Declared here (not inside the try) so the attempt recorder below can see
+  // them on every exit path, including the technical-failure ones.
+  const walletOcrStartedAt = new Date();
+  let walletProviderDiagnostic: ProviderDiagnostic | undefined;
+
+  // ── EXACT-FILE IDENTIFIER ─────────────────────────────────────────────
+  // Computed BEFORE the OCR-enabled check, not inside the try block. When
+  // OCR is disabled the function returns early, and computing the hash after
+  // that point left every such top-up with NO strong identifier - which
+  // manual approval now refuses, making them permanently unapprovable.
+  //
+  // Needs no provider: it hashes the bytes already stored in the private
+  // bucket. Never client-supplied.
+  const walletSlipFileHash = await computeSlipFileHash(slipImageUrl);
+
+  /** Minimal extraction carrying just the server-derived file identifier. */
+  const fileHashOnlyExtraction = walletSlipFileHash
+    ? ({ fileHash: walletSlipFileHash } as any)
+    : undefined;
+
+  /**
+   * Appends this run to the persistent attempt history. Best-effort:
+   * recordOcrAttempt swallows its own errors, so diagnostics can never break
+   * wallet crediting. Records automatic runs that previously left no trace at
+   * all, so history reflects the real sequence rather than starting at the
+   * first admin recheck.
+   *
+   * CALLED ONLY AFTER a guarded write's outcome is known (or after a run that
+   * performs no persistence at all, like OCR-disabled/shadow-mode config
+   * blocks). handlePendingReview/handleDuplicate/handleOCRError take the
+   * INTENDED (result, reason, category, confidence) and record it themselves
+   * once `applied` is known - the intended DATA/CONFIG/TECHNICAL result if
+   * the write landed, or exactly one STATE result if a slip
+   * replacement/finalization refused it. Recording before that point (the
+   * previous shape) could commit a stale DATA/CONFIG/TECHNICAL row for a
+   * slip version this run no longer owns.
+   */
+  const recordWalletAttempt = async (
+    result: "auto_approved" | "needs_review" | "technical_failure" | "config_blocked",
+    reviewReason: string | null,
+    category: string | null,
+    confidence: number | null
+  ) => {
+    await recordOcrAttempt({
+      subjectType: "wallet_topup",
+      subjectId: topupId,
+      trigger: "automatic",
+      initiatedByUserId: null,
+      startedAt: walletOcrStartedAt,
+      stage: walletProviderDiagnostic
+        ? walletProviderDiagnostic.code === "OCR_IMAGE_PREPARATION_FAILED"
+          ? "image_preparation"
+          : "provider_call"
+        : "completed",
+      result,
+      reviewCategory: category,
+      reviewReason,
+      confidence,
+      providerMode: walletProviderDiagnostic?.providerMode ?? null,
+      providerHttpStatus: walletProviderDiagnostic?.providerHttpStatus ?? null,
+      providerAttemptCount: walletProviderDiagnostic?.providerAttemptCount ?? 1,
+      verificationSnapshot: JSON.stringify({
+        fileHashAvailable: Boolean(walletSlipFileHash),
+      }),
+    });
+  };
 
   // OCR disabled: short-circuit BEFORE preparing the image or calling any
   // provider - matches slipSubmissionService.ts's existing high-level
@@ -78,16 +210,46 @@ export async function submitWalletTopupSlip(
   // observation while preventing auto-approval (see the shadow-mode check
   // further down, unchanged).
   if (!ocrConfig.enabled) {
+    // IPE-001-C06: re-verify immediately before persisting the baseline
+    // hash - even this early exit has a (small but real) window between
+    // computing walletSlipFileHash and this write actually committing.
+    if (!(await verifyWalletSlipStillStable(slipImageUrl, walletSlipFileHash))) {
+      console.error(
+        `[OCR] slip integrity mismatch for wallet top-up ${topupId}: stored bytes changed before persistence (OCR disabled)`
+      );
+      return await handlePendingReview(
+        topupId,
+        userId,
+        "SLIP_INTEGRITY_MISMATCH",
+        "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        topup,
+        expectedSlipVersion,
+        recordWalletAttempt,
+        "needs_review",
+        "TECHNICAL",
+        null
+      );
+    }
     return await handlePendingReview(
       topupId,
       userId,
       "OCR_DISABLED",
       "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
+      // Persist the server-derived file identifier even though OCR never ran.
+      fileHashOnlyExtraction,
       undefined,
       undefined,
       undefined,
-      undefined,
-      topup
+      topup,
+      expectedSlipVersion,
+      recordWalletAttempt,
+      "config_blocked",
+      "CONFIG",
+      null
     );
   }
 
@@ -125,34 +287,147 @@ export async function submitWalletTopupSlip(
 
     const parseResult = await parseSlipImage(ocrImageUrl);
 
-    // Handle OCR technical error
+    // Handle OCR technical error. The sanitized provider diagnostic is
+    // preserved instead of being flattened to OCR_PROCESSING_ERROR, so an
+    // admin can distinguish a provider outage from a bad slip.
     if (parseResult.technicalError) {
+      walletProviderDiagnostic = parseResult.providerDiagnostic;
+      // IPE-001-C06: OCR already independently re-fetched the stored bytes
+      // by this point (prepareSlipImageForOcr) - re-verify against the SAME
+      // baseline before persisting it, exactly like the post-extraction
+      // checkpoint further below.
+      if (!(await verifyWalletSlipStillStable(slipImageUrl, walletSlipFileHash))) {
+        console.error(
+          `[OCR] slip integrity mismatch for wallet top-up ${topupId}: stored bytes changed before persistence (technical error path)`
+        );
+        return await handlePendingReview(
+          topupId,
+          userId,
+          "SLIP_INTEGRITY_MISMATCH",
+          "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          topup,
+          expectedSlipVersion,
+          recordWalletAttempt,
+          "needs_review",
+          "TECHNICAL",
+          null
+        );
+      }
       return await handleOCRError(
         topupId,
         userId,
-        "OCR_PROCESSING_ERROR",
+        parseResult.technicalErrorCode ?? "OCR_PROCESSING_ERROR",
         "ส่งสลิปแล้ว แต่ระบบ OCR ขัดข้อง แอดมินจะตรวจสอบให้",
-        topup
+        topup,
+        // Persist the server-derived identifier: OCR failed, but the stored
+        // bytes are still uniquely identifying, and without this the top-up
+        // would be unapprovable.
+        fileHashOnlyExtraction,
+        expectedSlipVersion,
+        recordWalletAttempt
       );
     }
 
     // Handle shadow mode
     if (ocrConfig.shadowModeEnabled) {
+      // IPE-001-C06: OCR already ran (this branch is reached only after a
+      // successful parse) - re-verify the same baseline before persisting.
+      if (!(await verifyWalletSlipStillStable(slipImageUrl, walletSlipFileHash))) {
+        console.error(
+          `[OCR] slip integrity mismatch for wallet top-up ${topupId}: stored bytes changed before persistence (shadow mode)`
+        );
+        return await handlePendingReview(
+          topupId,
+          userId,
+          "SLIP_INTEGRITY_MISMATCH",
+          "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          topup,
+          expectedSlipVersion,
+          recordWalletAttempt,
+          "needs_review",
+          "TECHNICAL",
+          null
+        );
+      }
       return await handlePendingReview(
         topupId,
         userId,
         "SHADOW_MODE",
         "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
+        fileHashOnlyExtraction,
         undefined,
         undefined,
         undefined,
-        undefined,
-        topup
+        topup,
+        expectedSlipVersion,
+        recordWalletAttempt,
+        "needs_review",
+        "CONFIG",
+        null
       );
     }
 
     // Step 2: Extract slip data
-    const extractedData = extractSlipData(parseResult.text, parseResult.ocrConfidence);
+    // `undefined`, NOT the numeric 0 placeholder, when the provider never
+    // reported a confidence - otherwise extractSlipData reads 0 as a real
+    // "0%" reading and UNKNOWN_CONFIDENCE collapses into LOW_CONFIDENCE.
+    // See the identical fix in ocr-slip-integration-staging.ts.
+    const rawExtracted = extractSlipData(
+      parseResult.text,
+      parseResult.confidenceKnown === false ? undefined : parseResult.ocrConfidence
+    );
+    // Attach the server-computed exact-file identifier so it reaches strong
+    // identifier derivation and the claim registry.
+    const extractedData = walletSlipFileHash
+      ? { ...rawExtracted, fileHash: walletSlipFileHash }
+      : rawExtracted;
+
+    // ── INTEGRITY: RE-HASH THE SAME STORED SLIP BEFORE PUBLISHING ANYTHING
+    // OCR-DERIVED ─────────────────────────────────────────────────────────
+    // walletSlipFileHash above was computed from the stored bytes BEFORE
+    // OCR ran; OCR itself independently re-fetched those same bytes
+    // (prepareSlipImageForOcr), possibly seconds later. If the object at
+    // this URL was mutated in between - same key, different content -
+    // every downstream artifact (auto-approval's claim/credit, or even the
+    // metadata left for a LATER manual admin approval to trust) would
+    // describe bytes that no longer exist. Re-verify right after OCR
+    // extraction, before ANY branch below can publish it - a mismatch fails
+    // closed uniformly, whether this run would have auto-approved or only
+    // gone to manual review. This is ONE of several checkpoints
+    // (verifyWalletSlipStillStable) - every earlier exit above (OCR
+    // disabled, a parse technical error, shadow mode, and the outer catch)
+    // carries its own, so no terminal path can publish a stale baseline.
+    if (!(await verifyWalletSlipStillStable(slipImageUrl, walletSlipFileHash))) {
+      console.error(
+        `[OCR] slip integrity mismatch for wallet top-up ${topupId}: stored bytes changed during OCR processing`
+      );
+      return await handlePendingReview(
+        topupId,
+        userId,
+        "SLIP_INTEGRITY_MISMATCH",
+        "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
+        // Nothing OCR derived from the stale bytes is trustworthy - not
+        // even the fileHash-only fallback other error paths use.
+        undefined,
+        undefined,
+        undefined,
+        parseResult,
+        topup,
+        expectedSlipVersion,
+        recordWalletAttempt,
+        "needs_review",
+        "TECHNICAL",
+        null
+      );
+    }
 
     // Step 3: Verify slip data
     const existingRefs = new Set(await getExistingReferencesForWallet(userId));
@@ -190,7 +465,12 @@ export async function submitWalletTopupSlip(
         verificationResult,
         "พบความเสี่ยงสลิปซ้ำ รอแอดมินตรวจสอบ",
         parseResult,
-        topup
+        topup,
+        expectedSlipVersion,
+        recordWalletAttempt,
+        "WEAK_DUPLICATE_RISK",
+        "DATA",
+        null
       );
     }
 
@@ -205,7 +485,12 @@ export async function submitWalletTopupSlip(
         fingerprint,
         verificationResult,
         parseResult,
-        topup
+        topup,
+        expectedSlipVersion,
+        recordWalletAttempt,
+        "needs_review",
+        "DATA",
+        null
       );
     }
 
@@ -220,7 +505,12 @@ export async function submitWalletTopupSlip(
         fingerprint,
         verificationResult,
         parseResult,
-        topup
+        topup,
+        expectedSlipVersion,
+        recordWalletAttempt,
+        "needs_review",
+        "DATA",
+        null
       );
     }
 
@@ -235,43 +525,172 @@ export async function submitWalletTopupSlip(
         fingerprint,
         verificationResult,
         parseResult,
-        topup
+        topup,
+        expectedSlipVersion,
+        recordWalletAttempt,
+        "needs_review",
+        "DATA",
+        null
       );
     }
 
     // Step 8: Auto-approve if all checks pass
     if (ocrConfig.autoApproveEnabled && verificationResult.status === "approved") {
-      return await autoApproveWalletTopup(
-        topupId,
-        userId,
-        requestedAmountNum,
-        extractedData,
-        fingerprint,
-        verificationResult,
-        parseResult
-      );
+      // HISTORY IS WRITTEN ONLY AFTER THE MONEY COMMITS.
+      //
+      // Recording `auto_approved` before autoApproveWalletTopup ran meant a
+      // claim conflict or a failed approval transaction left history
+      // asserting an approval that never happened, while the top-up sat in
+      // pending_review. The row is now written only once the atomic claim and
+      // the wallet credit have both committed.
+      try {
+        const approved = await autoApproveWalletTopup(
+          topupId,
+          userId,
+          requestedAmountNum,
+          extractedData,
+          fingerprint,
+          verificationResult,
+          parseResult,
+          expectedSlipVersion
+        );
+        await recordWalletAttempt("auto_approved", null, null, finalConfidence);
+        return approved;
+      } catch (approvalError: any) {
+        // A claim conflict is a DATA outcome, not a provider failure - OCR
+        // worked perfectly; the slip was simply already used. Classifying it
+        // as TECHNICAL/OCR_PROCESSING_ERROR would tell an admin the wrong
+        // story and invite a pointless recheck.
+        const claimCode =
+          approvalError instanceof db.WalletSlipClaimError ? approvalError.code : undefined;
+
+        // A LOST STATE RACE IS NOT A REVIEW OUTCOME. Checked BEFORE the
+        // generic claim handling below, which routes everything to
+        // handlePendingReview.
+        //
+        // Two distinct causes share this shape: an admin approved or
+        // rejected this top-up while OCR was running (TOPUP_STATE_RACE), or
+        // the customer replaced the slip while THIS run's OCR was still in
+        // flight (TOPUP_SLIP_VERSION_CHANGED - the row is still reviewable,
+        // but the identifiers this run computed belong to a slip that is no
+        // longer current). Either way the claim already rolled back with the
+        // transaction, so there is nothing to record and nothing to undo -
+        // and writing pending_review here would reopen a finalized record or
+        // stomp a newer slip's evidence. The persisted state is
+        // authoritative: report it and write NOTHING.
+        if (claimCode === "TOPUP_STATE_RACE" || claimCode === "TOPUP_SLIP_VERSION_CHANGED") {
+          await recordWalletAttempt(
+            // The attempt-history enum has no state-race member and adding
+            // one needs a migration; the reason/category pair below is what
+            // identifies this outcome, and it is neither a provider failure
+            // nor a duplicate.
+            "needs_review",
+            claimCode === "TOPUP_SLIP_VERSION_CHANGED"
+              ? "TOPUP_SUPERSEDED_BY_SLIP_REPLACEMENT"
+              : "TOPUP_SUPERSEDED_BY_FINALIZATION",
+            "STATE",
+            finalConfidence
+          );
+          return await buildSupersededResult(topupId, expectedSlipVersion);
+        }
+
+        if (claimCode) {
+          const duplicateReason =
+            claimCode === "NO_STRONG_IDENTIFIER" ? "NO_STRONG_IDENTIFIER" : claimCode;
+          return await handlePendingReview(
+            topupId,
+            userId,
+            duplicateReason,
+            "ส่งสลิปแล้ว พบความเสี่ยงสลิปซ้ำ รอแอดมินตรวจสอบ",
+            extractedData,
+            fingerprint,
+            verificationResult,
+            parseResult,
+            topup,
+            expectedSlipVersion,
+            recordWalletAttempt,
+            "needs_review",
+            "DATA",
+            finalConfidence
+          );
+        }
+
+        // Anything else is a genuine failure - rethrow so the outer catch
+        // classifies it. No auto_approved row was written.
+        throw approvalError;
+      }
     }
 
-    // Step 9: Default to pending review if auto-approve is disabled
+    // Step 9: Not auto-approved.
+    //
+    // AUTO_APPROVE_DISABLED is only truthful when verification actually
+    // PASSED and operator config withheld approval. Previously every
+    // unhandled verifier failure - RECIPIENT_NOT_VERIFIED,
+    // TRANSACTION_OUTSIDE_TIME_WINDOW, MISSING_TRANSACTION_DATE, ... - landed
+    // here and was recorded as a configuration decision, concealing the real
+    // data problem from the admin.
+    const verificationPassed = verificationResult.status === "approved";
+    const step9Reason = verificationPassed
+      ? "AUTO_APPROVE_DISABLED"
+      : (verificationResult.reviewReason ?? "MANUAL_REVIEW_REQUIRED");
+    const step9Category = verificationPassed ? "CONFIG" : "DATA";
+
     return await handlePendingReview(
       topupId,
       userId,
-      "AUTO_APPROVE_DISABLED",
+      step9Reason,
       "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
       extractedData,
       fingerprint,
       verificationResult,
       parseResult,
-      topup
+      topup,
+      expectedSlipVersion,
+      recordWalletAttempt,
+      "needs_review",
+      step9Category,
+      finalConfidence
     );
   } catch (error: any) {
-    console.error("Wallet top-up OCR submission error:", error);
+    // Sanitized classification only - the thrown error's own message may
+    // embed an endpoint or credential and is never propagated.
+    walletProviderDiagnostic = describeProviderFailure(error);
+    console.error(
+      `[Wallet OCR] technical failure for topup ${topupId}: ${walletProviderDiagnostic.code} status=${walletProviderDiagnostic.providerHttpStatus ?? "n/a"} attempts=${walletProviderDiagnostic.providerAttemptCount}`
+    );
+    // IPE-001-C06: this outer catch is the last exit before publishing the
+    // baseline fileHashOnlyExtraction - re-verify here too, regardless of
+    // which line inside the try block actually threw.
+    if (!(await verifyWalletSlipStillStable(slipImageUrl, walletSlipFileHash))) {
+      console.error(
+        `[OCR] slip integrity mismatch for wallet top-up ${topupId}: stored bytes changed before persistence (outer catch)`
+      );
+      return await handlePendingReview(
+        topupId,
+        userId,
+        "SLIP_INTEGRITY_MISMATCH",
+        "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        topup,
+        expectedSlipVersion,
+        recordWalletAttempt,
+        "needs_review",
+        "TECHNICAL",
+        null
+      );
+    }
     return await handleOCRError(
       topupId,
       userId,
-      "OCR_PROCESSING_ERROR",
+      walletProviderDiagnostic.code,
       "ส่งสลิปแล้ว แต่ระบบ OCR ขัดข้อง แอดมินจะตรวจสอบให้",
-      topup
+      topup,
+      fileHashOnlyExtraction,
+      expectedSlipVersion,
+      recordWalletAttempt
     );
   }
 }
@@ -286,7 +705,8 @@ async function autoApproveWalletTopup(
   extractedData: ExtractedSlipData,
   fingerprint: string,
   verificationResult: VerificationResult,
-  parseResult?: any
+  parseResult?: any,
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
 ): Promise<WalletTopupSubmissionResult> {
   // Fetch topup to get bonus amount
   const topup = await db.getWalletTopupById(topupId);
@@ -312,25 +732,30 @@ async function autoApproveWalletTopup(
   
   // Phase 2: Use transactional approveWalletTopupWithOCR for approval + wallet credit in one transaction
   // This ensures atomicity: if approval succeeds, wallet is credited; if either fails, both rollback
-  const updatedTopup = await db.approveWalletTopupWithOCR(topupId, {
-    status: "approved",
-    slipSubmittedAt: new Date(),
-    extractedData: JSON.stringify(extractedData),
-    ocrConfidence: ocrConfidenceValue,
-    visionConfidence: visionConfidenceValue,
-    structuredConfidence: structuredConfidenceValue,
-    finalConfidence: finalConfidenceValue,
-    duplicateStatus: JSON.stringify({
-      isDuplicate: false,
-      type: null,
-      reference: null,
-      fingerprint,
-    }),
-    ocrDecision: "approved",
-    approvalSource: "ocr_auto",
-    approvedAt: new Date(),
-    creditedAmount: creditedAmountStr,
-  });
+  const updatedTopup = await db.approveWalletTopupWithOCR(
+    topupId,
+    {
+      status: "approved",
+      slipSubmittedAt: new Date(),
+      extractedData: JSON.stringify(extractedData),
+      ocrConfidence: ocrConfidenceValue,
+      visionConfidence: visionConfidenceValue,
+      structuredConfidence: structuredConfidenceValue,
+      finalConfidence: finalConfidenceValue,
+      duplicateStatus: JSON.stringify({
+        isDuplicate: false,
+        type: null,
+        reference: null,
+        fingerprint,
+      }),
+      ocrDecision: "approved",
+      approvalSource: "ocr_auto",
+      approvedAt: new Date(),
+      creditedAmount: creditedAmountStr,
+    },
+    undefined,
+    expectedSlipVersion
+  );
 
   if (!updatedTopup) {
     throw new TRPCError({
@@ -351,6 +776,75 @@ async function autoApproveWalletTopup(
 }
 
 /**
+ * Reports the CURRENT persisted state of a top-up without mutating anything.
+ *
+ * Two distinct causes reach here: an admin finalized the record while OCR
+ * was still running, or the customer replaced the slip this run started
+ * against (the top-up is still reviewable - a replacement re-opens status to
+ * "pending" - but the identifiers this run computed belong to a slip that is
+ * no longer current). Passing `expectedSlipVersion` lets this distinguish
+ * them by comparing the reloaded row's slip identity against it, mirroring
+ * ocrRecheckService.ts's buildSupersededResult. The database is the single
+ * authority here either way: this function never approves, rejects,
+ * reopens, claims or credits.
+ */
+async function buildSupersededResult(
+  topupId: number,
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+  /**
+   * When supplied, records exactly ONE STATE attempt for this run - the
+   * terminal outcome now that the guarded write's refusal is known. Omitted
+   * by the one call site that already recorded this same STATE outcome
+   * itself (the auto-approval claim race, which learns the refusal directly
+   * from the rolled-back transaction rather than from a guarded write here).
+   */
+  recordAttempt?: WalletAttemptRecorder,
+  attemptConfidence: number | null = null
+): Promise<WalletTopupSubmissionResult> {
+  const current = await db.getWalletTopupById(topupId);
+  const status = (current?.status as WalletTopupSubmissionResult["status"]) ?? "pending_review";
+  const isFinalized = status === "approved" || status === "rejected" || status === "cancelled";
+
+  const slipReplaced =
+    !isFinalized &&
+    expectedSlipVersion !== undefined &&
+    current != null &&
+    !(
+      (current.slipImageUrl as string | null) === expectedSlipVersion.slipImageUrl &&
+      ((current.slipSubmittedAt as Date | null)?.getTime() ?? null) ===
+        (expectedSlipVersion.slipSubmittedAt?.getTime() ?? null)
+    );
+
+  const reviewReason = slipReplaced
+    ? "TOPUP_SUPERSEDED_BY_SLIP_REPLACEMENT"
+    : "TOPUP_SUPERSEDED_BY_FINALIZATION";
+
+  // Exactly ONE terminal attempt for this run: the STATE outcome that
+  // actually landed, never the DATA/CONFIG/TECHNICAL result the caller had
+  // intended before discovering its write was refused.
+  if (recordAttempt) {
+    await recordAttempt("needs_review", reviewReason, "STATE", attemptConfidence);
+  }
+
+  return {
+    topupId,
+    status,
+    ocrDecision: "needs_review",
+    reviewReason,
+    reviewCategory: "STATE",
+    supersededByFinalization: !slipReplaced,
+    userMessage: slipReplaced
+      ? "สลิปนี้ถูกแทนที่ด้วยการอัปโหลดใหม่ก่อนที่ระบบจะประมวลผลเสร็จ"
+      : status === "approved"
+        ? "รายการนี้ได้รับการอนุมัติโดยแอดมินแล้ว"
+        : status === "rejected"
+          ? "รายการนี้ถูกปฏิเสธโดยแอดมินแล้ว"
+          : "สถานะรายการถูกอัปเดตโดยแอดมินแล้ว",
+    creditedAmount: undefined,
+  };
+}
+
+/**
  * Handle pending review with OCR data
  */
 async function handlePendingReview(
@@ -362,7 +856,19 @@ async function handlePendingReview(
   fingerprint?: string,
   verificationResult?: VerificationResult,
   parseResult?: any,
-  topup?: any // Topup object for Discord notification
+  topup?: any, // Topup object for Discord notification
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+  /**
+   * The attempt history recorder and the OUTCOME this call intended, passed
+   * through rather than recorded by the caller before this write runs. Only
+   * once `applied` is known below do we know whether to record this intended
+   * result or the STATE outcome a refused write actually produced - see the
+   * module-level doc on recordWalletAttempt.
+   */
+  recordAttempt?: WalletAttemptRecorder,
+  intendedResult: "needs_review" | "config_blocked" = "needs_review",
+  intendedCategory: string | null = "DATA",
+  intendedConfidence: number | null = null
 ): Promise<WalletTopupSubmissionResult> {
   const updateData: any = {
     status: "pending_review",
@@ -372,9 +878,18 @@ async function handlePendingReview(
     approvalSource: "manual",
   };
 
-  if (extractedData) {
-    updateData.extractedData = JSON.stringify(extractedData);
-  }
+  // IPE-001-C07: always write this key, never skip it. The five
+  // SLIP_INTEGRITY_MISMATCH checkpoints above call this with `extractedData`
+  // deliberately `undefined` - the whole point being that the stale
+  // pre-mismatch hash must never be trusted again. Skipping the assignment
+  // when falsy left whatever `extractedData` a PRIOR write (an earlier
+  // automatic attempt, or the deprecated `wallet.uploadTopupSlip` flow) had
+  // already persisted untouched in the row, so a manual approval could still
+  // derive a strong identifier from bytes this very call just proved stale.
+  // Matches slipSubmissionService.ts's order-side pattern (`extractedData:
+  // verificationResult.extractedData ? JSON.stringify(...) : null`), which
+  // never had this gap because it always writes the key.
+  updateData.extractedData = extractedData ? JSON.stringify(extractedData) : null;
 
   if (verificationResult?.breakdown) {
     updateData.ocrConfidence = Math.round(verificationResult.breakdown.ocrConfidence);
@@ -392,13 +907,38 @@ async function handlePendingReview(
     });
   }
 
-  const updatedTopup = await db.updateWalletTopupWithOCRApproval(topupId, updateData);
+  const { applied, topup: updatedTopup } = await db.applyWalletTopupOcrUpdate(
+    topupId,
+    updateData,
+    expectedSlipVersion
+  );
 
   if (!updatedTopup) {
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
       message: "Failed to update wallet top-up",
     });
+  }
+
+  // The write was refused - either an admin had already finalized this
+  // top-up, or the customer replaced its slip while this run was in flight.
+  // Report the authoritative state instead of claiming a review that did not
+  // happen - and do not notify, since nothing needs reviewing. Recording
+  // happens INSIDE buildSupersededResult, now that the refusal is known:
+  // never the intended DATA/CONFIG result above, which never actually landed.
+  if (!applied) {
+    return await buildSupersededResult(
+      topupId,
+      expectedSlipVersion,
+      recordAttempt,
+      intendedConfidence
+    );
+  }
+
+  // The write landed for the exact slip version this run processed - safe to
+  // record the intended outcome now.
+  if (recordAttempt) {
+    await recordAttempt(intendedResult, reviewReason, intendedCategory, intendedConfidence);
   }
 
   // Send Discord notification for OCR review (non-blocking)
@@ -444,7 +984,12 @@ async function handleDuplicate(
   verificationResult: VerificationResult,
   userMessage: string,
   parseResult?: any,
-  topup?: any // Topup object for Discord notification
+  topup?: any, // Topup object for Discord notification
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+  recordAttempt?: WalletAttemptRecorder,
+  intendedReason: string = "WEAK_DUPLICATE_RISK",
+  intendedCategory: string | null = "DATA",
+  intendedConfidence: number | null = null
 ): Promise<WalletTopupSubmissionResult> {
   const duplicateType = verificationResult.reviewReason?.replace("DUPLICATE_", "") || "UNKNOWN";
   const updateData = {
@@ -466,13 +1011,37 @@ async function handleDuplicate(
     approvalSource: "manual",
   };
 
-  const updatedTopup = await db.updateWalletTopupWithOCRApproval(topupId, updateData);
+  const { applied, topup: updatedTopup } = await db.applyWalletTopupOcrUpdate(
+    topupId,
+    updateData,
+    expectedSlipVersion
+  );
 
   if (!updatedTopup) {
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
       message: "Failed to update wallet top-up",
     });
+  }
+
+  // Refused: the top-up was finalized by an admin first, or its slip was
+  // replaced while this run was in flight. A duplicate finding must not
+  // reopen a decided record or stomp a newer slip's evidence. Recording
+  // happens INSIDE buildSupersededResult - never the intended
+  // WEAK_DUPLICATE_RISK result above, which never actually landed.
+  if (!applied) {
+    return await buildSupersededResult(
+      topupId,
+      expectedSlipVersion,
+      recordAttempt,
+      intendedConfidence
+    );
+  }
+
+  // The write landed for the exact slip version this run processed - safe to
+  // record the intended outcome now.
+  if (recordAttempt) {
+    await recordAttempt("needs_review", intendedReason, intendedCategory, intendedConfidence);
   }
 
   // Send Discord notification for duplicate detection (non-blocking)
@@ -518,9 +1087,17 @@ async function handleOCRError(
   userId: number,
   reviewReason: string,
   userMessage: string,
-  topup?: any // Topup object for Discord notification
+  topup?: any, // Topup object for Discord notification
+  /**
+   * Server-derived identifiers to persist even though OCR produced nothing.
+   * Without this the top-up would carry NO strong identifier and manual
+   * approval - which now refuses such records - could never clear it.
+   */
+  extractedData?: ExtractedSlipData,
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+  recordAttempt?: WalletAttemptRecorder
 ): Promise<WalletTopupSubmissionResult> {
-  const updateData = {
+  const updateData: any = {
     status: "pending_review",
     slipSubmittedAt: new Date(),
     ocrDecision: "needs_review",
@@ -528,13 +1105,38 @@ async function handleOCRError(
     approvalSource: "manual",
   };
 
-  const updatedTopup = await db.updateWalletTopupWithOCRApproval(topupId, updateData);
+  // IPE-001-C07: always write this key - see the identical comment in
+  // handlePendingReview above. handleOCRError's two callers currently only
+  // ever pass a truthy fileHashOnlyExtraction, but leaving this conditional
+  // would silently reopen the same stale-extraction gap for any future
+  // caller that (legitimately) has none to offer.
+  updateData.extractedData = extractedData ? JSON.stringify(extractedData) : null;
+
+  const { applied, topup: updatedTopup } = await db.applyWalletTopupOcrUpdate(
+    topupId,
+    updateData,
+    expectedSlipVersion
+  );
 
   if (!updatedTopup) {
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
       message: "Failed to update wallet top-up",
     });
+  }
+
+  // Refused: an OCR failure arriving after a human decision must not undo
+  // it, and must not overwrite a slip the customer has already replaced.
+  // Recording happens INSIDE buildSupersededResult - never a stale TECHNICAL
+  // result attributed to a slip this run no longer owns.
+  if (!applied) {
+    return await buildSupersededResult(topupId, expectedSlipVersion, recordAttempt, null);
+  }
+
+  // The write landed for the exact slip version this run processed - safe to
+  // record the intended technical-failure outcome now.
+  if (recordAttempt) {
+    await recordAttempt("technical_failure", reviewReason, "TECHNICAL", null);
   }
 
   // Send Discord notification for OCR error (non-blocking)

@@ -172,6 +172,25 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     category: "deliberately_ignored",
     reason: "The ADMIN who approved the top-up, not its own owner.",
   },
+  {
+    table: "paymentSlipReviewResolutions",
+    column: "adminUserId",
+    category: "deliberately_ignored",
+    reason: "The ADMIN who resolved a legacy reference case ambiguity, not the owner of the payment being resolved. An admin-actor identity, consistent with the other actor columns above; the payment's own ownership is already covered transitively via payments -> orders.userId.",
+  },
+  {
+    table: "ocrVerificationAttempts",
+    column: "initiatedByUserId",
+    category: "deliberately_ignored",
+    reason: "The ADMIN who requested an OCR recheck, not the owner of the payment being rechecked. NULL for automatic attempts. Consistent with the other admin-actor columns above; the payment's own ownership is already covered transitively via payments -> orders.userId.",
+  },
+  {
+    table: "paymentSlipClaims",
+    column: "userId",
+    category: "deliberately_ignored",
+    reason:
+      "The global anti-replay claim registry. A claim row records that ONE bank transaction was consumed by ONE submission; it is not user-owned data this workflow moves or must protect, and any account with a claim is ALREADY hard-blocked transitively by the orders/walletTopups row that created it. Note the Admin Users Management inventory classifies this same column as \"economic\" instead - deliberately, because hard-DELETING a user must never remove their claims (that would re-open every slip they used for replay), which is a different question from whether account RECOVERY needs to inspect them.",
+  },
 
   // ---- economic_hard_block: Category A - wallet/points/purchases/orders/payments/transactions/coupons ----
   { table: "orders", column: "userId", category: "economic_hard_block", reason: "An order is a financial transaction record." },
