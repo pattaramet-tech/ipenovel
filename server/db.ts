@@ -4240,6 +4240,34 @@ export async function approveWalletTopup(
     }
     const topup = topupResult[0];
 
+    // Step 1a: DURABLE SLIP-INTEGRITY BLOCK (IPE-001-C07).
+    //
+    // walletTopupSubmissionService.ts's automatic-submission checkpoints
+    // durably clear `extractedData` to null the moment they detect the
+    // stored bytes changed mid-run (SLIP_INTEGRITY_MISMATCH), so the
+    // strong-identifier check in Step 1b below already refuses an approval
+    // with nothing to claim. This is a second, independent gate on the
+    // reviewReason itself - wallet parity with orderService's
+    // lockAndRequireReviewablePayment/SLIP_INTEGRITY_BLOCK_REASON check -
+    // so approval stays refused even if some OTHER path (present or future,
+    // including the deprecated wallet.uploadTopupSlip flow) re-seeds
+    // extractedData without re-verifying the slip is stable. Cleared only by
+    // a genuine replacement upload - publishWalletTopupReplacementIfReviewable
+    // accepts this row's "pending_review" status precisely so a customer is
+    // not permanently stuck, and its single atomic write unconditionally
+    // resets reviewReason to null alongside the fresh slip/extractedData -
+    // never a partial clear that could leave this guard on while a new,
+    // unrelated hash sits underneath it.
+    if (topup.reviewReason === "SLIP_INTEGRITY_MISMATCH") {
+      throw new WalletSlipClaimError(
+        "SLIP_INTEGRITY_MISMATCH_BLOCKED",
+        `Wallet top-up ${topupId}'s slip was found to have changed bytes at the same URL ` +
+          `during a prior automatic check, and that finding has not yet been cleared. Approval ` +
+          `is refused until a stable re-submission re-establishes integrity for this exact slip, ` +
+          `or the customer uploads a genuine replacement.`
+      );
+    }
+
     // Step 1b: ANTI-REPLAY GATE (manual admin approval).
     //
     // The admin's browser is never trusted: identifiers are recomputed

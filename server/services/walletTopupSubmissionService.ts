@@ -878,9 +878,18 @@ async function handlePendingReview(
     approvalSource: "manual",
   };
 
-  if (extractedData) {
-    updateData.extractedData = JSON.stringify(extractedData);
-  }
+  // IPE-001-C07: always write this key, never skip it. The five
+  // SLIP_INTEGRITY_MISMATCH checkpoints above call this with `extractedData`
+  // deliberately `undefined` - the whole point being that the stale
+  // pre-mismatch hash must never be trusted again. Skipping the assignment
+  // when falsy left whatever `extractedData` a PRIOR write (an earlier
+  // automatic attempt, or the deprecated `wallet.uploadTopupSlip` flow) had
+  // already persisted untouched in the row, so a manual approval could still
+  // derive a strong identifier from bytes this very call just proved stale.
+  // Matches slipSubmissionService.ts's order-side pattern (`extractedData:
+  // verificationResult.extractedData ? JSON.stringify(...) : null`), which
+  // never had this gap because it always writes the key.
+  updateData.extractedData = extractedData ? JSON.stringify(extractedData) : null;
 
   if (verificationResult?.breakdown) {
     updateData.ocrConfidence = Math.round(verificationResult.breakdown.ocrConfidence);
@@ -1096,9 +1105,12 @@ async function handleOCRError(
     approvalSource: "manual",
   };
 
-  if (extractedData) {
-    updateData.extractedData = JSON.stringify(extractedData);
-  }
+  // IPE-001-C07: always write this key - see the identical comment in
+  // handlePendingReview above. handleOCRError's two callers currently only
+  // ever pass a truthy fileHashOnlyExtraction, but leaving this conditional
+  // would silently reopen the same stale-extraction gap for any future
+  // caller that (legitimately) has none to offer.
+  updateData.extractedData = extractedData ? JSON.stringify(extractedData) : null;
 
   const { applied, topup: updatedTopup } = await db.applyWalletTopupOcrUpdate(
     topupId,

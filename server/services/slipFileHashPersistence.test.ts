@@ -105,7 +105,13 @@ describe("WALLET path persists the file identifier on every outcome", () => {
   it("handleOCRError actually persists what it is given", () => {
     const idx = code.indexOf("async function handleOCRError");
     const block = code.slice(idx, idx + 900);
-    expect(block).toMatch(/updateData\.extractedData = JSON\.stringify\(extractedData\)/);
+    // IPE-001-C07: this write is now unconditional (extractedData ? ... :
+    // null) rather than behind `if (extractedData)`, so a falsy value
+    // durably clears any stale extraction instead of leaving the row's
+    // prior value untouched - see walletIntegrityMismatchDurability.test.ts.
+    expect(block).toMatch(
+      /updateData\.extractedData = extractedData \? JSON\.stringify\(extractedData\) : null;/
+    );
   });
 
   it("never reads a hash from client input", () => {

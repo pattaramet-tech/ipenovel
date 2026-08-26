@@ -163,8 +163,16 @@ export function referenceHashCandidatesFromExtractedData(
     }
   }
 
-  // Last resort: the legacy upper-cased field.
-  push(hashSlipReference(parsed.reference), "legacy_uppercase");
+  // IPE-001-C07: last resort ONLY - add the lossy upper-cased fallback ONLY
+  // when nothing case-preserving was recovered above. Adding it unconditionally
+  // let it sit alongside a genuine reference_raw/reparsed_raw_text candidate
+  // for the SAME row; a distinct current reference differing only by case then
+  // manufactured a legacy ambiguity that should never have existed, since
+  // referenceMatches below already has real case-preserving evidence to judge
+  // this row by.
+  if (candidates.length === 0) {
+    push(hashSlipReference(parsed.reference), "legacy_uppercase");
+  }
 
   return candidates;
 }
@@ -212,23 +220,40 @@ function referenceMatches(
 ):
   | { matchedBy: "reference_exact" | "legacy_uppercase_only"; evidence: NonNullable<LegacyDuplicateMatch["evidence"]> }
   | undefined {
-  // EXACT first, across ALL candidates. A case-preserving hit is
-  // authoritative and must win over any lossy fold, even if the lossy
-  // candidate appears earlier in the list.
+  // EXACT first, across every CASE-PRESERVING candidate. A case-preserving
+  // hit is authoritative and must win over any lossy fold, even if the lossy
+  // candidate appears earlier in the list. `legacy_uppercase` evidence is
+  // explicitly excluded here (IPE-001-C07): it is a fold, never proof of the
+  // original casing, so it must never be classified reference_exact even
+  // when its hash happens to equal identifiers.referenceHash (which happens
+  // whenever the CURRENT incoming reference is itself all-uppercase) - that
+  // is exactly the "advisory ambiguity" legacy_uppercase_only exists for, not
+  // an exact duplicate with no resolution path.
   if (identifiers.referenceHash) {
     for (const candidate of candidates) {
+      if (candidate.evidence === "legacy_uppercase") continue;
       if (candidate.hash === identifiers.referenceHash) {
         return { matchedBy: "reference_exact", evidence: candidate.evidence };
       }
     }
   }
 
-  // Lossy fallback: only reachable when nothing matched exactly.
-  if (identifiers.referenceHashUpperCandidate) {
-    for (const candidate of candidates) {
-      if (candidate.hash === identifiers.referenceHashUpperCandidate) {
-        return { matchedBy: "legacy_uppercase_only", evidence: candidate.evidence };
-      }
+  // Lossy fallback: only reachable when nothing matched exactly above. Checks
+  // BOTH the caller-supplied upper-cased candidate (folds the CURRENT
+  // reference to uppercase before comparing - the usual route) AND the
+  // incoming reference's own case-preserving hash as-is (covers a caller that
+  // never supplied a separate upper candidate, and the case where the
+  // incoming reference is itself already all-uppercase, so folding it changes
+  // nothing). Either way this is still a fold of the LEGACY row's evidence -
+  // its original casing was never recoverable - so it can only ever be
+  // advisory, never a step toward reference_exact.
+  for (const candidate of candidates) {
+    if (candidate.evidence !== "legacy_uppercase") continue;
+    if (
+      candidate.hash === identifiers.referenceHashUpperCandidate ||
+      candidate.hash === identifiers.referenceHash
+    ) {
+      return { matchedBy: "legacy_uppercase_only", evidence: candidate.evidence };
     }
   }
 

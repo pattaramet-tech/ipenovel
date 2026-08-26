@@ -156,15 +156,23 @@ describe("an OLD approved record blocks a NEW replay", () => {
         sourceId: 99,
         userId: 4242,
         identifiers: { referenceHash: KBANK_HASH },
+        // IPE-001-C07: every REAL caller supplies this (see
+        // getRawReferenceForLegacyLookup at every db.ts/orderService.ts/
+        // slipSubmissionService.ts call site) - without it, the legacy-case
+        // ambiguity check never engages at all, matching neither production
+        // behavior nor what this test means to exercise.
+        referenceRawForLegacyLookup: KBANK_REF,
       },
       tx
     );
 
+    // KBANK_REF has no lowercase to lose, so this row's ONLY evidence is the
+    // legacy_uppercase fold - never reference_exact (IPE-001-C07), only the
+    // resolvable advisory ambiguity every other uppercase-only row gets.
     expect(outcome.claimed).toBe(false);
-    if (!outcome.claimed && outcome.reason === "already_claimed") {
-      expect(outcome.existingSourceType).toBe("order_payment");
-      expect(outcome.existingSourceId).toBe(11);
-      expect(outcome.viaLegacyCompatibility).toBe(true);
+    if (!outcome.claimed && outcome.reason === "legacy_case_ambiguity") {
+      expect(outcome.matchedSourceType).toBe("order_payment");
+      expect(outcome.matchedSourceId).toBe(11);
     }
     // Nothing may be written when the legacy gate refuses.
     expect(tx._claims).toHaveLength(0);
@@ -179,14 +187,15 @@ describe("an OLD approved record blocks a NEW replay", () => {
         sourceId: 5,
         userId: 1,
         identifiers: { referenceHash: KBANK_HASH },
+        referenceRawForLegacyLookup: KBANK_REF,
       },
       tx
     );
 
     expect(outcome.claimed).toBe(false);
-    if (!outcome.claimed && outcome.reason === "already_claimed") {
-      expect(outcome.existingSourceType).toBe("wallet_topup");
-      expect(outcome.existingSourceId).toBe(77);
+    if (!outcome.claimed && outcome.reason === "legacy_case_ambiguity") {
+      expect(outcome.matchedSourceType).toBe("wallet_topup");
+      expect(outcome.matchedSourceId).toBe(77);
     }
   });
 
@@ -198,6 +207,7 @@ describe("an OLD approved record blocks a NEW replay", () => {
         sourceId: 100,
         userId: 999999, // unrelated user
         identifiers: { referenceHash: KBANK_HASH },
+        referenceRawForLegacyLookup: KBANK_REF,
       },
       tx
     );
@@ -485,13 +495,14 @@ describe("the legacy scan has no correctness cap", () => {
         sourceId: 7000,
         userId: 3,
         identifiers: { referenceHash: KBANK_HASH },
+        referenceRawForLegacyLookup: KBANK_REF,
       },
       tx
     );
 
     expect(outcome.claimed).toBe(false);
-    if (!outcome.claimed && outcome.reason === "already_claimed") {
-      expect(outcome.existingSourceId).toBe(1200);
+    if (!outcome.claimed && outcome.reason === "legacy_case_ambiguity") {
+      expect(outcome.matchedSourceId).toBe(1200);
     }
   });
 
@@ -524,14 +535,134 @@ describe("the legacy scan has no correctness cap", () => {
         sourceId: 4242,
         userId: 8,
         identifiers: { referenceHash: KBANK_HASH },
+        referenceRawForLegacyLookup: KBANK_REF,
+      },
+      tx
+    );
+
+    expect(outcome.claimed).toBe(false);
+    if (!outcome.claimed && outcome.reason === "legacy_case_ambiguity") {
+      expect(outcome.matchedSourceType).toBe("wallet_topup");
+      expect(outcome.matchedSourceId).toBe(900);
+    }
+  });
+});
+
+describe("legacy_uppercase provenance can never become an exact match, IPE-001-C07", () => {
+  const MIXED_REF = "202608225ApOyxElgdOo7YVwv";
+  const MIXED_HASH = hashSlipReference(MIXED_REF)!;
+  const DISTINCT_CURRENT_REF = "202608225XyZaBcDeFgH7YVwv";
+
+  it("never adds the uppercase fallback when referenceRaw already preserves casing", () => {
+    const candidates = referenceHashCandidatesFromExtractedData(
+      JSON.stringify({ reference: MIXED_REF.toUpperCase(), referenceRaw: MIXED_REF })
+    );
+    expect(candidates.some((c) => c.evidence === "legacy_uppercase")).toBe(false);
+  });
+
+  it("never adds the uppercase fallback when rawText reparsing already recovered casing", () => {
+    const candidates = referenceHashCandidatesFromExtractedData(
+      JSON.stringify({ reference: SCB_UPPER, rawText: SCB_RAW_TEXT })
+    );
+    expect(candidates.some((c) => c.evidence === "legacy_uppercase")).toBe(false);
+  });
+
+  it("never adds the uppercase fallback when a stored referenceHash already exists", () => {
+    const stored = "b".repeat(64);
+    const candidates = referenceHashCandidatesFromExtractedData(
+      JSON.stringify({ referenceHash: stored, reference: MIXED_REF.toUpperCase() })
+    );
+    expect(candidates.some((c) => c.evidence === "legacy_uppercase")).toBe(false);
+  });
+
+  it("DOES add the uppercase fallback when nothing case-preserving was recovered", () => {
+    const candidates = referenceHashCandidatesFromExtractedData(
+      JSON.stringify({ reference: MIXED_REF.toUpperCase() })
+    );
+    expect(candidates.some((c) => c.evidence === "legacy_uppercase")).toBe(true);
+  });
+
+  it("a case-preserving reference distinct from the legacy row's casing does not manufacture ambiguity", async () => {
+    // The historical row has genuine case-preserving evidence (referenceRaw)
+    // for a DIFFERENT reference than the current submission. Before
+    // IPE-001-C07 the unconditional legacy_uppercase fallback let a
+    // same-when-uppercased-but-different current reference collide with this
+    // row via the fold, even though real case-preserving evidence already
+    // proved they are two distinct references.
+    const legacy = {
+      id: 41,
+      extractedData: JSON.stringify({
+        reference: MIXED_REF.toUpperCase(),
+        referenceRaw: MIXED_REF,
+      }),
+    };
+    const tx = makeFakeTx({ approvedPayments: [legacy] });
+
+    const outcome = await claimSlip(
+      {
+        sourceType: "wallet_topup",
+        sourceId: 501,
+        userId: 1,
+        identifiers: { referenceHash: hashSlipReference(DISTINCT_CURRENT_REF) },
+        referenceRawForLegacyLookup: DISTINCT_CURRENT_REF,
+      },
+      tx
+    );
+
+    expect(outcome.claimed).toBe(true);
+  });
+
+  it("an incoming reference that is itself all-uppercase never becomes reference_exact against a legacy_uppercase-only row", async () => {
+    // KBANK_REF has no lowercase, so the CURRENT submission's own hash equals
+    // the legacy row's fold exactly - the scenario Codex flagged as
+    // permanently hard-blocking with no resolution path. It must still only
+    // ever be legacy_case_ambiguity (resolvable), never already_claimed.
+    const tx = makeFakeTx({ approvedPayments: [legacyRow(42, KBANK_REF)] });
+
+    const outcome = await claimSlip(
+      {
+        sourceType: "wallet_topup",
+        sourceId: 502,
+        userId: 1,
+        identifiers: { referenceHash: KBANK_HASH },
+        referenceRawForLegacyLookup: KBANK_REF,
+      },
+      tx
+    );
+
+    expect(outcome.claimed).toBe(false);
+    if (!outcome.claimed) {
+      expect(outcome.reason).toBe("legacy_case_ambiguity");
+      expect(outcome.reason).not.toBe("already_claimed");
+    }
+  });
+
+  it("a genuine exact case-preserving match still hard-blocks as before", async () => {
+    const legacy = {
+      id: 43,
+      extractedData: JSON.stringify({
+        reference: MIXED_REF.toUpperCase(),
+        referenceRaw: MIXED_REF,
+      }),
+    };
+    const tx = makeFakeTx({ approvedPayments: [legacy] });
+
+    const outcome = await claimSlip(
+      {
+        sourceType: "wallet_topup",
+        sourceId: 503,
+        userId: 1,
+        identifiers: { referenceHash: MIXED_HASH },
+        referenceRawForLegacyLookup: MIXED_REF,
       },
       tx
     );
 
     expect(outcome.claimed).toBe(false);
     if (!outcome.claimed && outcome.reason === "already_claimed") {
-      expect(outcome.existingSourceType).toBe("wallet_topup");
-      expect(outcome.existingSourceId).toBe(900);
+      expect(outcome.viaLegacyCompatibility).toBe(true);
+    } else {
+      throw new Error(`expected already_claimed, got ${JSON.stringify(outcome)}`);
     }
   });
 });

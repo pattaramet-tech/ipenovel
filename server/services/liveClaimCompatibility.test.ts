@@ -248,9 +248,23 @@ describe("the legacy scan is skipped only after a verified backfill", () => {
     });
 
     const outcome = await claimSlip(
-      { sourceType: "wallet_topup", sourceId: 1, userId: 1, identifiers: { referenceHash: REF } },
+      {
+        sourceType: "wallet_topup",
+        sourceId: 1,
+        userId: 1,
+        identifiers: { referenceHash: REF },
+        // IPE-001-C07: every real caller supplies this (getRawReferenceForLegacyLookup
+        // at every production call site). Without it, the legacy-case
+        // ambiguity check never engages - see legacySlipCompatibilityService.test.ts's
+        // "legacy_uppercase provenance can never become an exact match" block for why
+        // this row's uppercase-only evidence can no longer hard-block via reference_exact.
+        referenceRawForLegacyLookup: "016234222922AQR05745",
+      },
       tx
     );
+    // Still refused (claimed: false) - now via the resolvable
+    // legacy_case_ambiguity path rather than an unresolvable already_claimed
+    // hard block, since this row's only evidence is the lossy uppercase fold.
     expect(outcome.claimed).toBe(false);
   });
 

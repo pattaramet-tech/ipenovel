@@ -228,7 +228,8 @@ export async function adminApproveWalletTopup(topupId: number, adminUserId: numb
       const precondition =
         error.code === "NO_STRONG_IDENTIFIER" ||
         error.code === "LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION" ||
-        error.code === "LEGACY_REFERENCE_CASE_AMBIGUITY";
+        error.code === "LEGACY_REFERENCE_CASE_AMBIGUITY" ||
+        error.code === "SLIP_INTEGRITY_MISMATCH_BLOCKED";
       throw new TRPCError({
         code: precondition ? "PRECONDITION_FAILED" : "CONFLICT",
         message: `${error.code}: ${error.message}`,
