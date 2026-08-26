@@ -1264,6 +1264,78 @@ describe("recipient authority is bound to a trusted path, not just a matching ke
     });
   });
 
+  // IPE-001-C04: the container check must be a POSITIVE ALLOWLIST, not a
+  // finite denylist - an arbitrary, never-audited container name (not one of
+  // the six previously blocked names) must be rejected by default, exactly
+  // like a known-adversarial one. A denylist can only ever cover the
+  // containers someone thought to name; an allowlist rejects everything else
+  // automatically.
+  describe("must-fail: an arbitrary, unaudited container is rejected by default (allowlist, not a denylist)", () => {
+    it("foo.biller_id does not become recipient evidence", () => {
+      const text = jsonSlip({
+        reference_number: "016234222922AQR05745",
+        amount: "100.00",
+        foo: { biller_id: "010753600031501" },
+      });
+      const extracted = extractSlipData(text, 98);
+      expect(extracted.receiverAccountOrId).toBeUndefined();
+    });
+
+    it("debug.receiver_name does not become recipient evidence", () => {
+      const text = jsonSlip({
+        reference_number: "016234222922AQR05745",
+        amount: "100.00",
+        debug: { receiver_name: "Ipe Novel" },
+      });
+      const extracted = extractSlipData(text, 98);
+      expect(extracted.shopName).toBeUndefined();
+    });
+
+    it("payload.merchant_code does not become recipient evidence", () => {
+      const text = jsonSlip({
+        reference_number: "016234222922AQR05745",
+        amount: "100.00",
+        payload: { merchant_code: "KB000002283068" },
+      });
+      const extracted = extractSlipData(text, 98);
+      expect(extracted.merchantCode).toBeUndefined();
+    });
+
+    it("customer.receiver_shop_name does not become recipient evidence - 'customer' is not an explicit recipient section", () => {
+      const text = jsonSlip({
+        reference_number: "016234222922AQR05745",
+        amount: "100.00",
+        customer: { receiver_shop_name: "Ipe Novel" },
+      });
+      const extracted = extractSlipData(text, 98);
+      expect(extracted.shopName).toBeUndefined();
+    });
+
+    it("arbitrary.merchantTransactionCode does not become recipient evidence", () => {
+      const text = jsonSlip({
+        reference_number: "016234222922AQR05745",
+        amount: "100.00",
+        arbitrary: { merchantTransactionCode: "KPS004KB000002283068" },
+      });
+      const extracted = extractSlipData(text, 98);
+      expect(extracted.merchantTransactionCode).toBeUndefined();
+    });
+
+    it("a nested unknown container two levels deep also fails, even under an otherwise-trusted envelope", () => {
+      // The envelope alone does not launder an untrusted inner container -
+      // EVERY segment of the path must be trusted.
+      const text = jsonSlip({
+        extracted_text: {
+          reference_number: "016234222922AQR05745",
+          amount: "100.00",
+          customer: { biller_id: "010753600031501" },
+        },
+      });
+      const extracted = extractSlipData(text, 98);
+      expect(extracted.receiverAccountOrId).toBeUndefined();
+    });
+  });
+
   describe("must-pass: legitimate root and repository-evidenced structured recipient fields still extract", () => {
     it("root-level biller_id, merchant_code, merchantTransactionCode extract exactly (SCB root shape)", () => {
       const text = jsonSlip({
@@ -1288,6 +1360,30 @@ describe("recipient authority is bound to a trusted path, not just a matching ke
           amount: "100.00",
           receiver_shop_name: "Ipe Novel",
         },
+      });
+      const extracted = extractSlipData(text, 98);
+      expect(extracted.shopName).toBe("Ipe Novel");
+    });
+
+    it("the real KBANK_THAI_LABELS_SAMPLE chain (extracted_data.ผู้รับ.*) still extracts - envelope then explicit recipient section", () => {
+      const text = jsonSlip({
+        extracted_data: {
+          reference_number: "016234222922AQR05745",
+          amount: "100.00",
+          ผู้รับ: {
+            ชื่อร้านค้า_หรือ_ชื่อผู้รับ: "Ipe Novel",
+          },
+        },
+      });
+      const extracted = extractSlipData(text, 98);
+      expect(extracted.shopName).toBe("Ipe Novel");
+    });
+
+    it("an English explicit recipient section (receiver.shopName) also extracts", () => {
+      const text = jsonSlip({
+        reference_number: "016234222922AQR05745",
+        amount: "100.00",
+        receiver: { shopName: "Ipe Novel" },
       });
       const extracted = extractSlipData(text, 98);
       expect(extracted.shopName).toBe("Ipe Novel");

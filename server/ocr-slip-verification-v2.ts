@@ -451,47 +451,67 @@ function flattenObject(obj: any, prefix = ""): Record<string, any> {
 }
 
 /**
- * Container path segments that must NEVER grant FINANCIAL RECIPIENT
+ * The ONLY container path segments that MAY carry FINANCIAL RECIPIENT
  * AUTHORITY (biller ID, merchant code, merchant transaction code, shop /
  * receiver name) - fields whose exact value can, on its own, satisfy
- * recipient verification and permit auto-approval - even when the terminal
- * key matches an authoritative suffix exactly.
+ * recipient verification and permit auto-approval. Everything else is
+ * rejected by default (allowlist, not a blocklist): a suffix match on the
+ * TERMINAL key alone is not enough - `memo.biller_id`, `sender.receiver_name`,
+ * `foo.biller_id`, `debug.receiver_name`, `payload.merchant_code` would all
+ * satisfy a plain suffix match despite living under a container that has
+ * nothing established about the recipient. Trusting every container except a
+ * finite deny-list cannot close this: the set of possible unrelated
+ * container names is unbounded, so only a positive allowlist - grown ONLY
+ * from real, evidenced fixture shapes - keeps an arbitrary/unaudited path
+ * from becoming financial authority.
  *
- * `sender` is a direction contradiction, not a depth problem: a value
- * nested under a sender-labeled container describes the SENDER, never the
- * recipient, no matter what its own key name claims (a hypothetical
- * `sender.receiver_name` is adversarial, not a real recipient field - real
- * sender-side data in these fixtures is `sender_name`/`sender_bank`/
- * `sender_account_number(_masked)`, never a nested `sender.*` receiver
- * field). `memo`/`note`/`notes`/`metadata` are informal or administrative
- * containers: no real bank fixture in this repo ever nests a structured
- * biller/merchant/receiver field under one of them, and the one comparable
- * real field, `additional_info`, is always raw free text, never a
- * structured object carrying recipient identity.
+ * Two distinct, evidenced categories, both verified against the real bank
+ * fixtures in server/ocr-slip-verification-v2.test.ts:
+ *
+ *   - GENERIC ENVELOPES: a container that wraps the ENTIRE parsed slip, not
+ *     a cherry-picked section - `extracted_text` (KBANK_NESTED_JSON_SAMPLE)
+ *     and `extracted_data` (KBANK_THAI_LABELS_SAMPLE). Trusting these adds
+ *     no risk: an attacker who controls the WHOLE OCR JSON already controls
+ *     every path in it, envelope or not - the envelope name itself carries
+ *     no additional claim of authenticity to exploit.
+ *   - EXPLICIT RECIPIENT SECTIONS: a container whose own name unambiguously
+ *     means "this is the recipient's information" - `ผู้รับ` (Thai
+ *     "recipient", KBANK_THAI_LABELS_SAMPLE) plus the English equivalents
+ *     (`receiver`/`recipient`/`payee`/`merchant`/`biller`) named directly in
+ *     this repo's own field vocabulary (`receiver_name`, `merchant_code`,
+ *     `biller_id`, ...). A container actually NAMED this way is unambiguous
+ *     positive evidence, unlike `sender`/`memo`/`note`/`metadata`/an
+ *     arbitrary unaudited name, which say nothing about the recipient (or,
+ *     for `sender`, actively contradict it).
+ *
+ * A path may chain ONLY through these two categories (e.g. the real
+ * `extracted_data.ผู้รับ.*` fixture: envelope then explicit section) - a
+ * SINGLE untrusted segment anywhere in the path, however deep, still
+ * rejects the whole key. If a future supported fixture needs a genuinely
+ * new container, add it here with the SAME evidence bar (a real fixture in
+ * this test file) - never widen this by guessing.
  */
-const UNTRUSTED_RECIPIENT_CONTAINERS = new Set([
-  "sender",
-  "memo",
-  "note",
-  "notes",
-  "metadata",
-  "additional_info",
+const RECIPIENT_TRUSTED_CONTAINERS = new Set([
+  "extracted_text",
+  "extracted_data",
+  "ผู้รับ",
+  "receiver",
+  "recipient",
+  "payee",
+  "merchant",
+  "biller",
 ]);
 
 /**
  * Same suffix-matching as getFieldBySuffixMatch, but restricted to keys
- * whose full path never passes through an untrusted container - for
- * FINANCIAL RECIPIENT AUTHORITY lookups only (see
- * UNTRUSTED_RECIPIENT_CONTAINERS).
+ * whose full path chains ONLY through trusted containers - for FINANCIAL
+ * RECIPIENT AUTHORITY lookups only (see RECIPIENT_TRUSTED_CONTAINERS).
  *
- * A suffix match on the TERMINAL key alone is not enough: `memo.biller_id`
- * or `sender.receiver_name` would satisfy a plain suffix match despite
- * living under a container that has nothing to do with the recipient - the
- * exact class of bug the whole-text-scan and unlabeled-regex fallbacks were
- * already removed for elsewhere in this file. A ROOT-level key (no
- * container at all) and a key nested under any container NOT on the
- * blocklist (e.g. this file's real `extracted_text` envelope) both remain
- * trusted, since the risk here is a MISLEADING container, not depth itself.
+ * A ROOT-level key (no container at all) is always trusted; a nested key is
+ * trusted only when EVERY intermediate segment is itself an allowlisted
+ * container. This is a positive allowlist, not a denylist: an unaudited
+ * container name (`foo`, `debug`, `payload`, `customer`, ...) is rejected by
+ * default, exactly like a known-adversarial one (`sender`, `memo`).
  */
 function getRecipientFieldBySuffixMatch(
   flattened: Record<string, any>,
@@ -500,7 +520,7 @@ function getRecipientFieldBySuffixMatch(
   const isTrustedPath = (key: string): boolean => {
     const segments = key.split(".");
     segments.pop(); // the terminal key itself carries no container risk
-    return segments.every((s) => !UNTRUSTED_RECIPIENT_CONTAINERS.has(s.toLowerCase()));
+    return segments.every((s) => RECIPIENT_TRUSTED_CONTAINERS.has(s.toLowerCase()));
   };
 
   for (const suffix of suffixes) {
