@@ -9,6 +9,11 @@ import { Loader2, ArrowLeft, Image as ImageIcon, FileText, ExternalLink, Eye, In
 import { useLanguage } from "@/contexts/LanguageContext";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  describeDuplicate,
+  requiresLegacyCaseResolution,
+  type OcrPanelInput,
+} from "@/components/ocrVerdictModel";
 
 /** Derive a color class for a topup status string */
 function topupStatusColor(status: string | undefined | null): string {
@@ -163,16 +168,73 @@ export default function AdminWalletTopupDetailPage() {
   const canApproveOrReject =
     topup.status === "pending" || topup.status === "pending_review";
 
-  // Normal Approve refuses with this precondition, so the panel must offer the
-  // two explicit choices instead of leaving the admin stuck.
+  // Server-derived duplicate finding (evaluateSlipConflict, run read-only by
+  // wallet.admin.detail) - the SAME classifier normal wallet Approve will
+  // enforce. Built from the initial page load / refetch, not from a failed
+  // Approve attempt: previously this ambiguity was invisible until an admin
+  // clicked Approve and it failed, so normal Approve WAS the discovery
+  // mechanism instead of the detail page.
+  const ocrMeta = (data as any).ocrMeta;
+  const model: OcrPanelInput = {
+    reviewReason: ocrMeta?.reviewReason,
+    duplicate: ocrMeta?.duplicate ?? null,
+  };
+  const duplicate = describeDuplicate(model);
+
+  // requiresLegacyCaseResolution checks strict equality on the single-member
+  // `legacy_case_ambiguity` state only - never `unresolved` or
+  // `legacy_case_ambiguity_group`, which need manual investigation instead
+  // of the audited "confirm distinct" resolution this offers.
   const legacyCaseAmbiguity =
-    typeof approveError === "string" &&
-    (approveError.includes("LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION") ||
-      approveError.includes("LEGACY_REFERENCE_CASE_AMBIGUITY"));
+    requiresLegacyCaseResolution(model) ||
+    (typeof approveError === "string" &&
+      (approveError.includes("LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION") ||
+        approveError.includes("LEGACY_REFERENCE_CASE_AMBIGUITY")));
+
+  // Every OTHER duplicate state, surfaced read-only with matched-source
+  // navigation - `legacy_case_ambiguity` gets its own actionable box below
+  // instead, so it is excluded here to avoid showing the same finding twice.
+  const showGeneralDuplicateBanner =
+    duplicate.strength !== "none" && duplicate.strength !== "legacy_case_ambiguity";
 
   return (
     <AdminLayout>
       <div className="space-y-6">
+        {showGeneralDuplicateBanner && (
+          <div
+            className={`rounded-lg border-2 p-4 space-y-2 ${
+              duplicate.strength === "strong"
+                ? "border-red-300 bg-red-50"
+                : "border-yellow-300 bg-yellow-50"
+            }`}
+          >
+            <p
+              className={`text-sm font-bold ${
+                duplicate.strength === "strong" ? "text-red-900" : "text-yellow-900"
+              }`}
+            >
+              {duplicate.strength === "strong" ? "⚠ Confirmed Duplicate" : `⚠ ${duplicate.headline}`}
+            </p>
+            {duplicate.caveat && (
+              <p className={duplicate.strength === "strong" ? "text-sm text-red-900" : "text-sm text-yellow-900"}>
+                {duplicate.caveat}
+              </p>
+            )}
+            {duplicate.matchedLabel && (
+              <p className="text-sm text-slate-700">
+                <span className="font-semibold">Matched:</span>{" "}
+                {duplicate.matchedHref ? (
+                  <a className="text-blue-700 underline" href={duplicate.matchedHref}>
+                    {duplicate.matchedLabel}
+                  </a>
+                ) : (
+                  duplicate.matchedLabel
+                )}
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Legacy case ambiguity - an unanswered question, not a verdict */}
         {legacyCaseAmbiguity && canApproveOrReject && (
           <div className="rounded-lg border-2 border-yellow-300 bg-yellow-50 p-4 space-y-3">

@@ -23,6 +23,16 @@ export type CheckState = "pass" | "fail" | "warning" | "not_evaluated";
 
 export type OcrVerdict =
   | "auto_approved"
+  /**
+   * Shadow mode's `ocrDecision: "shadow_auto_approved"` - the server
+   * DELIBERATELY forced `isAutoApproved: false` (see
+   * server/ocr-slip-integration-staging.ts), so the payment stays
+   * `pending_review` and NO financial value was created. This records only
+   * what auto-approval WOULD have decided, for monitoring/comparison. It
+   * must never render as if real approval happened - see verdictLabel and
+   * the "final" checklist row below.
+   */
+  | "shadow_auto_approved"
   | "ready_for_admin_approval"
   | "needs_review"
   | "ocr_disabled"
@@ -111,9 +121,12 @@ export interface OcrPanelInput {
 
 export function deriveVerdict(input: OcrPanelInput): OcrVerdict {
   if (input.readyForAdminApproval) return "ready_for_admin_approval";
-  if (input.ocrDecision === "auto_approved" || input.ocrDecision === "shadow_auto_approved") {
-    return "auto_approved";
-  }
+  // Checked BEFORE "auto_approved" - shadow is what auto-approval simulated,
+  // never what it actually did. Collapsing the two here would be the exact
+  // bug this state exists to prevent: a payment still sitting pending_review
+  // rendering as if it were already finalized.
+  if (input.ocrDecision === "shadow_auto_approved") return "shadow_auto_approved";
+  if (input.ocrDecision === "auto_approved") return "auto_approved";
   if (input.ocrDecision === "ocr_disabled" || input.reviewReason === "OCR_DISABLED") {
     return "ocr_disabled";
   }
@@ -125,6 +138,10 @@ export function verdictLabel(verdict: OcrVerdict): string {
   switch (verdict) {
     case "auto_approved":
       return "AUTO APPROVED";
+    case "shadow_auto_approved":
+      // "SIMULATED", never "APPROVED" alone - this payment is still
+      // pending_review and no value was created.
+      return "SIMULATED AUTO-APPROVE (SHADOW MODE, NOT APPROVED)";
     case "ready_for_admin_approval":
       return "READY FOR ADMIN APPROVAL";
     case "needs_review":
@@ -604,10 +621,17 @@ export function buildChecklist(input: OcrPanelInput): ChecklistRow[] {
     state:
       verdict === "auto_approved" || verdict === "ready_for_admin_approval"
         ? "pass"
-        : verdict === "ocr_disabled"
-          ? "not_evaluated"
-          : "fail",
-    detail: input.rootCauseSummary ?? undefined,
+        : verdict === "shadow_auto_approved"
+          // Neither PASS (no value was created) nor FAIL (verification did
+          // not actually fail - shadow mode just never acts on it).
+          ? "warning"
+          : verdict === "ocr_disabled"
+            ? "not_evaluated"
+            : "fail",
+    detail:
+      verdict === "shadow_auto_approved"
+        ? "Shadow mode: auto-approval would have passed, but nothing was approved or created."
+        : input.rootCauseSummary ?? undefined,
   });
 
   return rows;

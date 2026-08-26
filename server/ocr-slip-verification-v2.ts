@@ -503,50 +503,52 @@ const RECIPIENT_TRUSTED_CONTAINERS = new Set([
 ]);
 
 /**
- * Same suffix-matching as getFieldBySuffixMatch, but restricted to keys
- * whose full path chains ONLY through trusted containers - for FINANCIAL
- * RECIPIENT AUTHORITY lookups only (see RECIPIENT_TRUSTED_CONTAINERS).
+ * Restricted to keys whose full path chains ONLY through trusted containers
+ * - for FINANCIAL RECIPIENT AUTHORITY lookups only (see
+ * RECIPIENT_TRUSTED_CONTAINERS).
  *
- * A ROOT-level key (no container at all) is always trusted; a nested key is
- * trusted only when EVERY intermediate segment is itself an allowlisted
- * container. This is a positive allowlist, not a denylist: an unaudited
- * container name (`foo`, `debug`, `payload`, `customer`, ...) is rejected by
- * default, exactly like a known-adversarial one (`sender`, `memo`).
+ * A ROOT-level key (no container at all) is always container-trusted; a
+ * nested key is container-trusted only when EVERY intermediate segment is
+ * itself an allowlisted container. This is a positive allowlist, not a
+ * denylist: an unaudited container name (`foo`, `debug`, `payload`,
+ * `customer`, ...) is rejected by default, exactly like a known-adversarial
+ * one (`sender`, `memo`).
  */
-function getRecipientFieldBySuffixMatch(
+function isRecipientTrustedContainerPath(key: string): boolean {
+  const segments = key.split(".");
+  segments.pop(); // the terminal key itself carries no container risk
+  return segments.every((s) => RECIPIENT_TRUSTED_CONTAINERS.has(s.toLowerCase()));
+}
+
+/**
+ * FINANCIAL RECIPIENT AUTHORITY lookup - EXACT approved field paths only.
+ *
+ * Deliberately NOT a suffix or substring match, unlike getFieldBySuffixMatch:
+ * a root-level key is NOT automatically trusted merely for being at the
+ * root - `sender_biller_id` and `memo_merchant_code` are both root-level
+ * (no `.` at all) and both END WITH an authoritative suffix, so the earlier
+ * endsWith-based check accepted them as if they were the real `biller_id`/
+ * `merchant_code` field. The terminal key must equal one of `exactKeys`
+ * CHARACTER FOR CHARACTER - a prefixed, suffixed, or otherwise decorated
+ * variant of a real field name is a DIFFERENT field, not the same field
+ * merely spelled differently, and must fail.
+ *
+ * `exactKeys` is a closed, repository-evidenced list (see the call sites):
+ * every entry is a literal key this file's own real bank fixtures use for
+ * this piece of data (server/ocr-slip-verification-v2.test.ts). A container
+ * check (see isRecipientTrustedContainerPath) still applies on top of the
+ * exact terminal match, so `memo.biller_id` fails on the container even
+ * though `biller_id` alone is an approved terminal key.
+ */
+function getRecipientFieldByExactPath(
   flattened: Record<string, any>,
-  suffixes: string[]
+  exactKeys: string[]
 ): any {
-  const isTrustedPath = (key: string): boolean => {
-    const segments = key.split(".");
-    segments.pop(); // the terminal key itself carries no container risk
-    return segments.every((s) => RECIPIENT_TRUSTED_CONTAINERS.has(s.toLowerCase()));
-  };
-
-  for (const suffix of suffixes) {
+  for (const exactKey of exactKeys) {
     for (const key in flattened) {
-      if ((key.endsWith(suffix) || key === suffix) && isTrustedPath(key)) {
-        return flattened[key];
-      }
-    }
-  }
-
-  const normalizedSuffixes = suffixes.map((s) =>
-    s
-      .toLowerCase()
-      .replace(/\s+/g, "")
-      .replace(/[/_()]/g, "")
-  );
-
-  for (const key in flattened) {
-    if (!isTrustedPath(key)) continue;
-    const normalizedKey = key
-      .toLowerCase()
-      .replace(/\s+/g, "")
-      .replace(/[/_()]/g, "");
-
-    for (const normSuffix of normalizedSuffixes) {
-      if (normalizedKey.includes(normSuffix)) {
+      const segments = key.split(".");
+      const terminal = segments[segments.length - 1];
+      if (terminal === exactKey && isRecipientTrustedContainerPath(key)) {
         return flattened[key];
       }
     }
@@ -797,9 +799,13 @@ function extractReference(flattened: Record<string, any>, text: string): string 
 }
 
 function extractShopName(flattened: Record<string, any>, text: string): string | undefined {
-  let shopVal = getRecipientFieldBySuffixMatch(flattened, [
+  let shopVal = getRecipientFieldByExactPath(flattened, [
     "receiver_shop_name",
     "ชื่อร้านค้า_หรือ_ชื่อผู้รับ",
+    // Real KBANK_SIMPLE_SAMPLE fixture spelling - spaces/slash, not
+    // underscores. A DIFFERENT literal key from the line above, not a fuzzy
+    // match of it.
+    "ชื่อร้านค้า / ชื่อผู้รับ",
     "ชื่อร้านค้า",
     "receiver_name",
     "ผู้รับ",
@@ -909,7 +915,7 @@ function extractMaskedAccount(flattened: Record<string, any>, text: string): str
 }
 
 function extractMerchantCode(flattened: Record<string, any>, text: string): string | undefined {
-  let codeVal = getRecipientFieldBySuffixMatch(flattened, [
+  let codeVal = getRecipientFieldByExactPath(flattened, [
     "merchant_code",
     "รหัสร้านค้า",
     "merchantCode",
@@ -945,7 +951,7 @@ function extractMerchantCode(flattened: Record<string, any>, text: string): stri
 }
 
 function extractMerchantTransactionCode(flattened: Record<string, any>, text: string): string | undefined {
-  let txnCodeVal = getRecipientFieldBySuffixMatch(flattened, [
+  let txnCodeVal = getRecipientFieldByExactPath(flattened, [
     "transaction_code",
     "รหัสธุรกรรม",
     "merchantTransactionCode",
@@ -989,7 +995,7 @@ function extractMerchantTransactionCode(flattened: Record<string, any>, text: st
 }
 
 function extractBillerId(flattened: Record<string, any>, text: string): string | undefined {
-  let receiverAccountOrIdVal = getRecipientFieldBySuffixMatch(flattened, [
+  let receiverAccountOrIdVal = getRecipientFieldByExactPath(flattened, [
     "biller_id",
     "receiverAccountOrId",
     "รหัสบิลเลอร์",

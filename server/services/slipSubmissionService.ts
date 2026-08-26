@@ -288,6 +288,41 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
     shouldApprove = false;
   }
 
+  // ── INTEGRITY: RE-HASH THE SAME STORED SLIP BEFORE PUBLISHING ANYTHING
+  // OCR-DERIVED ─────────────────────────────────────────────────────────
+  // `slipFileHash` above was computed from the stored bytes BEFORE OCR ran.
+  // OCR itself independently re-fetches those same bytes
+  // (prepareSlipImageForOcr), sometimes seconds later. If the object at this
+  // URL was mutated in between - same key, different content - every
+  // downstream artifact keyed to `slipFileHash` (the claim, auto-approval,
+  // even the metadata left for a LATER manual review to trust) would
+  // describe bytes that no longer exist, letting a swapped-in image evade
+  // the exact-file identifier it was supposed to be bound to. Re-verify
+  // against the SAME published slip right before anything OCR-derived is
+  // written; a mismatch fails closed for BOTH the auto-approval branch and
+  // the manual-review fallback below - neither may publish the now-
+  // unverifiable extraction, and auto-approval must not even attempt a
+  // claim with it.
+  if (slipFileHash) {
+    const rehash = await computeSlipFileHash(publishedSlipVersion.slipImageUrl);
+    if (rehash !== slipFileHash) {
+      console.error(
+        `[OCR] slip integrity mismatch for payment ${payment.id}: stored bytes changed during OCR processing`
+      );
+      shouldApprove = false;
+      verificationResult = {
+        ...verificationResult,
+        isAutoApproved: false,
+        isShadowMode: false,
+        reviewReason: "SLIP_INTEGRITY_MISMATCH",
+        ocrDecision: "needs_review",
+        // The fileHash (and everything else OCR derived from it) is no
+        // longer trustworthy - never publish it, not even for manual review.
+        extractedData: null,
+      };
+    }
+  }
+
   // Use effective config for all OCR decisions (already fetched above)
   const config = effectiveConfig;
 

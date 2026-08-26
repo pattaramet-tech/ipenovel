@@ -2992,10 +2992,118 @@ export const appRouter = router({
 
           const topup = await withResolvedSlipUrl(rawTopup, "wallet.admin.detail");
 
+          const ocrConfig = await getEffectiveOCRConfig();
+
+          // ── DUPLICATE STATE (read-only, admin-only) ─────────────────────
+          // Mirrors admin.orders.detail EXACTLY: the same shared classifier,
+          // so an admin viewing a wallet top-up sees the SAME conflict a
+          // wallet Approve attempt will enforce, before ever attempting one.
+          // Without this, a mixed-case reference (or any other advisory
+          // ambiguity) was invisible until Approve failed - normal Approve
+          // was the discovery mechanism, not the detail page.
+          let duplicate:
+            | {
+                strength: "strong" | "legacy_case_ambiguity" | "unresolved" | "legacy_case_ambiguity_group";
+                kind?: string;
+                matchedSourceType: "order_payment" | "wallet_topup";
+                matchedSourceId: number;
+                matchedOrderId?: number;
+                viaLegacyCompatibility?: boolean;
+                advisory?: true;
+                requiresAdminResolution?: true;
+              }
+            | undefined;
+          let reviewReasonOverride: string | undefined;
+          let fileIdentifierStatus: "AVAILABLE" | "MATCH" | "UNAVAILABLE" = "UNAVAILABLE";
+          let recipient: ReturnType<typeof verifyRecipient> | undefined;
+
+          if (rawTopup?.extractedData) {
+            const { identifiers } = deriveStrongIdentifiersFromExtractedData(
+              rawTopup.extractedData as string
+            );
+            const database = await db.getDb();
+            if (database && hasStrongIdentifier(identifiers)) {
+              const conflict = await evaluateSlipConflict(
+                {
+                  identifiers,
+                  rawReference: getRawReferenceForLegacyLookup(
+                    rawTopup.extractedData as string
+                  ),
+                  sourceType: "wallet_topup",
+                  sourceId: rawTopup.id,
+                },
+                database
+              );
+
+              if (conflict.kind === "strong_duplicate") {
+                duplicate = {
+                  strength: "strong",
+                  kind: conflict.matchedKind,
+                  matchedSourceType: conflict.matchedSourceType,
+                  matchedSourceId: conflict.matchedSourceId,
+                  viaLegacyCompatibility: conflict.viaLegacyCompatibility,
+                };
+              } else if (conflict.kind === "legacy_case_ambiguity") {
+                duplicate = {
+                  strength: "legacy_case_ambiguity",
+                  matchedSourceType: conflict.matchedSourceType,
+                  matchedSourceId: conflict.matchedSourceId,
+                  advisory: true,
+                  requiresAdminResolution: true,
+                };
+                reviewReasonOverride = "LEGACY_REFERENCE_CASE_AMBIGUITY";
+              } else if (conflict.kind === "unresolved") {
+                duplicate = {
+                  strength: "unresolved",
+                  matchedSourceType: conflict.matchedSourceType,
+                  matchedSourceId: conflict.matchedSourceId,
+                  advisory: true,
+                };
+                reviewReasonOverride = "LEGACY_APPROVED_SLIP_UNRESOLVED";
+              } else if (conflict.kind === "legacy_case_ambiguity_group") {
+                duplicate = {
+                  strength: "legacy_case_ambiguity_group",
+                  matchedSourceType: conflict.matchedSourceType,
+                  matchedSourceId: conflict.matchedSourceId,
+                  advisory: true,
+                };
+                reviewReasonOverride = "LEGACY_ALIAS_GROUP_AMBIGUITY";
+              }
+
+              if (duplicate) {
+                const nav = await resolveMatchedSourceNavigation(
+                  duplicate.matchedSourceType,
+                  duplicate.matchedSourceId,
+                  database
+                );
+                duplicate.matchedOrderId = nav.orderId;
+              }
+            }
+            fileIdentifierStatus = describeFileIdentifierStatus({
+              fileHash: identifiers.fileHash,
+              duplicateFileMatch: duplicate?.kind === "file",
+            });
+
+            try {
+              const parsedExtracted = JSON.parse(rawTopup.extractedData as string);
+              recipient = verifyRecipient(parsedExtracted);
+            } catch {
+              recipient = undefined;
+            }
+          }
+
           return {
             topup,
             user,
             logs: logs || [],
+            ocrMeta: {
+              effectiveWindowMinutes: ocrConfig.maxTimeWindowMinutes,
+              minConfidence: ocrConfig.minConfidence,
+              duplicate,
+              fileIdentifierStatus,
+              recipient,
+              reviewReason: reviewReasonOverride ?? (rawTopup?.reviewReason as string | undefined),
+            },
           };
         }),
       approveTopup: adminProcedure

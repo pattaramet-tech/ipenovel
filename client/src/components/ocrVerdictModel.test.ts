@@ -56,6 +56,28 @@ describe("deriveVerdict", () => {
   it("ocr disabled", () => {
     expect(deriveVerdict(input({ ocrDecision: "ocr_disabled" }))).toBe("ocr_disabled");
   });
+
+  // IPE-001-C05: shadow mode's ocrDecision literally reads
+  // "shadow_auto_approved" - the server forced isAutoApproved: false for it,
+  // so the payment stays pending_review and NO value was created. It must
+  // NEVER collapse into the same "auto_approved" verdict as a real approval.
+  it("shadow_auto_approved is its own distinct verdict, never auto_approved", () => {
+    const v = deriveVerdict(input({ ocrDecision: "shadow_auto_approved" }));
+    expect(v).toBe("shadow_auto_approved");
+    expect(v).not.toBe("auto_approved");
+  });
+
+  it("shadow_auto_approved's label says SIMULATED, never a bare AUTO APPROVED", () => {
+    const label = verdictLabel(deriveVerdict(input({ ocrDecision: "shadow_auto_approved" })));
+    expect(label).toMatch(/SIMULAT/i);
+    expect(label).not.toBe("AUTO APPROVED");
+  });
+
+  it("a real auto_approved decision is completely unaffected by the shadow branch", () => {
+    const v = deriveVerdict(input({ ocrDecision: "auto_approved" }));
+    expect(v).toBe("auto_approved");
+    expect(verdictLabel(v)).toBe("AUTO APPROVED");
+  });
 });
 
 describe("compareTransactionTime", () => {
@@ -483,6 +505,16 @@ describe("buildChecklist", () => {
       (r) => r.key === "final"
     )!;
     expect(row.state).toBe("pass");
+  });
+
+  it("final verification WARNS (never passes or fails) for a shadow-mode decision - no value was created", () => {
+    const row = buildChecklist(input({ ocrDecision: "shadow_auto_approved" })).find(
+      (r) => r.key === "final"
+    )!;
+    expect(row.state).toBe("warning");
+    expect(row.state).not.toBe("pass");
+    expect(row.detail).toMatch(/shadow mode/i);
+    expect(row.detail).toMatch(/nothing was approved|no value/i);
   });
 
   it("the legacy-unresolved row warns explicitly and is not_evaluated otherwise", () => {

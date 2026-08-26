@@ -289,6 +289,45 @@ export async function submitWalletTopupSlip(
       ? { ...rawExtracted, fileHash: walletSlipFileHash }
       : rawExtracted;
 
+    // ── INTEGRITY: RE-HASH THE SAME STORED SLIP BEFORE PUBLISHING ANYTHING
+    // OCR-DERIVED ─────────────────────────────────────────────────────────
+    // walletSlipFileHash above was computed from the stored bytes BEFORE
+    // OCR ran; OCR itself independently re-fetched those same bytes
+    // (prepareSlipImageForOcr), possibly seconds later. If the object at
+    // this URL was mutated in between - same key, different content -
+    // every downstream artifact (auto-approval's claim/credit, or even the
+    // metadata left for a LATER manual admin approval to trust) would
+    // describe bytes that no longer exist. Re-verify right after OCR
+    // extraction, before ANY branch below can publish it - a mismatch fails
+    // closed uniformly, whether this run would have auto-approved or only
+    // gone to manual review.
+    if (walletSlipFileHash) {
+      const walletRehash = await computeSlipFileHash(slipImageUrl);
+      if (walletRehash !== walletSlipFileHash) {
+        console.error(
+          `[OCR] slip integrity mismatch for wallet top-up ${topupId}: stored bytes changed during OCR processing`
+        );
+        return await handlePendingReview(
+          topupId,
+          userId,
+          "SLIP_INTEGRITY_MISMATCH",
+          "ส่งสลิปแล้ว รอแอดมินตรวจสอบ",
+          // Nothing OCR derived from the stale bytes is trustworthy - not
+          // even the fileHash-only fallback other error paths use.
+          undefined,
+          undefined,
+          undefined,
+          parseResult,
+          topup,
+          expectedSlipVersion,
+          recordWalletAttempt,
+          "needs_review",
+          "TECHNICAL",
+          null
+        );
+      }
+    }
+
     // Step 3: Verify slip data
     const existingRefs = new Set(await getExistingReferencesForWallet(userId));
     const existingFingerprints = new Set(await getExistingFingerprintsForWallet(userId));

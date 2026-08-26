@@ -44,6 +44,8 @@ interface OCRResultPanelProps {
     reviewReason?: string | null;
     approvalSource?: string | null;
     slipSubmittedAt?: string | Date | null;
+    /** Presence alone justifies showing Recheck even with zero OCR metadata. */
+    slipImageUrl?: string | null;
     order?: { totalAmount: number | string };
   };
   /**
@@ -117,25 +119,37 @@ const STATE_CLASS: Record<CheckState, string> = {
 };
 
 function VerdictBanner({ verdict }: { verdict: OcrVerdict }) {
+  // shadow_auto_approved gets its OWN, deliberately non-green tone - it is
+  // NEVER real approval (the payment stays pending_review, no value was
+  // created), so it must never share auto_approved's success styling.
   const tone =
     verdict === "auto_approved"
       ? "bg-green-50 border-green-300 text-green-900"
-      : verdict === "ready_for_admin_approval"
-        ? "bg-blue-50 border-blue-300 text-blue-900"
-        : verdict === "ocr_disabled"
-          ? "bg-slate-50 border-slate-300 text-slate-800"
-          : "bg-yellow-50 border-yellow-300 text-yellow-900";
+      : verdict === "shadow_auto_approved"
+        ? "bg-purple-50 border-purple-300 text-purple-900"
+        : verdict === "ready_for_admin_approval"
+          ? "bg-blue-50 border-blue-300 text-blue-900"
+          : verdict === "ocr_disabled"
+            ? "bg-slate-50 border-slate-300 text-slate-800"
+            : "bg-yellow-50 border-yellow-300 text-yellow-900";
 
   return (
     <div className={`rounded-lg border-2 p-4 ${tone}`}>
       <p className="text-xs font-semibold uppercase tracking-wide opacity-70">OCR Verdict</p>
       <p className="text-xl font-bold mt-1 flex items-center gap-2">
         {verdict === "auto_approved" && <CheckCircle2 className="w-5 h-5" aria-hidden />}
+        {verdict === "shadow_auto_approved" && <EyeOff className="w-5 h-5" aria-hidden />}
         {verdict === "ready_for_admin_approval" && <CheckCircle2 className="w-5 h-5" aria-hidden />}
         {verdict === "needs_review" && <AlertTriangle className="w-5 h-5" aria-hidden />}
         {verdict === "ocr_disabled" && <EyeOff className="w-5 h-5" aria-hidden />}
         {verdictLabel(verdict)}
       </p>
+      {verdict === "shadow_auto_approved" && (
+        <p className="text-sm mt-1 opacity-90">
+          Shadow mode: this is a SIMULATION of what auto-approval would decide. This payment is
+          still pending_review - nothing was approved and no value was created.
+        </p>
+      )}
     </div>
   );
 }
@@ -186,7 +200,24 @@ export function OCRResultPanel({ payment, ocrMeta, onRecheckComplete }: OCRResul
     },
   });
 
-  if (!extracted && !payment.ocrDecision && !payment.reviewReason && !payment.approvalSource) {
+  // IPE-001-C05: a reviewable payment with a STORED SLIP but no OCR metadata
+  // at all (extractedData/ocrDecision/reviewReason/approvalSource all absent
+  // - e.g. OCR was disabled or crashed before writing anything) used to hide
+  // the entire panel, including Recheck - the one control that could
+  // actually recover it. Absent metadata must not manufacture a verdict
+  // (the panel below still shows nothing but "unknown"/"not evaluated"), but
+  // it must not hide the recovery path either.
+  const isReviewablePaymentStatus = payment.status === "pending_review" || payment.status === "pending";
+  const hasStoredSlipWithNoMetadata =
+    isReviewablePaymentStatus && Boolean(payment.slipImageUrl);
+
+  if (
+    !extracted &&
+    !payment.ocrDecision &&
+    !payment.reviewReason &&
+    !payment.approvalSource &&
+    !hasStoredSlipWithNoMetadata
+  ) {
     return null;
   }
 
