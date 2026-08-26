@@ -474,3 +474,199 @@ describe("Recheck and Admin Detail treat a group ambiguity as a non-waivable, di
     }
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════
+// H. PARTIAL BACKFILL: indexed and live-scan members are unioned
+// ════════════════════════════════════════════════════════════════════════
+//
+// IPE-001-C03 P1: while the legacy scan is still required (backfill
+// incomplete), an indexed alias match with exactly ONE member does NOT mean
+// only one historical source shares the fold - it only means one has been
+// backfilled so far. The previous code returned the single-member ambiguity
+// the moment `aliasMatches.length === 1`, before ever consulting the live
+// scan for a second, not-yet-backfilled source sharing the same alias - an
+// admin could then "confirm distinct" against the one row they were shown,
+// unknowingly waiving a replay of the row the backfill hadn't reached yet.
+
+describe("H. partial backfill: indexed and live-scan members are unioned into one semantic group", () => {
+  it("1. one indexed ORDER + one unindexed WALLET, same fold, scan required -> group", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(true);
+    const tx = makeTx({
+      claims: [
+        { sourceType: "order_payment", sourceId: 42, legacyReferenceUpperHash: UPPER_HASH },
+      ],
+      approvedTopups: [{ id: 99, extractedData: JSON.stringify({ reference: MIXED.toUpperCase() }) }],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { referenceHash: MIXED_HASH }, rawReference: MIXED, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("legacy_case_ambiguity_group");
+    if (conflict.kind === "legacy_case_ambiguity_group") {
+      expect(conflict.requiresAdminResolution).toBe(false);
+    }
+  });
+
+  it("2. one indexed WALLET + one unindexed ORDER, same fold, scan required -> group (reverse direction)", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(true);
+    const tx = makeTx({
+      claims: [
+        { sourceType: "wallet_topup", sourceId: 42, legacyReferenceUpperHash: UPPER_HASH },
+      ],
+      approvedPayments: [{ id: 99, extractedData: JSON.stringify({ reference: MIXED.toUpperCase() }) }],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { referenceHash: MIXED_HASH }, rawReference: MIXED, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("legacy_case_ambiguity_group");
+  });
+
+  it("3. one indexed and one unindexed member in the SAME table -> group", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(true);
+    const tx = makeTx({
+      claims: [
+        { sourceType: "order_payment", sourceId: 42, legacyReferenceUpperHash: UPPER_HASH },
+      ],
+      approvedPayments: [{ id: 99, extractedData: JSON.stringify({ reference: MIXED.toUpperCase() }) }],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { referenceHash: MIXED_HASH }, rawReference: MIXED, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("legacy_case_ambiguity_group");
+  });
+
+  it("4. the SAME historical source visible through BOTH the registry and the scan counts once - single-member semantics preserved", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(true);
+    const tx = makeTx({
+      claims: [
+        { sourceType: "order_payment", sourceId: 42, legacyReferenceUpperHash: UPPER_HASH },
+      ],
+      // Source #42's own underlying row is STILL approved and therefore
+      // still visible to the live scan - this is not a second member.
+      approvedPayments: [{ id: 42, extractedData: JSON.stringify({ reference: MIXED.toUpperCase() }) }],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { referenceHash: MIXED_HASH }, rawReference: MIXED, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("legacy_case_ambiguity");
+    if (conflict.kind === "legacy_case_ambiguity") {
+      expect(conflict.requiresAdminResolution).toBe(true);
+      expect(conflict.matchedSourceId).toBe(42);
+    }
+  });
+
+  it("5. an exact strong duplicate against one union member still wins over the group", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(true);
+    const tx = makeTx({
+      claims: [
+        {
+          sourceType: "order_payment",
+          sourceId: 42,
+          referenceHash: MIXED_HASH,
+          legacyReferenceUpperHash: UPPER_HASH,
+        },
+      ],
+      approvedTopups: [{ id: 99, extractedData: JSON.stringify({ reference: MIXED.toUpperCase() }) }],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { referenceHash: MIXED_HASH }, rawReference: MIXED, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("strong_duplicate");
+    if (conflict.kind === "strong_duplicate") expect(conflict.matchedSourceId).toBe(42);
+  });
+
+  it("6. once the scan is no longer required, indexed-only stays authoritative - a single indexed alias is still just a single-member ambiguity", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [
+        { sourceType: "order_payment", sourceId: 42, legacyReferenceUpperHash: UPPER_HASH },
+      ],
+      // Present in the mock but irrelevant: scanRequired=false means the
+      // live scan is never consulted, matching "backfill complete" reality.
+      approvedTopups: [{ id: 99, extractedData: JSON.stringify({ reference: MIXED.toUpperCase() }) }],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { referenceHash: MIXED_HASH }, rawReference: MIXED, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("legacy_case_ambiguity");
+    if (conflict.kind === "legacy_case_ambiguity") expect(conflict.matchedSourceId).toBe(42);
+  });
+
+  it("7. claimSlip refuses a partial-backfill union group exactly like a fully-indexed one - a single-member resolution has no effect", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(true);
+    const tx = makeTx({
+      claims: [
+        { sourceType: "order_payment", sourceId: 42, legacyReferenceUpperHash: UPPER_HASH },
+      ],
+      approvedTopups: [{ id: 99, extractedData: JSON.stringify({ reference: MIXED.toUpperCase() }) }],
+    }) as any;
+    tx.insert = () => ({ values: async () => [{ insertId: 1 }] });
+
+    const outcome = await claimSlip(
+      {
+        sourceType: "order_payment",
+        sourceId: 500,
+        userId: 1,
+        identifiers: { referenceHash: MIXED_HASH },
+        referenceRawForLegacyLookup: MIXED,
+        legacyCaseAmbiguityResolution: {
+          expectedLegacyAliasHash: UPPER_HASH,
+          expectedMatchedSourceType: "order_payment",
+          expectedMatchedSourceId: 42,
+          expectedIncomingReferenceHash: MIXED_HASH,
+        },
+      },
+      tx
+    );
+
+    expect(outcome.claimed).toBe(false);
+    if (!outcome.claimed) expect(outcome.reason).toBe("legacy_alias_group_ambiguity");
+  });
+
+  it("8. the union verdict does not depend on which table holds the indexed vs. unindexed member", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(true);
+    const indexedInOrders = makeTx({
+      claims: [
+        { sourceType: "order_payment", sourceId: 42, legacyReferenceUpperHash: UPPER_HASH },
+      ],
+      approvedTopups: [{ id: 99, extractedData: JSON.stringify({ reference: MIXED.toUpperCase() }) }],
+    });
+    const a = await evaluateSlipConflict(
+      { identifiers: { referenceHash: MIXED_HASH }, rawReference: MIXED, ...self },
+      indexedInOrders
+    );
+
+    vi.restoreAllMocks();
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(true);
+    const indexedInWallets = makeTx({
+      claims: [
+        { sourceType: "wallet_topup", sourceId: 42, legacyReferenceUpperHash: UPPER_HASH },
+      ],
+      approvedPayments: [{ id: 99, extractedData: JSON.stringify({ reference: MIXED.toUpperCase() }) }],
+    });
+    const b = await evaluateSlipConflict(
+      { identifiers: { referenceHash: MIXED_HASH }, rawReference: MIXED, ...self },
+      indexedInWallets
+    );
+
+    expect(a.kind).toBe("legacy_case_ambiguity_group");
+    expect(b.kind).toBe("legacy_case_ambiguity_group");
+  });
+});

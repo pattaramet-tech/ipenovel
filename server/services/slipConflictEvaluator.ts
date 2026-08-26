@@ -197,62 +197,59 @@ export async function evaluateSlipConflict(
   // Checked AFTER every exact avenue, and evaluated whether or not the scan
   // is enabled, so pre- and post-backfill produce the same verdict.
   //
-  // COMPLETE ALIAS GROUP FIRST. A human resolution must never waive this
-  // alias by adjudicating just one arbitrary historical source: if a SECOND
-  // source also folds to it, the incoming submission could equally be a
-  // replay of the one the admin never saw. Cardinality is therefore checked
-  // BEFORE surfacing any single member, in both the post-backfill (indexed)
-  // and pre-backfill (live scan) mechanisms - they must produce the SAME
-  // semantic verdict for the same underlying data.
+  // COMPLETE ALIAS GROUP, ACROSS BOTH MECHANISMS. A human resolution must
+  // never waive this alias by adjudicating just one arbitrary historical
+  // source: if a SECOND source also folds to it, the incoming submission
+  // could equally be a replay of the one the admin never saw. While the
+  // legacy scan is still required (backfill incomplete), an indexed match
+  // and a not-yet-backfilled approved row can each hide the other - an
+  // indexed `aliasMatches.length === 1` does NOT mean only one historical
+  // source shares this fold, only that one has been backfilled so far. So
+  // the semantic member set is the UNION of the indexed registry lookup and
+  // the live-scan group lookup, de-duplicated by (sourceType, sourceId) -
+  // the same historical source visible through both mechanisms counts once.
+  // Once the scan is no longer required, every historical row has been
+  // accounted for by the backfill, so the indexed registry alone is
+  // authoritative again and the scan is skipped entirely.
   if (legacyAliasHash) {
     const aliasMatches = await findClaimsByLegacyAlias(legacyAliasHash, self, tx);
-    if (aliasMatches.length > 1) {
+    const members: Array<{ sourceType: SlipConflictSourceType; sourceId: number }> =
+      aliasMatches.map((m) => ({ sourceType: m.sourceType, sourceId: m.sourceId }));
+
+    if (scanRequired && members.length <= 1) {
+      const scanMembers = await findLegacyAliasGroupMembers(legacyAliasHash, self, tx);
+      for (const m of scanMembers) {
+        const alreadyCounted = members.some(
+          (x) => x.sourceType === m.sourceType && x.sourceId === m.sourceId
+        );
+        if (!alreadyCounted) {
+          members.push({ sourceType: m.sourceType, sourceId: m.sourceId });
+          // Cardinality only - a third member would not change the verdict.
+          if (members.length > 1) break;
+        }
+      }
+    }
+
+    if (members.length > 1) {
       return {
         kind: "legacy_case_ambiguity_group",
-        matchedSourceType: aliasMatches[0].sourceType,
-        matchedSourceId: aliasMatches[0].sourceId,
+        matchedSourceType: members[0].sourceType,
+        matchedSourceId: members[0].sourceId,
         advisory: true,
         requiresAdminResolution: false,
         legacyAliasHash,
       };
     }
-    if (aliasMatches.length === 1) {
+    if (members.length === 1) {
       return {
         kind: "legacy_case_ambiguity",
-        matchedSourceType: aliasMatches[0].sourceType,
-        matchedSourceId: aliasMatches[0].sourceId,
+        matchedSourceType: members[0].sourceType,
+        matchedSourceId: members[0].sourceId,
         advisory: true,
         requiresAdminResolution: true,
         legacyAliasHash,
       };
     }
-  }
-
-  // The scan's uppercase-only hit, held back above, is the pre-backfill
-  // equivalent of the indexed alias lookup - same verdict, different
-  // mechanism. Before surfacing it as a single-member ambiguity, check
-  // whether a SECOND historical row (in either table) also folds to the same
-  // alias - findLegacyApprovedDuplicate only ever reports the one it found.
-  if (scanHit && scanHit.matchedBy === "legacy_uppercase_only" && legacyAliasHash) {
-    const groupMembers = await findLegacyAliasGroupMembers(legacyAliasHash, self, tx);
-    if (groupMembers.length > 1) {
-      return {
-        kind: "legacy_case_ambiguity_group",
-        matchedSourceType: groupMembers[0].sourceType,
-        matchedSourceId: groupMembers[0].sourceId,
-        advisory: true,
-        requiresAdminResolution: false,
-        legacyAliasHash,
-      };
-    }
-    return {
-      kind: "legacy_case_ambiguity",
-      matchedSourceType: scanHit.sourceType,
-      matchedSourceId: scanHit.sourceId,
-      advisory: true,
-      requiresAdminResolution: true,
-      legacyAliasHash,
-    };
   }
 
   return { kind: "none" };

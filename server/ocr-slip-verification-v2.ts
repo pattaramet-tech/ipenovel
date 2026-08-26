@@ -450,6 +450,91 @@ function flattenObject(obj: any, prefix = ""): Record<string, any> {
   return result;
 }
 
+/**
+ * Container path segments that must NEVER grant FINANCIAL RECIPIENT
+ * AUTHORITY (biller ID, merchant code, merchant transaction code, shop /
+ * receiver name) - fields whose exact value can, on its own, satisfy
+ * recipient verification and permit auto-approval - even when the terminal
+ * key matches an authoritative suffix exactly.
+ *
+ * `sender` is a direction contradiction, not a depth problem: a value
+ * nested under a sender-labeled container describes the SENDER, never the
+ * recipient, no matter what its own key name claims (a hypothetical
+ * `sender.receiver_name` is adversarial, not a real recipient field - real
+ * sender-side data in these fixtures is `sender_name`/`sender_bank`/
+ * `sender_account_number(_masked)`, never a nested `sender.*` receiver
+ * field). `memo`/`note`/`notes`/`metadata` are informal or administrative
+ * containers: no real bank fixture in this repo ever nests a structured
+ * biller/merchant/receiver field under one of them, and the one comparable
+ * real field, `additional_info`, is always raw free text, never a
+ * structured object carrying recipient identity.
+ */
+const UNTRUSTED_RECIPIENT_CONTAINERS = new Set([
+  "sender",
+  "memo",
+  "note",
+  "notes",
+  "metadata",
+  "additional_info",
+]);
+
+/**
+ * Same suffix-matching as getFieldBySuffixMatch, but restricted to keys
+ * whose full path never passes through an untrusted container - for
+ * FINANCIAL RECIPIENT AUTHORITY lookups only (see
+ * UNTRUSTED_RECIPIENT_CONTAINERS).
+ *
+ * A suffix match on the TERMINAL key alone is not enough: `memo.biller_id`
+ * or `sender.receiver_name` would satisfy a plain suffix match despite
+ * living under a container that has nothing to do with the recipient - the
+ * exact class of bug the whole-text-scan and unlabeled-regex fallbacks were
+ * already removed for elsewhere in this file. A ROOT-level key (no
+ * container at all) and a key nested under any container NOT on the
+ * blocklist (e.g. this file's real `extracted_text` envelope) both remain
+ * trusted, since the risk here is a MISLEADING container, not depth itself.
+ */
+function getRecipientFieldBySuffixMatch(
+  flattened: Record<string, any>,
+  suffixes: string[]
+): any {
+  const isTrustedPath = (key: string): boolean => {
+    const segments = key.split(".");
+    segments.pop(); // the terminal key itself carries no container risk
+    return segments.every((s) => !UNTRUSTED_RECIPIENT_CONTAINERS.has(s.toLowerCase()));
+  };
+
+  for (const suffix of suffixes) {
+    for (const key in flattened) {
+      if ((key.endsWith(suffix) || key === suffix) && isTrustedPath(key)) {
+        return flattened[key];
+      }
+    }
+  }
+
+  const normalizedSuffixes = suffixes.map((s) =>
+    s
+      .toLowerCase()
+      .replace(/\s+/g, "")
+      .replace(/[/_()]/g, "")
+  );
+
+  for (const key in flattened) {
+    if (!isTrustedPath(key)) continue;
+    const normalizedKey = key
+      .toLowerCase()
+      .replace(/\s+/g, "")
+      .replace(/[/_()]/g, "");
+
+    for (const normSuffix of normalizedSuffixes) {
+      if (normalizedKey.includes(normSuffix)) {
+        return flattened[key];
+      }
+    }
+  }
+
+  return undefined;
+}
+
 function getFieldBySuffixMatch(flattened: Record<string, any>, suffixes: string[]): any {
   // Try exact suffix match first
   for (const suffix of suffixes) {
@@ -692,7 +777,7 @@ function extractReference(flattened: Record<string, any>, text: string): string 
 }
 
 function extractShopName(flattened: Record<string, any>, text: string): string | undefined {
-  let shopVal = getFieldBySuffixMatch(flattened, [
+  let shopVal = getRecipientFieldBySuffixMatch(flattened, [
     "receiver_shop_name",
     "ชื่อร้านค้า_หรือ_ชื่อผู้รับ",
     "ชื่อร้านค้า",
@@ -804,7 +889,7 @@ function extractMaskedAccount(flattened: Record<string, any>, text: string): str
 }
 
 function extractMerchantCode(flattened: Record<string, any>, text: string): string | undefined {
-  let codeVal = getFieldBySuffixMatch(flattened, [
+  let codeVal = getRecipientFieldBySuffixMatch(flattened, [
     "merchant_code",
     "รหัสร้านค้า",
     "merchantCode",
@@ -840,7 +925,7 @@ function extractMerchantCode(flattened: Record<string, any>, text: string): stri
 }
 
 function extractMerchantTransactionCode(flattened: Record<string, any>, text: string): string | undefined {
-  let txnCodeVal = getFieldBySuffixMatch(flattened, [
+  let txnCodeVal = getRecipientFieldBySuffixMatch(flattened, [
     "transaction_code",
     "รหัสธุรกรรม",
     "merchantTransactionCode",
@@ -884,7 +969,7 @@ function extractMerchantTransactionCode(flattened: Record<string, any>, text: st
 }
 
 function extractBillerId(flattened: Record<string, any>, text: string): string | undefined {
-  let receiverAccountOrIdVal = getFieldBySuffixMatch(flattened, [
+  let receiverAccountOrIdVal = getRecipientFieldBySuffixMatch(flattened, [
     "biller_id",
     "receiverAccountOrId",
     "รหัสบิลเลอร์",
