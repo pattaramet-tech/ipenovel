@@ -229,7 +229,9 @@ export async function adminApproveWalletTopup(topupId: number, adminUserId: numb
         error.code === "NO_STRONG_IDENTIFIER" ||
         error.code === "LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION" ||
         error.code === "LEGACY_REFERENCE_CASE_AMBIGUITY" ||
-        error.code === "SLIP_INTEGRITY_MISMATCH_BLOCKED";
+        error.code === "SLIP_INTEGRITY_MISMATCH_BLOCKED" ||
+        error.code === "SLIP_CURRENT_BYTES_UNAVAILABLE" ||
+        error.code === "SLIP_INTEGRITY_MISMATCH_AT_APPROVAL";
       throw new TRPCError({
         code: precondition ? "PRECONDITION_FAILED" : "CONFLICT",
         message: `${error.code}: ${error.message}`,

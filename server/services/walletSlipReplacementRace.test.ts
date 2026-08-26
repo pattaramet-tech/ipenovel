@@ -417,6 +417,13 @@ describe("Wallet slip replacement publish is atomic and version-bound (IPE-001)"
     expect(harness.store.walletTopups[0].slipImageUrl).toBe(B_URL);
     expect(harness.store.walletTopups[0].status).toBe("pending");
 
+    // IPE-001-C09: manual approval now re-hashes the CURRENT stored bytes
+    // before claiming - stand in for B's real bytes hashing to what was just
+    // published for B, so this test still exercises the intended "B's
+    // identifiers, not A's" scenario rather than failing on an unrelated
+    // hash-fetch-unavailable path.
+    (computeSlipFileHash as any).mockResolvedValue("b".repeat(64));
+
     await dbModule.approveWalletTopup(900, 1);
 
     expect(harness.store.walletTopups[0].status).toBe("approved");

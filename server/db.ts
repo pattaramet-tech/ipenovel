@@ -5,6 +5,8 @@ import {
   hasStrongIdentifier,
 } from "./services/slipIdentifierService";
 import { claimSlip, describeClaimFailure } from "./services/slipClaimService";
+import { computeSlipFileHash } from "./services/slipFileHashService";
+import { fileHashFromExtractedData } from "./services/legacySlipCompatibilityService";
 import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql, gt, lt, ne, like } from "drizzle-orm";
 
 /**
@@ -4294,6 +4296,50 @@ export async function approveWalletTopup(
             "be protected against replay. It needs the legacy override path (not yet " +
             "available) rather than a normal approval."
         );
+      }
+
+      // ── CURRENT-BYTE INTEGRITY (IPE-001-C09) ────────────────────────────
+      // `topup` is reloaded and row-locked above, but `persistedExtractedData`
+      // - and any fileHash within it - describes bytes from an EARLIER
+      // moment: the last successful automatic submission or admin-facing
+      // resubmission, not necessarily what slipImageUrl serves RIGHT NOW.
+      // Row locks and the SLIP_INTEGRITY_MISMATCH_BLOCKED reviewReason guard
+      // above serialize concurrent writes to THIS row; neither serializes an
+      // external object-store mutation of the same key. Recompute the
+      // current bytes' hash here, inside this transaction, immediately
+      // before claiming - wallet parity with orderService.ts's
+      // approvePaymentInTx. Applies whenever a slip exists, even for a
+      // reference-only identifier set: a reference match alone must never
+      // bypass current-file integrity when a file is right there to check.
+      if (topup.slipImageUrl) {
+        const currentFileHash = await computeSlipFileHash(topup.slipImageUrl as string);
+        const persistedFileHash = fileHashFromExtractedData(persistedExtractedData);
+
+        if (!currentFileHash) {
+          // Unavailability is uncertainty, never proof of stability - fail
+          // closed exactly as a proven mismatch would.
+          throw new WalletSlipClaimError(
+            "SLIP_CURRENT_BYTES_UNAVAILABLE",
+            "The stored slip's current bytes could not be read at approval time, so this " +
+              "approval cannot be bound to what is actually being displayed. Nothing was " +
+              "claimed or approved. Try again, or run Recheck OCR first."
+          );
+        }
+
+        if (persistedFileHash && currentFileHash !== persistedFileHash) {
+          throw new WalletSlipClaimError(
+            "SLIP_INTEGRITY_MISMATCH_AT_APPROVAL",
+            "The stored slip's bytes changed after the last successful check and before this " +
+              "approval. Nothing was claimed or approved. Run Recheck OCR again to " +
+              "re-establish integrity for the exact bytes now on file."
+          );
+        }
+
+        // Bind the freshly confirmed current hash into what THIS approval
+        // actually claims - re-confirms an identifier that already had one,
+        // and enriches a reference-only record with one now, atomically
+        // inside the SAME transaction that commits the claim and the credit.
+        identifiers.fileHash = currentFileHash;
       }
 
       const claim = await claimSlip(

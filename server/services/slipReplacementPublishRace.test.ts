@@ -26,10 +26,22 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// IPE-001-C09: orderService.approvePayment now re-hashes the CURRENT stored
+// bytes before claiming, immediately before claimSlip. The real
+// implementation fetches a signed URL and downloads the object - unavailable
+// against this test's fake "r2p:" URLs - so it is mocked exactly like
+// walletSlipReplacementRace.test.ts already mocks it for the wallet side,
+// and each test that reaches the new checkpoint sets its own return value.
+vi.mock("./slipFileHashService", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./slipFileHashService")>();
+  return { ...actual, computeSlipFileHash: vi.fn() };
+});
+
 import * as dbModule from "../db";
 import * as orderService from "./orderService";
 import { hashSlipReference } from "./slipIdentifierService";
 import * as backfillState from "./slipBackfillStateService";
+import { computeSlipFileHash } from "./slipFileHashService";
 
 const REFERENCE_A = "original-slip-a-ref";
 const HASH_A = hashSlipReference(REFERENCE_A)!;
@@ -261,7 +273,9 @@ describe("Slip replacement publish is atomic and version-bound (IPE-001 P1-B)", 
     expect(harness.store.payments[0].status).toBe("pending");
 
     // Admin approves what is now on the row. It can only see B's fileHash -
-    // A's referenceHash was never a candidate.
+    // A's referenceHash was never a candidate. Stand in for B's real bytes
+    // hashing to what was just published for B (IPE-001-C09's rehash).
+    (computeSlipFileHash as any).mockResolvedValue(B_FILE_HASH);
     await orderService.approvePayment(700, "admin-1", "Admin");
 
     expect(harness.store.payments[0].status).toBe("approved");

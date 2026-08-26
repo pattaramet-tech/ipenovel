@@ -8,6 +8,8 @@ import {
   hasStrongIdentifier,
 } from "./slipIdentifierService";
 import { claimSlip, describeClaimFailure } from "./slipClaimService";
+import { computeSlipFileHash } from "./slipFileHashService";
+import { fileHashFromExtractedData } from "./legacySlipCompatibilityService";
 
 const COUPON_OWNERSHIP_DENIAL_PATTERNS = [/^coupon not found$/i, /belongs to another user/i];
 
@@ -567,6 +569,49 @@ async function approvePaymentInTx(
         "slip still yields no identifier, this record needs the legacy override path " +
         "(not yet available) rather than a normal approval."
     );
+  }
+
+  // ── CURRENT-BYTE INTEGRITY (IPE-001-C09) ────────────────────────────────
+  // `payment` is reloaded fresh above, but `persistedExtractedData` - and any
+  // fileHash within it - describes bytes from an EARLIER moment: the last
+  // successful OCR/Recheck, not necessarily what slipImageUrl serves RIGHT
+  // NOW. The row lock and lockAndRequireReviewablePayment's slip-version/
+  // status/SLIP_INTEGRITY_BLOCK_REASON guards all serialize concurrent
+  // writes to THIS row; none of them serialize an external object-store
+  // mutation of the same key. Recompute the current bytes' hash here, inside
+  // this transaction, immediately before claiming - the only way to know
+  // what this approval is actually about to claim value for. Applies
+  // whenever a slip exists, even for a reference-only identifier set: a
+  // reference match alone must never bypass current-file integrity when a
+  // file is right there to check.
+  if (payment.slipImageUrl) {
+    const currentFileHash = await computeSlipFileHash(payment.slipImageUrl);
+    const persistedFileHash = fileHashFromExtractedData(persistedExtractedData);
+
+    if (!currentFileHash) {
+      // Unavailability is uncertainty, never proof of stability - fail
+      // closed exactly as a proven mismatch would.
+      throw new Error(
+        "SLIP_CURRENT_BYTES_UNAVAILABLE: The stored slip's current bytes could not be read at " +
+          "approval time, so this approval cannot be bound to what is actually being displayed. " +
+          "Nothing was claimed or approved. Try again, or run Recheck OCR first."
+      );
+    }
+
+    if (persistedFileHash && currentFileHash !== persistedFileHash) {
+      throw new Error(
+        "SLIP_INTEGRITY_MISMATCH_AT_APPROVAL: The stored slip's bytes changed after the last " +
+          "successful OCR/Recheck and before this approval. Nothing was claimed or approved. " +
+          "Run Recheck OCR again to re-establish integrity for the exact bytes now on file."
+      );
+    }
+
+    // Bind the freshly confirmed current hash into what THIS approval
+    // actually claims - re-confirms an identifier that already had one, and
+    // enriches a reference-only record (whose persisted extraction never
+    // carried a fileHash) with one now, atomically inside the SAME
+    // transaction that commits the claim and the money.
+    identifiers.fileHash = currentFileHash;
   }
 
   const claim = await claimSlip(
