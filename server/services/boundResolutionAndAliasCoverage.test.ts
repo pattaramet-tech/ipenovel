@@ -498,25 +498,31 @@ describe("a legacy row is represented only when its alias is covered too", () =>
     expect(result.findings.length).toBeGreaterThan(0);
   });
 
-  it("partial ownership of a NON-file identifier is still a collision, checked before the alias", () => {
-    // The claim owns the file hash but not this row's distinct reference.
+  it("IPE-004 P2: a same-source claim missing ONLY a reference sibling is a repair, not a collision", () => {
+    // The claim owns the file hash (same source) but not this row's distinct
+    // reference, and nobody else owns that reference. Previously this was
+    // reported as a "(unclaimed)" collision, forcing manual review; the
+    // review flagged that reference and qr are UNIQUE columns exactly like
+    // fileHash and must be enriched in place the same way.
     const partial = ownClaim({ referenceHash: null, legacyReferenceUpperHash: ALIAS_A });
     const result: any = classifyRepresentation(IDS, HERE, [partial], ALIAS_A);
-    expect(result.kind).toBe("collision");
+    expect(result.kind).toBe("needs_strong_identifier");
+    expect(result.claim.id).toBe(1);
+    expect(result.missing).toEqual([{ kind: "reference", field: "referenceHash", value: HASH_A }]);
   });
 
   it("IPE-001-C01: a same-source claim missing ONLY the fileHash is a repair, not a collision", () => {
     // The claim owns the reference but not this row's exact fileHash - the
     // exact gap Codex flagged: a row already represented via reference/QR
     // whose earlier backfill run never captured its exact fileHash. This
-    // must be mechanically repairable (needs_file_hash), never a hard
+    // must be mechanically repairable (needs_strong_identifier), never a hard
     // collision requiring manual review - reference/QR presence never
     // excuses missing file-byte replay coverage, but neither does it block
     // the tool from filling the gap itself.
     const partial = ownClaim({ fileHash: null, legacyReferenceUpperHash: ALIAS_A });
     const result: any = classifyRepresentation(IDS, HERE, [partial], ALIAS_A);
-    expect(result.kind).toBe("needs_file_hash");
-    expect(result.expected).toBe(FILE_A);
+    expect(result.kind).toBe("needs_strong_identifier");
+    expect(result.missing).toEqual([{ kind: "file", field: "fileHash", value: FILE_A }]);
     expect(result.claim.id).toBe(1);
   });
 
@@ -544,6 +550,37 @@ describe("a legacy row is represented only when its alias is covered too", () =>
 
   it("a row with no strong identifier is never represented", () => {
     expect(classifyRepresentation({}, HERE, [ownClaim()], ALIAS_A)).toBeUndefined();
+  });
+
+  it("IPE-004 P2: a same-source claim missing ONLY a QR sibling is enrichable, not a collision", () => {
+    const withQr = { referenceHash: HASH_A, fileHash: FILE_A, qrPayloadHash: HASH_B };
+    const claim = ownClaim({ qrPayloadHash: null, legacyReferenceUpperHash: ALIAS_A });
+    const result: any = classifyRepresentation(withQr, HERE, [claim], ALIAS_A);
+    expect(result.kind).toBe("needs_strong_identifier");
+    expect(result.missing).toEqual([{ kind: "qr", field: "qrPayloadHash", value: HASH_B }]);
+  });
+
+  it("IPE-004 P2: more than one missing same-source axis is enriched together, not a collision", () => {
+    const claim = ownClaim({ referenceHash: null, qrPayloadHash: null, legacyReferenceUpperHash: ALIAS_A });
+    const withAll = { referenceHash: HASH_A, fileHash: FILE_A, qrPayloadHash: HASH_B };
+    const result: any = classifyRepresentation(withAll, HERE, [claim], ALIAS_A);
+    expect(result.kind).toBe("needs_strong_identifier");
+    expect(result.missing.map((m: any) => m.kind).sort()).toEqual(["qr", "reference"]);
+  });
+
+  it("a missing sibling that IS owned by a foreign source is still a collision, not an enrichment", () => {
+    const own = ownClaim({ referenceHash: null, legacyReferenceUpperHash: ALIAS_A });
+    const foreignRef = {
+      id: 5,
+      sourceType: "wallet_topup",
+      sourceId: 88,
+      referenceHash: HASH_A,
+      fileHash: FILE_B,
+      qrPayloadHash: null,
+      legacyReferenceUpperHash: null,
+    };
+    const result: any = classifyRepresentation(IDS, HERE, [own, foreignRef], ALIAS_A);
+    expect(result.kind).toBe("collision");
   });
 });
 
@@ -647,33 +684,37 @@ describe("I. completion is refused while any required exact fileHash coverage is
     expect(gateCode).toMatch(/fileHashUncovered=\$\{stats\.fileHashUncovered\}/);
   });
 
-  it("a dry run reports WOULD_ADD_FILE_HASH and counts the row as uncovered", () => {
-    const start = script.indexOf('if (registry?.kind === "needs_file_hash")');
+  it("a dry run reports WOULD_ENRICH_<axis> and counts the row as uncovered", () => {
+    const start = script.indexOf('if (registry?.kind === "needs_strong_identifier")');
     expect(start).toBeGreaterThan(-1);
-    const body = script.slice(start, start + 1800);
-    expect(body).toMatch(/WOULD_ADD_FILE_HASH/);
-    expect(body).toMatch(/stats\.wouldAddFileHash \+= 1/);
-    expect(body).toMatch(/stats\.fileHashUncovered \+= 1/);
+    const body = script.slice(start, start + 2200);
+    expect(body).toMatch(/WOULD_ENRICH_\$\{m\.kind\.toUpperCase\(\)\}/);
+    expect(body).toMatch(/stats\[c\.would\] \+= 1/);
+    expect(body).toMatch(/stats\[c\.uncovered\] \+= 1/);
+    // fileHash keeps its own counters so the gate's fileHashUncovered stays
+    // meaningful; reference/qr share strongId*.
+    expect(body).toMatch(/uncovered: "fileHashUncovered"/);
+    expect(body).toMatch(/uncovered: "strongIdUncovered"/);
   });
 
-  it("a live run UPDATES the same claim and re-reads to confirm", () => {
-    const start = script.indexOf('if (registry?.kind === "needs_file_hash")');
+  it("a live run UPDATES the same claim, one axis at a time, and re-reads to confirm", () => {
+    const start = script.indexOf('if (registry?.kind === "needs_strong_identifier")');
     const body = script.slice(start, script.indexOf('if (registry?.kind === "collision")', start));
     expect(body).toMatch(/\.update\(schema\.paymentSlipClaims\)/);
-    expect(body).toMatch(/\.set\(\{ fileHash: registry\.expected \}\)/);
-    expect(body).toMatch(/await verifyFileHashPersisted\(registry\.claim\.id, registry\.expected\)/);
-    // No second claim row is ever inserted for a fileHash repair.
+    expect(body).toMatch(/\.set\(\{ \[m\.field\]: m\.value \}\)/);
+    expect(body).toMatch(/rows\?\.\[0\]\?\.\[m\.field\] === m\.value/);
+    // No second claim row is ever inserted for an enrichment.
     expect(body).not.toMatch(/\.insert\(schema\.paymentSlipClaims\)/);
   });
 
   it("an enrichment that did not land is a failure, not coverage", () => {
-    const start = script.indexOf('if (registry?.kind === "needs_file_hash")');
-    const body = script.slice(start, start + 1800);
-    expect(body).toMatch(/fileHash not present after update/);
+    const start = script.indexOf('if (registry?.kind === "needs_strong_identifier")');
+    const body = script.slice(start, start + 2200);
+    expect(body).toMatch(/\$\{m\.field\} not present after update/);
   });
 
-  it("a duplicate-key error during fileHash enrichment is reported as a genuine collision, never swallowed", () => {
-    const start = script.indexOf('if (registry?.kind === "needs_file_hash")');
+  it("a duplicate-key error during enrichment is reported as a genuine collision, never swallowed", () => {
+    const start = script.indexOf('if (registry?.kind === "needs_strong_identifier")');
     const body = script.slice(start, script.indexOf('if (registry?.kind === "collision")', start));
     expect(body).toMatch(/ER_DUP_ENTRY/);
     expect(body).toMatch(/tracker\.collisions\.push/);

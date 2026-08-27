@@ -435,6 +435,76 @@ describe("known_collision - durable, indexed, no winner picked", () => {
 
     expect(conflict.kind).toBe("none");
   });
+
+  it("IPE-004 P2: a known collision WINS over a singleton claim on the same hash - no fabricated owner", async () => {
+    // The backfill gives the FIRST member of a colliding group an ordinary
+    // paymentSlipClaims row and records the rest as collision members. A
+    // plain findExistingClaim() would then present that first row as a proven
+    // duplicate owner. The known-collision lookup runs first, so the verdict
+    // is known_collision (no winner, manual review), never strong_duplicate.
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [{ referenceHash: MIXED_HASH, sourceType: "order_payment", sourceId: 1, kind: "reference" }],
+      legacyCollisions: [
+        { kind: "reference", identifierHash: MIXED_HASH, sourceType: "order_payment", sourceId: 1 },
+        { kind: "reference", identifierHash: MIXED_HASH, sourceType: "order_payment", sourceId: 2 },
+      ],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { referenceHash: MIXED_HASH }, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("known_collision");
+  });
+
+  it("a submission that is ITSELF the only recorded member on a hash is not blocked by that alone", async () => {
+    // Self-exclusion: re-evaluating an already-backfilled row must not treat
+    // its own recorded membership as a collision against itself.
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [],
+      legacyCollisions: [
+        {
+          kind: "reference",
+          identifierHash: MIXED_HASH,
+          sourceType: self.sourceType,
+          sourceId: self.sourceId,
+        },
+      ],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { referenceHash: MIXED_HASH }, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("none");
+  });
+
+  it("but a real group still blocks self when ANOTHER member shares the hash", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [],
+      legacyCollisions: [
+        {
+          kind: "reference",
+          identifierHash: MIXED_HASH,
+          sourceType: self.sourceType,
+          sourceId: self.sourceId,
+        },
+        { kind: "reference", identifierHash: MIXED_HASH, sourceType: "order_payment", sourceId: 7 },
+      ],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { referenceHash: MIXED_HASH }, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("known_collision");
+  });
 });
 
 // ─── Production-shaped unresolved history must never block an unrelated,

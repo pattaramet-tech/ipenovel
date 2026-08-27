@@ -14,21 +14,38 @@ database.
 For every historical `approved` order payment and wallet top-up, the tool
 classifies the row into exactly one of three durable buckets:
 
-- **protected** - a `paymentSlipClaims` row exists (or is inserted) with the
-  row's exact reference/file/QR identifier(s). Ordinary anti-replay coverage.
+- **protected** - a `paymentSlipClaims` row exists (or is inserted/enriched)
+  with every exact identifier this row genuinely carries. A row whose file
+  bytes are gone but whose exact reference and/or QR IS known is still
+  protected *on those axes* - the known identifiers are always claimed, and
+  only the missing file axis is separately recorded as unknown. reference and
+  QR are UNIQUE columns exactly like fileHash, so a same-source claim missing
+  a sibling identifier is enriched in place (never a second claim, never a
+  "collision" against nothing), with a re-read to confirm and a duplicate-key
+  rejection treated as a real collision.
 - **collision** - two or more historical rows share the same exact identifier.
   Recorded in `paymentSlipLegacyCollisions`, one row per member, under the
   identifier's (kind, hash). **No winner is ever picked** among the colliding
-  historical rows, and no financial/audit record is modified.
-- **unknown** - the row's file identity can never be established (most
-  commonly `no_slip_image_url`: the row has no slip image URL at all, so its
-  bytes are permanently gone). Recorded in `paymentSlipLegacyUnknown` for
-  operator visibility. **Never consulted to block or approve anything** -
-  recording it is what lets the backfill be marked complete despite it.
+  historical rows, and no financial/audit record is modified. Note the
+  backfill still writes an ordinary claim for the first member it sees; the
+  live approval path checks the collision registry *before* that singleton
+  claim, so a colliding identifier always surfaces as `known_collision` (no
+  winner, manual review), never as a proven duplicate owned by that first row.
+- **unknown** - the row's file identity could not be established this run.
+  Recorded in `paymentSlipLegacyUnknown` for operator visibility. **Never
+  consulted to block or approve anything.** Two sub-cases:
+  - `no_slip_image_url` - the row has no slip image URL at all, so its bytes
+    are permanently gone. **Proven permanent**: recording it is what lets the
+    backfill be marked complete despite it.
+  - `file_hash_recovery_failed` - a signed-URL / storage / network / timeout /
+    oversize failure. **NOT permanent**: it may succeed on a later run. Any
+    nonzero count of these keeps `--mark-complete` refused until the row is
+    resolved (or an operator justifies a permanent classification explicitly).
 
 Once every historical row has landed in one of these three buckets with no
-processing failures, the run is "clean" and `--mark-complete` may succeed.
-Completion durably disables the old O(N) historical scan
+processing failures - and every "unknown" is the proven-permanent
+`no_slip_image_url` kind - the run is "clean" and `--mark-complete` may
+succeed. Completion durably disables the old O(N) historical scan
 (`legacySlipCompatibilityService.ts`) in the live approval path; from then on,
 every approval and detail view uses indexed lookups against the three durable
 tables only.
@@ -37,7 +54,8 @@ tables only.
 Both are permanent facts about historical data - a row with no slip image can
 never be recovered no matter how many times you re-run this tool. What
 `--mark-complete` actually requires is that every one of them has been
-durably, explicitly classified, with no write failures. See
+durably, explicitly classified, with no write failures, and that no
+still-recoverable row is sitting behind a transient failure. See
 `scripts/lib/backfillCompletionGate.mjs` for the exact rule.
 
 ## Step 1: Dry-run first, always
@@ -161,13 +179,23 @@ tool itself judges "clean" (see `scripts/lib/backfillCompletionGate.mjs`):
 - Zero processing failures.
 - Full alias coverage (every legacy-uppercase-only row's claim carries its
   advisory alias) and zero alias inconsistencies.
-- Full exact-fileHash coverage (every represented row's claim carries its
-  exact file hash - no reference/QR presence excuses a missing file-byte
-  identifier).
-- Zero stale legacy claims left unrepaired.
+- Full exact-fileHash coverage (every *represented* row's claim carries its
+  exact file hash where one exists - a row whose bytes are permanently gone
+  is classified `unknown` on the file axis instead, never counted as
+  represented-but-missing).
+- Full reference/QR sibling coverage: `strongIdUncovered == 0` - every known
+  reference/QR identifier that belonged on a same-source claim was actually
+  enriched onto it.
+- Zero stale legacy claims left unrepaired. A duplicate-key conflict on the
+  fileHash half of a stale-claim migration must still end with the obsolete
+  lossy `referenceHash` cleared (the tool retries with a fileHash-free patch)
+  - otherwise that row stays `staleClaimsUncovered` and blocks completion.
 - **Zero FAILED durable writes** for collision members or unknown rows -
   not zero collisions or zero unresolved rows. A collision or an unresolved
   row that was successfully, durably recorded does not block completion.
+- **Zero TRANSIENT unknowns** (`unknownRowsTransient == 0`): every `unknown`
+  row is the proven-permanent `no_slip_image_url` kind, not a
+  `file_hash_recovery_failed` that might recover on a later run.
 - Both source tables (`payments`, `walletTopups`) were scanned to EOF.
 
 ```

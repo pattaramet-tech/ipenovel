@@ -143,9 +143,10 @@ export interface EvaluateSlipConflictInput {
  * Classifies any conflict for this slip.
  *
  * Ordering is deliberate and mirrors the priority rule:
- *   1. exact claim registry (reference / file / qr)
- *   2. exact historical match via the temporary scan
- *   3. lossy legacy case fold - registry alias, then scan
+ *   1. durable known-collision registry (no winner - fail closed)
+ *   2. exact singleton claim registry (reference / file / qr)
+ *   3. exact historical match via the temporary scan
+ *   4. lossy legacy case fold - registry alias, then scan
  *
  * A failure in any lookup PROPAGATES. Treating a failed read as "no conflict"
  * would silently reopen replay, so callers fail closed.
@@ -156,7 +157,32 @@ export async function evaluateSlipConflict(
 ): Promise<SlipConflict> {
   const self = { sourceType: input.sourceType, sourceId: input.sourceId };
 
-  // ── 1. Exact registry match ────────────────────────────────────────────
+  // ── 1. Durable known-collision registry (indexed, no scan) ─────────────
+  // Checked BEFORE the singleton claim registry, and regardless of whether
+  // the backfill is complete. When the backfill hits two historical rows
+  // sharing one exact identifier, the FIRST gets an ordinary
+  // paymentSlipClaims row and the rest are recorded as collision members -
+  // so a plain findExistingClaim() on that hash WOULD succeed and present
+  // that first backfilled row as a proven duplicate owner. That is a
+  // fabricated winner: no historical row was ever adjudicated the real
+  // owner of a collision. The known-collision lookup therefore takes
+  // precedence - the identifier surfaces as `known_collision` (no winner,
+  // fail closed, manual review of the whole group), never
+  // `strong_duplicate`. Before the backfill runs the table is empty and
+  // this is a fast no-op.
+  const knownCollision = await findKnownLegacyCollision(input.identifiers, tx, self);
+  if (knownCollision) {
+    return {
+      kind: "known_collision",
+      matchedKind: knownCollision.kind,
+      matchedSourceType: knownCollision.matchedSourceType,
+      matchedSourceId: knownCollision.matchedSourceId,
+      advisory: true,
+      requiresAdminResolution: false,
+    };
+  }
+
+  // ── 2. Exact singleton claim registry (reference / file / qr) ──────────
   const existingClaim = await findExistingClaim(input.identifiers, tx);
   if (
     existingClaim &&
@@ -171,30 +197,11 @@ export async function evaluateSlipConflict(
     };
   }
 
-  // ── 1.5. Durable known-collision registry (indexed, no scan) ───────────
-  // Checked BEFORE the temporary historical scan and regardless of whether
-  // the backfill is complete: a collision here is a fact about historical
-  // data, discovered and recorded once by the backfill, and is authoritative
-  // the moment it exists - there is no "pre-backfill" version of this check
-  // to fall back to, because before the backfill runs the table is simply
-  // empty and this step is a fast no-op.
-  const knownCollision = await findKnownLegacyCollision(input.identifiers, tx);
-  if (knownCollision) {
-    return {
-      kind: "known_collision",
-      matchedKind: knownCollision.kind,
-      matchedSourceType: knownCollision.matchedSourceType,
-      matchedSourceId: knownCollision.matchedSourceId,
-      advisory: true,
-      requiresAdminResolution: false,
-    };
-  }
-
   const legacyAliasHash = input.rawReference
     ? hashSlipReference(input.rawReference.toUpperCase())
     : undefined;
 
-  // ── 2. Exact historical match (temporary scan) ─────────────────────────
+  // ── 3. Exact historical match (temporary scan) ─────────────────────────
   const scanRequired =
     input.includeLegacyScanIfRequired === false ? false : await isLegacyScanRequired();
 
@@ -239,7 +246,7 @@ export async function evaluateSlipConflict(
     }
   }
 
-  // ── 3. Lossy legacy case fold ──────────────────────────────────────────
+  // ── 4. Lossy legacy case fold ──────────────────────────────────────────
   // Checked AFTER every exact avenue, and evaluated whether or not the scan
   // is enabled, so pre- and post-backfill produce the same verdict.
   //

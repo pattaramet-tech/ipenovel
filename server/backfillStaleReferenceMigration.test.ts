@@ -152,11 +152,14 @@ describe("the backfill script wires stale-claim migration in for legacy_uppercas
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const body = script.slice(start, end);
-    // Four call sites: recovery succeeded, no-identifier-at-all unresolved,
-    // has-another-identifier-but-no-fileHash unresolved, and ids.fileHash
-    // already present before recovery was even considered.
+    // Three call sites: recovery succeeded, no-identifier-at-all unresolved,
+    // and ids.fileHash already present (or a reference/QR-only row falling
+    // through) before the registry path. The has-a-reference/QR-but-no-fileHash
+    // branch no longer migrates inline - IPE-004 makes it fall through to the
+    // shared `if (staleClaim)` migrate below rather than `continue`, so its
+    // known identifiers still get claimed.
     const calls = body.match(/await migrateStaleReferenceClaim\(/g);
-    expect(calls?.length).toBe(4);
+    expect(calls?.length).toBe(3);
   });
 
   it("H/I/J. stale-claim coverage gates --mark-complete, same as alias/fileHash coverage", () => {
@@ -191,5 +194,29 @@ describe("the backfill script wires stale-claim migration in for legacy_uppercas
     const body = script.slice(start, end);
     expect(body).toMatch(/ER_DUP_ENTRY/);
     expect(body).toMatch(/tracker\.collisions\.push/);
+  });
+
+  it("IPE-004 P2: a duplicate-key on the fileHash half still clears the obsolete referenceHash, or blocks completion", () => {
+    // The reviewed head recorded the file collision and moved on, leaving the
+    // wrong lossy exact `referenceHash` in place while the gate still passed.
+    // The fix: on ER_DUP_ENTRY, retry with a fileHash-free patch that clears
+    // referenceHash + ensures the alias, re-read to confirm, and only then
+    // count it repaired - otherwise staleClaimsUncovered/failure is bumped so
+    // --mark-complete is refused.
+    const start = script.indexOf("async function migrateStaleReferenceClaim(");
+    const end = script.indexOf("async function processRows(");
+    const body = script.slice(start, end);
+    const dupIdx = body.indexOf("if (isDuplicate) {");
+    expect(dupIdx).toBeGreaterThan(-1);
+    const dupBody = body.slice(dupIdx);
+    // retries with a patch that has no fileHash
+    expect(dupBody).toMatch(/const safePatch = \{ referenceHash: null \};/);
+    expect(dupBody).toMatch(/\.set\(safePatch\)/);
+    // re-reads and only counts repaired when the obsolete referenceHash is gone
+    expect(dupBody).toMatch(/persisted\.referenceHash === null/);
+    expect(dupBody).toMatch(/stats\.staleClaimsRepaired \+= 1/);
+    // otherwise it fails closed
+    expect(dupBody).toMatch(/stats\.staleClaimsUncovered \+= 1/);
+    expect(dupBody).toMatch(/obsolete referenceHash not cleared after duplicate-key retry/);
   });
 });

@@ -70,10 +70,16 @@ const KIND_FIELD: Record<StrongDuplicateKind, keyof SlipStrongIdentifiers> = {
  * Read-only. Returns the first match found, checked in a fixed order
  * (reference, file, qr) purely for determinism; a real collision would only
  * ever exist on one axis for a given incoming identifier value in practice.
+ *
+ * `self`, when given, is the submission being evaluated: rows that ARE this
+ * same source are skipped, so a payment is never blocked solely because it is
+ * itself one of the recorded collision members. A real collision group has
+ * two or more members, so a genuine collision still matches via the others.
  */
 export async function findKnownLegacyCollision(
   identifiers: SlipStrongIdentifiers,
-  tx: any
+  tx: any,
+  self?: { sourceType: LegacyCollisionSourceType; sourceId: number }
 ): Promise<LegacyCollisionMatch | undefined> {
   for (const kind of ["reference", "file", "qr"] as StrongDuplicateKind[]) {
     const hash = identifiers[KIND_FIELD[kind]];
@@ -85,9 +91,11 @@ export async function findKnownLegacyCollision(
       .where(
         and(eq(paymentSlipLegacyCollisions.kind, kind), eq(paymentSlipLegacyCollisions.identifierHash, hash))
       )
-      .limit(1);
+      .limit(5);
 
-    const row = rows?.[0];
+    const row = (rows ?? []).find(
+      (r: any) => !(self && r.sourceType === self.sourceType && r.sourceId === self.sourceId)
+    );
     if (row) {
       return {
         kind,

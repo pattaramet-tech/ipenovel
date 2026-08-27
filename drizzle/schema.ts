@@ -1476,7 +1476,7 @@ export type InsertPaymentSlipClaim = typeof paymentSlipClaims.$inferInsert;
 /**
  * Durable record of a KNOWN historical strong-identifier collision.
  *
- * ── Why this exists (IPE-002 hotfix) ──────────────────────────────────────
+ * ── Why this exists (IPE-004 hotfix) ──────────────────────────────────────
  * The backfill's dry-run audit found 114 real cases where TWO OR MORE
  * approved historical records (order payments and/or wallet top-ups) share
  * the exact same referenceHash or fileHash (85 on reference, 29 on file).

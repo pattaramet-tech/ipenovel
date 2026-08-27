@@ -85,7 +85,7 @@ describe("the backfill script wires recovery in for every row with no strong ide
 
   it("imports recoverFileHashIdentifier and the real slipFileHashService primitive", () => {
     expect(script).toMatch(
-      /import \{ recoverFileHashIdentifier \} from "\.\/lib\/backfillFileHashRecovery\.mjs"/
+      /import \{[\s\S]*?recoverFileHashIdentifier[\s\S]*?\} from "\.\/lib\/backfillFileHashRecovery\.mjs"/
     );
     expect(script).toMatch(
       /fileHashService = await import\("\.\.\/server\/services\/slipFileHashService\.ts"\)/
@@ -104,24 +104,38 @@ describe("the backfill script wires recovery in for every row with no strong ide
     expect(body).toMatch(/slipImageUrl: row\.slipImageUrl/);
     expect(body).toMatch(/computeSlipFileHash: fileHashService\.computeSlipFileHash/);
     expect(body).toMatch(/stats\.fileHashRecovered \+= 1/);
-    // Two distinct unresolved branches - no identifier at all, and another
-    // identifier present but fileHash still unrecoverable - both count.
-    expect(body.match(/stats\.noIdentifier \+= 1/g)?.length).toBe(2);
+    // IPE-004 fix: only ONE branch increments noIdentifier now - the row that
+    // has no strong identifier at all AND no recoverable fileHash. A row that
+    // DOES carry a reference/QR is not identifier-less: it records only the
+    // file axis as unknown and falls through to claim its known identifiers.
+    expect(body.match(/stats\.noIdentifier \+= 1/g)?.length).toBe(1);
     expect(body).toMatch(/else if \(!identifiers\.hasStrongIdentifier\(ids\)\) \{/);
   });
 
-  it("a reference/QR identifier does not excuse missing fileHash coverage - still unresolved", () => {
-    // readCode() strips comments, so this checks the executable branch shape
-    // directly: recovery failure with ANOTHER identifier present takes the
-    // `else` arm (not the `hasStrongIdentifier` arm) and still lands on the
-    // same unresolved bookkeeping - see the previous test for the count.
+  it("a reference/QR identifier is still claimed when fileHash is unrecoverable - only the file axis is recorded unknown", () => {
+    // IPE-004 review finding P1: dropping a known reference/QR here was a
+    // replay hole - after completion a same-reference / same-QR replay could
+    // create value again. readCode() strips comments, so this checks the
+    // executable branch shape directly: the `else` arm (recovery failed with
+    // ANOTHER identifier present) records the file axis unknown, pushes an
+    // unresolvedRows entry tagged fileAxisOnly, does NOT increment
+    // noIdentifier, and does NOT `continue` - it falls through so the normal
+    // claim path below still records the reference/QR.
     const start = script.indexOf("if (!ids.fileHash) {");
     const body = script.slice(start, start + 2000);
     const elseIdx = body.indexOf("} else {", body.indexOf("else if (!identifiers.hasStrongIdentifier(ids)) {"));
     expect(elseIdx).toBeGreaterThan(-1);
-    const elseBody = body.slice(elseIdx, elseIdx + 300);
-    expect(elseBody).toMatch(/stats\.noIdentifier \+= 1/);
+    // Scope to just the else block body - up to the line that closes it.
+    const elseEnd = body.indexOf("\n      }", elseIdx);
+    expect(elseEnd).toBeGreaterThan(elseIdx);
+    const elseBody = body.slice(elseIdx, elseEnd);
     expect(elseBody).toMatch(/stats\.unresolvedRows\.push/);
+    expect(elseBody).toMatch(/fileAxisOnly: true/);
+    expect(elseBody).toMatch(/await recordUnknownRow\(sourceType, row\.id, recovery\.unresolvedReason\)/);
+    expect(elseBody).not.toMatch(/stats\.noIdentifier \+= 1/);
+    // Crucially: no `continue` - the row falls through to the claim path so
+    // its known reference/QR identifiers ARE recorded.
+    expect(elseBody).not.toMatch(/\bcontinue;/);
   });
 
   it("G. the scan predicate no longer requires extractedData IS NOT NULL", () => {

@@ -56,6 +56,31 @@ describe("evaluateBackfillCompletion", () => {
     expect(gate.reasons.join(" ")).toMatch(/unknownRowsFailed=1/);
   });
 
+  it("IPE-004 P1: a TRANSIENT unknown (file_hash_recovery_failed) DOES block completion", () => {
+    // A single failed signed-URL / storage / network / timeout / oversize
+    // recovery must never retire the safety scan with recoverable history
+    // unprotected. unknownRowsTransient counts those; nonzero => fail closed.
+    const gate = evaluateBackfillCompletion(baseStats({ unknownRowsTransient: 3 }), eof);
+    expect(gate.cleanRun).toBe(false);
+    expect(gate.noTransientUnknown).toBe(false);
+    expect(gate.reasons.join(" ")).toMatch(/unknownRowsTransient=3/);
+  });
+
+  it("a permanent-only unknown corpus (no_slip_image_url, transient count 0) still completes", () => {
+    const gate = evaluateBackfillCompletion(
+      baseStats({ unknownRowsFailed: 0, unknownRowsTransient: 0 }),
+      eof
+    );
+    expect(gate.cleanRun).toBe(true);
+  });
+
+  it("IPE-004 P2: a known reference/QR sibling left unclaimed (strongIdUncovered) blocks completion", () => {
+    const gate = evaluateBackfillCompletion(baseStats({ strongIdUncovered: 1 }), eof);
+    expect(gate.cleanRun).toBe(false);
+    expect(gate.strongIdCoverageComplete).toBe(false);
+    expect(gate.reasons.join(" ")).toMatch(/strongIdUncovered=1/);
+  });
+
   it("a FAILED durable write for a collision member DOES block completion", () => {
     const gate = evaluateBackfillCompletion(baseStats({ collisionMembersFailed: 2 }), eof);
     expect(gate.cleanRun).toBe(false);
