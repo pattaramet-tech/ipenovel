@@ -56,6 +56,11 @@ function makeRegistry(seed: any[] = []) {
         from(table: any) {
           const name = String(table?.[Symbol.for("drizzle:Name")] ?? "");
           return {
+            // findAnyLegacyFileIdentityUnknown (IPE-004-C03) calls
+            // select().from(...).limit(1) directly, with no .where() at all -
+            // the only such shape here. This fixture never seeds
+            // paymentSlipLegacyUnknown, so it is always empty.
+            limit: async () => [],
             where(cond: any) {
               const wanted = findHash(cond);
               return {

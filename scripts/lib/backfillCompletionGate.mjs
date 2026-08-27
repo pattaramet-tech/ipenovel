@@ -32,6 +32,19 @@
  * safety scan over it. `unknownRowsTransient` counts those, and any nonzero
  * value fails the gate closed until the row is resolved on a later run.
  *
+ * ── Durable classification must never contradict itself (IPE-004-C03) ────
+ * A row that was UNKNOWN on an earlier run can become resolvable on a later
+ * one (a fresh claim insert, a same-source sibling enrichment, or a stale
+ * claim migration that recovered its fileHash). The stale
+ * paymentSlipLegacyUnknown row from the earlier run must be cleared - or the
+ * durable state contradicts itself: the row is simultaneously "claimed/
+ * protected" AND "permanently unknown". `unknownCleanupFailed` counts rows
+ * where that clear/verify step itself failed (the delete threw, or the row
+ * was still present on re-read); any nonzero value fails the gate closed,
+ * exactly like a failed collision/unknown write - completion asserts an
+ * exact durable provenance state, and it must not do so while a resolved
+ * row still carries a stale, contradictory classification.
+ *
  * Extracted as a pure function (no DB, no I/O) so the exact gate can be unit
  * tested against every combination directly.
  */
@@ -46,6 +59,7 @@
  *   staleClaimsUncovered: number,
  *   unknownRowsFailed: number,
  *   unknownRowsTransient?: number,
+ *   unknownCleanupFailed?: number,
  *   collisionMembersFailed: number,
  * }} stats
  * @param {{ payments: boolean, walletTopups: boolean }} reachedEof
@@ -71,6 +85,10 @@ export function evaluateBackfillCompletion(stats, reachedEof) {
   // either recovers the row or an operator justifies a permanent
   // classification for it explicitly.
   const noTransientUnknown = (stats.unknownRowsTransient ?? 0) === 0;
+  // A row that WAS recorded unknown on an earlier run and became resolvable
+  // this run must have that stale record cleared - completion must not claim
+  // a row is both "protected" and "permanently unknown" at once.
+  const unknownCleanupSucceeded = (stats.unknownCleanupFailed ?? 0) === 0;
   // Every COLLISION finding must have been durably recorded - NOT that there
   // were zero collisions. Two historical rows sharing an identifier is a
   // permanent fact about financial history; it can be recorded, never erased.
@@ -88,6 +106,9 @@ export function evaluateBackfillCompletion(stats, reachedEof) {
   if (!staleClaimsCoverageComplete) reasons.push(`staleClaimsUncovered=${stats.staleClaimsUncovered}`);
   if (!unknownRowsClassified) reasons.push(`unknownRowsFailed=${stats.unknownRowsFailed}`);
   if (!noTransientUnknown) reasons.push(`unknownRowsTransient=${stats.unknownRowsTransient ?? 0}`);
+  if (!unknownCleanupSucceeded) {
+    reasons.push(`unknownCleanupFailed=${stats.unknownCleanupFailed ?? 0}`);
+  }
   if (!collisionsClassified) reasons.push(`collisionMembersFailed=${stats.collisionMembersFailed}`);
   if (!reachedEof.payments) reasons.push("paymentsEOF=false");
   if (!reachedEof.walletTopups) reasons.push("topupsEOF=false");
@@ -100,6 +121,7 @@ export function evaluateBackfillCompletion(stats, reachedEof) {
     staleClaimsCoverageComplete &&
     unknownRowsClassified &&
     noTransientUnknown &&
+    unknownCleanupSucceeded &&
     collisionsClassified &&
     reachedEof.payments &&
     reachedEof.walletTopups;
@@ -112,6 +134,7 @@ export function evaluateBackfillCompletion(stats, reachedEof) {
     staleClaimsCoverageComplete,
     unknownRowsClassified,
     noTransientUnknown,
+    unknownCleanupSucceeded,
     collisionsClassified,
     reasons,
   };

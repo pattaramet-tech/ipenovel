@@ -717,7 +717,20 @@ describe("I. completion is refused while any required exact fileHash coverage is
     const start = script.indexOf('if (registry?.kind === "needs_strong_identifier")');
     const body = script.slice(start, script.indexOf('if (registry?.kind === "collision")', start));
     expect(body).toMatch(/ER_DUP_ENTRY/);
-    expect(body).toMatch(/tracker\.collisions\.push/);
+    // IPE-004-C03: the collision-recording logic itself moved into the
+    // shared, independently-tested recordConfirmedDuplicateKeyCollisions ->
+    // resolveDuplicateKeyCollisions pure function (see
+    // backfillDuplicateKeyResolution.test.ts) - it re-reads to identify the
+    // EXACT colliding axis rather than blindly recording every present
+    // identifier. This site now delegates to it instead of pushing inline.
+    expect(body).toMatch(/recordConfirmedDuplicateKeyCollisions\(/);
+
+    const fnCode = readCode("scripts/backfill-slip-claims.mjs");
+    const fnStart = fnCode.indexOf("async function recordConfirmedDuplicateKeyCollisions(");
+    expect(fnStart).toBeGreaterThan(-1);
+    const fnBody = fnCode.slice(fnStart, fnStart + 600);
+    expect(fnBody).toMatch(/resolveDuplicateKeyCollisions\(/);
+    expect(fnBody).toMatch(/tracker\.collisions\.push/);
   });
 
   it("--mark-complete is refused while fileHash coverage is incomplete", () => {

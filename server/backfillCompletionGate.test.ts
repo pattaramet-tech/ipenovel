@@ -74,6 +74,24 @@ describe("evaluateBackfillCompletion", () => {
     expect(gate.cleanRun).toBe(true);
   });
 
+  it("IPE-004-C03: a FAILED cleanup of a resolved-but-stale unknown row blocks completion", () => {
+    // A row was UNKNOWN on an earlier run and became resolvable this run
+    // (fresh claim, sibling enrichment, or stale-claim migration recovering
+    // its fileHash), but clearing the stale paymentSlipLegacyUnknown record
+    // itself failed (delete threw, or the row was still present on re-read).
+    // Completion must not claim an exact durable provenance state while a
+    // resolved row still carries a contradictory "unknown" classification.
+    const gate = evaluateBackfillCompletion(baseStats({ unknownCleanupFailed: 1 }), eof);
+    expect(gate.cleanRun).toBe(false);
+    expect(gate.unknownCleanupSucceeded).toBe(false);
+    expect(gate.reasons.join(" ")).toMatch(/unknownCleanupFailed=1/);
+  });
+
+  it("unknownCleanupFailed=0 (default) does not block completion", () => {
+    const gate = evaluateBackfillCompletion(baseStats(), eof);
+    expect(gate.unknownCleanupSucceeded).toBe(true);
+  });
+
   it("IPE-004 P2: a known reference/QR sibling left unclaimed (strongIdUncovered) blocks completion", () => {
     const gate = evaluateBackfillCompletion(baseStats({ strongIdUncovered: 1 }), eof);
     expect(gate.cleanRun).toBe(false);

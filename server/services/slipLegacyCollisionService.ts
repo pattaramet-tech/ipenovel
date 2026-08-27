@@ -71,10 +71,15 @@ const KIND_FIELD: Record<StrongDuplicateKind, keyof SlipStrongIdentifiers> = {
  * (reference, file, qr) purely for determinism; a real collision would only
  * ever exist on one axis for a given incoming identifier value in practice.
  *
- * `self`, when given, is the submission being evaluated: rows that ARE this
- * same source are skipped, so a payment is never blocked solely because it is
- * itself one of the recorded collision members. A real collision group has
- * two or more members, so a genuine collision still matches via the others.
+ * The collision FACT is "this hash is in paymentSlipLegacyCollisions" - it
+ * never depends on excluding the caller. The backfill records EVERY member of
+ * a colliding group (the historical owner AND the row that clashed with it),
+ * so a genuine collision is authoritative no matter which member is being
+ * evaluated. `self`, when given, only picks a DIFFERENT member as the
+ * `matchedSource` for admin display/navigation when one exists; if the only
+ * recorded member is the caller, that still counts as a match and fails
+ * closed - a lone self-member is a degenerate/partial registry state and the
+ * safe direction there is manual review, never a silent singleton "winner".
  */
 export async function findKnownLegacyCollision(
   identifiers: SlipStrongIdentifiers,
@@ -93,20 +98,51 @@ export async function findKnownLegacyCollision(
       )
       .limit(5);
 
-    const row = (rows ?? []).find(
-      (r: any) => !(self && r.sourceType === self.sourceType && r.sourceId === self.sourceId)
-    );
-    if (row) {
-      return {
-        kind,
-        identifierHash: hash,
-        matchedSourceType: row.sourceType as LegacyCollisionSourceType,
-        matchedSourceId: row.sourceId as number,
-      };
-    }
+    const all = (rows ?? []) as any[];
+    if (all.length === 0) continue;
+    // Prefer a member that is NOT the caller for display; fall back to any.
+    const row =
+      all.find(
+        (r) => !(self && r.sourceType === self.sourceType && r.sourceId === self.sourceId)
+      ) ?? all[0];
+    return {
+      kind,
+      identifierHash: hash,
+      matchedSourceType: row.sourceType as LegacyCollisionSourceType,
+      matchedSourceId: row.sourceId as number,
+    };
   }
 
   return undefined;
+}
+
+/**
+ * Does ANY historical approved row have a permanently-unknown file identity
+ * (paymentSlipLegacyUnknown)? One bounded `LIMIT 1` read - never a scan of
+ * the row corpus.
+ *
+ * This is the post-completion file-axis sufficiency signal. Once the O(N)
+ * historical scan is retired, the reference and QR axes are fully covered by
+ * the indexed registries, but a subset of historical rows (`no_slip_image_url`)
+ * permanently lost their slip bytes, so their exact fileHash could never be
+ * computed and is in NO registry. If any such row exists, a current
+ * submission whose ONLY strong evidence is a fileHash cannot be proven safe
+ * and must fail closed - see evaluateSlipConflict.
+ *
+ * Returns one representative row for admin display/navigation, or undefined
+ * when the unknown registry is empty (nothing to fail closed over).
+ */
+export async function findAnyLegacyFileIdentityUnknown(
+  tx: any
+): Promise<{ sourceType: LegacyCollisionSourceType; sourceId: number } | undefined> {
+  const rows = await tx.select().from(paymentSlipLegacyUnknown).limit(1);
+  const row = (rows ?? [])[0];
+  return row
+    ? {
+        sourceType: row.sourceType as LegacyCollisionSourceType,
+        sourceId: row.sourceId as number,
+      }
+    : undefined;
 }
 
 /**

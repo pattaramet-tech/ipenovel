@@ -77,6 +77,8 @@ import {
   buildStaleReferenceMigrationPatch,
 } from "./lib/backfillStaleReferenceMigration.mjs";
 import { evaluateBackfillCompletion } from "./lib/backfillCompletionGate.mjs";
+import { resolveDuplicateKeyCollisions } from "./lib/backfillDuplicateKeyResolution.mjs";
+import { clearAndVerifyStaleUnknownRow } from "./lib/backfillStaleUnknownCleanup.mjs";
 
 const TOOL_VERSION = "backfill-slip-claims@2";
 
@@ -203,6 +205,13 @@ const stats = {
   unknownRowsTransient: 0,
   wouldRecordUnknownTransient: 0,
   /**
+   * Stale paymentSlipLegacyUnknown rows that this run resolved but could not
+   * durably delete (delete threw, or the row was still present on re-read).
+   * A completion blocker: a "backfill complete" flag must not be written
+   * while a resolved row still carries a contradictory unknown classification.
+   */
+  unknownCleanupFailed: 0,
+  /**
    * Durable classification of COLLISION findings into
    * paymentSlipLegacyCollisions - the historical-collision analogue of the
    * above. Every member of every collision finding must land in
@@ -314,20 +323,43 @@ async function recordUnknownRow(sourceType, sourceId, reason) {
 }
 
 /**
- * Clears a stale UNRESOLVED record for one source that a re-run of the
- * backfill was able to fully resolve after all (e.g. a transient recovery
- * failure that succeeded this time). Best-effort: a failure here is not
- * itself a completion blocker - the row is now properly represented/claimed,
- * which is what matters - but is still surfaced in the failures list so an
- * operator notices a stale unknown record was left behind.
+ * Clears a stale UNRESOLVED record for one source that this run resolved
+ * after all (its file identity became recoverable - fresh claim insert,
+ * needs_strong_identifier enrichment, or a stale-claim migration that folded
+ * in a recovered fileHash). Called on EVERY successful file-axis resolution
+ * path, not just `represented`: otherwise a run can mark complete while
+ * paymentSlipLegacyUnknown still contradicts the claim registry.
+ *
+ * Re-reads to confirm the row is actually gone. A cleanup FAILURE is a
+ * completion blocker: `--mark-complete` records an exact durable
+ * classification/provenance state, and it must not do so while a resolved
+ * row still carries a stale "unknown" classification.
  */
 async function clearStaleUnknownRow(sourceType, sourceId) {
   if (!isLive) return;
-  try {
-    await legacyCollisionService.clearLegacyUnknownRow({ sourceType, sourceId }, db);
-  } catch {
-    // Best-effort cleanup only; the row's own classification already
-    // succeeded via a different path, so this never blocks completion.
+  const result = await clearAndVerifyStaleUnknownRow({
+    deleteRow: () => legacyCollisionService.clearLegacyUnknownRow({ sourceType, sourceId }, db),
+    checkStillPresent: async () => {
+      const still = await db
+        .select()
+        .from(schema.paymentSlipLegacyUnknown)
+        .where(
+          and(
+            eq(schema.paymentSlipLegacyUnknown.sourceType, sourceType),
+            eq(schema.paymentSlipLegacyUnknown.sourceId, sourceId)
+          )
+        )
+        .limit(1);
+      return Boolean(still && still.length > 0);
+    },
+  });
+  if (!result.cleared) {
+    stats.unknownCleanupFailed += 1;
+    stats.failures.push({
+      source: `${sourceType}#${sourceId}`,
+      stage: "clear stale unknown row",
+      error: result.error,
+    });
   }
 }
 
@@ -382,6 +414,36 @@ async function finalizeCollisionRegistry() {
       });
     }
   }
+}
+
+/**
+ * A driver duplicate-key error (ER_DUP_ENTRY) does NOT say which UNIQUE
+ * constraint collided. Marking every present identifier as a collision would
+ * poison unrelated reference/file/QR hashes forever; recording only the
+ * current row would leave a one-member group. So after any duplicate-key
+ * failure, RE-READ `paymentSlipClaims` by each present hash, find the axes
+ * actually owned by ANOTHER source, and push a proper TWO-member finding
+ * (foreign owner + this row) for exactly those axes - so
+ * `finalizeCollisionRegistry` records every real member and the live
+ * `findKnownLegacyCollision` stays authoritative from any member's view.
+ *
+ * Returns { confirmed, selfOwnsEvery }: `selfOwnsEvery` = every present
+ * identifier already resolves to THIS source (a redundant insert on an
+ * idempotent re-run, not a clash); `confirmed` = number of axes recorded as
+ * genuine collisions.
+ */
+async function recordConfirmedDuplicateKeyCollisions(ids, sourceType, rowId, stage) {
+  const result = await resolveDuplicateKeyCollisions({
+    ids,
+    sourceType,
+    rowId,
+    stage,
+    strongFields: STRONG_FIELDS,
+    lookupOwners: (field, hash) =>
+      db.select().from(schema.paymentSlipClaims).where(eq(schema.paymentSlipClaims[field], hash)).limit(5),
+  });
+  tracker.collisions.push(...result.collisions);
+  return { confirmed: result.confirmed, selfOwnsEvery: result.selfOwnsEvery };
 }
 
 /**
@@ -536,17 +598,27 @@ async function migrateStaleReferenceClaim(staleClaim, ids, expectedAlias, source
     // referenceHash + ensure the alias only) and re-read to confirm.
     const isDuplicate = error?.code === "ER_DUP_ENTRY" || error?.errno === 1062;
     if (isDuplicate) {
-      tracker.collisions.push({
-        kind: "file",
-        identifier: "(unique index)",
-        hash: ids.fileHash,
-        first: "existing claim",
-        second: `${sourceType}#${rowId}`,
-        // The other party is identified only by the database's rejection,
-        // not a specific row - recording this row's own membership is still
-        // what stops a future exact match on this hash from slipping through.
-        secondSource: { sourceType, sourceId: rowId },
-      });
+      // Re-read the file axis to name the real owner and record a proper
+      // two-member finding. If none is visible (transient race), fall back to
+      // a one-sided membership entry so the hash is still not left claimable
+      // by default - but that path also leaves staleClaimsUncovered nonzero
+      // below unless the retry clears the obsolete reference.
+      const { confirmed } = await recordConfirmedDuplicateKeyCollisions(
+        { fileHash: ids.fileHash },
+        sourceType,
+        rowId,
+        "stale claim migration"
+      );
+      if (confirmed === 0 && ids.fileHash) {
+        tracker.collisions.push({
+          kind: "file",
+          identifier: `${String(ids.fileHash).slice(0, 12)}...`,
+          hash: ids.fileHash,
+          first: "existing claim",
+          second: `${sourceType}#${rowId}`,
+          secondSource: { sourceType, sourceId: rowId },
+        });
+      }
 
       const safePatch = { referenceHash: null };
       if (staleClaim.legacyReferenceUpperHash !== expectedAlias) {
@@ -657,6 +729,8 @@ async function processRows(sourceType, rows) {
           // recovered fileHash - migrate it in place and stop; there is
           // nothing left for the normal registry/insert path to do.
           await migrateStaleReferenceClaim(staleClaim, ids, expectedAlias, sourceType, row.id);
+          // The file axis is resolved now - drop any stale unknown record.
+          await clearStaleUnknownRow(sourceType, row.id);
           continue;
         }
       } else if (!identifiers.hasStrongIdentifier(ids)) {
@@ -710,6 +784,7 @@ async function processRows(sourceType, rows) {
       // considered (extractedData carried it directly) - the stale claim can
       // still be migrated using it.
       await migrateStaleReferenceClaim(staleClaim, ids, expectedAlias, sourceType, row.id);
+      if (ids.fileHash) await clearStaleUnknownRow(sourceType, row.id);
       continue;
     }
 
@@ -787,6 +862,9 @@ async function processRows(sourceType, rows) {
         // Re-read: an update that affected nothing is not coverage.
         if (await verifyAliasPersisted(registry.claim.id, registry.expected)) {
           stats.aliasEnriched += 1;
+          // needs_alias implies full strong coverage (incl. fileHash) already -
+          // any prior stale unknown record for this row is now contradictory.
+          if (ids.fileHash) await clearStaleUnknownRow(sourceType, row.id);
         } else {
           stats.aliasUncovered += 1;
           stats.failures.push({
@@ -865,16 +943,27 @@ async function processRows(sourceType, rows) {
           // A duplicate-key error means this exact identifier is ALREADY
           // claimed by a different source - a genuine collision the
           // classification-time equality lookup (not a live race) missed.
+          // Re-read THIS axis to name the real owner and record a proper
+          // two-member finding (never a one-sided "(unique index)" entry).
           const isDuplicate = error?.code === "ER_DUP_ENTRY" || error?.errno === 1062;
           if (isDuplicate) {
-            tracker.collisions.push({
-              kind: m.kind,
-              identifier: "(unique index)",
-              hash: m.value,
-              first: "existing claim",
-              second: `${sourceType}#${row.id}`,
-              secondSource: { sourceType, sourceId: row.id },
-            });
+            const { confirmed } = await recordConfirmedDuplicateKeyCollisions(
+              { [m.field]: m.value },
+              sourceType,
+              row.id,
+              `${m.kind} enrichment`
+            );
+            if (confirmed === 0) {
+              // The driver rejected it but no foreign owner is visible on
+              // re-read - a transient race, not a provable collision. Block
+              // completion rather than invent one.
+              stats[c.uncovered] += 1;
+              stats.failures.push({
+                source: `${sourceType}#${row.id}`,
+                stage: `${m.kind} enrichment`,
+                error: "duplicate-key with no identifiable colliding owner on re-read",
+              });
+            }
           } else {
             stats[c.uncovered] += 1;
             stats.failures.push({
@@ -883,6 +972,18 @@ async function processRows(sourceType, rows) {
               error: error?.code ?? error?.message ?? "unknown",
             });
           }
+        }
+      }
+      // If the file axis ended up covered on the claim, any stale unknown
+      // record for this row is now contradictory - clear and verify it.
+      if (ids.fileHash) {
+        const finalRows = await db
+          .select()
+          .from(schema.paymentSlipClaims)
+          .where(eq(schema.paymentSlipClaims.id, registry.claim.id))
+          .limit(1);
+        if (finalRows?.[0]?.fileHash === ids.fileHash) {
+          await clearStaleUnknownRow(sourceType, row.id);
         }
       }
       continue;
@@ -919,23 +1020,36 @@ async function processRows(sourceType, rows) {
         claimedAt: new Date(),
       });
       stats.claimed += 1;
+      // A fresh claim now covers this row - resolve any stale unknown record
+      // if the file axis is part of it.
+      if (ids.fileHash) await clearStaleUnknownRow(sourceType, row.id);
     } catch (error) {
       // A duplicate-key error here is a genuine collision the pre-checks
       // missed (e.g. a concurrent writer); anything else is a real failure.
       const isDuplicate = error?.code === "ER_DUP_ENTRY" || error?.errno === 1062;
       if (isDuplicate) {
-        // Which exact identifier collided is not reported by the driver -
-        // record durably under every present identifier this row carries so
-        // none of them is left able to slip through a future indexed lookup.
-        for (const [kind, field] of STRONG_FIELDS) {
-          if (!ids[field]) continue;
-          tracker.collisions.push({
-            kind,
-            identifier: "(unique index)",
-            hash: ids[field],
-            first: "existing claim",
-            second: `${sourceType}#${row.id}`,
-            secondSource: { sourceType, sourceId: row.id },
+        // The driver does not say WHICH unique constraint collided. Re-read
+        // per axis to name the real owner(s) and record only the axes that
+        // actually clash - never poison unrelated hashes, never leave a
+        // one-member group.
+        const { confirmed, selfOwnsEvery } = await recordConfirmedDuplicateKeyCollisions(
+          ids,
+          sourceType,
+          row.id,
+          "insert"
+        );
+        if (selfOwnsEvery) {
+          // Idempotent re-run: this row already owns every identifier. Not a
+          // clash - just make sure no stale unknown record lingers.
+          if (ids.fileHash) await clearStaleUnknownRow(sourceType, row.id);
+        } else if (confirmed === 0) {
+          // Rejected, yet no foreign owner is visible on re-read and this row
+          // does not own everything either - a transient race. Block
+          // completion rather than invent a collision.
+          stats.failures.push({
+            source: `${sourceType}#${row.id}`,
+            stage: "insert",
+            error: "duplicate-key with no identifiable colliding owner on re-read",
           });
         }
       } else {
@@ -1086,6 +1200,7 @@ try {
       isLive ? stats.unknownRowsTransient : stats.wouldRecordUnknownTransient
     }`
   );
+  console.log(`  stale unknown rows we FAILED to clear         : ${stats.unknownCleanupFailed}`);
   console.log(`  failures                 : ${stats.failures.length}`);
 
   if (tracker.collisions.length > 0) {
@@ -1183,6 +1298,7 @@ try {
       staleClaimsUncovered: stats.staleClaimsUncovered,
       unknownRowsFailed: stats.unknownRowsFailed,
       unknownRowsTransient: stats.unknownRowsTransient,
+      unknownCleanupFailed: stats.unknownCleanupFailed,
       collisionMembersFailed: stats.collisionMembersFailed,
     },
     reachedEof
@@ -1247,7 +1363,8 @@ try {
     // A NON-permanent unknown (file_hash_recovery_failed) is a real problem
     // to resolve, not steady state - see the completion gate.
     (isLive ? stats.unknownRowsTransient : stats.wouldRecordUnknownTransient) > 0 ||
-    stats.strongIdUncovered > 0;
+    stats.strongIdUncovered > 0 ||
+    stats.unknownCleanupFailed > 0;
   const dryRunHasFindings = !isLive && (tracker.collisions.length > 0 || stats.noIdentifier > 0);
 
   if (hasGenuineProblem || dryRunHasFindings) {

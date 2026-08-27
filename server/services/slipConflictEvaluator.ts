@@ -38,7 +38,10 @@ import {
 } from "./legacySlipCompatibilityService";
 import { isLegacyScanRequired } from "./slipBackfillStateService";
 import { hashSlipReference, type SlipStrongIdentifiers } from "./slipIdentifierService";
-import { findKnownLegacyCollision } from "./slipLegacyCollisionService";
+import {
+  findKnownLegacyCollision,
+  findAnyLegacyFileIdentityUnknown,
+} from "./slipLegacyCollisionService";
 
 export type SlipConflictSourceType = "order_payment" | "wallet_topup";
 
@@ -111,14 +114,26 @@ export type SlipConflict =
     }
   | {
       /**
-       * The live legacy scan encountered an approved historical row it could
-       * not evaluate: no persisted fileHash, and no exact fileHash could be
-       * recovered from its own stored slip bytes. We do not know whether
-       * that row IS this submission, so this is neither "no conflict" nor a
-       * proven duplicate - it fails closed and requires a human decision.
-       * Possible only while the legacy scan is required; a completed
-       * backfill has already resolved (or refused to complete over) every
-       * approved row, so this cannot occur post-backfill.
+       * "We cannot prove this submission is safe on the file axis."
+       *
+       * Two ways to reach it, both fail closed for manual review, neither a
+       * proven duplicate:
+       *
+       *  - PRE-completion: the live legacy scan hit an approved historical
+       *    row it could not evaluate at all (no persisted fileHash, none
+       *    recoverable from its own stored bytes).
+       *
+       *  - POST-completion: the O(N) scan is retired, but
+       *    `paymentSlipLegacyUnknown` is non-empty - some historical rows
+       *    (`no_slip_image_url`) permanently lost their slip bytes, so their
+       *    exact fileHash is in no registry. A current submission whose ONLY
+       *    strong evidence is a fileHash therefore cannot be ruled out as a
+       *    byte-identical replay of one of them. (A submission that also
+       *    carries a reference or QR is sufficient and never reaches here -
+       *    those axes are fully covered by the indexed registries.)
+       *
+       * `matchedSource` is one representative historical row for admin-safe
+       * display/navigation - it does NOT assert that row is the match.
        */
       kind: "unresolved";
       matchedSourceType: SlipConflictSourceType;
@@ -147,6 +162,8 @@ export interface EvaluateSlipConflictInput {
  *   2. exact singleton claim registry (reference / file / qr)
  *   3. exact historical match via the temporary scan
  *   4. lossy legacy case fold - registry alias, then scan
+ *   5. post-completion file-axis sufficiency (fileHash-only + permanent
+ *      unknown legacy file identity exists -> fail closed)
  *
  * A failure in any lookup PROPAGATES. Treating a failed read as "no conflict"
  * would silently reopen replay, so callers fail closed.
@@ -305,6 +322,37 @@ export async function evaluateSlipConflict(
     }
   }
 
+  // ── 5. Post-completion file-axis sufficiency ──────────────────────────
+  // Nothing above matched. The reference and QR axes are fully covered by
+  // the indexed registries, so a submission carrying either is SUFFICIENT
+  // and finalizes now. But once the O(N) historical scan is retired
+  // (backfill complete), the FILE axis has a residual gap: some historical
+  // approved rows (`no_slip_image_url`) permanently lost their slip bytes,
+  // so their exact fileHash could never be computed and is in no registry.
+  // They are recorded in `paymentSlipLegacyUnknown` for exactly this check.
+  // A submission whose ONLY strong evidence is a fileHash cannot be ruled
+  // out as a byte-identical replay of one of them - it fails closed for
+  // manual review, deterministically, via ONE bounded indexed read (never a
+  // history scan). While the scan is still required this is a no-op: the
+  // scan itself already covers the file axis and returns its own
+  // `unresolved` for any row it cannot evaluate.
+  if (!scanRequired) {
+    const onlyFileEvidence =
+      Boolean(input.identifiers.fileHash) &&
+      !input.identifiers.referenceHash &&
+      !input.identifiers.qrPayloadHash;
+    if (onlyFileEvidence) {
+      const unknownRow = await findAnyLegacyFileIdentityUnknown(tx);
+      if (unknownRow) {
+        return {
+          kind: "unresolved",
+          matchedSourceType: unknownRow.sourceType,
+          matchedSourceId: unknownRow.sourceId,
+        };
+      }
+    }
+  }
+
   return { kind: "none" };
 }
 
@@ -328,10 +376,12 @@ export function describeSlipConflict(conflict: SlipConflict): string {
 
   if (conflict.kind === "unresolved") {
     return (
-      `An approved ${where} predates the claim registry and its slip image could not be ` +
-      `verified server-side, so historical replay protection for it is incomplete. This is ` +
-      `NOT a proven duplicate - it cannot be confirmed either way. An admin must review the ` +
-      `historical record manually before this can be approved.`
+      `At least one approved historical record (for example ${where}) cannot have its slip ` +
+      `image verified server-side - its bytes are gone - so its exact file identity is in no ` +
+      `registry and cannot be compared against this submission's slip image. This submission ` +
+      `therefore cannot be confirmed clean OR a duplicate on the file axis. This is NOT a ` +
+      `proven duplicate. An admin must review it manually; a verified bank reference or QR ` +
+      `payload on the slip would let it clear automatically.`
     );
   }
 

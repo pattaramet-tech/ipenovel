@@ -42,15 +42,26 @@ function makeTx(options: {
     sourceType: "order_payment" | "wallet_topup";
     sourceId: number;
   }>;
+  /**
+   * Durable permanently-unknown fixture rows for paymentSlipLegacyUnknown -
+   * IPE-004-C03's post-completion file-axis sufficiency signal.
+   * `findAnyLegacyFileIdentityUnknown` queries this with NO `.where()`
+   * (`select().from(table).limit(1)`), unlike every other table here.
+   */
+  legacyUnknownRows?: Array<{ sourceType: "order_payment" | "wallet_topup"; sourceId: number }>;
 } = {}) {
   const claims = options.claims ?? [];
   const legacyCollisions = options.legacyCollisions ?? [];
+  const legacyUnknownRows = options.legacyUnknownRows ?? [];
   return {
     select() {
       return {
         from(table: any) {
           const name = String(table?.[Symbol.for("drizzle:Name")] ?? "");
           return {
+            // findAnyLegacyFileIdentityUnknown calls select().from(...).limit(1)
+            // directly, with no .where() at all - the only such shape here.
+            limit: async (n: number) => legacyUnknownRows.slice(0, n),
             where(cond: any) {
               const wanted = boundHashes(cond);
               const cols = targetedColumns(cond);
@@ -459,9 +470,13 @@ describe("known_collision - durable, indexed, no winner picked", () => {
     expect(conflict.kind).toBe("known_collision");
   });
 
-  it("a submission that is ITSELF the only recorded member on a hash is not blocked by that alone", async () => {
-    // Self-exclusion: re-evaluating an already-backfilled row must not treat
-    // its own recorded membership as a collision against itself.
+  it("IPE-004-C03: a submission that is ITSELF the ONLY recorded member on a hash still fails closed - a lone self-member is a degenerate registry state, never a silent singleton winner", async () => {
+    // The collision FACT is "this hash is in paymentSlipLegacyCollisions" -
+    // it never depends on excluding the caller. A group with only one member
+    // recorded (this row) is a partial/degenerate state (e.g. the other
+    // member's write is still in flight, or was itself never durably
+    // recorded) - the safe direction is manual review, never treating it as
+    // proof of no conflict.
     vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
     const tx = makeTx({
       claims: [],
@@ -480,7 +495,7 @@ describe("known_collision - durable, indexed, no winner picked", () => {
       tx
     );
 
-    expect(conflict.kind).toBe("none");
+    expect(conflict.kind).toBe("known_collision");
   });
 
   it("but a real group still blocks self when ANOTHER member shares the hash", async () => {
@@ -582,6 +597,119 @@ describe("a current submission that genuinely depends on unknown legacy evidence
     // might mistake for a green light independent of that gate.
     const conflict = await evaluateSlipConflict({ identifiers: {}, ...self }, tx);
     expect(conflict.kind).toBe("none");
+  });
+});
+
+// ─── Post-completion file-axis sufficiency (IPE-004-C03) ─────────────────
+
+describe("post-completion: fileHash-only submissions still fail closed against permanent unknown legacy history", () => {
+  it("scan retired + a permanently-unknown historical row exists + current submission's ONLY evidence is fileHash -> unresolved, zero history scan", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [],
+      legacyUnknownRows: [{ sourceType: "order_payment", sourceId: 555 }],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { fileHash: FILE_A }, ...self },
+      tx
+    );
+
+    // Never silently "none" just because the O(N) scan is off - the file
+    // axis has a residual gap (paymentSlipLegacyUnknown is non-empty) that
+    // a fileHash-only submission cannot be proven safe against.
+    expect(conflict.kind).toBe("unresolved");
+    if (conflict.kind === "unresolved") {
+      expect(conflict.matchedSourceType).toBe("order_payment");
+      expect(conflict.matchedSourceId).toBe(555);
+    }
+  });
+
+  it("scan retired + a permanently-unknown historical row exists + current submission ALSO carries a referenceHash -> sufficient, proceeds as none (acceptance criterion B)", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [],
+      legacyUnknownRows: [{ sourceType: "order_payment", sourceId: 555 }],
+    });
+
+    // A reference (or QR) axis is fully covered by the indexed claim
+    // registry regardless of what the unknown-file registry holds - it must
+    // never be dragged into review by an unrelated file-axis gap.
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { referenceHash: MIXED_HASH, fileHash: FILE_A }, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("none");
+  });
+
+  it("scan retired + a permanently-unknown historical row exists + current submission ALSO carries a qrPayloadHash -> sufficient, proceeds as none", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [],
+      legacyUnknownRows: [{ sourceType: "order_payment", sourceId: 555 }],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { qrPayloadHash: FILE_A, fileHash: FILE_A }, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("none");
+  });
+
+  it("scan retired + the unknown registry is EMPTY -> fileHash-only proceeds promptly as none (no permanent gap to fail closed over)", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({ claims: [], legacyUnknownRows: [] });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { fileHash: FILE_A }, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("none");
+  });
+
+  it("scan STILL required (pre-completion) -> the sufficiency check is a no-op; the live scan's own unresolved handling governs instead", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(true);
+    // Even with unknown rows durably recorded, while the scan is still
+    // required the O(N) path already covers the file axis and returns its
+    // own `unresolved` for anything it cannot evaluate - this checkpoint
+    // must not ALSO run (which would mean two different unresolved sources
+    // disagreeing, or worse, an unbounded read layered on top of the scan).
+    const tx = makeTx({
+      claims: [],
+      legacyUnknownRows: [{ sourceType: "order_payment", sourceId: 555 }],
+      approvedPayments: [],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { fileHash: FILE_A }, ...self },
+      tx
+    );
+
+    // No approved historical rows in the scan and nothing else matches -
+    // "none", never routed through the post-completion checkpoint.
+    expect(conflict.kind).toBe("none");
+  });
+
+  it("Wallet parity: the same fileHash-only submission fails closed identically regardless of sourceType", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [],
+      legacyUnknownRows: [{ sourceType: "wallet_topup", sourceId: 900 }],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      {
+        identifiers: { fileHash: FILE_A },
+        sourceType: "order_payment",
+        sourceId: 42,
+      },
+      tx
+    );
+
+    expect(conflict.kind).toBe("unresolved");
   });
 });
 
