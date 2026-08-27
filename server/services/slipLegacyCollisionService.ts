@@ -93,6 +93,32 @@ export async function findKnownLegacyCollision(
   tx: any,
   self?: { sourceType: LegacyCollisionSourceType; sourceId: number }
 ): Promise<LegacyCollisionMatch | undefined> {
+  const axes = await findKnownLegacyCollisionAxes(identifiers, tx, self);
+  return axes[0];
+}
+
+/**
+ * EVERY collision-ambiguous axis the incoming submission carries, in the same
+ * fixed (reference, file, qr) order - not just the first (IPE-004-C06).
+ *
+ * `findKnownLegacyCollision` above returns only the first match, which was
+ * enough while a collision on ANY axis short-circuited the whole evaluation.
+ * It is not enough for per-axis precedence: to decide whether an exact
+ * foreign claim on a DIFFERENT axis is trustworthy, the caller must know
+ * exactly WHICH axes are collision-ambiguous and which are clean. Answering
+ * that from a single first-match result would wrongly treat every remaining
+ * axis as clean.
+ *
+ * Same cost profile: at most one indexed lookup per identifier the incoming
+ * slip actually carries (at most three), no scan, no pagination.
+ */
+export async function findKnownLegacyCollisionAxes(
+  identifiers: SlipStrongIdentifiers,
+  tx: any,
+  self?: { sourceType: LegacyCollisionSourceType; sourceId: number }
+): Promise<LegacyCollisionMatch[]> {
+  const matches: LegacyCollisionMatch[] = [];
+
   for (const kind of ["reference", "file", "qr"] as StrongDuplicateKind[]) {
     const hash = identifiers[KIND_FIELD[kind]];
     if (!hash) continue;
@@ -112,15 +138,15 @@ export async function findKnownLegacyCollision(
       all.find(
         (r) => !(self && r.sourceType === self.sourceType && r.sourceId === self.sourceId)
       ) ?? all[0];
-    return {
+    matches.push({
       kind,
       identifierHash: hash,
       matchedSourceType: row.sourceType as LegacyCollisionSourceType,
       matchedSourceId: row.sourceId as number,
-    };
+    });
   }
 
-  return undefined;
+  return matches;
 }
 
 /**

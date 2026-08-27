@@ -522,6 +522,247 @@ describe("known_collision - durable, indexed, no winner picked", () => {
   });
 });
 
+// ─── IPE-004-C06: cross-axis conflict precedence ──────────────────────────
+// A collision on ONE axis says nothing about whether ANOTHER axis proves an
+// exact, unambiguous foreign owner. Returning known_collision the moment any
+// axis collided was fail-closed but named the wrong finding and the wrong
+// source - which is what an admin actually acts on. Precedence is now
+// per-axis: a proven claim on a CLEAN axis wins; a singleton on a COLLIDING
+// axis is still never promoted to a fabricated winner.
+
+describe("cross-axis precedence: a proven owner on a clean axis outranks a collision elsewhere", () => {
+  const OTHER_HASH = hashSlipReference(OTHER_REF)!;
+  const QR_A = "9".repeat(64);
+
+  it("collision-listed REFERENCE + exact foreign-owned non-collision FILE -> strong_duplicate by the file owner", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [
+        {
+          sourceType: "order_payment",
+          sourceId: 55,
+          userId: 3,
+          referenceHash: null,
+          fileHash: FILE_A,
+          qrPayloadHash: null,
+          legacyReferenceUpperHash: null,
+        },
+      ],
+      legacyCollisions: [
+        { kind: "reference", identifierHash: MIXED_HASH, sourceType: "order_payment", sourceId: 1 },
+      ],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { referenceHash: MIXED_HASH, fileHash: FILE_A }, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("strong_duplicate");
+    if (conflict.kind === "strong_duplicate") {
+      expect(conflict.matchedKind).toBe("file");
+      expect(conflict.matchedSourceType).toBe("order_payment");
+      expect(conflict.matchedSourceId).toBe(55);
+    }
+  });
+
+  it("collision-listed FILE + exact foreign-owned non-collision REFERENCE -> strong_duplicate by the reference owner", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [
+        {
+          sourceType: "order_payment",
+          sourceId: 66,
+          userId: 3,
+          referenceHash: OTHER_HASH,
+          fileHash: null,
+          qrPayloadHash: null,
+          legacyReferenceUpperHash: null,
+        },
+      ],
+      legacyCollisions: [
+        { kind: "file", identifierHash: FILE_A, sourceType: "wallet_topup", sourceId: 9 },
+      ],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { referenceHash: OTHER_HASH, fileHash: FILE_A }, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("strong_duplicate");
+    if (conflict.kind === "strong_duplicate") {
+      expect(conflict.matchedKind).toBe("reference");
+      expect(conflict.matchedSourceId).toBe(66);
+    }
+  });
+
+  it("collision-listed FILE + exact foreign-owned non-collision QR -> strong_duplicate by the QR owner", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [
+        {
+          sourceType: "wallet_topup",
+          sourceId: 77,
+          userId: 3,
+          referenceHash: null,
+          fileHash: null,
+          qrPayloadHash: QR_A,
+          legacyReferenceUpperHash: null,
+        },
+      ],
+      legacyCollisions: [
+        { kind: "file", identifierHash: FILE_A, sourceType: "order_payment", sourceId: 9 },
+      ],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { fileHash: FILE_A, qrPayloadHash: QR_A }, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("strong_duplicate");
+    if (conflict.kind === "strong_duplicate") {
+      expect(conflict.matchedKind).toBe("qr");
+      expect(conflict.matchedSourceId).toBe(77);
+    }
+  });
+
+  it("SAME-AXIS collision + a singleton claim on that same axis -> known_collision, NO fabricated winner", async () => {
+    // This is the invariant the precedence rule must never break: the
+    // backfill writes an ordinary claim for the FIRST member of a colliding
+    // group, so a plain claim lookup on that axis WOULD "find an owner".
+    // That owner was never adjudicated and must stay excluded.
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [
+        {
+          sourceType: "order_payment",
+          sourceId: 1,
+          userId: 3,
+          referenceHash: MIXED_HASH,
+          fileHash: null,
+          qrPayloadHash: null,
+          legacyReferenceUpperHash: null,
+        },
+      ],
+      legacyCollisions: [
+        { kind: "reference", identifierHash: MIXED_HASH, sourceType: "order_payment", sourceId: 1 },
+      ],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { referenceHash: MIXED_HASH }, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("known_collision");
+    if (conflict.kind === "known_collision") expect(conflict.matchedKind).toBe("reference");
+  });
+
+  it("EVERY present axis is collision-ambiguous -> known_collision, reported deterministically on the first (reference, file, qr) axis", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [],
+      legacyCollisions: [
+        { kind: "file", identifierHash: FILE_A, sourceType: "order_payment", sourceId: 8 },
+        { kind: "reference", identifierHash: MIXED_HASH, sourceType: "order_payment", sourceId: 1 },
+      ],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { referenceHash: MIXED_HASH, fileHash: FILE_A }, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("known_collision");
+    // reference is checked before file, so reference is the reported axis.
+    if (conflict.kind === "known_collision") expect(conflict.matchedKind).toBe("reference");
+  });
+
+  it("MULTIPLE colliding axes: a singleton claim on the SECOND colliding axis is still never promoted", async () => {
+    // Every colliding axis must be excluded from the claim lookup, not just
+    // the first one found. The backfill writes an ordinary claim for the
+    // first member of EVERY colliding group, so if only the first colliding
+    // axis were excluded, the second one's singleton would be found and
+    // wrongly returned as a proven owner - the exact fabricated winner this
+    // precedence rule exists to prevent, reintroduced one axis over.
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [
+        {
+          sourceType: "order_payment",
+          sourceId: 8,
+          userId: 3,
+          referenceHash: null,
+          fileHash: FILE_A,
+          qrPayloadHash: null,
+          legacyReferenceUpperHash: null,
+        },
+      ],
+      legacyCollisions: [
+        { kind: "reference", identifierHash: MIXED_HASH, sourceType: "order_payment", sourceId: 1 },
+        { kind: "file", identifierHash: FILE_A, sourceType: "order_payment", sourceId: 8 },
+      ],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { referenceHash: MIXED_HASH, fileHash: FILE_A }, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("known_collision");
+    if (conflict.kind === "known_collision") expect(conflict.matchedKind).toBe("reference");
+  });
+
+  it("a collision on one axis while the clean axis is owned by SELF is not a duplicate", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [
+        {
+          sourceType: self.sourceType,
+          sourceId: self.sourceId,
+          userId: 3,
+          referenceHash: null,
+          fileHash: FILE_A,
+          qrPayloadHash: null,
+          legacyReferenceUpperHash: null,
+        },
+      ],
+      legacyCollisions: [
+        { kind: "reference", identifierHash: MIXED_HASH, sourceType: "order_payment", sourceId: 1 },
+      ],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { referenceHash: MIXED_HASH, fileHash: FILE_A }, ...self },
+      tx
+    );
+
+    // Self-ownership is never a duplicate, so the remaining finding is the
+    // reference collision - still fail closed, still no winner.
+    expect(conflict.kind).toBe("known_collision");
+    if (conflict.kind === "known_collision") expect(conflict.matchedKind).toBe("reference");
+  });
+
+  it("collision on one axis and NO claim on the clean axis -> known_collision (nothing proven to outrank it)", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [],
+      legacyCollisions: [
+        { kind: "reference", identifierHash: MIXED_HASH, sourceType: "order_payment", sourceId: 1 },
+      ],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { referenceHash: MIXED_HASH, fileHash: FILE_A }, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("known_collision");
+  });
+});
+
 // ─── Production-shaped unresolved history must never block an unrelated,
 // safe approval (IPE-004 acceptance criterion 1) ───────────────────────────
 

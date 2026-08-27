@@ -70,12 +70,13 @@ describe("P2: stale unknown cleanup after a collision is durably written, on eve
     expect(idx).toBeGreaterThan(-1);
     // Scope tightly to THIS block's own "continue;" - a wider fixed window
     // bleeds into the next site's identical push call a few lines later and
-    // would falsely pass even if this block's own push were deleted. Bound
-    // widened in IPE-004-C05 (this block grew to also claim residual axes) -
-    // still bounded to THIS block's own continue, not a fixed width.
+    // would falsely pass even if this block's own push were deleted. The
+    // bound was widened in C05 and again in C06 as this block grew (residual
+    // axes, then required alias coverage); it stays bounded to THIS block's
+    // own continue, never a fixed slice, which is what prevents the bleed.
     const blockEndIdx = code.indexOf("continue;", idx);
     expect(blockEndIdx).toBeGreaterThan(idx);
-    expect(blockEndIdx - idx).toBeLessThan(700);
+    expect(blockEndIdx - idx).toBeLessThan(900);
     const body = code.slice(idx, blockEndIdx);
     expect(body).toMatch(/pendingUnknownClearsAfterCollision\.push/);
     // Must NOT call clearStaleUnknownRow directly here - the write hasn't
@@ -86,12 +87,13 @@ describe("P2: stale unknown cleanup after a collision is durably written, on eve
   it("the in-run tracker.check collision path also defers cleanup the same way", () => {
     const idx = code.indexOf("const collidingKinds = tracker.check(ids, current);");
     expect(idx).toBeGreaterThan(-1);
-    // Widened in IPE-004-C05 (this block grew to also claim residual axes) -
-    // still bounded to THIS block's own "continue;", not a fixed width, so
-    // it cannot bleed into a neighboring site's identical push call.
+    // Widened in C05 and again in C06 as this block grew (residual axes,
+    // then required alias coverage) - still bounded to THIS block's own
+    // "continue;", not a fixed width, so it cannot bleed into a neighboring
+    // site's identical push call.
     const blockEndIdx = code.indexOf("continue;", idx);
     expect(blockEndIdx).toBeGreaterThan(idx);
-    expect(blockEndIdx - idx).toBeLessThan(700);
+    expect(blockEndIdx - idx).toBeLessThan(900);
     const body = code.slice(idx, blockEndIdx);
     expect(body).toMatch(/pendingUnknownClearsAfterCollision\.push/);
     expect(body).not.toMatch(/await clearStaleUnknownRow/);

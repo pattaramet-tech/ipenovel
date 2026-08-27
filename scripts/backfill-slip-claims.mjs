@@ -80,6 +80,7 @@ import { evaluateBackfillCompletion } from "./lib/backfillCompletionGate.mjs";
 import { resolveDuplicateKeyCollisions } from "./lib/backfillDuplicateKeyResolution.mjs";
 import { claimResidualIdentifiers as claimResidualIdentifiersPure } from "./lib/backfillResidualIdentifierClaim.mjs";
 import { clearAndVerifyStaleUnknownRow } from "./lib/backfillStaleUnknownCleanup.mjs";
+import { decideAliasCoverage } from "./lib/backfillAliasCoverage.mjs";
 import { selectPendingClearsToApply } from "./lib/backfillPendingUnknownClearScheduler.mjs";
 
 const TOOL_VERSION = "backfill-slip-claims@2";
@@ -696,6 +697,130 @@ async function findSameSourceClaim(current) {
 }
 
 /**
+ * EVERY claim row this source owns - not just the first (IPE-004-C06).
+ *
+ * A source can legitimately own more than one claim row: the residual-axis
+ * claims introduced in C04/C05 write a second, identifier-partial row for
+ * the same historical source when a sibling axis collided. Advisory alias
+ * coverage must be recognized on ANY of them, or a rerun would keep
+ * reporting an already-covered row as uncovered and churn out more rows.
+ *
+ * Bounded: a source owns at most a handful of rows by construction (one per
+ * strong axis at worst).
+ */
+async function findAllSameSourceClaims(current) {
+  const rows = await db
+    .select()
+    .from(schema.paymentSlipClaims)
+    .where(
+      and(
+        eq(schema.paymentSlipClaims.sourceType, current.sourceType),
+        eq(schema.paymentSlipClaims.sourceId, current.sourceId)
+      )
+    )
+    .limit(10);
+  return rows ?? [];
+}
+
+/**
+ * IPE-004-C06 P1: ensures the REQUIRED advisory alias is durably indexed for
+ * this source, whatever strong bucket the row landed in - including the two
+ * that previously escaped it entirely (unknown-only, and collision). See
+ * scripts/lib/backfillAliasCoverage.mjs for the decision matrix and why the
+ * alias-only claim row fabricates no exact coverage.
+ *
+ * Always re-reads to confirm the alias actually landed: an UPDATE that
+ * affected nothing, or an INSERT that silently did not persist, is not
+ * coverage. Any failure to write or verify increments `aliasUncovered` and
+ * records a failure, so `--mark-complete` refuses.
+ */
+async function ensureLegacyAliasCoverage(expectedAlias, sourceType, rowId, rowUserId) {
+  if (!expectedAlias) return;
+  const current = { sourceType, sourceId: rowId };
+
+  if (!isLive) {
+    // Dry-run: report the coverage that WOULD be created rather than
+    // silently skipping it, and count it uncovered until a live run
+    // actually writes it - mirroring the needs_alias dry-run branch.
+    stats.wouldEnrichAlias += 1;
+    stats.aliasUncovered += 1;
+    console.log(`  WOULD_COVER_LEGACY_ALIAS  ${sourceType}#${rowId}`);
+    return;
+  }
+
+  let decision;
+  try {
+    decision = decideAliasCoverage(expectedAlias, await findAllSameSourceClaims(current));
+  } catch (error) {
+    stats.aliasUncovered += 1;
+    stats.failures.push({
+      source: `${sourceType}#${rowId}`,
+      stage: "alias coverage lookup",
+      error: error?.code ?? error?.message ?? "unknown",
+    });
+    return;
+  }
+
+  if (decision.action === "none" || decision.action === "already_covered") return;
+
+  if (decision.action === "inconsistent") {
+    // Never overwrite an alias that may be protecting a different fold.
+    stats.aliasInconsistencies.push({
+      source: `${sourceType}#${rowId}`,
+      expected: `${String(expectedAlias).slice(0, 12)}...`,
+      existing: `${String(decision.existing).slice(0, 12)}...`,
+    });
+    return;
+  }
+
+  try {
+    if (decision.action === "enrich") {
+      await db
+        .update(schema.paymentSlipClaims)
+        .set({ legacyReferenceUpperHash: expectedAlias })
+        .where(eq(schema.paymentSlipClaims.id, decision.claimId));
+    } else {
+      // insert_alias_only: every EXACT identifier column stays NULL. This
+      // row asserts the advisory fold and nothing else - it must never be
+      // mistaken for reference/file/QR ownership.
+      await db.insert(schema.paymentSlipClaims).values({
+        sourceType,
+        sourceId: rowId,
+        userId: rowUserId ?? 0,
+        referenceHash: null,
+        legacyReferenceUpperHash: expectedAlias,
+        fileHash: null,
+        qrPayloadHash: null,
+        semanticFingerprint: null,
+        claimedAt: new Date(),
+      });
+    }
+
+    // Re-read by SOURCE (not by the id we just wrote): proves the alias is
+    // now discoverable exactly the way a later run and the live approval
+    // path would find it.
+    const after = await findAllSameSourceClaims(current);
+    if (after.some((c) => c.legacyReferenceUpperHash === expectedAlias)) {
+      stats.aliasEnriched += 1;
+    } else {
+      stats.aliasUncovered += 1;
+      stats.failures.push({
+        source: `${sourceType}#${rowId}`,
+        stage: "alias coverage",
+        error: "alias not present after write",
+      });
+    }
+  } catch (error) {
+    stats.aliasUncovered += 1;
+    stats.failures.push({
+      source: `${sourceType}#${rowId}`,
+      stage: "alias coverage",
+      error: error?.code ?? error?.message ?? "unknown",
+    });
+  }
+}
+
+/**
  * Repairs a claim an OLDER backfill version wrote before this codebase
  * stopped treating lossy legacy-uppercase evidence as EXACT reference
  * ownership (see scripts/lib/backfillIdentifierDerivation.mjs). That old
@@ -932,6 +1057,15 @@ async function processRows(sourceType, rows) {
         // resolved (e.g. no_slip_image_url is permanent) - see
         // scripts/lib/backfillCompletionGate.mjs.
         await recordUnknownRow(sourceType, row.id, recovery.unresolvedReason);
+        // IPE-004-C06: "no strong identifier" does NOT mean "no required
+        // coverage". A legacy_uppercase row still needs its advisory alias
+        // durably indexed, or a later mixed-case read of this very
+        // transaction matches nothing at all after the scan retires - the
+        // file-only unknown sufficiency check by design never fires for a
+        // submission that carries a reference. Never fabricates any exact
+        // identifier; a write/verify failure blocks completion.
+        noteLegacyAlias(expectedAlias, current);
+        await ensureLegacyAliasCoverage(expectedAlias, sourceType, row.id, row.userId);
         continue;
       } else {
         // An exact reference and/or QR IS known for this row, but exact
@@ -1183,6 +1317,13 @@ async function processRows(sourceType, rows) {
         for (const { field, value } of registry.residual) residualIds[field] = value;
         await claimResidualAxesAfterCollision(residualIds, sourceType, row.id, row.userId, derived, current);
       }
+      // IPE-004-C06: the required advisory alias is independent of every
+      // strong axis. classifyRepresentation returns `collision` before alias
+      // coverage is ever evaluated, and the residual claim only attaches the
+      // alias when referenceHash is among the inserted fields - which a
+      // legacy_uppercase row deliberately never has. Cover it explicitly.
+      noteLegacyAlias(expectedAlias, current);
+      await ensureLegacyAliasCoverage(expectedAlias, sourceType, row.id, row.userId);
       continue;
     }
 
@@ -1203,6 +1344,9 @@ async function processRows(sourceType, rows) {
         if (ids[field] && !collidingKinds.includes(kind)) residualIds[field] = ids[field];
       }
       await claimResidualAxesAfterCollision(residualIds, sourceType, row.id, row.userId, derived, current);
+      // IPE-004-C06: same alias invariant as the registry-collision branch.
+      noteLegacyAlias(expectedAlias, current);
+      await ensureLegacyAliasCoverage(expectedAlias, sourceType, row.id, row.userId);
       continue;
     }
 

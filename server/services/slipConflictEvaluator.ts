@@ -39,7 +39,7 @@ import {
 import { isLegacyScanRequired } from "./slipBackfillStateService";
 import { hashSlipReference, type SlipStrongIdentifiers } from "./slipIdentifierService";
 import {
-  findKnownLegacyCollision,
+  findKnownLegacyCollisionAxes,
   findAnyLegacyFileIdentityUnknown,
 } from "./slipLegacyCollisionService";
 
@@ -158,8 +158,14 @@ export interface EvaluateSlipConflictInput {
  * Classifies any conflict for this slip.
  *
  * Ordering is deliberate and mirrors the priority rule:
- *   1. durable known-collision registry (no winner - fail closed)
- *   2. exact singleton claim registry (reference / file / qr)
+ *   1. durable known-collision registry, evaluated PER AXIS (IPE-004-C06):
+ *      which of this submission's identifiers are collision-ambiguous
+ *   2. exact singleton claim registry (reference / file / qr), restricted to
+ *      the axes step 1 found clean - a proven foreign owner on a clean axis
+ *      is the strongest evidence and outranks a collision elsewhere, while a
+ *      singleton on a COLLIDING axis is never promoted to a fabricated winner
+ *   2b. otherwise, if any axis was collision-ambiguous -> known_collision
+ *      (no winner - fail closed, manual review of the whole group)
  *   3. exact historical match via the temporary scan
  *   4. lossy legacy case fold - registry alias, then scan
  *   5. post-completion file-axis sufficiency (fileHash-only + permanent
@@ -187,20 +193,37 @@ export async function evaluateSlipConflict(
   // fail closed, manual review of the whole group), never
   // `strong_duplicate`. Before the backfill runs the table is empty and
   // this is a fast no-op.
-  const knownCollision = await findKnownLegacyCollision(input.identifiers, tx, self);
-  if (knownCollision) {
-    return {
-      kind: "known_collision",
-      matchedKind: knownCollision.kind,
-      matchedSourceType: knownCollision.matchedSourceType,
-      matchedSourceId: knownCollision.matchedSourceId,
-      advisory: true,
-      requiresAdminResolution: false,
-    };
-  }
+  //
+  // ── Per-axis precedence (IPE-004-C06) ─────────────────────────────────
+  // The reasoning above is per-AXIS, not per-submission. A collision on the
+  // reference axis says nothing about whether this submission's fileHash is
+  // a proven, unambiguous replay of some other approved row. Returning
+  // `known_collision` the moment ANY axis collided masked exactly that: the
+  // strongest available evidence (a proven exact foreign owner on a clean
+  // axis) was discarded in favour of the weaker "no winner, go look at this
+  // group" verdict. Both are fail-closed, so this was never a replay hole -
+  // but it named the wrong finding and the wrong source, which is what an
+  // admin actually acts on.
+  //
+  // So: collect EVERY collision-ambiguous axis, then look for an exact
+  // claim using ONLY the axes that are clean. A singleton claim on a
+  // COLLIDING axis is still never promoted to `strong_duplicate` - that is
+  // the fabricated-winner this precedence exists to prevent - because that
+  // axis is excluded from the claim lookup entirely.
+  const collisionAxes = await findKnownLegacyCollisionAxes(input.identifiers, tx, self);
+  const collidingKinds = new Set(collisionAxes.map((c) => c.kind));
+
+  const nonCollidingIdentifiers: SlipStrongIdentifiers = {
+    referenceHash: collidingKinds.has("reference") ? undefined : input.identifiers.referenceHash,
+    fileHash: collidingKinds.has("file") ? undefined : input.identifiers.fileHash,
+    qrPayloadHash: collidingKinds.has("qr") ? undefined : input.identifiers.qrPayloadHash,
+  };
 
   // ── 2. Exact singleton claim registry (reference / file / qr) ──────────
-  const existingClaim = await findExistingClaim(input.identifiers, tx);
+  // Restricted to non-colliding axes. A proven foreign owner here is the
+  // strongest, least ambiguous evidence available and outranks a collision
+  // on some OTHER axis.
+  const existingClaim = await findExistingClaim(nonCollidingIdentifiers, tx);
   if (
     existingClaim &&
     !(existingClaim.sourceType === self.sourceType && existingClaim.sourceId === self.sourceId)
@@ -211,6 +234,22 @@ export async function evaluateSlipConflict(
       matchedSourceType: existingClaim.sourceType,
       matchedSourceId: existingClaim.sourceId,
       viaLegacyCompatibility: false,
+    };
+  }
+
+  // No unambiguous exact owner anywhere. If any axis IS collision-ambiguous,
+  // that is now the finding: no winner, fail closed, manual review of the
+  // whole group. Reported on the first colliding axis in the fixed
+  // (reference, file, qr) order for determinism.
+  if (collisionAxes.length > 0) {
+    const knownCollision = collisionAxes[0];
+    return {
+      kind: "known_collision",
+      matchedKind: knownCollision.kind,
+      matchedSourceType: knownCollision.matchedSourceType,
+      matchedSourceId: knownCollision.matchedSourceId,
+      advisory: true,
+      requiresAdminResolution: false,
     };
   }
 
