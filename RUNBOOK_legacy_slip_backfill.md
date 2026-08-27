@@ -211,10 +211,16 @@ Once marked complete, the live approval path stops paging through history
 entirely: `evaluateSlipConflict` (`server/services/slipConflictEvaluator.ts`)
 relies on indexed lookups against `paymentSlipClaims` (exact
 reference/file/QR ownership and the advisory legacy-case alias) and
-`paymentSlipLegacyCollisions` (known collisions) only. Rows recorded in
-`paymentSlipLegacyUnknown` are never consulted by that path - they exist for
-operator/audit visibility only, in the admin detail views and this tool's own
-output.
+`paymentSlipLegacyCollisions` (known collisions) - and, for one narrow case,
+`paymentSlipLegacyUnknown` too (IPE-004-C03): a current submission whose ONLY
+strong evidence is a fileHash cannot be proven clean on the file axis while
+ANY row in `paymentSlipLegacyUnknown` exists, since it could be a
+byte-identical replay of one - a single bounded, indexed `LIMIT 1` read,
+never a scan. A submission that also carries a reference or QR is unaffected;
+those axes are fully covered by `paymentSlipClaims`/`paymentSlipLegacyCollisions`
+and this check never runs for them. Outside that one case,
+`paymentSlipLegacyUnknown` rows exist for operator/audit visibility, in the
+admin detail views and this tool's own output.
 
 To re-enable the historical scan later (e.g. if a completed backfill is later
 found to be incomplete for some reason), an operator can call

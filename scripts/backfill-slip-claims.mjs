@@ -78,7 +78,9 @@ import {
 } from "./lib/backfillStaleReferenceMigration.mjs";
 import { evaluateBackfillCompletion } from "./lib/backfillCompletionGate.mjs";
 import { resolveDuplicateKeyCollisions } from "./lib/backfillDuplicateKeyResolution.mjs";
+import { claimResidualIdentifiers as claimResidualIdentifiersPure } from "./lib/backfillResidualIdentifierClaim.mjs";
 import { clearAndVerifyStaleUnknownRow } from "./lib/backfillStaleUnknownCleanup.mjs";
+import { selectPendingClearsToApply } from "./lib/backfillPendingUnknownClearScheduler.mjs";
 
 const TOOL_VERSION = "backfill-slip-claims@2";
 
@@ -267,6 +269,17 @@ const stats = {
 const tracker = createCollisionTracker();
 
 /**
+ * IPE-004-C04: sources whose FILE-axis collision was identified this run
+ * (registry.kind === "collision", the in-run tracker.check cross-check, or a
+ * duplicate-insert re-read) but whose durable write only happens later, in
+ * the single batched finalizeCollisionRegistry() pass. A stale
+ * paymentSlipLegacyUnknown record for one of these sources must only be
+ * cleared AFTER that write is confirmed to have actually landed - see
+ * clearPendingUnknownRowsAfterCollisionFinalization below.
+ */
+const pendingUnknownClearsAfterCollision = [];
+
+/**
  * Groups of historical rows sharing one advisory legacy alias.
  *
  * Reported SEPARATELY from strong-identifier collisions and deliberately not
@@ -381,6 +394,12 @@ async function clearStaleUnknownRow(sourceType, sourceId) {
  * finding accumulated during the run (including ones discovered via the
  * classifyAgainstRegistry cross-check on a LATER page) is captured.
  */
+/**
+ * @returns {Promise<Set<string>>} keys `${sourceType}#${sourceId}#${kind}`
+ *   for every member whose durable write actually succeeded this call -
+ *   IPE-004-C04 uses this to gate deferred unknown-row clears on the FILE
+ *   axis specifically.
+ */
 async function finalizeCollisionRegistry() {
   const seen = new Set();
   const members = [];
@@ -396,15 +415,18 @@ async function finalizeCollisionRegistry() {
     }
   }
 
+  const succeeded = new Set();
+
   if (!isLive) {
     stats.wouldRecordCollisionMembers += members.length;
-    return;
+    return succeeded;
   }
 
   for (const member of members) {
     try {
       await legacyCollisionService.recordLegacyCollisionMember(member, db);
       stats.collisionMembersRecorded += 1;
+      succeeded.add(`${member.sourceType}#${member.sourceId}#${member.kind}`);
     } catch (error) {
       stats.collisionMembersFailed += 1;
       stats.failures.push({
@@ -413,6 +435,24 @@ async function finalizeCollisionRegistry() {
         error: error?.code ?? error?.message ?? "unknown",
       });
     }
+  }
+
+  return succeeded;
+}
+
+/**
+ * IPE-004-C04: processes every source deferred while its FILE-axis collision
+ * finding was only in-memory (registry.kind === "collision", the in-run
+ * tracker cross-check, or a duplicate-insert re-read) - now that
+ * finalizeCollisionRegistry() has run, clear the stale unknown row ONLY for
+ * sources whose file-axis collision member actually landed durably. A
+ * source whose write failed keeps its unknown record - clearing it would
+ * assert protection this run never actually established.
+ */
+async function clearPendingUnknownRowsAfterCollisionFinalization(succeededMemberKeys) {
+  const toApply = selectPendingClearsToApply(pendingUnknownClearsAfterCollision, succeededMemberKeys);
+  for (const { sourceType, sourceId } of toApply) {
+    await clearStaleUnknownRow(sourceType, sourceId);
   }
 }
 
@@ -443,7 +483,99 @@ async function recordConfirmedDuplicateKeyCollisions(ids, sourceType, rowId, sta
       db.select().from(schema.paymentSlipClaims).where(eq(schema.paymentSlipClaims[field], hash)).limit(5),
   });
   tracker.collisions.push(...result.collisions);
-  return { confirmed: result.confirmed, selfOwnsEvery: result.selfOwnsEvery };
+  // IPE-004-C04: findings pushed onto tracker.collisions are only durably
+  // written LATER, in the single batched finalizeCollisionRegistry() pass -
+  // never here. A row whose file axis was just confirmed a collision may
+  // still have a stale paymentSlipLegacyUnknown record; clearing it NOW
+  // would assert durability before the write has actually happened. Record
+  // the intent and let the caller, after finalizeCollisionRegistry()
+  // confirms the write succeeded, perform the clear.
+  for (const c of result.collisions) {
+    if (c.kind === "file") {
+      pendingUnknownClearsAfterCollision.push({ sourceType, sourceId: rowId });
+    }
+  }
+  return { confirmed: result.confirmed, selfOwnsEvery: result.selfOwnsEvery, collisions: result.collisions };
+}
+
+/**
+ * Per-axis coverage counters, field-keyed (fileHash keeps its own gate
+ * counter; reference/qr share strongId*). Shared between the
+ * needs_strong_identifier enrichment path and claimResidualIdentifiers below
+ * so both count coverage identically.
+ */
+function coverageCounters(field) {
+  return field === "fileHash"
+    ? { would: "wouldAddFileHash", done: "fileHashCoverageAdded", uncovered: "fileHashUncovered" }
+    : { would: "wouldEnrichStrongId", done: "strongIdEnriched", uncovered: "strongIdUncovered" };
+}
+
+/**
+ * IPE-004-C04 P1: after a multi-identifier INSERT hits a duplicate-key error
+ * and `recordConfirmedDuplicateKeyCollisions` has identified exactly which
+ * axis(es) genuinely collide, every OTHER present identifier this row
+ * carries - owned by nobody, never touched by the failed INSERT - must still
+ * end this run in a safe state: claimed for this source, or itself proven a
+ * collision. Leaving it silently unclaimed (the old behaviour whenever
+ * `confirmed > 0`) is a replay hole the completion gate would never catch,
+ * since `confirmed > 0` alone said nothing about the axes that DIDN'T
+ * collide.
+ *
+ * Inserts ONE new claim row containing only the residual (non-colliding)
+ * axes - paymentSlipClaims has no UNIQUE constraint on (sourceType,
+ * sourceId), only on each identifier hash, so a second row for the same
+ * historical source is a normal, supported shape here. If that insert
+ * itself hits a duplicate key (a genuine TOCTOU race a moment after the
+ * first check), the newly-confirmed collision axes are recorded and the
+ * remaining residual is retried EXACTLY once more; anything still uncovered
+ * after that increments the correct uncovered counter and blocks
+ * completion rather than being silently dropped.
+ */
+async function claimResidualIdentifiers(ids, confirmedKinds, sourceType, rowId, rowUserId, derived) {
+  const result = await claimResidualIdentifiersPure({
+    ids,
+    confirmedKinds,
+    strongFields: STRONG_FIELDS,
+    insertClaim: async (fields) => {
+      const values = {
+        sourceType,
+        sourceId: rowId,
+        userId: rowUserId ?? 0,
+        referenceHash: null,
+        legacyReferenceUpperHash: null,
+        fileHash: null,
+        qrPayloadHash: null,
+        semanticFingerprint: derived?.semanticFingerprint ?? null,
+        claimedAt: new Date(),
+      };
+      for (const [field, value] of Object.entries(fields)) {
+        values[field] = value;
+        if (field === "referenceHash") values.legacyReferenceUpperHash = derived?.legacyReferenceUpperHash ?? null;
+      }
+      await db.insert(schema.paymentSlipClaims).values(values);
+    },
+    resolveCollisions: (residualIds) =>
+      recordConfirmedDuplicateKeyCollisions(residualIds, sourceType, rowId, "residual identifier claim"),
+  });
+
+  for (const kind of result.claimedKinds) {
+    const field = STRONG_FIELDS.find(([k]) => k === kind)[1];
+    stats[coverageCounters(field).done] += 1;
+  }
+  if (result.claimedKinds.includes("file")) {
+    await clearStaleUnknownRow(sourceType, rowId);
+  }
+  for (const kind of result.uncoveredKinds) {
+    const field = STRONG_FIELDS.find(([k]) => k === kind)[1];
+    stats[coverageCounters(field).uncovered] += 1;
+  }
+  if (result.failed && result.uncoveredKinds.length > 0) {
+    stats.failures.push({
+      source: `${sourceType}#${rowId}`,
+      stage: "residual identifier claim",
+      error: "duplicate-key persisted after retry with no identifiable colliding owner",
+    });
+  }
 }
 
 /**
@@ -991,12 +1123,24 @@ async function processRows(sourceType, rows) {
 
     if (registry?.kind === "collision") {
       for (const finding of registry.findings) tracker.collisions.push(finding);
+      // IPE-004-C04: the write for this finding happens later, batched, in
+      // finalizeCollisionRegistry() - defer any unknown-row clear until that
+      // write is confirmed.
+      if (registry.findings.some((f) => f.kind === "file")) {
+        pendingUnknownClearsAfterCollision.push({ sourceType, sourceId: row.id });
+      }
       continue;
     }
 
     // Collisions WITHIN this run, checked per identifier.
     const collidingKinds = tracker.check(ids, current);
-    if (collidingKinds.length > 0) continue;
+    if (collidingKinds.length > 0) {
+      // Same deferral: tracker.collisions is only durably written later.
+      if (collidingKinds.includes("file")) {
+        pendingUnknownClearsAfterCollision.push({ sourceType, sourceId: row.id });
+      }
+      continue;
+    }
 
     tracker.remember(ids, current);
     noteLegacyAlias(derived.legacyReferenceUpperHash, current);
@@ -1032,7 +1176,7 @@ async function processRows(sourceType, rows) {
         // per axis to name the real owner(s) and record only the axes that
         // actually clash - never poison unrelated hashes, never leave a
         // one-member group.
-        const { confirmed, selfOwnsEvery } = await recordConfirmedDuplicateKeyCollisions(
+        const { confirmed, selfOwnsEvery, collisions } = await recordConfirmedDuplicateKeyCollisions(
           ids,
           sourceType,
           row.id,
@@ -1051,6 +1195,15 @@ async function processRows(sourceType, rows) {
             stage: "insert",
             error: "duplicate-key with no identifiable colliding owner on re-read",
           });
+        } else {
+          // IPE-004-C04: SOME axis(es) genuinely collided and are now
+          // recorded (confirmed > 0) - but that says nothing about any OTHER
+          // present identifier this row carries that did NOT collide. It was
+          // never inserted (the whole multi-column INSERT failed), owned by
+          // nobody, and must not be left silently unclaimed just because a
+          // sibling axis happened to clash.
+          const confirmedKinds = new Set(collisions.map((c) => c.kind));
+          await claimResidualIdentifiers(ids, confirmedKinds, sourceType, row.id, row.userId, derived);
         }
       } else {
         stats.failures.push({
@@ -1137,7 +1290,8 @@ try {
   // unresolved status is final the moment it is scanned) and
   // finalizeCollisionRegistry (called here, once, so a collision discovered
   // via a claim written on a LATER page is still captured for every member).
-  await finalizeCollisionRegistry();
+  const succeededCollisionMembers = await finalizeCollisionRegistry();
+  await clearPendingUnknownRowsAfterCollisionFinalization(succeededCollisionMembers);
 
   console.log("\n[backfill] ---- SUMMARY ----");
   console.log(`  scanned approved records : ${stats.scanned}`);
@@ -1332,8 +1486,12 @@ try {
           "           indexed lookups and skip the historical scan entirely. Every new\n" +
           "           approval still writes its own claim atomically; the " +
           `${stats.unknownRowsRecorded} permanently\n` +
-          "           unknown historical row(s) are on file for operators but are never\n" +
-          "           consulted to block or approve an unrelated future submission."
+          "           unknown historical row(s) are on file for operators, and are never\n" +
+          "           used to block or approve an unrelated future submission - EXCEPT\n" +
+          "           one bounded, indexed check: a submission whose ONLY strong evidence\n" +
+          "           is a fileHash fails closed to manual review while any such row\n" +
+          "           exists, since it could be a byte-identical replay of one. A\n" +
+          "           submission that also carries a reference or QR is unaffected."
       );
     }
   } else if (isLive && cleanRun) {

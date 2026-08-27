@@ -28,12 +28,19 @@
  *   this exact identifier is not safe to treat as unclaimed.
  *
  *   PERMANENTLY UNKNOWN - a historical row's file identity can never be
- *   established. This is recorded for operator visibility ONLY. It is never
- *   consulted by evaluateSlipConflict to block or approve anything: an
- *   unrelated new submission has no way to collide with an identifier that
- *   was never computed, and forcing every future approval to treat "some
- *   unrelated row somewhere is unknown" as a reason to stop is exactly the
- *   defect being fixed here.
+ *   established. Recorded primarily for operator/audit visibility - it is
+ *   NEVER used as a global duplicate match (an unrelated new submission has
+ *   no way to collide with an identifier that was never computed, and
+ *   forcing every future approval to treat "some unrelated row somewhere is
+ *   unknown" as a reason to stop is exactly the defect being fixed here).
+ *   It IS consulted for one narrow, bounded, indexed purpose (IPE-004-C03,
+ *   `findAnyLegacyFileIdentityUnknown` below): once the O(N) scan retires,
+ *   a current submission whose ONLY strong evidence is a fileHash cannot be
+ *   proven clean on the file axis while ANY permanently-unknown row exists,
+ *   since it could be a byte-identical replay of one - this check is a
+ *   single `LIMIT 1` read, never a scan, and never fires for a submission
+ *   that also carries a reference or QR (those axes are fully covered by
+ *   the indexed registries and are never affected by this table's contents).
  *
  * Both tables are ONLY ever written by the backfill tool
  * (scripts/backfill-slip-claims.mjs). A live approval path never inserts
