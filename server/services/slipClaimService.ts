@@ -202,6 +202,23 @@ export type SlipClaimOutcome =
       matchedSourceId?: number;
       requiresAdminResolution: false;
       legacyAliasHash?: string;
+    }
+  | {
+      claimed: false;
+      /**
+       * This submission's own strong identifier exactly matches an
+       * identifier the backfill DURABLY recorded as a KNOWN COLLISION
+       * between two or more already-approved historical rows. No winner was
+       * ever picked among them, so nothing in the registry owns it - this is
+       * the indexed check that stops it being claimed anyway. NEVER
+       * waivable: there is no single-member resolution that could apply to
+       * an unpicked group.
+       */
+      reason: "known_collision";
+      conflictKind?: StrongDuplicateKind;
+      matchedSourceType?: SlipClaimSourceType;
+      matchedSourceId?: number;
+      requiresAdminResolution: false;
     };
 
 /**
@@ -415,6 +432,19 @@ export async function claimSlip(
       };
     }
 
+    if (conflict.kind === "known_collision") {
+      // A durably recorded historical collision. NEVER consult any waiver -
+      // there is none for this state, by design; see the outcome's doc.
+      return {
+        claimed: false,
+        reason: "known_collision",
+        conflictKind: conflict.matchedKind,
+        matchedSourceType: conflict.matchedSourceType,
+        matchedSourceId: conflict.matchedSourceId,
+        requiresAdminResolution: false,
+      };
+    }
+
     if (conflict.kind === "legacy_case_ambiguity_group") {
       // MORE THAN ONE historical source shares this alias. NEVER consult
       // request.legacyCaseAmbiguityResolution here, even if one was
@@ -559,6 +589,28 @@ export function describeClaimFailure(outcome: SlipClaimOutcome): string {
       `verified server-side, so replay protection for it is incomplete. This is NOT a proven ` +
       `duplicate - it cannot be confirmed either way from stored data. Manual review is ` +
       `required until the historical backfill resolves this record.`
+    );
+  }
+
+  if (outcome.reason === "known_collision") {
+    const where =
+      outcome.matchedSourceType && outcome.matchedSourceId
+        ? outcome.matchedSourceType === "order_payment"
+          ? ` order payment #${outcome.matchedSourceId}`
+          : ` wallet top-up #${outcome.matchedSourceId}`
+        : " an earlier approved record";
+    const what =
+      outcome.conflictKind === "file"
+        ? "This exact slip image"
+        : outcome.conflictKind === "qr"
+          ? "This slip's QR payload"
+          : "This bank transaction reference";
+
+    return (
+      `${what} is already known to be shared by MORE THAN ONE approved historical record - ` +
+      `including${where} - discovered during the legacy backfill. No single historical record ` +
+      `was picked as the "real" owner. This is NOT proof of a duplicate. Manual investigation ` +
+      `of the complete group of matching historical records is required.`
     );
   }
 

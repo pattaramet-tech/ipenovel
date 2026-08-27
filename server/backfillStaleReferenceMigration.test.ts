@@ -160,13 +160,29 @@ describe("the backfill script wires stale-claim migration in for legacy_uppercas
   });
 
   it("H/I/J. stale-claim coverage gates --mark-complete, same as alias/fileHash coverage", () => {
+    // The completion rule now lives in scripts/lib/backfillCompletionGate.mjs
+    // (extracted as a pure function so every combination can be unit tested
+    // directly - see server/backfillCompletionGate.test.ts). The script
+    // forwards its stale-claim counter into that gate and takes cleanRun
+    // straight from the result; the gate is where staleClaimsUncovered must
+    // still both block completion and be named in the refusal reasons.
     expect(script).toMatch(
+      /import \{ evaluateBackfillCompletion \} from "\.\/lib\/backfillCompletionGate\.mjs"/
+    );
+    const callStart = script.indexOf("evaluateBackfillCompletion(");
+    expect(callStart).toBeGreaterThan(-1);
+    const callBody = script.slice(callStart, callStart + 400);
+    expect(callBody).toMatch(/staleClaimsUncovered: stats\.staleClaimsUncovered/);
+    expect(script).toMatch(/const cleanRun = gate\.cleanRun;/);
+
+    const gate = readCode("scripts/lib/backfillCompletionGate.mjs");
+    expect(gate).toMatch(
       /const staleClaimsCoverageComplete = stats\.staleClaimsUncovered === 0;/
     );
-    const start = script.indexOf("const cleanRun =");
-    const body = script.slice(start, start + 500);
-    expect(body).toMatch(/staleClaimsCoverageComplete/);
-    expect(script).toMatch(/staleClaimsUncovered=\$\{stats\.staleClaimsUncovered\}/);
+    const gateCleanRunStart = gate.indexOf("const cleanRun =");
+    const gateCleanRunBody = gate.slice(gateCleanRunStart, gateCleanRunStart + 500);
+    expect(gateCleanRunBody).toMatch(/staleClaimsCoverageComplete/);
+    expect(gate).toMatch(/staleClaimsUncovered=\$\{stats\.staleClaimsUncovered\}/);
   });
 
   it("a duplicate-key error during migration is reported as a genuine collision, never swallowed", () => {

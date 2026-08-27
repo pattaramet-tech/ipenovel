@@ -549,19 +549,31 @@ describe("a legacy row is represented only when its alias is covered too", () =>
 
 describe("H. completion is refused while any required alias is missing", () => {
   const script = readCode("scripts/backfill-slip-claims.mjs");
+  // IPE-004: the clean-run computation moved into
+  // scripts/lib/backfillCompletionGate.mjs (see backfillCompletionGate.test.ts
+  // for its full unit coverage) so it can be tested directly and so
+  // completion no longer requires zero collisions/unresolved rows - only
+  // that they were durably classified. Required alias coverage is
+  // UNCHANGED: still part of the rule, just relocated.
+  const gateCode = readCode("scripts/lib/backfillCompletionGate.mjs");
 
   it("alias coverage is part of the clean-run rule", () => {
-    expect(script).toMatch(
-      /const aliasCoverageComplete =\s*\n?\s*stats\.aliasUncovered === 0 && stats\.aliasInconsistencies\.length === 0;/
+    expect(gateCode).toMatch(
+      /const aliasCoverageComplete = stats\.aliasUncovered === 0 && stats\.aliasInconsistencies\.length === 0;/
     );
-    const start = script.indexOf("const cleanRun =");
-    const body = script.slice(start, start + 400);
+    const start = gateCode.indexOf("const cleanRun =");
+    const body = gateCode.slice(start, start + 400);
     expect(body).toMatch(/aliasCoverageComplete/);
+    // The script still delegates to it and still refuses when it says no.
+    expect(script).toMatch(/evaluateBackfillCompletion\(/);
+    expect(script).toMatch(/const cleanRun = gate\.cleanRun/);
   });
 
   it("the refusal message names the alias counters", () => {
-    expect(script).toMatch(/aliasUncovered=\$\{stats\.aliasUncovered\}/);
-    expect(script).toMatch(/aliasInconsistencies=\$\{stats\.aliasInconsistencies\.length\}/);
+    expect(gateCode).toMatch(/aliasUncovered=\$\{stats\.aliasUncovered\}/);
+    expect(gateCode).toMatch(/aliasInconsistencies=\$\{stats\.aliasInconsistencies\.length\}/);
+    // The script's console.error surfaces the gate's own reasons verbatim.
+    expect(script).toMatch(/gate\.reasons\.join/);
   });
 
   it("a dry run reports WOULD_ENRICH_LEGACY_ALIAS and counts the row as uncovered", () => {
@@ -591,7 +603,11 @@ describe("H. completion is refused while any required alias is missing", () => {
 
   it("an inconsistency is reported and sets a non-zero exit code", () => {
     expect(script).toMatch(/LEGACY_ALIAS_INCONSISTENCY/);
-    const start = script.indexOf("if (\n    tracker.collisions.length > 0 ||");
+    // IPE-004: the final exit-code check was rewritten so that a merely
+    // EXPECTED finding (a durably-classified collision or unresolved row)
+    // no longer forces a non-zero exit forever - but a genuine operator-only
+    // problem, like an alias inconsistency, still does.
+    const start = script.indexOf("const hasGenuineProblem =");
     const body = script.slice(start, start + 300);
     expect(body).toMatch(/stats\.aliasInconsistencies\.length > 0/);
   });
@@ -614,18 +630,21 @@ describe("H. completion is refused while any required alias is missing", () => {
 
 describe("I. completion is refused while any required exact fileHash coverage is missing", () => {
   const script = readCode("scripts/backfill-slip-claims.mjs");
+  // IPE-004: relocated into scripts/lib/backfillCompletionGate.mjs - see the
+  // note on section H above. Required fileHash coverage is UNCHANGED.
+  const gateCode = readCode("scripts/lib/backfillCompletionGate.mjs");
 
   it("fileHash coverage is part of the clean-run rule", () => {
-    expect(script).toMatch(
+    expect(gateCode).toMatch(
       /const fileHashCoverageComplete = stats\.fileHashUncovered === 0;/
     );
-    const start = script.indexOf("const cleanRun =");
-    const body = script.slice(start, start + 400);
+    const start = gateCode.indexOf("const cleanRun =");
+    const body = gateCode.slice(start, start + 400);
     expect(body).toMatch(/fileHashCoverageComplete/);
   });
 
   it("the refusal message names the fileHash coverage counter", () => {
-    expect(script).toMatch(/fileHashUncovered=\$\{stats\.fileHashUncovered\}/);
+    expect(gateCode).toMatch(/fileHashUncovered=\$\{stats\.fileHashUncovered\}/);
   });
 
   it("a dry run reports WOULD_ADD_FILE_HASH and counts the row as uncovered", () => {
@@ -663,7 +682,9 @@ describe("I. completion is refused while any required exact fileHash coverage is
   it("--mark-complete is refused while fileHash coverage is incomplete", () => {
     const start = script.indexOf("if (!cleanRun) {");
     const body = script.slice(start, start + 700);
-    expect(body).toMatch(/fileHashUncovered=\$\{stats\.fileHashUncovered\}/);
+    // The refusal message surfaces the gate's own reasons, which include
+    // fileHashUncovered whenever it is non-zero (see backfillCompletionGate.mjs).
+    expect(body).toMatch(/gate\.reasons\.join/);
   });
 });
 

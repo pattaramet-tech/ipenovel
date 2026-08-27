@@ -252,8 +252,18 @@ describe("registry classification is not satisfied by a partial match", () => {
     expect(block).toMatch(/\.limit\(20\)/);
   });
 
-  it("collisions from the registry keep the run from being marked complete", () => {
-    expect(code).toMatch(/tracker\.collisions\.length === 0/);
+  // IPE-004: collisions found via the registry cross-check no longer keep
+  // the run from being marked complete forever - a real dry-run found 114
+  // genuine historical collisions, a permanent fact about financial history
+  // no re-run could ever reduce to zero. Instead every member of every
+  // collision finding must be durably recorded into
+  // paymentSlipLegacyCollisions (see finalizeCollisionRegistry and
+  // scripts/lib/backfillCompletionGate.mjs); only a FAILED durable write
+  // still blocks completion.
+  it("collisions from the registry are durably recorded, not left blocking completion forever", () => {
+    expect(code).not.toMatch(/tracker\.collisions\.length === 0/);
+    expect(code).toMatch(/finalizeCollisionRegistry\(\)/);
+    expect(code).toMatch(/collisionMembersFailed: stats\.collisionMembersFailed/);
   });
 
   it("persists the advisory legacy alias under its corrected name", () => {

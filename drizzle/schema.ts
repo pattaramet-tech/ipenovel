@@ -1474,6 +1474,103 @@ export type PaymentSlipClaim = typeof paymentSlipClaims.$inferSelect;
 export type InsertPaymentSlipClaim = typeof paymentSlipClaims.$inferInsert;
 
 /**
+ * Durable record of a KNOWN historical strong-identifier collision.
+ *
+ * ── Why this exists (IPE-002 hotfix) ──────────────────────────────────────
+ * The backfill's dry-run audit found 114 real cases where TWO OR MORE
+ * approved historical records (order payments and/or wallet top-ups) share
+ * the exact same referenceHash or fileHash (85 on reference, 29 on file).
+ * Each is a genuine finding - a historical double-credit or a parser
+ * artifact - and the backfill correctly refuses to auto-resolve it by
+ * picking a winner: doing so would fabricate uniqueness over financial
+ * history, which is explicitly out of scope.
+ *
+ * This table is where that refusal is made DURABLE instead of forcing every
+ * future approval to rediscover the same fact via a live O(N) scan. Every
+ * member of a colliding group (both/all historical sources that share the
+ * hash) is recorded here, one row per (kind, identifierHash, source). A new
+ * submission whose own strong identifier hash matches a row here is blocked
+ * from auto-approval via one indexed lookup - `known_collision` - the same
+ * fail-closed outcome the group already deserved, without ever touching or
+ * re-deriving the historical rows themselves.
+ *
+ * NEVER written to by a live approval. Only the backfill tool
+ * (scripts/backfill-slip-claims.mjs) inserts here, and only for identifiers
+ * it found colliding across two or more ALREADY-APPROVED historical rows.
+ */
+export const paymentSlipLegacyCollisions = mysqlTable(
+  "paymentSlipLegacyCollisions",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    kind: mysqlEnum("kind", ["reference", "file", "qr"]).notNull(),
+    identifierHash: varchar("identifierHash", { length: 64 }).notNull(),
+    sourceType: mysqlEnum("sourceType", ["order_payment", "wallet_topup"]).notNull(),
+    sourceId: int("sourceId").notNull(),
+    recordedAt: timestamp("recordedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    memberUnique: uniqueIndex("paymentSlipLegacyCollisions_member_unique").on(
+      table.kind,
+      table.identifierHash,
+      table.sourceType,
+      table.sourceId
+    ),
+    identifierHashIdx: index("paymentSlipLegacyCollisions_identifierHash_idx").on(
+      table.kind,
+      table.identifierHash
+    ),
+  })
+);
+
+export type PaymentSlipLegacyCollision = typeof paymentSlipLegacyCollisions.$inferSelect;
+export type InsertPaymentSlipLegacyCollision = typeof paymentSlipLegacyCollisions.$inferInsert;
+
+/**
+ * Durable record that a historical approved row's file identity is
+ * PERMANENTLY UNKNOWN - most commonly because it predates slip image storage
+ * entirely (`no_slip_image_url`: the row has no slipImageUrl at all, so its
+ * bytes can never be recovered from anywhere).
+ *
+ * ── Why this is its own explicit state, not "safe" and not "blocked" ──────
+ * An unrecoverable historical row is neither proof of safety (we have zero
+ * evidence it differs from any future submission) nor proof of a conflict
+ * (we have zero evidence it matches one either). Collapsing it into either
+ * extreme is wrong: treating it as safe could reopen replay for that one
+ * historical transaction; treating it as blocking would fail every
+ * completely unrelated future approval forever, for a fact about data that
+ * can never be resolved - which is exactly the production incident this
+ * migration fixes.
+ *
+ * So it gets a third, explicit bucket. A row's row here means: "classified,
+ * permanently unresolvable, on file so an operator can see it - and NEVER
+ * consulted to block or approve anything." Recording it here (versus
+ * leaving it out entirely) is what lets the backfill be marked COMPLETE:
+ * completion requires every historical row to land in one of protected /
+ * collision / unknown, never a fourth "silently skipped" state.
+ */
+export const paymentSlipLegacyUnknown = mysqlTable(
+  "paymentSlipLegacyUnknown",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    sourceType: mysqlEnum("sourceType", ["order_payment", "wallet_topup"]).notNull(),
+    sourceId: int("sourceId").notNull(),
+    /** Fixed reason code only - e.g. "no_slip_image_url". Never a URL or secret. */
+    reason: varchar("reason", { length: 64 }).notNull(),
+    recordedAt: timestamp("recordedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    sourceUnique: uniqueIndex("paymentSlipLegacyUnknown_source_unique").on(
+      table.sourceType,
+      table.sourceId
+    ),
+    sourceTypeIdx: index("paymentSlipLegacyUnknown_sourceType_idx").on(table.sourceType),
+  })
+);
+
+export type PaymentSlipLegacyUnknown = typeof paymentSlipLegacyUnknown.$inferSelect;
+export type InsertPaymentSlipLegacyUnknown = typeof paymentSlipLegacyUnknown.$inferInsert;
+
+/**
  * Persistent OCR attempt history (automatic submissions + admin rechecks).
  *
  * Answers the question an admin previously could not answer from the UI:

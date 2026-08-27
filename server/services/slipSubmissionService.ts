@@ -526,7 +526,13 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
                       // distinct" flow.
                       claim.reason === "legacy_alias_group_ambiguity"
                       ? "LEGACY_ALIAS_GROUP_AMBIGUITY"
-                      : claim.reason === "already_claimed" && claim.conflictKind === "file"
+                      : // This submission's own strong identifier durably
+                        // matches a KNOWN historical collision. No winner
+                        // was ever picked, so nothing owns it in the
+                        // registry - auto-approval must still stop here.
+                        claim.reason === "known_collision"
+                        ? "LEGACY_KNOWN_COLLISION"
+                        : claim.reason === "already_claimed" && claim.conflictKind === "file"
                         ? "DUPLICATE_FILE"
                         : claim.reason === "already_claimed" && claim.conflictKind === "qr"
                           ? "DUPLICATE_QR"

@@ -38,6 +38,7 @@ import {
 } from "./legacySlipCompatibilityService";
 import { isLegacyScanRequired } from "./slipBackfillStateService";
 import { hashSlipReference, type SlipStrongIdentifiers } from "./slipIdentifierService";
+import { findKnownLegacyCollision } from "./slipLegacyCollisionService";
 
 export type SlipConflictSourceType = "order_payment" | "wallet_topup";
 
@@ -60,6 +61,32 @@ export type SlipConflict =
       advisory: true;
       requiresAdminResolution: true;
       legacyAliasHash?: string;
+    }
+  | {
+      /**
+       * This submission's own strong identifier (reference, file, or QR
+       * hash) exactly matches an identifier the backfill DURABLY recorded as
+       * a KNOWN COLLISION: two or more already-approved historical rows
+       * share it. No winner was ever picked among those historical rows
+       * (that would fabricate uniqueness over financial history), so
+       * nothing in the registry "owns" it - a plain claim-registry lookup
+       * would see no conflict and let this insert succeed. This is the
+       * indexed, durable replacement for that gap: found via ONE lookup
+       * against paymentSlipLegacyCollisions, never a historical scan. Never
+       * a duplicate verdict on its own (we don't know if THIS submission is
+       * one of the colliding historical rows), but never safe to
+       * auto-approve either - it fails closed and requires manual
+       * investigation of the whole historical group, exactly like
+       * `legacy_case_ambiguity_group`.
+       */
+      kind: "known_collision";
+      matchedKind: "reference" | "file" | "qr";
+      matchedSourceType: SlipConflictSourceType;
+      matchedSourceId: number;
+      /** Always true - never a duplicate verdict. */
+      advisory: true;
+      /** Always false - there is no single-member waiver to grant here. */
+      requiresAdminResolution: false;
     }
   | {
       /**
@@ -141,6 +168,25 @@ export async function evaluateSlipConflict(
       matchedSourceType: existingClaim.sourceType,
       matchedSourceId: existingClaim.sourceId,
       viaLegacyCompatibility: false,
+    };
+  }
+
+  // ── 1.5. Durable known-collision registry (indexed, no scan) ───────────
+  // Checked BEFORE the temporary historical scan and regardless of whether
+  // the backfill is complete: a collision here is a fact about historical
+  // data, discovered and recorded once by the backfill, and is authoritative
+  // the moment it exists - there is no "pre-backfill" version of this check
+  // to fall back to, because before the backfill runs the table is simply
+  // empty and this step is a fast no-op.
+  const knownCollision = await findKnownLegacyCollision(input.identifiers, tx);
+  if (knownCollision) {
+    return {
+      kind: "known_collision",
+      matchedKind: knownCollision.kind,
+      matchedSourceType: knownCollision.matchedSourceType,
+      matchedSourceId: knownCollision.matchedSourceId,
+      advisory: true,
+      requiresAdminResolution: false,
     };
   }
 
@@ -279,6 +325,21 @@ export function describeSlipConflict(conflict: SlipConflict): string {
       `verified server-side, so historical replay protection for it is incomplete. This is ` +
       `NOT a proven duplicate - it cannot be confirmed either way. An admin must review the ` +
       `historical record manually before this can be approved.`
+    );
+  }
+
+  if (conflict.kind === "known_collision") {
+    const what =
+      conflict.matchedKind === "file"
+        ? "This exact slip image"
+        : conflict.matchedKind === "qr"
+          ? "This slip's QR payload"
+          : "This bank transaction reference";
+    return (
+      `${what} is already known to be shared by MORE THAN ONE approved historical record - ` +
+      `including ${where} - discovered during the legacy backfill. No single historical record ` +
+      `was picked as the "real" owner. This is NOT proof of a duplicate. An admin must manually ` +
+      `investigate the complete group of matching historical records before this can be approved.`
     );
   }
 

@@ -88,8 +88,13 @@ export function classifyRepresentation(ids, current, claimRows, expectedAliasHas
       findings.push({
         kind,
         identifier: `${String(ids[field]).slice(0, 12)}...`,
+        // Full hash, for durable recording into paymentSlipLegacyCollisions -
+        // the truncated `identifier` above is display-only and must never be
+        // used as the indexed lookup key.
+        hash: ids[field],
         first: "(unclaimed)",
         second: `${current.sourceType}#${current.sourceId}`,
+        secondSource: { sourceType: current.sourceType, sourceId: current.sourceId },
         detail: "partial: a sibling identifier is claimed but this one is not",
       });
       continue;
@@ -104,8 +109,11 @@ export function classifyRepresentation(ids, current, claimRows, expectedAliasHas
       findings.push({
         kind,
         identifier: `${String(ids[field]).slice(0, 12)}...`,
+        hash: ids[field],
         first: `${owner.sourceType}#${owner.sourceId}`,
         second: `${current.sourceType}#${current.sourceId}`,
+        firstSource: { sourceType: owner.sourceType, sourceId: owner.sourceId },
+        secondSource: { sourceType: current.sourceType, sourceId: current.sourceId },
         detail: "claimed by a DIFFERENT source",
       });
     }

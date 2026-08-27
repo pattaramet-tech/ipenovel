@@ -73,6 +73,7 @@ import {
   detectStaleReferenceClaim,
   buildStaleReferenceMigrationPatch,
 } from "./lib/backfillStaleReferenceMigration.mjs";
+import { evaluateBackfillCompletion } from "./lib/backfillCompletionGate.mjs";
 
 const TOOL_VERSION = "backfill-slip-claims@2";
 
@@ -114,12 +115,13 @@ console.log(
 const { default: mysql } = await import("mysql2/promise");
 const { drizzle } = await import("drizzle-orm/mysql2");
 const { and, asc, eq, gt, or } = await import("drizzle-orm");
-let schema, identifiers, parser, fileHashService;
+let schema, identifiers, parser, fileHashService, legacyCollisionService;
 try {
   schema = await import("../drizzle/schema.ts");
   identifiers = await import("../server/services/slipIdentifierService.ts");
   parser = await import("../server/ocr-slip-verification-v2.ts");
   fileHashService = await import("../server/services/slipFileHashService.ts");
+  legacyCollisionService = await import("../server/services/slipLegacyCollisionService.ts");
 } catch (error) {
   if (error instanceof Error && error.code === "ERR_MODULE_NOT_FOUND") {
     console.error(
@@ -175,6 +177,27 @@ const stats = {
    */
   noIdentifier: 0,
   unresolvedRows: [],
+  /**
+   * Durable classification of UNRESOLVED rows into paymentSlipLegacyUnknown -
+   * the fix for the incident where zero unresolved rows was required before
+   * the historical scan could ever be disabled. Every unresolved row must
+   * land in `unknownRowsRecorded` (write succeeded, whether newly inserted or
+   * already present from a prior run) for completion; `unknownRowsFailed`
+   * blocks it.
+   */
+  unknownRowsRecorded: 0,
+  unknownRowsFailed: 0,
+  wouldRecordUnknown: 0,
+  /**
+   * Durable classification of COLLISION findings into
+   * paymentSlipLegacyCollisions - the historical-collision analogue of the
+   * above. Every member of every collision finding must land in
+   * `collisionMembersRecorded` for completion; `collisionMembersFailed`
+   * blocks it.
+   */
+  collisionMembersRecorded: 0,
+  collisionMembersFailed: 0,
+  wouldRecordCollisionMembers: 0,
   /** Represented rows whose required advisory alias is missing. */
   wouldEnrichAlias: 0,
   aliasEnriched: 0,
@@ -226,6 +249,106 @@ function noteLegacyAlias(aliasHash, current) {
   const existing = legacyAliasGroups.get(aliasHash) ?? [];
   existing.push(`${current.sourceType}#${current.sourceId}`);
   legacyAliasGroups.set(aliasHash, existing);
+}
+
+/**
+ * Durably records ONE historical row as UNRESOLVED (permanently unknown file
+ * identity) in paymentSlipLegacyUnknown - IPE-004's fix for the incident
+ * where an unresolved row could never be reconciled with "mark complete".
+ *
+ * Idempotent: the service's insert-or-detect-duplicate call makes a repeat
+ * run for the same source a no-op, never a second row and never an error.
+ */
+async function recordUnknownRow(sourceType, sourceId, reason) {
+  if (!isLive) {
+    stats.wouldRecordUnknown += 1;
+    return;
+  }
+  try {
+    await legacyCollisionService.recordLegacyUnknownRow(
+      { sourceType, sourceId, reason: reason ?? "unknown" },
+      db
+    );
+    stats.unknownRowsRecorded += 1;
+  } catch (error) {
+    stats.unknownRowsFailed += 1;
+    stats.failures.push({
+      source: `${sourceType}#${sourceId}`,
+      stage: "record unknown row",
+      error: error?.code ?? error?.message ?? "unknown",
+    });
+  }
+}
+
+/**
+ * Clears a stale UNRESOLVED record for one source that a re-run of the
+ * backfill was able to fully resolve after all (e.g. a transient recovery
+ * failure that succeeded this time). Best-effort: a failure here is not
+ * itself a completion blocker - the row is now properly represented/claimed,
+ * which is what matters - but is still surfaced in the failures list so an
+ * operator notices a stale unknown record was left behind.
+ */
+async function clearStaleUnknownRow(sourceType, sourceId) {
+  if (!isLive) return;
+  try {
+    await legacyCollisionService.clearLegacyUnknownRow({ sourceType, sourceId }, db);
+  } catch {
+    // Best-effort cleanup only; the row's own classification already
+    // succeeded via a different path, so this never blocks completion.
+  }
+}
+
+/**
+ * Durably records EVERY collision finding accumulated in `tracker.collisions`
+ * (both from the registry cross-check and from in-run duplicates) into
+ * paymentSlipLegacyCollisions - IPE-004's fix for the incident where a
+ * collision could never be reconciled with "mark complete". No winner is
+ * ever picked: every identified member of every finding is recorded under
+ * its (kind, identifierHash), which is what makes a future exact match on
+ * that hash block via one indexed lookup instead of silently succeeding
+ * because the registry has no single owner for it.
+ *
+ * Deduplicated by (kind, hash, sourceType, sourceId) before writing so a
+ * member referenced by more than one finding (e.g. both directions of the
+ * SAME clash) is only written once - the underlying UNIQUE index would make
+ * a repeat write a no-op anyway, but deduplicating here keeps the reported
+ * counters meaningful. Called ONCE, after the full scan completes, so every
+ * finding accumulated during the run (including ones discovered via the
+ * classifyAgainstRegistry cross-check on a LATER page) is captured.
+ */
+async function finalizeCollisionRegistry() {
+  const seen = new Set();
+  const members = [];
+
+  for (const finding of tracker.collisions) {
+    if (!finding.hash) continue; // no identifiable hash to record under
+    for (const source of [finding.firstSource, finding.secondSource]) {
+      if (!source) continue;
+      const key = `${finding.kind}|${finding.hash}|${source.sourceType}|${source.sourceId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      members.push({ kind: finding.kind, identifierHash: finding.hash, ...source });
+    }
+  }
+
+  if (!isLive) {
+    stats.wouldRecordCollisionMembers += members.length;
+    return;
+  }
+
+  for (const member of members) {
+    try {
+      await legacyCollisionService.recordLegacyCollisionMember(member, db);
+      stats.collisionMembersRecorded += 1;
+    } catch (error) {
+      stats.collisionMembersFailed += 1;
+      stats.failures.push({
+        source: `${member.sourceType}#${member.sourceId}`,
+        stage: "record collision member",
+        error: error?.code ?? error?.message ?? "unknown",
+      });
+    }
+  }
 }
 
 /**
@@ -390,8 +513,13 @@ async function migrateStaleReferenceClaim(staleClaim, ids, expectedAlias, source
       tracker.collisions.push({
         kind: "file",
         identifier: "(unique index)",
+        hash: ids.fileHash,
         first: "existing claim",
         second: `${sourceType}#${rowId}`,
+        // The other party is identified only by the database's rejection,
+        // not a specific row - recording this row's own membership is still
+        // what stops a future exact match on this hash from slipping through.
+        secondSource: { sourceType, sourceId: rowId },
       });
     } else {
       stats.staleClaimsUncovered += 1;
@@ -477,6 +605,12 @@ async function processRows(sourceType, rows) {
           source: `${sourceType}#${row.id}`,
           reason: recovery.unresolvedReason,
         });
+        // Durably classify as UNKNOWN (paymentSlipLegacyUnknown) rather than
+        // leaving this row in a fourth, silently-skipped state. This is what
+        // lets --mark-complete succeed even though this row can never be
+        // resolved (e.g. no_slip_image_url is permanent) - see
+        // scripts/lib/backfillCompletionGate.mjs.
+        await recordUnknownRow(sourceType, row.id, recovery.unresolvedReason);
         continue;
       } else {
         // UNRESOLVED: another exact identifier (reference/QR) exists, but
@@ -492,6 +626,12 @@ async function processRows(sourceType, rows) {
           source: `${sourceType}#${row.id}`,
           reason: recovery.unresolvedReason,
         });
+        // Durably classify as UNKNOWN (paymentSlipLegacyUnknown) rather than
+        // leaving this row in a fourth, silently-skipped state. This is what
+        // lets --mark-complete succeed even though this row can never be
+        // resolved (e.g. no_slip_image_url is permanent) - see
+        // scripts/lib/backfillCompletionGate.mjs.
+        await recordUnknownRow(sourceType, row.id, recovery.unresolvedReason);
         continue;
       }
     }
@@ -526,6 +666,11 @@ async function processRows(sourceType, rows) {
       // Represented rows carry their alias too, so the advisory grouping
       // report covers the whole corpus rather than just newly claimed rows.
       noteLegacyAlias(expectedAlias, current);
+      // Best-effort: a prior run may have durably recorded this source as
+      // UNKNOWN before a later re-run (fixed data, restored bytes, or a
+      // transient recovery failure resolving itself) resolved it properly.
+      // Never blocks completion on its own - see clearStaleUnknownRow.
+      await clearStaleUnknownRow(sourceType, row.id);
       continue;
     }
 
@@ -633,8 +778,10 @@ async function processRows(sourceType, rows) {
           tracker.collisions.push({
             kind: "file",
             identifier: "(unique index)",
+            hash: registry.expected,
             first: "existing claim",
             second: `${sourceType}#${row.id}`,
+            secondSource: { sourceType, sourceId: row.id },
           });
         } else {
           stats.fileHashUncovered += 1;
@@ -684,12 +831,20 @@ async function processRows(sourceType, rows) {
       // missed (e.g. a concurrent writer); anything else is a real failure.
       const isDuplicate = error?.code === "ER_DUP_ENTRY" || error?.errno === 1062;
       if (isDuplicate) {
-        tracker.collisions.push({
-          kind: "registry",
-          identifier: "(unique index)",
-          first: "existing claim",
-          second: `${sourceType}#${row.id}`,
-        });
+        // Which exact identifier collided is not reported by the driver -
+        // record durably under every present identifier this row carries so
+        // none of them is left able to slip through a future indexed lookup.
+        for (const [kind, field] of STRONG_FIELDS) {
+          if (!ids[field]) continue;
+          tracker.collisions.push({
+            kind,
+            identifier: "(unique index)",
+            hash: ids[field],
+            first: "existing claim",
+            second: `${sourceType}#${row.id}`,
+            secondSource: { sourceType, sourceId: row.id },
+          });
+        }
       } else {
         stats.failures.push({
           source: `${sourceType}#${row.id}`,
@@ -769,6 +924,14 @@ try {
     }
   );
 
+  // Durably classify every UNRESOLVED row and every COLLISION finding found
+  // during the scan, ONCE, now that the full corpus (both tables) has been
+  // seen. See recordUnknownRow (called inline per row, since a row's
+  // unresolved status is final the moment it is scanned) and
+  // finalizeCollisionRegistry (called here, once, so a collision discovered
+  // via a claim written on a LATER page is still captured for every member).
+  await finalizeCollisionRegistry();
+
   console.log("\n[backfill] ---- SUMMARY ----");
   console.log(`  scanned approved records : ${stats.scanned}`);
   console.log(`  already represented      : ${stats.alreadyClaimed}`);
@@ -807,17 +970,35 @@ try {
   console.log(`  alias inconsistencies    : ${stats.aliasInconsistencies.length}`);
   console.log(`  rows lacking alias cover : ${stats.aliasUncovered}`);
   console.log(`  collisions REPORTED      : ${tracker.collisions.length}`);
+  console.log(
+    isLive
+      ? `  collision members RECORDED (durable) : ${stats.collisionMembersRecorded}`
+      : `  would record collision members       : ${stats.wouldRecordCollisionMembers}`
+  );
+  console.log(`  collision members FAILED to record   : ${stats.collisionMembersFailed}`);
+  console.log(
+    isLive
+      ? `  unresolved rows RECORDED as unknown (durable) : ${stats.unknownRowsRecorded}`
+      : `  would record unresolved rows as unknown       : ${stats.wouldRecordUnknown}`
+  );
+  console.log(`  unresolved rows FAILED to record as unknown   : ${stats.unknownRowsFailed}`);
   console.log(`  failures                 : ${stats.failures.length}`);
 
   if (tracker.collisions.length > 0) {
-    console.log("\n[backfill] COLLISIONS - review each before treating the backfill as complete:");
+    console.log(
+      "\n[backfill] COLLISIONS - durably recorded as KNOWN COLLISIONS (no winner picked;" +
+        " does NOT block completion once every member is recorded):"
+    );
     for (const c of tracker.collisions) {
       console.log(`  - [${c.kind}] ${c.identifier}  ${c.first}  <->  ${c.second}`);
     }
     console.log(
       "\n  A collision means two APPROVED records share one strong identifier.\n" +
         "  That is either a historical double-credit or a parser bug. It has NOT\n" +
-        "  been auto-resolved and no financial record was modified."
+        "  been auto-resolved and no financial record was modified. It is instead\n" +
+        "  recorded durably (paymentSlipLegacyCollisions) so any future exact match\n" +
+        "  on that identifier is blocked via an indexed lookup, with no winner ever\n" +
+        "  chosen among the historical rows."
     );
   }
 
@@ -860,7 +1041,10 @@ try {
     console.log(
       "\n[backfill] UNRESOLVED - no exact fileHash could be established for this row " +
         "(a reference/QR identifier, if present, does not excuse missing file-byte " +
-        "replay coverage):"
+        "replay coverage). Durably recorded as PERMANENTLY UNKNOWN " +
+        "(paymentSlipLegacyUnknown) - this does NOT block completion once every such " +
+        "row is recorded, and it is NEVER consulted to block or approve an unrelated " +
+        "future submission:"
     );
     for (const u of stats.unresolvedRows) {
       // Only sourceType/sourceId and a fixed reason code - never a slip URL,
@@ -869,54 +1053,44 @@ try {
     }
     console.log(
       "\n  This approved record is missing exact fileHash replay coverage and remains\n" +
-        "  replayable on the file axis. It has NOT been skipped silently: it blocks\n" +
-        "  --mark-complete until an operator resolves it (e.g. by locating the\n" +
-        "  original slip bytes)."
+        "  replayable on the file axis IF something turns out to be a byte-identical\n" +
+        "  copy of it - but its own identity can never be established (most commonly\n" +
+        "  no_slip_image_url: the bytes are permanently gone), so there is nothing\n" +
+        "  further this tool, or any future scan, could ever do about it. Recording it\n" +
+        "  explicitly is what lets the backfill be marked complete despite it."
     );
   }
 
   // ── Completion ─────────────────────────────────────────────────────────
-  // Required ADVISORY coverage counts toward completion just as strong
-  // coverage does. Completion disables the historical scan, so a legacy row
-  // whose claim carries no alias would be left with NO protection at all
-  // against a mixed-case replay - the hole this rule closes. Required exact
-  // fileHash coverage is the same idea for the file axis: a row already
-  // represented via reference/QR whose same-source claim never captured its
-  // exact fileHash would be left with no file-byte replay protection.
-  const aliasCoverageComplete =
-    stats.aliasUncovered === 0 && stats.aliasInconsistencies.length === 0;
-  const fileHashCoverageComplete = stats.fileHashUncovered === 0;
-  // A stale claim still exact-blocks future distinct transactions with its
-  // obsolete lossy referenceHash until it is migrated - completion must wait
-  // for every one of them to be repaired, exactly like alias/fileHash gaps.
-  const staleClaimsCoverageComplete = stats.staleClaimsUncovered === 0;
-
-  // Every APPROVED row must land in one of: represented/claimed with full
-  // exact fileHash coverage, claimable via a recovered identifier, or
-  // explicitly UNRESOLVED (stats.noIdentifier > 0) - which blocks
-  // completion. There is no fourth state where a row is silently skipped but
-  // completion is still allowed.
-  const cleanRun =
-    stats.failures.length === 0 &&
-    tracker.collisions.length === 0 &&
-    aliasCoverageComplete &&
-    fileHashCoverageComplete &&
-    staleClaimsCoverageComplete &&
-    stats.noIdentifier === 0 &&
-    reachedEof.payments &&
-    reachedEof.walletTopups;
+  // See scripts/lib/backfillCompletionGate.mjs for the exact rule and why it
+  // no longer requires zero unresolved rows or zero collisions - both are
+  // permanent facts about historical data that can be durably CLASSIFIED but
+  // can never be reduced to zero by any number of re-runs. What still blocks
+  // completion is a row landing in NONE of protected/collision/unknown: a
+  // processing failure, an operator-only alias inconsistency, or a failed
+  // durable write for a collision/unknown record.
+  const gate = evaluateBackfillCompletion(
+    {
+      failures: stats.failures,
+      aliasUncovered: stats.aliasUncovered,
+      aliasInconsistencies: stats.aliasInconsistencies,
+      fileHashUncovered: stats.fileHashUncovered,
+      staleClaimsUncovered: stats.staleClaimsUncovered,
+      unknownRowsFailed: stats.unknownRowsFailed,
+      collisionMembersFailed: stats.collisionMembersFailed,
+    },
+    reachedEof
+  );
+  const cleanRun = gate.cleanRun;
 
   if (markComplete) {
     if (!cleanRun) {
       console.error(
         "\n[backfill] REFUSING to mark complete. A completion flag disables the legacy\n" +
-          "           safety scan, so it is only written after a fully clean run:\n" +
-          `             failures=${stats.failures.length} collisions=${tracker.collisions.length} ` +
-          `aliasUncovered=${stats.aliasUncovered} aliasInconsistencies=${stats.aliasInconsistencies.length} ` +
-          `fileHashUncovered=${stats.fileHashUncovered} ` +
-          `staleClaimsUncovered=${stats.staleClaimsUncovered} ` +
-          `noIdentifier=${stats.noIdentifier}` +
-          ` paymentsEOF=${reachedEof.payments} topupsEOF=${reachedEof.walletTopups}\n` +
+          "           safety scan, so it is only written after every historical row has\n" +
+          "           been classified as protected, collision, or unknown - with no\n" +
+          "           processing failures:\n" +
+          `             ${gate.reasons.join(" ") || "(no reasons - unexpected)"}\n` +
           "           Resolve the findings above and re-run."
       );
       process.exitCode = 1;
@@ -927,11 +1101,17 @@ try {
         paymentMaxId: stats.paymentMaxId,
         walletTopupMaxId: stats.walletTopupMaxId,
         claimsInserted: stats.claimed,
+        collisionMembersRecorded: stats.collisionMembersRecorded,
+        unknownRowsRecorded: stats.unknownRowsRecorded,
       });
       console.log(
-        "\n[backfill] Marked COMPLETE. The approval path will now rely on the\n" +
-          "           paymentSlipClaims UNIQUE registry and skip the historical scan.\n" +
-          "           Every new approval still writes its own claim atomically."
+        "\n[backfill] Marked COMPLETE. The approval path will now rely on the durable\n" +
+          "           registries (paymentSlipClaims, paymentSlipLegacyCollisions) via\n" +
+          "           indexed lookups and skip the historical scan entirely. Every new\n" +
+          "           approval still writes its own claim atomically; the " +
+          `${stats.unknownRowsRecorded} permanently\n` +
+          "           unknown historical row(s) are on file for operators but are never\n" +
+          "           consulted to block or approve an unrelated future submission."
       );
     }
   } else if (isLive && cleanRun) {
@@ -945,12 +1125,22 @@ try {
     console.log("\n[backfill] DRY-RUN complete. No rows were written. Re-run with --live to apply.");
   }
 
-  if (
-    tracker.collisions.length > 0 ||
+  // A genuine problem (a processing failure, an operator-only alias
+  // inconsistency, or a durable classification write that itself failed)
+  // always exits non-zero. Collisions and unresolved rows that were
+  // successfully, durably classified are the EXPECTED steady state for a
+  // corpus with real historical data - they no longer make a clean live run
+  // "look failed" forever. A dry run still exits non-zero whenever there is
+  // anything for an operator to review before going live, since nothing was
+  // actually written yet.
+  const hasGenuineProblem =
     stats.failures.length > 0 ||
     stats.aliasInconsistencies.length > 0 ||
-    stats.noIdentifier > 0
-  ) {
+    stats.collisionMembersFailed > 0 ||
+    stats.unknownRowsFailed > 0;
+  const dryRunHasFindings = !isLive && (tracker.collisions.length > 0 || stats.noIdentifier > 0);
+
+  if (hasGenuineProblem || dryRunHasFindings) {
     process.exitCode = 1;
   }
 } finally {

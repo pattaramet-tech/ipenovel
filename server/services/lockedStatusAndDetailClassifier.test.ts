@@ -377,7 +377,10 @@ describe("the guard is ONE shared primitive, not per-caller", () => {
   it("in BOTH callers, the guard runs before any claim, approval mutation or finalization", () => {
     // Manual/legacy-resolution approval.
     const orderStart = orderCode.indexOf("async function approvePaymentInTx(");
-    const orderBody = orderCode.slice(orderStart, orderStart + 4800);
+    // IPE-004 widened this window: approvePaymentInTx grew a new
+    // known_collision guard clause (LEGACY_KNOWN_COLLISION), pushing
+    // finalizeOrderCompletion's call site further from the function start.
+    const orderBody = orderCode.slice(orderStart, orderStart + 5400);
     const orderGuardIdx = orderBody.indexOf("await lockAndRequireReviewablePayment(paymentId, tx)");
     const orderClaimIdx = orderBody.indexOf("const claim = await claimSlip(");
     const orderApproveIdx = orderBody.indexOf("ApprovalService.approvePaymentWithSource");

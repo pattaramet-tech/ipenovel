@@ -139,14 +139,29 @@ describe("the backfill script wires recovery in for every row with no strong ide
     );
   });
 
-  it("H. cleanRun requires zero unresolved rows", () => {
-    const start = script.indexOf("const cleanRun =");
+  // IPE-004 production incident: a real dry-run backfill found 915 approved
+  // historical rows (out of 4,147) that can NEVER be resolved
+  // (no_slip_image_url - the bytes are permanently gone). Requiring
+  // `stats.noIdentifier === 0` before completion meant --mark-complete could
+  // NEVER succeed for this exact, real corpus, so the O(N) legacy scan
+  // stayed enabled forever and blocked unrelated new approvals. The fix:
+  // completion instead requires every unresolved row to be durably
+  // CLASSIFIED (written to paymentSlipLegacyUnknown) - see
+  // scripts/lib/backfillCompletionGate.mjs and backfillCompletionGate.test.ts.
+  it("H. cleanRun no longer requires zero unresolved rows - it requires every one durably classified", () => {
+    const start = script.indexOf("const gate = evaluateBackfillCompletion(");
+    expect(start).toBeGreaterThan(-1);
     const body = script.slice(start, start + 400);
-    expect(body).toMatch(/stats\.noIdentifier === 0/);
+    // Every unresolved row's durable-write outcome feeds the gate...
+    expect(body).toMatch(/unknownRowsFailed: stats\.unknownRowsFailed/);
+    // ...and the OLD all-or-nothing rule is gone from THIS script entirely.
+    expect(script).not.toMatch(/stats\.noIdentifier === 0/);
   });
 
-  it("the refusal message names the unresolved count", () => {
-    expect(script).toMatch(/noIdentifier=\$\{stats\.noIdentifier\}/);
+  it("every unresolved row is durably recorded as unknown, inline, as soon as it is scanned", () => {
+    const start = script.indexOf("if (!ids.fileHash) {");
+    const body = script.slice(start, start + 2500);
+    expect(body.match(/await recordUnknownRow\(sourceType, row\.id, recovery\.unresolvedReason\)/g)?.length).toBe(2);
   });
 
   it("unresolved rows never leak a slip URL, only source + reason code", () => {
@@ -158,10 +173,20 @@ describe("the backfill script wires recovery in for every row with no strong ide
     expect(body).toMatch(/u\.reason/);
   });
 
-  it("a non-zero unresolved count sets a non-zero exit code even without --mark-complete", () => {
-    const start = script.lastIndexOf("if (\n    tracker.collisions.length > 0");
+  it("a FAILED durable write for an unresolved row still sets a non-zero exit code", () => {
+    const start = script.indexOf("const hasGenuineProblem =");
     expect(start).toBeGreaterThan(-1);
     const body = script.slice(start, start + 300);
-    expect(body).toMatch(/stats\.noIdentifier > 0/);
+    expect(body).toMatch(/stats\.unknownRowsFailed > 0/);
+  });
+
+  it("unresolved rows alone (successfully classified) no longer force a live run's exit code non-zero", () => {
+    // The OLD unconditional rule - collisions/unresolved rows ALWAYS force
+    // exit 1 - is gone. It is now conditioned on NOT being a live run
+    // (dryRunHasFindings), or on a genuine failure (hasGenuineProblem).
+    const start = script.indexOf("const dryRunHasFindings =");
+    expect(start).toBeGreaterThan(-1);
+    const body = script.slice(start, start + 200);
+    expect(body).toMatch(/!isLive/);
   });
 });
