@@ -50,7 +50,25 @@ export const STRONG_FIELDS = [
  *                                               repairable by enriching the SAME
  *                                               claim in place
  *   { kind: "alias_inconsistent", claim, expected, existing }
- *   { kind: "collision", findings: [...] }
+ *   { kind: "collision", findings: [...], residual: [{ kind, field, value }] }
+ *                                               `residual` (IPE-004-C05) lists
+ *                                               every OTHER present strong
+ *                                               identifier this row carries
+ *                                               that is owned by NOBODY - not
+ *                                               a foreign source (already in
+ *                                               `findings`) and not this same
+ *                                               source either (silently fine,
+ *                                               omitted). A collision on ONE
+ *                                               axis must never leave a
+ *                                               present sibling axis
+ *                                               unprotected; the caller must
+ *                                               durably claim or fail every
+ *                                               entry in `residual`. Empty on
+ *                                               a rerun once those axes are
+ *                                               already same-source-owned
+ *                                               (e.g. via a split claim row
+ *                                               from an earlier run) - never
+ *                                               redundantly reported then.
  *
  * ── Why a missing sibling identifier is a repair, not a collision report ──
  * A row already owning its claim via ONE strong identifier, but whose
@@ -119,7 +137,14 @@ export function classifyRepresentation(ids, current, claimRows, expectedAliasHas
   }
 
   if (findings.length > 0) {
-    return { kind: "collision", findings };
+    // IPE-004-C05: a collision on one axis must not silently drop coverage
+    // accounting for a SIBLING axis this row also carries but that nobody
+    // (not a foreign source, not this same source) owns yet - `missingStrong`
+    // already excludes both the just-recorded collision axes (they matched
+    // an owner, so never entered `missingStrong`) and any axis already
+    // resolved to `sameSourceClaim` above, so it is exactly the residual
+    // coverage the caller must still durably claim or fail.
+    return { kind: "collision", findings, residual: missingStrong };
   }
 
   if (missingStrong.length > 0) {

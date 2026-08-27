@@ -581,6 +581,132 @@ describe("a legacy row is represented only when its alias is covered too", () =>
     };
     const result: any = classifyRepresentation(IDS, HERE, [own, foreignRef], ALIAS_A);
     expect(result.kind).toBe("collision");
+    // The file axis IS already same-source owned (`own.fileHash === FILE_A`) -
+    // nothing residual to claim, so it must not appear as residual either.
+    expect(result.residual ?? []).toEqual([]);
+  });
+
+  // ══════════════════════════════════════════════════════════════════════
+  // IPE-004-C05: a collision on ONE axis must never silently drop coverage
+  // accounting for a SIBLING axis this row also carries but that nobody -
+  // not a foreign source, not this same source - owns yet.
+  // ══════════════════════════════════════════════════════════════════════
+
+  const QR_A = "c".repeat(64);
+
+  it("C05: reference collides with a foreign source, file+QR are unclaimed anywhere -> both residual", () => {
+    const ids = { referenceHash: HASH_A, fileHash: FILE_A, qrPayloadHash: QR_A };
+    const foreignRef = {
+      id: 9,
+      sourceType: "wallet_topup",
+      sourceId: 200,
+      referenceHash: HASH_A,
+      fileHash: null,
+      qrPayloadHash: null,
+      legacyReferenceUpperHash: null,
+    };
+    const result: any = classifyRepresentation(ids, HERE, [foreignRef], undefined);
+    expect(result.kind).toBe("collision");
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].kind).toBe("reference");
+    expect(result.residual.map((r: any) => r.kind).sort()).toEqual(["file", "qr"]);
+    expect(result.residual).toEqual(
+      expect.arrayContaining([
+        { kind: "file", field: "fileHash", value: FILE_A },
+        { kind: "qr", field: "qrPayloadHash", value: QR_A },
+      ])
+    );
+  });
+
+  it("C05: file is the ONLY collision, reference+QR are unclaimed anywhere -> both residual", () => {
+    const ids = { referenceHash: HASH_A, fileHash: FILE_A, qrPayloadHash: QR_A };
+    const foreignFile = {
+      id: 10,
+      sourceType: "wallet_topup",
+      sourceId: 201,
+      referenceHash: null,
+      fileHash: FILE_A,
+      qrPayloadHash: null,
+      legacyReferenceUpperHash: null,
+    };
+    const result: any = classifyRepresentation(ids, HERE, [foreignFile], undefined);
+    expect(result.kind).toBe("collision");
+    expect(result.findings.map((f: any) => f.kind)).toEqual(["file"]);
+    expect(result.residual.map((r: any) => r.kind).sort()).toEqual(["qr", "reference"]);
+  });
+
+  it("C05: QR is the ONLY collision, reference+file are unclaimed anywhere -> both residual", () => {
+    const ids = { referenceHash: HASH_A, fileHash: FILE_A, qrPayloadHash: QR_A };
+    const foreignQr = {
+      id: 11,
+      sourceType: "wallet_topup",
+      sourceId: 202,
+      referenceHash: null,
+      fileHash: null,
+      qrPayloadHash: QR_A,
+      legacyReferenceUpperHash: null,
+    };
+    const result: any = classifyRepresentation(ids, HERE, [foreignQr], undefined);
+    expect(result.kind).toBe("collision");
+    expect(result.findings.map((f: any) => f.kind)).toEqual(["qr"]);
+    expect(result.residual.map((r: any) => r.kind).sort()).toEqual(["file", "reference"]);
+  });
+
+  it("C05: an axis already SAME-SOURCE-owned via a split claim row is excluded from residual - idempotent rerun", () => {
+    // Simulates a rerun: an earlier pass already wrote a residual-only claim
+    // row for this exact source covering fileHash (C04/C05's own residual
+    // mechanism). This pass must recognize that ownership, not attempt a
+    // redundant insert or falsely report it uncovered.
+    const ids = { referenceHash: HASH_A, fileHash: FILE_A, qrPayloadHash: QR_A };
+    const foreignRef = {
+      id: 12,
+      sourceType: "wallet_topup",
+      sourceId: 203,
+      referenceHash: HASH_A,
+      fileHash: null,
+      qrPayloadHash: null,
+      legacyReferenceUpperHash: null,
+    };
+    const splitSameSourceClaim = {
+      id: 13,
+      sourceType: "order_payment",
+      sourceId: 42,
+      referenceHash: null,
+      fileHash: FILE_A,
+      qrPayloadHash: null,
+      legacyReferenceUpperHash: null,
+    };
+    const result: any = classifyRepresentation(ids, HERE, [foreignRef, splitSameSourceClaim], undefined);
+    expect(result.kind).toBe("collision");
+    expect(result.findings.map((f: any) => f.kind)).toEqual(["reference"]);
+    // file is already same-source owned via the split claim row - excluded.
+    // Only qr (owned by nobody) remains residual.
+    expect(result.residual.map((r: any) => r.kind)).toEqual(["qr"]);
+  });
+
+  it("C05: residual is empty when every non-colliding axis is already same-source-owned - nothing left to claim", () => {
+    const ids = { referenceHash: HASH_A, fileHash: FILE_A, qrPayloadHash: QR_A };
+    const foreignRef = {
+      id: 14,
+      sourceType: "wallet_topup",
+      sourceId: 204,
+      referenceHash: HASH_A,
+      fileHash: null,
+      qrPayloadHash: null,
+      legacyReferenceUpperHash: null,
+    };
+    const splitSameSourceClaim = {
+      id: 15,
+      sourceType: "order_payment",
+      sourceId: 42,
+      referenceHash: null,
+      fileHash: FILE_A,
+      qrPayloadHash: QR_A,
+      legacyReferenceUpperHash: null,
+    };
+    const result: any = classifyRepresentation(ids, HERE, [foreignRef, splitSameSourceClaim], undefined);
+    expect(result.kind).toBe("collision");
+    expect(result.residual).toEqual([]);
   });
 });
 

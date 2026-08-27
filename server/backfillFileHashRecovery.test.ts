@@ -181,7 +181,10 @@ describe("the backfill script wires recovery in for every row with no strong ide
   it("unresolved rows never leak a slip URL, only source + reason code", () => {
     const start = script.indexOf("if (stats.unresolvedRows.length > 0) {");
     expect(start).toBeGreaterThan(-1);
-    const body = script.slice(start, start + 700);
+    // Widened in IPE-004-C05 (the console message grew to describe the
+    // narrower, accurate post-completion sufficiency rule instead of
+    // claiming the table is never consulted).
+    const body = script.slice(start, start + 1200);
     expect(body).not.toMatch(/slipImageUrl/);
     expect(body).toMatch(/u\.source/);
     expect(body).toMatch(/u\.reason/);

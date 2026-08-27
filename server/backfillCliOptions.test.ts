@@ -219,7 +219,10 @@ describe("registry classification is not satisfied by a partial match", () => {
     // a gap the tool itself can safely fill. Only a hash owned by a
     // DIFFERENT source is a genuine collision.
     expect(lib).toMatch(/if \(findings\.length > 0\) \{/);
-    expect(lib).toMatch(/return \{ kind: "collision", findings \};/);
+    // IPE-004-C05: the return also carries `residual` (missingStrong) now -
+    // every present sibling axis owned by nobody, so the caller can still
+    // durably claim or fail it instead of silently dropping it.
+    expect(lib).toMatch(/return \{ kind: "collision", findings, residual: missingStrong \};/);
   });
 
   it("a same-source claim missing any strong identifier (reference/file/qr) is repairable, not a collision", () => {

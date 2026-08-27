@@ -579,6 +579,51 @@ async function claimResidualIdentifiers(ids, confirmedKinds, sourceType, rowId, 
 }
 
 /**
+ * IPE-004-C05: a collision discovered on ONE axis - whether from the
+ * registry (classifyAgainstRegistry / classifyRepresentation) or the in-run
+ * tracker - must not leave a present SIBLING axis this same row carries, and
+ * that nobody owns, silently unprotected. C04 closed this gap only for the
+ * duplicate-key INSERT-catch path; both collision-DISCOVERY paths still
+ * pushed their finding and immediately `continue`d, leaving any other
+ * present-but-unclaimed identifier never inserted and never counted
+ * uncovered.
+ *
+ * `residualIds` must already be narrowed to exactly the axes that need
+ * action - the colliding axis (already recorded) and any axis already
+ * owned by THIS source (nothing to do) must both be excluded by the caller
+ * before this is invoked, so `confirmedKinds` here is always empty: nothing
+ * in `residualIds` is a confirmed collision, by construction.
+ *
+ * Remembers the residual identifiers in the in-run tracker (mirroring the
+ * normal claim path's pre-emptive `tracker.remember`) so a LATER row in
+ * this same pass sharing one of these residual identifiers is caught as an
+ * in-run collision - critical in dry-run, where nothing is written to the
+ * database and the tracker is the only cross-row memory this run has.
+ *
+ * Dry-run reports what it WOULD claim (would/uncovered counters, mirroring
+ * needs_strong_identifier's own dry-run reporting) rather than silently
+ * skipping it - nothing is written until --live.
+ */
+async function claimResidualAxesAfterCollision(residualIds, sourceType, rowId, rowUserId, derived, current) {
+  const present = STRONG_FIELDS.filter(([, field]) => Boolean(residualIds[field]));
+  if (present.length === 0) return;
+
+  tracker.remember(residualIds, current);
+
+  if (!isLive) {
+    for (const [kind, field] of present) {
+      const c = coverageCounters(field);
+      stats[c.would] += 1;
+      stats[c.uncovered] += 1;
+      console.log(`  WOULD_CLAIM_RESIDUAL_${kind.toUpperCase()}  ${sourceType}#${rowId}`);
+    }
+    return;
+  }
+
+  await claimResidualIdentifiers(residualIds, new Set(), sourceType, rowId, rowUserId, derived);
+}
+
+/**
  * Classifies a historical row against the REGISTRY.
  *
  * A row counts as REPRESENTED only when the SAME source already owns EVERY
@@ -1129,6 +1174,15 @@ async function processRows(sourceType, rows) {
       if (registry.findings.some((f) => f.kind === "file")) {
         pendingUnknownClearsAfterCollision.push({ sourceType, sourceId: row.id });
       }
+      // IPE-004-C05: a collision on one axis must not leave a present
+      // sibling axis - owned by nobody - silently unprotected. `residual`
+      // is already narrowed by classifyRepresentation to exclude both the
+      // just-recorded collision axis and anything already same-source-owned.
+      if (registry.residual && registry.residual.length > 0) {
+        const residualIds = {};
+        for (const { field, value } of registry.residual) residualIds[field] = value;
+        await claimResidualAxesAfterCollision(residualIds, sourceType, row.id, row.userId, derived, current);
+      }
       continue;
     }
 
@@ -1139,6 +1193,16 @@ async function processRows(sourceType, rows) {
       if (collidingKinds.includes("file")) {
         pendingUnknownClearsAfterCollision.push({ sourceType, sourceId: row.id });
       }
+      // IPE-004-C05: same invariant for an in-run collision - any OTHER
+      // present identifier this row carries that did not collide is still
+      // owned by nobody (classifyAgainstRegistry already returned undefined
+      // for this row, so none of its present axes are same-source-owned
+      // yet) and must still be claimed or reported uncovered.
+      const residualIds = {};
+      for (const [kind, field] of STRONG_FIELDS) {
+        if (ids[field] && !collidingKinds.includes(kind)) residualIds[field] = ids[field];
+      }
+      await claimResidualAxesAfterCollision(residualIds, sourceType, row.id, row.userId, derived, current);
       continue;
     }
 
@@ -1416,8 +1480,11 @@ try {
         "(a reference/QR identifier, if present, does not excuse missing file-byte " +
         "replay coverage). Durably recorded as PERMANENTLY UNKNOWN " +
         "(paymentSlipLegacyUnknown) - this does NOT block completion once every such " +
-        "row is recorded, and it is NEVER consulted to block or approve an unrelated " +
-        "future submission:"
+        "row is recorded. It is NEVER a global duplicate match: a future submission " +
+        "carrying a reference or QR identifier is entirely unaffected. It IS " +
+        "consulted for one narrow case once completion retires the historical scan: " +
+        "a future submission whose ONLY strong evidence is a fileHash (IPE-004-C03, " +
+        "see findAnyLegacyFileIdentityUnknown):"
     );
     for (const u of stats.unresolvedRows) {
       // Only sourceType/sourceId and a fixed reason code - never a slip URL,

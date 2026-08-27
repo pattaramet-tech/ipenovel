@@ -33,7 +33,13 @@ classifies the row into exactly one of three durable buckets:
   winner, manual review), never as a proven duplicate owned by that first row.
 - **unknown** - the row's file identity could not be established this run.
   Recorded in `paymentSlipLegacyUnknown` for operator visibility. **Never
-  consulted to block or approve anything.** Two sub-cases:
+  used as a global duplicate match** - it never blocks or approves an
+  unrelated submission on its own. It IS consulted once completion retires
+  the historical scan, via one narrow, bounded, indexed lookup: a current
+  submission whose ONLY strong evidence is a fileHash fails closed to manual
+  review while ANY row here exists (see Step 5 below for the exact rule); a
+  submission that also carries a reference or QR is unaffected. Two
+  sub-cases:
   - `no_slip_image_url` - the row has no slip image URL at all, so its bytes
     are permanently gone. **Proven permanent**: recording it is what lets the
     backfill be marked complete despite it.
