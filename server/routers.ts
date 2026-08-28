@@ -59,6 +59,7 @@ import {
 import { isValidStoredFileRef } from "@shared/privateFileRef";
 import * as accountRecoveryService from "./services/accountRecoveryService";
 import { AccountRecoveryError } from "./services/accountRecoveryService";
+import { buildAccountMergePreview } from "./services/accountMergePreviewService";
 import { updateAdminUserProfile, AdminUserManagementError } from "./services/adminUserManagementService";
 
 // ============ HELPER PROCEDURES ============
@@ -3814,6 +3815,43 @@ export const appRouter = router({
           } catch (error) {
             throw mapAccountRecoveryError(error);
           }
+        }),
+    }),
+  }),
+
+  // ============ ADVANCED ACCOUNT MERGE (IPE-003 Foundation & Preview) ============
+  // See server/services/accountMergePreviewService.ts for the read-only
+  // safety/inventory logic below - this router is deliberately thin, same
+  // split as the accountRecovery router above. IPE-005 through IPE-008 add
+  // the actual merge-execution procedures in later phases; this phase adds
+  // only the read-only preview.
+  accountMerge: router({
+    admin: router({
+      // Read-only, safe to call repeatedly as the admin picks different
+      // candidate targets - same shape/purpose as
+      // accountRecovery.admin.previewApproval above. `requestId` must name
+      // an existing, BLOCKED recovery request - Source is ALWAYS that
+      // request's own requesterUserId, never accepted as input here, so
+      // nothing a client sends can redirect this to a different source
+      // account. `targetUserId` is the one thing an admin actually
+      // supplies, exactly like previewApproval's targetUserId.
+      preview: adminProcedure
+        .input(z.object({ requestId: z.number().int().positive(), targetUserId: z.number().int().positive() }))
+        .query(async ({ input }) => {
+          const request = await db.getAccountRecoveryRequestById(input.requestId);
+          if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "Recovery request not found" });
+          if (request.status !== "blocked") {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Advanced Account Merge preview requires a BLOCKED recovery request",
+            });
+          }
+
+          return buildAccountMergePreview({
+            requestId: input.requestId,
+            sourceUserId: request.requesterUserId,
+            targetUserId: input.targetUserId,
+          });
         }),
     }),
   }),
