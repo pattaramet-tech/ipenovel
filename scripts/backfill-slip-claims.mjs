@@ -73,8 +73,9 @@ import {
 } from "./lib/backfillFileHashRecovery.mjs";
 import { deriveIdentifiers as deriveIdentifiersPure } from "./lib/backfillIdentifierDerivation.mjs";
 import {
-  detectStaleReferenceClaim,
-  buildStaleReferenceMigrationPatch,
+  detectStaleReferenceClaims,
+  planStaleReferenceMigrations,
+  evaluateStaleRepairOutcome,
 } from "./lib/backfillStaleReferenceMigration.mjs";
 import { evaluateBackfillCompletion } from "./lib/backfillCompletionGate.mjs";
 import { resolveDuplicateKeyCollisions } from "./lib/backfillDuplicateKeyResolution.mjs";
@@ -673,28 +674,16 @@ async function verifyAliasPersisted(claimId, expectedAliasHash) {
 }
 
 /**
- * The one existing claim for a source, looked up directly by
- * (sourceType, sourceId) rather than by any hash value.
- *
- * Needed specifically for stale-claim migration: a claim written by an OLDER
- * backfill version may hold, as its EXACT `referenceHash`, a value today's
- * derivation would never produce again (see migrateStaleReferenceClaim) -
- * that claim is therefore invisible to classifyAgainstRegistry's hash-based
- * lookup, which only ever queries by values `ids` currently holds.
+ * Upper bound on one source's claim rows read in a single query. A source
+ * owns at most one row per strong axis plus one alias-only row (5 by
+ * construction), so 10 is generous headroom - but it IS a bound, and a read
+ * that comes back saturated is therefore not proof that the source holds
+ * nothing else. Stale-claim verification treats saturation as unproven
+ * rather than clean - see migrateStaleReferenceClaims and, for the rule
+ * itself, evaluateStaleRepairOutcome in
+ * scripts/lib/backfillStaleReferenceMigration.mjs.
  */
-async function findSameSourceClaim(current) {
-  const rows = await db
-    .select()
-    .from(schema.paymentSlipClaims)
-    .where(
-      and(
-        eq(schema.paymentSlipClaims.sourceType, current.sourceType),
-        eq(schema.paymentSlipClaims.sourceId, current.sourceId)
-      )
-    )
-    .limit(1);
-  return rows?.[0];
-}
+const SAME_SOURCE_CLAIM_READ_LIMIT = 10;
 
 /**
  * EVERY claim row this source owns - not just the first (IPE-004-C06).
@@ -706,7 +695,12 @@ async function findSameSourceClaim(current) {
  * reporting an already-covered row as uncovered and churn out more rows.
  *
  * Bounded: a source owns at most a handful of rows by construction (one per
- * strong axis at worst).
+ * strong axis at worst, plus the alias-only row) - well inside
+ * SAME_SOURCE_CLAIM_READ_LIMIT.
+ *
+ * Ordered by id (IPE-004-C08): the read is also what stale-claim detection
+ * and its post-repair proof run on, so which rows come back - and in what
+ * order they are repaired - must never be left to the database's choice.
  */
 async function findAllSameSourceClaims(current) {
   const rows = await db
@@ -718,7 +712,8 @@ async function findAllSameSourceClaims(current) {
         eq(schema.paymentSlipClaims.sourceId, current.sourceId)
       )
     )
-    .limit(10);
+    .orderBy(asc(schema.paymentSlipClaims.id))
+    .limit(SAME_SOURCE_CLAIM_READ_LIMIT);
   return rows ?? [];
 }
 
@@ -845,17 +840,20 @@ async function ensureLegacyAliasCoverage(expectedAlias, sourceType, rowId, rowUs
  * legitimate authority), the required advisory alias is ensured, and a
  * freshly recovered exact fileHash is folded in ONLY into an empty slot -
  * an existing fileHash on the claim is never overwritten by this repair.
+ *
+ * Repairs exactly ONE row, with a patch planStaleReferenceMigrations already
+ * built for it. Returns true only when the repair is verified persisted -
+ * the orchestrator uses that to tell apart a row it already counted as
+ * uncovered from one the post-repair re-read newly finds still stale.
  */
-async function migrateStaleReferenceClaim(staleClaim, ids, expectedAlias, sourceType, rowId) {
-  const patch = buildStaleReferenceMigrationPatch(staleClaim, ids, expectedAlias);
-
+async function migrateOneStaleReferenceClaim(staleClaim, patch, ids, expectedAlias, sourceType, rowId) {
   if (!isLive) {
     stats.wouldRepairStaleClaim += 1;
     stats.staleClaimsUncovered += 1;
     console.log(
       `  WOULD_MIGRATE_STALE_LEGACY_CLAIM  ${sourceType}#${rowId}  claim#${staleClaim.id}`
     );
-    return;
+    return false;
   }
 
   try {
@@ -880,14 +878,15 @@ async function migrateStaleReferenceClaim(staleClaim, ids, expectedAlias, source
 
     if (ok) {
       stats.staleClaimsRepaired += 1;
-    } else {
-      stats.staleClaimsUncovered += 1;
-      stats.failures.push({
-        source: `${sourceType}#${rowId}`,
-        stage: "stale claim migration",
-        error: "claim not in expected state after update",
-      });
+      return true;
     }
+    stats.staleClaimsUncovered += 1;
+    stats.failures.push({
+      source: `${sourceType}#${rowId}`,
+      stage: "stale claim migration",
+      error: "claim not in expected state after update",
+    });
+    return false;
   } catch (error) {
     // A duplicate-key error means the freshly recovered fileHash in `patch`
     // is ALREADY claimed by a different source - a genuine collision. It is
@@ -949,14 +948,15 @@ async function migrateStaleReferenceClaim(staleClaim, ids, expectedAlias, source
           // recorded collision (above); it does not block completion, an
           // unrepaired stale reference would have.
           stats.staleClaimsRepaired += 1;
-        } else {
-          stats.staleClaimsUncovered += 1;
-          stats.failures.push({
-            source: `${sourceType}#${rowId}`,
-            stage: "stale claim migration",
-            error: "obsolete referenceHash not cleared after duplicate-key retry",
-          });
+          return true;
         }
+        stats.staleClaimsUncovered += 1;
+        stats.failures.push({
+          source: `${sourceType}#${rowId}`,
+          stage: "stale claim migration",
+          error: "obsolete referenceHash not cleared after duplicate-key retry",
+        });
+        return false;
       } catch (retryError) {
         stats.staleClaimsUncovered += 1;
         stats.failures.push({
@@ -964,15 +964,89 @@ async function migrateStaleReferenceClaim(staleClaim, ids, expectedAlias, source
           stage: "stale claim migration",
           error: retryError?.code ?? retryError?.message ?? "unknown",
         });
+        return false;
       }
-    } else {
-      stats.staleClaimsUncovered += 1;
-      stats.failures.push({
-        source: `${sourceType}#${rowId}`,
-        stage: "stale claim migration",
-        error: error?.code ?? error?.message ?? "unknown",
-      });
     }
+    stats.staleClaimsUncovered += 1;
+    stats.failures.push({
+      source: `${sourceType}#${rowId}`,
+      stage: "stale claim migration",
+      error: error?.code ?? error?.message ?? "unknown",
+    });
+    return false;
+  }
+}
+
+/**
+ * Repairs EVERY stale claim this source owns, then PROVES none survived.
+ *
+ * IPE-004-C08 P2. The reviewed head read one same-source claim row in
+ * unspecified order and repaired that. Because a source can own several
+ * rows (C04/C05 residual axes, C06 alias-only), a residual or alias-only
+ * row coming back first answered "nothing stale here" while the obsolete
+ * lossy exact `referenceHash` sat untouched on a sibling row - and the run
+ * was still allowed to --mark-complete, leaving the replay hole open.
+ *
+ * So: repair every detected row, then RE-READ the source's claims and
+ * confirm no row still carries `referenceHash === expectedAlias`. Anything
+ * short of that proof - a row still stale, a saturated read that cannot
+ * speak for rows it never returned, or a failed re-read - increments
+ * `staleClaimsUncovered` and records a failure, so the completion gate
+ * refuses `--mark-complete`.
+ *
+ * Rows the per-claim repair already counted as uncovered are NOT counted
+ * twice; the verification only accounts for what it newly finds.
+ */
+async function migrateStaleReferenceClaims(staleClaims, ids, expectedAlias, sourceType, rowId, current) {
+  const failedClaimIds = new Set();
+
+  for (const { claim, patch } of planStaleReferenceMigrations(staleClaims, ids, expectedAlias)) {
+    const repaired = await migrateOneStaleReferenceClaim(
+      claim,
+      patch,
+      ids,
+      expectedAlias,
+      sourceType,
+      rowId
+    );
+    if (!repaired) failedClaimIds.add(claim.id);
+  }
+
+  // Dry-run wrote nothing and has already counted every detected row as
+  // uncovered - there is no post-state to prove anything about.
+  if (!isLive) return;
+
+  let after;
+  try {
+    after = await findAllSameSourceClaims(current);
+  } catch (error) {
+    stats.staleClaimsUncovered += 1;
+    stats.failures.push({
+      source: `${sourceType}#${rowId}`,
+      stage: "stale claim verification",
+      error: error?.code ?? error?.message ?? "unknown",
+    });
+    return;
+  }
+
+  // Whether that read actually PROVES the source clean - a saturated read
+  // cannot speak for rows it never returned, and a row still carrying the
+  // obsolete hash is the replay hole still being open. See
+  // scripts/lib/backfillStaleReferenceMigration.mjs.
+  const outcome = evaluateStaleRepairOutcome({
+    afterClaims: after,
+    expectedAlias,
+    failedClaimIds,
+    readLimit: SAME_SOURCE_CLAIM_READ_LIMIT,
+  });
+
+  if (outcome.uncovered > 0) {
+    stats.staleClaimsUncovered += outcome.uncovered;
+    stats.failures.push({
+      source: `${sourceType}#${rowId}`,
+      stage: "stale claim verification",
+      error: outcome.error,
+    });
   }
 }
 
@@ -1002,11 +1076,11 @@ async function processRows(sourceType, rows) {
     // the hash-based registry lookup below can never find it - leaving that
     // wrong ownership to survive every rerun, and a later fresh insert to
     // create a SECOND claim for the same source. See
-    // migrateStaleReferenceClaim for the provenance proof this depends on.
-    let staleClaim;
+    // migrateStaleReferenceClaims for the provenance proof this depends on.
+    let staleClaims = [];
     if (expectedAlias) {
-      const sameSource = await findSameSourceClaim(current);
-      staleClaim = detectStaleReferenceClaim(sameSource, expectedAlias);
+      const sameSource = await findAllSameSourceClaims(current);
+      staleClaims = detectStaleReferenceClaims(sameSource, expectedAlias);
     }
 
     if (!ids.fileHash) {
@@ -1026,11 +1100,11 @@ async function processRows(sourceType, rows) {
       if (recovery.fileHash) {
         ids = { ...ids, fileHash: recovery.fileHash };
         stats.fileHashRecovered += 1;
-        if (staleClaim) {
-          // The stale claim can be fully repaired with this freshly
-          // recovered fileHash - migrate it in place and stop; there is
+        if (staleClaims.length > 0) {
+          // The stale claims can be fully repaired with this freshly
+          // recovered fileHash - migrate them in place and stop; there is
           // nothing left for the normal registry/insert path to do.
-          await migrateStaleReferenceClaim(staleClaim, ids, expectedAlias, sourceType, row.id);
+          await migrateStaleReferenceClaims(staleClaims, ids, expectedAlias, sourceType, row.id, current);
           // The file axis is resolved now - drop any stale unknown record.
           await clearStaleUnknownRow(sourceType, row.id);
           continue;
@@ -1039,12 +1113,12 @@ async function processRows(sourceType, rows) {
         // UNRESOLVED: no identifier in extractedData AND no recoverable file
         // hash. This row has NO claim and remains replayable - it must block
         // --mark-complete, never be silently skipped.
-        if (staleClaim) {
+        if (staleClaims.length > 0) {
           // Still repair the obsolete EXACT ownership even without a
           // replacement fileHash - it must never survive a rerun, since it
           // wrongly hard-blocks any future distinct transaction sharing the
           // same fold. The row itself remains correctly unresolved below.
-          await migrateStaleReferenceClaim(staleClaim, ids, expectedAlias, sourceType, row.id);
+          await migrateStaleReferenceClaims(staleClaims, ids, expectedAlias, sourceType, row.id, current);
         }
         stats.noIdentifier += 1;
         stats.unresolvedRows.push({
@@ -1090,11 +1164,11 @@ async function processRows(sourceType, rows) {
       }
     }
 
-    if (staleClaim) {
+    if (staleClaims.length > 0) {
       // ids.fileHash was already present before recovery was even
-      // considered (extractedData carried it directly) - the stale claim can
-      // still be migrated using it.
-      await migrateStaleReferenceClaim(staleClaim, ids, expectedAlias, sourceType, row.id);
+      // considered (extractedData carried it directly) - the stale claims
+      // can still be migrated using it.
+      await migrateStaleReferenceClaims(staleClaims, ids, expectedAlias, sourceType, row.id, current);
       if (ids.fileHash) await clearStaleUnknownRow(sourceType, row.id);
       continue;
     }

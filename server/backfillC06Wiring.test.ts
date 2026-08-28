@@ -115,10 +115,10 @@ describe("P1: ensureLegacyAliasCoverage never fabricates exact coverage and neve
     const idx = code.indexOf("async function findAllSameSourceClaims(");
     expect(idx).toBeGreaterThan(-1);
     const body = code.slice(idx, idx + 600);
-    // Must not reuse findSameSourceClaim's .limit(1) - split residual claim
+    // Must never collapse to .limit(1) - split residual claim
     // rows from C04/C05 mean a source can own several.
     expect(body).not.toMatch(/\.limit\(1\)/);
-    expect(body).toMatch(/\.limit\(\d+\)/);
+    expect(body).toMatch(/\.limit\((\d+|SAME_SOURCE_CLAIM_READ_LIMIT)\)/);
   });
 });
 
