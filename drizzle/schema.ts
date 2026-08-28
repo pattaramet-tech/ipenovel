@@ -1325,6 +1325,103 @@ export type AccountRecoveryAuditLog = typeof accountRecoveryAuditLogs.$inferSele
 export type InsertAccountRecoveryAuditLog = typeof accountRecoveryAuditLogs.$inferInsert;
 
 /**
+ * Advanced Account Merge - Phase 1 (IPE-003) Foundation.
+ *
+ * Durable case record for a full account merge (source account's economic
+ * AND user-owned data folded into a target account) - the path Account
+ * Recovery's own empty-source-account invariant routes every non-empty
+ * source to (see accountRecoveryService.assessAccountRecoverySafety's
+ * blockReasons: "requires Advanced Account Merge, never an automated move").
+ *
+ * Schema only in this phase - nothing in IPE-003 ever INSERTs a row here.
+ * The read-only merge preview (server/services/accountMergePreviewService.ts)
+ * computes everything on demand from the source tables directly and never
+ * persists a case; this table exists so IPE-005 (Guard & Concurrency) has a
+ * durable case identity to lock/lease over, and IPE-006/007/008 have
+ * somewhere to record execution progress, without a later migration
+ * retrofitting the linkage back onto historical account-recovery evidence.
+ *
+ * `originAccountRecoveryRequestId` is that linkage: every merge case must
+ * trace back to the BLOCKED account-recovery request that could not be
+ * auto-resolved (never a bare admin action with no paper trail) - see
+ * accountRecoveryRequests' own doc comment for why that request row is
+ * preserved forever as historical evidence, never deleted or overwritten by
+ * this table. No FK CASCADE here (unlike accountRecoveryAuditLogs'
+ * deliberate exception) - a merge case must remain readable even if the
+ * originating request row were ever removed, matching this schema's default
+ * convention (see e.g. purchases.orderId).
+ *
+ * `status` intentionally stops at the coarse workflow shape a Foundation
+ * phase can commit to without guessing at IPE-005's locking mechanism or
+ * IPE-006/007's per-domain progress tracking - those add their OWN columns
+ * (guard/lock fields, per-phase completion) in their own migrations rather
+ * than this one reaching ahead of scope to design them now.
+ */
+export const accountMergeCases = mysqlTable(
+  "accountMergeCases",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    originAccountRecoveryRequestId: int("originAccountRecoveryRequestId").notNull(),
+    sourceUserId: int("sourceUserId").notNull(),
+    targetUserId: int("targetUserId").notNull(),
+    status: mysqlEnum("status", ["pending", "in_progress", "completed", "failed", "cancelled"])
+      .default("pending")
+      .notNull(),
+    createdByAdminId: int("createdByAdminId").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+    completedAt: timestamp("completedAt"),
+    cancelledAt: timestamp("cancelledAt"),
+    cancelReason: text("cancelReason"),
+  },
+  (table) => ({
+    originRequestIdx: index("accountMergeCases_originAccountRecoveryRequestId_idx").on(
+      table.originAccountRecoveryRequestId
+    ),
+    sourceUserIdIdx: index("accountMergeCases_sourceUserId_idx").on(table.sourceUserId),
+    targetUserIdIdx: index("accountMergeCases_targetUserId_idx").on(table.targetUserId),
+    statusIdx: index("accountMergeCases_status_idx").on(table.status),
+  })
+);
+
+export type AccountMergeCase = typeof accountMergeCases.$inferSelect;
+export type InsertAccountMergeCase = typeof accountMergeCases.$inferInsert;
+
+/**
+ * Append-only audit trail for the Advanced Account Merge feature - same
+ * "text column + manual JSON serialization" convention as
+ * accountRecoveryAuditLogs.safeMetadata, and the same append-only-by-
+ * construction guarantee (no update/delete API is ever added for rows
+ * here - see accountRecoveryAuditLogs' identical note). `mergeCaseId` is
+ * nullable because a "previewed" event can happen before any
+ * accountMergeCases row exists at all (this phase's preview never creates
+ * one - see accountMergeCases' own doc comment); later phases populate it
+ * once a real case exists.
+ */
+export const accountMergeAuditLogs = mysqlTable(
+  "accountMergeAuditLogs",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    mergeCaseId: int("mergeCaseId"),
+    actorAdminId: int("actorAdminId"),
+    action: varchar("action", { length: 32 }).notNull(),
+    sourceUserId: int("sourceUserId"),
+    targetUserId: int("targetUserId"),
+    safeMetadata: text("safeMetadata"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    mergeCaseIdIdx: index("accountMergeAuditLogs_mergeCaseId_idx").on(table.mergeCaseId),
+    sourceUserIdIdx: index("accountMergeAuditLogs_sourceUserId_idx").on(table.sourceUserId),
+    targetUserIdIdx: index("accountMergeAuditLogs_targetUserId_idx").on(table.targetUserId),
+    createdAtIdx: index("accountMergeAuditLogs_createdAt_idx").on(table.createdAt),
+  })
+);
+
+export type AccountMergeAuditLog = typeof accountMergeAuditLogs.$inferSelect;
+export type InsertAccountMergeAuditLog = typeof accountMergeAuditLogs.$inferInsert;
+
+/**
  * Append-only audit trail for the Admin Users Management page - one row per
  * name/role edit or hard delete performed through admin.users.update /
  * admin.users.delete (server/routers.ts). Deliberately NO foreign key from
