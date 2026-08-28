@@ -62,6 +62,8 @@ import {
   dailyCheckinRewardGrants,
   accountRecoveryRequests,
   accountRecoveryAuditLogs,
+  accountMergeCases,
+  accountMergeAuditLogs,
   adminUserAuditLogs,
   paymentSlipClaims,
   Novel,
@@ -7831,6 +7833,35 @@ const ADMIN_USER_DELETE_CHECKS: Array<{
         eq(accountRecoveryAuditLogs.actorAdminId, id),
         eq(accountRecoveryAuditLogs.sourceUserId, id),
         eq(accountRecoveryAuditLogs.targetUserId, id)
+      ),
+  },
+  // IPE-003: Advanced Account Merge's own case/audit rows - same
+  // protection as accountRecoveryRequests/accountRecoveryAuditLogs above,
+  // for the same reason (a merge case's source/target/creator, or a merge
+  // audit entry's actor/source/target, must not be hard-deletable out from
+  // under this feature's own audit trail).
+  {
+    table: "accountMergeCases",
+    reference: "Account Merge Cases",
+    category: "audit_or_actor",
+    from: accountMergeCases,
+    condition: (id) =>
+      or(
+        eq(accountMergeCases.sourceUserId, id),
+        eq(accountMergeCases.targetUserId, id),
+        eq(accountMergeCases.createdByAdminId, id)
+      ),
+  },
+  {
+    table: "accountMergeAuditLogs",
+    reference: "Account Merge Audit References",
+    category: "audit_or_actor",
+    from: accountMergeAuditLogs,
+    condition: (id) =>
+      or(
+        eq(accountMergeAuditLogs.actorAdminId, id),
+        eq(accountMergeAuditLogs.sourceUserId, id),
+        eq(accountMergeAuditLogs.targetUserId, id)
       ),
   },
   // Review finding on PR #45: a FORMER admin who performed a prior

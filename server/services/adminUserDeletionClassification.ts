@@ -126,6 +126,15 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
   { table: "accountRecoveryAuditLogs", column: "actorAdminId", category: "audit_or_actor", reference: "Account Recovery Audit References", reason: "This account performed an audited account-recovery transition." },
   { table: "accountRecoveryAuditLogs", column: "sourceUserId", category: "audit_or_actor", reference: "Account Recovery Audit References", reason: "This account was the source in an account-recovery audit entry." },
   { table: "accountRecoveryAuditLogs", column: "targetUserId", category: "audit_or_actor", reference: "Account Recovery Audit References", reason: "This account was the target in an account-recovery audit entry." },
+  // IPE-003: Advanced Account Merge's own case/audit rows - same
+  // protection as the accountRecoveryRequests/accountRecoveryAuditLogs
+  // entries above, for the same reason.
+  { table: "accountMergeCases", column: "sourceUserId", category: "audit_or_actor", reference: "Account Merge Cases", reason: "This account was the source of a merge case." },
+  { table: "accountMergeCases", column: "targetUserId", category: "audit_or_actor", reference: "Account Merge Cases", reason: "This account was the target of a merge case." },
+  { table: "accountMergeCases", column: "createdByAdminId", category: "audit_or_actor", reference: "Account Merge Cases", reason: "This account (an admin) created a merge case." },
+  { table: "accountMergeAuditLogs", column: "actorAdminId", category: "audit_or_actor", reference: "Account Merge Audit References", reason: "This account performed an audited merge action." },
+  { table: "accountMergeAuditLogs", column: "sourceUserId", category: "audit_or_actor", reference: "Account Merge Audit References", reason: "This account was the source in a merge audit entry." },
+  { table: "accountMergeAuditLogs", column: "targetUserId", category: "audit_or_actor", reference: "Account Merge Audit References", reason: "This account was the target in a merge audit entry." },
   {
     table: "adminUserAuditLogs",
     column: "actorAdminId",

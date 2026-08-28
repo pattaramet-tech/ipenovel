@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getAdminUserDeleteAssessment } from "./db";
-import { adminUserAuditLogs, orders } from "../drizzle/schema";
+import { adminUserAuditLogs, orders, accountMergeCases, accountMergeAuditLogs } from "../drizzle/schema";
 
 /**
  * Direct, unmocked test of getAdminUserDeleteAssessment's REAL check list
@@ -57,5 +57,35 @@ describe("getAdminUserDeleteAssessment", () => {
       expect.objectContaining({ table: "orders", category: "economic", count: 3 })
     );
     expect(result.blockers.find((b) => b.table === "adminUserAuditLogs")).toBeUndefined();
+  });
+
+  it("[IPE-003] an account referenced by an Advanced Account Merge case (as source, target, or creating admin) is blocked from hard-deletion", async () => {
+    const fakeDb = fakeCountDatabase(new Map([[accountMergeCases, 1]]));
+    const result = await getAdminUserDeleteAssessment(2, fakeDb as any);
+
+    expect(result.canDelete).toBe(false);
+    expect(result.blockers).toContainEqual(
+      expect.objectContaining({
+        table: "accountMergeCases",
+        reference: "Account Merge Cases",
+        count: 1,
+        category: "audit_or_actor",
+      })
+    );
+  });
+
+  it("[IPE-003] an account referenced by an Advanced Account Merge audit log entry is blocked from hard-deletion", async () => {
+    const fakeDb = fakeCountDatabase(new Map([[accountMergeAuditLogs, 2]]));
+    const result = await getAdminUserDeleteAssessment(2, fakeDb as any);
+
+    expect(result.canDelete).toBe(false);
+    expect(result.blockers).toContainEqual(
+      expect.objectContaining({
+        table: "accountMergeAuditLogs",
+        reference: "Account Merge Audit References",
+        count: 2,
+        category: "audit_or_actor",
+      })
+    );
   });
 });
