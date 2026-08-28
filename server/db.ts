@@ -63,6 +63,7 @@ import {
   accountRecoveryRequests,
   accountRecoveryAuditLogs,
   adminUserAuditLogs,
+  paymentSlipClaims,
   Novel,
   couponUsages as couponUsagesTable,
 } from "../drizzle/schema";
@@ -7256,6 +7257,344 @@ export function buildOtherBlockingAccountRecoveryRequestsCondition(userId: numbe
     ne(accountRecoveryRequests.id, excludeRequestId),
     inArray(accountRecoveryRequests.status, BLOCKING_ACCOUNT_RECOVERY_REQUEST_STATUSES)
   );
+}
+
+// ============ ADVANCED ACCOUNT MERGE - FOUNDATION & PREVIEW (IPE-003) ============
+// Backs the read-only merge preview - see
+// server/services/accountMergePreviewService.ts for the orchestration these
+// compose into, and server/services/accountMergeTypes.ts for the returned
+// shapes. EVERY function in this section is READ-ONLY: no INSERT/UPDATE/
+// DELETE appears anywhere below - see accountMergePreviewService.ts's own
+// docstring for why that is exhaustively true, not merely a convention.
+
+export type AccountMergeTableInventoryFinding = {
+  table: string;
+  category: "economic" | "user_owned" | "indirect_economic" | "indirect_user_owned";
+  sourceCount: number;
+  targetCount: number;
+  conflictCount: number;
+};
+
+/** Exact row count for one userId-column table. Unlike Account Recovery's
+ *  own presence-only `.limit(1)` checks (findAccountRecoveryEconomicData/
+ *  findAccountRecoveryUserOwnedData above), the merge preview needs the
+ *  REAL count for the admin to judge scale before a later phase acts on
+ *  it, so every check below is a genuine `count()` aggregate. */
+function plainUserIdCount(table: any, userIdColumn: any) {
+  return async (userId: number, database: any): Promise<number> => {
+    const rows = await database.select({ value: count() }).from(table).where(eq(userIdColumn, userId));
+    return Number(rows[0]?.value ?? 0);
+  };
+}
+
+/** Same shape, for the three no-direct-userId-column indirect tables -
+ *  counted via a join back to the parent's own already-classified userId
+ *  column (cartItems -> carts.userId, orderItems/payments ->
+ *  orders.userId - see ACCOUNT_RECOVERY_INDIRECT_TABLES's own doc
+ *  comment for why these tables have no direct column to reflect over). */
+function joinedParentUserIdCount(
+  childTable: any,
+  childParentIdColumn: any,
+  parentTable: any,
+  parentIdColumn: any,
+  parentUserIdColumn: any
+) {
+  return async (userId: number, database: any): Promise<number> => {
+    const rows = await database
+      .select({ value: count() })
+      .from(childTable)
+      .innerJoin(parentTable, eq(childParentIdColumn, parentIdColumn))
+      .where(eq(parentUserIdColumn, userId));
+    return Number(rows[0]?.value ?? 0);
+  };
+}
+
+/**
+ * Renders the "how many of source's rows share a per-account unique key
+ * with one of target's rows" query for one table - a plain re-parent of
+ * exactly these rows would violate that table's own UNIQUE(userId, ...)
+ * constraint (e.g. wishlists' unique_user_novel, purchases'
+ * unique_user_episode). Exported (not just a local closure) purely so
+ * server/accountMergeKeyOverlap.static.test.ts can assert the generated
+ * SQL shape with a connection-free `.toSQL()`-style dialect render - the
+ * same pattern already used by
+ * buildOtherBlockingAccountRecoveryRequestsCondition above.
+ *
+ * `table`/`userIdColumn`/`keyColumns` are ALWAYS literal string constants
+ * from ACCOUNT_MERGE_TABLE_CHECKS below - never derived from request
+ * input - so embedding them as SQL identifiers (via `sql.identifier`,
+ * which quotes and escapes them) rather than bound parameters (which
+ * MySQL/TiDB cannot accept identifiers as at all) carries no injection
+ * risk. `sourceUserId`/`targetUserId` remain real bound parameters.
+ */
+export function buildAccountMergeKeyOverlapQuery(
+  table: string,
+  userIdColumn: string,
+  keyColumns: string[],
+  sourceUserId: number,
+  targetUserId: number
+) {
+  const tableIdent = sql.identifier(table);
+  const userIdIdent = sql.identifier(userIdColumn);
+  const keyEquality = sql.join(
+    keyColumns.map((c) => sql`s.${sql.identifier(c)} = t.${sql.identifier(c)}`),
+    sql` AND `
+  );
+  return sql`SELECT COUNT(*) AS cnt FROM ${tableIdent} s WHERE s.${userIdIdent} = ${sourceUserId} AND EXISTS (SELECT 1 FROM ${tableIdent} t WHERE t.${userIdIdent} = ${targetUserId} AND ${keyEquality})`;
+}
+
+async function countAccountMergeKeyOverlap(
+  database: any,
+  table: string,
+  userIdColumn: string,
+  keyColumns: string[],
+  sourceUserId: number,
+  targetUserId: number
+): Promise<number> {
+  const raw: any = await database.execute(
+    buildAccountMergeKeyOverlapQuery(table, userIdColumn, keyColumns, sourceUserId, targetUserId)
+  );
+  const rows = Array.isArray(raw?.[0]) ? raw[0] : raw;
+  return Number(rows?.[0]?.cnt ?? 0);
+}
+
+type AccountMergeTableCheck = {
+  table: string;
+  category: AccountMergeTableInventoryFinding["category"];
+  countFor: (userId: number, database: any) => Promise<number>;
+  /** The column countFor/the overlap query key off - always the SAME
+   *  column classified for this table in
+   *  ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION (coupons is the one direct
+   *  table using `ownerUserId` instead of `userId`). */
+  userIdColumnName: string;
+  /** Present only for a table with a real UNIQUE(userId, <content>)
+   *  constraint - the columns forming <content>. Omitted entirely for an
+   *  append-only ledger table with no such constraint (conflictCount is
+   *  always 0 for those) and for the indirect (no-direct-column) tables,
+   *  where per-row dedupe is deferred to the phase that actually
+   *  implements cart/order consolidation - see this file's own inventory
+   *  orchestrator below for how each shape is handled. */
+  conflictKeyColumns?: string[];
+  /** true only for a table with UNIQUE(userId) (at most one row per
+   *  account) - conflictCount there comes from "both sides already have
+   *  their one row" (sourceCount>0 && targetCount>0), never an extra
+   *  query. */
+  isSingleton?: boolean;
+};
+
+/**
+ * The merge inventory's real query registry. Table NAMES here must match
+ * accountMergeInventory.ts's ACCOUNT_MERGE_DIRECT_TABLES/
+ * ACCOUNT_MERGE_INDIRECT_TABLES exactly (as a set) - proven by
+ * server/services/accountMergeInventory.test.ts, the same
+ * "no drift between the inventory and the real queries" pattern as
+ * ACCOUNT_RECOVERY_ECONOMIC_TABLE_NAMES/ACCOUNT_RECOVERY_USER_OWNED_TABLE_NAMES
+ * above.
+ */
+const ACCOUNT_MERGE_TABLE_CHECKS: AccountMergeTableCheck[] = [
+  // ---- economic (direct) ----
+  { table: "orders", category: "economic", userIdColumnName: "userId", countFor: plainUserIdCount(orders, orders.userId) },
+  {
+    table: "purchases",
+    category: "economic",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(purchases, purchases.userId),
+    conflictKeyColumns: ["episodeId"],
+  },
+  {
+    table: "episodePurchases",
+    category: "economic",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(episodePurchases, episodePurchases.userId),
+    conflictKeyColumns: ["episodeId"],
+  },
+  {
+    table: "walletAccounts",
+    category: "economic",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(walletAccounts, walletAccounts.userId),
+    isSingleton: true,
+  },
+  { table: "walletTransactions", category: "economic", userIdColumnName: "userId", countFor: plainUserIdCount(walletTransactions, walletTransactions.userId) },
+  { table: "walletTopups", category: "economic", userIdColumnName: "userId", countFor: plainUserIdCount(walletTopups, walletTopups.userId) },
+  { table: "topupLogs", category: "economic", userIdColumnName: "userId", countFor: plainUserIdCount(topupLogs, topupLogs.userId) },
+  { table: "pointsTransactions", category: "economic", userIdColumnName: "userId", countFor: plainUserIdCount(pointsTransactions, pointsTransactions.userId) },
+  { table: "couponUsages", category: "economic", userIdColumnName: "userId", countFor: plainUserIdCount(couponUsagesTable, couponUsagesTable.userId) },
+  {
+    table: "coupons",
+    category: "economic",
+    userIdColumnName: "ownerUserId",
+    countFor: plainUserIdCount(coupons, coupons.ownerUserId),
+  },
+  {
+    table: "sportsMatchVotes",
+    category: "economic",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(sportsMatchVotes, sportsMatchVotes.userId),
+    conflictKeyColumns: ["matchId"],
+  },
+  { table: "sportsMatchRewards", category: "economic", userIdColumnName: "userId", countFor: plainUserIdCount(sportsMatchRewards, sportsMatchRewards.userId) },
+  {
+    table: "dailyCheckinRewardGrants",
+    category: "economic",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(dailyCheckinRewardGrants, dailyCheckinRewardGrants.userId),
+    conflictKeyColumns: ["ruleId", "milestoneInstanceNumber"],
+  },
+
+  // ---- user_owned (direct) ----
+  {
+    table: "carts",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(carts, carts.userId),
+    isSingleton: true,
+  },
+  {
+    table: "wishlists",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(wishlists, wishlists.userId),
+    conflictKeyColumns: ["novelId"],
+  },
+  {
+    table: "readingProgress",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(readingProgress, readingProgress.userId),
+    conflictKeyColumns: ["episodeId"],
+  },
+  {
+    table: "dailyCheckins",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(dailyCheckins, dailyCheckins.userId),
+    conflictKeyColumns: ["checkinDate", "campaignKey"],
+  },
+
+  // ---- indirect (no direct userId column - counted via a join to the
+  // already-classified parent column; per-row dedupe within them is
+  // deferred to whichever later phase actually implements cart/order
+  // consolidation, not guessed at here - conflictCount stays 0). ----
+  {
+    table: "cartItems",
+    category: "indirect_user_owned",
+    userIdColumnName: "userId",
+    countFor: joinedParentUserIdCount(cartItems, cartItems.cartId, carts, carts.id, carts.userId),
+  },
+  {
+    table: "orderItems",
+    category: "indirect_economic",
+    userIdColumnName: "userId",
+    countFor: joinedParentUserIdCount(orderItems, orderItems.orderId, orders, orders.id, orders.userId),
+  },
+  {
+    table: "payments",
+    category: "indirect_economic",
+    userIdColumnName: "userId",
+    countFor: joinedParentUserIdCount(payments, payments.orderId, orders, orders.id, orders.userId),
+  },
+];
+
+/** Table names this registry actually queries - cross-checked against
+ *  accountMergeInventory.ts's derived lists by
+ *  server/services/accountMergeInventory.test.ts. */
+export const ACCOUNT_MERGE_TABLE_NAMES: string[] = ACCOUNT_MERGE_TABLE_CHECKS.map((c) => c.table);
+
+/**
+ * Every classified direct/indirect table's exact source and target counts,
+ * plus a conflictCount wherever this table's own UNIQUE constraint means a
+ * plain re-parent of overlapping rows would fail (see
+ * AccountMergeTableCheck's own doc comments for the two shapes:
+ * `isSingleton` and `conflictKeyColumns`). Purely read-only; runs every
+ * check independently (never one giant UNION) so one slow/locked table
+ * never masks the others, matching getAdminUserDeleteAssessment's own
+ * established pattern above.
+ *
+ * The overlap query only ever runs when BOTH sides are non-empty - if
+ * either side has zero rows, no overlap is possible and the extra query
+ * would only ever return 0.
+ */
+export async function findAccountMergeTableInventory(
+  sourceUserId: number,
+  targetUserId: number,
+  tx?: any
+): Promise<AccountMergeTableInventoryFinding[]> {
+  const database = tx ?? (await getDb());
+  if (!database) return [];
+
+  const findings: AccountMergeTableInventoryFinding[] = [];
+  for (const check of ACCOUNT_MERGE_TABLE_CHECKS) {
+    const [sourceCount, targetCount] = await Promise.all([
+      check.countFor(sourceUserId, database),
+      check.countFor(targetUserId, database),
+    ]);
+
+    let conflictCount = 0;
+    if (check.isSingleton) {
+      conflictCount = sourceCount > 0 && targetCount > 0 ? 1 : 0;
+    } else if (check.conflictKeyColumns && sourceCount > 0 && targetCount > 0) {
+      conflictCount = await countAccountMergeKeyOverlap(
+        database,
+        check.table,
+        check.userIdColumnName,
+        check.conflictKeyColumns,
+        sourceUserId,
+        targetUserId
+      );
+    }
+
+    findings.push({ table: check.table, category: check.category, sourceCount, targetCount, conflictCount });
+  }
+  return findings;
+}
+
+/** Current wallet balance for one user - "0.00" (never null/undefined)
+ *  when the user has no walletAccounts row yet, so callers can always
+ *  safely formatMoney/moneyAdd the result without a separate null check.
+ *  Read straight off the walletAccounts row - never recomputed/summed from
+ *  walletTransactions (that ledger is Category-A evidence for the
+ *  inventory above, not itself the source of truth for the CURRENT
+ *  balance - see approveWalletTopup's own identical convention). */
+export async function getAccountMergeWalletBalance(userId: number, tx?: any): Promise<string> {
+  const database = tx ?? (await getDb());
+  if (!database) return "0.00";
+  const rows = await database
+    .select({ balance: walletAccounts.balance })
+    .from(walletAccounts)
+    .where(eq(walletAccounts.userId, userId))
+    .limit(1);
+  return rows[0]?.balance ?? "0.00";
+}
+
+/** Current points balance for one user - the most recent
+ *  pointsTransactions.balanceAfter (the ledger's own running total, the
+ *  same source of truth every points-spending code path already reads),
+ *  "0.00" when the user has never had a points transaction. */
+export async function getAccountMergePointsBalance(userId: number, tx?: any): Promise<string> {
+  const database = tx ?? (await getDb());
+  if (!database) return "0.00";
+  const rows = await database
+    .select({ balanceAfter: pointsTransactions.balanceAfter })
+    .from(pointsTransactions)
+    .where(eq(pointsTransactions.userId, userId))
+    .orderBy(desc(pointsTransactions.id))
+    .limit(1);
+  return rows[0]?.balanceAfter ?? "0.00";
+}
+
+/** Read-only count of paymentSlipClaims rows owned by the source account -
+ *  see accountRecoveryDataClassification.ts's paymentSlipClaims.userId
+ *  entry for why this registry is never itself moved/merged/deleted by any
+ *  account workflow: doing so would reopen every slip the source ever used
+ *  for anti-replay. This function only ever SELECTs - proof (together with
+ *  every other function in this section) that the merge preview is
+ *  read-only with respect to paymentSlipClaims/OCR anti-replay evidence. */
+export async function getAccountMergePaymentSlipClaimsCount(userId: number, tx?: any): Promise<number> {
+  const database = tx ?? (await getDb());
+  if (!database) return 0;
+  const rows = await database.select({ value: count() }).from(paymentSlipClaims).where(eq(paymentSlipClaims.userId, userId));
+  return Number(rows[0]?.value ?? 0);
 }
 
 // ============ ADMIN USERS MANAGEMENT ============

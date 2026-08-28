@@ -45,13 +45,22 @@
  *   already-classified column (see each entry's `reason`). Every entry in
  *   this category states, explicitly, why it is safe to exclude - this
  *   category must never be used as a silent catch-all.
+ * - "merge_internal": the Advanced Account Merge feature's (IPE-003+) OWN
+ *   subject matter - accountMergeCases/accountMergeAuditLogs' sourceUserId/
+ *   targetUserId columns. Exactly analogous to "recovery_internal" above
+ *   (it IS the mechanism, not third-party data this workflow scans for),
+ *   kept as its own category rather than folded into "recovery_internal"
+ *   only because the name "recovery_internal" specifically means the
+ *   Account Recovery workflow and would be misleading applied to a
+ *   different feature's bookkeeping.
  */
 
 export type AccountRecoveryDataCategory =
   | "economic_hard_block"
   | "user_owned_hard_block"
   | "recovery_internal"
-  | "deliberately_ignored";
+  | "deliberately_ignored"
+  | "merge_internal";
 
 export type AccountRecoveryColumnClassification = {
   table: string;
@@ -105,7 +114,45 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     reason: "The workflow's own audit trail of its own actions.",
   },
 
+  // ---- merge_internal: Advanced Account Merge's (IPE-003+) own subject matter ----
+  {
+    table: "accountMergeCases",
+    column: "sourceUserId",
+    category: "merge_internal",
+    reason: "The merge case's own subject (= the account recovery source) - handled by the merge workflow itself, not a table it scans for orphaned data.",
+  },
+  {
+    table: "accountMergeCases",
+    column: "targetUserId",
+    category: "merge_internal",
+    reason: "The merge case's own subject (= the account the source is merged into) - handled by the merge workflow itself, not a table it scans for orphaned data.",
+  },
+  {
+    table: "accountMergeAuditLogs",
+    column: "sourceUserId",
+    category: "merge_internal",
+    reason: "The workflow's own audit trail of its own actions.",
+  },
+  {
+    table: "accountMergeAuditLogs",
+    column: "targetUserId",
+    category: "merge_internal",
+    reason: "The workflow's own audit trail of its own actions.",
+  },
+
   // ---- deliberately_ignored: admin/system actor identities, never the source's own data ----
+  {
+    table: "accountMergeCases",
+    column: "createdByAdminId",
+    category: "deliberately_ignored",
+    reason: "The ADMIN who initiated the merge case, not the source account's own data.",
+  },
+  {
+    table: "accountMergeAuditLogs",
+    column: "actorAdminId",
+    category: "deliberately_ignored",
+    reason: "The ADMIN who performed the audited merge action, not the source account's own data.",
+  },
   {
     table: "accountRecoveryRequests",
     column: "reviewedByAdminId",

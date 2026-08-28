@@ -184,9 +184,38 @@ describe("no migration re-creates the 0039 legacy registry", () => {
       expect(creators).toEqual(["0039_add_legacy_collision_and_unknown_registry.sql"]);
     }
   });
+});
 
-  it("D. no journal entry beyond 0039 exists for the legacy registry", () => {
-    const beyond = journal.entries.filter((e) => e.idx > 39);
-    expect(beyond).toEqual([]);
+/**
+ * IPE-003. Migration 0040 added the Advanced Account Merge foundation
+ * tables (accountMergeCases, accountMergeAuditLogs) - same phantom-
+ * duplicate-migration risk 0039 had (see the describe block above), and
+ * the same generic journal/snapshot-completeness checks above already
+ * cover its metadata. This block additionally proves 0040 itself creates
+ * exactly what it should and nothing was left duplicated by a later
+ * migration - the same two-sided proof as the 0039 block, so this file
+ * keeps catching a phantom-duplicate regression for whichever migration
+ * is newest, not just the one it was first written against.
+ */
+describe("no migration re-creates the 0040 account-merge foundation", () => {
+  const sqlFiles = fs.readdirSync(drizzleDir).filter((f) => f.endsWith(".sql"));
+  const ACCOUNT_MERGE_TABLES = ["accountMergeCases", "accountMergeAuditLogs"];
+
+  it("exactly one migration file CREATEs each account-merge table", () => {
+    for (const table of ACCOUNT_MERGE_TABLES) {
+      const creators = sqlFiles.filter((file) =>
+        fs.readFileSync(path.join(drizzleDir, file), "utf-8").includes(`CREATE TABLE \`${table}\``)
+      );
+      expect(creators).toEqual(["0040_add_account_merge_foundation.sql"]);
+    }
+  });
+
+  it("0040's snapshot carries both new tables, chained from 0039", () => {
+    const s39 = readSnapshot(39);
+    const s40 = readSnapshot(40);
+    expect(s40.prevId).toBe(s39.id);
+    for (const table of ACCOUNT_MERGE_TABLES) {
+      expect(s40.tables[table]?.name).toBe(table);
+    }
   });
 });
