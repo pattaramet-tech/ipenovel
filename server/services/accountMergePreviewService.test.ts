@@ -392,6 +392,89 @@ describe("buildAccountMergePreview - D) table findings: projected action, confli
     expect(preview.isPreviewValid).toBe(true);
     expect(preview.hardBlockers.length).toBeGreaterThan(0);
   });
+
+  // ---- Indirect (no-direct-userId-column) action semantics - P2-2 ----
+  // A later phase can never re-parent these tables by userId (there is no
+  // such column), so labelling them "transfer_only" (which specifically
+  // means a direct userId re-parent) is dishonest. They must project
+  // "preserve_via_parent" instead.
+
+  it("D. indirect_economic table (orderItems) with source rows -> preserve_via_parent, NOT transfer_only, no warning", async () => {
+    const preview = await previewWith([
+      { table: "orderItems", category: "indirect_economic", sourceCount: 12, targetCount: 4, conflictCount: 0 },
+    ]);
+    expect(preview.tableFindings[0].projectedAction).toBe("preserve_via_parent");
+    expect(preview.tableFindings[0].warnings).toEqual([]);
+    expect(preview.hardBlockers).toEqual([]);
+  });
+
+  it("D. indirect_economic table (orderHistory) - the P2-2 gap table - projects preserve_via_parent", async () => {
+    const preview = await previewWith([
+      { table: "orderHistory", category: "indirect_economic", sourceCount: 30, targetCount: 9, conflictCount: 0 },
+    ]);
+    expect(preview.tableFindings[0].projectedAction).toBe("preserve_via_parent");
+  });
+
+  it("D. indirect_user_owned table (cartItems) with source rows -> preserve_via_parent", async () => {
+    const preview = await previewWith([
+      { table: "cartItems", category: "indirect_user_owned", sourceCount: 3, targetCount: 1, conflictCount: 0 },
+    ]);
+    expect(preview.tableFindings[0].projectedAction).toBe("preserve_via_parent");
+  });
+
+  it("D. an indirect table with zero source rows still projects no_action (nothing to preserve)", async () => {
+    const preview = await previewWith([
+      { table: "orderHistory", category: "indirect_economic", sourceCount: 0, targetCount: 5, conflictCount: 0 },
+    ]);
+    expect(preview.tableFindings[0].projectedAction).toBe("no_action");
+  });
+
+  it("D. an indirect table is NEVER labelled a direct transfer/dedupe/consolidate action, even if a conflictCount somehow arrived", async () => {
+    // conflictCount is always 0 for indirect tables in practice (db.ts never
+    // computes one) - this asserts the derivation itself never downgrades an
+    // indirect row into a direct-re-parent action regardless.
+    const preview = await previewWith([
+      { table: "payments", category: "indirect_economic", sourceCount: 8, targetCount: 8, conflictCount: 2 },
+    ]);
+    const action = preview.tableFindings[0].projectedAction;
+    expect(action).toBe("preserve_via_parent");
+    expect(["transfer_only", "transfer_with_dedupe", "consolidate_singleton"]).not.toContain(action);
+  });
+
+  it("D. NEGATIVE/REVERT PROOF: a DIRECT table (orders) with the SAME counts as the indirect case still projects transfer_only - the discriminator is the category, not the numbers", async () => {
+    const indirect = await previewWith([
+      { table: "orderItems", category: "indirect_economic", sourceCount: 12, targetCount: 4, conflictCount: 0 },
+    ]);
+    const direct = await previewWith([
+      { table: "orders", category: "economic", sourceCount: 12, targetCount: 4, conflictCount: 0 },
+    ]);
+    expect(indirect.tableFindings[0].projectedAction).toBe("preserve_via_parent");
+    expect(direct.tableFindings[0].projectedAction).toBe("transfer_only");
+    // Same raw counts, different honest action - proves the category flips it.
+    expect(indirect.tableFindings[0].projectedAction).not.toBe(direct.tableFindings[0].projectedAction);
+  });
+
+  it("D. a mixed inventory: direct rows keep their direct actions, indirect rows all read preserve_via_parent", async () => {
+    const preview = await previewWith([
+      { table: "orders", category: "economic", sourceCount: 5, targetCount: 0, conflictCount: 0 },
+      { table: "walletAccounts", category: "economic", sourceCount: 1, targetCount: 1, conflictCount: 1 },
+      { table: "wishlists", category: "user_owned", sourceCount: 6, targetCount: 3, conflictCount: 2 },
+      { table: "orderItems", category: "indirect_economic", sourceCount: 9, targetCount: 0, conflictCount: 0 },
+      { table: "payments", category: "indirect_economic", sourceCount: 4, targetCount: 0, conflictCount: 0 },
+      { table: "orderHistory", category: "indirect_economic", sourceCount: 11, targetCount: 0, conflictCount: 0 },
+      { table: "cartItems", category: "indirect_user_owned", sourceCount: 2, targetCount: 0, conflictCount: 0 },
+    ]);
+    const byTable = Object.fromEntries(preview.tableFindings.map((f) => [f.table, f.projectedAction]));
+    expect(byTable.orders).toBe("transfer_only");
+    expect(byTable.walletAccounts).toBe("consolidate_singleton");
+    expect(byTable.wishlists).toBe("transfer_with_dedupe");
+    expect(byTable.orderItems).toBe("preserve_via_parent");
+    expect(byTable.payments).toBe("preserve_via_parent");
+    expect(byTable.orderHistory).toBe("preserve_via_parent");
+    expect(byTable.cartItems).toBe("preserve_via_parent");
+    // Indirect rows contribute nothing to hardBlockers.
+    expect(preview.hardBlockers.every((w) => w.startsWith("walletAccounts:") || w.startsWith("wishlists:"))).toBe(true);
+  });
 });
 
 describe("buildAccountMergePreview - G) paymentSlipClaims/OCR anti-replay evidence is read-only", () => {

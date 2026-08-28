@@ -5,6 +5,7 @@ import type {
   AccountMergeBalanceProjection,
   AccountMergePreview,
   AccountMergeProjectedAction,
+  AccountMergeTableCategory,
   AccountMergeTableFinding,
   AccountMergeTargetValidation,
 } from "./accountMergeTypes";
@@ -124,14 +125,23 @@ async function buildBalanceProjection(
 }
 
 /** Derives what a LATER phase would need to do with one table's rows from
- *  its raw counts - pure, no I/O. See AccountMergeProjectedAction's own
- *  doc comment for what each value means. */
+ *  its raw counts and classified category - pure, no I/O. See
+ *  AccountMergeProjectedAction's own doc comment for what each value means. */
 function deriveProjectedAction(
   table: string,
+  category: AccountMergeTableCategory,
   sourceCount: number,
   conflictCount: number
 ): AccountMergeProjectedAction {
   if (sourceCount === 0) return "no_action";
+  // An indirect table (indirect_economic/indirect_user_owned) has NO direct
+  // userId column - a later phase can never re-parent it by userId, so
+  // describing it as any kind of "transfer" would be dishonest. Its rows
+  // are preserved by moving their already-inventoried parent
+  // (cartItems -> carts, orderItems/payments/orderHistory -> orders).
+  if (category === "indirect_economic" || category === "indirect_user_owned") {
+    return "preserve_via_parent";
+  }
   const isSingleton = ACCOUNT_MERGE_SINGLETON_TABLES.includes(table);
   if (conflictCount > 0) return isSingleton ? "consolidate_singleton" : "transfer_with_dedupe";
   return "transfer_only";
@@ -198,7 +208,12 @@ export async function buildAccountMergePreview(params: {
   ]);
 
   const tableFindings: AccountMergeTableFinding[] = rawFindings.map((finding) => {
-    const projectedAction = deriveProjectedAction(finding.table, finding.sourceCount, finding.conflictCount);
+    const projectedAction = deriveProjectedAction(
+      finding.table,
+      finding.category,
+      finding.sourceCount,
+      finding.conflictCount
+    );
     return {
       table: finding.table,
       category: finding.category,

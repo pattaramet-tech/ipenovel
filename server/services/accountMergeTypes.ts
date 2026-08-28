@@ -25,9 +25,18 @@ export type AccountMergeTableCategory =
  * acted on here.
  *
  * - "no_action": zero rows on the source side - nothing to move.
- * - "transfer_only": source has rows, and this table has no per-account
- *   uniqueness constraint that a straightforward `userId` re-parent could
- *   ever violate (an append-only ledger/history table).
+ * - "transfer_only": source has rows, this table has its own direct
+ *   `userId` column, and no per-account uniqueness constraint that a
+ *   straightforward `userId` re-parent could ever violate (an append-only
+ *   ledger/history table).
+ * - "preserve_via_parent": source has rows in an INDIRECT table - one with
+ *   no direct `userId` column at all (category "indirect_economic"/
+ *   "indirect_user_owned"), reached only through a parent FK
+ *   (cartItems -> carts, orderItems/payments/orderHistory -> orders). A
+ *   later phase never re-parents these by `userId` because there is no such
+ *   column to rewrite; the rows simply follow their already-inventoried
+ *   parent when it moves. Deliberately NOT "transfer_only", which means a
+ *   direct `userId` re-parent this table cannot have.
  * - "consolidate_singleton": the table enforces UNIQUE(userId) - both
  *   source and target already own their own single row, so a later phase
  *   must explicitly combine them (e.g. sum a wallet balance), never a
@@ -40,6 +49,7 @@ export type AccountMergeTableCategory =
 export type AccountMergeProjectedAction =
   | "no_action"
   | "transfer_only"
+  | "preserve_via_parent"
   | "consolidate_singleton"
   | "transfer_with_dedupe";
 

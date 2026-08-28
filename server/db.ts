@@ -7289,11 +7289,13 @@ function plainUserIdCount(table: any, userIdColumn: any) {
   };
 }
 
-/** Same shape, for the three no-direct-userId-column indirect tables -
- *  counted via a join back to the parent's own already-classified userId
- *  column (cartItems -> carts.userId, orderItems/payments ->
- *  orders.userId - see ACCOUNT_RECOVERY_INDIRECT_TABLES's own doc
- *  comment for why these tables have no direct column to reflect over). */
+/** Same shape, for the no-direct-userId-column indirect tables - counted
+ *  via a join back to the parent's own already-classified userId column
+ *  (cartItems -> carts.userId; orderItems/payments/orderHistory ->
+ *  orders.userId - see ACCOUNT_RECOVERY_INDIRECT_TABLES's own doc comment
+ *  for why these tables have no direct column to reflect over, and
+ *  accountMergeInventory.ts's ACCOUNT_MERGE_EXCLUDED_INDIRECT_TABLES for
+ *  the payment/top-up-descendant tables deliberately left out). */
 function joinedParentUserIdCount(
   childTable: any,
   childParentIdColumn: any,
@@ -7496,6 +7498,20 @@ const ACCOUNT_MERGE_TABLE_CHECKS: AccountMergeTableCheck[] = [
     userIdColumnName: "userId",
     countFor: joinedParentUserIdCount(payments, payments.orderId, orders, orders.id, orders.userId),
   },
+  {
+    // The status-transition audit trail of the source account's own orders.
+    // No direct userId column - every row is owned transitively via
+    // orderId -> orders.userId, exactly like orderItems above. Its
+    // orderHistory.actorUserId column records WHO made a transition (often
+    // an admin/system actor) and is classified deliberately_ignored, which
+    // is why a naive "is this table already classified?" scan treated
+    // orderHistory as covered when it was not - the ROW's ownership runs
+    // through its order, not through the actor column.
+    table: "orderHistory",
+    category: "indirect_economic",
+    userIdColumnName: "userId",
+    countFor: joinedParentUserIdCount(orderHistory, orderHistory.orderId, orders, orders.id, orders.userId),
+  },
 ];
 
 /** Table names this registry actually queries - cross-checked against
@@ -7572,17 +7588,19 @@ export async function getAccountMergeWalletBalance(userId: number, tx?: any): Pr
 /** Current points balance for one user - the most recent
  *  pointsTransactions.balanceAfter (the ledger's own running total, the
  *  same source of truth every points-spending code path already reads),
- *  "0.00" when the user has never had a points transaction. */
+ *  "0.00" when the user has never had a points transaction.
+ *
+ *  Delegates verbatim to the canonical getUserPointsBalance so the merge
+ *  preview projects EXACTLY the balance production shows: the latest row by
+ *  `(createdAt DESC, id DESC)`, never by `id` alone. pointsTransactions
+ *  .createdAt is a second-precision MySQL timestamp, and an imported or
+ *  backfilled ledger can carry rows whose `id` order does not match their
+ *  chronological order - ordering on `id` alone would then read a stale
+ *  balanceAfter and mis-project both the per-account balance and the merged
+ *  total. The `id DESC` tiebreaker still disambiguates same-second rows.
+ *  See getUserPointsBalance's own doc comment for the full rationale. */
 export async function getAccountMergePointsBalance(userId: number, tx?: any): Promise<string> {
-  const database = tx ?? (await getDb());
-  if (!database) return "0.00";
-  const rows = await database
-    .select({ balanceAfter: pointsTransactions.balanceAfter })
-    .from(pointsTransactions)
-    .where(eq(pointsTransactions.userId, userId))
-    .orderBy(desc(pointsTransactions.id))
-    .limit(1);
-  return rows[0]?.balanceAfter ?? "0.00";
+  return getUserPointsBalance(userId, tx);
 }
 
 /** Read-only count of paymentSlipClaims rows owned by the source account -

@@ -280,8 +280,19 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
  * (there is no user-id column on these tables to reflect over), and
  * intentionally not queried a second time by
  * findAccountRecoveryEconomicData/findAccountRecoveryUserOwnedData: a
- * cartItems/orderItems/payments row can never exist without its parent
- * carts/orders row, which is already checked directly.
+ * cartItems/orderItems/payments/orderHistory row can never exist without
+ * its parent carts/orders row, which is already checked directly.
+ *
+ * A note on membership: a table earns a place here when it has NO direct
+ * user column AND its rows are wholly owned by a single classified parent
+ * row. orderHistory qualifies even though it also carries an actorUserId
+ * (an actor, not an owner - classified deliberately_ignored above). Tables
+ * that merely reference a payment/top-up by id but represent
+ * cross-account, globally-scoped anti-replay or OCR-diagnostic state
+ * (paymentSlipClaims, paymentSlipLegacyCollisions, paymentSlipLegacyUnknown,
+ * ocrVerificationAttempts, paymentSlipReviewResolutions) are deliberately
+ * NOT here - see accountMergeInventory.ts's
+ * ACCOUNT_MERGE_EXCLUDED_INDIRECT_TABLES for each one's reasoned exclusion.
  */
 export const ACCOUNT_RECOVERY_INDIRECT_TABLES: Array<{
   table: string;
@@ -306,5 +317,12 @@ export const ACCOUNT_RECOVERY_INDIRECT_TABLES: Array<{
     via: "orderId -> orders.userId",
     category: "economic_hard_block",
     reason: "Cannot exist without a parent orders row, which is already checked directly. (payments.reviewedByUserId/approvedByAdminId are separately classified above as deliberately_ignored admin-actor columns - this entry is about the payment row's own ownership, not those columns.)",
+  },
+  {
+    table: "orderHistory",
+    via: "orderId -> orders.userId",
+    category: "economic_hard_block",
+    reason:
+      "The status-transition audit trail of the source account's own orders - every row hangs off a parent orders row (already economic_hard_block) and cannot exist without it, so Account Recovery's presence checks are covered by orders itself. Listed here because the Advanced Account Merge inventory (accountMergeInventory.ts), which needs a COMPLETE per-row picture of everything transitively owned by the source rather than mere presence, must count and preserve it. orderHistory.actorUserId is separately classified deliberately_ignored above (it records WHO performed a transition, often an admin/system actor); this entry is about the row's ownership via its order, which the actor column does not represent.",
   },
 ];
