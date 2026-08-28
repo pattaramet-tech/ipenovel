@@ -30,7 +30,7 @@
  * exactly why the UNIQUE constraint remains the authority.
  */
 
-import { findExistingClaim, findClaimsByLegacyAlias } from "./slipClaimService";
+import { findForeignClaimPerAxis, findClaimsByLegacyAlias } from "./slipClaimService";
 import {
   findLegacyApprovedDuplicate,
   findLegacyAliasGroupMembers,
@@ -38,6 +38,10 @@ import {
 } from "./legacySlipCompatibilityService";
 import { isLegacyScanRequired } from "./slipBackfillStateService";
 import { hashSlipReference, type SlipStrongIdentifiers } from "./slipIdentifierService";
+import {
+  findKnownLegacyCollisionAxes,
+  findAnyLegacyFileIdentityUnknown,
+} from "./slipLegacyCollisionService";
 
 export type SlipConflictSourceType = "order_payment" | "wallet_topup";
 
@@ -63,6 +67,32 @@ export type SlipConflict =
     }
   | {
       /**
+       * This submission's own strong identifier (reference, file, or QR
+       * hash) exactly matches an identifier the backfill DURABLY recorded as
+       * a KNOWN COLLISION: two or more already-approved historical rows
+       * share it. No winner was ever picked among those historical rows
+       * (that would fabricate uniqueness over financial history), so
+       * nothing in the registry "owns" it - a plain claim-registry lookup
+       * would see no conflict and let this insert succeed. This is the
+       * indexed, durable replacement for that gap: found via ONE lookup
+       * against paymentSlipLegacyCollisions, never a historical scan. Never
+       * a duplicate verdict on its own (we don't know if THIS submission is
+       * one of the colliding historical rows), but never safe to
+       * auto-approve either - it fails closed and requires manual
+       * investigation of the whole historical group, exactly like
+       * `legacy_case_ambiguity_group`.
+       */
+      kind: "known_collision";
+      matchedKind: "reference" | "file" | "qr";
+      matchedSourceType: SlipConflictSourceType;
+      matchedSourceId: number;
+      /** Always true - never a duplicate verdict. */
+      advisory: true;
+      /** Always false - there is no single-member waiver to grant here. */
+      requiresAdminResolution: false;
+    }
+  | {
+      /**
        * MORE THAN ONE historical source shares this lossy alias. A human
        * resolution must never waive it by adjudicating just one arbitrary
        * member - the incoming submission could equally be a replay of a
@@ -84,14 +114,26 @@ export type SlipConflict =
     }
   | {
       /**
-       * The live legacy scan encountered an approved historical row it could
-       * not evaluate: no persisted fileHash, and no exact fileHash could be
-       * recovered from its own stored slip bytes. We do not know whether
-       * that row IS this submission, so this is neither "no conflict" nor a
-       * proven duplicate - it fails closed and requires a human decision.
-       * Possible only while the legacy scan is required; a completed
-       * backfill has already resolved (or refused to complete over) every
-       * approved row, so this cannot occur post-backfill.
+       * "We cannot prove this submission is safe on the file axis."
+       *
+       * Two ways to reach it, both fail closed for manual review, neither a
+       * proven duplicate:
+       *
+       *  - PRE-completion: the live legacy scan hit an approved historical
+       *    row it could not evaluate at all (no persisted fileHash, none
+       *    recoverable from its own stored bytes).
+       *
+       *  - POST-completion: the O(N) scan is retired, but
+       *    `paymentSlipLegacyUnknown` is non-empty - some historical rows
+       *    (`no_slip_image_url`) permanently lost their slip bytes, so their
+       *    exact fileHash is in no registry. A current submission whose ONLY
+       *    strong evidence is a fileHash therefore cannot be ruled out as a
+       *    byte-identical replay of one of them. (A submission that also
+       *    carries a reference or QR is sufficient and never reaches here -
+       *    those axes are fully covered by the indexed registries.)
+       *
+       * `matchedSource` is one representative historical row for admin-safe
+       * display/navigation - it does NOT assert that row is the match.
        */
       kind: "unresolved";
       matchedSourceType: SlipConflictSourceType;
@@ -116,9 +158,18 @@ export interface EvaluateSlipConflictInput {
  * Classifies any conflict for this slip.
  *
  * Ordering is deliberate and mirrors the priority rule:
- *   1. exact claim registry (reference / file / qr)
- *   2. exact historical match via the temporary scan
- *   3. lossy legacy case fold - registry alias, then scan
+ *   1. durable known-collision registry, evaluated PER AXIS (IPE-004-C06):
+ *      which of this submission's identifiers are collision-ambiguous
+ *   2. exact singleton claim registry (reference / file / qr), restricted to
+ *      the axes step 1 found clean - a proven foreign owner on a clean axis
+ *      is the strongest evidence and outranks a collision elsewhere, while a
+ *      singleton on a COLLIDING axis is never promoted to a fabricated winner
+ *   2b. otherwise, if any axis was collision-ambiguous -> known_collision
+ *      (no winner - fail closed, manual review of the whole group)
+ *   3. exact historical match via the temporary scan
+ *   4. lossy legacy case fold - registry alias, then scan
+ *   5. post-completion file-axis sufficiency (fileHash-only + permanent
+ *      unknown legacy file identity exists -> fail closed)
  *
  * A failure in any lookup PROPAGATES. Treating a failed read as "no conflict"
  * would silently reopen replay, so callers fail closed.
@@ -129,12 +180,60 @@ export async function evaluateSlipConflict(
 ): Promise<SlipConflict> {
   const self = { sourceType: input.sourceType, sourceId: input.sourceId };
 
-  // ── 1. Exact registry match ────────────────────────────────────────────
-  const existingClaim = await findExistingClaim(input.identifiers, tx);
-  if (
-    existingClaim &&
-    !(existingClaim.sourceType === self.sourceType && existingClaim.sourceId === self.sourceId)
-  ) {
+  // ── 1. Durable known-collision registry (indexed, no scan) ─────────────
+  // Checked BEFORE the singleton claim registry, and regardless of whether
+  // the backfill is complete. When the backfill hits two historical rows
+  // sharing one exact identifier, the FIRST gets an ordinary
+  // paymentSlipClaims row and the rest are recorded as collision members -
+  // so a plain findExistingClaim() on that hash WOULD succeed and present
+  // that first backfilled row as a proven duplicate owner. That is a
+  // fabricated winner: no historical row was ever adjudicated the real
+  // owner of a collision. The known-collision lookup therefore takes
+  // precedence - the identifier surfaces as `known_collision` (no winner,
+  // fail closed, manual review of the whole group), never
+  // `strong_duplicate`. Before the backfill runs the table is empty and
+  // this is a fast no-op.
+  //
+  // ── Per-axis precedence (IPE-004-C06) ─────────────────────────────────
+  // The reasoning above is per-AXIS, not per-submission. A collision on the
+  // reference axis says nothing about whether this submission's fileHash is
+  // a proven, unambiguous replay of some other approved row. Returning
+  // `known_collision` the moment ANY axis collided masked exactly that: the
+  // strongest available evidence (a proven exact foreign owner on a clean
+  // axis) was discarded in favour of the weaker "no winner, go look at this
+  // group" verdict. Both are fail-closed, so this was never a replay hole -
+  // but it named the wrong finding and the wrong source, which is what an
+  // admin actually acts on.
+  //
+  // So: collect EVERY collision-ambiguous axis, then look for an exact
+  // claim using ONLY the axes that are clean. A singleton claim on a
+  // COLLIDING axis is still never promoted to `strong_duplicate` - that is
+  // the fabricated-winner this precedence exists to prevent - because that
+  // axis is excluded from the claim lookup entirely.
+  const collisionAxes = await findKnownLegacyCollisionAxes(input.identifiers, tx, self);
+  const collidingKinds = new Set(collisionAxes.map((c) => c.kind));
+
+  const nonCollidingIdentifiers: SlipStrongIdentifiers = {
+    referenceHash: collidingKinds.has("reference") ? undefined : input.identifiers.referenceHash,
+    fileHash: collidingKinds.has("file") ? undefined : input.identifiers.fileHash,
+    qrPayloadHash: collidingKinds.has("qr") ? undefined : input.identifiers.qrPayloadHash,
+  };
+
+  // ── 2. Exact singleton claim registry (reference / file / qr) ──────────
+  // Restricted to non-colliding axes. A proven foreign owner here is the
+  // strongest, least ambiguous evidence available and outranks a collision
+  // on some OTHER axis.
+  //
+  // Deterministic PER AXIS (IPE-004-C07): a single or(...) + limit(1) let the
+  // database pick which matching row came back, so a self-owned claim on one
+  // clean axis could be returned ahead of a foreign owner on another clean
+  // axis. Self is not a duplicate, so that verdict was discarded and the
+  // evaluation fell through to the weaker known_collision from a different
+  // axis - hiding a proven replay and naming the wrong source. The per-axis
+  // helper asks each clean axis its own indexed question in a fixed order and
+  // skips (never stops at) a self-owned one.
+  const existingClaim = await findForeignClaimPerAxis(nonCollidingIdentifiers, tx, self);
+  if (existingClaim) {
     return {
       kind: "strong_duplicate",
       matchedKind: existingClaim.kind,
@@ -144,11 +243,27 @@ export async function evaluateSlipConflict(
     };
   }
 
+  // No unambiguous exact owner anywhere. If any axis IS collision-ambiguous,
+  // that is now the finding: no winner, fail closed, manual review of the
+  // whole group. Reported on the first colliding axis in the fixed
+  // (reference, file, qr) order for determinism.
+  if (collisionAxes.length > 0) {
+    const knownCollision = collisionAxes[0];
+    return {
+      kind: "known_collision",
+      matchedKind: knownCollision.kind,
+      matchedSourceType: knownCollision.matchedSourceType,
+      matchedSourceId: knownCollision.matchedSourceId,
+      advisory: true,
+      requiresAdminResolution: false,
+    };
+  }
+
   const legacyAliasHash = input.rawReference
     ? hashSlipReference(input.rawReference.toUpperCase())
     : undefined;
 
-  // ── 2. Exact historical match (temporary scan) ─────────────────────────
+  // ── 3. Exact historical match (temporary scan) ─────────────────────────
   const scanRequired =
     input.includeLegacyScanIfRequired === false ? false : await isLegacyScanRequired();
 
@@ -193,7 +308,7 @@ export async function evaluateSlipConflict(
     }
   }
 
-  // ── 3. Lossy legacy case fold ──────────────────────────────────────────
+  // ── 4. Lossy legacy case fold ──────────────────────────────────────────
   // Checked AFTER every exact avenue, and evaluated whether or not the scan
   // is enabled, so pre- and post-backfill produce the same verdict.
   //
@@ -252,6 +367,37 @@ export async function evaluateSlipConflict(
     }
   }
 
+  // ── 5. Post-completion file-axis sufficiency ──────────────────────────
+  // Nothing above matched. The reference and QR axes are fully covered by
+  // the indexed registries, so a submission carrying either is SUFFICIENT
+  // and finalizes now. But once the O(N) historical scan is retired
+  // (backfill complete), the FILE axis has a residual gap: some historical
+  // approved rows (`no_slip_image_url`) permanently lost their slip bytes,
+  // so their exact fileHash could never be computed and is in no registry.
+  // They are recorded in `paymentSlipLegacyUnknown` for exactly this check.
+  // A submission whose ONLY strong evidence is a fileHash cannot be ruled
+  // out as a byte-identical replay of one of them - it fails closed for
+  // manual review, deterministically, via ONE bounded indexed read (never a
+  // history scan). While the scan is still required this is a no-op: the
+  // scan itself already covers the file axis and returns its own
+  // `unresolved` for any row it cannot evaluate.
+  if (!scanRequired) {
+    const onlyFileEvidence =
+      Boolean(input.identifiers.fileHash) &&
+      !input.identifiers.referenceHash &&
+      !input.identifiers.qrPayloadHash;
+    if (onlyFileEvidence) {
+      const unknownRow = await findAnyLegacyFileIdentityUnknown(tx);
+      if (unknownRow) {
+        return {
+          kind: "unresolved",
+          matchedSourceType: unknownRow.sourceType,
+          matchedSourceId: unknownRow.sourceId,
+        };
+      }
+    }
+  }
+
   return { kind: "none" };
 }
 
@@ -275,10 +421,27 @@ export function describeSlipConflict(conflict: SlipConflict): string {
 
   if (conflict.kind === "unresolved") {
     return (
-      `An approved ${where} predates the claim registry and its slip image could not be ` +
-      `verified server-side, so historical replay protection for it is incomplete. This is ` +
-      `NOT a proven duplicate - it cannot be confirmed either way. An admin must review the ` +
-      `historical record manually before this can be approved.`
+      `At least one approved historical record (for example ${where}) cannot have its slip ` +
+      `image verified server-side - its bytes are gone - so its exact file identity is in no ` +
+      `registry and cannot be compared against this submission's slip image. This submission ` +
+      `therefore cannot be confirmed clean OR a duplicate on the file axis. This is NOT a ` +
+      `proven duplicate. An admin must review it manually; a verified bank reference or QR ` +
+      `payload on the slip would let it clear automatically.`
+    );
+  }
+
+  if (conflict.kind === "known_collision") {
+    const what =
+      conflict.matchedKind === "file"
+        ? "This exact slip image"
+        : conflict.matchedKind === "qr"
+          ? "This slip's QR payload"
+          : "This bank transaction reference";
+    return (
+      `${what} is already known to be shared by MORE THAN ONE approved historical record - ` +
+      `including ${where} - discovered during the legacy backfill. No single historical record ` +
+      `was picked as the "real" owner. This is NOT proof of a duplicate. An admin must manually ` +
+      `investigate the complete group of matching historical records before this can be approved.`
     );
   }
 

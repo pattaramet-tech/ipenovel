@@ -1448,7 +1448,7 @@ export const appRouter = router({
           // strength from a legacy fingerprint.
           let duplicate:
             | {
-                strength: "strong" | "legacy_case_ambiguity" | "unresolved" | "legacy_case_ambiguity_group";
+                strength: "strong" | "legacy_case_ambiguity" | "unresolved" | "legacy_case_ambiguity_group" | "known_collision";
                 kind?: string;
                 matchedSourceType: "order_payment" | "wallet_topup";
                 matchedSourceId: number;
@@ -1553,6 +1553,19 @@ export const appRouter = router({
                   advisory: true,
                 };
                 reviewReasonOverride = "LEGACY_ALIAS_GROUP_AMBIGUITY";
+              } else if (conflict.kind === "known_collision") {
+                // This submission's own strong identifier durably matches a
+                // KNOWN historical collision (paymentSlipLegacyCollisions).
+                // Reflects the SAME state normal Approve sees: it refuses
+                // with LEGACY_KNOWN_COLLISION and never consults a waiver.
+                duplicate = {
+                  strength: "known_collision",
+                  kind: conflict.matchedKind,
+                  matchedSourceType: conflict.matchedSourceType,
+                  matchedSourceId: conflict.matchedSourceId,
+                  advisory: true,
+                };
+                reviewReasonOverride = "LEGACY_KNOWN_COLLISION";
               }
 
               if (duplicate) {
@@ -3003,7 +3016,7 @@ export const appRouter = router({
           // was the discovery mechanism, not the detail page.
           let duplicate:
             | {
-                strength: "strong" | "legacy_case_ambiguity" | "unresolved" | "legacy_case_ambiguity_group";
+                strength: "strong" | "legacy_case_ambiguity" | "unresolved" | "legacy_case_ambiguity_group" | "known_collision";
                 kind?: string;
                 matchedSourceType: "order_payment" | "wallet_topup";
                 matchedSourceId: number;
@@ -3068,6 +3081,19 @@ export const appRouter = router({
                   advisory: true,
                 };
                 reviewReasonOverride = "LEGACY_ALIAS_GROUP_AMBIGUITY";
+              } else if (conflict.kind === "known_collision") {
+                // This submission's own strong identifier durably matches a
+                // KNOWN historical collision (paymentSlipLegacyCollisions).
+                // Reflects the SAME state normal Approve sees: it refuses
+                // with LEGACY_KNOWN_COLLISION and never consults a waiver.
+                duplicate = {
+                  strength: "known_collision",
+                  kind: conflict.matchedKind,
+                  matchedSourceType: conflict.matchedSourceType,
+                  matchedSourceId: conflict.matchedSourceId,
+                  advisory: true,
+                };
+                reviewReasonOverride = "LEGACY_KNOWN_COLLISION";
               }
 
               if (duplicate) {

@@ -35,7 +35,16 @@ import { getSetting, setSetting } from "../db";
 export const SLIP_BACKFILL_STATE_KEY = "paymentSlipClaims.backfillState";
 
 export interface SlipBackfillState {
-  /** True only when a live backfill ran to completion with no failures. */
+  /**
+   * True only when a live backfill ran to completion with EVERY historical
+   * row classified into exactly one of: protected (a durable claim),
+   * collision (durably recorded in paymentSlipLegacyCollisions, no winner
+   * picked), or unknown (durably recorded in paymentSlipLegacyUnknown, e.g.
+   * `no_slip_image_url`). Completion never requires zero unresolved rows -
+   * only that every one of them has been explicitly, durably classified as
+   * unknown rather than silently skipped. See scripts/backfill-slip-claims.mjs
+   * and scripts/lib/backfillCompletionGate.mjs for the exact gate.
+   */
   complete: boolean;
   /** ISO timestamp of completion, for operator audit. */
   completedAt?: string;
@@ -46,6 +55,14 @@ export interface SlipBackfillState {
   walletTopupMaxId?: number;
   /** Counters from the completing run, for the record. */
   claimsInserted?: number;
+  /**
+   * Provenance counters from the completing run: how many historical rows
+   * landed in each of the three durable buckets. Purely for operator audit -
+   * never consulted to decide whether the scan is required; `complete` alone
+   * decides that.
+   */
+  collisionMembersRecorded?: number;
+  unknownRowsRecorded?: number;
 }
 
 const INCOMPLETE: SlipBackfillState = { complete: false };
@@ -78,6 +95,12 @@ export async function getSlipBackfillState(): Promise<SlipBackfillState> {
         ? parsed.walletTopupMaxId
         : undefined,
       claimsInserted: Number.isInteger(parsed.claimsInserted) ? parsed.claimsInserted : undefined,
+      collisionMembersRecorded: Number.isInteger(parsed.collisionMembersRecorded)
+        ? parsed.collisionMembersRecorded
+        : undefined,
+      unknownRowsRecorded: Number.isInteger(parsed.unknownRowsRecorded)
+        ? parsed.unknownRowsRecorded
+        : undefined,
     };
   } catch {
     return INCOMPLETE;
@@ -118,6 +141,8 @@ export async function markSlipBackfillComplete(details: {
   paymentMaxId?: number;
   walletTopupMaxId?: number;
   claimsInserted?: number;
+  collisionMembersRecorded?: number;
+  unknownRowsRecorded?: number;
 }): Promise<void> {
   const state: SlipBackfillState = {
     complete: true,
@@ -126,6 +151,8 @@ export async function markSlipBackfillComplete(details: {
     paymentMaxId: details.paymentMaxId,
     walletTopupMaxId: details.walletTopupMaxId,
     claimsInserted: details.claimsInserted,
+    collisionMembersRecorded: details.collisionMembersRecorded,
+    unknownRowsRecorded: details.unknownRowsRecorded,
   };
 
   await setSetting(

@@ -648,6 +648,15 @@ async function approvePaymentInTx(
     throw new Error(`LEGACY_ALIAS_GROUP_AMBIGUITY: ${describeClaimFailure(claim)}`);
   }
 
+  if (!claim.claimed && claim.reason === "known_collision") {
+    // This submission's own strong identifier durably matches a KNOWN
+    // historical collision (two or more approved rows already share it). No
+    // winner was ever picked among them, so nothing owns it in the registry
+    // - normal Approve must still fail closed rather than let this insert
+    // succeed by default.
+    throw new Error(`LEGACY_KNOWN_COLLISION: ${describeClaimFailure(claim)}`);
+  }
+
   if (!claim.claimed && claim.reason === "legacy_case_ambiguity") {
     // Normal Approve must not silently bypass this, and must not treat it as
     // a duplicate. The alias is lossy, so this is an unresolved question, and

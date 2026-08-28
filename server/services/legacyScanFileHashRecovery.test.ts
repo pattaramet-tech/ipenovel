@@ -106,6 +106,12 @@ function makeFakeTx(
                 ? (options.approvedTopups ?? [])
                 : [];
           return {
+            // findAnyLegacyFileIdentityUnknown (IPE-004-C03) calls
+            // select().from(...).limit(1) directly, with no .where() at all -
+            // the only such shape here. This fixture never seeds
+            // paymentSlipLegacyUnknown, so it is always empty.
+            limit: (n: number) =>
+              Promise.resolve(name === "paymentSlipLegacyUnknown" ? [] : rows.slice(0, n)),
             where(cond: any) {
               const cursor = extractCursor(cond);
               if (name in cursorsSeen) cursorsSeen[name].push(cursor);

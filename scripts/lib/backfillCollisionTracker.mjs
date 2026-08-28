@@ -53,8 +53,14 @@ export function createCollisionTracker() {
           // Only a prefix - the full hash is a fingerprint of a customer's
           // payment document and is not needed to act on the finding.
           identifier: `${String(hash).slice(0, 12)}...`,
+          // Full hash + structured source objects, for durable recording
+          // into paymentSlipLegacyCollisions - `identifier`/`first`/`second`
+          // above stay display-only strings for the console report.
+          hash,
           first: `${prior.sourceType}#${prior.sourceId}`,
           second: `${current.sourceType}#${current.sourceId}`,
+          firstSource: prior,
+          secondSource: current,
         });
         collidingKinds.push(kind);
       }

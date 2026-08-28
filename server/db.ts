@@ -4383,6 +4383,16 @@ export async function approveWalletTopup(
         );
       }
 
+      if (!claim.claimed && claim.reason === "known_collision") {
+        // This top-up's own strong identifier durably matches a KNOWN
+        // historical collision. No winner was ever picked, so nothing owns
+        // it in the registry - must still fail closed here.
+        throw new WalletSlipClaimError(
+          "LEGACY_KNOWN_COLLISION",
+          describeClaimFailure(claim)
+        );
+      }
+
       if (!claim.claimed && claim.reason === "legacy_case_ambiguity") {
         // Normal Approve must not silently bypass this, and must not call it
         // a duplicate - it is an unresolved question. Direct the admin to the
@@ -6554,6 +6564,16 @@ export async function approveWalletTopupWithOCR(
         if (claim.reason === "legacy_alias_group_ambiguity") {
           throw new WalletSlipClaimError(
             "LEGACY_ALIAS_GROUP_AMBIGUITY",
+            describeClaimFailure(claim)
+          );
+        }
+
+        // This top-up's own strong identifier durably matches a KNOWN
+        // historical collision. No winner was ever picked, so nothing owns
+        // it in the registry - auto-approval must still stop here.
+        if (claim.reason === "known_collision") {
+          throw new WalletSlipClaimError(
+            "LEGACY_KNOWN_COLLISION",
             describeClaimFailure(claim)
           );
         }

@@ -95,7 +95,7 @@ export interface RecheckOcrResult {
   requiresAdminResolution?: boolean;
   /** Read-only conflict finding. Approve still runs its own atomic claim. */
   duplicate?: {
-    strength: "strong" | "legacy_case_ambiguity" | "unresolved" | "legacy_case_ambiguity_group";
+    strength: "strong" | "legacy_case_ambiguity" | "unresolved" | "legacy_case_ambiguity_group" | "known_collision";
     kind: string;
     matchedSourceType: SlipClaimSourceType;
     matchedSourceId: number;
@@ -525,10 +525,16 @@ export async function recheckOrderPaymentOcr(
   // could only ever have adjudicated one arbitrary member of the group.
   const aliasGroupAmbiguity =
     conflict.kind === "legacy_case_ambiguity_group" ? conflict : undefined;
+  // This submission's own strong identifier durably matches a KNOWN
+  // historical collision (paymentSlipLegacyCollisions). Same "no waiver,
+  // block READY" treatment as aliasGroupAmbiguity: Approve is guaranteed to
+  // refuse with LEGACY_KNOWN_COLLISION.
+  const knownCollision = conflict.kind === "known_collision" ? conflict : undefined;
 
   // Resolve the matched source to something an admin can actually open. Same
   // shared helper the detail query uses, so the two cannot disagree.
-  const matchedSource = strongDuplicate ?? legacyAmbiguity ?? unresolvedLegacy ?? aliasGroupAmbiguity;
+  const matchedSource =
+    strongDuplicate ?? legacyAmbiguity ?? unresolvedLegacy ?? aliasGroupAmbiguity ?? knownCollision;
   let matchedNavigation: { orderId?: number } = {};
   if (matchedSource) {
     const navDb = await db.getDb();
@@ -552,7 +558,8 @@ export async function recheckOrderPaymentOcr(
     !strongDuplicate &&
     !legacyAmbiguity &&
     !unresolvedLegacy &&
-    !aliasGroupAmbiguity;
+    !aliasGroupAmbiguity &&
+    !knownCollision;
   const readyForAdminApproval = verificationPassed && strongIdentifierPresent;
 
   const conflictReason = strongDuplicate
@@ -567,7 +574,9 @@ export async function recheckOrderPaymentOcr(
         ? "LEGACY_APPROVED_SLIP_UNRESOLVED"
         : aliasGroupAmbiguity
           ? "LEGACY_ALIAS_GROUP_AMBIGUITY"
-          : undefined;
+          : knownCollision
+            ? "LEGACY_KNOWN_COLLISION"
+            : undefined;
 
   const reviewReason =
     conflictReason ??
@@ -577,7 +586,8 @@ export async function recheckOrderPaymentOcr(
         : "NO_STRONG_IDENTIFIER"
       : verification.reviewReason);
 
-  const matchedConflict = strongDuplicate ?? legacyAmbiguity ?? unresolvedLegacy ?? aliasGroupAmbiguity;
+  const matchedConflict =
+    strongDuplicate ?? legacyAmbiguity ?? unresolvedLegacy ?? aliasGroupAmbiguity ?? knownCollision;
   const matchedSourceLabel = matchedConflict
     ? matchedConflict.matchedSourceType === "order_payment"
       ? `order payment #${matchedConflict.matchedSourceId}`
@@ -706,7 +716,21 @@ export async function recheckOrderPaymentOcr(
                 matchedOrderId: matchedNavigation.orderId,
                 viaLegacyCompatibility: true,
               }
-            : undefined,
+            : knownCollision
+              ? {
+                  // A FIFTH, distinct strength - this submission's own
+                  // strong identifier durably matches a KNOWN historical
+                  // collision. Never "strong" (we don't know THIS submission
+                  // is one of the colliding rows) and never a resolvable
+                  // ambiguity - there is no waiver for an unpicked group.
+                  strength: "known_collision",
+                  kind: knownCollision.matchedKind,
+                  matchedSourceType: knownCollision.matchedSourceType,
+                  matchedSourceId: knownCollision.matchedSourceId,
+                  matchedOrderId: matchedNavigation.orderId,
+                  viaLegacyCompatibility: true,
+                }
+              : undefined,
     // Only a single-member legacy-case ambiguity has an audited "confirm
     // distinct" escape. An unresolved row and an alias GROUP ambiguity are
     // not that state - both mean an admin must investigate manually rather

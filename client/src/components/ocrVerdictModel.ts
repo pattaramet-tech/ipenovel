@@ -82,7 +82,8 @@ export interface OcrPanelInput {
       | "weak"
       | "legacy_case_ambiguity"
       | "unresolved"
-      | "legacy_case_ambiguity_group";
+      | "legacy_case_ambiguity_group"
+      | "known_collision";
     matchedSourceType?: "order_payment" | "wallet_topup";
     matchedSourceId?: number;
     /**
@@ -234,6 +235,7 @@ export interface DuplicatePresentation {
     | "legacy_case_ambiguity"
     | "unresolved"
     | "legacy_case_ambiguity_group"
+    | "known_collision"
     | "none";
   headline: string;
   /** Always present for weak/legacy - the caveat must never be omitted. */
@@ -356,6 +358,37 @@ export function describeDuplicate(input: OcrPanelInput): DuplicatePresentation {
         "one older record shares this fold, no single one of them can be safely confirmed " +
         "as distinct: this submission could be a replay of any member of that group. This " +
         "is NOT proof of a duplicate. An admin must manually investigate the complete " +
+        "group of matching historical records before this can be approved.",
+      matchedLabel: matched?.label,
+      matchedHref: matched?.href ?? undefined,
+    };
+  }
+
+  // TWO OR MORE approved historical records share this exact strong
+  // identifier, and the backfill never picked a winner among them - doing so
+  // would fabricate uniqueness over financial history. So nothing "owns" this
+  // identifier, and this submission may or may not be one of those historical
+  // rows. Never a duplicate verdict, and never waivable: Approve refuses
+  // server-side with LEGACY_KNOWN_COLLISION and consults no single-member
+  // resolution for this state. Shown before "strong"/"weak" for the same
+  // reason as the branches above - without this branch the value fell through
+  // to "No duplicate signal", hiding a guaranteed Approve refusal from the
+  // admin (IPE-004-C07).
+  if (
+    input.reviewReason === "LEGACY_KNOWN_COLLISION" ||
+    dup?.strength === "known_collision"
+  ) {
+    const matched = matchedSourceNavigation(dup);
+
+    return {
+      strength: "known_collision",
+      headline: "Multiple approved records share this identifier - no owner established",
+      caveat:
+        "This exact identifier is shared by MORE THAN ONE already-approved historical " +
+        "record - including the one shown below, if any. No single record was ever " +
+        "established as its owner, so this is NOT proof that this submission is a " +
+        "duplicate, and the record shown is NOT its proven owner - it is one member of " +
+        "the group, for context only. An admin must manually investigate the complete " +
         "group of matching historical records before this can be approved.",
       matchedLabel: matched?.label,
       matchedHref: matched?.href ?? undefined,
@@ -586,6 +619,21 @@ export function buildChecklist(input: OcrPanelInput): ChecklistRow[] {
       dup.strength === "legacy_case_ambiguity_group"
         ? "Matches MORE THAN ONE historical record after case folding. Requires manual " +
           "investigation of the complete group - no single-member resolution applies."
+        : undefined,
+  });
+
+  rows.push({
+    key: "known_collision",
+    label: "Known Historical Collision",
+    // WARNING, never FAIL: nothing is proven about THIS submission, but never
+    // silently PASS either - Approve refuses server-side with
+    // LEGACY_KNOWN_COLLISION until the group is investigated (IPE-004-C07).
+    state: dup.strength === "known_collision" ? "warning" : "not_evaluated",
+    detail:
+      dup.strength === "known_collision"
+        ? "This exact identifier is shared by MORE THAN ONE approved historical record " +
+          "and no owner was ever established. Requires manual investigation of the " +
+          "complete group - no single-member resolution applies."
         : undefined,
   });
 

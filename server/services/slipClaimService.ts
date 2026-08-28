@@ -202,6 +202,23 @@ export type SlipClaimOutcome =
       matchedSourceId?: number;
       requiresAdminResolution: false;
       legacyAliasHash?: string;
+    }
+  | {
+      claimed: false;
+      /**
+       * This submission's own strong identifier exactly matches an
+       * identifier the backfill DURABLY recorded as a KNOWN COLLISION
+       * between two or more already-approved historical rows. No winner was
+       * ever picked among them, so nothing in the registry owns it - this is
+       * the indexed check that stops it being claimed anyway. NEVER
+       * waivable: there is no single-member resolution that could apply to
+       * an unpicked group.
+       */
+      reason: "known_collision";
+      conflictKind?: StrongDuplicateKind;
+      matchedSourceType?: SlipClaimSourceType;
+      matchedSourceId?: number;
+      requiresAdminResolution: false;
     };
 
 /**
@@ -294,6 +311,79 @@ export async function findExistingClaim(
     userId: row.userId as number,
   };
 }
+
+/**
+ * The FOREIGN owner of any supplied strong identifier, chosen deterministically
+ * PER AXIS (IPE-004-C07).
+ *
+ * ── Why findExistingClaim above is not enough here ────────────────────────
+ * That function issues ONE `or(...)` query with `.limit(1)`, so which row
+ * comes back among several matches is up to the database. When the caller has
+ * already excluded collision-ambiguous axes and is asking "does any remaining
+ * axis prove a duplicate?", that indeterminacy is a correctness bug: if this
+ * submission's own source owns a claim on one clean axis while a DIFFERENT
+ * clean axis is exactly owned by a foreign source, the engine may return the
+ * self row first. The caller discards self (self is never a duplicate),
+ * concludes nothing was proven, and falls back to a weaker verdict from some
+ * other axis - hiding a proven replay and naming the wrong source.
+ *
+ * ── The rule ──────────────────────────────────────────────────────────────
+ * Ask each present axis its own question, in the fixed (reference, file, qr)
+ * order, and return the FIRST axis with a foreign owner. A self-owned axis is
+ * skipped, never allowed to terminate the search. Every column queried here is
+ * UNIQUE, so each axis has at most one owner and each lookup is a single
+ * indexed point read - at most three, bounded by the identifiers the incoming
+ * slip actually carries.
+ *
+ * Still READ-ONLY and still advisory: claimSlip's UNIQUE constraint remains the
+ * write authority, because any read can be invalidated by a concurrent commit.
+ */
+export async function findForeignClaimPerAxis(
+  identifiers: SlipStrongIdentifiers,
+  tx: any,
+  self: { sourceType: SlipClaimSourceType; sourceId: number }
+): Promise<
+  | {
+      kind: StrongDuplicateKind;
+      sourceType: SlipClaimSourceType;
+      sourceId: number;
+      userId: number;
+    }
+  | undefined
+> {
+  const axes: Array<[StrongDuplicateKind, "referenceHash" | "fileHash" | "qrPayloadHash"]> = [
+    ["reference", "referenceHash"],
+    ["file", "fileHash"],
+    ["qr", "qrPayloadHash"],
+  ];
+
+  for (const [kind, field] of axes) {
+    const hash = identifiers[field];
+    if (!hash) continue;
+
+    const rows = await tx
+      .select()
+      .from(paymentSlipClaims)
+      .where(eq(paymentSlipClaims[field], hash))
+      .limit(1);
+
+    const row = rows?.[0];
+    if (!row) continue;
+    // Self-owned: not a duplicate, and NOT a reason to stop looking - a later
+    // axis may still carry a genuine foreign owner.
+    if (row.sourceType === self.sourceType && row.sourceId === self.sourceId) continue;
+
+    return {
+      kind,
+      sourceType: row.sourceType as SlipClaimSourceType,
+      sourceId: row.sourceId as number,
+      userId: row.userId as number,
+    };
+  }
+
+  return undefined;
+}
+
 
 /**
  * Looks up EVERY historical claim sharing one advisory legacy case alias.
@@ -412,6 +502,19 @@ export async function claimSlip(
         matchedSourceType: conflict.matchedSourceType,
         matchedSourceId: conflict.matchedSourceId,
         requiresAdminResolution: true,
+      };
+    }
+
+    if (conflict.kind === "known_collision") {
+      // A durably recorded historical collision. NEVER consult any waiver -
+      // there is none for this state, by design; see the outcome's doc.
+      return {
+        claimed: false,
+        reason: "known_collision",
+        conflictKind: conflict.matchedKind,
+        matchedSourceType: conflict.matchedSourceType,
+        matchedSourceId: conflict.matchedSourceId,
+        requiresAdminResolution: false,
       };
     }
 
@@ -559,6 +662,28 @@ export function describeClaimFailure(outcome: SlipClaimOutcome): string {
       `verified server-side, so replay protection for it is incomplete. This is NOT a proven ` +
       `duplicate - it cannot be confirmed either way from stored data. Manual review is ` +
       `required until the historical backfill resolves this record.`
+    );
+  }
+
+  if (outcome.reason === "known_collision") {
+    const where =
+      outcome.matchedSourceType && outcome.matchedSourceId
+        ? outcome.matchedSourceType === "order_payment"
+          ? ` order payment #${outcome.matchedSourceId}`
+          : ` wallet top-up #${outcome.matchedSourceId}`
+        : " an earlier approved record";
+    const what =
+      outcome.conflictKind === "file"
+        ? "This exact slip image"
+        : outcome.conflictKind === "qr"
+          ? "This slip's QR payload"
+          : "This bank transaction reference";
+
+    return (
+      `${what} is already known to be shared by MORE THAN ONE approved historical record - ` +
+      `including${where} - discovered during the legacy backfill. No single historical record ` +
+      `was picked as the "real" owner. This is NOT proof of a duplicate. Manual investigation ` +
+      `of the complete group of matching historical records is required.`
     );
   }
 

@@ -69,6 +69,18 @@ export const REQUIRED_TABLES = [
   // presence check below has an entry for it and actually runs the
   // coupons_ownerUserId_idx check instead of silently skipping it.
   "coupons",
+  // Migration 0039 (IPE-004). The legacy anti-replay registry: every
+  // approval that reaches the strong-identifier gate reads
+  // paymentSlipLegacyCollisions to decide `known_collision`, and the
+  // backfill's completion gate reads paymentSlipLegacyUnknown to decide
+  // whether a historical row is permanently unresolvable. A database whose
+  // migration journal claims 0039 ran but whose tables are absent would let
+  // the server boot and then fail EVERY payment approval at query time -
+  // exactly the production incident this task exists to prevent - or, worse,
+  // let a collision lookup error be mistaken for "no collision". Verified at
+  // boot so an incomplete 0039 stops the deploy instead.
+  "paymentSlipLegacyCollisions",
+  "paymentSlipLegacyUnknown",
 ];
 export const REQUIRED_COLUMNS = [
   { table: "coupons", column: "maxDiscountAmount" },
@@ -111,6 +123,29 @@ export const REQUIRED_INDEXES = [
   { table: "dailyCheckinRewardGrants", index: "dailyCheckinRewardGrants_pointsTransactionId_unique" },
   { table: "dailyCheckinRewardRules", index: "dailyCheckinRewardRules_campaign_dedupe_unique" },
   { table: "dailyCheckinCampaigns", index: "dailyCheckinCampaigns_campaignKey_unique" },
+  // Migration 0039 (IPE-004). Each of these is application-critical, not
+  // merely a performance hint:
+  //  - PRIMARY: the autoincrement identity every insert depends on.
+  //  - paymentSlipLegacyCollisions_member_unique: what makes recording a
+  //    collision member idempotent. Without it a rerun of the backfill
+  //    silently duplicates members instead of hitting ER_DUP_ENTRY, and the
+  //    duplicate-key paths that prove a collision is durably recorded stop
+  //    firing.
+  //  - paymentSlipLegacyCollisions_identifierHash_idx: the (kind,
+  //    identifierHash) lookup the live approval path uses. Missing, the
+  //    bounded per-approval check degrades to a full table scan - the O(N)
+  //    approval cost this hotfix removed.
+  //  - paymentSlipLegacyUnknown_source_unique: one unknown row per source.
+  //    Without it the unknown registry can hold contradictory duplicate rows
+  //    for one source and clearing a stale unknown stops being decisive.
+  //  - paymentSlipLegacyUnknown_sourceType_idx: the per-source-type read the
+  //    completion gate uses.
+  { table: "paymentSlipLegacyCollisions", index: "PRIMARY" },
+  { table: "paymentSlipLegacyCollisions", index: "paymentSlipLegacyCollisions_member_unique" },
+  { table: "paymentSlipLegacyCollisions", index: "paymentSlipLegacyCollisions_identifierHash_idx" },
+  { table: "paymentSlipLegacyUnknown", index: "PRIMARY" },
+  { table: "paymentSlipLegacyUnknown", index: "paymentSlipLegacyUnknown_source_unique" },
+  { table: "paymentSlipLegacyUnknown", index: "paymentSlipLegacyUnknown_sourceType_idx" },
 ];
 
 /**

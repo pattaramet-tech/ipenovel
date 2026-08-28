@@ -210,26 +210,26 @@ describe("registry classification is not satisfied by a partial match", () => {
   // so its matrix can be tested against real inputs rather than source text -
   // see server/services/boundResolutionAndAliasCoverage.test.ts. These
   // assertions moved with it.
-  it("only counts a row represented when THIS source owns EVERY identifier", () => {
-    // IPE-001-C01: a missing fileHash on an otherwise same-source claim is no
-    // longer folded into this same "any unclaimed field -> collision" rule -
-    // it is a dedicated, repairable state (see the needs_file_hash test
-    // below) so a claim already covering another identifier isn't dragged
-    // into manual review purely for a gap the tool itself can safely fill.
-    // Every OTHER field still requires full same-source ownership.
+  it("only reports a collision when an identifier is owned by a FOREIGN source", () => {
+    // IPE-004 review finding P2: a missing identifier (reference, file OR qr)
+    // on an otherwise same-source claim is no longer folded into "any
+    // unclaimed field -> collision" - it is a dedicated, repairable state
+    // (see the needs_strong_identifier test below) so a claim already
+    // covering another identifier isn't dragged into manual review purely for
+    // a gap the tool itself can safely fill. Only a hash owned by a
+    // DIFFERENT source is a genuine collision.
     expect(lib).toMatch(/if \(findings\.length > 0\) \{/);
-    expect(lib).toMatch(/return \{ kind: "collision", findings \};/);
+    // IPE-004-C05: the return also carries `residual` (missingStrong) now -
+    // every present sibling axis owned by nobody, so the caller can still
+    // durably claim or fail it instead of silently dropping it.
+    expect(lib).toMatch(/return \{ kind: "collision", findings, residual: missingStrong \};/);
   });
 
-  it("a same-source claim missing only this row's fileHash is repairable, not a collision", () => {
-    expect(lib).toMatch(/missingFileHashOnSameSource/);
+  it("a same-source claim missing any strong identifier (reference/file/qr) is repairable, not a collision", () => {
+    expect(lib).toMatch(/missingStrong\.push\(\{ kind, field, value: ids\[field\] \}\)/);
     expect(lib).toMatch(
-      /return \{ kind: "needs_file_hash", claim: sameSourceClaim, expected: ids\.fileHash \};/
+      /return \{ kind: "needs_strong_identifier", claim: sameSourceClaim, missing: missingStrong \};/
     );
-  });
-
-  it("reports an identifier that is unclaimed while a sibling is claimed", () => {
-    expect(lib).toMatch(/partial: a sibling identifier is claimed but this one is not/);
   });
 
   it("reports an identifier claimed by a DIFFERENT source", () => {
@@ -252,8 +252,18 @@ describe("registry classification is not satisfied by a partial match", () => {
     expect(block).toMatch(/\.limit\(20\)/);
   });
 
-  it("collisions from the registry keep the run from being marked complete", () => {
-    expect(code).toMatch(/tracker\.collisions\.length === 0/);
+  // IPE-004: collisions found via the registry cross-check no longer keep
+  // the run from being marked complete forever - a real dry-run found 114
+  // genuine historical collisions, a permanent fact about financial history
+  // no re-run could ever reduce to zero. Instead every member of every
+  // collision finding must be durably recorded into
+  // paymentSlipLegacyCollisions (see finalizeCollisionRegistry and
+  // scripts/lib/backfillCompletionGate.mjs); only a FAILED durable write
+  // still blocks completion.
+  it("collisions from the registry are durably recorded, not left blocking completion forever", () => {
+    expect(code).not.toMatch(/tracker\.collisions\.length === 0/);
+    expect(code).toMatch(/finalizeCollisionRegistry\(\)/);
+    expect(code).toMatch(/collisionMembersFailed: stats\.collisionMembersFailed/);
   });
 
   it("persists the advisory legacy alias under its corrected name", () => {

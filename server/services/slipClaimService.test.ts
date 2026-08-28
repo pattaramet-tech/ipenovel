@@ -26,7 +26,10 @@ import {
 function boundHashes(cond: any): string[] {
   const found: string[] = [];
   const walk = (n: any, d = 0) => {
-    if (!n || d > 6) return;
+    // Depth 12: an and(eq, eq) (used by the paymentSlipLegacyCollisions
+    // lookup) nests the bound Param deeper than the single eq() this was
+    // originally sized for - a shallow limit silently found no hashes at all.
+    if (!n || d > 12) return;
     if (typeof n === "string" && /^[0-9a-f]{64}$/.test(n)) found.push(n);
     if (Array.isArray(n)) return n.forEach((x) => walk(x, d + 1));
     if (typeof n === "object") for (const k of Object.keys(n)) walk((n as any)[k], d + 1);
@@ -77,8 +80,18 @@ interface FakeRow {
  * Minimal drizzle-shaped stub. Only the surface slipClaimService actually
  * uses is implemented; anything else would be untested scaffolding.
  */
-function makeFakeTx() {
+function makeFakeTx(
+  options: {
+    legacyCollisions?: Array<{
+      kind: "reference" | "file" | "qr";
+      identifierHash: string;
+      sourceType: SlipClaimSourceType;
+      sourceId: number;
+    }>;
+  } = {}
+) {
   const rows: FakeRow[] = [];
+  const legacyCollisions = options.legacyCollisions ?? [];
   let nextId = 1;
 
   // Mirrors the three UNIQUE indexes. NULL never participates, matching
@@ -138,6 +151,15 @@ function makeFakeTx() {
                 limit(n: number) {
                   if (name === "payments" || name === "walletTopups") {
                     return emptyLegacyPage();
+                  }
+                  if (name === "paymentSlipLegacyCollisions") {
+                    if (wanted.length === 0) return Promise.resolve([]);
+                    return Promise.resolve(
+                      legacyCollisions
+                        .filter((c) => wanted.includes(c.identifierHash))
+                        .map((c) => ({ sourceType: c.sourceType, sourceId: c.sourceId }))
+                        .slice(0, n)
+                    );
                   }
                   if (wanted.length === 0) return Promise.resolve([]);
                   return Promise.resolve(matching().slice(0, n));
@@ -245,6 +267,84 @@ describe("claimSlip - strong identifier claiming", () => {
     );
     expect(a.claimed).toBe(true);
     expect(b.claimed).toBe(true);
+  });
+});
+
+// IPE-004: known historical collisions are durable and never picked a winner.
+describe("claimSlip - known_collision (durable, no historical winner)", () => {
+  it("refuses to claim a reference that durably matches a known historical collision", async () => {
+    const tx = makeFakeTx({
+      legacyCollisions: [
+        { kind: "reference", identifierHash: REF_A, sourceType: "order_payment", sourceId: 5 },
+      ],
+    });
+
+    const result = await claimSlip(baseRequest({ identifiers: { referenceHash: REF_A } }), tx);
+
+    expect(result.claimed).toBe(false);
+    if (!result.claimed) {
+      expect(result.reason).toBe("known_collision");
+      if (result.reason === "known_collision") {
+        expect(result.requiresAdminResolution).toBe(false);
+        expect(result.matchedSourceType).toBe("order_payment");
+        expect(result.matchedSourceId).toBe(5);
+      }
+    }
+  });
+
+  it("refuses to claim a fileHash that durably matches a known FILE collision", async () => {
+    const FILE_X = "f".repeat(64);
+    const tx = makeFakeTx({
+      legacyCollisions: [
+        { kind: "file", identifierHash: FILE_X, sourceType: "wallet_topup", sourceId: 3 },
+      ],
+    });
+
+    const result = await claimSlip(
+      baseRequest({ identifiers: { fileHash: FILE_X } }),
+      tx
+    );
+
+    expect(result.claimed).toBe(false);
+    if (!result.claimed && result.reason === "known_collision") {
+      expect(result.conflictKind).toBe("file");
+    }
+  });
+
+  it("no paymentSlipClaims row is ever inserted for a known collision - no winner is picked", async () => {
+    const tx: any = makeFakeTx({
+      legacyCollisions: [
+        { kind: "reference", identifierHash: REF_A, sourceType: "order_payment", sourceId: 5 },
+      ],
+    });
+
+    await claimSlip(baseRequest({ identifiers: { referenceHash: REF_A } }), tx);
+    expect(tx._rows).toHaveLength(0);
+  });
+
+  it("an unrelated reference is NOT affected by a collision recorded under a different hash", async () => {
+    const tx = makeFakeTx({
+      legacyCollisions: [
+        { kind: "reference", identifierHash: REF_B, sourceType: "order_payment", sourceId: 5 },
+      ],
+    });
+
+    const result = await claimSlip(baseRequest({ identifiers: { referenceHash: REF_A } }), tx);
+    expect(result.claimed).toBe(true);
+  });
+
+  it("describeClaimFailure never claims proof and never leaks a hash for known_collision", () => {
+    const msg = describeClaimFailure({
+      claimed: false,
+      reason: "known_collision",
+      conflictKind: "reference",
+      matchedSourceType: "order_payment",
+      matchedSourceId: 5,
+      requiresAdminResolution: false,
+    });
+    expect(msg).toMatch(/NOT proof/i);
+    expect(msg).toMatch(/order payment #5/);
+    expect(msg).not.toMatch(new RegExp(REF_A));
   });
 });
 

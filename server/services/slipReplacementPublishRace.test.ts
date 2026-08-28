@@ -145,6 +145,11 @@ function makeDb(rows: Record<string, any[]>) {
         from(table: any) {
           const name = tableName(table);
           return {
+            // findAnyLegacyFileIdentityUnknown (IPE-004-C03) calls
+            // select().from(...).limit(1) directly, with no .where() at all -
+            // the only such shape here. This fixture never seeds
+            // paymentSlipLegacyUnknown, so it is always empty.
+            limit: async () => (name === "paymentSlipLegacyUnknown" ? [] : store[name] ?? []),
             where(cond: any) {
               const wanted = boundHashes(cond);
               const cols = targetedColumns(cond);

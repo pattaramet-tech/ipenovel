@@ -133,6 +133,43 @@ describe("markSlipBackfillComplete", () => {
     expect(parsed.paymentMaxId).toBe(99);
     expect(parsed.walletTopupMaxId).toBe(42);
   });
+
+  // IPE-004: completion no longer requires zero unresolved rows or zero
+  // collisions - both are permanent facts about historical data (a row with
+  // no_slip_image_url can NEVER be resolved by any re-run). It requires every
+  // one of them to be durably CLASSIFIED into paymentSlipLegacyCollisions /
+  // paymentSlipLegacyUnknown instead. These provenance counters are how an
+  // operator audits that a "complete" run actually classified something.
+  it("records how many rows landed in the collision/unknown buckets", async () => {
+    const setSetting = vi.spyOn(db, "setSetting").mockResolvedValue(undefined as any);
+    await markSlipBackfillComplete({
+      toolVersion: "t",
+      collisionMembersRecorded: 114,
+      unknownRowsRecorded: 915,
+    });
+    const parsed = JSON.parse(setSetting.mock.calls[0][1] as string);
+    expect(parsed.collisionMembersRecorded).toBe(114);
+    expect(parsed.unknownRowsRecorded).toBe(915);
+  });
+
+  it("round-trips the new provenance fields through getSlipBackfillState", async () => {
+    stubSetting(
+      JSON.stringify({
+        complete: true,
+        toolVersion: "t",
+        collisionMembersRecorded: 114,
+        unknownRowsRecorded: 915,
+      })
+    );
+    const state = await getSlipBackfillState();
+    expect(state.collisionMembersRecorded).toBe(114);
+    expect(state.unknownRowsRecorded).toBe(915);
+  });
+
+  it("ignores non-integer provenance fields for the new counters too", async () => {
+    stubSetting(JSON.stringify({ complete: true, collisionMembersRecorded: "lots" }));
+    expect((await getSlipBackfillState()).collisionMembersRecorded).toBeUndefined();
+  });
 });
 
 // ─── Storage medium + completion guards ──────────────────────────────────
@@ -156,12 +193,33 @@ describe("the switch is durable and operator-gated", () => {
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^[ \t]*\/\/.*$/gm, "");
 
-  it("completion requires a fully clean run", () => {
-    expect(scriptCode).toMatch(/const cleanRun =/);
-    expect(scriptCode).toMatch(/stats\.failures\.length === 0/);
-    expect(scriptCode).toMatch(/tracker\.collisions\.length === 0/);
-    expect(scriptCode).toMatch(/reachedEof\.payments/);
-    expect(scriptCode).toMatch(/reachedEof\.walletTopups/);
+  const gateCode = fs
+    .readFileSync(path.resolve(process.cwd(), "scripts/lib/backfillCompletionGate.mjs"), "utf-8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ \t]*\/\/.*$/gm, "");
+
+  it("completion requires a fully clean run - now via the extracted, unit-tested gate", () => {
+    // IPE-004: the gate moved into scripts/lib/backfillCompletionGate.mjs so
+    // it can be tested directly (see backfillCompletionGate.test.ts) instead
+    // of only via this source-text check. It no longer requires
+    // `tracker.collisions.length === 0` or zero unresolved rows - both are
+    // permanent facts about historical data - but it still requires every
+    // one of them to have been durably classified with no write failures.
+    expect(scriptCode).toMatch(/evaluateBackfillCompletion\(/);
+    expect(scriptCode).toMatch(/const cleanRun = gate\.cleanRun/);
+    expect(gateCode).toMatch(/reachedEof\.payments/);
+    expect(gateCode).toMatch(/reachedEof\.walletTopups/);
+    // The OLD all-or-nothing rules must be gone from the gate computation -
+    // completion must not still silently require zero of either.
+    expect(gateCode).not.toMatch(/collisions\.length === 0/);
+    expect(gateCode).not.toMatch(/noIdentifier === 0/);
+  });
+
+  it("every unresolved row and every collision finding is durably classified, not just counted", () => {
+    expect(scriptCode).toMatch(/recordUnknownRow\(/);
+    expect(scriptCode).toMatch(/finalizeCollisionRegistry\(/);
+    expect(scriptCode).toMatch(/recordLegacyCollisionMember/);
+    expect(scriptCode).toMatch(/recordLegacyUnknownRow/);
   });
 
   it("refuses to mark complete when the run was not clean", () => {

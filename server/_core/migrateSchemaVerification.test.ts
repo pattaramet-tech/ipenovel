@@ -29,11 +29,20 @@ interface FakeQuery {
   params: unknown[];
 }
 
+/**
+ * `indexesPresent` accepts either bare index names (matched on the name
+ * alone) or explicit {table, index} pairs. The pair form exists because
+ * PRIMARY is required on several different tables - saying "PRIMARY is
+ * missing" by name alone cannot express "missing on paymentSlipLegacyUnknown
+ * but present on dailyCheckins", which is exactly what the 0039 index checks
+ * need. information_schema.statistics is scoped by table too, so the pair
+ * form is also the more faithful fake.
+ */
 function fakeConn(
   tableNameCase: "camel" | "lower",
   tablesPresent: string[],
   columnsPresent: boolean,
-  indexesPresent: string[],
+  indexesPresent: Array<string | { table: string; index: string }>,
   nullableColumnsAreNullable = true
 ) {
   const calls: FakeQuery[] = [];
@@ -54,16 +63,32 @@ function fakeConn(
       return [columnsPresent ? [{ name: params[1] }] : []];
     }
     if (sql.includes("information_schema.statistics")) {
-      const [, indexName] = params;
-      return [indexesPresent.includes(String(indexName)) ? [{ name: indexName }] : []];
+      const [tableName, indexName] = params;
+      const present = indexesPresent.some((entry) =>
+        typeof entry === "string"
+          ? entry === String(indexName)
+          : entry.table === String(tableName) && entry.index === String(indexName)
+      );
+      return [present ? [{ name: indexName }] : []];
     }
     throw new Error(`unexpected query in fake connection: ${sql}`);
   };
   return { query, calls };
 }
 
+/** Every migration-0039 object the running application hard-depends on. */
+const LEGACY_REGISTRY_TABLES = ["paymentSlipLegacyCollisions", "paymentSlipLegacyUnknown"];
+const LEGACY_REGISTRY_INDEXES = [
+  { table: "paymentSlipLegacyCollisions", index: "PRIMARY" },
+  { table: "paymentSlipLegacyCollisions", index: "paymentSlipLegacyCollisions_member_unique" },
+  { table: "paymentSlipLegacyCollisions", index: "paymentSlipLegacyCollisions_identifierHash_idx" },
+  { table: "paymentSlipLegacyUnknown", index: "PRIMARY" },
+  { table: "paymentSlipLegacyUnknown", index: "paymentSlipLegacyUnknown_source_unique" },
+  { table: "paymentSlipLegacyUnknown", index: "paymentSlipLegacyUnknown_sourceType_idx" },
+];
+
 describe("findMissingSchemaObjects - required object lists", () => {
-  it("requires the five daily check-in tables plus coupons", () => {
+  it("requires the five daily check-in tables plus coupons and the migration-0039 legacy registry", () => {
     expect(REQUIRED_TABLES).toEqual([
       "dailyCheckins",
       "dailyCheckinCampaigns",
@@ -71,6 +96,8 @@ describe("findMissingSchemaObjects - required object lists", () => {
       "dailyCheckinRewardRules",
       "dailyCheckinRewardGrants",
       "coupons",
+      "paymentSlipLegacyCollisions",
+      "paymentSlipLegacyUnknown",
     ]);
   });
 
@@ -92,17 +119,21 @@ describe("findMissingSchemaObjects - required object lists", () => {
     expect(REQUIRED_NULLABLE_COLUMNS).toEqual([{ table: "dailyCheckins", column: "couponId" }]);
   });
 
-  it("requires coupons_ownerUserId_idx plus the dailyCheckins indexes and reward-grant idempotency guards", () => {
-    expect(REQUIRED_INDEXES.map((i) => i.index)).toEqual([
-      "coupons_ownerUserId_idx",
-      "PRIMARY",
-      "unique_daily_checkin_user_date_campaign",
-      "unique_daily_checkins_coupon",
-      "dailyCheckins_userId_idx",
-      "dailyCheckinRewardGrants_checkin_rule_unique",
-      "dailyCheckinRewardGrants_pointsTransactionId_unique",
-      "dailyCheckinRewardRules_campaign_dedupe_unique",
-      "dailyCheckinCampaigns_campaignKey_unique",
+  it("requires coupons_ownerUserId_idx plus the dailyCheckins indexes, reward-grant idempotency guards and the migration-0039 registry indexes", () => {
+    expect(REQUIRED_INDEXES).toEqual([
+      { table: "coupons", index: "coupons_ownerUserId_idx" },
+      { table: "dailyCheckins", index: "PRIMARY" },
+      { table: "dailyCheckins", index: "unique_daily_checkin_user_date_campaign" },
+      { table: "dailyCheckins", index: "unique_daily_checkins_coupon" },
+      { table: "dailyCheckins", index: "dailyCheckins_userId_idx" },
+      { table: "dailyCheckinRewardGrants", index: "dailyCheckinRewardGrants_checkin_rule_unique" },
+      {
+        table: "dailyCheckinRewardGrants",
+        index: "dailyCheckinRewardGrants_pointsTransactionId_unique",
+      },
+      { table: "dailyCheckinRewardRules", index: "dailyCheckinRewardRules_campaign_dedupe_unique" },
+      { table: "dailyCheckinCampaigns", index: "dailyCheckinCampaigns_campaignKey_unique" },
+      ...LEGACY_REGISTRY_INDEXES,
     ]);
   });
 
@@ -168,5 +199,69 @@ describe("findMissingSchemaObjects - case-insensitive table name comparison (reg
     // still surface, because those tables are present.
     expect(missing).toContain("table dailyCheckins");
     expect(missing.filter((m: string) => m.startsWith("index dailyCheckins."))).toEqual([]);
+  });
+});
+
+/**
+ * IPE-004-C08 P2 (acceptance A/B). Migration 0039 created the durable legacy
+ * anti-replay registry - paymentSlipLegacyCollisions (what the live approval
+ * path reads to decide `known_collision` in one indexed lookup) and
+ * paymentSlipLegacyUnknown (what lets the backfill's completion gate treat a
+ * permanently unresolvable historical row as classified rather than skipped).
+ *
+ * The reviewed head listed neither in REQUIRED_TABLES/REQUIRED_INDEXES, so a
+ * database whose migration journal claims 0039 ran - but whose tables or
+ * indexes are absent, partially applied, or were dropped - passed startup
+ * verification and the server was allowed to open a port. Every payment
+ * approval would then fail at query time: exactly the production incident
+ * this task exists to end, except discovered by users instead of the deploy.
+ */
+describe("findMissingSchemaObjects - migration 0039 legacy registry (IPE-004)", () => {
+  const allTables = REQUIRED_TABLES;
+  const allIndexes = REQUIRED_INDEXES.map((i) => i.index);
+
+  it("passes when the 0039 tables and every required index are present", async () => {
+    const { query } = fakeConn("camel", allTables, true, allIndexes);
+    expect(await findMissingSchemaObjects({ query })).toEqual([]);
+  });
+
+  for (const table of LEGACY_REGISTRY_TABLES) {
+    it(`A. fails closed naming \`table ${table}\` when 0039 left it missing`, async () => {
+      const present = allTables.filter((t) => t !== table);
+      const { query } = fakeConn("camel", present, true, allIndexes);
+      const missing = await findMissingSchemaObjects({ query });
+      expect(missing).toContain(`table ${table}`);
+      // The table is the root cause - its own indexes are not reported again.
+      expect(missing.filter((m: string) => m.startsWith(`index ${table}.`))).toEqual([]);
+    });
+  }
+
+  for (const { table, index } of LEGACY_REGISTRY_INDEXES) {
+    it(`B. fails closed naming \`index ${table}.${index}\` when that index alone is missing`, async () => {
+      // PRIMARY is required on both 0039 tables, so dropping it by name must
+      // scope to the one table under test - the fake connection answers the
+      // index probe per (table, index) pair exactly like information_schema.
+      const presentIndexes = REQUIRED_INDEXES.filter(
+        (i) => !(i.table === table && i.index === index)
+      );
+      const { query } = fakeConn("camel", allTables, true, presentIndexes);
+      const missing = await findMissingSchemaObjects({ query });
+      expect(missing).toEqual([`index ${table}.${index}`]);
+    });
+  }
+
+  it("A/B. reports EVERY missing 0039 object at once, not just the first", async () => {
+    const present = allTables.filter((t) => !LEGACY_REGISTRY_TABLES.includes(t));
+    const { query } = fakeConn("camel", present, true, allIndexes);
+    const missing = await findMissingSchemaObjects({ query });
+    expect(missing).toEqual([
+      "table paymentSlipLegacyCollisions",
+      "table paymentSlipLegacyUnknown",
+    ]);
+  });
+
+  it("A. finds the 0039 tables under lower_case_table_names too (same casing rule as the rest)", async () => {
+    const { query } = fakeConn("lower", allTables, true, allIndexes);
+    expect(await findMissingSchemaObjects({ query })).toEqual([]);
   });
 });
