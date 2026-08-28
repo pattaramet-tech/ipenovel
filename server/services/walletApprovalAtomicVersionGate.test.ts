@@ -182,8 +182,13 @@ function makeDb(
   let snapshot: Record<string, any[]> = structuredClone(store);
 
   const executor = (): any => ({
-    execute: async () => {
-      // Stands for `SELECT ... FOR UPDATE` - Step 0 of the fix.
+    execute: async (query: any) => {
+      const queryText = (query?.queryChunks ?? [])
+        .map((chunk: any) => (Array.isArray(chunk?.value) ? chunk.value.join("") : String(chunk?.value ?? "")))
+        .join("");
+      if (queryText.includes("accountMergeCases")) return [[]];
+      if (queryText.includes("FROM users")) return [[{ id: 1 }]];
+      // Stands for the subject-row `SELECT ... FOR UPDATE` - Step 0 of the fix.
       hooks.onLock?.();
       snapshot = structuredClone(store);
       return [[{ id: 1 }]];

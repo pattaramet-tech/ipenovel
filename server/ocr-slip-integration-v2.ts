@@ -1,4 +1,4 @@
-import { getDb } from "./db";
+import { getDb, withAccountMergePaymentMutationGuard } from "./db";
 import { payments, orders } from "../drizzle/schema";
 import { eq, or } from "drizzle-orm";
 import {
@@ -10,7 +10,6 @@ import {
   VerificationResult,
   ParseSlipImageResult,
 } from "./ocr-slip-verification-v2";
-import { ApprovalService } from "./services/approvalService";
 
 /**
  * Process OCR slip verification and auto-approval for a payment (v2 with improvements).
@@ -110,11 +109,12 @@ export async function processSlipVerification(
   );
 
   // ── Update payment status based on verification result ────────────────────
-  const db2 = await getDb();
-  if (db2) {
+  // IPE-005: preserve the legacy v2 write shape exactly, but run it under the
+  // owning account's durable merge guard so a stale/background OCR write can
+  // never commit after Source guard activation.
+  await withAccountMergePaymentMutationGuard(payment.id, undefined, async (guardedDb) => {
     if (verificationResult.isAutoApproved) {
-      // Auto-approved: update payment status
-      await db2
+      await guardedDb
         .update(payments)
         .set({
           status: "approved",
@@ -127,8 +127,7 @@ export async function processSlipVerification(
         })
         .where(eq(payments.id, payment.id));
     } else {
-      // Pending review: update payment status
-      await db2
+      await guardedDb
         .update(payments)
         .set({
           status: "pending_review",
@@ -139,7 +138,7 @@ export async function processSlipVerification(
         })
         .where(eq(payments.id, payment.id));
     }
-  }
+  });
 
   // ── Store verification breakdown for admin visibility ────────────────────
   const breakdownData = verificationResult.breakdown;

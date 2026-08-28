@@ -68,7 +68,11 @@ function makeFakeDb(options: {
   const tx: any = {
     // The subject row lock issued before any evidence is read.
     execute: async (query: any) => {
-      locks.push(String(query?.queryChunks?.map?.((c: any) => c?.value ?? "").join("") ?? "lock"));
+      const queryText = (query?.queryChunks ?? [])
+        .map((chunk: any) => (Array.isArray(chunk?.value) ? chunk.value.join("") : String(chunk?.value ?? "")))
+        .join("");
+      if (queryText.includes("accountMergeCases")) return [[]];
+      locks.push(queryText || "lock");
       return [[{ id: options.topup.id }]];
     },
     select() {
@@ -697,13 +701,12 @@ describe("a duplicate resolution commits with its rejection", () => {
     expect(code).toMatch(/revalidate,[\s\S]{0,40}?auditResolution,/);
   });
 
-  it("the order rejection reloads and re-checks reviewability inside the transaction", () => {
+  it("the order rejection reuses the canonical locked reviewability helper inside the transaction", () => {
     const start = code.indexOf(
       "async rejectWithResolution({ adminUserId, reason, revalidate, auditResolution })"
     );
     const body = code.slice(start, start + 2200);
-    expect(body).toMatch(/db\.getPaymentById\(input\.subjectId, tx\)/);
-    expect(body).toMatch(/isReviewable\(payment\.status as string\)/);
+    expect(body).toMatch(/orderService\.lockAndRequireReviewablePayment\(input\.subjectId, tx\)/);
   });
 
   it("losing the conditional rejection raises CONFLICT so the record rolls back", () => {

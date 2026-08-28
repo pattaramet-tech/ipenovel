@@ -1367,10 +1367,23 @@ export const accountMergeCases = mysqlTable(
     status: mysqlEnum("status", ["pending", "in_progress", "completed", "failed", "cancelled"])
       .default("pending")
       .notNull(),
+    // IPE-005 durable Source-account write guard. Every status except
+    // `cancelled` keeps the Source guarded; `completed` and `failed` remain
+    // fail-closed so a stale session can never create new classified data on
+    // the former Source after the merge lifecycle has advanced. MySQL's
+    // UNIQUE+NULL semantics let cancelled historical cases coexist while
+    // enforcing at most one guarded case per Source at the database layer.
+    guardedSourceMarker: int("guardedSourceMarker").generatedAlwaysAs(
+      sql`(case when \`status\` <> 'cancelled' then \`sourceUserId\` else NULL end)`,
+      { mode: "stored" }
+    ),
     createdByAdminId: int("createdByAdminId").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+    startedAt: timestamp("startedAt"),
     completedAt: timestamp("completedAt"),
+    failedAt: timestamp("failedAt"),
+    failureReason: text("failureReason"),
     cancelledAt: timestamp("cancelledAt"),
     cancelReason: text("cancelReason"),
   },
@@ -1381,6 +1394,9 @@ export const accountMergeCases = mysqlTable(
     sourceUserIdIdx: index("accountMergeCases_sourceUserId_idx").on(table.sourceUserId),
     targetUserIdIdx: index("accountMergeCases_targetUserId_idx").on(table.targetUserId),
     statusIdx: index("accountMergeCases_status_idx").on(table.status),
+    oneGuardedCasePerSourceUnique: uniqueIndex("accountMergeCases_one_guarded_per_source_unique").on(
+      table.guardedSourceMarker
+    ),
   })
 );
 

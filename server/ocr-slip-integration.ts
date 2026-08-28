@@ -1,4 +1,4 @@
-import { getDb } from "./db";
+import { getDb, updatePayment } from "./db";
 import { payments, orders } from "../drizzle/schema";
 import { eq, or } from "drizzle-orm";
 import {
@@ -141,36 +141,48 @@ export async function processSlipVerification(
   }
 
   // ── Persist ───────────────────────────────────────────────────────────────
+  // IPE-005: status + OCR metadata are one classified mutation. Keeping both
+  // writes in the same transaction prevents merge activation from landing in
+  // the window between an approval/review status change and its evidence.
   if (shouldAutoApprove) {
-    await ApprovalService.approvePaymentWithSource(paymentId, "auto", {
-      autoApprovedAt: new Date(),
+    await db.transaction(async (tx: any) => {
+      await ApprovalService.approvePaymentWithSource(
+        paymentId,
+        "auto",
+        { autoApprovedAt: new Date() },
+        tx
+      );
+      await updatePayment(
+        paymentId,
+        {
+          extractedData: JSON.stringify(extractedData),
+          reviewReason: verificationResult.reviewReason,
+          fingerprint,
+          linkedOrderId: verificationResult.linkedOrderId,
+          linkedPaymentId: verificationResult.linkedPaymentId,
+        },
+        tx
+      );
     });
-    await db
-      .update(payments)
-      .set({
-        extractedData: JSON.stringify(extractedData),
-        reviewReason: verificationResult.reviewReason,
-        fingerprint,
-        linkedOrderId: verificationResult.linkedOrderId,
-        linkedPaymentId: verificationResult.linkedPaymentId,
-        updatedAt: new Date(),
-      })
-      .where(eq(payments.id, paymentId));
   } else {
-    await ApprovalService.sendToReview(
-      paymentId,
-      verificationResult.reviewReason || "MANUAL_REVIEW_REQUIRED",
-      extractedData,
-      fingerprint
-    );
-    await db
-      .update(payments)
-      .set({
-        linkedOrderId: verificationResult.linkedOrderId,
-        linkedPaymentId: verificationResult.linkedPaymentId,
-        updatedAt: new Date(),
-      })
-      .where(eq(payments.id, paymentId));
+    await db.transaction(async (tx: any) => {
+      await ApprovalService.sendToReview(
+        paymentId,
+        verificationResult.reviewReason || "MANUAL_REVIEW_REQUIRED",
+        extractedData,
+        fingerprint,
+        undefined,
+        tx
+      );
+      await updatePayment(
+        paymentId,
+        {
+          linkedOrderId: verificationResult.linkedOrderId,
+          linkedPaymentId: verificationResult.linkedPaymentId,
+        },
+        tx
+      );
+    });
   }
 
   return {
