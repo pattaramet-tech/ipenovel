@@ -131,12 +131,15 @@ describe("P2: conflict evaluation is per-axis", () => {
   });
 
   it("the exact-claim lookup is restricted to the axes proven clean", () => {
-    expect(evaluator).toMatch(/findExistingClaim\(nonCollidingIdentifiers, tx\)/);
+    // IPE-004-C07 replaced the or()+limit(1) findExistingClaim here with the
+    // deterministic per-axis helper; the restriction to clean axes is what
+    // this pin is actually about, and is unchanged.
+    expect(evaluator).toMatch(/findForeignClaimPerAxis\(nonCollidingIdentifiers, tx, self\)/);
     expect(evaluator).not.toMatch(/findExistingClaim\(input\.identifiers, tx\)/);
   });
 
   it("known_collision is returned only AFTER the clean-axis claim lookup found nothing", () => {
-    const claimIdx = evaluator.indexOf("findExistingClaim(nonCollidingIdentifiers, tx)");
+    const claimIdx = evaluator.indexOf("findForeignClaimPerAxis(nonCollidingIdentifiers, tx, self)");
     const collisionReturnIdx = evaluator.indexOf("if (collisionAxes.length > 0) {");
     expect(claimIdx).toBeGreaterThan(-1);
     expect(collisionReturnIdx).toBeGreaterThan(claimIdx);

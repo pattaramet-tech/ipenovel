@@ -304,6 +304,65 @@ describe("describeDuplicate", () => {
     expect(group.strength).not.toBe("strong");
     expect(group.strength).not.toBe("weak");
   });
+
+  // IPE-004-C07: the server has been able to emit `known_collision` since
+  // C02 (Approve refuses with LEGACY_KNOWN_COLLISION), but this model had no
+  // branch for it, so the value fell through to
+  // {strength:"none", headline:"No duplicate signal"} - telling the admin
+  // there was nothing to look at while Approve was guaranteed to refuse.
+
+  it("a known historical collision is presented as a distinct blocker, never 'No duplicate signal'", () => {
+    const d = describeDuplicate(
+      input({
+        duplicate: {
+          strength: "known_collision",
+          matchedSourceType: "order_payment",
+          matchedSourceId: 77,
+          matchedOrderId: 21,
+        },
+      })
+    );
+    expect(d.strength).toBe("known_collision");
+    expect(d.headline).not.toMatch(/no duplicate signal/i);
+    expect(d.headline).toMatch(/multiple approved records/i);
+    expect(d.matchedLabel).toBe("Order payment #77");
+    expect(d.matchedHref).toBe("/admin/orders/21");
+  });
+
+  it("the known-collision caveat never claims a proven duplicate or a proven owner", () => {
+    const d = describeDuplicate(
+      input({ duplicate: { strength: "known_collision", matchedSourceType: "wallet_topup", matchedSourceId: 5 } })
+    );
+    // No winner was ever picked among the colliding historical rows, so the
+    // matched row is context only - the wording must say so explicitly.
+    expect(d.caveat).toMatch(/NOT proof/i);
+    expect(d.caveat).toMatch(/NOT its proven owner/i);
+    expect(d.caveat).toMatch(/context only/i);
+    expect(d.caveat).toMatch(/manually investigate/i);
+    expect(d.headline).not.toMatch(/confirmed duplicate/i);
+  });
+
+  it("LEGACY_KNOWN_COLLISION alone (no duplicate object) still renders the known-collision state", () => {
+    const d = describeDuplicate(
+      input({ reviewReason: "LEGACY_KNOWN_COLLISION", duplicate: null })
+    );
+    expect(d.strength).toBe("known_collision");
+    expect(d.headline).not.toMatch(/no duplicate signal/i);
+  });
+
+  it("known_collision is checked ahead of strong/weak, so it can never be masked", () => {
+    const kc = describeDuplicate(input({ duplicate: { strength: "known_collision" } }));
+    expect(kc.strength).not.toBe("strong");
+    expect(kc.strength).not.toBe("weak");
+    expect(kc.strength).not.toBe("none");
+  });
+
+  it("known_collision is safe to render with no matched source at all", () => {
+    const d = describeDuplicate(input({ duplicate: { strength: "known_collision" } }));
+    expect(d.strength).toBe("known_collision");
+    expect(d.matchedLabel).toBeUndefined();
+    expect(d.matchedHref).toBeUndefined();
+  });
 });
 
 describe("requiresLegacyCaseResolution never fires for unresolved or group ambiguity", () => {
@@ -342,6 +401,20 @@ describe("requiresLegacyCaseResolution never fires for unresolved or group ambig
         })
       )
     ).toBe(true);
+  });
+
+  it("a known historical collision does not trigger the resolution flow", () => {
+    // IPE-004-C07: no single-member "confirm distinct" waiver exists for a
+    // collision group - the server consults none, so offering the control
+    // would let an admin waive a state it was never designed to adjudicate.
+    expect(
+      requiresLegacyCaseResolution(
+        input({
+          reviewReason: "LEGACY_KNOWN_COLLISION",
+          duplicate: { strength: "known_collision" },
+        })
+      )
+    ).toBe(false);
   });
 });
 
@@ -539,6 +612,30 @@ describe("buildChecklist", () => {
     const clear = buildChecklist(input()).find((r) => r.key === "legacy_alias_group")!;
     expect(clear.state).toBe("not_evaluated");
     expect(clear.detail).toBeUndefined();
+  });
+
+  it("the known-collision row warns explicitly and is not_evaluated otherwise", () => {
+    // IPE-004-C07: WARNING, never FAIL (nothing is proven about THIS
+    // submission) and never a silent PASS (Approve refuses server-side with
+    // LEGACY_KNOWN_COLLISION until the group is investigated).
+    const warned = buildChecklist(
+      input({ duplicate: { strength: "known_collision" } })
+    ).find((r) => r.key === "known_collision")!;
+    expect(warned.state).toBe("warning");
+    expect(warned.detail).toMatch(/MORE THAN ONE/i);
+    expect(warned.detail).toMatch(/no owner was ever established/i);
+
+    const clear = buildChecklist(input()).find((r) => r.key === "known_collision")!;
+    expect(clear.state).toBe("not_evaluated");
+    expect(clear.detail).toBeUndefined();
+  });
+
+  it("the known-collision row never reports pass, which would read as cleared", () => {
+    const row = buildChecklist(
+      input({ duplicate: { strength: "known_collision" } })
+    ).find((r) => r.key === "known_collision")!;
+    expect(row.state).not.toBe("pass");
+    expect(row.state).not.toBe("fail");
   });
 });
 

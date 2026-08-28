@@ -761,6 +761,219 @@ describe("cross-axis precedence: a proven owner on a clean axis outranks a colli
 
     expect(conflict.kind).toBe("known_collision");
   });
+
+  // ── IPE-004-C07: clean-axis selection must be deterministic per axis ────
+  // C06 correctly excluded collision-ambiguous axes, but the lookup was one
+  // or(...) + limit(1), so the database chose which matching row came back.
+  // A self-owned claim on one clean axis could be returned ahead of a foreign
+  // owner on another clean axis; self is not a duplicate, so the proven
+  // replay was discarded and a weaker verdict from a different axis won.
+  //
+  // In each of the following the SELF claim is deliberately listed FIRST, so
+  // a lookup that stops at the first matching row sees self and gives up.
+
+  it("C07: collision reference + SELF-owned clean file + FOREIGN clean QR -> strong_duplicate by the QR owner", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [
+        {
+          sourceType: self.sourceType,
+          sourceId: self.sourceId,
+          userId: 3,
+          referenceHash: null,
+          fileHash: FILE_A,
+          qrPayloadHash: null,
+          legacyReferenceUpperHash: null,
+        },
+        {
+          sourceType: "order_payment",
+          sourceId: 321,
+          userId: 4,
+          referenceHash: null,
+          fileHash: null,
+          qrPayloadHash: QR_A,
+          legacyReferenceUpperHash: null,
+        },
+      ],
+      legacyCollisions: [
+        { kind: "reference", identifierHash: MIXED_HASH, sourceType: "order_payment", sourceId: 1 },
+      ],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      {
+        identifiers: { referenceHash: MIXED_HASH, fileHash: FILE_A, qrPayloadHash: QR_A },
+        ...self,
+      },
+      tx
+    );
+
+    expect(conflict.kind).toBe("strong_duplicate");
+    if (conflict.kind === "strong_duplicate") {
+      expect(conflict.matchedKind).toBe("qr");
+      expect(conflict.matchedSourceType).toBe("order_payment");
+      expect(conflict.matchedSourceId).toBe(321);
+    }
+  });
+
+  it("C07: SELF-owned clean reference + FOREIGN clean file -> strong_duplicate by the file owner", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const OTHER_HASH2 = hashSlipReference(OTHER_REF)!;
+    const tx = makeTx({
+      claims: [
+        {
+          sourceType: self.sourceType,
+          sourceId: self.sourceId,
+          userId: 3,
+          referenceHash: OTHER_HASH2,
+          fileHash: null,
+          qrPayloadHash: null,
+          legacyReferenceUpperHash: null,
+        },
+        {
+          sourceType: "order_payment",
+          sourceId: 322,
+          userId: 4,
+          referenceHash: null,
+          fileHash: FILE_A,
+          qrPayloadHash: null,
+          legacyReferenceUpperHash: null,
+        },
+      ],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { referenceHash: OTHER_HASH2, fileHash: FILE_A }, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("strong_duplicate");
+    if (conflict.kind === "strong_duplicate") {
+      expect(conflict.matchedKind).toBe("file");
+      expect(conflict.matchedSourceId).toBe(322);
+    }
+  });
+
+  it("C07: SELF-owned clean file + FOREIGN clean QR -> strong_duplicate by the QR owner", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [
+        {
+          sourceType: self.sourceType,
+          sourceId: self.sourceId,
+          userId: 3,
+          referenceHash: null,
+          fileHash: FILE_A,
+          qrPayloadHash: null,
+          legacyReferenceUpperHash: null,
+        },
+        {
+          sourceType: "order_payment",
+          sourceId: 323,
+          userId: 4,
+          referenceHash: null,
+          fileHash: null,
+          qrPayloadHash: QR_A,
+          legacyReferenceUpperHash: null,
+        },
+      ],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { fileHash: FILE_A, qrPayloadHash: QR_A }, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("strong_duplicate");
+    if (conflict.kind === "strong_duplicate") {
+      expect(conflict.matchedKind).toBe("qr");
+      expect(conflict.matchedSourceId).toBe(323);
+    }
+  });
+
+  it("C07: EVERY clean axis is self-owned while another axis collides -> known_collision, self never a duplicate", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [
+        {
+          sourceType: self.sourceType,
+          sourceId: self.sourceId,
+          userId: 3,
+          referenceHash: null,
+          fileHash: FILE_A,
+          qrPayloadHash: QR_A,
+          legacyReferenceUpperHash: null,
+        },
+      ],
+      legacyCollisions: [
+        { kind: "reference", identifierHash: MIXED_HASH, sourceType: "order_payment", sourceId: 1 },
+      ],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      {
+        identifiers: { referenceHash: MIXED_HASH, fileHash: FILE_A, qrPayloadHash: QR_A },
+        ...self,
+      },
+      tx
+    );
+
+    expect(conflict.kind).toBe("known_collision");
+    if (conflict.kind === "known_collision") expect(conflict.matchedKind).toBe("reference");
+  });
+
+  it("C07: every clean axis self-owned and NO collision anywhere -> no conflict at all", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [
+        {
+          sourceType: self.sourceType,
+          sourceId: self.sourceId,
+          userId: 3,
+          referenceHash: null,
+          fileHash: FILE_A,
+          qrPayloadHash: QR_A,
+          legacyReferenceUpperHash: null,
+        },
+      ],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { fileHash: FILE_A, qrPayloadHash: QR_A }, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("none");
+  });
+
+  it("C07: a self-owned claim on a COLLIDING axis still never becomes a duplicate via the clean-axis search", async () => {
+    // The colliding axis is excluded from the lookup entirely, so neither the
+    // foreign first-member singleton nor a self row on it can be selected.
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [
+        {
+          sourceType: self.sourceType,
+          sourceId: self.sourceId,
+          userId: 3,
+          referenceHash: MIXED_HASH,
+          fileHash: null,
+          qrPayloadHash: null,
+          legacyReferenceUpperHash: null,
+        },
+      ],
+      legacyCollisions: [
+        { kind: "reference", identifierHash: MIXED_HASH, sourceType: "order_payment", sourceId: 1 },
+      ],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      { identifiers: { referenceHash: MIXED_HASH }, ...self },
+      tx
+    );
+
+    expect(conflict.kind).toBe("known_collision");
+  });
 });
 
 // ─── Production-shaped unresolved history must never block an unrelated,

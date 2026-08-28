@@ -30,7 +30,7 @@
  * exactly why the UNIQUE constraint remains the authority.
  */
 
-import { findExistingClaim, findClaimsByLegacyAlias } from "./slipClaimService";
+import { findForeignClaimPerAxis, findClaimsByLegacyAlias } from "./slipClaimService";
 import {
   findLegacyApprovedDuplicate,
   findLegacyAliasGroupMembers,
@@ -223,11 +223,17 @@ export async function evaluateSlipConflict(
   // Restricted to non-colliding axes. A proven foreign owner here is the
   // strongest, least ambiguous evidence available and outranks a collision
   // on some OTHER axis.
-  const existingClaim = await findExistingClaim(nonCollidingIdentifiers, tx);
-  if (
-    existingClaim &&
-    !(existingClaim.sourceType === self.sourceType && existingClaim.sourceId === self.sourceId)
-  ) {
+  //
+  // Deterministic PER AXIS (IPE-004-C07): a single or(...) + limit(1) let the
+  // database pick which matching row came back, so a self-owned claim on one
+  // clean axis could be returned ahead of a foreign owner on another clean
+  // axis. Self is not a duplicate, so that verdict was discarded and the
+  // evaluation fell through to the weaker known_collision from a different
+  // axis - hiding a proven replay and naming the wrong source. The per-axis
+  // helper asks each clean axis its own indexed question in a fixed order and
+  // skips (never stops at) a self-owned one.
+  const existingClaim = await findForeignClaimPerAxis(nonCollidingIdentifiers, tx, self);
+  if (existingClaim) {
     return {
       kind: "strong_duplicate",
       matchedKind: existingClaim.kind,

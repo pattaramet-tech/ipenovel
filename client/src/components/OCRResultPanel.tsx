@@ -61,7 +61,8 @@ interface OCRResultPanelProps {
         | "strong"
         | "legacy_case_ambiguity"
         | "unresolved"
-        | "legacy_case_ambiguity_group";
+        | "legacy_case_ambiguity_group"
+        | "known_collision";
       kind?: string;
       matchedSourceType?: "order_payment" | "wallet_topup";
       matchedSourceId?: number;
@@ -509,7 +510,9 @@ export function OCRResultPanel({ payment, ocrMeta, onRecheckComplete }: OCRResul
                 ? "LEGACY / WEAK"
                 : duplicate.strength === "legacy_case_ambiguity"
                   ? "LEGACY CASE AMBIGUITY"
-                  : duplicate.strength.toUpperCase()}
+                  : duplicate.strength === "known_collision"
+                      ? "KNOWN COLLISION"
+                      : duplicate.strength.toUpperCase()}
             </Badge>
             <span className="text-slate-700">{duplicate.headline}</span>
           </div>
