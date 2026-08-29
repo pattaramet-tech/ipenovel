@@ -1,8 +1,8 @@
 {
   "version": "5",
   "dialect": "mysql",
-  "id": "9e5f8761-4f78-4ba3-8c86-e0f61ab5a1c9",
-  "prevId": "42ef0faa-22a4-49d1-8ab9-b15ad53dd39a",
+  "id": "42ef0faa-22a4-49d1-8ab9-b15ad53dd39a",
+  "prevId": "4b3c5821-b052-4acb-8d0f-33888faa9e62",
   "tables": {
     "accountMergeAuditLogs": {
       "name": "accountMergeAuditLogs",
@@ -4182,250 +4182,6 @@
       },
       "checkConstraint": {}
     },
-    "sportsCompetitions": {
-      "name": "sportsCompetitions",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "int",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": true
-        },
-        "code": {
-          "name": "code",
-          "type": "varchar(80)",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "name": {
-          "name": "name",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "competitionType": {
-          "name": "competitionType",
-          "type": "enum('league','cup')",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'league'"
-        },
-        "logoImageUrl": {
-          "name": "logoImageUrl",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "isActive": {
-          "name": "isActive",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": true
-        },
-        "createdAt": {
-          "name": "createdAt",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "(now())"
-        },
-        "updatedAt": {
-          "name": "updatedAt",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "onUpdate": true,
-          "default": "(now())"
-        }
-      },
-      "indexes": {
-        "sportsCompetitions_code_unique": {
-          "name": "sportsCompetitions_code_unique",
-          "columns": ["code"],
-          "isUnique": true
-        },
-        "sportsCompetitions_name_idx": {
-          "name": "sportsCompetitions_name_idx",
-          "columns": ["name"],
-          "isUnique": false
-        },
-        "sportsCompetitions_isActive_idx": {
-          "name": "sportsCompetitions_isActive_idx",
-          "columns": ["isActive"],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "sportsCompetitions_id": {
-          "name": "sportsCompetitions_id",
-          "columns": ["id"]
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraint": {}
-    },
-    "sportsCompetitionTeams": {
-      "name": "sportsCompetitionTeams",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "int",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": true
-        },
-        "competitionId": {
-          "name": "competitionId",
-          "type": "int",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "teamId": {
-          "name": "teamId",
-          "type": "int",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "displayOrder": {
-          "name": "displayOrder",
-          "type": "int",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "createdAt": {
-          "name": "createdAt",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "(now())"
-        }
-      },
-      "indexes": {
-        "sportsCompetitionTeams_competition_team_unique": {
-          "name": "sportsCompetitionTeams_competition_team_unique",
-          "columns": ["competitionId", "teamId"],
-          "isUnique": true
-        },
-        "sportsCompetitionTeams_competitionId_idx": {
-          "name": "sportsCompetitionTeams_competitionId_idx",
-          "columns": ["competitionId"],
-          "isUnique": false
-        },
-        "sportsCompetitionTeams_teamId_idx": {
-          "name": "sportsCompetitionTeams_teamId_idx",
-          "columns": ["teamId"],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "sportsCompetitionTeams_id": {
-          "name": "sportsCompetitionTeams_id",
-          "columns": ["id"]
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraint": {}
-    },
-    "sportsTeams": {
-      "name": "sportsTeams",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "int",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": true
-        },
-        "code": {
-          "name": "code",
-          "type": "varchar(80)",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "name": {
-          "name": "name",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "logoImageUrl": {
-          "name": "logoImageUrl",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "isActive": {
-          "name": "isActive",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": true
-        },
-        "createdAt": {
-          "name": "createdAt",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "(now())"
-        },
-        "updatedAt": {
-          "name": "updatedAt",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "onUpdate": true,
-          "default": "(now())"
-        }
-      },
-      "indexes": {
-        "sportsTeams_code_unique": {
-          "name": "sportsTeams_code_unique",
-          "columns": ["code"],
-          "isUnique": true
-        },
-        "sportsTeams_name_idx": {
-          "name": "sportsTeams_name_idx",
-          "columns": ["name"],
-          "isUnique": false
-        },
-        "sportsTeams_isActive_idx": {
-          "name": "sportsTeams_isActive_idx",
-          "columns": ["isActive"],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "sportsTeams_id": {
-          "name": "sportsTeams_id",
-          "columns": ["id"]
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraint": {}
-    },
     "sportsMatchRewards": {
       "name": "sportsMatchRewards",
       "columns": {
@@ -4457,33 +4213,11 @@
           "notNull": true,
           "autoincrement": false
         },
-        "rewardKind": {
-          "name": "rewardKind",
-          "type": "enum('coupon','points')",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'coupon'"
-        },
         "couponId": {
           "name": "couponId",
           "type": "int",
           "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "pointsAmount": {
-          "name": "pointsAmount",
-          "type": "decimal(10,2)",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "pointsTransactionId": {
-          "name": "pointsTransactionId",
-          "type": "int",
-          "primaryKey": false,
-          "notNull": false,
+          "notNull": true,
           "autoincrement": false
         },
         "status": {
@@ -4567,13 +4301,6 @@
           "name": "unique_sports_match_rewards_coupon",
           "columns": [
             "couponId"
-          ],
-          "isUnique": true
-        },
-        "unique_sports_match_rewards_points_tx": {
-          "name": "unique_sports_match_rewards_points_tx",
-          "columns": [
-            "pointsTransactionId"
           ],
           "isUnique": true
         }
@@ -4736,27 +4463,6 @@
           "notNull": false,
           "autoincrement": false
         },
-        "competitionId": {
-          "name": "competitionId",
-          "type": "int",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "homeTeamId": {
-          "name": "homeTeamId",
-          "type": "int",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "awayTeamId": {
-          "name": "awayTeamId",
-          "type": "int",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "homeTeamName": {
           "name": "homeTeamName",
           "type": "varchar(255)",
@@ -4814,33 +4520,18 @@
           "autoincrement": false,
           "default": "'0.00'"
         },
-        "rewardKind": {
-          "name": "rewardKind",
-          "type": "enum('coupon','points')",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'coupon'"
-        },
-        "rewardPointsAmount": {
-          "name": "rewardPointsAmount",
-          "type": "decimal(10,2)",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "rewardDiscountType": {
           "name": "rewardDiscountType",
           "type": "enum('flat','percentage')",
           "primaryKey": false,
-          "notNull": false,
+          "notNull": true,
           "autoincrement": false
         },
         "rewardDiscountValue": {
           "name": "rewardDiscountValue",
           "type": "decimal(10,2)",
           "primaryKey": false,
-          "notNull": false,
+          "notNull": true,
           "autoincrement": false
         },
         "rewardMinPurchaseAmount": {
@@ -4933,27 +4624,6 @@
           "name": "sportsMatches_displayOrder_idx",
           "columns": [
             "displayOrder"
-          ],
-          "isUnique": false
-        },
-        "sportsMatches_competitionId_idx": {
-          "name": "sportsMatches_competitionId_idx",
-          "columns": [
-            "competitionId"
-          ],
-          "isUnique": false
-        },
-        "sportsMatches_homeTeamId_idx": {
-          "name": "sportsMatches_homeTeamId_idx",
-          "columns": [
-            "homeTeamId"
-          ],
-          "isUnique": false
-        },
-        "sportsMatches_awayTeamId_idx": {
-          "name": "sportsMatches_awayTeamId_idx",
-          "columns": [
-            "awayTeamId"
           ],
           "isUnique": false
         }

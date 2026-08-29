@@ -1522,6 +1522,50 @@ export type AccountMergeAuditLog = typeof accountMergeAuditLogs.$inferSelect;
 export type InsertAccountMergeAuditLog = typeof accountMergeAuditLogs.$inferInsert;
 
 /**
+ * Durable once-only receipt for IPE-006 financial reconciliation.
+ *
+ * One merge case may reconcile Wallet + Points exactly once. The UNIQUE
+ * mergeCaseId constraint is the database-level idempotency barrier; the
+ * service also serializes on the canonical Source/Target users rows and the
+ * merge-case row before inspecting this receipt. Because this row is inserted
+ * in the same transaction as all wallet/points balance and ledger writes,
+ * either every financial effect plus this receipt commits, or none of them do.
+ *
+ * Historical walletTransactions, walletTopups and pointsTransactions rows are
+ * never re-parented or rewritten. The before/after snapshots here make the
+ * exact value movement independently auditable without changing that history.
+ */
+export const accountMergeFinancialReconciliations = mysqlTable(
+  "accountMergeFinancialReconciliations",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    mergeCaseId: int("mergeCaseId").notNull(),
+    sourceUserId: int("sourceUserId").notNull(),
+    targetUserId: int("targetUserId").notNull(),
+    actorAdminId: int("actorAdminId").notNull(),
+    walletSourceBefore: decimal("walletSourceBefore", { precision: 12, scale: 2 }).notNull(),
+    walletTargetBefore: decimal("walletTargetBefore", { precision: 12, scale: 2 }).notNull(),
+    walletTransferred: decimal("walletTransferred", { precision: 12, scale: 2 }).notNull(),
+    walletSourceAfter: decimal("walletSourceAfter", { precision: 12, scale: 2 }).notNull(),
+    walletTargetAfter: decimal("walletTargetAfter", { precision: 12, scale: 2 }).notNull(),
+    pointsSourceBefore: decimal("pointsSourceBefore", { precision: 10, scale: 2 }).notNull(),
+    pointsTargetBefore: decimal("pointsTargetBefore", { precision: 10, scale: 2 }).notNull(),
+    pointsTransferred: decimal("pointsTransferred", { precision: 10, scale: 2 }).notNull(),
+    pointsSourceAfter: decimal("pointsSourceAfter", { precision: 10, scale: 2 }).notNull(),
+    pointsTargetAfter: decimal("pointsTargetAfter", { precision: 10, scale: 2 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    mergeCaseUnique: uniqueIndex("accountMergeFinancialReconciliations_mergeCaseId_unique").on(table.mergeCaseId),
+    sourceUserIdIdx: index("accountMergeFinancialReconciliations_sourceUserId_idx").on(table.sourceUserId),
+    targetUserIdIdx: index("accountMergeFinancialReconciliations_targetUserId_idx").on(table.targetUserId),
+  })
+);
+
+export type AccountMergeFinancialReconciliation = typeof accountMergeFinancialReconciliations.$inferSelect;
+export type InsertAccountMergeFinancialReconciliation = typeof accountMergeFinancialReconciliations.$inferInsert;
+
+/**
  * Append-only audit trail for the Admin Users Management page - one row per
  * name/role edit or hard delete performed through admin.users.update /
  * admin.users.delete (server/routers.ts). Deliberately NO foreign key from

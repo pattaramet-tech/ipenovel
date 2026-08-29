@@ -297,6 +297,13 @@
       "breakpoints": true
     },
     {
+      "idx": 42,
+      "version": "5",
+      "when": 1788020144269,
+      "tag": "0042_add_account_merge_financial_reconciliation",
+      "breakpoints": true
+    },
+    {
       "idx": 43,
       "version": "5",
       "when": 1788050000000,
