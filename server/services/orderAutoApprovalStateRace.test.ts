@@ -124,7 +124,12 @@ function makeDb(rows: Record<string, any[]>, onLock?: (store: Record<string, any
   let snapshot: Record<string, any[]> = JSON.parse(JSON.stringify(store));
 
   const executor = (): any => ({
-    execute: async () => {
+    execute: async (query: any) => {
+      const queryText = (query?.queryChunks ?? [])
+        .map((chunk: any) => (Array.isArray(chunk?.value) ? chunk.value.join("") : String(chunk?.value ?? "")))
+        .join("");
+      if (queryText.includes("accountMergeCases")) return [[]];
+      if (queryText.includes("FROM users")) return [[{ id: 1 }]];
       onLock?.(store);
       snapshot = JSON.parse(JSON.stringify(store));
       return [[{ id: 1 }]];

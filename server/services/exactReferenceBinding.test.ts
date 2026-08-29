@@ -100,7 +100,12 @@ function makeDb(options: FakeOptions) {
   let locks = 0;
 
   const executor = (): any => ({
-    execute: async () => {
+    execute: async (query: any) => {
+      const queryText = (query?.queryChunks ?? [])
+        .map((chunk: any) => (Array.isArray(chunk?.value) ? chunk.value.join("") : String(chunk?.value ?? "")))
+        .join("");
+      if (queryText.includes("accountMergeCases")) return [[]];
+      if (queryText.includes("FROM users")) return [[{ id: 1 }]];
       locks += 1;
       options.onLock?.(store);
       return [[{ id: 1 }]];

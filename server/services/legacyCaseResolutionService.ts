@@ -150,23 +150,11 @@ function adapterFor(input: ResolveLegacyCaseInput): SubjectAdapter {
       async rejectWithResolution({ adminUserId, reason, revalidate, auditResolution }) {
         const database = await requireDb();
         await database.transaction(async (tx: any) => {
-          // 0. LOCK the subject so the evidence cannot be rewritten by a
-          //    concurrent Recheck between revalidation and commit.
-          await db.lockPaymentForUpdate(input.subjectId, tx);
-
-          // 1. Reload INSIDE the transaction - never trust the pre-check.
-          const payment = await db.getPaymentById(input.subjectId, tx);
-          if (!payment) {
-            throw new TRPCError({ code: "NOT_FOUND", message: "Payment not found" });
-          }
-
-          // 2. Still reviewable?
-          if (!isReviewable(payment.status as string)) {
-            throw new TRPCError({
-              code: "CONFLICT",
-              message: `This payment is already ${payment.status}. Refresh to see the current decision.`,
-            });
-          }
+          // 0-2. IPE-005: lock Source user/merge guard first, then payment,
+          // and require reviewable state under that subject lock. Reuse the
+          // canonical order-side primitive so legacy resolution cannot form a
+          // payment-row -> users-row deadlock with Account Merge prepare.
+          await orderService.lockAndRequireReviewablePayment(input.subjectId, tx);
 
           // 3. Revalidate the evidence WHILE THE STATUS IS STILL REVIEWABLE.
           //    This has to happen before the rejection, not after it.

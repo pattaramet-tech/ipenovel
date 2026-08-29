@@ -1,4 +1,4 @@
-import { getDb } from "../db";
+import { withAccountMergePaymentMutationGuard } from "../db";
 import { payments } from "../../drizzle/schema";
 import { and, eq, isNull, or } from "drizzle-orm";
 
@@ -18,13 +18,18 @@ export interface ApprovalMetadata {
 }
 
 /**
- * Centralized approval service to standardize approval metadata across all paths
+ * Centralized approval service to standardize approval metadata across all paths.
+ *
+ * IPE-005: every method that mutates a payment is also a classified mutation
+ * of the owning account. The payment-owner guard resolves the order owner,
+ * acquires the canonical users-row / account-merge guard first, then locks the
+ * payment row before the write. This keeps OCR/admin/background paths on the
+ * same lock hierarchy as checkout and manual approval.
  */
 export class ApprovalService {
   /**
-   * Approve a payment with source metadata
-   * Supports: manual admin approval, OCR auto-approval, wallet approval
-   * @param tx - Optional transaction context for atomic operations
+   * Approve a payment with source metadata.
+   * Supports: manual admin approval, OCR auto-approval, wallet approval.
    */
   static async approvePaymentWithSource(
     paymentId: number,
@@ -37,13 +42,9 @@ export class ApprovalService {
     },
     tx?: any
   ) {
-    const db = tx || (await getDb());
-    if (!db) throw new Error("Database connection failed");
-
     const now = new Date();
 
-    // Build approval metadata based on source
-    let approvalData: any = {
+    const approvalData: any = {
       status: "approved",
       approvalSource: source,
       approvedAt: now,
@@ -51,7 +52,6 @@ export class ApprovalService {
 
     switch (source) {
       case "manual":
-        // Manual admin approval
         approvalData.approvedByAdminId = metadata.adminId || null;
         approvalData.approvedByLabel = metadata.adminLabel || "Admin";
         approvalData.reviewedAt = metadata.reviewedAt || now;
@@ -59,60 +59,53 @@ export class ApprovalService {
         break;
 
       case "auto":
-        // OCR auto-approval
         approvalData.approvedByAdminId = null;
         approvalData.approvedByLabel = "OCR Auto-Approve";
         approvalData.autoApprovedAt = metadata.autoApprovedAt || now;
         break;
 
       case "wallet":
-        // Wallet approval
         approvalData.approvedByAdminId = null;
         approvalData.approvedByLabel = "Wallet";
         break;
 
       case "legacy":
-        // Legacy approval (backward compatibility)
         approvalData.approvedByAdminId = null;
         approvalData.approvedByLabel = "Legacy / Unknown";
         break;
     }
 
-    // Update payment with approval metadata
-    await db
-      .update(payments)
-      .set(approvalData)
-      .where(eq(payments.id, paymentId));
+    await withAccountMergePaymentMutationGuard(paymentId, tx, async (guardedDb) => {
+      await guardedDb
+        .update(payments)
+        .set(approvalData)
+        .where(eq(payments.id, paymentId));
+    });
 
     return approvalData;
   }
 
-  /**
-   * Reject a payment with reason
-   * Does NOT set approval metadata
-   * @param tx - Optional transaction context for atomic operations
-   */
+  /** Reject a payment with reason. Does NOT set approval metadata. */
   static async rejectPayment(
     paymentId: number,
     reason: string,
     reviewedByAdminId?: number,
     tx?: any
   ) {
-    const db = tx || (await getDb());
-    if (!db) throw new Error("Database connection failed");
-
     const now = new Date();
 
-    await db
-      .update(payments)
-      .set({
-        status: "rejected",
-        rejectionReason: reason,
-        reviewedAt: now,
-        reviewedByUserId: reviewedByAdminId || null,
-        // DO NOT set approval fields
-      })
-      .where(eq(payments.id, paymentId));
+    await withAccountMergePaymentMutationGuard(paymentId, tx, async (guardedDb) => {
+      await guardedDb
+        .update(payments)
+        .set({
+          status: "rejected",
+          rejectionReason: reason,
+          reviewedAt: now,
+          reviewedByUserId: reviewedByAdminId || null,
+          // DO NOT set approval fields
+        })
+        .where(eq(payments.id, paymentId));
+    });
   }
 
   /**
@@ -121,20 +114,9 @@ export class ApprovalService {
    *
    * Conditioned on the payment still being reviewable, so a late-finishing
    * automatic OCR run can never resurrect an already-finalized payment back
-   * to "pending_review".
-   *
-   * `expectedSlipVersion`, when passed, additionally requires the row's
-   * current `(slipImageUrl, slipSubmittedAt)` to still match it. Callers
-   * pass this when `extractedData` was computed against a specific slip
-   * snapshot (an automatic OCR run) rather than being read fresh from the
-   * row inside this same call - without it, OCR started for slip B could
-   * still publish B's extraction after the customer replaced B with C.
-   *
-   * Returns whether this call actually won the write. Callers MUST treat
-   * `false` as "nothing was published" and must not proceed with any
-   * further write that assumes this one landed.
-   *
-   * @param tx - Optional transaction context for atomic operations
+   * to "pending_review". `expectedSlipVersion`, when supplied, additionally
+   * requires the current slip identity to remain the exact one this OCR run
+   * processed.
    */
   static async sendToReview(
     paymentId: number,
@@ -144,9 +126,6 @@ export class ApprovalService {
     expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
     tx?: any
   ): Promise<boolean> {
-    const db = tx || (await getDb());
-    if (!db) throw new Error("Database connection failed");
-
     const conditions = [
       eq(payments.id, paymentId),
       or(eq(payments.status, "pending"), eq(payments.status, "pending_review")),
@@ -165,42 +144,37 @@ export class ApprovalService {
       );
     }
 
-    const result = await db
-      .update(payments)
-      .set({
-        status: "pending_review",
-        reviewReason,
-        extractedData: extractedData ? JSON.stringify(extractedData) : null,
-        fingerprint: fingerprint || null,
-        // DO NOT set approval fields
-      })
-      .where(and(...conditions));
+    return withAccountMergePaymentMutationGuard(paymentId, tx, async (guardedDb) => {
+      const result = await guardedDb
+        .update(payments)
+        .set({
+          status: "pending_review",
+          reviewReason,
+          extractedData: extractedData ? JSON.stringify(extractedData) : null,
+          fingerprint: fingerprint || null,
+          // DO NOT set approval fields
+        })
+        .where(and(...conditions));
 
-    const header = Array.isArray(result) ? result[0] : result;
-    return ((header as any)?.affectedRows || 0) > 0;
+      const header = Array.isArray(result) ? result[0] : result;
+      return ((header as any)?.affectedRows || 0) > 0;
+    });
   }
 
-  /**
-   * Get approval metadata for display
-   * Handles legacy records gracefully
-   */
+  /** Get approval metadata for display; handles legacy records gracefully. */
   static getDisplayMetadata(payment: any) {
     return {
-      // Normalize to lowercase to match ApprovalSource enum
       approvalSource: (payment.approvalSource as string | null) || "legacy",
       approvedByLabel: payment.approvedByLabel || "Legacy / Unknown",
       approvedAt: payment.approvedAt,
       autoApprovedAt: payment.autoApprovedAt,
       reviewedAt: payment.reviewedAt,
-      // Bug fix: DB column is reviewedByUserId, not reviewedByAdminId
       reviewedByUserId: payment.reviewedByUserId,
       approvedByAdminId: payment.approvedByAdminId,
     };
   }
 
-  /**
-   * Format approval source for UI display
-   */
+  /** Format approval source for UI display. */
   static formatApprovalSource(source: ApprovalSource | null | undefined): string {
     switch (source) {
       case "manual":

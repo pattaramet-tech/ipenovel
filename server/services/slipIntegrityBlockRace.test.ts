@@ -120,7 +120,11 @@ function makeDb(rows: Record<string, any[]>) {
   let snapshot: Record<string, any[]> = structuredClone(store);
 
   const executor = (): any => ({
-    execute: async () => {
+    execute: async (query: any) => {
+      const queryText = (query?.queryChunks ?? [])
+        .map((chunk: any) => (Array.isArray(chunk?.value) ? chunk.value.join("") : String(chunk?.value ?? "")))
+        .join("");
+      if (queryText.includes("accountMergeCases")) return [[]];
       snapshot = structuredClone(store);
       return [[{ id: 1 }]];
     },

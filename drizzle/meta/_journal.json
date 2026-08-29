@@ -288,6 +288,13 @@
       "when": 1787919487827,
       "tag": "0040_add_account_merge_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "5",
+      "when": 1787939153092,
+      "tag": "0041_add_account_merge_guard_concurrency",
+      "breakpoints": true
     }
   ]
 }

@@ -60,6 +60,12 @@ import { isValidStoredFileRef } from "@shared/privateFileRef";
 import * as accountRecoveryService from "./services/accountRecoveryService";
 import { AccountRecoveryError } from "./services/accountRecoveryService";
 import { buildAccountMergePreview } from "./services/accountMergePreviewService";
+import {
+  AccountMergeLifecycleError,
+  cancelAccountMergeGuard,
+  prepareAccountMergeGuard,
+  startAccountMergeGuard,
+} from "./services/accountMergeGuardService";
 import { updateAdminUserProfile, AdminUserManagementError } from "./services/adminUserManagementService";
 
 // ============ HELPER PROCEDURES ============
@@ -682,6 +688,11 @@ export const appRouter = router({
         let order: any;
         try {
           order = await dbConnection.transaction(async (tx: any) => {
+            // IPE-005: users-row merge guard is the FIRST Source lock. If a
+            // prepare won the race, this throws before any Order/Payment/cart
+            // write; if checkout won, prepare waits until this transaction
+            // (including its locked cart snapshot) commits.
+            await db.assertAccountMergeClassifiedMutationAllowed(ctx.user.id, tx);
             const cartId = await db.lockCartForCheckout(ctx.user.id, tx);
             if (cartId === null) {
               throw new TRPCError({ code: "BAD_REQUEST", message: "Your cart is empty. Please add items before checkout." });
@@ -819,6 +830,9 @@ export const appRouter = router({
           if (!dbConnection) throw new Error("Database connection failed");
           
           const order = await dbConnection.transaction(async (tx) => {
+            // IPE-005: serialize the full wallet/order/finalization mutation
+            // before any classified Source write in this transaction.
+            await db.assertAccountMergeClassifiedMutationAllowed(ctx.user.id, tx);
             // STEP 3: Create order (within transaction)
             // Pass tx so all writes use the same transaction
             const newOrder = await orderService.createOrderFromCart(String(ctx.user.id), cartItems, input.couponCode, input.pointsToRedeem, undefined, tx);
@@ -3852,6 +3866,55 @@ export const appRouter = router({
             sourceUserId: request.requesterUserId,
             targetUserId: input.targetUserId,
           });
+        }),
+
+      // IPE-005 guard lifecycle only. These procedures never move balances,
+      // entitlements, user-owned rows or auth identities; they only establish
+      // / advance / release the durable Source write guard.
+      prepareGuard: adminProcedure
+        .input(z.object({ requestId: z.number().int().positive(), targetUserId: z.number().int().positive() }))
+        .mutation(async ({ input, ctx }) => {
+          try {
+            return await prepareAccountMergeGuard({
+              requestId: input.requestId,
+              targetUserId: input.targetUserId,
+              actorAdminId: ctx.user.id,
+            });
+          } catch (error) {
+            if (error instanceof AccountMergeLifecycleError) {
+              throw new TRPCError({
+                code: error.code === "REQUEST_NOT_FOUND" || error.code === "CASE_NOT_FOUND" ? "NOT_FOUND" : "CONFLICT",
+                message: "Account merge guard could not be prepared",
+              });
+            }
+            throw error;
+          }
+        }),
+
+      startGuard: adminProcedure
+        .input(z.object({ caseId: z.number().int().positive() }))
+        .mutation(async ({ input, ctx }) => {
+          try {
+            return await startAccountMergeGuard(input.caseId, ctx.user.id);
+          } catch (error) {
+            if (error instanceof AccountMergeLifecycleError) {
+              throw new TRPCError({ code: error.code === "CASE_NOT_FOUND" ? "NOT_FOUND" : "CONFLICT", message: "Account merge guard could not be started" });
+            }
+            throw error;
+          }
+        }),
+
+      cancelGuard: adminProcedure
+        .input(z.object({ caseId: z.number().int().positive(), reason: z.string().trim().min(1).max(1000) }))
+        .mutation(async ({ input, ctx }) => {
+          try {
+            return await cancelAccountMergeGuard(input.caseId, ctx.user.id, input.reason);
+          } catch (error) {
+            if (error instanceof AccountMergeLifecycleError) {
+              throw new TRPCError({ code: error.code === "CASE_NOT_FOUND" ? "NOT_FOUND" : "CONFLICT", message: "Account merge guard could not be cancelled" });
+            }
+            throw error;
+          }
         }),
     }),
   }),

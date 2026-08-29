@@ -362,7 +362,8 @@ describe("H. the subject is locked across revalidation and commit", () => {
   });
 
   it("both rejection transactions lock too", () => {
-    expect(svc).toMatch(/await db\.lockPaymentForUpdate\(input\.subjectId, tx\)/);
+    expect(svc).toMatch(/await orderService\.lockAndRequireReviewablePayment\(input\.subjectId, tx\)/);
+    expect(orderCode).toMatch(/await db\.lockPaymentForUpdate\(paymentId, tx\)/);
     const start = dbCode.indexOf("export async function rejectWalletTopup(");
     const body = dbCode.slice(start, start + 1200);
     expect(body).toMatch(/await lockWalletTopupForUpdate\(topupId, tx\)/);

@@ -975,29 +975,31 @@ export async function upsertReadingProgress(data: {
 
   const clampedPercent = Math.max(0, Math.min(100, Math.round(data.progressPercent)));
 
-  await db
-    .insert(readingProgress)
-    .values({
-      userId: data.userId,
-      novelId: data.novelId,
-      episodeId: data.episodeId,
-      progressPercent: clampedPercent,
-      scrollPosition: Math.max(0, Math.round(data.scrollPosition ?? 0)),
-      currentChapterNumber: data.currentChapterNumber ?? null,
-      currentChapterTitle: data.currentChapterTitle ?? null,
-      anchorKey: data.anchorKey ?? null,
-      lastReadAt: new Date(),
-    })
-    .onDuplicateKeyUpdate({
-      set: {
+  await withAccountMergeClassifiedMutationGuard(data.userId, undefined, async (guardedDb) => {
+    await guardedDb
+      .insert(readingProgress)
+      .values({
+        userId: data.userId,
+        novelId: data.novelId,
+        episodeId: data.episodeId,
         progressPercent: clampedPercent,
         scrollPosition: Math.max(0, Math.round(data.scrollPosition ?? 0)),
         currentChapterNumber: data.currentChapterNumber ?? null,
         currentChapterTitle: data.currentChapterTitle ?? null,
         anchorKey: data.anchorKey ?? null,
         lastReadAt: new Date(),
-      },
-    });
+      })
+      .onDuplicateKeyUpdate({
+        set: {
+          progressPercent: clampedPercent,
+          scrollPosition: Math.max(0, Math.round(data.scrollPosition ?? 0)),
+          currentChapterNumber: data.currentChapterNumber ?? null,
+          currentChapterTitle: data.currentChapterTitle ?? null,
+          anchorKey: data.anchorKey ?? null,
+          lastReadAt: new Date(),
+        },
+      });
+  });
 }
 
 // ============ CATEGORY CRUD ============
@@ -1031,15 +1033,23 @@ export async function deleteCategory(categoryId: number) {
 // ============ CART ============
 
 export async function getOrCreateCart(userId: number) {
-  const db = await getDb();
-  if (!db) return undefined;
+  const database = await getDb();
+  if (!database) return undefined;
 
-  let cart = await db.select().from(carts).where(eq(carts.userId, userId)).limit(1);
-  if (cart.length > 0) return cart[0];
+  const existing = await database.select().from(carts).where(eq(carts.userId, userId)).limit(1);
+  if (existing.length > 0) return existing[0];
 
-  const newCart = await db.insert(carts).values({ userId });
-  const cartId = newCart[0].insertId;
-  return { id: cartId as number, userId, createdAt: new Date(), updatedAt: new Date() };
+  // Only the create path is a classified mutation. Re-check after acquiring
+  // the Source guard because another request may have created the singleton
+  // cart while this one waited for the users-row lock.
+  return withAccountMergeClassifiedMutationGuard(userId, undefined, async (guardedDb) => {
+    const afterLock = await guardedDb.select().from(carts).where(eq(carts.userId, userId)).limit(1);
+    if (afterLock.length > 0) return afterLock[0];
+    const newCart: any = await guardedDb.insert(carts).values({ userId });
+    const header = Array.isArray(newCart) ? newCart[0] : newCart;
+    const cartId = Number(header?.insertId);
+    return { id: cartId, userId, createdAt: new Date(), updatedAt: new Date() };
+  });
 }
 
 export async function getCartItems(cartId: number, tx?: any) {
@@ -1097,29 +1107,54 @@ export async function getCartItemsForUpdate(cartId: number, tx: any) {
   return rows || [];
 }
 
-export async function addToCart(cartId: number, episodeId: number, novelId: number, price: string) {
-  const db = await getDb();
-  if (!db) return undefined;
+async function getCartOwnerUserId(cartId: number, database: any): Promise<number | undefined> {
+  const rows = await database.select({ userId: carts.userId }).from(carts).where(eq(carts.id, cartId)).limit(1);
+  return rows[0]?.userId;
+}
 
-  const result = await db.insert(cartItems).values({
-    cartId,
-    episodeId,
-    novelId,
-    price: price as any,
+export async function addToCart(cartId: number, episodeId: number, novelId: number, price: string) {
+  const database = await getDb();
+  if (!database) return undefined;
+  const userId = await getCartOwnerUserId(cartId, database);
+  if (!userId) throw new Error("Cart not found");
+
+  return withAccountMergeClassifiedMutationGuard(userId, undefined, async (guardedDb) => {
+    const lockedOwner = await getCartOwnerUserId(cartId, guardedDb);
+    if (lockedOwner !== userId) throw new Error("Cart owner changed while mutation was waiting for account lock");
+    return guardedDb.insert(cartItems).values({
+      cartId,
+      episodeId,
+      novelId,
+      price: price as any,
+    });
   });
-  return result;
 }
 
 export async function removeFromCart(cartItemId: number) {
-  const db = await getDb();
-  if (!db) return;
-  await db.delete(cartItems).where(eq(cartItems.id, cartItemId));
+  const database = await getDb();
+  if (!database) return;
+  const ownerRows = await database
+    .select({ userId: carts.userId })
+    .from(cartItems)
+    .innerJoin(carts, eq(cartItems.cartId, carts.id))
+    .where(eq(cartItems.id, cartItemId))
+    .limit(1);
+  const userId = ownerRows[0]?.userId;
+  if (!userId) return;
+
+  await withAccountMergeClassifiedMutationGuard(userId, undefined, async (guardedDb) => {
+    await guardedDb.delete(cartItems).where(eq(cartItems.id, cartItemId));
+  });
 }
 
 export async function clearCart(cartId: number, tx?: any) {
-  const db = tx || await getDb();
-  if (!db) return;
-  await db.delete(cartItems).where(eq(cartItems.cartId, cartId));
+  const database = tx || await getDb();
+  if (!database) return;
+  const userId = await getCartOwnerUserId(cartId, database);
+  if (!userId) return;
+  await withAccountMergeClassifiedMutationGuard(userId, tx, async (guardedDb) => {
+    await guardedDb.delete(cartItems).where(eq(cartItems.cartId, cartId));
+  });
 }
 
 // ============ ORDERS & PAYMENTS ============
@@ -1132,9 +1167,15 @@ export async function createOrder(data: {
   pointsDiscountAmount: string;
   totalAmount: string;
   couponCodeSnapshot?: string;
-}, tx?: any) {
+}, tx?: any): Promise<{ id: number } | undefined> {
+  if (data.userId && !tx) {
+    return withAccountMergeClassifiedMutationGuard(data.userId, undefined, async (guardedTx) =>
+      createOrder(data, guardedTx)
+    );
+  }
   const db = tx || await getDb();
   if (!db) return undefined;
+  if (data.userId && tx) await assertAccountMergeClassifiedMutationAllowed(data.userId, tx);
 
   const result = await db.insert(orders).values({
     orderNumber: data.orderNumber,
@@ -1495,9 +1536,14 @@ export async function countOrdersByDateRange(startDate: Date, endDate: Date) {
 }
 
 export async function createOrderItems(items: Array<{ orderId: number; novelId: number; episodeId: number; unitPrice: string; discountAmount: string; finalPrice: string }>, tx?: any) {
-  const db = tx || await getDb();
-  if (!db) return;
-  await db.insert(orderItems).values(items as any);
+  if (items.length === 0) return;
+  const orderId = items[0].orderId;
+  if (items.some((item) => item.orderId !== orderId)) {
+    throw new Error("createOrderItems requires one order per guarded mutation");
+  }
+  await withAccountMergeOrderMutationGuard(orderId, tx, async (guardedDb) => {
+    await guardedDb.insert(orderItems).values(items as any);
+  });
 }
 
 export async function getOrderItems(orderId: number, tx?: any) {
@@ -1521,9 +1567,18 @@ export async function getOrderItems(orderId: number, tx?: any) {
   return enriched;
 }
 
-export async function createPayment(orderId: number, slipImageUrl?: string, tx?: any) {
-  const db = tx || await getDb();
-  if (!db) return undefined;
+export async function createPayment(
+  orderId: number,
+  slipImageUrl?: string,
+  tx?: any
+): Promise<{ id: number } | undefined> {
+  if (!tx) {
+    return withAccountMergeOrderMutationGuard(orderId, undefined, async (guardedTx) =>
+      createPayment(orderId, slipImageUrl, guardedTx)
+    );
+  }
+  await withAccountMergeOrderMutationGuard(orderId, tx, async () => undefined);
+  const db = tx;
   const result = await db.insert(payments).values({
     orderId,
     status: "pending",
@@ -1573,9 +1628,6 @@ export async function getPaymentById(paymentId: number, tx?: any) {
 }
 
 export async function updateOrder(orderId: number, data: { status?: string; paymentStatus?: string; notes?: string }, tx?: any) {
-  const db = tx || await getDb();
-  if (!db) return;
-
   const updateData: any = {};
   if (data.status !== undefined) updateData.status = data.status;
   if (data.paymentStatus !== undefined) updateData.paymentStatus = data.paymentStatus;
@@ -1583,40 +1635,42 @@ export async function updateOrder(orderId: number, data: { status?: string; paym
 
   if (Object.keys(updateData).length === 0) return;
 
-  await db.update(orders).set(updateData).where(eq(orders.id, orderId));
+  await withAccountMergeOrderMutationGuard(orderId, tx, async (guardedDb) => {
+    await guardedDb.update(orders).set(updateData).where(eq(orders.id, orderId));
+  });
 }
 
 export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected" | "pending_review"; rejectionReason?: string; extractedData?: string | null; reviewReason?: string | null; fingerprint?: string | null; linkedOrderId?: number | null; linkedPaymentId?: number | null; ocrConfidence?: number | null; ocrDecision?: string | null }, tx?: any) {
-  const db = tx || await getDb();
-  if (!db) return;
-  await db.update(payments).set(data).where(eq(payments.id, paymentId));
+  await withAccountMergePaymentMutationGuard(paymentId, tx, async (guardedDb) => {
+    await guardedDb.update(payments).set(data).where(eq(payments.id, paymentId));
+  });
 }
 
 export async function approvePayment(paymentId: number, reviewedByUserId: number, tx?: any) {
-  const db = tx || await getDb();
-  if (!db) return;
-  await db
-    .update(payments)
-    .set({
-      status: "approved",
-      reviewedByUserId,
-      reviewedAt: new Date(),
-    })
-    .where(eq(payments.id, paymentId));
+  await withAccountMergePaymentMutationGuard(paymentId, tx, async (guardedDb) => {
+    await guardedDb
+      .update(payments)
+      .set({
+        status: "approved",
+        reviewedByUserId,
+        reviewedAt: new Date(),
+      })
+      .where(eq(payments.id, paymentId));
+  });
 }
 
 export async function rejectPayment(paymentId: number, reviewedByUserId: number, rejectionReason: string, tx?: any) {
-  const db = tx || await getDb();
-  if (!db) return;
-  await db
-    .update(payments)
-    .set({
-      status: "rejected",
-      rejectionReason,
-      reviewedByUserId,
-      reviewedAt: new Date(),
-    })
-    .where(eq(payments.id, paymentId));
+  await withAccountMergePaymentMutationGuard(paymentId, tx, async (guardedDb) => {
+    await guardedDb
+      .update(payments)
+      .set({
+        status: "rejected",
+        rejectionReason,
+        reviewedByUserId,
+        reviewedAt: new Date(),
+      })
+      .where(eq(payments.id, paymentId));
+  });
 }
 
 export async function getCartItemById(cartItemId: number) {
@@ -1665,17 +1719,15 @@ export async function getPendingPayments(limit?: number, offset?: number) {
 // ============ PURCHASES (ENTITLEMENTS) ============
 
 export async function createPurchase(userId: number, novelId: number, episodeId: number, orderId: number, tx?: any) {
-  const db = tx || await getDb();
-  if (!db) return undefined;
-
-  const result = await db.insert(purchases).values({
-    userId,
-    novelId,
-    episodeId,
-    orderId,
-    grantedAt: new Date(),
-  });
-  return result;
+  return withAccountMergeClassifiedMutationGuard(userId, tx, async (guardedDb) =>
+    guardedDb.insert(purchases).values({
+      userId,
+      novelId,
+      episodeId,
+      orderId,
+      grantedAt: new Date(),
+    })
+  );
 }
 
 export async function getPurchaseByUserAndEpisode(userId: number, episodeId: number, tx?: any) {
@@ -1965,19 +2017,26 @@ export async function createCoupon(data: {
 
   // Normalize code: uppercase for consistency
   const normalizedCode = String(data.code || "").trim().toUpperCase();
-  const result = await db.insert(coupons).values({
-    code: normalizedCode,
-    discountType: data.discountType,
-    discountValue: data.discountValue as any,
-    minPurchaseAmount: data.minPurchaseAmount as any,
-    maxUsageCount: data.maxUsageCount,
-    expiresAt: data.expiresAt,
-    isActive: true,
-    usageCount: 0,
-    scope,
-    ownerUserId,
-  });
-  return result;
+  const insertCoupon = (writeDb: any) =>
+    writeDb.insert(coupons).values({
+      code: normalizedCode,
+      discountType: data.discountType,
+      discountValue: data.discountValue as any,
+      minPurchaseAmount: data.minPurchaseAmount as any,
+      maxUsageCount: data.maxUsageCount,
+      expiresAt: data.expiresAt,
+      isActive: true,
+      usageCount: 0,
+      scope,
+      ownerUserId,
+    });
+
+  // Only user-scoped coupons are classified account value. Global campaign
+  // coupons remain unrelated to a Source account and keep their existing path.
+  if (ownerUserId) {
+    return withAccountMergeClassifiedMutationGuard(ownerUserId, undefined, insertCoupon);
+  }
+  return insertCoupon(db);
 }
 
 export async function updateCoupon(couponId: number, data: {
@@ -2001,6 +2060,7 @@ export async function updateCoupon(couponId: number, data: {
   }
 
   const normalizedData: any = { ...data };
+  let nextOwnerUserId: number | null = current.ownerUserId ?? null;
   if (data.code) {
     normalizedData.code = String(data.code).trim().toUpperCase();
   }
@@ -2015,6 +2075,18 @@ export async function updateCoupon(couponId: number, data: {
     const resolved = await resolveCouponScopeAndOwner(data, current as any);
     normalizedData.scope = resolved.scope;
     normalizedData.ownerUserId = resolved.ownerUserId;
+    nextOwnerUserId = resolved.ownerUserId;
+  }
+
+  const ownerIds = [current.ownerUserId, nextOwnerUserId].filter(
+    (id): id is number => typeof id === "number" && id > 0
+  );
+  if (ownerIds.length > 0) {
+    await db.transaction(async (tx: any) => {
+      await assertAccountMergeClassifiedMutationsAllowed(ownerIds, tx);
+      await tx.update(coupons).set(normalizedData).where(eq(coupons.id, couponId));
+    });
+    return;
   }
 
   await db.update(coupons).set(normalizedData).where(eq(coupons.id, couponId));
@@ -2023,6 +2095,9 @@ export async function updateCoupon(couponId: number, data: {
 export async function deleteCoupon(couponId: number) {
   const db = await getDb();
   if (!db) return;
+  const currentRows = await db.select().from(coupons).where(eq(coupons.id, couponId)).limit(1);
+  const current = currentRows[0];
+  if (!current) return;
 
   // Never delete a coupon with real usage history, or one still linked to a
   // reward-issuance row at all (even unused) - deleting it would leave a
@@ -2034,6 +2109,13 @@ export async function deleteCoupon(couponId: number) {
   const ownership = await getRewardCouponOwnership(couponId);
   if (ownership) {
     throw new Error("Cannot delete a reward coupon - deactivate it instead");
+  }
+
+  if (current.ownerUserId) {
+    await withAccountMergeClassifiedMutationGuard(current.ownerUserId, undefined, async (guardedDb) => {
+      await guardedDb.delete(coupons).where(eq(coupons.id, couponId));
+    });
+    return;
   }
 
   await db.delete(coupons).where(eq(coupons.id, couponId));
@@ -2108,9 +2190,23 @@ export async function withCouponLock<T>(
  * safe no-op, checked before the lock is even taken since it never races
  * against other orders.
  */
-export async function recordCouponUsage(couponId: number, userId: number | undefined, orderId: number, tx?: any) {
+export async function recordCouponUsage(
+  couponId: number,
+  userId: number | undefined,
+  orderId: number,
+  tx?: any
+): Promise<{ recorded?: boolean; alreadyRecorded?: boolean }> {
+  if (userId && !tx) {
+    return withAccountMergeClassifiedMutationGuard(userId, undefined, async (guardedTx) =>
+      recordCouponUsage(couponId, userId, orderId, guardedTx)
+    );
+  }
   const readDb = tx || (await getDb());
   if (!readDb) return { recorded: false };
+  if (userId && tx) {
+    // Canonical hierarchy: Source users-row / merge guard before coupon row.
+    await assertAccountMergeClassifiedMutationAllowed(userId, tx);
+  }
 
   const existing = await readDb.select().from(couponUsages)
     .where(and(eq(couponUsages.couponId, couponId), eq(couponUsages.orderId, orderId)));
@@ -2204,17 +2300,16 @@ export async function recordPointsTransaction(data: {
   referenceId?: number;
   note?: string;
 }, tx?: any) {
-  const db = tx || await getDb();
-  if (!db) return;
-
-  await db.insert(pointsTransactions).values({
-    userId: data.userId,
-    type: data.type,
-    amount: data.amount as any,
-    balanceAfter: data.balanceAfter as any,
-    referenceType: data.referenceType,
-    referenceId: data.referenceId,
-    note: data.note,
+  await withAccountMergeClassifiedMutationGuard(data.userId, tx, async (guardedDb) => {
+    await guardedDb.insert(pointsTransactions).values({
+      userId: data.userId,
+      type: data.type,
+      amount: data.amount as any,
+      balanceAfter: data.balanceAfter as any,
+      referenceType: data.referenceType,
+      referenceId: data.referenceId,
+      note: data.note,
+    });
   });
 }
 
@@ -2241,20 +2336,18 @@ export async function recordPointsTransactionReturningId(data: {
   referenceId?: number;
   note?: string;
 }, tx?: any): Promise<number> {
-  const db = tx || await getDb();
-  if (!db) throw new Error("Database not available");
-
-  const result = await db.insert(pointsTransactions).values({
-    userId: data.userId,
-    type: data.type,
-    amount: data.amount as any,
-    balanceAfter: data.balanceAfter as any,
-    referenceType: data.referenceType,
-    referenceId: data.referenceId,
-    note: data.note,
+  return withAccountMergeClassifiedMutationGuard(data.userId, tx, async (guardedDb) => {
+    const result = await guardedDb.insert(pointsTransactions).values({
+      userId: data.userId,
+      type: data.type,
+      amount: data.amount as any,
+      balanceAfter: data.balanceAfter as any,
+      referenceType: data.referenceType,
+      referenceId: data.referenceId,
+      note: data.note,
+    });
+    return extractInsertId(result);
   });
-
-  return extractInsertId(result);
 }
 
 export async function getPointsHistory(userId: number, limit?: number) {
@@ -2366,15 +2459,20 @@ export async function getWishlistNovelsByUserId(userId: number): Promise<Profile
 }
 
 export async function addToWishlist(userId: number, novelId: number) {
-  const db = await getDb();
-  if (!db) return;
-  await db.insert(wishlists).values({ userId, novelId });
+  await withAccountMergeClassifiedMutationGuard(userId, undefined, async (guardedDb) => {
+    await guardedDb.insert(wishlists).values({ userId, novelId });
+  });
 }
 
 export async function removeFromWishlist(wishlistId: number) {
-  const db = await getDb();
-  if (!db) return;
-  await db.delete(wishlists).where(eq(wishlists.id, wishlistId));
+  const database = await getDb();
+  if (!database) return;
+  const rows = await database.select({ userId: wishlists.userId }).from(wishlists).where(eq(wishlists.id, wishlistId)).limit(1);
+  const userId = rows[0]?.userId;
+  if (!userId) return;
+  await withAccountMergeClassifiedMutationGuard(userId, undefined, async (guardedDb) => {
+    await guardedDb.delete(wishlists).where(eq(wishlists.id, wishlistId));
+  });
 }
 
 // ============ BANNERS ============
@@ -2476,13 +2574,15 @@ export async function updatePaymentIfNotFinalized(
     );
   }
 
-  const result = await database
-    .update(payments)
-    .set(fields as any)
-    .where(and(...conditions));
+  return withAccountMergePaymentMutationGuard(paymentId, tx, async (guardedDb) => {
+    const result = await guardedDb
+      .update(payments)
+      .set(fields as any)
+      .where(and(...conditions));
 
-  const header = Array.isArray(result) ? result[0] : result;
-  return ((header as any)?.affectedRows || 0) > 0;
+    const header = Array.isArray(result) ? result[0] : result;
+    return ((header as any)?.affectedRows || 0) > 0;
+  });
 }
 
 /**
@@ -2514,30 +2614,32 @@ export async function publishReplacementSlipIfReviewable(
   const database = await getDb();
   if (!database) return false;
 
-  const result = await database
-    .update(payments)
-    .set({
-      slipImageUrl: fields.slipImageUrl,
-      slipSubmittedAt: fields.slipSubmittedAt,
-      status: "pending",
-      extractedData: fields.extractedData,
-      // Stale OCR verdicts from the replaced slip must not linger next to
-      // the new one - a leftover confidence/decision/reason would describe
-      // evidence for a slip that is no longer even displayed.
-      ocrConfidence: 0,
-      ocrDecision: "needs_review",
-      reviewReason: null,
-      fingerprint: null,
-    })
-    .where(
-      and(
-        eq(payments.id, paymentId),
-        or(eq(payments.status, "pending"), eq(payments.status, "pending_review"))
-      )
-    );
+  return withAccountMergePaymentMutationGuard(paymentId, undefined, async (guardedDb) => {
+    const result = await guardedDb
+      .update(payments)
+      .set({
+        slipImageUrl: fields.slipImageUrl,
+        slipSubmittedAt: fields.slipSubmittedAt,
+        status: "pending",
+        extractedData: fields.extractedData,
+        // Stale OCR verdicts from the replaced slip must not linger next to
+        // the new one - a leftover confidence/decision/reason would describe
+        // evidence for a slip that is no longer even displayed.
+        ocrConfidence: 0,
+        ocrDecision: "needs_review",
+        reviewReason: null,
+        fingerprint: null,
+      })
+      .where(
+        and(
+          eq(payments.id, paymentId),
+          or(eq(payments.status, "pending"), eq(payments.status, "pending_review"))
+        )
+      );
 
-  const header = Array.isArray(result) ? result[0] : result;
-  return ((header as any)?.affectedRows || 0) > 0;
+    const header = Array.isArray(result) ? result[0] : result;
+    return ((header as any)?.affectedRows || 0) > 0;
+  });
 }
 
 /**
@@ -2596,23 +2698,25 @@ export async function rejectPaymentIfReviewable(
   const database = tx || (await getDb());
   if (!database) return false;
 
-  const result = await database
-    .update(payments)
-    .set({
-      status: "rejected",
-      rejectionReason,
-      reviewedByUserId,
-      reviewedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(payments.id, paymentId),
-        or(eq(payments.status, "pending"), eq(payments.status, "pending_review"))
-      )
-    );
+  return withAccountMergePaymentMutationGuard(paymentId, tx, async (guardedDb) => {
+    const result = await guardedDb
+      .update(payments)
+      .set({
+        status: "rejected",
+        rejectionReason,
+        reviewedByUserId,
+        reviewedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(payments.id, paymentId),
+          or(eq(payments.status, "pending"), eq(payments.status, "pending_review"))
+        )
+      );
 
-  const header = Array.isArray(result) ? result[0] : result;
-  return ((header as any)?.affectedRows || 0) > 0;
+    const header = Array.isArray(result) ? result[0] : result;
+    return ((header as any)?.affectedRows || 0) > 0;
+  });
 }
 
 // ============ SETTINGS ============
@@ -2639,16 +2743,15 @@ export async function setSetting(key: string, value: string, description?: strin
 // ============ ORDER HISTORY ============
 
 export async function recordOrderHistory(data: { orderId: number; action: string; fromStatus?: string; toStatus?: string; actorUserId?: number; note?: string }, tx?: any) {
-  const db = tx || await getDb();
-  if (!db) return;
-
-  await db.insert(orderHistory).values({
-    orderId: data.orderId,
-    action: data.action,
-    fromStatus: data.fromStatus,
-    toStatus: data.toStatus,
-    actorUserId: data.actorUserId,
-    note: data.note,
+  await withAccountMergeOrderMutationGuard(data.orderId, tx, async (guardedDb) => {
+    await guardedDb.insert(orderHistory).values({
+      orderId: data.orderId,
+      action: data.action,
+      fromStatus: data.fromStatus,
+      toStatus: data.toStatus,
+      actorUserId: data.actorUserId,
+      note: data.note,
+    });
   });
 }
 
@@ -3866,13 +3969,28 @@ export async function getDashboardSummary() {
 
 // ============ WALLET HELPERS ============
 
-export async function getOrCreateWalletAccount(userId: number, tx?: any) {
+export async function getOrCreateWalletAccount(
+  userId: number,
+  tx?: any
+): Promise<typeof walletAccounts.$inferSelect> {
   const db = tx || await getDb();
   if (!db) throw new Error("Database not available");
 
   let account = (await db.select().from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1))[0];
 
+  if (!account && !tx) {
+    // The apparent read helper becomes a classified mutation when it creates
+    // the singleton account. Re-enter under one real guarded transaction;
+    // the in-transaction re-read below handles a concurrent creator safely.
+    return withAccountMergeClassifiedMutationGuard(userId, undefined, async (guardedTx) =>
+      getOrCreateWalletAccount(userId, guardedTx)
+    );
+  }
+
   if (!account) {
+    await assertAccountMergeClassifiedMutationAllowed(userId, tx);
+    account = (await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1))[0];
+    if (account) return account;
     const now = new Date();
     try {
       await db.insert(walletAccounts).values({
@@ -3967,41 +4085,44 @@ export async function createWalletTopup(userId: number, requestedAmount: string,
   // Use explicit timestamps to avoid production DB default mismatch
   const now = new Date();
 
-  let result: any;
-  try {
-    result = await db.insert(walletTopups).values({
-      userId,
-      requestedAmount,
-      bonusAmount,
-      creditedAmount,
-      slipImageUrl: slipImageUrl || null,
-      slipSubmittedAt: now,
-      status: "pending" as any,
-      approvalSource: "manual",
-      createdAt: now,
-      updatedAt: now,
-    });
-  } catch (insertError: any) {
-    console.error("[createWalletTopup] insert walletTopups failed", {
-      message: insertError?.message,
-      code: insertError?.code,
-      errno: insertError?.errno,
-      sqlState: insertError?.sqlState,
-      sqlMessage: insertError?.sqlMessage,
-      sql: insertError?.sql,
-      userId,
-      requestedAmount,
-      bonusAmount,
-      creditedAmount,
-      hasSlipImageUrl: !!slipImageUrl,
-      slipImageUrl,
-      now: now.toISOString(),
-      fullError: insertError,
-    });
-    throw insertError;
-  }
+  return await withAccountMergeClassifiedMutationGuard(userId, undefined, async (guardedDb) => {
+    let result: any;
+    try {
+      result = await guardedDb.insert(walletTopups).values({
+        userId,
+        requestedAmount,
+        bonusAmount,
+        creditedAmount,
+        slipImageUrl: slipImageUrl || null,
+        slipSubmittedAt: now,
+        status: "pending" as any,
+        approvalSource: "manual",
+        createdAt: now,
+        updatedAt: now,
+      });
+    } catch (insertError: any) {
+      console.error("[createWalletTopup] insert walletTopups failed", {
+        message: insertError?.message,
+        code: insertError?.code,
+        errno: insertError?.errno,
+        sqlState: insertError?.sqlState,
+        sqlMessage: insertError?.sqlMessage,
+        sql: insertError?.sql,
+        userId,
+        requestedAmount,
+        bonusAmount,
+        creditedAmount,
+        hasSlipImageUrl: !!slipImageUrl,
+        slipImageUrl,
+        now: now.toISOString(),
+        fullError: insertError,
+      });
+      throw insertError;
+    }
 
-  return (await db.select().from(walletTopups).where(eq(walletTopups.id, result[0].insertId)).limit(1))[0];
+    const header = Array.isArray(result) ? result[0] : result;
+    return (await guardedDb.select().from(walletTopups).where(eq(walletTopups.id, header.insertId)).limit(1))[0];
+  });
 }
 
 export async function getWalletTopupById(topupId: number) {
@@ -4051,12 +4172,10 @@ export async function listPendingWalletTopups(limit: number = 20, offset: number
  * IPE-001 wallet finding.
  */
 export async function updateWalletTopupSlip(topupId: number, slipImageUrl: string) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-
-  await db.update(walletTopups).set({ slipImageUrl }).where(eq(walletTopups.id, topupId));
-
-  return (await db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1))[0];
+  return withAccountMergeWalletTopupMutationGuard(topupId, undefined, async (guardedDb) => {
+    await guardedDb.update(walletTopups).set({ slipImageUrl }).where(eq(walletTopups.id, topupId));
+    return (await guardedDb.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1))[0];
+  });
 }
 
 /**
@@ -4083,36 +4202,35 @@ export async function publishWalletTopupReplacementIfReviewable(
     extractedData: string | null;
   }
 ): Promise<boolean> {
-  const database = await getDb();
-  if (!database) return false;
+  return withAccountMergeWalletTopupMutationGuard(topupId, undefined, async (guardedDb) => {
+    const result = await guardedDb
+      .update(walletTopups)
+      .set({
+        slipImageUrl: fields.slipImageUrl,
+        slipSubmittedAt: fields.slipSubmittedAt,
+        status: "pending",
+        extractedData: fields.extractedData,
+        // Stale OCR verdicts from the replaced slip must not linger next to
+        // the new one - a leftover confidence/decision/reason/duplicate flag
+        // would describe evidence for a slip that is no longer even displayed.
+        ocrConfidence: null,
+        visionConfidence: null,
+        structuredConfidence: null,
+        finalConfidence: null,
+        duplicateStatus: null,
+        ocrDecision: "needs_review",
+        reviewReason: null,
+      })
+      .where(
+        and(
+          eq(walletTopups.id, topupId),
+          or(eq(walletTopups.status, "pending"), eq(walletTopups.status, "pending_review"))
+        )
+      );
 
-  const result = await database
-    .update(walletTopups)
-    .set({
-      slipImageUrl: fields.slipImageUrl,
-      slipSubmittedAt: fields.slipSubmittedAt,
-      status: "pending",
-      extractedData: fields.extractedData,
-      // Stale OCR verdicts from the replaced slip must not linger next to
-      // the new one - a leftover confidence/decision/reason/duplicate flag
-      // would describe evidence for a slip that is no longer even displayed.
-      ocrConfidence: null,
-      visionConfidence: null,
-      structuredConfidence: null,
-      finalConfidence: null,
-      duplicateStatus: null,
-      ocrDecision: "needs_review",
-      reviewReason: null,
-    })
-    .where(
-      and(
-        eq(walletTopups.id, topupId),
-        or(eq(walletTopups.status, "pending"), eq(walletTopups.status, "pending_review"))
-      )
-    );
-
-  const header = Array.isArray(result) ? result[0] : result;
-  return ((header as any)?.affectedRows || 0) > 0;
+    const header = Array.isArray(result) ? result[0] : result;
+    return ((header as any)?.affectedRows || 0) > 0;
+  });
 }
 
 export async function createWalletTransaction(
@@ -4126,24 +4244,34 @@ export async function createWalletTransaction(
   note?: string,
   tx?: any
 ) {
-  const db = tx || await getDb();
-  if (!db) throw new Error("Database not available");
-
-  return db.insert(walletTransactions).values({
-    userId,
-    type: type as any,
-    amount,
-    balanceBefore,
-    balanceAfter,
-    referenceType,
-    referenceId,
-    note,
-  });
+  return withAccountMergeClassifiedMutationGuard(userId, tx, async (guardedDb) =>
+    guardedDb.insert(walletTransactions).values({
+      userId,
+      type: type as any,
+      amount,
+      balanceBefore,
+      balanceAfter,
+      referenceType,
+      referenceId,
+      note,
+    })
+  );
 }
 
-export async function debitWalletBalance(userId: number, amount: string, referenceType: string, referenceId: number, tx?: any) {
-  const db = tx || await getDb();
-  if (!db) throw new Error("Database not available");
+export async function debitWalletBalance(
+  userId: number,
+  amount: string,
+  referenceType: string,
+  referenceId: number,
+  tx?: any
+): Promise<string> {
+  if (!tx) {
+    return withAccountMergeClassifiedMutationGuard(userId, undefined, async (guardedTx) =>
+      debitWalletBalance(userId, amount, referenceType, referenceId, guardedTx)
+    );
+  }
+  const db = tx;
+  await assertAccountMergeClassifiedMutationAllowed(userId, tx);
 
   const account = await getOrCreateWalletAccount(userId, tx);
   const currentBalance = parseFloat(account.balance);
@@ -4176,30 +4304,31 @@ export async function debitWalletBalance(userId: number, amount: string, referen
 }
 
 export async function creditWalletBalance(userId: number, amount: string, referenceType: string, referenceId: number) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
+  return withAccountMergeClassifiedMutationGuard(userId, undefined, async (guardedDb) => {
+    const account = await getOrCreateWalletAccount(userId, guardedDb);
+    const currentBalance = parseFloat(account.balance);
+    const creditAmount = parseFloat(amount);
+    const newBalance = (currentBalance + creditAmount).toFixed(2);
 
-  const account = await getOrCreateWalletAccount(userId);
-  const currentBalance = parseFloat(account.balance);
-  const creditAmount = parseFloat(amount);
-  const newBalance = (currentBalance + creditAmount).toFixed(2);
+    await guardedDb
+      .update(walletAccounts)
+      .set({ balance: newBalance, updatedAt: new Date() })
+      .where(eq(walletAccounts.userId, userId));
 
-  await db
-    .update(walletAccounts)
-    .set({ balance: newBalance, updatedAt: new Date() })
-    .where(eq(walletAccounts.userId, userId));
+    await createWalletTransaction(
+      userId,
+      "topup_approved",
+      amount,
+      account.balance,
+      newBalance,
+      referenceType,
+      referenceId,
+      undefined,
+      guardedDb
+    );
 
-  await createWalletTransaction(
-    userId,
-    "topup_approved",
-    amount,
-    account.balance,
-    newBalance,
-    referenceType,
-    referenceId
-  );
-
-  return newBalance;
+    return newBalance;
+  });
 }
 
 export async function approveWalletTopup(
@@ -4229,13 +4358,14 @@ export async function approveWalletTopup(
 ) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const ownerCandidate = (await db.select({ userId: walletTopups.userId }).from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1))[0];
+  if (!ownerCandidate) throw new Error("Wallet top-up not found");
 
-  // REAL DATABASE TRANSACTION: All operations succeed or all rollback
-  // This prevents double-crediting if approval is retried
+  // REAL DATABASE TRANSACTION: All operations succeed or all rollback.
+  // IPE-005 lock hierarchy is users/merge-guard FIRST, subject row SECOND.
   return await db.transaction(async (tx) => {
-    // Step 0: LOCK the subject row before reading the evidence this approval
-    // rests on, so a concurrent Recheck cannot rewrite extractedData between
-    // the anti-replay decision below and the credit.
+    await assertAccountMergeClassifiedMutationAllowed(ownerCandidate.userId, tx);
+    // Step 0: LOCK the subject row only after the Source users-row guard.
     await lockWalletTopupForUpdate(topupId, tx);
 
     // Step 1: Fetch topup INSIDE transaction for consistency
@@ -4244,6 +4374,9 @@ export async function approveWalletTopup(
       throw new Error("Wallet top-up not found");
     }
     const topup = topupResult[0];
+    if (topup.userId !== ownerCandidate.userId) {
+      throw new Error("Wallet top-up owner changed while approval was waiting for account lock");
+    }
 
     // Step 1a: DURABLE SLIP-INTEGRITY BLOCK (IPE-001-C07).
     //
@@ -4553,15 +4686,19 @@ export async function rejectWalletTopup(
 ) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const ownerCandidate = (await db.select({ userId: walletTopups.userId }).from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1))[0];
+  if (!ownerCandidate) throw new Error("Wallet top-up not found");
 
   return await db.transaction(async (tx) => {
-    // Locked before any evidence is read, so an in-transaction resolution
-    // audit cannot be adjudicated against an extraction a concurrent Recheck
-    // is rewriting.
+    // IPE-005 canonical lock order: Source users-row/guard before subject.
+    await assertAccountMergeClassifiedMutationAllowed(ownerCandidate.userId, tx);
     await lockWalletTopupForUpdate(topupId, tx);
 
     const topup = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
     if (!topup || topup.length === 0) throw new Error("Wallet top-up not found");
+    if (topup[0].userId !== ownerCandidate.userId) {
+      throw new Error("Wallet top-up owner changed while rejection was waiting for account lock");
+    }
 
     // Locked, reloaded, and still reviewable: the only correct point to
     // revalidate the evidence a resolution rests on.
@@ -4633,8 +4770,12 @@ export async function repairWalletTopupCredit(
 ) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const ownerCandidate = (await db.select({ userId: walletTopups.userId }).from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1))[0];
+  if (!ownerCandidate) throw new Error("Wallet top-up not found");
 
   return await db.transaction(async (tx) => {
+    await assertAccountMergeClassifiedMutationAllowed(ownerCandidate.userId, tx);
+    await lockWalletTopupForUpdate(topupId, tx);
     // Step 1: Fetch topup
     const topupResult = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
     if (!topupResult || topupResult.length === 0) {
@@ -4754,6 +4895,7 @@ export async function adjustWalletBalance(
 
   // Use transaction to ensure atomicity
   return await db.transaction(async (tx) => {
+    await assertAccountMergeClassifiedMutationAllowed(userId, tx);
     // Get or create wallet account
     let account = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1);
     if (!account || account.length === 0) {
@@ -4920,19 +5062,19 @@ export async function createTopupLog(
   const bonusNum = parseFloat(bonus || "0");
   const total = (amountNum + bonusNum).toFixed(2);
 
-  const result = await db.insert(topupLogs).values({
-    userId,
-    amount: amount,
-    bonus: bonus || "0.00",
-    total: total,
-    method,
-    reference,
-    note,
-    createdBy,
-    createdAt: new Date(),
-  });
-
-  return result;
+  return withAccountMergeClassifiedMutationGuard(userId, undefined, async (guardedDb) =>
+    guardedDb.insert(topupLogs).values({
+      userId,
+      amount: amount,
+      bonus: bonus || "0.00",
+      total: total,
+      method,
+      reference,
+      note,
+      createdBy,
+      createdAt: new Date(),
+    })
+  );
 }
 
 export async function getTopupLogById(logId: number) {
@@ -5326,16 +5468,22 @@ export async function lockUserForPoints(userId: number, tx?: any) {
   const database = tx || (await getDb());
   if (!database) throw new Error("Database not available");
 
-  // mysql2's raw .execute() resolves to a [rows, fields] tuple, not the bare
-  // rows array (see lockCartForCheckout for the same driver-level shape).
-  // Reading `userRow.length` on the unwrapped tuple was always 2 regardless
-  // of whether a matching row existed, so "User not found" never actually
-  // fired - harmless today only because every current caller ignores the
-  // return value and relies purely on the row lock as a side effect.
+  // IPE-005: every points-changing path is also a classified Source-account
+  // mutation. When a real transaction is supplied, acquire the canonical
+  // users-row + merge-case guard instead of a points-only users-row lock.
+  // withUserPointsLock always supplies a transaction (opening one itself when
+  // necessary), as do the direct sports/check-in callers.
+  if (tx) {
+    await assertAccountMergeClassifiedMutationAllowed(userId, tx);
+    return { id: userId };
+  }
+
+  // Legacy fallback for any read/diagnostic caller that invokes this helper
+  // without a transaction. The lock cannot outlive this statement, exactly
+  // as before IPE-005; mutation entry points must use withUserPointsLock.
   const rawResult: any = await database.execute(sql`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`);
   const userRow = Array.isArray(rawResult?.[0]) ? rawResult[0] : rawResult;
   if (!userRow || userRow.length === 0) throw new Error("User not found");
-
   return userRow[0];
 }
 
@@ -5373,11 +5521,24 @@ export async function withUserPointsLock<T>(
   });
 }
 
+async function lockSportsMatchForAccountMutation(matchId: number, tx: any): Promise<void> {
+  const rows = unwrapMysqlRows(
+    await tx.execute(sql`SELECT id FROM sportsMatches WHERE id = ${matchId} FOR UPDATE`)
+  );
+  if (rows.length !== 1) throw new Error("Match not found");
+}
+
 export async function castSportsVote(userId: number, matchId: number, prediction: SportsPrediction) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
   return db.transaction(async (tx: any) => {
+    // Sports flows share a global match row plus one-or-many account rows.
+    // Always lock the match FIRST, then user rows in ascending id order. This
+    // prevents vote (user -> match FK) from deadlocking with settle/cancel
+    // (match -> users) while preserving the account-merge users-row hierarchy
+    // inside the account portion of the transaction.
+    await lockSportsMatchForAccountMutation(matchId, tx);
     const match = await getSportsMatchById(matchId, tx);
     if (!match) throw new Error("Match not found");
     if (!match.isActive || match.status !== "open") throw new Error("Voting is not open for this match");
@@ -5431,6 +5592,7 @@ export async function settleSportsMatch(matchId: number, result: SportsPredictio
   if (!db) throw new Error("Database not available");
 
   return db.transaction(async (tx: any) => {
+    await lockSportsMatchForAccountMutation(matchId, tx);
     const match = await getSportsMatchById(matchId, tx);
     if (!match) throw new Error("Match not found");
     if (match.status === "settled") throw new Error("Match has already been settled");
@@ -5452,6 +5614,15 @@ export async function settleSportsMatch(matchId: number, result: SportsPredictio
       .select()
       .from(sportsMatchVotes)
       .where(eq(sportsMatchVotes.matchId, matchId));
+
+    // Settlement can mutate several users' votes/rewards/coupons in one
+    // transaction. Acquire every involved Source lock in canonical ascending
+    // order up front so settlement cannot deadlock with another multi-user
+    // mutation or strand one guarded Source after partially processing others.
+    const pendingUserIds = votes.filter((vote: any) => vote.status === "pending").map((vote: any) => vote.userId);
+    if (pendingUserIds.length > 0) {
+      await assertAccountMergeClassifiedMutationsAllowed(pendingUserIds, tx);
+    }
 
     let winnerCount = 0;
 
@@ -5525,6 +5696,7 @@ export async function cancelSportsMatch(matchId: number) {
   if (!db) throw new Error("Database not available");
 
   return db.transaction(async (tx: any) => {
+    await lockSportsMatchForAccountMutation(matchId, tx);
     const match = await getSportsMatchById(matchId, tx);
     if (!match) throw new Error("Match not found");
     if (match.status === "settled") throw new Error("Settled match cannot be cancelled");
@@ -5535,6 +5707,10 @@ export async function cancelSportsMatch(matchId: number) {
       .select()
       .from(sportsMatchVotes)
       .where(and(eq(sportsMatchVotes.matchId, matchId), eq(sportsMatchVotes.status, "pending")));
+
+    if (pendingVotes.length > 0) {
+      await assertAccountMergeClassifiedMutationsAllowed(pendingVotes.map((vote: any) => vote.userId), tx);
+    }
 
     for (const vote of pendingVotes) {
       // Lock this voter's row BEFORE reading their balance - refunding N
@@ -5566,9 +5742,18 @@ export async function cancelSportsMatch(matchId: number) {
 }
 
 
-export async function markSportsRewardCouponUsed(couponId: number, userId: number, tx?: any) {
-  const db = tx || (await getDb());
-  if (!db) throw new Error("Database not available");
+export async function markSportsRewardCouponUsed(
+  couponId: number,
+  userId: number,
+  tx?: any
+): Promise<void> {
+  if (!tx) {
+    return withAccountMergeClassifiedMutationGuard(userId, undefined, async (guardedTx) =>
+      markSportsRewardCouponUsed(couponId, userId, guardedTx)
+    );
+  }
+  const db = tx;
+  await assertAccountMergeClassifiedMutationAllowed(userId, tx);
 
   // Find reward record for this coupon and user
   const reward = await db
@@ -6059,6 +6244,7 @@ async function claimDailyCheckinCouponReward(
   const config = await getEffectiveDailyCheckinConfig();
 
   return database.transaction(async (tx: any) => {
+    await assertAccountMergeClassifiedMutationAllowed(userId, tx);
     const code = buildDailyCheckinCouponCode(userId, checkinDate);
     const expiresAt = new Date(Date.now() + config.validityDays * 24 * 60 * 60 * 1000);
     const discountValue = config.rewardPercent.toFixed(2);
@@ -6218,8 +6404,14 @@ async function claimDailyCheckinPointReward(
 }
 
 export async function markDailyCheckinCouponUsed(couponId: number, userId: number, tx?: any): Promise<void> {
-  const database = tx || (await getDb());
-  if (!database) throw new Error("Database not available");
+  if (!tx) {
+    await withAccountMergeClassifiedMutationGuard(userId, undefined, async (guardedTx) =>
+      markDailyCheckinCouponUsed(couponId, userId, guardedTx)
+    );
+    return;
+  }
+  const database = tx;
+  await assertAccountMergeClassifiedMutationAllowed(userId, tx);
 
   const reward = await database
     .select()
@@ -6329,15 +6521,17 @@ export async function applyWalletTopupOcrUpdate(
   }
   const whereClause = guarded ? and(...guardConditions) : eq(walletTopups.id, topupId);
 
-  const result = await db.update(walletTopups).set(updateData).where(whereClause);
-  const header = Array.isArray(result) ? result[0] : result;
-  const affectedRows = (header as any)?.affectedRows || 0;
+  return withAccountMergeWalletTopupMutationGuard(topupId, undefined, async (guardedDb) => {
+    const result = await guardedDb.update(walletTopups).set(updateData).where(whereClause);
+    const header = Array.isArray(result) ? result[0] : result;
+    const affectedRows = (header as any)?.affectedRows || 0;
 
-  const topup = (
-    await db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1)
-  )[0];
+    const topup = (
+      await guardedDb.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1)
+    )[0];
 
-  return { applied: !guarded || affectedRows > 0, topup };
+    return { applied: !guarded || affectedRows > 0, topup };
+  });
 }
 
 /**
@@ -6453,9 +6647,17 @@ export async function approveWalletTopupWithOCR(
 ) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const ownerCandidate = (
+    await db.select({ userId: walletTopups.userId }).from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1)
+  )[0];
+  if (!ownerCandidate) throw new Error("Wallet top-up not found");
 
   // REAL DATABASE TRANSACTION: All operations succeed or all rollback
   return await db.transaction(async (tx) => {
+    // IPE-005 canonical lock hierarchy: Source user/merge guard first,
+    // walletTopup subject second. OCR evidence/version checks remain under
+    // the same subject row lock as before.
+    await assertAccountMergeClassifiedMutationAllowed(ownerCandidate.userId, tx);
     // Step 0: LOCK the subject row BEFORE reading the version this run
     // validates against - same reasoning as approveWalletTopup's Step 0.
     //
@@ -6478,6 +6680,9 @@ export async function approveWalletTopupWithOCR(
       throw new Error("Wallet top-up not found");
     }
     const topup = topupResult[0];
+    if (topup.userId !== ownerCandidate.userId) {
+      throw new Error("Wallet top-up owner changed while OCR approval was waiting for account lock");
+    }
 
     // Step 1a: SLIP-VERSION GATE - before any claim or write, and before the
     // status-only CAS below, since a replacement re-opens status to
@@ -7027,17 +7232,16 @@ export async function updatePaymentSlipUrlIfUnchanged(
   expectedCurrentSlipImageUrl: string,
   newSlipImageUrl: string
 ): Promise<boolean> {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
+  return withAccountMergePaymentMutationGuard(paymentId, undefined, async (guardedDb) => {
+    const updateResult = await guardedDb
+      .update(payments)
+      .set({ slipImageUrl: newSlipImageUrl })
+      .where(and(eq(payments.id, paymentId), eq(payments.slipImageUrl, expectedCurrentSlipImageUrl)));
 
-  const updateResult = await db
-    .update(payments)
-    .set({ slipImageUrl: newSlipImageUrl })
-    .where(and(eq(payments.id, paymentId), eq(payments.slipImageUrl, expectedCurrentSlipImageUrl)));
-
-  const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
-  const affectedRows = (resultHeader as any)?.affectedRows || 0;
-  return affectedRows === 1;
+    const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
+    const affectedRows = (resultHeader as any)?.affectedRows || 0;
+    return affectedRows === 1;
+  });
 }
 
 export async function updateWalletTopupSlipUrlIfUnchanged(
@@ -7045,17 +7249,16 @@ export async function updateWalletTopupSlipUrlIfUnchanged(
   expectedCurrentSlipImageUrl: string,
   newSlipImageUrl: string
 ): Promise<boolean> {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
+  return withAccountMergeWalletTopupMutationGuard(topupId, undefined, async (guardedDb) => {
+    const updateResult = await guardedDb
+      .update(walletTopups)
+      .set({ slipImageUrl: newSlipImageUrl })
+      .where(and(eq(walletTopups.id, topupId), eq(walletTopups.slipImageUrl, expectedCurrentSlipImageUrl)));
 
-  const updateResult = await db
-    .update(walletTopups)
-    .set({ slipImageUrl: newSlipImageUrl })
-    .where(and(eq(walletTopups.id, topupId), eq(walletTopups.slipImageUrl, expectedCurrentSlipImageUrl)));
-
-  const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
-  const affectedRows = (resultHeader as any)?.affectedRows || 0;
-  return affectedRows === 1;
+    const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
+    const affectedRows = (resultHeader as any)?.affectedRows || 0;
+    return affectedRows === 1;
+  });
 }
 
 /** `column` selects exactly one of sportsMatches' three legacy-asset image
@@ -7259,6 +7462,208 @@ export function buildOtherBlockingAccountRecoveryRequestsCondition(userId: numbe
     ne(accountRecoveryRequests.id, excludeRequestId),
     inArray(accountRecoveryRequests.status, BLOCKING_ACCOUNT_RECOVERY_REQUEST_STATUSES)
   );
+}
+
+// ============ ADVANCED ACCOUNT MERGE - GUARD & CONCURRENCY (IPE-005) ============
+
+export const ACCOUNT_MERGE_GUARDED_STATUSES = ["pending", "in_progress", "completed", "failed"] as const;
+export type AccountMergeGuardedStatus = (typeof ACCOUNT_MERGE_GUARDED_STATUSES)[number];
+
+/**
+ * Stable server-side refusal for a classified Source-account write while an
+ * account merge guard is durable. Client routes may map this to their own
+ * generic error message; the important contract is that the mutation throws
+ * before any classified write in the surrounding transaction can commit.
+ */
+export class AccountMergeWriteGuardError extends Error {
+  readonly code = "ACCOUNT_MERGE_SOURCE_GUARDED";
+  constructor(
+    readonly sourceUserId: number,
+    readonly mergeCaseId: number,
+    readonly mergeStatus: AccountMergeGuardedStatus
+  ) {
+    super(`Classified account mutation refused while merge case ${mergeCaseId} is ${mergeStatus}`);
+    this.name = "AccountMergeWriteGuardError";
+  }
+}
+
+function unwrapMysqlRows(rawResult: any): any[] {
+  const rows = Array.isArray(rawResult?.[0]) ? rawResult[0] : rawResult;
+  return Array.isArray(rows) ? rows : [];
+}
+
+/**
+ * Canonical account-merge user lock hierarchy. Every multi-account merge
+ * lifecycle operation and every multi-user classified mutation must acquire
+ * `users` rows in ascending id order before touching merge-case rows or any
+ * classified table. That one ordering rule prevents the source/target and
+ * multi-reward deadlock shapes from acquiring the same two users in opposite
+ * order.
+ */
+export async function lockAccountMergeUserRows(userIds: number[], tx: any): Promise<number[]> {
+  const ordered = Array.from(new Set(userIds)).sort((a, b) => a - b);
+  if (ordered.length === 0) throw new Error("At least one user id is required for account-merge locking");
+
+  for (const userId of ordered) {
+    if (!Number.isInteger(userId) || userId <= 0) throw new Error("Invalid user id for account-merge locking");
+    const rows = unwrapMysqlRows(
+      await tx.execute(sql`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`)
+    );
+    if (rows.length !== 1) throw new Error(`User ${userId} not found while acquiring account-merge lock`);
+  }
+
+  return ordered;
+}
+
+/**
+ * Locking read of every merge case for one Source. This MUST be a FOR UPDATE
+ * read rather than a plain ORM SELECT: after waiting behind another holder of
+ * the Source users-row lock, TiDB/MySQL-compatible snapshot semantics can
+ * otherwise return a transaction-start snapshot that predates the case that
+ * just activated. The locking read guarantees the mutation decides from the
+ * latest committed guard state.
+ */
+export async function getAccountMergeCasesForSourceForUpdate(sourceUserId: number, tx: any) {
+  return unwrapMysqlRows(
+    await tx.execute(
+      sql`SELECT id, sourceUserId, targetUserId, status, originAccountRecoveryRequestId, createdByAdminId, startedAt, completedAt, failedAt, cancelledAt FROM accountMergeCases WHERE sourceUserId = ${sourceUserId} ORDER BY id FOR UPDATE`
+    )
+  );
+}
+
+/**
+ * Shared correctness gate for all classified Source-account mutations.
+ * Locks every involved user first, then reads merge guards under lock. A
+ * mutation that got the user lock BEFORE prepare is therefore guaranteed to
+ * commit before prepare can activate its guard/snapshot; a mutation arriving
+ * AFTER activation waits, then sees the durable guard and fails before its
+ * transaction can commit. `cancelled` is the only released state; unknown or
+ * duplicate non-cancelled state fails closed.
+ */
+export async function assertAccountMergeClassifiedMutationsAllowed(userIds: number[], tx: any): Promise<void> {
+  const ordered = await lockAccountMergeUserRows(userIds, tx);
+  const guardedStatuses = new Set<string>(ACCOUNT_MERGE_GUARDED_STATUSES);
+
+  for (const sourceUserId of ordered) {
+    const cases = await getAccountMergeCasesForSourceForUpdate(sourceUserId, tx);
+    const nonCancelled = cases.filter((row: any) => row.status !== "cancelled");
+    if (nonCancelled.length > 1) {
+      throw new Error(`Inconsistent account-merge guard state for source ${sourceUserId}`);
+    }
+    const active = nonCancelled[0];
+    if (!active) continue;
+    if (!guardedStatuses.has(active.status)) {
+      throw new Error(`Unknown account-merge guard state '${String(active.status)}' for source ${sourceUserId}`);
+    }
+    throw new AccountMergeWriteGuardError(sourceUserId, Number(active.id), active.status as AccountMergeGuardedStatus);
+  }
+}
+
+export async function assertAccountMergeClassifiedMutationAllowed(userId: number, tx: any): Promise<void> {
+  return assertAccountMergeClassifiedMutationsAllowed([userId], tx);
+}
+
+/**
+ * Transaction wrapper for a classified mutation entry point. Existing callers
+ * that already own a transaction keep that transaction; stand-alone mutation
+ * helpers get a short transaction whose lifetime exactly matches the guard
+ * lock plus the write.
+ */
+export async function withAccountMergeClassifiedMutationGuard<T>(
+  userId: number,
+  tx: any | undefined,
+  fn: (guardedTx: any) => Promise<T>
+): Promise<T> {
+  if (tx) {
+    await assertAccountMergeClassifiedMutationAllowed(userId, tx);
+    return fn(tx);
+  }
+  const database = await getDb();
+  if (!database) throw new Error("Database not available");
+  return database.transaction(async (newTx: any) => {
+    await assertAccountMergeClassifiedMutationAllowed(userId, newTx);
+    return fn(newTx);
+  });
+}
+
+async function withAccountMergeOwnedSubjectGuard<T>(
+  subjectType: "order" | "payment" | "wallet_topup",
+  subjectId: number,
+  tx: any | undefined,
+  fn: (guardedTx: any, ownerUserId: number) => Promise<T>
+): Promise<T> {
+  const database = tx || (await getDb());
+  if (!database) throw new Error("Database not available");
+
+  const resolveOwner = async (readDb: any): Promise<number | undefined> => {
+    if (subjectType === "order") {
+      const rows = await readDb.select({ userId: orders.userId }).from(orders).where(eq(orders.id, subjectId)).limit(1);
+      return rows[0]?.userId ?? undefined;
+    }
+    if (subjectType === "wallet_topup") {
+      const rows = await readDb.select({ userId: walletTopups.userId }).from(walletTopups).where(eq(walletTopups.id, subjectId)).limit(1);
+      return rows[0]?.userId ?? undefined;
+    }
+    const paymentRows = await readDb
+      .select({ orderId: payments.orderId })
+      .from(payments)
+      .where(eq(payments.id, subjectId))
+      .limit(1);
+    const orderId = paymentRows[0]?.orderId;
+    if (!orderId) return undefined;
+    const orderRows = await readDb
+      .select({ userId: orders.userId })
+      .from(orders)
+      .where(eq(orders.id, orderId))
+      .limit(1);
+    return orderRows[0]?.userId ?? undefined;
+  };
+
+  const run = async (guardedTx: any): Promise<T> => {
+    const ownerCandidate = await resolveOwner(guardedTx);
+    if (!ownerCandidate) throw new Error(`${subjectType} ${subjectId} owner not found`);
+    await assertAccountMergeClassifiedMutationAllowed(ownerCandidate, guardedTx);
+
+    // Lock the subject only AFTER Source users/merge guard. Keep the lock
+    // query concerned only with subject existence; ownership is re-resolved
+    // immediately afterwards from the locked/current relationship. This is
+    // both simpler than a locking join and preserves compatibility with the
+    // repo's existing transaction test doubles, which intentionally model
+    // FOR UPDATE rows as `{ id }` only.
+    if (subjectType === "order") {
+      const lockedRows = unwrapMysqlRows(
+        await guardedTx.execute(sql`SELECT id FROM orders WHERE id = ${subjectId} FOR UPDATE`)
+      );
+      if (lockedRows.length !== 1) throw new Error(`order ${subjectId} not found while acquiring account lock`);
+    } else if (subjectType === "wallet_topup") {
+      const locked = await lockWalletTopupForUpdate(subjectId, guardedTx);
+      if (!locked) throw new Error(`wallet_topup ${subjectId} not found while acquiring account lock`);
+    } else {
+      const locked = await lockPaymentForUpdate(subjectId, guardedTx);
+      if (!locked) throw new Error(`payment ${subjectId} not found while acquiring account lock`);
+    }
+
+    const lockedOwner = await resolveOwner(guardedTx);
+    if (lockedOwner !== ownerCandidate) {
+      throw new Error(`${subjectType} ${subjectId} owner changed while waiting for account lock`);
+    }
+    return fn(guardedTx, ownerCandidate);
+  };
+
+  if (tx) return run(tx);
+  return database.transaction(run);
+}
+
+export function withAccountMergeOrderMutationGuard<T>(orderId: number, tx: any | undefined, fn: (guardedTx: any, ownerUserId: number) => Promise<T>) {
+  return withAccountMergeOwnedSubjectGuard("order", orderId, tx, fn);
+}
+
+export function withAccountMergePaymentMutationGuard<T>(paymentId: number, tx: any | undefined, fn: (guardedTx: any, ownerUserId: number) => Promise<T>) {
+  return withAccountMergeOwnedSubjectGuard("payment", paymentId, tx, fn);
+}
+
+export function withAccountMergeWalletTopupMutationGuard<T>(topupId: number, tx: any | undefined, fn: (guardedTx: any, ownerUserId: number) => Promise<T>) {
+  return withAccountMergeOwnedSubjectGuard("wallet_topup", topupId, tx, fn);
 }
 
 // ============ ADVANCED ACCOUNT MERGE - FOUNDATION & PREVIEW (IPE-003) ============

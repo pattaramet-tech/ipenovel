@@ -84,7 +84,12 @@ function makeDb(rows: Record<string, any[]>, onLock?: (store: Record<string, any
   let snapshot: Record<string, any[]> = JSON.parse(JSON.stringify(store));
 
   const executor = (): any => ({
-    execute: async () => {
+    execute: async (query: any) => {
+      const queryText = (query?.queryChunks ?? [])
+        .map((chunk: any) => (Array.isArray(chunk?.value) ? chunk.value.join("") : String(chunk?.value ?? "")))
+        .join("");
+      if (queryText.includes("accountMergeCases")) return [[]];
+      if (queryText.includes("FROM users")) return [[{ id: 1 }]];
       onLock?.(store);
       snapshot = JSON.parse(JSON.stringify(store));
       return [[{ id: 1 }]];
@@ -348,9 +353,9 @@ describe("the guard is ONE shared primitive, not per-caller", () => {
   it("lockAndRequireReviewablePayment is the single implementation: lock, reload, require reviewable", () => {
     const start = orderCode.indexOf("export async function lockAndRequireReviewablePayment(");
     expect(start).toBeGreaterThan(-1);
-    const body = orderCode.slice(start, start + 700);
+    const body = orderCode.slice(start, start + 1800);
     const lockIdx = body.indexOf("await db.lockPaymentForUpdate(paymentId, tx)");
-    const reloadIdx = body.indexOf("await db.getPaymentById(paymentId, tx)");
+    const reloadIdx = body.indexOf("const payment = await db.getPaymentById(paymentId, tx)");
     const guardIdx = body.indexOf("isReviewablePaymentStatus(payment.status as string)");
     const throwIdx = body.indexOf("throw new PaymentNotReviewableError(paymentId, String(payment.status))");
     expect(lockIdx).toBeGreaterThan(-1);

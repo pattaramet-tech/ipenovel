@@ -477,11 +477,28 @@ export async function lockAndRequireReviewablePayment(
   tx: any,
   expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
 ) {
+  // IPE-005 canonical hierarchy: discover the immutable order owner without
+  // taking a subject lock, then lock Source users/merge guard BEFORE the
+  // payment row. The post-lock owner check below makes the pre-read advisory
+  // only; no classified write can proceed if the relationship changed.
+  const ownerPayment = await db.getPaymentById(paymentId, tx);
+  if (!ownerPayment) throw new Error("Payment not found");
+  const ownerOrder = await db.getOrderById(ownerPayment.orderId, tx);
+  if (!ownerOrder?.userId) throw new Error("Payment order owner not found");
+  await db.assertAccountMergeClassifiedMutationAllowed(ownerOrder.userId, tx);
+
   await db.lockPaymentForUpdate(paymentId, tx);
 
   const payment = await db.getPaymentById(paymentId, tx);
   if (!payment) {
     throw new Error("Payment not found");
+  }
+  if (payment.orderId !== ownerPayment.orderId) {
+    throw new Error("Payment order changed while approval was waiting for account lock");
+  }
+  const lockedOrder = await db.getOrderById(payment.orderId, tx);
+  if (!lockedOrder || lockedOrder.userId !== ownerOrder.userId) {
+    throw new Error("Payment order owner changed while approval was waiting for account lock");
   }
 
   if (!isReviewablePaymentStatus(payment.status as string)) {
