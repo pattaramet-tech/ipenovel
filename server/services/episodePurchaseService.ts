@@ -1,5 +1,5 @@
 import { eq, and, sql, gte } from "drizzle-orm";
-import { getDb } from "../db";
+import { assertAccountMergeClassifiedMutationAllowed, getDb } from "../db";
 import {
   episodes,
   episodePurchases,
@@ -264,6 +264,9 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
 
     // ATOMIC TRANSACTION: All following operations must succeed together or all fail
     return await db.transaction(async (tx) => {
+      // IPE-005: serialize wallet debit + ledger + episode entitlement as one
+      // classified Source mutation before any of those writes can occur.
+      await assertAccountMergeClassifiedMutationAllowed(userId, tx);
       // 6. RE-CHECK if user already purchased (within transaction for safety - minimal select)
       const existingPurchase = await tx
         .select({ id: episodePurchases.id })
