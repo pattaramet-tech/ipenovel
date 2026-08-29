@@ -1,67 +1,126 @@
-import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { describe, expect, it } from "vitest";
 
-// Minimal test suite for sports-votes backend validation
-// Full integration tests require database connection setup
-// These tests verify guard conditions exist and are accessible
+function source(path: string): string {
+  return readFileSync(resolve(process.cwd(), path), "utf8");
+}
 
-describe("Sports Votes Backend Guard Conditions", () => {
-  it("castSportsVote should exist and handle validation", () => {
-    // Test would require: database connection, user setup, match setup
-    // For now, verify the guard conditions are documented:
-    // 1. ✅ Unique vote per user+match via unique index
-    // 2. ✅ Check match.status === "open"
-    // 3. ✅ Check voteDeadlineAt <= Date.now()
-    // 4. ✅ Check sufficient points (currentBalance >= cost)
-    // 5. ✅ Lock user row before deducting points
-    // 6. ✅ Deduct points in transaction
-    expect(true).toBe(true);
+describe("IPE-009 Sports Vote schema contracts", () => {
+  const schema = source("drizzle/schema.ts");
+
+  it("defines canonical competitions, teams, and reusable competition membership", () => {
+    expect(schema).toContain('export const sportsCompetitions = mysqlTable(');
+    expect(schema).toContain('export const sportsTeams = mysqlTable(');
+    expect(schema).toContain('export const sportsCompetitionTeams = mysqlTable(');
+    expect(schema).toContain('uniqueIndex("sportsCompetitionTeams_competition_team_unique")');
+    expect(schema).toContain('uniqueIndex("sportsTeams_code_unique")');
   });
 
-  it("settleSportsMatch should reject invalid states", () => {
-    // Guard conditions verified:
-    // 1. ✅ Reject settled match (already settled)
-    // 2. ✅ Reject cancelled match
-    // 3. ✅ Reject draft match
-    // 4. ✅ Reject open match before deadline
-    // 5. ✅ Idempotent: check existing reward before creating
-    expect(true).toBe(true);
+  it("keeps legacy match snapshots while adding nullable catalog references", () => {
+    expect(schema).toContain('competitionId: int("competitionId")');
+    expect(schema).toContain('homeTeamId: int("homeTeamId")');
+    expect(schema).toContain('awayTeamId: int("awayTeamId")');
+    expect(schema).toContain('homeTeamName: varchar("homeTeamName", { length: 255 }).notNull()');
+    expect(schema).toContain('homeTeamImageUrl: text("homeTeamImageUrl")');
   });
 
-  it("cancelSportsMatch should refund only pending votes", () => {
-    // Guard conditions verified:
-    // 1. ✅ Reject settled match
-    // 2. ✅ Filter only pending votes for refund
-    // 3. ✅ Refund in transaction
-    expect(true).toBe(true);
-  });
-
-  it("getSportsRewardsForUser should enforce ownership", () => {
-    // Guard conditions verified:
-    // 1. ✅ Filter by userId in sportsMatchRewards
-    // 2. ✅ Return coupon info with ownership link
-    expect(true).toBe(true);
-  });
-
-  it("markSportsRewardCouponUsed should enforce user ownership", () => {
-    // Guard conditions verified:
-    // 1. ✅ Check userId in sportsMatchRewards before marking used
-    // 2. ✅ Only mark "issued" rewards as used
-    expect(true).toBe(true);
+  it("supports point rewards without requiring a coupon and links the exact points transaction", () => {
+    expect(schema).toContain('rewardKind: mysqlEnum("rewardKind", ["coupon", "points"])');
+    expect(schema).toContain('rewardPointsAmount: decimal("rewardPointsAmount"');
+    expect(schema).toContain('couponId: int("couponId")');
+    expect(schema).toContain('pointsTransactionId: int("pointsTransactionId")');
+    expect(schema).toContain('uniqueIndex("unique_sports_match_rewards_points_tx")');
   });
 });
 
-describe("Sports Votes Database Schema Integrity", () => {
-  it("sportsMatchVotes should have unique constraint on (matchId, userId)", () => {
-    // Schema verified:
-    // ✅ uniqueIndex("unique_sports_match_user_vote").on(table.matchId, table.userId)
-    expect(true).toBe(true);
+describe("IPE-009 Sports Vote bulk import contracts", () => {
+  const db = source("server/db.ts");
+  const router = source("server/routers.ts");
+  const adminUi = source("client/src/pages/AdminSportsVotesPage.tsx");
+
+  it("resolves fixture teams against competition membership and fails the batch before any transaction on row errors", () => {
+    const bulkStart = db.indexOf("export async function bulkCreateSportsFixtures");
+    const bulkEnd = db.indexOf("// Strict numeric validation helpers", bulkStart);
+    const bulkSource = db.slice(bulkStart, bulkEnd);
+    expect(bulkSource).toContain("resolveSportsTeamReference(row.homeTeamRef, competitionTeams, allTeams)");
+    expect(bulkSource).toContain("resolveSportsTeamReference(row.awayTeamRef, competitionTeams, allTeams)");
+    expect(bulkSource).toContain("Duplicate fixture row in this import");
+    expect(bulkSource.indexOf("if (errors.length) return")).toBeLessThan(bulkSource.indexOf("database.transaction"));
   });
 
-  it("sportsMatchRewards should link vote to coupon", () => {
-    // Schema verified:
-    // ✅ voteId links to sportsMatchVotes.id with unique constraint
-    // ✅ couponId links to coupons.id with unique constraint
-    // ✅ userId enforces ownership
-    expect(true).toBe(true);
+  it("does not update canonical team assets unless the admin explicitly opts in", () => {
+    const bulkStart = db.indexOf("export async function bulkCreateSportsFixtures");
+    const bulkEnd = db.indexOf("// Strict numeric validation helpers", bulkStart);
+    const bulkSource = db.slice(bulkStart, bulkEnd);
+    expect(bulkSource).toContain("if (input.updateTeamAssets)");
+    expect(router).toContain("updateTeamAssets: z.boolean().optional()");
+    expect(adminUi).toContain("Explicitly update canonical team logos");
+    expect(adminUi).toContain("Off by default");
+  });
+
+  it("exposes XLSX/CSV bulk fixture upload and catalog-only team selectors", () => {
+    expect(adminUi).toContain('import * as XLSX from "xlsx"');
+    expect(adminUi).toContain('accept=".xlsx,.xls,.csv"');
+    expect(adminUi).toContain("Select from competition");
+    expect(adminUi).toContain("Known teams need no image columns");
+    expect(router).toContain("bulkCreate: adminProcedure");
+  });
+});
+
+describe("IPE-009 Sports Vote settlement contracts", () => {
+  const db = source("server/db.ts");
+
+  it("treats an exact retry of an already-settled result as an idempotent success", () => {
+    const start = db.indexOf("export async function settleSportsMatch");
+    const end = db.indexOf("export async function cancelSportsMatch", start);
+    const settle = db.slice(start, end);
+    expect(settle).toContain('if (match.status === "settled")');
+    expect(settle).toContain("if (match.result !== result)");
+    expect(settle).toContain("idempotent: true");
+  });
+
+  it("credits point winners through the auditable points ledger and creates no coupon in the point branch", () => {
+    const settleStart = db.indexOf("export async function settleSportsMatch");
+    const winnerRewardCheck = db.indexOf("if (existingReward.length)", settleStart);
+    const start = db.indexOf("if (rewardKind === \"points\")", winnerRewardCheck);
+    const end = db.indexOf("} else {", start);
+    const pointsBranch = db.slice(start, end);
+    expect(pointsBranch).toContain("lockUserForPoints(vote.userId, tx)");
+    expect(pointsBranch).toContain("recordPointsTransactionReturningId");
+    expect(pointsBranch).toContain('referenceType: "sports_reward"');
+    expect(pointsBranch).toContain("couponId: null");
+    expect(pointsBranch).not.toContain("tx.insert(coupons)");
+  });
+
+  it("retains the legacy coupon settlement branch", () => {
+    const start = db.indexOf("export async function settleSportsMatch");
+    const end = db.indexOf("export async function cancelSportsMatch", start);
+    const settle = db.slice(start, end);
+    expect(settle).toContain("tx.insert(coupons).values");
+    expect(settle).toContain('rewardKind: "coupon"');
+    expect(settle).toContain("rewardCouponCode: code");
+  });
+});
+
+describe("IPE-009 non-destructive migration contracts", () => {
+  const migration = source("drizzle/0042_add_sports_vote_catalog_points_rewards.sql");
+  const migrateRunner = source("scripts/migrate.mjs");
+
+  it("adds the catalog and points-reward schema without dropping legacy columns or tables", () => {
+    expect(migration).toContain("CREATE TABLE `sportsCompetitions`");
+    expect(migration).toContain("CREATE TABLE `sportsTeams`");
+    expect(migration).toContain("CREATE TABLE `sportsCompetitionTeams`");
+    expect(migration).toContain("ALTER TABLE `sportsMatches` ADD `rewardKind`");
+    expect(migration).toContain("ALTER TABLE `sportsMatchRewards` MODIFY COLUMN `couponId` int NULL");
+    expect(migration.toUpperCase()).not.toContain("DROP TABLE");
+    expect(migration.toUpperCase()).not.toContain("DROP COLUMN");
+  });
+
+  it("makes startup fail closed when critical IPE-009 schema objects are missing", () => {
+    expect(migrateRunner).toContain('"sportsCompetitions"');
+    expect(migrateRunner).toContain('{ table: "sportsMatches", column: "rewardKind" }');
+    expect(migrateRunner).toContain('{ table: "sportsMatchRewards", index: "unique_sports_match_rewards_points_tx" }');
+    expect(migrateRunner).toContain('{ table: "sportsMatchRewards", column: "couponId" }');
   });
 });
