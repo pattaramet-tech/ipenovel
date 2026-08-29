@@ -140,6 +140,18 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     reason: "The workflow's own audit trail of its own actions.",
   },
 
+  {
+    table: "accountMergeFinancialReconciliations",
+    column: "sourceUserId",
+    category: "merge_internal",
+    reason: "IPE-006's durable financial receipt records the merge workflow's own Source participant and must not be mistaken for unrelated Source-owned data.",
+  },
+  {
+    table: "accountMergeFinancialReconciliations",
+    column: "targetUserId",
+    category: "merge_internal",
+    reason: "IPE-006's durable financial receipt records the merge workflow's own Target participant and must not be scanned as unrelated account data.",
+  },
   // ---- deliberately_ignored: admin/system actor identities, never the source's own data ----
   {
     table: "accountMergeCases",
@@ -152,6 +164,12 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     column: "actorAdminId",
     category: "deliberately_ignored",
     reason: "The ADMIN who performed the audited merge action, not the source account's own data.",
+  },
+  {
+    table: "accountMergeFinancialReconciliations",
+    column: "actorAdminId",
+    category: "deliberately_ignored",
+    reason: "The ADMIN who performed IPE-006 financial reconciliation, not financial data owned by the Account Recovery source.",
   },
   {
     table: "accountRecoveryRequests",

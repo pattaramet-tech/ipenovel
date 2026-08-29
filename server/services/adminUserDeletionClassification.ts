@@ -135,6 +135,9 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
   { table: "accountMergeAuditLogs", column: "actorAdminId", category: "audit_or_actor", reference: "Account Merge Audit References", reason: "This account performed an audited merge action." },
   { table: "accountMergeAuditLogs", column: "sourceUserId", category: "audit_or_actor", reference: "Account Merge Audit References", reason: "This account was the source in a merge audit entry." },
   { table: "accountMergeAuditLogs", column: "targetUserId", category: "audit_or_actor", reference: "Account Merge Audit References", reason: "This account was the target in a merge audit entry." },
+  { table: "accountMergeFinancialReconciliations", column: "actorAdminId", category: "audit_or_actor", reference: "Account Merge Financial Receipts", reason: "This account performed an IPE-006 financial reconciliation whose attribution must remain durable." },
+  { table: "accountMergeFinancialReconciliations", column: "sourceUserId", category: "audit_or_actor", reference: "Account Merge Financial Receipts", reason: "This account was the Source recorded in an immutable financial reconciliation receipt." },
+  { table: "accountMergeFinancialReconciliations", column: "targetUserId", category: "audit_or_actor", reference: "Account Merge Financial Receipts", reason: "This account was the Target recorded in an immutable financial reconciliation receipt." },
   {
     table: "adminUserAuditLogs",
     column: "actorAdminId",

@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { getAdminUserDeleteAssessment } from "./db";
-import { adminUserAuditLogs, orders, accountMergeCases, accountMergeAuditLogs } from "../drizzle/schema";
+import {
+  adminUserAuditLogs,
+  orders,
+  accountMergeCases,
+  accountMergeAuditLogs,
+  accountMergeFinancialReconciliations,
+} from "../drizzle/schema";
 
 /**
  * Direct, unmocked test of getAdminUserDeleteAssessment's REAL check list
@@ -84,6 +90,21 @@ describe("getAdminUserDeleteAssessment", () => {
         table: "accountMergeAuditLogs",
         reference: "Account Merge Audit References",
         count: 2,
+        category: "audit_or_actor",
+      })
+    );
+  });
+
+  it("[IPE-006] a user referenced by a durable financial reconciliation receipt is blocked from hard-deletion", async () => {
+    const fakeDb = fakeCountDatabase(new Map([[accountMergeFinancialReconciliations, 1]]));
+    const result = await getAdminUserDeleteAssessment(2, fakeDb as any);
+
+    expect(result.canDelete).toBe(false);
+    expect(result.blockers).toContainEqual(
+      expect.objectContaining({
+        table: "accountMergeFinancialReconciliations",
+        reference: "Account Merge Financial Receipts",
+        count: 1,
         category: "audit_or_actor",
       })
     );
