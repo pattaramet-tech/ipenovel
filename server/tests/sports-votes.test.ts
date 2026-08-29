@@ -104,7 +104,7 @@ describe("IPE-009 Sports Vote settlement contracts", () => {
 });
 
 describe("IPE-009 non-destructive migration contracts", () => {
-  const migration = source("drizzle/0042_add_sports_vote_catalog_points_rewards.sql");
+  const migration = source("drizzle/0043_add_sports_vote_catalog_points_rewards.sql");
   const migrateRunner = source("scripts/migrate.mjs");
 
   it("adds the catalog and points-reward schema without dropping legacy columns or tables", () => {
