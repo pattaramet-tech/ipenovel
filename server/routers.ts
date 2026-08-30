@@ -2978,9 +2978,9 @@ export const appRouter = router({
         .input(z.object({
           title: z.string().min(1),
           leagueName: z.string().optional(),
-          competitionId: z.number().int().positive().optional(),
-          homeTeamId: z.number().int().positive().optional(),
-          awayTeamId: z.number().int().positive().optional(),
+          competitionId: z.number().int().positive(),
+          homeTeamId: z.number().int().positive(),
+          awayTeamId: z.number().int().positive(),
           homeTeamName: z.string().min(1).optional(),
           awayTeamName: z.string().min(1).optional(),
           homeTeamImageUrl: z.string().optional(),

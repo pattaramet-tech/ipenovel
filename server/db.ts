@@ -5539,9 +5539,9 @@ export async function getSportsVoteByMatchAndUser(matchId: number, userId: numbe
 export async function createSportsMatch(data: {
   title: string;
   leagueName?: string;
-  competitionId?: number;
-  homeTeamId?: number;
-  awayTeamId?: number;
+  competitionId: number;
+  homeTeamId: number;
+  awayTeamId: number;
   homeTeamName?: string;
   awayTeamName?: string;
   homeTeamImageUrl?: string;
@@ -5573,37 +5573,20 @@ export async function createSportsMatch(data: {
     throw new Error("voteDeadlineAt must be in the future");
   }
 
-  const hasAnyCatalogRef = data.competitionId !== undefined || data.homeTeamId !== undefined || data.awayTeamId !== undefined;
-  let catalogPatch: any = {};
-  if (hasAnyCatalogRef) {
-    if (!data.competitionId || !data.homeTeamId || !data.awayTeamId) {
-      throw new Error("competitionId, homeTeamId, and awayTeamId must be provided together");
-    }
-    const resolved = await resolveSportsMatchCatalogSelection(data.competitionId, data.homeTeamId, data.awayTeamId, db);
-    catalogPatch = {
-      competitionId: resolved.competition.id,
-      homeTeamId: resolved.homeTeam.id,
-      awayTeamId: resolved.awayTeam.id,
-      leagueName: resolved.competition.name,
-      homeTeamName: resolved.homeTeam.name,
-      awayTeamName: resolved.awayTeam.name,
-      homeTeamImageUrl: resolved.homeTeam.logoImageUrl ?? null,
-      awayTeamImageUrl: resolved.awayTeam.logoImageUrl ?? null,
-    };
-  } else {
-    const homeTeamName = data.homeTeamName?.trim();
-    const awayTeamName = data.awayTeamName?.trim();
-    if (!homeTeamName || !awayTeamName) {
-      throw new Error("Home and away team names are required for a legacy match without catalog references");
-    }
-    catalogPatch = {
-      leagueName: data.leagueName ?? null,
-      homeTeamName,
-      awayTeamName,
-      homeTeamImageUrl: data.homeTeamImageUrl ?? null,
-      awayTeamImageUrl: data.awayTeamImageUrl ?? null,
-    };
+  if (!data.competitionId || !data.homeTeamId || !data.awayTeamId) {
+    throw new Error("New Sports Vote matches require competitionId, homeTeamId, and awayTeamId");
   }
+  const resolved = await resolveSportsMatchCatalogSelection(data.competitionId, data.homeTeamId, data.awayTeamId, db);
+  const catalogPatch = {
+    competitionId: resolved.competition.id,
+    homeTeamId: resolved.homeTeam.id,
+    awayTeamId: resolved.awayTeam.id,
+    leagueName: resolved.competition.name,
+    homeTeamName: resolved.homeTeam.name,
+    awayTeamName: resolved.awayTeam.name,
+    homeTeamImageUrl: resolved.homeTeam.logoImageUrl ?? null,
+    awayTeamImageUrl: resolved.awayTeam.logoImageUrl ?? null,
+  };
 
   const result = await db.insert(sportsMatches).values({
     title: data.title.trim(),

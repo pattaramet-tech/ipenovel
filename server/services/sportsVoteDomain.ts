@@ -51,6 +51,12 @@ export function normalizeSportsCatalogCode(value: string, fieldName = "code"): s
       `${fieldName} must use 1-80 characters: A-Z, 0-9, underscore, or hyphen`
     );
   }
+  if (/^\d+$/.test(normalized)) {
+    throw new SportsVoteValidationError(
+      "INVALID_CODE",
+      `${fieldName} must include at least one letter so digit-only references remain unambiguous team IDs`
+    );
+  }
   return normalized;
 }
 

@@ -108,9 +108,10 @@ describe("Sports Vote canonical team resolution", () => {
     expect(fromLeague.logoImageUrl).toBe(fromCup.logoImageUrl);
   });
 
-  it("normalizes catalog codes deterministically", () => {
+  it("normalizes catalog codes deterministically and rejects digit-only codes so IDs stay unambiguous", () => {
     expect(normalizeSportsCatalogCode("  epl-2026 ")).toBe("EPL-2026");
     expect(() => normalizeSportsCatalogCode("bad code")).toThrow("must use 1-80 characters");
+    expect(() => normalizeSportsCatalogCode("123", "team code")).toThrow("must include at least one letter");
   });
 });
 
