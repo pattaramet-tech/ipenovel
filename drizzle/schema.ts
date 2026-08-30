@@ -1512,9 +1512,11 @@ export type InsertAccountMergeDataReconciliation = typeof accountMergeDataReconc
 
 /**
  * Immutable mapping for rows intentionally collapsed because both accounts
- * already owned the same logical access/user-data key. The original source
- * row id and surviving target row id remain auditable even when the duplicate
- * source row must be deleted to satisfy a UNIQUE(userId, key) constraint.
+ * already owned the same logical access/user-data key. `sourceRowId` and
+ * `targetRowId` are origin identities: they always mean the row that belonged
+ * to the Source account and the row that belonged to the Target account before
+ * reconciliation. They do NOT imply which row survives. Domain-specific
+ * survivor/removal details belong in `safeMetadata` when the survivor can vary.
  * No user-id columns are stored here: participant identity is recovered from
  * the parent accountMergeDataReconciliations/accountMergeCases receipt.
  */

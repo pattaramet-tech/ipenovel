@@ -496,6 +496,11 @@ describe.sequential(
         .select()
         .from(accountMergeDataDedupeRecords)
         .where(eq(accountMergeDataDedupeRecords.mergeCaseId, f.caseId));
+      expect(dedupe).toMatchObject({
+        domain: "purchases",
+        sourceRowId: sourcePurchaseId,
+        targetRowId: targetPurchaseId,
+      });
       expect(JSON.parse(String(dedupe.safeMetadata))).toMatchObject({
         sourceOrderStatus: "approved",
         targetOrderStatus: "rejected",
@@ -538,6 +543,23 @@ describe.sequential(
       expect(await db.getPurchaseByUserAndEpisode(f.targetId, 2201)).toEqual(
         expect.objectContaining({ id: targetPurchaseId })
       );
+
+      const [dedupe] = await t
+        .select()
+        .from(accountMergeDataDedupeRecords)
+        .where(eq(accountMergeDataDedupeRecords.mergeCaseId, f.caseId));
+      expect(dedupe).toMatchObject({
+        domain: "purchases",
+        sourceRowId: sourcePurchaseId,
+        targetRowId: targetPurchaseId,
+      });
+      expect(JSON.parse(String(dedupe.safeMetadata))).toMatchObject({
+        sourceOrderStatus: "rejected",
+        targetOrderStatus: "approved",
+        keptPurchaseId: targetPurchaseId,
+        removedPurchaseId: sourcePurchaseId,
+        resolution: "target_approved_kept",
+      });
     }, 30000);
 
     it("fails closed when duplicate purchases are both reader-invalid instead of guessing which future entitlement to keep", async () => {

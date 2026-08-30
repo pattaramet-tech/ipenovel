@@ -169,9 +169,12 @@ function sourceCartItemWins(source: any, target: any): boolean {
 type DedupeRecord = {
   mergeCaseId: number;
   domain: string;
+  /** Original row id owned by the merge Source before reconciliation. */
   sourceRowId: number;
+  /** Original row id owned by the merge Target before reconciliation. */
   targetRowId: number;
   keySummary: string;
+  /** Domain-specific survivor/removal facts; row-origin columns never encode liveness. */
   safeMetadata?: string | null;
 };
 
