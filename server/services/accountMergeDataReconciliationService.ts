@@ -298,21 +298,23 @@ async function assertNoAmbiguousRewardConflicts(
   // even though MySQL UNIQUE indexes permit many NULLs. Two rows for the same
   // rule+instance on the merged account would still represent duplicate reward
   // grants and must not be created merely by ownership re-parenting.
-  const targetGrantKeys = new Set(
-    targetGrants.map(
-      (row: any) =>
-        `${Number(row.ruleId)}\u0000${row.milestoneInstanceNumber == null ? "NULL" : Number(row.milestoneInstanceNumber)}`
-    )
+  const milestoneGrantKey = (row: any): string | null => {
+    if (row.grantReason !== "milestone") return null;
+    return `${Number(row.ruleId)}\u0000${row.milestoneInstanceNumber == null ? "NULL" : Number(row.milestoneInstanceNumber)}`;
+  };
+  const targetMilestoneGrantKeys = new Set(
+    targetGrants
+      .map(milestoneGrantKey)
+      .filter((key: string | null): key is string => key !== null)
   );
-  const grantConflict = sourceGrants.find((row: any) =>
-    targetGrantKeys.has(
-      `${Number(row.ruleId)}\u0000${row.milestoneInstanceNumber == null ? "NULL" : Number(row.milestoneInstanceNumber)}`
-    )
-  );
+  const grantConflict = sourceGrants.find((row: any) => {
+    const key = milestoneGrantKey(row);
+    return key !== null && targetMilestoneGrantKeys.has(key);
+  });
   if (grantConflict) {
     throw new AccountMergeDataError(
       "DAILY_REWARD_CONFLICT",
-      `Both accounts already have reward grant rule ${Number(grantConflict.ruleId)} instance ${grantConflict.milestoneInstanceNumber == null ? "NULL" : Number(grantConflict.milestoneInstanceNumber)}; merge must fail closed`
+      `Both accounts already have milestone reward grant rule ${Number(grantConflict.ruleId)} instance ${grantConflict.milestoneInstanceNumber == null ? "NULL" : Number(grantConflict.milestoneInstanceNumber)}; merge must fail closed`
     );
   }
 }
@@ -333,6 +335,22 @@ async function reconcileEntitlementRows(
     .select()
     .from(purchases)
     .where(eq(purchases.userId, targetUserId));
+  const [sourcePurchaseOrders, targetPurchaseOrders] = await Promise.all([
+    tx
+      .select({ id: orders.id, status: orders.status })
+      .from(orders)
+      .where(eq(orders.userId, sourceUserId)),
+    tx
+      .select({ id: orders.id, status: orders.status })
+      .from(orders)
+      .where(eq(orders.userId, targetUserId)),
+  ]);
+  const sourceOrderById = new Map<number, any>(
+    sourcePurchaseOrders.map((row: any) => [Number(row.id), row])
+  );
+  const targetOrderById = new Map<number, any>(
+    targetPurchaseOrders.map((row: any) => [Number(row.id), row])
+  );
   const targetPurchaseByEpisode = new Map<number, any>(
     targetPurchases.map((row: any) => [Number(row.episodeId), row])
   );
@@ -346,6 +364,63 @@ async function reconcileEntitlementRows(
       summary.purchasesMoved += 1;
       continue;
     }
+
+    if (Number(row.novelId) !== Number(target.novelId)) {
+      throw new AccountMergeDataError(
+        "PURCHASE_ENTITLEMENT_CONFLICT",
+        `Duplicate purchase for episode ${Number(row.episodeId)} references different novel ids`
+      );
+    }
+
+    const sourceOrder = sourceOrderById.get(Number(row.orderId));
+    const targetOrder = targetOrderById.get(Number(target.orderId));
+    if (!sourceOrder || !targetOrder) {
+      throw new AccountMergeDataError(
+        "PURCHASE_ORDER_MISSING",
+        `Duplicate purchase for episode ${Number(row.episodeId)} has a missing or cross-owned order reference`
+      );
+    }
+
+    const sourceApproved = sourceOrder.status === "approved";
+    const targetApproved = targetOrder.status === "approved";
+    let keptPurchaseId: number;
+    let removedPurchaseId: number;
+    let resolution: string;
+
+    if (sourceApproved && !targetApproved) {
+      // The Source row is the only reader-valid entitlement. Remove the
+      // inaccessible Target duplicate first so the unique(userId, episodeId)
+      // index permits re-parenting the valid Source purchase without changing
+      // either order or its immutable history.
+      await tx.delete(purchases).where(eq(purchases.id, target.id));
+      await tx
+        .update(purchases)
+        .set({ userId: targetUserId })
+        .where(eq(purchases.id, row.id));
+      keptPurchaseId = Number(row.id);
+      removedPurchaseId = Number(target.id);
+      resolution = "source_approved_kept";
+      summary.purchasesMoved += 1;
+    } else if (targetApproved) {
+      // Target already has a reader-valid entitlement. This also covers the
+      // both-approved case deterministically by retaining the existing Target
+      // row and preserving both parent orders/history unchanged.
+      await tx.delete(purchases).where(eq(purchases.id, row.id));
+      keptPurchaseId = Number(target.id);
+      removedPurchaseId = Number(row.id);
+      resolution = sourceApproved
+        ? "both_approved_target_kept"
+        : "target_approved_kept";
+    } else {
+      // Neither duplicate grants reader access today. Choosing one could
+      // silently discard a future entitlement if either parent order later
+      // becomes approved, so this ambiguous legacy state must fail closed.
+      throw new AccountMergeDataError(
+        "PURCHASE_ENTITLEMENT_CONFLICT",
+        `Neither duplicate purchase for episode ${Number(row.episodeId)} is linked to an approved order`
+      );
+    }
+
     dedupes.push({
       mergeCaseId: caseId,
       domain: "purchases",
@@ -354,11 +429,15 @@ async function reconcileEntitlementRows(
       keySummary: `episode:${Number(row.episodeId)}`,
       safeMetadata: JSON.stringify({
         sourceOrderId: Number(row.orderId),
+        sourceOrderStatus: String(sourceOrder.status),
         targetOrderId: Number(target.orderId),
+        targetOrderStatus: String(targetOrder.status),
         novelId: Number(row.novelId),
+        keptPurchaseId,
+        removedPurchaseId,
+        resolution,
       }),
     });
-    await tx.delete(purchases).where(eq(purchases.id, row.id));
     summary.purchasesDeduped += 1;
   }
 

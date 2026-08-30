@@ -127,13 +127,16 @@ async function createMergePair(
   return fixture;
 }
 
-async function createOrder(userId: number) {
+async function createOrder(
+  userId: number,
+  status: "pending" | "approved" | "rejected" | "cancelled" = "approved"
+) {
   const result: any = await requireTestDb()
     .insert(orders)
     .values({
       orderNumber: `IPE007-${uniqueTestTag()}`.slice(0, 50),
       userId,
-      status: "approved",
+      status,
     });
   return insertId(result);
 }
@@ -445,6 +448,137 @@ describe.sequential(
       );
     }, 30000);
 
+    it("keeps the Source approved purchase when the Target duplicate is rejected so reader access survives", async () => {
+      const f = await createMergePair();
+      const t = requireTestDb();
+      const sourceOrderId = await createOrder(f.sourceId, "approved");
+      const targetOrderId = await createOrder(f.targetId, "rejected");
+      const sourcePurchaseId = insertId(
+        await t.insert(purchases).values({
+          userId: f.sourceId,
+          novelId: 21,
+          episodeId: 2101,
+          orderId: sourceOrderId,
+        })
+      );
+      const targetPurchaseId = insertId(
+        await t.insert(purchases).values({
+          userId: f.targetId,
+          novelId: 21,
+          episodeId: 2101,
+          orderId: targetOrderId,
+        })
+      );
+
+      expect(await db.getPurchaseByUserAndEpisode(f.sourceId, 2101)).toEqual(
+        expect.objectContaining({ id: sourcePurchaseId })
+      );
+      expect(
+        await db.getPurchaseByUserAndEpisode(f.targetId, 2101)
+      ).toBeUndefined();
+
+      await reconcileAccountMergeData({ caseId: f.caseId, actorAdminId: 1 });
+
+      expect(
+        (await readById(purchases, purchases.id, sourcePurchaseId)).userId
+      ).toBe(f.targetId);
+      expect(
+        await readById(purchases, purchases.id, targetPurchaseId)
+      ).toBeUndefined();
+      expect(await db.getPurchaseByUserAndEpisode(f.targetId, 2101)).toEqual(
+        expect.objectContaining({ id: sourcePurchaseId })
+      );
+      expect(
+        await db.getPurchaseByUserAndEpisode(f.sourceId, 2101)
+      ).toBeUndefined();
+
+      const [dedupe] = await t
+        .select()
+        .from(accountMergeDataDedupeRecords)
+        .where(eq(accountMergeDataDedupeRecords.mergeCaseId, f.caseId));
+      expect(JSON.parse(String(dedupe.safeMetadata))).toMatchObject({
+        sourceOrderStatus: "approved",
+        targetOrderStatus: "rejected",
+        keptPurchaseId: sourcePurchaseId,
+        removedPurchaseId: targetPurchaseId,
+        resolution: "source_approved_kept",
+      });
+    }, 30000);
+
+    it("keeps the Target approved purchase when the Source duplicate is rejected", async () => {
+      const f = await createMergePair();
+      const t = requireTestDb();
+      const sourceOrderId = await createOrder(f.sourceId, "rejected");
+      const targetOrderId = await createOrder(f.targetId, "approved");
+      const sourcePurchaseId = insertId(
+        await t.insert(purchases).values({
+          userId: f.sourceId,
+          novelId: 22,
+          episodeId: 2201,
+          orderId: sourceOrderId,
+        })
+      );
+      const targetPurchaseId = insertId(
+        await t.insert(purchases).values({
+          userId: f.targetId,
+          novelId: 22,
+          episodeId: 2201,
+          orderId: targetOrderId,
+        })
+      );
+
+      await reconcileAccountMergeData({ caseId: f.caseId, actorAdminId: 1 });
+
+      expect(
+        await readById(purchases, purchases.id, sourcePurchaseId)
+      ).toBeUndefined();
+      expect(
+        (await readById(purchases, purchases.id, targetPurchaseId)).userId
+      ).toBe(f.targetId);
+      expect(await db.getPurchaseByUserAndEpisode(f.targetId, 2201)).toEqual(
+        expect.objectContaining({ id: targetPurchaseId })
+      );
+    }, 30000);
+
+    it("fails closed when duplicate purchases are both reader-invalid instead of guessing which future entitlement to keep", async () => {
+      const f = await createMergePair();
+      const t = requireTestDb();
+      const sourceOrderId = await createOrder(f.sourceId, "pending");
+      const targetOrderId = await createOrder(f.targetId, "rejected");
+      const sourcePurchaseId = insertId(
+        await t.insert(purchases).values({
+          userId: f.sourceId,
+          novelId: 23,
+          episodeId: 2301,
+          orderId: sourceOrderId,
+        })
+      );
+      const targetPurchaseId = insertId(
+        await t.insert(purchases).values({
+          userId: f.targetId,
+          novelId: 23,
+          episodeId: 2301,
+          orderId: targetOrderId,
+        })
+      );
+
+      await expect(
+        reconcileAccountMergeData({ caseId: f.caseId, actorAdminId: 1 })
+      ).rejects.toMatchObject({ code: "PURCHASE_ENTITLEMENT_CONFLICT" });
+      expect(
+        (await readById(purchases, purchases.id, sourcePurchaseId)).userId
+      ).toBe(f.sourceId);
+      expect(
+        (await readById(purchases, purchases.id, targetPurchaseId)).userId
+      ).toBe(f.targetId);
+      expect(
+        await t
+          .select()
+          .from(accountMergeDataReconciliations)
+          .where(eq(accountMergeDataReconciliations.mergeCaseId, f.caseId))
+      ).toHaveLength(0);
+    }, 30000);
+
     it("consolidates cart/wishlist/progress deterministically without losing the latest safe user state", async () => {
       const f = await createMergePair();
       const t = requireTestDb();
@@ -670,7 +804,85 @@ describe.sequential(
       ).toHaveLength(0);
     }, 30000);
 
-    it("fails closed on duplicate check-in or semantic reward-grant collision instead of silently dropping value", async () => {
+    it("preserves distinct daily grants from the same daily rule on different check-in dates", async () => {
+      const f = await createMergePair();
+      const t = requireTestDb();
+      const sourceCheckinId = insertId(
+        await t.insert(dailyCheckins).values({
+          userId: f.sourceId,
+          checkinDate: "2026-08-26",
+          campaignKey: "daily-points",
+        })
+      );
+      const targetCheckinId = insertId(
+        await t.insert(dailyCheckins).values({
+          userId: f.targetId,
+          checkinDate: "2026-08-25",
+          campaignKey: "daily-points",
+        })
+      );
+      const sourceGrantId = insertId(
+        await t.insert(dailyCheckinRewardGrants).values({
+          dailyCheckinId: sourceCheckinId,
+          userId: f.sourceId,
+          campaignId: 1,
+          ruleId: 8001,
+          rewardKind: "points",
+          grantReason: "daily",
+          milestoneInstanceNumber: null,
+          streakCountAtGrant: 1,
+          pointsAmount: "1.00",
+        })
+      );
+      const targetGrantId = insertId(
+        await t.insert(dailyCheckinRewardGrants).values({
+          dailyCheckinId: targetCheckinId,
+          userId: f.targetId,
+          campaignId: 1,
+          ruleId: 8001,
+          rewardKind: "points",
+          grantReason: "daily",
+          milestoneInstanceNumber: null,
+          streakCountAtGrant: 1,
+          pointsAmount: "1.00",
+        })
+      );
+
+      await reconcileAccountMergeData({ caseId: f.caseId, actorAdminId: 1 });
+
+      expect(
+        (
+          await readById(
+            dailyCheckinRewardGrants,
+            dailyCheckinRewardGrants.id,
+            sourceGrantId
+          )
+        ).userId
+      ).toBe(f.targetId);
+      expect(
+        (
+          await readById(
+            dailyCheckinRewardGrants,
+            dailyCheckinRewardGrants.id,
+            targetGrantId
+          )
+        ).userId
+      ).toBe(f.targetId);
+      expect(
+        await t
+          .select()
+          .from(dailyCheckinRewardGrants)
+          .where(eq(dailyCheckinRewardGrants.userId, f.targetId))
+      ).toHaveLength(2);
+      expect(
+        await t
+          .select()
+          .from(accountMergeDataReconciliations)
+          .where(eq(accountMergeDataReconciliations.mergeCaseId, f.caseId))
+      ).toHaveLength(1);
+    }, 30000);
+
+    it("fails closed on duplicate check-in or a true milestone rule-instance collision", async () => {
       const f = await createMergePair();
       const t = requireTestDb();
       await t.insert(dailyCheckins).values([
@@ -703,21 +915,25 @@ describe.sequential(
           dailyCheckinId: sourceCheckinId,
           userId: f.sourceId,
           campaignId: 1,
-          ruleId: 8001,
+          ruleId: 8002,
           rewardKind: "points",
-          grantReason: "daily",
-          streakCountAtGrant: 1,
-          pointsAmount: "1.00",
+          grantReason: "milestone",
+          milestoneDay: 7,
+          milestoneInstanceNumber: 1,
+          streakCountAtGrant: 7,
+          pointsAmount: "5.00",
         },
         {
           dailyCheckinId: targetCheckinId,
           userId: f.targetId,
           campaignId: 1,
-          ruleId: 8001,
+          ruleId: 8002,
           rewardKind: "points",
-          grantReason: "daily",
-          streakCountAtGrant: 1,
-          pointsAmount: "1.00",
+          grantReason: "milestone",
+          milestoneDay: 7,
+          milestoneInstanceNumber: 1,
+          streakCountAtGrant: 7,
+          pointsAmount: "5.00",
         },
       ]);
       await expect(
