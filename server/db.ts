@@ -65,6 +65,7 @@ import {
   accountMergeCases,
   accountMergeAuditLogs,
   accountMergeFinancialReconciliations,
+  accountMergeDataReconciliations,
   adminUserAuditLogs,
   paymentSlipClaims,
   Novel,
@@ -8298,6 +8299,18 @@ const ADMIN_USER_DELETE_CHECKS: Array<{
         eq(accountMergeFinancialReconciliations.actorAdminId, id),
         eq(accountMergeFinancialReconciliations.sourceUserId, id),
         eq(accountMergeFinancialReconciliations.targetUserId, id)
+      ),
+  },
+  {
+    table: "accountMergeDataReconciliations",
+    reference: "Account Merge Data Receipts",
+    category: "audit_or_actor",
+    from: accountMergeDataReconciliations,
+    condition: (id) =>
+      or(
+        eq(accountMergeDataReconciliations.actorAdminId, id),
+        eq(accountMergeDataReconciliations.sourceUserId, id),
+        eq(accountMergeDataReconciliations.targetUserId, id)
       ),
   },
   // Review finding on PR #45: a FORMER admin who performed a prior

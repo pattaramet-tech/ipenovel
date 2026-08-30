@@ -152,6 +152,18 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     category: "merge_internal",
     reason: "IPE-006's durable financial receipt records the merge workflow's own Target participant and must not be scanned as unrelated account data.",
   },
+  {
+    table: "accountMergeDataReconciliations",
+    column: "sourceUserId",
+    category: "merge_internal",
+    reason: "IPE-007's durable data-reconciliation receipt records the merge workflow's own Source participant, not unrelated Source-owned data.",
+  },
+  {
+    table: "accountMergeDataReconciliations",
+    column: "targetUserId",
+    category: "merge_internal",
+    reason: "IPE-007's durable data-reconciliation receipt records the merge workflow's own Target participant, not unrelated user-owned data.",
+  },
   // ---- deliberately_ignored: admin/system actor identities, never the source's own data ----
   {
     table: "accountMergeCases",
@@ -170,6 +182,12 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     column: "actorAdminId",
     category: "deliberately_ignored",
     reason: "The ADMIN who performed IPE-006 financial reconciliation, not financial data owned by the Account Recovery source.",
+  },
+  {
+    table: "accountMergeDataReconciliations",
+    column: "actorAdminId",
+    category: "deliberately_ignored",
+    reason: "The ADMIN who performed IPE-007 entitlement/user-data reconciliation, not data owned by the Account Recovery source.",
   },
   {
     table: "accountRecoveryRequests",
