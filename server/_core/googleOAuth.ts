@@ -9,6 +9,7 @@ import { getGoogleOAuthTransientCookieOptions, getSessionCookieOptions, readCook
 import { ENV, evaluateGoogleConnectionCutoff, isGoogleAuthActive } from "./env";
 import * as googleOidc from "./googleOidc";
 import { sdk } from "./sdk";
+import { isCompletedAccountMergeSource } from "./accountMergeSessionGate";
 
 // Direct Google OpenID Connect login/connect - the AUTH_PROVIDER=google and
 // AUTH_PROVIDER=transition counterpart to server/_core/oauth.ts's Manus
@@ -207,7 +208,11 @@ export function registerGoogleOAuthRoutes(app: Express) {
     // auth rejection - matching the discipline authErrors.ts documents for
     // every other caller of authenticateRequest.
     try {
-      await sdk.authenticateRequest(req);
+      const currentUser = await sdk.authenticateRequest(req);
+      if (await isCompletedAccountMergeSource(currentUser)) {
+        res.status(409).json({ error: "This account has been merged. Sign out and sign in again." });
+        return;
+      }
     } catch (error) {
       if (isAnonymousCredentialError(error)) {
         res.status(401).json({ error: "Sign in before connecting a Google account" });
@@ -405,6 +410,10 @@ async function handleConnectCallback(req: Request, res: Response, deps: ConnectC
     // from this re-verified session - never a query string, never a
     // cookie value of its own, never anything client-supplied.
     const currentUser = await sdk.authenticateRequest(req);
+    if (await isCompletedAccountMergeSource(currentUser)) {
+      redirectFromConnectCallback("session_expired");
+      return;
+    }
 
     const tokens = await googleOidc.exchangeCodeForTokens({ code, codeVerifier: verifierCookie });
     const claims = await googleOidc.verifyGoogleIdToken(tokens.idToken, nonceCookie);

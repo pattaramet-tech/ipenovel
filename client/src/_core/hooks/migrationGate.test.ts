@@ -69,12 +69,27 @@ function baseInput(overrides: Partial<MigrationGateInput> = {}): MigrationGateIn
     authLoading: false,
     statusLoading: false,
     statusError: false,
+    accountMerged: false,
     needsConnection: false,
     ...overrides,
   };
 }
 
 describe("resolveMigrationGateAction", () => {
+  it("completed Account Merge Source -> block_merged before any Google-migration path decision", () => {
+    expect(resolveMigrationGateAction(baseInput({ accountMerged: true }))).toBe("block_merged");
+  });
+
+  it("completed Account Merge Source on /account/recovery -> block_merged even though the path is exempt from the ordinary Google migration gate", () => {
+    expect(
+      resolveMigrationGateAction(baseInput({ pathname: "/account/recovery", accountMerged: true, needsConnection: true }))
+    ).toBe("block_merged");
+  });
+
+  it("completed Account Merge Source on /admin would also block_merged if such a state were ever supplied; server merge rules forbid admins from becoming merge participants", () => {
+    expect(resolveMigrationGateAction(baseInput({ pathname: "/admin", accountMerged: true }))).toBe("block_merged");
+  });
+
   it("server says needsConnection: false -> allow, regardless of everything else about the feature being on/off (that's the server's call, baked into needsConnection already)", () => {
     expect(resolveMigrationGateAction(baseInput({ needsConnection: false }))).toBe("allow");
   });

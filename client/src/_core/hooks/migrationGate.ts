@@ -77,7 +77,7 @@ export function isMigrationGateExemptPath(pathname: string): boolean {
   return false;
 }
 
-export type MigrationGateAction = "allow" | "block_loading" | "block_error" | "redirect_upgrade";
+export type MigrationGateAction = "allow" | "block_loading" | "block_error" | "block_merged" | "redirect_upgrade";
 
 export type MigrationGateInput = {
   pathname: string;
@@ -95,6 +95,8 @@ export type MigrationGateInput = {
    * "allow" and never "redirect_upgrade".
    */
   statusError: boolean;
+  /** True only when this authenticated user is the retained Source row of a completed Advanced Account Merge. */
+  accountMerged?: boolean;
   /** The server's own `needsConnection` field (server/_core/env.ts's evaluateGoogleConnectionCutoff, combined with this user's own connected/exempt status) - the ONE field this function branches on to decide redirect_upgrade. `undefined` = not yet resolved (distinct from a real `false`). */
   needsConnection: boolean | undefined;
 };
@@ -108,6 +110,12 @@ export type MigrationGateInput = {
  * server's own status response says `needsConnection: true`.
  */
 export function resolveMigrationGateAction(input: MigrationGateInput): MigrationGateAction {
+  // Completed merge Sources retain their historical users row/openId, so a
+  // stale JWT may still authenticate. This state has priority over the Google
+  // migration-path exemptions: /account/recovery is exactly where a user is
+  // most likely to land after an account workflow and must show the explicit
+  // merged/re-login outcome rather than silently allowing continued use.
+  if (input.accountMerged === true) return "block_merged";
   if (isMigrationGateExemptPath(input.pathname)) return "allow";
   // Auth state itself hasn't settled yet - never redirect based on a
   // guess; let the page render normally until useAuth() resolves one way
