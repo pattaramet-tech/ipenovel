@@ -6,6 +6,7 @@ import {
   accountMergeCases,
   accountMergeAuditLogs,
   accountMergeFinancialReconciliations,
+  accountMergeDataReconciliations,
 } from "../drizzle/schema";
 
 /**
@@ -104,6 +105,21 @@ describe("getAdminUserDeleteAssessment", () => {
       expect.objectContaining({
         table: "accountMergeFinancialReconciliations",
         reference: "Account Merge Financial Receipts",
+        count: 1,
+        category: "audit_or_actor",
+      })
+    );
+  });
+
+  it("[IPE-007] a user referenced by a durable data reconciliation receipt is blocked from hard-deletion", async () => {
+    const fakeDb = fakeCountDatabase(new Map([[accountMergeDataReconciliations, 1]]));
+    const result = await getAdminUserDeleteAssessment(2, fakeDb as any);
+
+    expect(result.canDelete).toBe(false);
+    expect(result.blockers).toContainEqual(
+      expect.objectContaining({
+        table: "accountMergeDataReconciliations",
+        reference: "Account Merge Data Receipts",
         count: 1,
         category: "audit_or_actor",
       })

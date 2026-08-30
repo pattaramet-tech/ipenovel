@@ -1482,6 +1482,70 @@ export type AccountMergeFinancialReconciliation = typeof accountMergeFinancialRe
 export type InsertAccountMergeFinancialReconciliation = typeof accountMergeFinancialReconciliations.$inferInsert;
 
 /**
+ * Durable once-only receipt for IPE-007 entitlement/user-data reconciliation.
+ * The UNIQUE mergeCaseId is the database-level retry/concurrency barrier,
+ * mirroring IPE-006's financial receipt. `safeSummary` contains aggregate
+ * action counts only; per-row duplicate consolidation evidence lives in the
+ * append-only accountMergeDataDedupeRecords table below so large accounts do
+ * not risk overflowing one TEXT receipt.
+ */
+export const accountMergeDataReconciliations = mysqlTable(
+  "accountMergeDataReconciliations",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    mergeCaseId: int("mergeCaseId").notNull(),
+    sourceUserId: int("sourceUserId").notNull(),
+    targetUserId: int("targetUserId").notNull(),
+    actorAdminId: int("actorAdminId").notNull(),
+    safeSummary: text("safeSummary").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    mergeCaseUnique: uniqueIndex("accountMergeDataReconciliations_mergeCaseId_unique").on(table.mergeCaseId),
+    sourceUserIdIdx: index("accountMergeDataReconciliations_sourceUserId_idx").on(table.sourceUserId),
+    targetUserIdIdx: index("accountMergeDataReconciliations_targetUserId_idx").on(table.targetUserId),
+  })
+);
+
+export type AccountMergeDataReconciliation = typeof accountMergeDataReconciliations.$inferSelect;
+export type InsertAccountMergeDataReconciliation = typeof accountMergeDataReconciliations.$inferInsert;
+
+/**
+ * Immutable mapping for rows intentionally collapsed because both accounts
+ * already owned the same logical access/user-data key. `sourceRowId` and
+ * `targetRowId` are origin identities: they always mean the row that belonged
+ * to the Source account and the row that belonged to the Target account before
+ * reconciliation. They do NOT imply which row survives. Domain-specific
+ * survivor/removal details belong in `safeMetadata` when the survivor can vary.
+ * No user-id columns are stored here: participant identity is recovered from
+ * the parent accountMergeDataReconciliations/accountMergeCases receipt.
+ */
+export const accountMergeDataDedupeRecords = mysqlTable(
+  "accountMergeDataDedupeRecords",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    mergeCaseId: int("mergeCaseId").notNull(),
+    domain: varchar("domain", { length: 40 }).notNull(),
+    sourceRowId: int("sourceRowId").notNull(),
+    targetRowId: int("targetRowId").notNull(),
+    keySummary: varchar("keySummary", { length: 255 }).notNull(),
+    safeMetadata: text("safeMetadata"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    caseIdx: index("accountMergeDataDedupeRecords_mergeCaseId_idx").on(table.mergeCaseId),
+    sourceUnique: uniqueIndex("accountMergeDataDedupeRecords_case_domain_source_unique").on(
+      table.mergeCaseId,
+      table.domain,
+      table.sourceRowId
+    ),
+  })
+);
+
+export type AccountMergeDataDedupeRecord = typeof accountMergeDataDedupeRecords.$inferSelect;
+export type InsertAccountMergeDataDedupeRecord = typeof accountMergeDataDedupeRecords.$inferInsert;
+
+/**
  * Append-only audit trail for the Admin Users Management page - one row per
  * name/role edit or hard delete performed through admin.users.update /
  * admin.users.delete (server/routers.ts). Deliberately NO foreign key from
