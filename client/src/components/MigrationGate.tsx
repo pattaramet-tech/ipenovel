@@ -39,8 +39,12 @@ export default function MigrationGate({ children }: { children: ReactNode }) {
   // it must still resolve completed-merge Source status so a stale Source
   // session sees the explicit merged/re-login outcome. Login/upgrade/admin
   // paths keep their existing no-query behavior.
-  const shouldQuery = isAuthenticated && (!exempt || pathname === "/account/recovery");
-  const statusQuery = trpc.auth.googleConnectionCutoffStatus.useQuery(undefined, { enabled: shouldQuery });
+  const shouldQuery =
+    isAuthenticated && (!exempt || pathname === "/account/recovery");
+  const statusQuery = trpc.auth.googleConnectionCutoffStatus.useQuery(
+    undefined,
+    { enabled: shouldQuery }
+  );
 
   const action = resolveMigrationGateAction({
     pathname,
@@ -61,7 +65,10 @@ export default function MigrationGate({ children }: { children: ReactNode }) {
   if (action === "block_loading" || action === "redirect_upgrade") {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
-        <Loader2 className="w-8 h-8 animate-spin text-blue-600" aria-hidden="true" />
+        <Loader2
+          className="w-8 h-8 animate-spin text-blue-600"
+          aria-hidden="true"
+        />
       </div>
     );
   }
@@ -70,12 +77,26 @@ export default function MigrationGate({ children }: { children: ReactNode }) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 px-4 py-12">
         <Card className="w-full max-w-md p-8 text-center">
-          <CheckCircle2 className="w-10 h-10 text-green-600 mx-auto mb-4" aria-hidden="true" />
-          <h1 className="text-xl font-bold text-slate-900 mb-2">Account merge completed</h1>
+          <CheckCircle2
+            className="w-10 h-10 text-green-600 mx-auto mb-4"
+            aria-hidden="true"
+          />
+          <h1 className="text-xl font-bold text-slate-900 mb-2">
+            Account merge completed
+          </h1>
           <p className="text-sm text-slate-600 leading-relaxed mb-6">
-            This session belongs to the Source account that has already been merged. Sign out, then sign in with Google again to continue with the merged Target account.
+            This session belongs to the Source account that has already been
+            merged. Sign out, then sign in with Google again to continue with
+            the merged Target account.
           </p>
-          <Button size="lg" className="w-full" onClick={() => logout()}>
+          <Button
+            size="lg"
+            className="w-full"
+            onClick={async () => {
+              await logout();
+              navigate("/login", { replace: true });
+            }}
+          >
             Sign out and sign in again
           </Button>
         </Card>
@@ -94,16 +115,31 @@ export default function MigrationGate({ children }: { children: ReactNode }) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 px-4 py-12">
         <Card className="w-full max-w-md p-8 text-center">
-          <AlertTriangle className="w-10 h-10 text-amber-500 mx-auto mb-4" aria-hidden="true" />
-          <h1 className="text-xl font-bold text-slate-900 mb-2">ไม่สามารถตรวจสอบสถานะบัญชีได้</h1>
+          <AlertTriangle
+            className="w-10 h-10 text-amber-500 mx-auto mb-4"
+            aria-hidden="true"
+          />
+          <h1 className="text-xl font-bold text-slate-900 mb-2">
+            ไม่สามารถตรวจสอบสถานะบัญชีได้
+          </h1>
           <p className="text-sm text-slate-600 leading-relaxed mb-6">
-            เกิดข้อผิดพลาดชั่วคราว กรุณาลองใหม่อีกครั้ง หากยังไม่สำเร็จ กรุณาติดต่อฝ่ายช่วยเหลือ
+            เกิดข้อผิดพลาดชั่วคราว กรุณาลองใหม่อีกครั้ง หากยังไม่สำเร็จ
+            กรุณาติดต่อฝ่ายช่วยเหลือ
           </p>
           <div className="flex flex-col gap-3">
-            <Button size="lg" className="w-full" onClick={() => statusQuery.refetch()}>
+            <Button
+              size="lg"
+              className="w-full"
+              onClick={() => statusQuery.refetch()}
+            >
               ลองใหม่
             </Button>
-            <Button variant="outline" size="lg" className="w-full" onClick={() => logout()}>
+            <Button
+              variant="outline"
+              size="lg"
+              className="w-full"
+              onClick={() => logout()}
+            >
               ออกจากระบบ
             </Button>
             {supportUrl && (
@@ -134,7 +170,11 @@ export default function MigrationGate({ children }: { children: ReactNode }) {
 
   return (
     <>
-      {showBanner && <GoogleConnectionCutoffBanner cutoffAt={statusQuery.data?.cutoffAt ?? null} />}
+      {showBanner && (
+        <GoogleConnectionCutoffBanner
+          cutoffAt={statusQuery.data?.cutoffAt ?? null}
+        />
+      )}
       {children}
     </>
   );

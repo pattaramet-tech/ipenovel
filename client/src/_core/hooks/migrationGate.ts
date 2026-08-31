@@ -36,10 +36,16 @@ export function isMandatoryGoogleConnectionEnabled(
   viteAuthProvider: string | undefined,
   viteRequireGoogleConnection: string | undefined
 ): boolean {
-  return viteAuthProvider === "transition" && viteRequireGoogleConnection === "true";
+  return (
+    viteAuthProvider === "transition" && viteRequireGoogleConnection === "true"
+  );
 }
 
-const GATE_EXEMPT_EXACT_PATHS = new Set(["/account/upgrade-login", "/login", "/account/recovery"]);
+const GATE_EXEMPT_EXACT_PATHS = new Set([
+  "/account/upgrade-login",
+  "/login",
+  "/account/recovery",
+]);
 
 /**
  * Paths the gate must never redirect away from, regardless of connection
@@ -77,7 +83,12 @@ export function isMigrationGateExemptPath(pathname: string): boolean {
   return false;
 }
 
-export type MigrationGateAction = "allow" | "block_loading" | "block_error" | "block_merged" | "redirect_upgrade";
+export type MigrationGateAction =
+  | "allow"
+  | "block_loading"
+  | "block_error"
+  | "block_merged"
+  | "redirect_upgrade";
 
 export type MigrationGateInput = {
   pathname: string;
@@ -109,20 +120,25 @@ export type MigrationGateInput = {
  * authenticated, non-exempt-path user, and even then only once the
  * server's own status response says `needsConnection: true`.
  */
-export function resolveMigrationGateAction(input: MigrationGateInput): MigrationGateAction {
+export function resolveMigrationGateAction(
+  input: MigrationGateInput
+): MigrationGateAction {
+  // A confirmed anonymous state must win over any cached status-query payload.
+  // TanStack Query can retain the previous accountMerged=true data after a
+  // successful logout disables the query; once auth.me says there is no
+  // session, that stale payload must never trap the browser on block_merged.
+  if (!input.isAuthenticated) return "allow";
+
   // Completed merge Sources retain their historical users row/openId, so a
-  // stale JWT may still authenticate. This state has priority over the Google
-  // migration-path exemptions: /account/recovery is exactly where a user is
-  // most likely to land after an account workflow and must show the explicit
-  // merged/re-login outcome rather than silently allowing continued use.
+  // stale JWT may still authenticate. For an authenticated Source this state
+  // stays blocked even while logout is pending, and has priority over the
+  // Google migration-path exemptions such as /account/recovery.
   if (input.accountMerged === true) return "block_merged";
   if (isMigrationGateExemptPath(input.pathname)) return "allow";
-  // Auth state itself hasn't settled yet - never redirect based on a
-  // guess; let the page render normally until useAuth() resolves one way
-  // or the other (mirrors useAuth's own redirectOnUnauthenticated effect,
-  // which waits for the same signal before acting).
+  // Auth state itself hasn't settled yet - never redirect based on a guess.
+  // This runs after the authenticated merged-session check so a logout that
+  // is merely pending cannot briefly reveal the underlying protected page.
   if (input.authLoading) return "allow";
-  if (!input.isAuthenticated) return "allow";
   if (input.statusLoading) return "block_loading";
   if (input.statusError) return "block_error";
   if (input.needsConnection === true) return "redirect_upgrade";
@@ -147,6 +163,13 @@ export type UpcomingCutoffBannerInput = {
  * already connected - connecting immediately hides the banner on next
  * refetch, without any separate dismiss/hide state to manage.
  */
-export function shouldShowUpcomingCutoffBanner(input: UpcomingCutoffBannerInput): boolean {
-  return input.enabled && !input.activeNow && input.exempt === false && input.googleConnected === false;
+export function shouldShowUpcomingCutoffBanner(
+  input: UpcomingCutoffBannerInput
+): boolean {
+  return (
+    input.enabled &&
+    !input.activeNow &&
+    input.exempt === false &&
+    input.googleConnected === false
+  );
 }
