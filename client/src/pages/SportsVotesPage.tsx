@@ -29,6 +29,7 @@ const predictionLabelMap: Record<string, string> = {
 };
 
 const rewardStatusConfig: Record<string, { text: string; color: string; badgeVariant: string }> = {
+  granted: { text: "Granted", color: "bg-emerald-50", badgeVariant: "default" },
   issued: { text: "sports.available", color: "bg-blue-50", badgeVariant: "secondary" },
   used: { text: "sports.alreadyUsed", color: "bg-green-50", badgeVariant: "default" },
   expired: { text: "sports.expired", color: "bg-slate-50", badgeVariant: "outline" },
@@ -52,9 +53,10 @@ function getSportStatusLabel(t: any, status?: string): string {
 }
 
 function rewardText(match: any): string {
+  if (match.rewardKind === "points") return `${Number(match.rewardPointsAmount || 0).toFixed(2)} pts`;
   const value = Number(match.rewardDiscountValue || 0);
-  if (match.rewardDiscountType === "percentage") return `${value}%`;
-  return `฿${value.toFixed(2)}`;
+  if (match.rewardDiscountType === "percentage") return `${value}% coupon`;
+  return `฿${value.toFixed(2)} coupon`;
 }
 
 export default function SportsVotesPage() {
@@ -191,7 +193,7 @@ export default function SportsVotesPage() {
               {rewards.map((reward: any) => {
                 const config = rewardStatusConfig[reward.rewardStatus] || rewardStatusConfig.expired;
                 return (
-                  <Card key={`${reward.matchId}-${reward.couponCode}`} className={config.color}>
+                  <Card key={`${reward.matchId}-${reward.pointsTransactionId || reward.couponCode || reward.issuedAt}`} className={config.color}>
                     <CardHeader className="pb-3">
                       <CardTitle className="text-base">{reward.matchTitle}</CardTitle>
                       <p className="text-xs text-slate-600">
@@ -208,48 +210,64 @@ export default function SportsVotesPage() {
                         </p>
                         <p className="flex items-center gap-1">
                           {t("sports.status")}:
-                          <Badge variant={config.badgeVariant as any}>{t(config.text)}</Badge>
+                          <Badge variant={config.badgeVariant as any}>
+                            {reward.rewardStatus === "granted" ? "Granted" : t(config.text)}
+                          </Badge>
                           {reward.rewardStatus === "void" && <AlertCircle className="w-3 h-3 text-red-500" />}
                         </p>
                       </div>
-                      <div className="bg-white rounded p-2 text-center">
-                        <p className="text-xs text-slate-600">{t("sports.couponCode")}</p>
-                        <code className="font-bold text-sm">{reward.couponCode}</code>
-                      </div>
-                      <div className="text-xs text-slate-600 space-y-1">
-                        <p>
-                          {t("sports.discount")}: {reward.discountType === "percentage" ? `${reward.discountValue}%` : `฿${reward.discountValue}`}
-                        </p>
-                        {reward.minPurchaseAmount && <p>{t("sports.minPurchase")}: ฿{reward.minPurchaseAmount}</p>}
-                        {reward.expiresAt && <p>{t("sports.expires")}: {formatDateThai(reward.expiresAt)}</p>}
-                      </div>
 
-                      {reward.rewardStatus === "issued" && (
-                        <div className="flex flex-col gap-2">
-                          <Button
-                            size="sm"
-                            className="w-full"
-                            onClick={() => {
-                              navigator.clipboard.writeText(reward.couponCode);
-                              toast.success(t("sports.copyAs"));
-                            }}
-                          >
-                            <Copy className="w-3 h-3 mr-1" /> {t("sports.btnCopyCoupon")}
-                          </Button>
-                          <Button size="sm" variant="outline" className="w-full" onClick={() => navigate("/cart")}>
-                            {t("sports.btnUseCoupon")}
-                          </Button>
-                        </div>
-                      )}
-
-                      {reward.rewardStatus !== "issued" && (
-                        <Button size="sm" className="w-full" disabled>
-                          {reward.rewardStatus === "used"
-                            ? t("sports.alreadyUsed")
-                            : reward.rewardStatus === "void"
-                              ? t("sports.voided")
-                              : t("sports.expired")}
-                        </Button>
+                      {reward.rewardKind === "points" ? (
+                        <>
+                          <div className="bg-white rounded p-3 text-center">
+                            <p className="text-xs text-slate-600">Winner reward</p>
+                            <p className="text-2xl font-bold text-emerald-700">+{Number(reward.pointsAmount || 0).toFixed(2)} pts</p>
+                          </div>
+                          <div className="text-xs text-slate-600 space-y-1">
+                            {reward.balanceAfterGrant != null && <p>Balance after grant: {Number(reward.balanceAfterGrant).toFixed(2)} pts</p>}
+                            {reward.pointsTransactionId != null && <p>Transaction #{reward.pointsTransactionId}</p>}
+                          </div>
+                          <Button size="sm" className="w-full" disabled>Credited to points balance</Button>
+                        </>
+                      ) : (
+                        <>
+                          <div className="bg-white rounded p-2 text-center">
+                            <p className="text-xs text-slate-600">{t("sports.couponCode")}</p>
+                            <code className="font-bold text-sm">{reward.couponCode}</code>
+                          </div>
+                          <div className="text-xs text-slate-600 space-y-1">
+                            <p>
+                              {t("sports.discount")}: {reward.discountType === "percentage" ? `${reward.discountValue}%` : `฿${reward.discountValue}`}
+                            </p>
+                            {reward.minPurchaseAmount && <p>{t("sports.minPurchase")}: ฿{reward.minPurchaseAmount}</p>}
+                            {reward.expiresAt && <p>{t("sports.expires")}: {formatDateThai(reward.expiresAt)}</p>}
+                          </div>
+                          {reward.rewardStatus === "issued" ? (
+                            <div className="flex flex-col gap-2">
+                              <Button
+                                size="sm"
+                                className="w-full"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(reward.couponCode);
+                                  toast.success(t("sports.copyAs"));
+                                }}
+                              >
+                                <Copy className="w-3 h-3 mr-1" /> {t("sports.btnCopyCoupon")}
+                              </Button>
+                              <Button size="sm" variant="outline" className="w-full" onClick={() => navigate("/cart")}>
+                                {t("sports.btnUseCoupon")}
+                              </Button>
+                            </div>
+                          ) : (
+                            <Button size="sm" className="w-full" disabled>
+                              {reward.rewardStatus === "used"
+                                ? t("sports.alreadyUsed")
+                                : reward.rewardStatus === "void"
+                                  ? t("sports.voided")
+                                  : t("sports.expired")}
+                            </Button>
+                          )}
+                        </>
                       )}
                     </CardContent>
                   </Card>
@@ -316,7 +334,7 @@ export default function SportsVotesPage() {
                     <div className="flex items-start justify-between gap-2">
                       <div>
                         <CardTitle className="text-lg line-clamp-1">{match.title}</CardTitle>
-                        <p className="text-xs text-slate-500">{match.leagueName || "Football"}</p>
+                        <p className="text-xs text-slate-500">{match.competitionName || match.leagueName || "Football"}</p>
                       </div>
                       <Badge variant={match.status === "open" ? "default" : "secondary"}>{getSportStatusLabel(t, match.status)}</Badge>
                     </div>
