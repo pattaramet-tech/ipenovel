@@ -309,6 +309,13 @@
       "when": 1788027469369,
       "tag": "0043_broken_madrox",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "5",
+      "when": 1788182918549,
+      "tag": "0044_add_sports_vote_catalog_points_rewards",
+      "breakpoints": true
     }
   ]
 }

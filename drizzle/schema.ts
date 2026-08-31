@@ -834,10 +834,82 @@ export type TopupLog = typeof topupLogs.$inferSelect;
 export type InsertTopupLog = typeof topupLogs.$inferInsert;
 
 /**
+ * Sports competition catalog. A competition is an organizational layer for
+ * Sports Vote fixtures (league/cup); it intentionally does not implement
+ * standings, bracket progression, or result engines.
+ */
+export const sportsCompetitions = mysqlTable(
+  "sportsCompetitions",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    code: varchar("code", { length: 80 }).notNull(),
+    name: varchar("name", { length: 255 }).notNull(),
+    competitionType: mysqlEnum("competitionType", ["league", "cup"]).default("league").notNull(),
+    logoImageUrl: text("logoImageUrl"),
+    isActive: boolean("isActive").default(true).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    codeUnique: uniqueIndex("sportsCompetitions_code_unique").on(table.code),
+    nameIdx: index("sportsCompetitions_name_idx").on(table.name),
+    activeIdx: index("sportsCompetitions_isActive_idx").on(table.isActive),
+  })
+);
+
+export type SportsCompetition = typeof sportsCompetitions.$inferSelect;
+export type InsertSportsCompetition = typeof sportsCompetitions.$inferInsert;
+
+/** Canonical reusable sports team identity and logo asset. */
+export const sportsTeams = mysqlTable(
+  "sportsTeams",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    code: varchar("code", { length: 80 }).notNull(),
+    name: varchar("name", { length: 255 }).notNull(),
+    logoImageUrl: text("logoImageUrl"),
+    isActive: boolean("isActive").default(true).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    codeUnique: uniqueIndex("sportsTeams_code_unique").on(table.code),
+    nameIdx: index("sportsTeams_name_idx").on(table.name),
+    activeIdx: index("sportsTeams_isActive_idx").on(table.isActive),
+  })
+);
+
+export type SportsTeam = typeof sportsTeams.$inferSelect;
+export type InsertSportsTeam = typeof sportsTeams.$inferInsert;
+
+/** Many-to-many membership: one canonical team can join many competitions. */
+export const sportsCompetitionTeams = mysqlTable(
+  "sportsCompetitionTeams",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    competitionId: int("competitionId").notNull(),
+    teamId: int("teamId").notNull(),
+    displayOrder: int("displayOrder").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    membershipUnique: uniqueIndex("sportsCompetitionTeams_competition_team_unique").on(
+      table.competitionId,
+      table.teamId
+    ),
+    competitionIdx: index("sportsCompetitionTeams_competitionId_idx").on(table.competitionId),
+    teamIdx: index("sportsCompetitionTeams_teamId_idx").on(table.teamId),
+  })
+);
+
+export type SportsCompetitionTeam = typeof sportsCompetitionTeams.$inferSelect;
+export type InsertSportsCompetitionTeam = typeof sportsCompetitionTeams.$inferInsert;
+
+/**
  * Sports Matches (Football prediction voting)
- * Admin creates matches with team info, vote cost, and reward coupon settings.
- * Users vote on match results and spend points.
- * Admin settles matches and generates reward coupons for winners.
+ * New matches reference a competition and canonical team records, while the
+ * legacy name/image columns remain populated snapshots for backward-compatible
+ * reads and historical records created before the catalog existed.
  */
 export const sportsMatches = mysqlTable(
   "sportsMatches",
@@ -845,6 +917,9 @@ export const sportsMatches = mysqlTable(
     id: int("id").autoincrement().primaryKey(),
     title: varchar("title", { length: 255 }).notNull(),
     leagueName: varchar("leagueName", { length: 255 }),
+    competitionId: int("competitionId"),
+    homeTeamId: int("homeTeamId"),
+    awayTeamId: int("awayTeamId"),
 
     homeTeamName: varchar("homeTeamName", { length: 255 }).notNull(),
     awayTeamName: varchar("awayTeamName", { length: 255 }).notNull(),
@@ -857,8 +932,10 @@ export const sportsMatches = mysqlTable(
 
     voteCostPoints: decimal("voteCostPoints", { precision: 10, scale: 2 }).default("0.00").notNull(),
 
-    rewardDiscountType: mysqlEnum("rewardDiscountType", ["flat", "percentage"]).notNull(),
-    rewardDiscountValue: decimal("rewardDiscountValue", { precision: 10, scale: 2 }).notNull(),
+    rewardKind: mysqlEnum("rewardKind", ["coupon", "points"]).default("coupon").notNull(),
+    rewardPointsAmount: decimal("rewardPointsAmount", { precision: 10, scale: 2 }),
+    rewardDiscountType: mysqlEnum("rewardDiscountType", ["flat", "percentage"]),
+    rewardDiscountValue: decimal("rewardDiscountValue", { precision: 10, scale: 2 }),
     rewardMinPurchaseAmount: decimal("rewardMinPurchaseAmount", { precision: 10, scale: 2 }).default("0.00"),
     rewardCouponExpiresAt: timestamp("rewardCouponExpiresAt"),
 
@@ -876,6 +953,9 @@ export const sportsMatches = mysqlTable(
     activeIdx: index("sportsMatches_isActive_idx").on(table.isActive),
     deadlineIdx: index("sportsMatches_voteDeadlineAt_idx").on(table.voteDeadlineAt),
     displayOrderIdx: index("sportsMatches_displayOrder_idx").on(table.displayOrder),
+    competitionIdx: index("sportsMatches_competitionId_idx").on(table.competitionId),
+    homeTeamIdx: index("sportsMatches_homeTeamId_idx").on(table.homeTeamId),
+    awayTeamIdx: index("sportsMatches_awayTeamId_idx").on(table.awayTeamId),
   })
 );
 
@@ -929,7 +1009,10 @@ export const sportsMatchRewards = mysqlTable(
     matchId: int("matchId").notNull(),
     voteId: int("voteId").notNull(),
     userId: int("userId").notNull(),
-    couponId: int("couponId").notNull(),
+    rewardKind: mysqlEnum("rewardKind", ["coupon", "points"]).default("coupon").notNull(),
+    couponId: int("couponId"),
+    pointsAmount: decimal("pointsAmount", { precision: 10, scale: 2 }),
+    pointsTransactionId: int("pointsTransactionId"),
 
     status: mysqlEnum("status", ["issued", "used", "expired", "void"]).default("issued").notNull(),
     issuedAt: timestamp("issuedAt").defaultNow().notNull(),
@@ -945,6 +1028,7 @@ export const sportsMatchRewards = mysqlTable(
     statusIdx: index("sportsMatchRewards_status_idx").on(table.status),
     uniqueVoteId: uniqueIndex("unique_sports_match_rewards_vote").on(table.voteId),
     uniqueCouponId: uniqueIndex("unique_sports_match_rewards_coupon").on(table.couponId),
+    uniquePointsTransactionId: uniqueIndex("unique_sports_match_rewards_points_tx").on(table.pointsTransactionId),
   })
 );
 

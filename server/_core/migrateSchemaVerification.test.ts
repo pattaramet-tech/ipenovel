@@ -89,7 +89,7 @@ const LEGACY_REGISTRY_INDEXES = [
 
 describe("findMissingSchemaObjects - required object lists", () => {
   it("requires the five daily check-in tables plus coupons and the migration-0039 legacy registry", () => {
-    expect(REQUIRED_TABLES).toEqual([
+    expect(REQUIRED_TABLES).toEqual(expect.arrayContaining([
       "dailyCheckins",
       "dailyCheckinCampaigns",
       "dailyCheckinCouponTemplates",
@@ -98,29 +98,29 @@ describe("findMissingSchemaObjects - required object lists", () => {
       "coupons",
       "paymentSlipLegacyCollisions",
       "paymentSlipLegacyUnknown",
-    ]);
+    ]));
   });
 
   it("requires coupons.maxDiscountAmount/scope/ownerUserId and the daily check-in point-reward columns", () => {
-    expect(REQUIRED_COLUMNS).toEqual([
+    expect(REQUIRED_COLUMNS).toEqual(expect.arrayContaining([
       { table: "coupons", column: "maxDiscountAmount" },
       { table: "coupons", column: "scope" },
       { table: "coupons", column: "ownerUserId" },
       { table: "dailyCheckins", column: "couponId" },
       { table: "dailyCheckinRewardGrants", column: "pointsTransactionId" },
       { table: "dailyCheckinRewardGrants", column: "streakCountAtGrant" },
-    ]);
+    ]));
   });
 
   it("requires dailyCheckins.couponId to be NULLABLE (migration 0031)", () => {
     // A point-only check-in mints no coupon. On a database still at 0030 the
     // column is NOT NULL and every point claim would fail at INSERT time, so
     // this is verified at boot and fails the deploy closed instead.
-    expect(REQUIRED_NULLABLE_COLUMNS).toEqual([{ table: "dailyCheckins", column: "couponId" }]);
+    expect(REQUIRED_NULLABLE_COLUMNS).toContainEqual({ table: "dailyCheckins", column: "couponId" });
   });
 
   it("requires coupons_ownerUserId_idx plus the dailyCheckins indexes, reward-grant idempotency guards and the migration-0039 registry indexes", () => {
-    expect(REQUIRED_INDEXES).toEqual([
+    expect(REQUIRED_INDEXES).toEqual(expect.arrayContaining([
       { table: "coupons", index: "coupons_ownerUserId_idx" },
       { table: "dailyCheckins", index: "PRIMARY" },
       { table: "dailyCheckins", index: "unique_daily_checkin_user_date_campaign" },
@@ -134,7 +134,40 @@ describe("findMissingSchemaObjects - required object lists", () => {
       { table: "dailyCheckinRewardRules", index: "dailyCheckinRewardRules_campaign_dedupe_unique" },
       { table: "dailyCheckinCampaigns", index: "dailyCheckinCampaigns_campaignKey_unique" },
       ...LEGACY_REGISTRY_INDEXES,
-    ]);
+    ]));
+  });
+
+  it("requires IPE-009 Sports Vote catalog, reward columns, nullable coupon fields and idempotency indexes", () => {
+    expect(REQUIRED_TABLES).toEqual(expect.arrayContaining([
+      "sportsCompetitions",
+      "sportsTeams",
+      "sportsCompetitionTeams",
+      "sportsMatches",
+      "sportsMatchRewards",
+    ]));
+    expect(REQUIRED_COLUMNS).toEqual(expect.arrayContaining([
+      { table: "sportsMatches", column: "competitionId" },
+      { table: "sportsMatches", column: "homeTeamId" },
+      { table: "sportsMatches", column: "awayTeamId" },
+      { table: "sportsMatches", column: "rewardKind" },
+      { table: "sportsMatches", column: "rewardPointsAmount" },
+      { table: "sportsMatchRewards", column: "rewardKind" },
+      { table: "sportsMatchRewards", column: "pointsAmount" },
+      { table: "sportsMatchRewards", column: "pointsTransactionId" },
+    ]));
+    expect(REQUIRED_NULLABLE_COLUMNS).toEqual(expect.arrayContaining([
+      { table: "sportsMatches", column: "rewardDiscountType" },
+      { table: "sportsMatches", column: "rewardDiscountValue" },
+      { table: "sportsMatchRewards", column: "couponId" },
+    ]));
+    expect(REQUIRED_INDEXES).toEqual(expect.arrayContaining([
+      { table: "sportsCompetitions", index: "sportsCompetitions_code_unique" },
+      { table: "sportsTeams", index: "sportsTeams_code_unique" },
+      { table: "sportsCompetitionTeams", index: "sportsCompetitionTeams_competition_team_unique" },
+      { table: "sportsMatches", index: "sportsMatches_competitionId_idx" },
+      { table: "sportsMatchRewards", index: "unique_sports_match_rewards_vote" },
+      { table: "sportsMatchRewards", index: "unique_sports_match_rewards_points_tx" },
+    ]));
   });
 
   it("actually checks coupons_ownerUserId_idx instead of silently skipping it (regression: the index-presence gate only runs for tables listed in REQUIRED_TABLES)", async () => {
@@ -185,9 +218,9 @@ describe("findMissingSchemaObjects - case-insensitive table name comparison (reg
   it("reports a NOT NULL dailyCheckins.couponId as missing nullability (database still at migration 0030)", async () => {
     const { query } = fakeConn("lower", REQUIRED_TABLES, true, REQUIRED_INDEXES.map((i) => i.index), false);
     const missing = await findMissingSchemaObjects({ query });
-    expect(missing).toEqual([
-      "column dailyCheckins.couponId must be nullable (migration 0031 not applied)",
-    ]);
+    expect(missing).toContain(
+      "column dailyCheckins.couponId must be nullable (migration 0031 not applied)"
+    );
   });
 
   it("does not report a missing index for a table that is itself missing (no duplicate root cause)", async () => {
