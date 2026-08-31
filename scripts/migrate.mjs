@@ -81,6 +81,13 @@ export const REQUIRED_TABLES = [
   // boot so an incomplete 0039 stops the deploy instead.
   "paymentSlipLegacyCollisions",
   "paymentSlipLegacyUnknown",
+  // IPE-009 Sports Vote catalog/reward runtime dependencies. The match list,
+  // admin catalog, and points settlement read these tables unconditionally.
+  "sportsCompetitions",
+  "sportsTeams",
+  "sportsCompetitionTeams",
+  "sportsMatches",
+  "sportsMatchRewards",
 ];
 export const REQUIRED_COLUMNS = [
   { table: "coupons", column: "maxDiscountAmount" },
@@ -97,6 +104,14 @@ export const REQUIRED_COLUMNS = [
   // here instead.
   { table: "dailyCheckinRewardGrants", column: "pointsTransactionId" },
   { table: "dailyCheckinRewardGrants", column: "streakCountAtGrant" },
+  { table: "sportsMatches", column: "competitionId" },
+  { table: "sportsMatches", column: "homeTeamId" },
+  { table: "sportsMatches", column: "awayTeamId" },
+  { table: "sportsMatches", column: "rewardKind" },
+  { table: "sportsMatches", column: "rewardPointsAmount" },
+  { table: "sportsMatchRewards", column: "rewardKind" },
+  { table: "sportsMatchRewards", column: "pointsAmount" },
+  { table: "sportsMatchRewards", column: "pointsTransactionId" },
 ];
 
 /**
@@ -108,7 +123,12 @@ export const REQUIRED_COLUMNS = [
  * Verifying nullability at boot turns that into a fail-closed deploy error
  * instead of a runtime error for every user who taps "check in".
  */
-export const REQUIRED_NULLABLE_COLUMNS = [{ table: "dailyCheckins", column: "couponId" }];
+export const REQUIRED_NULLABLE_COLUMNS = [
+  { table: "dailyCheckins", column: "couponId" },
+  { table: "sportsMatches", column: "rewardDiscountType" },
+  { table: "sportsMatches", column: "rewardDiscountValue" },
+  { table: "sportsMatchRewards", column: "couponId" },
+];
 
 export const REQUIRED_INDEXES = [
   { table: "coupons", index: "coupons_ownerUserId_idx" },
@@ -146,6 +166,13 @@ export const REQUIRED_INDEXES = [
   { table: "paymentSlipLegacyUnknown", index: "PRIMARY" },
   { table: "paymentSlipLegacyUnknown", index: "paymentSlipLegacyUnknown_source_unique" },
   { table: "paymentSlipLegacyUnknown", index: "paymentSlipLegacyUnknown_sourceType_idx" },
+  // IPE-009 catalog identity/membership and settlement idempotency guards.
+  { table: "sportsCompetitions", index: "sportsCompetitions_code_unique" },
+  { table: "sportsTeams", index: "sportsTeams_code_unique" },
+  { table: "sportsCompetitionTeams", index: "sportsCompetitionTeams_competition_team_unique" },
+  { table: "sportsMatches", index: "sportsMatches_competitionId_idx" },
+  { table: "sportsMatchRewards", index: "unique_sports_match_rewards_vote" },
+  { table: "sportsMatchRewards", index: "unique_sports_match_rewards_points_tx" },
 ];
 
 /**

@@ -2899,6 +2899,67 @@ export const appRouter = router({
         }),
     }),
 
+    sportsCompetitions: router({
+      list: adminProcedure.query(async () => db.getAdminSportsCompetitions()),
+      create: adminProcedure
+        .input(z.object({
+          code: z.string().min(1).max(80),
+          name: z.string().min(1).max(255),
+          competitionType: z.enum(["league", "cup"]),
+          logoImageUrl: z.string().nullable().optional(),
+          isActive: z.boolean().optional(),
+        }))
+        .mutation(async ({ input }) => db.createSportsCompetition(input)),
+      update: adminProcedure
+        .input(z.object({
+          competitionId: z.number().int().positive(),
+          code: z.string().min(1).max(80).optional(),
+          name: z.string().min(1).max(255).optional(),
+          competitionType: z.enum(["league", "cup"]).optional(),
+          logoImageUrl: z.string().nullable().optional(),
+          isActive: z.boolean().optional(),
+        }))
+        .mutation(async ({ input }) => {
+          const { competitionId, ...patch } = input;
+          return db.updateSportsCompetition(competitionId, patch);
+        }),
+    }),
+
+    sportsTeams: router({
+      list: adminProcedure.query(async () => db.getAdminSportsTeams()),
+      create: adminProcedure
+        .input(z.object({
+          code: z.string().min(1).max(80),
+          name: z.string().min(1).max(255),
+          logoImageUrl: z.string().nullable().optional(),
+          isActive: z.boolean().optional(),
+        }))
+        .mutation(async ({ input }) => db.createSportsTeam(input)),
+      update: adminProcedure
+        .input(z.object({
+          teamId: z.number().int().positive(),
+          code: z.string().min(1).max(80).optional(),
+          name: z.string().min(1).max(255).optional(),
+          logoImageUrl: z.string().nullable().optional(),
+          isActive: z.boolean().optional(),
+        }))
+        .mutation(async ({ input }) => {
+          const { teamId, ...patch } = input;
+          return db.updateSportsTeam(teamId, patch);
+        }),
+    }),
+
+    sportsCompetitionTeams: router({
+      setMembership: adminProcedure
+        .input(z.object({
+          competitionId: z.number().int().positive(),
+          teamId: z.number().int().positive(),
+          isMember: z.boolean(),
+          displayOrder: z.number().int().optional(),
+        }))
+        .mutation(async ({ input }) => db.setSportsCompetitionTeamMembership(input)),
+    }),
+
     sportsMatches: router({
       list: adminProcedure.query(async () => {
         return db.getAdminSportsMatches();
@@ -2940,31 +3001,37 @@ export const appRouter = router({
         .input(z.object({
           title: z.string().min(1),
           leagueName: z.string().optional(),
-          homeTeamName: z.string().min(1),
-          awayTeamName: z.string().min(1),
+          competitionId: z.number().int().positive(),
+          homeTeamId: z.number().int().positive(),
+          awayTeamId: z.number().int().positive(),
+          homeTeamName: z.string().min(1).optional(),
+          awayTeamName: z.string().min(1).optional(),
           homeTeamImageUrl: z.string().optional(),
           awayTeamImageUrl: z.string().optional(),
           coverImageUrl: z.string().optional(),
           matchStartAt: z.date().optional(),
           voteDeadlineAt: z.date(),
           voteCostPoints: z.string(),
-          rewardDiscountType: z.enum(["flat", "percentage"]),
-          rewardDiscountValue: z.string(),
-          rewardMinPurchaseAmount: z.string().optional(),
-          rewardCouponExpiresAt: z.date().optional(),
+          rewardKind: z.enum(["coupon", "points"]).optional(),
+          rewardPointsAmount: z.string().nullable().optional(),
+          rewardDiscountType: z.enum(["flat", "percentage"]).nullable().optional(),
+          rewardDiscountValue: z.string().nullable().optional(),
+          rewardMinPurchaseAmount: z.string().nullable().optional(),
+          rewardCouponExpiresAt: z.date().nullable().optional(),
           status: z.enum(["draft", "open", "closed"]).optional(),
           isActive: z.boolean().optional(),
           displayOrder: z.number().optional(),
         }))
-        .mutation(async ({ input }) => {
-          return db.createSportsMatch(input);
-        }),
+        .mutation(async ({ input }) => db.createSportsMatch(input)),
 
       update: adminProcedure
         .input(z.object({
           matchId: z.number(),
           title: z.string().optional(),
           leagueName: z.string().nullable().optional(),
+          competitionId: z.number().int().positive().nullable().optional(),
+          homeTeamId: z.number().int().positive().nullable().optional(),
+          awayTeamId: z.number().int().positive().nullable().optional(),
           homeTeamName: z.string().optional(),
           awayTeamName: z.string().optional(),
           homeTeamImageUrl: z.string().nullable().optional(),
@@ -2973,8 +3040,10 @@ export const appRouter = router({
           matchStartAt: z.date().nullable().optional(),
           voteDeadlineAt: z.date().optional(),
           voteCostPoints: z.string().optional(),
-          rewardDiscountType: z.enum(["flat", "percentage"]).optional(),
-          rewardDiscountValue: z.string().optional(),
+          rewardKind: z.enum(["coupon", "points"]).optional(),
+          rewardPointsAmount: z.string().nullable().optional(),
+          rewardDiscountType: z.enum(["flat", "percentage"]).nullable().optional(),
+          rewardDiscountValue: z.string().nullable().optional(),
           rewardMinPurchaseAmount: z.string().nullable().optional(),
           rewardCouponExpiresAt: z.date().nullable().optional(),
           status: z.enum(["draft", "open", "closed"]).optional(),
@@ -2986,6 +3055,32 @@ export const appRouter = router({
           await db.updateSportsMatch(matchId, data as any);
           return { success: true };
         }),
+
+      bulkCreate: adminProcedure
+        .input(z.object({
+          competitionId: z.number().int().positive(),
+          updateTeamAssets: z.boolean().optional(),
+          rows: z.array(z.object({
+            rowNumber: z.number().int().positive().optional(),
+            title: z.string(),
+            homeTeamRef: z.union([z.string(), z.number()]),
+            awayTeamRef: z.union([z.string(), z.number()]),
+            homeTeamLogoUrl: z.string().nullable().optional(),
+            awayTeamLogoUrl: z.string().nullable().optional(),
+            matchStartAt: z.date().nullable().optional(),
+            voteDeadlineAt: z.date(),
+            voteCostPoints: z.string(),
+            rewardKind: z.enum(["coupon", "points"]).optional(),
+            rewardPointsAmount: z.string().nullable().optional(),
+            rewardDiscountType: z.enum(["flat", "percentage"]).nullable().optional(),
+            rewardDiscountValue: z.string().nullable().optional(),
+            rewardMinPurchaseAmount: z.string().nullable().optional(),
+            rewardCouponExpiresAt: z.date().nullable().optional(),
+            status: z.enum(["draft", "open", "closed"]).optional(),
+            displayOrder: z.number().int().optional(),
+          })).min(1).max(1000),
+        }))
+        .mutation(async ({ input }) => db.bulkCreateSportsFixtures(input)),
 
       settle: adminProcedure
         .input(z.object({ matchId: z.number(), result: z.enum(["home_win", "draw", "away_win"]) }))

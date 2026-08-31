@@ -54,6 +54,9 @@ import {
   walletTransactions,
   walletTopups,
   topupLogs,
+  sportsCompetitions,
+  sportsTeams,
+  sportsCompetitionTeams,
   sportsMatches,
   sportsMatchVotes,
   sportsMatchRewards,
@@ -82,6 +85,14 @@ import {
   resolveDailyCheckinRuntimeMode,
   type DailyCheckinRuntimeMode,
 } from "./services/dailyCheckinRewardModeService";
+import {
+  buildSportsMatchCatalogView,
+  normalizeSportsCatalogCode,
+  resolveSportsTeamReference,
+  validateSportsRewardConfig,
+  type SportsRewardKind,
+  type SportsTeamLookup,
+} from "./services/sportsVoteDomain";
 
 /**
  * referenceType for a Daily Check-in point reward in the pointsTransactions
@@ -5214,6 +5225,249 @@ function extractInsertId(result: any): number {
   return insertedId;
 }
 
+async function getSportsCompetitionTeamsInternal(competitionId: number, database: any): Promise<Array<SportsTeamLookup & { membershipId: number; displayOrder: number }>> {
+  return database
+    .select({
+      membershipId: sportsCompetitionTeams.id,
+      displayOrder: sportsCompetitionTeams.displayOrder,
+      id: sportsTeams.id,
+      code: sportsTeams.code,
+      name: sportsTeams.name,
+      logoImageUrl: sportsTeams.logoImageUrl,
+      isActive: sportsTeams.isActive,
+    })
+    .from(sportsCompetitionTeams)
+    .innerJoin(sportsTeams, eq(sportsCompetitionTeams.teamId, sportsTeams.id))
+    .where(eq(sportsCompetitionTeams.competitionId, competitionId))
+    .orderBy(asc(sportsCompetitionTeams.displayOrder), asc(sportsTeams.name));
+}
+
+async function getSportsCompetitionByIdInternal(competitionId: number, database: any) {
+  const rows = await database
+    .select()
+    .from(sportsCompetitions)
+    .where(eq(sportsCompetitions.id, competitionId))
+    .limit(1);
+  return rows[0];
+}
+
+async function getSportsTeamByIdInternal(teamId: number, database: any) {
+  const rows = await database.select().from(sportsTeams).where(eq(sportsTeams.id, teamId)).limit(1);
+  return rows[0];
+}
+
+export async function getAdminSportsCompetitions() {
+  const database = await getDb();
+  if (!database) return [];
+  const competitions = await database.select().from(sportsCompetitions).orderBy(asc(sportsCompetitions.name));
+  const membershipRows = await database
+    .select({
+      competitionId: sportsCompetitionTeams.competitionId,
+      membershipId: sportsCompetitionTeams.id,
+      displayOrder: sportsCompetitionTeams.displayOrder,
+      id: sportsTeams.id,
+      code: sportsTeams.code,
+      name: sportsTeams.name,
+      logoImageUrl: sportsTeams.logoImageUrl,
+      isActive: sportsTeams.isActive,
+    })
+    .from(sportsCompetitionTeams)
+    .innerJoin(sportsTeams, eq(sportsCompetitionTeams.teamId, sportsTeams.id))
+    .orderBy(asc(sportsCompetitionTeams.displayOrder), asc(sportsTeams.name));
+
+  const teamsByCompetition = new Map<number, any[]>();
+  for (const row of membershipRows) {
+    const list = teamsByCompetition.get(row.competitionId) ?? [];
+    list.push({
+      membershipId: row.membershipId,
+      displayOrder: row.displayOrder,
+      id: row.id,
+      code: row.code,
+      name: row.name,
+      logoImageUrl: row.logoImageUrl,
+      isActive: row.isActive,
+    });
+    teamsByCompetition.set(row.competitionId, list);
+  }
+
+  return competitions.map((competition: any) => ({
+    ...competition,
+    teams: teamsByCompetition.get(competition.id) ?? [],
+  }));
+}
+
+export async function getAdminSportsTeams() {
+  const database = await getDb();
+  if (!database) return [];
+  return database.select().from(sportsTeams).orderBy(asc(sportsTeams.name));
+}
+
+export async function createSportsCompetition(data: {
+  code: string;
+  name: string;
+  competitionType: "league" | "cup";
+  logoImageUrl?: string | null;
+  isActive?: boolean;
+}) {
+  const database = await getDb();
+  if (!database) throw new Error("Database not available");
+  const code = normalizeSportsCatalogCode(data.code, "competition code");
+  const name = data.name.trim();
+  if (!name) throw new Error("Competition name is required");
+  const result = await database.insert(sportsCompetitions).values({
+    code,
+    name,
+    competitionType: data.competitionType,
+    logoImageUrl: data.logoImageUrl ?? null,
+    isActive: data.isActive ?? true,
+  });
+  return { id: extractInsertId(result) };
+}
+
+export async function updateSportsCompetition(competitionId: number, data: Partial<{
+  code: string;
+  name: string;
+  competitionType: "league" | "cup";
+  logoImageUrl: string | null;
+  isActive: boolean;
+}>) {
+  const database = await getDb();
+  if (!database) throw new Error("Database not available");
+  const existing = await getSportsCompetitionByIdInternal(competitionId, database);
+  if (!existing) throw new Error("Competition not found");
+  const patch: any = { ...data };
+  if (data.code !== undefined) patch.code = normalizeSportsCatalogCode(data.code, "competition code");
+  if (data.name !== undefined) {
+    patch.name = data.name.trim();
+    if (!patch.name) throw new Error("Competition name is required");
+  }
+  await database.update(sportsCompetitions).set(patch).where(eq(sportsCompetitions.id, competitionId));
+  return { success: true };
+}
+
+export async function createSportsTeam(data: {
+  code: string;
+  name: string;
+  logoImageUrl?: string | null;
+  isActive?: boolean;
+}) {
+  const database = await getDb();
+  if (!database) throw new Error("Database not available");
+  const code = normalizeSportsCatalogCode(data.code, "team code");
+  const name = data.name.trim();
+  if (!name) throw new Error("Team name is required");
+  const result = await database.insert(sportsTeams).values({
+    code,
+    name,
+    logoImageUrl: data.logoImageUrl ?? null,
+    isActive: data.isActive ?? true,
+  });
+  return { id: extractInsertId(result) };
+}
+
+export async function updateSportsTeam(teamId: number, data: Partial<{
+  code: string;
+  name: string;
+  logoImageUrl: string | null;
+  isActive: boolean;
+}>) {
+  const database = await getDb();
+  if (!database) throw new Error("Database not available");
+  const existing = await getSportsTeamByIdInternal(teamId, database);
+  if (!existing) throw new Error("Team not found");
+  const patch: any = { ...data };
+  if (data.code !== undefined) patch.code = normalizeSportsCatalogCode(data.code, "team code");
+  if (data.name !== undefined) {
+    patch.name = data.name.trim();
+    if (!patch.name) throw new Error("Team name is required");
+  }
+  await database.update(sportsTeams).set(patch).where(eq(sportsTeams.id, teamId));
+  return { success: true };
+}
+
+export async function setSportsCompetitionTeamMembership(data: {
+  competitionId: number;
+  teamId: number;
+  isMember: boolean;
+  displayOrder?: number;
+}) {
+  const database = await getDb();
+  if (!database) throw new Error("Database not available");
+  const [competition, team] = await Promise.all([
+    getSportsCompetitionByIdInternal(data.competitionId, database),
+    getSportsTeamByIdInternal(data.teamId, database),
+  ]);
+  if (!competition) throw new Error("Competition not found");
+  if (!team) throw new Error("Team not found");
+
+  const existing = await database
+    .select()
+    .from(sportsCompetitionTeams)
+    .where(and(
+      eq(sportsCompetitionTeams.competitionId, data.competitionId),
+      eq(sportsCompetitionTeams.teamId, data.teamId)
+    ))
+    .limit(1);
+
+  if (data.isMember) {
+    if (existing.length) {
+      if (data.displayOrder !== undefined) {
+        await database
+          .update(sportsCompetitionTeams)
+          .set({ displayOrder: data.displayOrder })
+          .where(eq(sportsCompetitionTeams.id, existing[0].id));
+      }
+      return { success: true, membershipId: existing[0].id, created: false };
+    }
+    const result = await database.insert(sportsCompetitionTeams).values({
+      competitionId: data.competitionId,
+      teamId: data.teamId,
+      displayOrder: data.displayOrder ?? 0,
+    });
+    return { success: true, membershipId: extractInsertId(result), created: true };
+  }
+
+  if (existing.length) {
+    await database.delete(sportsCompetitionTeams).where(eq(sportsCompetitionTeams.id, existing[0].id));
+  }
+  return { success: true, created: false };
+}
+
+async function resolveSportsMatchCatalogSelection(
+  competitionId: number,
+  homeTeamId: number,
+  awayTeamId: number,
+  database: any
+) {
+  if (homeTeamId === awayTeamId) throw new Error("Home and away team must be different");
+  const competition = await getSportsCompetitionByIdInternal(competitionId, database);
+  if (!competition) throw new Error("Competition not found");
+  if (!competition.isActive) throw new Error("Competition is inactive");
+  const members = await getSportsCompetitionTeamsInternal(competitionId, database);
+  const homeTeam = members.find((team) => team.id === homeTeamId);
+  const awayTeam = members.find((team) => team.id === awayTeamId);
+  if (!homeTeam) throw new Error("Home team is not a member of the selected competition");
+  if (!awayTeam) throw new Error("Away team is not a member of the selected competition");
+  if (homeTeam.isActive === false || awayTeam.isActive === false) throw new Error("Selected team is inactive");
+  return { competition, homeTeam, awayTeam };
+}
+
+async function enrichSportsMatchesWithCatalog(matches: any[], database: any) {
+  if (!matches.length) return matches;
+  const [competitions, teams] = await Promise.all([
+    database.select().from(sportsCompetitions),
+    database.select().from(sportsTeams),
+  ]);
+  const competitionById = new Map(competitions.map((item: any) => [item.id, item]));
+  const teamById = new Map(teams.map((item: any) => [item.id, item]));
+  return matches.map((match: any) => {
+    const competition: any = match.competitionId ? competitionById.get(match.competitionId) : undefined;
+    const homeTeam: any = match.homeTeamId ? teamById.get(match.homeTeamId) : undefined;
+    const awayTeam: any = match.awayTeamId ? teamById.get(match.awayTeamId) : undefined;
+    return buildSportsMatchCatalogView(match, competition, homeTeam, awayTeam);
+  });
+}
+
 export async function getPublicSportsMatches(userId?: number) {
   const db = await getDb();
   if (!db) return [];
@@ -5223,8 +5477,9 @@ export async function getPublicSportsMatches(userId?: number) {
     .from(sportsMatches)
     .where(eq(sportsMatches.isActive, true))
     .orderBy(asc(sportsMatches.displayOrder), asc(sportsMatches.voteDeadlineAt));
+  const enrichedMatches = await enrichSportsMatchesWithCatalog(matches, db);
 
-  if (!userId) return matches.map((match: any) => ({ ...match, myVote: null }));
+  if (!userId) return enrichedMatches.map((match: any) => ({ ...match, myVote: null }));
 
   const votes = await db
     .select()
@@ -5232,7 +5487,7 @@ export async function getPublicSportsMatches(userId?: number) {
     .where(eq(sportsMatchVotes.userId, userId));
 
   const voteByMatchId = new Map(votes.map((vote: any) => [vote.matchId, vote]));
-  return matches.map((match: any) => ({ ...match, myVote: voteByMatchId.get(match.id) || null }));
+  return enrichedMatches.map((match: any) => ({ ...match, myVote: voteByMatchId.get(match.id) || null }));
 }
 
 export async function getAdminSportsMatches() {
@@ -5243,9 +5498,10 @@ export async function getAdminSportsMatches() {
     .select()
     .from(sportsMatches)
     .orderBy(desc(sportsMatches.createdAt));
+  const enrichedMatches = await enrichSportsMatchesWithCatalog(matches, db);
 
   return Promise.all(
-    matches.map(async (match: any) => {
+    enrichedMatches.map(async (match: any) => {
       const voteRows = await db
         .select({ status: sportsMatchVotes.status, prediction: sportsMatchVotes.prediction })
         .from(sportsMatchVotes)
@@ -5284,18 +5540,23 @@ export async function getSportsVoteByMatchAndUser(matchId: number, userId: numbe
 export async function createSportsMatch(data: {
   title: string;
   leagueName?: string;
-  homeTeamName: string;
-  awayTeamName: string;
+  competitionId: number;
+  homeTeamId: number;
+  awayTeamId: number;
+  homeTeamName?: string;
+  awayTeamName?: string;
   homeTeamImageUrl?: string;
   awayTeamImageUrl?: string;
   coverImageUrl?: string;
   matchStartAt?: Date;
   voteDeadlineAt: Date;
   voteCostPoints: string;
-  rewardDiscountType: "flat" | "percentage";
-  rewardDiscountValue: string;
-  rewardMinPurchaseAmount?: string;
-  rewardCouponExpiresAt?: Date;
+  rewardKind?: SportsRewardKind;
+  rewardPointsAmount?: string | null;
+  rewardDiscountType?: "flat" | "percentage" | null;
+  rewardDiscountValue?: string | null;
+  rewardMinPurchaseAmount?: string | null;
+  rewardCouponExpiresAt?: Date | null;
   status?: SportsMatchStatus;
   isActive?: boolean;
   displayOrder?: number;
@@ -5303,35 +5564,44 @@ export async function createSportsMatch(data: {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  // Validate numeric fields using shared strict helpers
-  const voteCostPoints = parseStrictNonNegativeDecimal(data.voteCostPoints, "voteCostPoints");
-  const rewardDiscountValue = parseStrictPositiveDecimal(data.rewardDiscountValue, "rewardDiscountValue");
-  const minPurchaseAmount = parseStrictNonNegativeDecimal(data.rewardMinPurchaseAmount, "rewardMinPurchaseAmount");
+  parseStrictNonNegativeDecimal(data.voteCostPoints, "voteCostPoints");
+  const reward = validateSportsRewardConfig(data);
 
-  // Validate discount percentage
-  if (data.rewardDiscountType === "percentage" && rewardDiscountValue > 100) {
-    throw new Error("Percentage discount cannot exceed 100");
-  }
-
-  // Validate dates
-  if (!data.voteDeadlineAt || !(data.voteDeadlineAt instanceof Date)) {
+  if (!data.voteDeadlineAt || !(data.voteDeadlineAt instanceof Date) || isNaN(data.voteDeadlineAt.getTime())) {
     throw new Error("voteDeadlineAt must be a valid date");
   }
-
-  // Always require deadline in future (regardless of status)
   if (data.voteDeadlineAt.getTime() <= Date.now()) {
     throw new Error("voteDeadlineAt must be in the future");
   }
 
-  if (data.rewardCouponExpiresAt && data.rewardCouponExpiresAt.getTime() <= Date.now()) {
-    throw new Error("rewardCouponExpiresAt must be in the future");
+  if (!data.competitionId || !data.homeTeamId || !data.awayTeamId) {
+    throw new Error("New Sports Vote matches require competitionId, homeTeamId, and awayTeamId");
   }
+  const resolved = await resolveSportsMatchCatalogSelection(data.competitionId, data.homeTeamId, data.awayTeamId, db);
+  const catalogPatch = {
+    competitionId: resolved.competition.id,
+    homeTeamId: resolved.homeTeam.id,
+    awayTeamId: resolved.awayTeam.id,
+    leagueName: resolved.competition.name,
+    homeTeamName: resolved.homeTeam.name,
+    awayTeamName: resolved.awayTeam.name,
+    homeTeamImageUrl: resolved.homeTeam.logoImageUrl ?? null,
+    awayTeamImageUrl: resolved.awayTeam.logoImageUrl ?? null,
+  };
 
   const result = await db.insert(sportsMatches).values({
-    ...data,
+    title: data.title.trim(),
+    ...catalogPatch,
+    coverImageUrl: data.coverImageUrl ?? null,
+    matchStartAt: data.matchStartAt ?? null,
+    voteDeadlineAt: data.voteDeadlineAt,
     voteCostPoints: data.voteCostPoints as any,
-    rewardDiscountValue: data.rewardDiscountValue as any,
-    rewardMinPurchaseAmount: (data.rewardMinPurchaseAmount || "0.00") as any,
+    rewardKind: reward.rewardKind,
+    rewardPointsAmount: reward.rewardPointsAmount as any,
+    rewardDiscountType: reward.rewardDiscountType,
+    rewardDiscountValue: reward.rewardDiscountValue as any,
+    rewardMinPurchaseAmount: reward.rewardMinPurchaseAmount as any,
+    rewardCouponExpiresAt: reward.rewardCouponExpiresAt,
     status: data.status || "draft",
     isActive: data.isActive ?? true,
     displayOrder: data.displayOrder ?? 0,
@@ -5343,6 +5613,9 @@ export async function createSportsMatch(data: {
 export async function updateSportsMatch(matchId: number, data: Partial<{
   title: string;
   leagueName: string | null;
+  competitionId: number | null;
+  homeTeamId: number | null;
+  awayTeamId: number | null;
   homeTeamName: string;
   awayTeamName: string;
   homeTeamImageUrl: string | null;
@@ -5351,8 +5624,10 @@ export async function updateSportsMatch(matchId: number, data: Partial<{
   matchStartAt: Date | null;
   voteDeadlineAt: Date;
   voteCostPoints: string;
-  rewardDiscountType: "flat" | "percentage";
-  rewardDiscountValue: string;
+  rewardKind: SportsRewardKind;
+  rewardPointsAmount: string | null;
+  rewardDiscountType: "flat" | "percentage" | null;
+  rewardDiscountValue: string | null;
   rewardMinPurchaseAmount: string | null;
   rewardCouponExpiresAt: Date | null;
   status: SportsMatchStatus;
@@ -5363,78 +5638,245 @@ export async function updateSportsMatch(matchId: number, data: Partial<{
   const db = tx || await getDb();
   if (!db) return;
 
-  // Load existing match for context
   const existing = await getSportsMatchById(matchId, tx);
   if (!existing) throw new Error("Match not found");
 
-  // Guard: Reject updates to critical fields if match is settled or cancelled
   const CRITICAL_FIELDS = [
-    "title", "leagueName", "homeTeamName", "awayTeamName",
-    "matchStartAt", "voteDeadlineAt",
-    "voteCostPoints",
-    "rewardDiscountType", "rewardDiscountValue", "rewardMinPurchaseAmount",
-    "rewardCouponExpiresAt",
-    "status", "result"
+    "title", "leagueName", "competitionId", "homeTeamId", "awayTeamId",
+    "homeTeamName", "awayTeamName", "matchStartAt", "voteDeadlineAt", "voteCostPoints",
+    "rewardKind", "rewardPointsAmount", "rewardDiscountType", "rewardDiscountValue",
+    "rewardMinPurchaseAmount", "rewardCouponExpiresAt", "status", "result"
   ];
-  
-  if ((existing.status === "settled" || existing.status === "cancelled") && 
-      Object.keys(data).some(key => CRITICAL_FIELDS.includes(key))) {
+  if ((existing.status === "settled" || existing.status === "cancelled") &&
+      Object.keys(data).some((key) => CRITICAL_FIELDS.includes(key))) {
     throw new Error(`Cannot update critical fields on a ${existing.status} match`);
   }
 
-  // Merge existing values with incoming updates
-  const merged = {
-    voteCostPoints: data.voteCostPoints !== undefined ? data.voteCostPoints : existing.voteCostPoints,
-    rewardDiscountType: data.rewardDiscountType !== undefined ? data.rewardDiscountType : existing.rewardDiscountType,
-    rewardDiscountValue: data.rewardDiscountValue !== undefined ? data.rewardDiscountValue : existing.rewardDiscountValue,
-    rewardMinPurchaseAmount: data.rewardMinPurchaseAmount !== undefined ? data.rewardMinPurchaseAmount : existing.rewardMinPurchaseAmount,
-    voteDeadlineAt: data.voteDeadlineAt !== undefined ? data.voteDeadlineAt : existing.voteDeadlineAt,
-    rewardCouponExpiresAt: data.rewardCouponExpiresAt !== undefined ? data.rewardCouponExpiresAt : existing.rewardCouponExpiresAt,
-    status: data.status !== undefined ? data.status : existing.status,
-  };
+  const patch: any = { ...data };
+  const voteCostPoints = data.voteCostPoints !== undefined ? data.voteCostPoints : String(existing.voteCostPoints);
+  parseStrictNonNegativeDecimal(voteCostPoints, "voteCostPoints");
 
-  // Validate voteCostPoints using strict helper
-  const voteCost = parseStrictNonNegativeDecimal(merged.voteCostPoints, "voteCostPoints");
-
-  // Validate rewardDiscountValue using strict helper
-  const discountValue = parseStrictPositiveDecimal(merged.rewardDiscountValue, "rewardDiscountValue");
-
-  // Validate percentage discount <= 100
-  if (merged.rewardDiscountType === "percentage" && discountValue > 100) {
-    throw new Error("rewardDiscountValue cannot exceed 100 for percentage discounts");
-  }
-
-  // Validate rewardMinPurchaseAmount using strict helper
-  if (merged.rewardMinPurchaseAmount !== null) {
-    parseStrictNonNegativeDecimal(merged.rewardMinPurchaseAmount, "rewardMinPurchaseAmount");
-  }
-
-  // Validate voteDeadlineAt is a valid date
-  if (merged.voteDeadlineAt) {
-    const deadline = new Date(merged.voteDeadlineAt);
-    if (isNaN(deadline.getTime())) {
-      throw new Error("voteDeadlineAt must be a valid date");
-    }
-    // If status is open, deadline must be in the future
-    if (merged.status === "open" && deadline.getTime() <= Date.now()) {
+  const mergedStatus = data.status !== undefined ? data.status : existing.status;
+  const mergedDeadline = data.voteDeadlineAt !== undefined ? data.voteDeadlineAt : existing.voteDeadlineAt;
+  if (mergedDeadline) {
+    const deadline = new Date(mergedDeadline);
+    if (isNaN(deadline.getTime())) throw new Error("voteDeadlineAt must be a valid date");
+    if (mergedStatus === "open" && deadline.getTime() <= Date.now()) {
       throw new Error("voteDeadlineAt must be in the future for open matches");
     }
   }
 
-  // Validate rewardCouponExpiresAt is in the future if provided
-  if (merged.rewardCouponExpiresAt) {
-    const expiresAt = new Date(merged.rewardCouponExpiresAt);
-    if (isNaN(expiresAt.getTime())) {
-      throw new Error("rewardCouponExpiresAt must be a valid date");
+  const rewardFields = [
+    "rewardKind", "rewardPointsAmount", "rewardDiscountType", "rewardDiscountValue",
+    "rewardMinPurchaseAmount", "rewardCouponExpiresAt"
+  ];
+  if (Object.keys(data).some((key) => rewardFields.includes(key))) {
+    const reward = validateSportsRewardConfig({
+      rewardKind: (data.rewardKind ?? existing.rewardKind ?? "coupon") as SportsRewardKind,
+      rewardPointsAmount: data.rewardPointsAmount !== undefined ? data.rewardPointsAmount : existing.rewardPointsAmount?.toString() ?? null,
+      rewardDiscountType: data.rewardDiscountType !== undefined ? data.rewardDiscountType : existing.rewardDiscountType as any,
+      rewardDiscountValue: data.rewardDiscountValue !== undefined ? data.rewardDiscountValue : existing.rewardDiscountValue?.toString() ?? null,
+      rewardMinPurchaseAmount: data.rewardMinPurchaseAmount !== undefined ? data.rewardMinPurchaseAmount : existing.rewardMinPurchaseAmount?.toString() ?? null,
+      rewardCouponExpiresAt: data.rewardCouponExpiresAt !== undefined ? data.rewardCouponExpiresAt : existing.rewardCouponExpiresAt,
+    });
+    patch.rewardKind = reward.rewardKind;
+    patch.rewardPointsAmount = reward.rewardPointsAmount;
+    patch.rewardDiscountType = reward.rewardDiscountType;
+    patch.rewardDiscountValue = reward.rewardDiscountValue;
+    patch.rewardMinPurchaseAmount = reward.rewardMinPurchaseAmount;
+    patch.rewardCouponExpiresAt = reward.rewardCouponExpiresAt;
+  }
+
+  const catalogFields = ["competitionId", "homeTeamId", "awayTeamId"];
+  if (Object.keys(data).some((key) => catalogFields.includes(key))) {
+    const competitionId = data.competitionId !== undefined ? data.competitionId : existing.competitionId;
+    const homeTeamId = data.homeTeamId !== undefined ? data.homeTeamId : existing.homeTeamId;
+    const awayTeamId = data.awayTeamId !== undefined ? data.awayTeamId : existing.awayTeamId;
+    if (!competitionId || !homeTeamId || !awayTeamId) {
+      throw new Error("competitionId, homeTeamId, and awayTeamId must be provided together");
     }
-    if (expiresAt.getTime() <= Date.now()) {
-      throw new Error("rewardCouponExpiresAt must be in the future");
+    const resolved = await resolveSportsMatchCatalogSelection(competitionId, homeTeamId, awayTeamId, db);
+    patch.competitionId = resolved.competition.id;
+    patch.homeTeamId = resolved.homeTeam.id;
+    patch.awayTeamId = resolved.awayTeam.id;
+    patch.leagueName = resolved.competition.name;
+    patch.homeTeamName = resolved.homeTeam.name;
+    patch.awayTeamName = resolved.awayTeam.name;
+    patch.homeTeamImageUrl = resolved.homeTeam.logoImageUrl ?? null;
+    patch.awayTeamImageUrl = resolved.awayTeam.logoImageUrl ?? null;
+  }
+
+  await db.update(sportsMatches).set(patch).where(eq(sportsMatches.id, matchId));
+}
+
+export interface SportsBulkFixtureRowInput {
+  rowNumber?: number;
+  title: string;
+  homeTeamRef: string | number;
+  awayTeamRef: string | number;
+  homeTeamLogoUrl?: string | null;
+  awayTeamLogoUrl?: string | null;
+  matchStartAt?: Date | null;
+  voteDeadlineAt: Date;
+  voteCostPoints: string;
+  rewardKind?: SportsRewardKind;
+  rewardPointsAmount?: string | null;
+  rewardDiscountType?: "flat" | "percentage" | null;
+  rewardDiscountValue?: string | null;
+  rewardMinPurchaseAmount?: string | null;
+  rewardCouponExpiresAt?: Date | null;
+  status?: "draft" | "open" | "closed";
+  displayOrder?: number;
+}
+
+export interface SportsBulkFixtureRowError {
+  rowNumber: number;
+  field: string;
+  message: string;
+}
+
+export async function bulkCreateSportsFixtures(input: {
+  competitionId: number;
+  rows: SportsBulkFixtureRowInput[];
+  updateTeamAssets?: boolean;
+}) {
+  const database = await getDb();
+  if (!database) throw new Error("Database not available");
+  if (!input.rows.length) return { success: false as const, createdCount: 0, errors: [{ rowNumber: 0, field: "rows", message: "At least one fixture row is required" }] };
+  if (input.rows.length > 1000) throw new Error("Bulk fixture import supports at most 1000 rows per batch");
+
+  const competition = await getSportsCompetitionByIdInternal(input.competitionId, database);
+  if (!competition) throw new Error("Competition not found");
+  if (!competition.isActive) throw new Error("Competition is inactive");
+
+  const [competitionTeams, allTeams] = await Promise.all([
+    getSportsCompetitionTeamsInternal(input.competitionId, database),
+    database.select().from(sportsTeams),
+  ]);
+  const errors: SportsBulkFixtureRowError[] = [];
+  const prepared: Array<{
+    source: SportsBulkFixtureRowInput;
+    homeTeam: SportsTeamLookup;
+    awayTeam: SportsTeamLookup;
+    reward: ReturnType<typeof validateSportsRewardConfig>;
+    rowNumber: number;
+  }> = [];
+  const seenFixtureKeys = new Set<string>();
+
+  for (let index = 0; index < input.rows.length; index += 1) {
+    const row = input.rows[index];
+    const rowNumber = row.rowNumber ?? index + 2;
+    const beforeErrorCount = errors.length;
+    const title = String(row.title ?? "").trim();
+    if (!title) errors.push({ rowNumber, field: "title", message: "Title is required" });
+
+    let homeTeam: SportsTeamLookup | undefined;
+    let awayTeam: SportsTeamLookup | undefined;
+    try {
+      homeTeam = resolveSportsTeamReference(row.homeTeamRef, competitionTeams, allTeams);
+    } catch (error: any) {
+      errors.push({ rowNumber, field: "homeTeamRef", message: error?.message || "Invalid home team" });
+    }
+    try {
+      awayTeam = resolveSportsTeamReference(row.awayTeamRef, competitionTeams, allTeams);
+    } catch (error: any) {
+      errors.push({ rowNumber, field: "awayTeamRef", message: error?.message || "Invalid away team" });
+    }
+    if (homeTeam && awayTeam && homeTeam.id === awayTeam.id) {
+      errors.push({ rowNumber, field: "awayTeamRef", message: "Home and away team must be different" });
+    }
+
+    try {
+      parseStrictNonNegativeDecimal(row.voteCostPoints, "voteCostPoints");
+    } catch (error: any) {
+      errors.push({ rowNumber, field: "voteCostPoints", message: error?.message || "Invalid vote cost" });
+    }
+
+    if (!(row.voteDeadlineAt instanceof Date) || isNaN(row.voteDeadlineAt.getTime())) {
+      errors.push({ rowNumber, field: "voteDeadlineAt", message: "voteDeadlineAt must be a valid date" });
+    } else if ((row.status ?? "draft") === "open" && row.voteDeadlineAt.getTime() <= Date.now()) {
+      errors.push({ rowNumber, field: "voteDeadlineAt", message: "Open fixtures require a future vote deadline" });
+    }
+    if (row.matchStartAt && (!(row.matchStartAt instanceof Date) || isNaN(row.matchStartAt.getTime()))) {
+      errors.push({ rowNumber, field: "matchStartAt", message: "matchStartAt must be a valid date" });
+    }
+
+    let reward: ReturnType<typeof validateSportsRewardConfig> | undefined;
+    try {
+      reward = validateSportsRewardConfig(row);
+    } catch (error: any) {
+      errors.push({ rowNumber, field: "reward", message: error?.message || "Invalid reward configuration" });
+    }
+
+    if (homeTeam && awayTeam && row.voteDeadlineAt instanceof Date && !isNaN(row.voteDeadlineAt.getTime())) {
+      const fixtureTime = row.matchStartAt instanceof Date && !isNaN(row.matchStartAt.getTime())
+        ? row.matchStartAt.toISOString()
+        : row.voteDeadlineAt.toISOString();
+      const fixtureKey = `${homeTeam.id}:${awayTeam.id}:${fixtureTime}:${title.toLocaleLowerCase()}`;
+      if (seenFixtureKeys.has(fixtureKey)) {
+        errors.push({ rowNumber, field: "row", message: "Duplicate fixture row in this import" });
+      } else {
+        seenFixtureKeys.add(fixtureKey);
+      }
+    }
+
+    if (errors.length === beforeErrorCount && homeTeam && awayTeam && reward) {
+      prepared.push({ source: { ...row, title }, homeTeam, awayTeam, reward, rowNumber });
     }
   }
 
-  // All validations passed, perform update
-  // Only update fields that are explicitly provided (not all merged fields)
-  await db.update(sportsMatches).set(data as any).where(eq(sportsMatches.id, matchId));
+  if (errors.length) return { success: false as const, createdCount: 0, errors };
+
+  return database.transaction(async (tx: any) => {
+    const ids: number[] = [];
+    const assetUpdates = new Map<number, string>();
+    if (input.updateTeamAssets) {
+      for (const item of prepared) {
+        const homeLogo = item.source.homeTeamLogoUrl?.trim();
+        const awayLogo = item.source.awayTeamLogoUrl?.trim();
+        if (homeLogo) assetUpdates.set(item.homeTeam.id, homeLogo);
+        if (awayLogo) assetUpdates.set(item.awayTeam.id, awayLogo);
+      }
+      for (const [teamId, logoImageUrl] of Array.from(assetUpdates.entries())) {
+        await tx.update(sportsTeams).set({ logoImageUrl }).where(eq(sportsTeams.id, teamId));
+      }
+    }
+
+    for (const item of prepared) {
+      const homeLogo = input.updateTeamAssets
+        ? assetUpdates.get(item.homeTeam.id) ?? item.homeTeam.logoImageUrl ?? null
+        : item.homeTeam.logoImageUrl ?? null;
+      const awayLogo = input.updateTeamAssets
+        ? assetUpdates.get(item.awayTeam.id) ?? item.awayTeam.logoImageUrl ?? null
+        : item.awayTeam.logoImageUrl ?? null;
+      const result = await tx.insert(sportsMatches).values({
+        title: item.source.title.trim(),
+        leagueName: competition.name,
+        competitionId: competition.id,
+        homeTeamId: item.homeTeam.id,
+        awayTeamId: item.awayTeam.id,
+        homeTeamName: item.homeTeam.name,
+        awayTeamName: item.awayTeam.name,
+        homeTeamImageUrl: homeLogo,
+        awayTeamImageUrl: awayLogo,
+        matchStartAt: item.source.matchStartAt ?? null,
+        voteDeadlineAt: item.source.voteDeadlineAt,
+        voteCostPoints: item.source.voteCostPoints as any,
+        rewardKind: item.reward.rewardKind,
+        rewardPointsAmount: item.reward.rewardPointsAmount as any,
+        rewardDiscountType: item.reward.rewardDiscountType,
+        rewardDiscountValue: item.reward.rewardDiscountValue as any,
+        rewardMinPurchaseAmount: item.reward.rewardMinPurchaseAmount as any,
+        rewardCouponExpiresAt: item.reward.rewardCouponExpiresAt,
+        status: item.source.status ?? "draft",
+        isActive: true,
+        displayOrder: item.source.displayOrder ?? 0,
+      });
+      ids.push(extractInsertId(result));
+    }
+
+    return { success: true as const, createdCount: ids.length, ids, errors: [] as SportsBulkFixtureRowError[] };
+  });
 }
 
 // Strict numeric validation helpers
@@ -5597,17 +6039,43 @@ export async function settleSportsMatch(matchId: number, result: SportsPredictio
     await lockSportsMatchForAccountMutation(matchId, tx);
     const match = await getSportsMatchById(matchId, tx);
     if (!match) throw new Error("Match not found");
-    if (match.status === "settled") throw new Error("Match has already been settled");
+
+    // A retry of the exact same settlement is a read-only success. Because
+    // match status, vote statuses, reward ledger rows, coupons/points, and the
+    // points transaction all commit in this one transaction, a committed
+    // settled row implies the original settlement committed as a unit.
+    if (match.status === "settled") {
+      if (match.result !== result) {
+        throw new Error(`Match was already settled with result ${match.result}`);
+      }
+      const existingRewards = await tx
+        .select({ id: sportsMatchRewards.id })
+        .from(sportsMatchRewards)
+        .where(eq(sportsMatchRewards.matchId, matchId));
+      return { success: true, winnerCount: existingRewards.length, idempotent: true };
+    }
     if (match.status === "cancelled") throw new Error("Cancelled match cannot be settled");
-    
-    // Settle policy guard: reject draft matches
     if (match.status === "draft") {
       throw new Error("Cannot settle draft match. Must be closed or deadline must have passed.");
     }
-    
-    // Settle policy guard: reject open matches before deadline
     if (match.status === "open" && new Date(match.voteDeadlineAt).getTime() > Date.now()) {
       throw new Error("Cannot settle open match before voting deadline has passed.");
+    }
+
+    const rewardKind: SportsRewardKind = match.rewardKind === "points" ? "points" : "coupon";
+    let pointsRewardAmount: string | null = null;
+    if (rewardKind === "points") {
+      const parsed = parseStrictPositiveDecimal(match.rewardPointsAmount, "rewardPointsAmount");
+      pointsRewardAmount = parsed.toFixed(2);
+    } else {
+      if (match.rewardDiscountType !== "flat" && match.rewardDiscountType !== "percentage") {
+        throw new Error("Coupon reward requires rewardDiscountType");
+      }
+      const discountValue = parseStrictPositiveDecimal(match.rewardDiscountValue, "rewardDiscountValue");
+      if (match.rewardDiscountType === "percentage" && discountValue > 100) {
+        throw new Error("rewardDiscountValue cannot exceed 100 for percentage discounts");
+      }
+      parseStrictNonNegativeDecimal(match.rewardMinPurchaseAmount ?? "0", "rewardMinPurchaseAmount");
     }
 
     await updateSportsMatch(matchId, { status: "settled", result }, tx);
@@ -5617,10 +6085,9 @@ export async function settleSportsMatch(matchId: number, result: SportsPredictio
       .from(sportsMatchVotes)
       .where(eq(sportsMatchVotes.matchId, matchId));
 
-    // Settlement can mutate several users' votes/rewards/coupons in one
-    // transaction. Acquire every involved Source lock in canonical ascending
-    // order up front so settlement cannot deadlock with another multi-user
-    // mutation or strand one guarded Source after partially processing others.
+    // Acquire all Source-account guards in canonical order before mutating any
+    // winner. Point winners then take the same user lock before their balance
+    // read-modify-write, matching every other points writer in this repository.
     const pendingUserIds = votes.filter((vote: any) => vote.status === "pending").map((vote: any) => vote.userId);
     if (pendingUserIds.length > 0) {
       await assertAccountMergeClassifiedMutationsAllowed(pendingUserIds, tx);
@@ -5631,65 +6098,96 @@ export async function settleSportsMatch(matchId: number, result: SportsPredictio
     for (const vote of votes) {
       if (vote.status !== "pending") continue;
 
-      if (vote.prediction === result) {
-        // Check if reward already exists (idempotency) - BEFORE creating coupon
-        const existingReward = await tx
-          .select()
-          .from(sportsMatchRewards)
-          .where(eq(sportsMatchRewards.voteId, vote.id))
-          .limit(1);
+      if (vote.prediction !== result) {
+        await tx.update(sportsMatchVotes).set({ status: "lost" }).where(eq(sportsMatchVotes.id, vote.id));
+        continue;
+      }
 
-        if (existingReward.length) {
-          // Reward already exists, skip coupon creation
-          winnerCount += 1;
-          continue;
-        }
+      const existingReward = await tx
+        .select()
+        .from(sportsMatchRewards)
+        .where(eq(sportsMatchRewards.voteId, vote.id))
+        .limit(1);
+      if (existingReward.length) {
+        await tx.update(sportsMatchVotes).set({ status: "won" }).where(eq(sportsMatchVotes.id, vote.id));
+        winnerCount += 1;
+        continue;
+      }
 
-        // Reward does not exist, create coupon and reward
+      if (rewardKind === "points") {
+        const amount = pointsRewardAmount!;
+        await lockUserForPoints(vote.userId, tx);
+        const currentBalance = await getUserPointsBalance(vote.userId, tx);
+        const balanceAfter = formatMoney(moneyAdd(currentBalance, amount), "sportsRewardBalanceAfter");
+
+        // Insert the unique vote->reward arbiter before touching the points
+        // ledger. The transaction-level match lock serializes settlement and
+        // uniqueVoteId makes a second reward for this vote structurally illegal.
+        const rewardResult = await tx.insert(sportsMatchRewards).values({
+          matchId,
+          voteId: vote.id,
+          userId: vote.userId,
+          rewardKind: "points",
+          couponId: null,
+          pointsAmount: amount as any,
+          pointsTransactionId: null,
+          status: "issued",
+          issuedAt: new Date(),
+        });
+        const rewardId = extractInsertId(rewardResult);
+        const pointsTransactionId = await recordPointsTransactionReturningId({
+          userId: vote.userId,
+          type: "earn",
+          amount,
+          balanceAfter,
+          referenceType: "sports_reward",
+          referenceId: rewardId,
+          note: `Sports prediction reward for match #${matchId}`,
+        }, tx);
+        await tx
+          .update(sportsMatchRewards)
+          .set({ pointsTransactionId })
+          .where(eq(sportsMatchRewards.id, rewardId));
+        await tx
+          .update(sportsMatchVotes)
+          .set({ status: "won", rewardCouponId: null, rewardCouponCode: null })
+          .where(eq(sportsMatchVotes.id, vote.id));
+      } else {
         const code = buildRewardCouponCode(matchId, vote.id);
         const couponResult = await tx.insert(coupons).values({
           code,
-          discountType: match.rewardDiscountType,
+          discountType: match.rewardDiscountType as "flat" | "percentage",
           discountValue: match.rewardDiscountValue as any,
           minPurchaseAmount: (match.rewardMinPurchaseAmount || "0.00") as any,
           maxUsageCount: 1,
           usageCount: 0,
           isActive: true,
           expiresAt: match.rewardCouponExpiresAt || null,
-          // Explicit ownership (in addition to, not instead of, the
-          // sportsMatchRewards row inserted below - getRewardCouponOwnership's
-          // join-based check remains the authoritative fallback for coupons
-          // issued before this column existed).
           scope: "user",
           ownerUserId: vote.userId,
         });
         const couponId = extractInsertId(couponResult);
-
-        // Create sportsMatchRewards entry to track ownership
         await tx.insert(sportsMatchRewards).values({
           matchId,
           voteId: vote.id,
           userId: vote.userId,
+          rewardKind: "coupon",
           couponId,
+          pointsAmount: null,
+          pointsTransactionId: null,
           status: "issued",
           issuedAt: new Date(),
         });
-
         await tx
           .update(sportsMatchVotes)
           .set({ status: "won", rewardCouponId: couponId, rewardCouponCode: code })
           .where(eq(sportsMatchVotes.id, vote.id));
-
-        winnerCount += 1;
-      } else {
-        await tx
-          .update(sportsMatchVotes)
-          .set({ status: "lost" })
-          .where(eq(sportsMatchVotes.id, vote.id));
       }
+
+      winnerCount += 1;
     }
 
-    return { success: true, winnerCount };
+    return { success: true, winnerCount, idempotent: false };
   });
 }
 
@@ -5789,7 +6287,11 @@ export async function getSportsRewardsForUser(userId: number) {
       prediction: sportsMatchVotes.prediction,
       result: sportsMatches.result,
       voteStatus: sportsMatchVotes.status,
+      rewardKind: sportsMatchRewards.rewardKind,
       rewardStatusRaw: sportsMatchRewards.status,
+      pointsAmount: sportsMatchRewards.pointsAmount,
+      pointsTransactionId: sportsMatchRewards.pointsTransactionId,
+      balanceAfterGrant: pointsTransactions.balanceAfter,
       couponCode: coupons.code,
       discountType: coupons.discountType,
       discountValue: coupons.discountValue,
@@ -5801,17 +6303,22 @@ export async function getSportsRewardsForUser(userId: number) {
     .from(sportsMatchRewards)
     .innerJoin(sportsMatches, eq(sportsMatchRewards.matchId, sportsMatches.id))
     .innerJoin(sportsMatchVotes, eq(sportsMatchRewards.voteId, sportsMatchVotes.id))
-    .innerJoin(coupons, eq(sportsMatchRewards.couponId, coupons.id))
+    .leftJoin(coupons, eq(sportsMatchRewards.couponId, coupons.id))
+    .leftJoin(pointsTransactions, eq(sportsMatchRewards.pointsTransactionId, pointsTransactions.id))
     .where(eq(sportsMatchRewards.userId, userId))
     .orderBy(desc(sportsMatchRewards.createdAt));
 
-  // Compute rewardStatus based on rewardStatusRaw and coupon expiration
   return rewards.map((reward: any) => ({
     ...reward,
-    rewardStatus: reward.rewardStatusRaw === "used" ? "used" : 
-                  reward.rewardStatusRaw === "void" ? "void" :
-                  reward.expiresAt && new Date(reward.expiresAt).getTime() <= Date.now() ? "expired" :
-                  "issued",
+    rewardStatus: reward.rewardStatusRaw === "void"
+      ? "void"
+      : reward.rewardKind === "points"
+        ? "granted"
+        : reward.rewardStatusRaw === "used"
+          ? "used"
+          : reward.expiresAt && new Date(reward.expiresAt).getTime() <= Date.now()
+            ? "expired"
+            : "issued",
   }));
 }
 
