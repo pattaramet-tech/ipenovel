@@ -50,11 +50,13 @@ import type {
  */
 export async function validateAccountMergeTarget(
   sourceUserId: number,
-  targetUserId: number
+  targetUserId: number,
+  tx?: any
 ): Promise<AccountMergeTargetValidation> {
   const blockers: string[] = [];
 
-  const [source, target] = await Promise.all([db.getUserById(sourceUserId), db.getUserById(targetUserId)]);
+  const readUser = (userId: number) => (tx === undefined ? db.getUserById(userId) : db.getUserById(userId, tx));
+  const [source, target] = await Promise.all([readUser(sourceUserId), readUser(targetUserId)]);
 
   const sourceExists = Boolean(source);
   const targetExists = Boolean(target);
@@ -74,17 +76,17 @@ export async function validateAccountMergeTarget(
   // The ONLY evidence ever trusted for "source owns a Google identity" - a
   // real row, looked up fresh, matching accountRecoveryService.ts's
   // identical rule for the sibling Account Recovery workflow.
-  const sourceIdentity = sourceExists
-    ? await db.getAuthIdentityByUserAndProvider(sourceUserId, "google")
-    : undefined;
+  const readGoogleIdentity = (userId: number) =>
+    tx === undefined
+      ? db.getAuthIdentityByUserAndProvider(userId, "google")
+      : db.getAuthIdentityByUserAndProvider(userId, "google", tx);
+  const sourceIdentity = sourceExists ? await readGoogleIdentity(sourceUserId) : undefined;
   const sourceHasGoogleIdentity = Boolean(sourceIdentity);
   if (!sourceHasGoogleIdentity) {
     blockers.push("Source account has no linked Google identity - cannot verify ownership");
   }
 
-  const targetIdentity = targetExists
-    ? await db.getAuthIdentityByUserAndProvider(targetUserId, "google")
-    : undefined;
+  const targetIdentity = targetExists ? await readGoogleIdentity(targetUserId) : undefined;
   const targetHasGoogleIdentity = Boolean(targetIdentity);
   if (targetHasGoogleIdentity) {
     blockers.push("Target account already has a linked Google identity");
@@ -112,11 +114,13 @@ const EMPTY_BALANCE_PROJECTION: AccountMergeBalanceProjection = {
 };
 
 async function buildBalanceProjection(
-  getBalance: (userId: number) => Promise<string>,
+  getBalance: (userId: number, tx?: any) => Promise<string>,
   sourceUserId: number,
-  targetUserId: number
+  targetUserId: number,
+  tx?: any
 ): Promise<AccountMergeBalanceProjection> {
-  const [sourceBalance, targetBalance] = await Promise.all([getBalance(sourceUserId), getBalance(targetUserId)]);
+  const readBalance = (userId: number) => (tx === undefined ? getBalance(userId) : getBalance(userId, tx));
+  const [sourceBalance, targetBalance] = await Promise.all([readBalance(sourceUserId), readBalance(targetUserId)]);
   return {
     sourceBalance,
     targetBalance,
@@ -175,14 +179,17 @@ const PAYMENT_SLIP_CLAIMS_NOTE =
  * never a table inventory or projection computed against data that
  * wouldn't mean anything (e.g. a non-existent target's "balance").
  */
-export async function buildAccountMergePreview(params: {
-  requestId: number;
-  sourceUserId: number;
-  targetUserId: number;
-}): Promise<AccountMergePreview> {
+export async function buildAccountMergePreview(
+  params: {
+    requestId: number;
+    sourceUserId: number;
+    targetUserId: number;
+  },
+  tx?: any
+): Promise<AccountMergePreview> {
   const { requestId, sourceUserId, targetUserId } = params;
 
-  const targetValidation = await validateAccountMergeTarget(sourceUserId, targetUserId);
+  const targetValidation = await validateAccountMergeTarget(sourceUserId, targetUserId, tx);
 
   if (!targetValidation.isValid) {
     return {
@@ -201,10 +208,10 @@ export async function buildAccountMergePreview(params: {
   }
 
   const [rawFindings, walletProjection, pointsProjection, paymentSlipClaimsCount] = await Promise.all([
-    db.findAccountMergeTableInventory(sourceUserId, targetUserId),
-    buildBalanceProjection(db.getAccountMergeWalletBalance, sourceUserId, targetUserId),
-    buildBalanceProjection(db.getAccountMergePointsBalance, sourceUserId, targetUserId),
-    db.getAccountMergePaymentSlipClaimsCount(sourceUserId),
+    db.findAccountMergeTableInventory(sourceUserId, targetUserId, tx),
+    buildBalanceProjection(db.getAccountMergeWalletBalance, sourceUserId, targetUserId, tx),
+    buildBalanceProjection(db.getAccountMergePointsBalance, sourceUserId, targetUserId, tx),
+    db.getAccountMergePaymentSlipClaimsCount(sourceUserId, tx),
   ]);
 
   const tableFindings: AccountMergeTableFinding[] = rawFindings.map((finding) => {

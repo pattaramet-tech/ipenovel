@@ -114,20 +114,27 @@ async function lockMergeCase(caseId: number, tx: any) {
 }
 
 async function readDataReceipt(caseId: number, database: any) {
-  const rows = await database
-    .select()
-    .from(accountMergeDataReconciliations)
-    .where(eq(accountMergeDataReconciliations.mergeCaseId, caseId))
-    .limit(1);
+  // Locking/current read is required for standalone two-admin idempotency.
+  // A transaction may establish a REPEATABLE READ snapshot before it waits
+  // for the canonical participant/case locks; after the wait it must observe
+  // the winner's committed receipt rather than attempt a duplicate insert.
+  const rows = unwrapRows(
+    await database.execute(
+      sql`SELECT * FROM accountMergeDataReconciliations WHERE mergeCaseId = ${caseId} LIMIT 1 FOR UPDATE`
+    )
+  );
   return rows[0];
 }
 
 async function readFinancialReceipt(caseId: number, database: any) {
-  const rows = await database
-    .select()
-    .from(accountMergeFinancialReconciliations)
-    .where(eq(accountMergeFinancialReconciliations.mergeCaseId, caseId))
-    .limit(1);
+  // Same current-read rule for the IPE-006 prerequisite: if data
+  // reconciliation waits behind a just-finishing financial transaction, it
+  // must see that committed prerequisite after acquiring the locks.
+  const rows = unwrapRows(
+    await database.execute(
+      sql`SELECT * FROM accountMergeFinancialReconciliations WHERE mergeCaseId = ${caseId} LIMIT 1 FOR UPDATE`
+    )
+  );
   return rows[0];
 }
 
@@ -779,28 +786,27 @@ async function reconcileReadingProgress(
  * are never mutated here. A UNIQUE data receipt makes ordinary retries and
  * two-admin races converge to one committed reconciliation.
  */
-export async function reconcileAccountMergeData(params: {
-  caseId: number;
-  actorAdminId: number;
-}) {
+export async function reconcileAccountMergeDataInTransaction(
+  params: {
+    caseId: number;
+    actorAdminId: number;
+  },
+  tx: any
+) {
   assertPositiveInteger(params.caseId, "caseId");
   assertPositiveInteger(params.actorAdminId, "actorAdminId");
 
-  const database = await db.getDb();
-  if (!database)
-    throw new AccountMergeDataError(
-      "DATABASE_UNAVAILABLE",
-      "Database unavailable"
-    );
-
-  const initial = await readMergeCase(params.caseId, database);
+  // IPE-008 calls this core through its outer transaction so financial,
+  // entitlement/user-data reconciliation, auth move, and completion share one
+  // commit/rollback boundary. The public wrapper below preserves the original
+  // standalone IPE-007 API and its exact behavior.
+  const initial = await readMergeCase(params.caseId, tx);
   if (!initial)
     throw new AccountMergeDataError(
       "CASE_NOT_FOUND",
       "Account merge case not found"
     );
 
-  return database.transaction(async (tx: any) => {
     const sourceUserId = Number(initial.sourceUserId);
     const targetUserId = Number(initial.targetUserId);
 
@@ -949,6 +955,18 @@ export async function reconcileAccountMergeData(params: {
       );
     }
 
-    return { alreadyReconciled: false, reconciliation };
-  });
+  return { alreadyReconciled: false, reconciliation };
+}
+
+export async function reconcileAccountMergeData(params: {
+  caseId: number;
+  actorAdminId: number;
+}) {
+  const database = await db.getDb();
+  if (!database)
+    throw new AccountMergeDataError(
+      "DATABASE_UNAVAILABLE",
+      "Database unavailable"
+    );
+  return database.transaction((tx: any) => reconcileAccountMergeDataInTransaction(params, tx));
 }

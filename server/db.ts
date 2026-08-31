@@ -8024,6 +8024,30 @@ export async function getAccountMergePaymentSlipClaimsCount(userId: number, tx?:
   return Number(rows[0]?.value ?? 0);
 }
 
+/**
+ * Minimal stale-session lookup for IPE-008. A completed merge deliberately
+ * keeps the Source users row/openId so historical references remain valid,
+ * which means an already-issued Source JWT can still authenticate. This read
+ * lets the server distinguish that retained historical account from an active
+ * account without exposing Target identity details to the client.
+ */
+export async function getCompletedAccountMergeForSource(userId: number, tx?: any) {
+  const database = tx ?? (await getDb());
+  if (!database) return undefined;
+  const rows = await database
+    .select({
+      id: accountMergeCases.id,
+      sourceUserId: accountMergeCases.sourceUserId,
+      targetUserId: accountMergeCases.targetUserId,
+      completedAt: accountMergeCases.completedAt,
+    })
+    .from(accountMergeCases)
+    .where(and(eq(accountMergeCases.sourceUserId, userId), eq(accountMergeCases.status, "completed")))
+    .orderBy(desc(accountMergeCases.id))
+    .limit(1);
+  return rows[0];
+}
+
 // ============ ADMIN USERS MANAGEMENT ============
 // Backs the Admin Users Management page (client/src/pages/AdminUsersPage.tsx)
 // - list/search/filter/sort, name+role edit, and safe hard-delete. See

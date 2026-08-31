@@ -1,7 +1,7 @@
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, protectedProcedure, authenticatedProcedure, router } from "./_core/trpc";
+import { publicProcedure, protectedProcedure, authenticatedProcedure, mergeAwareAuthenticatedProcedure, router } from "./_core/trpc";
 import { evaluateGoogleConnectionCutoff } from "./_core/env";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -61,6 +61,11 @@ import * as accountRecoveryService from "./services/accountRecoveryService";
 import { AccountRecoveryError } from "./services/accountRecoveryService";
 import { buildAccountMergePreview } from "./services/accountMergePreviewService";
 import {
+  AccountMergeOrchestrationError,
+  executeAccountMerge,
+  getAccountMergeExecutionStatus,
+} from "./services/accountMergeOrchestrationService";
+import {
   AccountMergeLifecycleError,
   cancelAccountMergeGuard,
   prepareAccountMergeGuard,
@@ -105,6 +110,20 @@ function mapAccountRecoveryError(error: unknown): TRPCError {
   return new TRPCError({
     code: "INTERNAL_SERVER_ERROR",
     message: "ไม่สามารถดำเนินการได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง",
+  });
+}
+
+function mapAccountMergeOrchestrationError(error: unknown): TRPCError {
+  if (error instanceof AccountMergeOrchestrationError) {
+    const notFound = new Set(["REQUEST_NOT_FOUND", "CASE_NOT_FOUND"]);
+    const badRequest = new Set(["INVALID_ARGUMENT", "REQUEST_NOT_BLOCKED", "CONFIRMATION_MISMATCH"]);
+    const code = notFound.has(error.code) ? "NOT_FOUND" : badRequest.has(error.code) ? "BAD_REQUEST" : "CONFLICT";
+    return new TRPCError({ code, message: error.message });
+  }
+  console.error("[AccountMerge] Unexpected orchestration error", safeErrorSummary(error));
+  return new TRPCError({
+    code: "INTERNAL_SERVER_ERROR",
+    message: "ไม่สามารถดำเนินการ Advanced Account Merge ได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง",
   });
 }
 
@@ -385,11 +404,15 @@ export const appRouter = router({
     googleConnectionCutoffStatus: authenticatedProcedure.query(async ({ ctx }) => {
       const cutoff = evaluateGoogleConnectionCutoff();
       const exempt = ctx.user.role === "admin";
-      const identity = await db.getAuthIdentityByUserAndProvider(ctx.user.id, "google");
+      const [identity, completedMerge] = await Promise.all([
+        db.getAuthIdentityByUserAndProvider(ctx.user.id, "google"),
+        db.getCompletedAccountMergeForSource(ctx.user.id),
+      ]);
       const googleConnected = Boolean(identity);
       return {
         ...cutoff,
         googleConnected,
+        accountMerged: Boolean(completedMerge),
         exempt,
         // Only true once the gate is genuinely active, this specific user
         // isn't exempt, and they haven't already connected - the ONE field
@@ -3658,7 +3681,7 @@ export const appRouter = router({
       return db.listAccountRecoveryRequestsForUser(ctx.user.id);
     }),
 
-    create: authenticatedProcedure
+    create: mergeAwareAuthenticatedProcedure
       .input(
         z.object({
           requestedLegacyUserId: z.number().int().positive().optional(),
@@ -3685,7 +3708,7 @@ export const appRouter = router({
     // id + status combination is used for both "not found" and "belongs to
     // someone else", so this never confirms/denies whether a given id
     // exists for another user.
-    cancel: authenticatedProcedure
+    cancel: mergeAwareAuthenticatedProcedure
       .input(z.object({ requestId: z.number().int().positive(), reason: z.string().trim().max(500).optional() }))
       .mutation(async ({ input, ctx }) => {
         const request = await db.getAccountRecoveryRequestById(input.requestId);
@@ -3866,6 +3889,39 @@ export const appRouter = router({
             sourceUserId: request.requesterUserId,
             targetUserId: input.targetUserId,
           });
+        }),
+
+      status: adminProcedure
+        .input(z.object({ requestId: z.number().int().positive() }))
+        .query(async ({ input }) => {
+          try {
+            return await getAccountMergeExecutionStatus(input.requestId);
+          } catch (error) {
+            throw mapAccountMergeOrchestrationError(error);
+          }
+        }),
+
+      execute: adminProcedure
+        .input(
+          z.object({
+            requestId: z.number().int().positive(),
+            targetUserId: z.number().int().positive(),
+            reason: z.string().trim().min(1).max(1000),
+            confirmation: z.string().trim().min(1).max(128),
+          })
+        )
+        .mutation(async ({ input, ctx }) => {
+          try {
+            return await executeAccountMerge({
+              requestId: input.requestId,
+              targetUserId: input.targetUserId,
+              adminId: ctx.user.id,
+              reason: input.reason,
+              confirmation: input.confirmation,
+            });
+          } catch (error) {
+            throw mapAccountMergeOrchestrationError(error);
+          }
         }),
 
       // IPE-005 guard lifecycle only. These procedures never move balances,

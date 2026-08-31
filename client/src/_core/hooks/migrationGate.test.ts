@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   isMandatoryGoogleConnectionEnabled,
@@ -23,26 +24,43 @@ describe("isMandatoryGoogleConnectionEnabled", () => {
 
   it.each([undefined, "", "TRUE", "True", " true", "true "])(
     '"transition" + %j -> false (exact literal "true" only)',
-    (requireValue) => {
-      expect(isMandatoryGoogleConnectionEnabled("transition", requireValue)).toBe(false);
+    requireValue => {
+      expect(
+        isMandatoryGoogleConnectionEnabled("transition", requireValue)
+      ).toBe(false);
     }
   );
 
   it("both unset -> false", () => {
-    expect(isMandatoryGoogleConnectionEnabled(undefined, undefined)).toBe(false);
+    expect(isMandatoryGoogleConnectionEnabled(undefined, undefined)).toBe(
+      false
+    );
   });
 });
 
 describe("isMigrationGateExemptPath", () => {
-  it.each(["/account/upgrade-login", "/login", "/account/recovery"])("%s -> exempt", (path) => {
-    expect(isMigrationGateExemptPath(path)).toBe(true);
-  });
+  it.each(["/account/upgrade-login", "/login", "/account/recovery"])(
+    "%s -> exempt",
+    path => {
+      expect(isMigrationGateExemptPath(path)).toBe(true);
+    }
+  );
 
-  it.each(["/admin", "/admin/settings", "/admin/novels", "/admin/orders/123"])("%s -> exempt (entire admin surface)", (path) => {
-    expect(isMigrationGateExemptPath(path)).toBe(true);
-  });
+  it.each(["/admin", "/admin/settings", "/admin/novels", "/admin/orders/123"])(
+    "%s -> exempt (entire admin surface)",
+    path => {
+      expect(isMigrationGateExemptPath(path)).toBe(true);
+    }
+  );
 
-  it.each(["/", "/profile", "/wallet", "/novels/some-novel", "/cart", "/account"])("%s -> NOT exempt", (path) => {
+  it.each([
+    "/",
+    "/profile",
+    "/wallet",
+    "/novels/some-novel",
+    "/cart",
+    "/account",
+  ])("%s -> NOT exempt", path => {
     expect(isMigrationGateExemptPath(path)).toBe(false);
   });
 
@@ -62,77 +80,173 @@ describe("isMigrationGateExemptPath", () => {
   });
 });
 
-function baseInput(overrides: Partial<MigrationGateInput> = {}): MigrationGateInput {
+function baseInput(
+  overrides: Partial<MigrationGateInput> = {}
+): MigrationGateInput {
   return {
     pathname: "/profile",
     isAuthenticated: true,
     authLoading: false,
     statusLoading: false,
     statusError: false,
+    accountMerged: false,
     needsConnection: false,
     ...overrides,
   };
 }
 
 describe("resolveMigrationGateAction", () => {
+  it("completed Account Merge Source -> block_merged before any Google-migration path decision", () => {
+    expect(resolveMigrationGateAction(baseInput({ accountMerged: true }))).toBe(
+      "block_merged"
+    );
+  });
+
+  it("completed Account Merge Source on /account/recovery -> block_merged even though the path is exempt from the ordinary Google migration gate", () => {
+    expect(
+      resolveMigrationGateAction(
+        baseInput({
+          pathname: "/account/recovery",
+          accountMerged: true,
+          needsConnection: true,
+        })
+      )
+    ).toBe("block_merged");
+  });
+
+  it("completed Account Merge Source on /admin would also block_merged if such a state were ever supplied; server merge rules forbid admins from becoming merge participants", () => {
+    expect(
+      resolveMigrationGateAction(
+        baseInput({ pathname: "/admin", accountMerged: true })
+      )
+    ).toBe("block_merged");
+  });
+
   it("server says needsConnection: false -> allow, regardless of everything else about the feature being on/off (that's the server's call, baked into needsConnection already)", () => {
-    expect(resolveMigrationGateAction(baseInput({ needsConnection: false }))).toBe("allow");
+    expect(
+      resolveMigrationGateAction(baseInput({ needsConnection: false }))
+    ).toBe("allow");
   });
 
   it("exempt path (/account/upgrade-login) -> allow even for an unconnected, authenticated user", () => {
-    expect(resolveMigrationGateAction(baseInput({ pathname: "/account/upgrade-login" }))).toBe("allow");
+    expect(
+      resolveMigrationGateAction(
+        baseInput({ pathname: "/account/upgrade-login" })
+      )
+    ).toBe("allow");
   });
 
   it("exempt path (/login) -> allow", () => {
-    expect(resolveMigrationGateAction(baseInput({ pathname: "/login" }))).toBe("allow");
+    expect(resolveMigrationGateAction(baseInput({ pathname: "/login" }))).toBe(
+      "allow"
+    );
   });
 
   it("exempt path (/admin/novels) -> allow, admin surface is never gated", () => {
-    expect(resolveMigrationGateAction(baseInput({ pathname: "/admin/novels" }))).toBe("allow");
+    expect(
+      resolveMigrationGateAction(baseInput({ pathname: "/admin/novels" }))
+    ).toBe("allow");
   });
 
   it("auth state still loading -> allow (never guesses/redirects before auth settles)", () => {
-    expect(resolveMigrationGateAction(baseInput({ authLoading: true }))).toBe("allow");
+    expect(resolveMigrationGateAction(baseInput({ authLoading: true }))).toBe(
+      "allow"
+    );
   });
 
   it("anonymous visitor (not authenticated) -> allow, on any non-exempt public page", () => {
-    expect(resolveMigrationGateAction(baseInput({ isAuthenticated: false }))).toBe("allow");
+    expect(
+      resolveMigrationGateAction(baseInput({ isAuthenticated: false }))
+    ).toBe("allow");
+  });
+
+  it("successful logout cannot stay trapped on block_merged when stale accountMerged=true remains cached", () => {
+    expect(
+      resolveMigrationGateAction(
+        baseInput({
+          isAuthenticated: false,
+          accountMerged: true,
+          needsConnection: true,
+        })
+      )
+    ).toBe("allow");
+  });
+
+  it("logout still pending keeps an authenticated merged Source blocked until the session is actually gone", () => {
+    expect(
+      resolveMigrationGateAction(
+        baseInput({
+          isAuthenticated: true,
+          authLoading: true,
+          accountMerged: true,
+        })
+      )
+    ).toBe("block_merged");
+  });
+
+  it("merged-session CTA waits for logout success and then routes to the fresh sign-in page", () => {
+    const componentSource = readFileSync(
+      new URL("../../components/MigrationGate.tsx", import.meta.url),
+      "utf8"
+    );
+    expect(componentSource).toContain("await logout();");
+    expect(componentSource).toContain('navigate("/login", { replace: true });');
   });
 
   it("authenticated, status query still loading -> block_loading", () => {
-    expect(resolveMigrationGateAction(baseInput({ statusLoading: true, needsConnection: undefined }))).toBe(
-      "block_loading"
-    );
+    expect(
+      resolveMigrationGateAction(
+        baseInput({ statusLoading: true, needsConnection: undefined })
+      )
+    ).toBe("block_loading");
   });
 
   it("authenticated, status query errored (infrastructure failure) -> block_error, NEVER 'allow' (fail open) and NEVER 'redirect_upgrade' (a guess)", () => {
-    expect(resolveMigrationGateAction(baseInput({ statusError: true, needsConnection: undefined }))).toBe(
-      "block_error"
-    );
+    expect(
+      resolveMigrationGateAction(
+        baseInput({ statusError: true, needsConnection: undefined })
+      )
+    ).toBe("block_error");
   });
 
   it("statusError takes priority over a stale needsConnection: false value from a previous successful fetch - still block_error, never redirect_upgrade", () => {
-    expect(resolveMigrationGateAction(baseInput({ statusError: true, needsConnection: false }))).toBe("block_error");
+    expect(
+      resolveMigrationGateAction(
+        baseInput({ statusError: true, needsConnection: false })
+      )
+    ).toBe("block_error");
   });
 
   it("authenticated, needsConnection: true -> redirect_upgrade", () => {
-    expect(resolveMigrationGateAction(baseInput({ needsConnection: true }))).toBe("redirect_upgrade");
+    expect(
+      resolveMigrationGateAction(baseInput({ needsConnection: true }))
+    ).toBe("redirect_upgrade");
   });
 
   it("needsConnection: undefined (not yet resolved, no loading/error flag set either) -> allow, never guesses redirect_upgrade", () => {
-    expect(resolveMigrationGateAction(baseInput({ needsConnection: undefined }))).toBe("allow");
+    expect(
+      resolveMigrationGateAction(baseInput({ needsConnection: undefined }))
+    ).toBe("allow");
   });
 
   it("redirect_upgrade is never returned for an exempt path, even if every other condition would otherwise trigger it (no redirect loop)", () => {
     expect(
       resolveMigrationGateAction(
-        baseInput({ pathname: "/account/upgrade-login", needsConnection: true, statusError: false })
+        baseInput({
+          pathname: "/account/upgrade-login",
+          needsConnection: true,
+          statusError: false,
+        })
       )
     ).toBe("allow");
   });
 
   it("block_error is never returned for an exempt path either", () => {
-    expect(resolveMigrationGateAction(baseInput({ pathname: "/admin/orders", statusError: true }))).toBe("allow");
+    expect(
+      resolveMigrationGateAction(
+        baseInput({ pathname: "/admin/orders", statusError: true })
+      )
+    ).toBe("allow");
   });
 
   // ---- /account/recovery: a user whose Google identity was just moved
@@ -142,37 +256,52 @@ describe("resolveMigrationGateAction", () => {
   // no linked Google identity and needsConnection would otherwise be true.
 
   it("[FIX] pathname=/account/recovery, needsConnection=true -> allow, never redirect_upgrade - the post-approval source session must reach its own explanation page", () => {
-    expect(resolveMigrationGateAction(baseInput({ pathname: "/account/recovery", needsConnection: true }))).toBe(
-      "allow"
-    );
+    expect(
+      resolveMigrationGateAction(
+        baseInput({ pathname: "/account/recovery", needsConnection: true })
+      )
+    ).toBe("allow");
   });
 
   it("[FIX] pathname=/account/recovery, statusError=true -> allow, never block_error - the exempt-path check runs before the status query is even consulted (MigrationGate.tsx never issues the query at all on an exempt path)", () => {
-    expect(resolveMigrationGateAction(baseInput({ pathname: "/account/recovery", statusError: true }))).toBe(
-      "allow"
-    );
+    expect(
+      resolveMigrationGateAction(
+        baseInput({ pathname: "/account/recovery", statusError: true })
+      )
+    ).toBe("allow");
   });
 
   it("[FIX] pathname=/account/recovery, statusLoading=true -> allow, never block_loading", () => {
-    expect(resolveMigrationGateAction(baseInput({ pathname: "/account/recovery", statusLoading: true }))).toBe(
-      "allow"
-    );
+    expect(
+      resolveMigrationGateAction(
+        baseInput({ pathname: "/account/recovery", statusLoading: true })
+      )
+    ).toBe("allow");
   });
 
   it("[FIX] a path merely resembling /account/recovery (/account/recovery-other) with needsConnection=true -> redirect_upgrade, NOT exempt - the exemption is exact-match only", () => {
     expect(
-      resolveMigrationGateAction(baseInput({ pathname: "/account/recovery-other", needsConnection: true }))
+      resolveMigrationGateAction(
+        baseInput({
+          pathname: "/account/recovery-other",
+          needsConnection: true,
+        })
+      )
     ).toBe("redirect_upgrade");
   });
 
   it("[FIX] other, non-exempt /account/* pages (e.g. /account/profile) are still fully gated - needsConnection=true -> redirect_upgrade", () => {
-    expect(resolveMigrationGateAction(baseInput({ pathname: "/account/profile", needsConnection: true }))).toBe(
-      "redirect_upgrade"
-    );
+    expect(
+      resolveMigrationGateAction(
+        baseInput({ pathname: "/account/profile", needsConnection: true })
+      )
+    ).toBe("redirect_upgrade");
   });
 });
 
-function baseBannerInput(overrides: Partial<UpcomingCutoffBannerInput> = {}): UpcomingCutoffBannerInput {
+function baseBannerInput(
+  overrides: Partial<UpcomingCutoffBannerInput> = {}
+): UpcomingCutoffBannerInput {
   return {
     enabled: true,
     activeNow: false,
@@ -184,7 +313,9 @@ function baseBannerInput(overrides: Partial<UpcomingCutoffBannerInput> = {}): Up
 
 describe("shouldShowUpcomingCutoffBanner", () => {
   it("feature disabled -> never shown", () => {
-    expect(shouldShowUpcomingCutoffBanner(baseBannerInput({ enabled: false }))).toBe(false);
+    expect(
+      shouldShowUpcomingCutoffBanner(baseBannerInput({ enabled: false }))
+    ).toBe(false);
   });
 
   it("feature enabled, not yet active, not connected, not exempt -> shown", () => {
@@ -192,19 +323,31 @@ describe("shouldShowUpcomingCutoffBanner", () => {
   });
 
   it("cutoff already active -> never shown (MigrationGate's redirect_upgrade takes over instead)", () => {
-    expect(shouldShowUpcomingCutoffBanner(baseBannerInput({ activeNow: true }))).toBe(false);
+    expect(
+      shouldShowUpcomingCutoffBanner(baseBannerInput({ activeNow: true }))
+    ).toBe(false);
   });
 
   it("already connected -> never shown", () => {
-    expect(shouldShowUpcomingCutoffBanner(baseBannerInput({ googleConnected: true }))).toBe(false);
+    expect(
+      shouldShowUpcomingCutoffBanner(baseBannerInput({ googleConnected: true }))
+    ).toBe(false);
   });
 
   it("exempt (admin) -> never shown", () => {
-    expect(shouldShowUpcomingCutoffBanner(baseBannerInput({ exempt: true }))).toBe(false);
+    expect(
+      shouldShowUpcomingCutoffBanner(baseBannerInput({ exempt: true }))
+    ).toBe(false);
   });
 
   it("googleConnected/exempt still undefined (status not yet resolved) -> never shown, not a guess", () => {
-    expect(shouldShowUpcomingCutoffBanner(baseBannerInput({ googleConnected: undefined }))).toBe(false);
-    expect(shouldShowUpcomingCutoffBanner(baseBannerInput({ exempt: undefined }))).toBe(false);
+    expect(
+      shouldShowUpcomingCutoffBanner(
+        baseBannerInput({ googleConnected: undefined })
+      )
+    ).toBe(false);
+    expect(
+      shouldShowUpcomingCutoffBanner(baseBannerInput({ exempt: undefined }))
+    ).toBe(false);
   });
 });
