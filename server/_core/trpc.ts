@@ -8,6 +8,11 @@ import {
   GOOGLE_CONNECTION_REQUIRED_MESSAGE,
   isBlockedByGoogleMigrationGate,
 } from "./googleMigrationGate";
+import {
+  ACCOUNT_MERGED_RELOGIN_REQUIRED_CODE,
+  ACCOUNT_MERGED_RELOGIN_REQUIRED_MESSAGE,
+  isCompletedAccountMergeSource,
+} from "./accountMergeSessionGate";
 
 /** Shown to the client for any error that was not deliberately raised by application code. */
 export const GENERIC_INTERNAL_ERROR_MESSAGE = "Unable to process this request at this time. Please try again.";
@@ -115,7 +120,10 @@ export function sanitizeTrpcErrorShape(shape: any, error: { code: string }, logg
   // (Thai, UI-owned) message text - see googleMigrationGate.ts. Never
   // carries anything beyond this one fixed literal - no userId, email, or
   // Google sub is ever attached to this error's cause.
-  const safeAuthGateCode = causeCode === GOOGLE_CONNECTION_REQUIRED_CODE ? causeCode : undefined;
+  const safeAuthGateCode =
+    causeCode === GOOGLE_CONNECTION_REQUIRED_CODE || causeCode === ACCOUNT_MERGED_RELOGIN_REQUIRED_CODE
+      ? causeCode
+      : undefined;
   const safeShape = {
     ...shape,
     data: { ...shape?.data, stack: undefined, maintenanceCode: safeCauseCode, authGateCode: safeAuthGateCode },
@@ -189,6 +197,30 @@ const requireUser = t.middleware(async opts => {
  */
 export const authenticatedProcedure = t.procedure.use(requireUser);
 
+const requireAccountMergeSessionCurrent = t.middleware(async opts => {
+  const { ctx, next } = opts;
+  if (!ctx.user) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  }
+  if (await isCompletedAccountMergeSource(ctx.user)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: ACCOUNT_MERGED_RELOGIN_REQUIRED_MESSAGE,
+      cause: { code: ACCOUNT_MERGED_RELOGIN_REQUIRED_CODE },
+    });
+  }
+  return next({ ctx: { ...ctx, user: ctx.user } });
+});
+
+/**
+ * Authenticated procedure that deliberately bypasses the Google-connection
+ * migration gate but still refuses a stale Source session after a completed
+ * Advanced Account Merge. Recovery customer mutations use this surface so a
+ * merged Source cannot create/cancel requests while auth status/logout remain
+ * reachable for the explicit re-login UX.
+ */
+export const mergeAwareAuthenticatedProcedure = authenticatedProcedure.use(requireAccountMergeSessionCurrent);
+
 const requireGoogleMigrationComplete = t.middleware(async opts => {
   const { ctx, next } = opts;
 
@@ -256,7 +288,7 @@ const requireGoogleMigrationComplete = t.middleware(async opts => {
  * even while a user is gated (see authenticatedProcedure's docstring) must
  * use authenticatedProcedure instead, never this one.
  */
-export const protectedProcedure = authenticatedProcedure.use(requireGoogleMigrationComplete);
+export const protectedProcedure = mergeAwareAuthenticatedProcedure.use(requireGoogleMigrationComplete);
 
 export const adminProcedure = t.procedure.use(
   t.middleware(async opts => {

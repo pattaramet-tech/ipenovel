@@ -62,11 +62,17 @@ async function lockMergeCase(caseId: number, tx: any) {
 }
 
 async function readReceipt(caseId: number, database: any) {
-  const rows = await database
-    .select()
-    .from(accountMergeFinancialReconciliations)
-    .where(eq(accountMergeFinancialReconciliations.mergeCaseId, caseId))
-    .limit(1);
+  // This must be a locking/current read. The standalone API performs an
+  // ordinary merge-case read before acquiring canonical locks, which can
+  // establish a REPEATABLE READ snapshot. A second concurrent admin that
+  // waits behind the first transaction must see the receipt committed by the
+  // winner after the lock wait; a plain snapshot SELECT can miss it and race
+  // into the UNIQUE receipt constraint instead of returning idempotently.
+  const rows = unwrapRows(
+    await database.execute(
+      sql`SELECT * FROM accountMergeFinancialReconciliations WHERE mergeCaseId = ${caseId} LIMIT 1 FOR UPDATE`
+    )
+  );
   return rows[0];
 }
 
@@ -92,23 +98,23 @@ function assertPositiveInteger(value: number, fieldName: string): void {
  * writes both ledgers directly in one transaction, and persists a UNIQUE
  * per-case receipt as the durable once-only barrier.
  */
-export async function reconcileAccountMergeFinancials(params: {
-  caseId: number;
-  actorAdminId: number;
-}) {
+export async function reconcileAccountMergeFinancialsInTransaction(
+  params: {
+    caseId: number;
+    actorAdminId: number;
+  },
+  tx: any
+) {
   assertPositiveInteger(params.caseId, "caseId");
   assertPositiveInteger(params.actorAdminId, "actorAdminId");
 
-  const database = await db.getDb();
-  if (!database) throw new AccountMergeFinancialError("DATABASE_UNAVAILABLE", "Database unavailable");
-
-  // We need the participant ids before opening the transaction so we can take
-  // users-row locks first. Participants are re-read and verified again under
-  // the merge-case FOR UPDATE lock before any financial read/write occurs.
-  const initial = await readMergeCase(params.caseId, database);
+  // External orchestrators may already hold the canonical participant/case
+  // locks. Re-reading through the SAME transaction preserves the exact IPE-006
+  // checks while allowing IPE-008 to include this phase in one outer atomic
+  // transaction. The public wrapper below keeps the original standalone API.
+  const initial = await readMergeCase(params.caseId, tx);
   if (!initial) throw new AccountMergeFinancialError("CASE_NOT_FOUND", "Account merge case not found");
 
-  return database.transaction(async (tx: any) => {
     const sourceUserId = Number(initial.sourceUserId);
     const targetUserId = Number(initial.targetUserId);
 
@@ -183,7 +189,6 @@ export async function reconcileAccountMergeFinancials(params: {
     const pointsSourceBefore = minorUnitsToDecimal(points.leftMinor, POINTS_SPEC.scale);
     const pointsTargetBefore = minorUnitsToDecimal(points.rightMinor, POINTS_SPEC.scale);
     const pointsTargetAfter = points.sum;
-    const now = new Date();
 
     if (wallet.leftMinor > 0) {
       if (!sourceWallet) {
@@ -192,13 +197,13 @@ export async function reconcileAccountMergeFinancials(params: {
 
       await tx
         .update(walletAccounts)
-        .set({ balance: "0.00", updatedAt: now })
+        .set({ balance: "0.00" })
         .where(eq(walletAccounts.userId, sourceUserId));
 
       if (targetWallet) {
         await tx
           .update(walletAccounts)
-          .set({ balance: walletTargetAfter, updatedAt: now })
+          .set({ balance: walletTargetAfter })
           .where(eq(walletAccounts.userId, targetUserId));
       } else {
         await tx.insert(walletAccounts).values({
@@ -206,8 +211,6 @@ export async function reconcileAccountMergeFinancials(params: {
           balance: walletTargetAfter,
           totalTopupApproved: "0.00",
           totalSpent: "0.00",
-          createdAt: now,
-          updatedAt: now,
         });
       }
 
@@ -221,7 +224,6 @@ export async function reconcileAccountMergeFinancials(params: {
           referenceType: FINANCIAL_REFERENCE_TYPE,
           referenceId: params.caseId,
           note: `Account merge #${params.caseId}: balance transferred to target ${targetUserId}`,
-          createdAt: now,
         },
         {
           userId: targetUserId,
@@ -232,7 +234,6 @@ export async function reconcileAccountMergeFinancials(params: {
           referenceType: FINANCIAL_REFERENCE_TYPE,
           referenceId: params.caseId,
           note: `Account merge #${params.caseId}: balance received from source ${sourceUserId}`,
-          createdAt: now,
         },
       ]);
     }
@@ -249,7 +250,6 @@ export async function reconcileAccountMergeFinancials(params: {
           referenceType: FINANCIAL_REFERENCE_TYPE,
           referenceId: params.caseId,
           note: `Account merge #${params.caseId}: points transferred to target ${targetUserId}`,
-          createdAt: now,
         },
         {
           userId: targetUserId,
@@ -259,7 +259,6 @@ export async function reconcileAccountMergeFinancials(params: {
           referenceType: FINANCIAL_REFERENCE_TYPE,
           referenceId: params.caseId,
           note: `Account merge #${params.caseId}: points received from source ${sourceUserId}`,
-          createdAt: now,
         },
       ]);
     }
@@ -282,7 +281,6 @@ export async function reconcileAccountMergeFinancials(params: {
       pointsTransferred: pointsSourceBefore,
       pointsSourceAfter: "0.00",
       pointsTargetAfter,
-      createdAt: now,
     });
 
     await tx.insert(accountMergeAuditLogs).values({
@@ -307,7 +305,6 @@ export async function reconcileAccountMergeFinancials(params: {
           targetAfter: pointsTargetAfter,
         },
       }),
-      createdAt: now,
     });
 
     const reconciliation = await readReceipt(params.caseId, tx);
@@ -315,6 +312,14 @@ export async function reconcileAccountMergeFinancials(params: {
       throw new AccountMergeFinancialError("RECEIPT_MISSING", "Financial reconciliation receipt was not persisted");
     }
 
-    return { alreadyReconciled: false, reconciliation };
-  });
+  return { alreadyReconciled: false, reconciliation };
+}
+
+export async function reconcileAccountMergeFinancials(params: {
+  caseId: number;
+  actorAdminId: number;
+}) {
+  const database = await db.getDb();
+  if (!database) throw new AccountMergeFinancialError("DATABASE_UNAVAILABLE", "Database unavailable");
+  return database.transaction((tx: any) => reconcileAccountMergeFinancialsInTransaction(params, tx));
 }

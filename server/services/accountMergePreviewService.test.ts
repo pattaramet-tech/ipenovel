@@ -176,7 +176,7 @@ describe("buildAccountMergePreview - A) source is always server-derived", () => 
     const preview = await buildAccountMergePreview({ requestId: 1, sourceUserId: SOURCE_ID, targetUserId: TARGET_ID });
 
     expect(preview.sourceUserId).toBe(SOURCE_ID);
-    expect(inventorySpy).toHaveBeenCalledWith(SOURCE_ID, TARGET_ID);
+    expect(inventorySpy).toHaveBeenCalledWith(SOURCE_ID, TARGET_ID, undefined);
   });
 });
 
@@ -489,7 +489,7 @@ describe("buildAccountMergePreview - G) paymentSlipClaims/OCR anti-replay eviden
 
     const preview = await buildAccountMergePreview({ requestId: 1, sourceUserId: SOURCE_ID, targetUserId: TARGET_ID });
 
-    expect(claimsSpy).toHaveBeenCalledWith(SOURCE_ID);
+    expect(claimsSpy).toHaveBeenCalledWith(SOURCE_ID, undefined);
     expect(preview.paymentSlipClaims.sourceCount).toBe(4);
     expect(preview.paymentSlipClaims.note.length).toBeGreaterThan(10);
   });
