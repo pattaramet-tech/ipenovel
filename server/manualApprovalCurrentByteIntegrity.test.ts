@@ -52,7 +52,7 @@ describe("orderService.ts approvePaymentInTx: current-byte integrity before clai
     const fnIdx = code.indexOf("async function approvePaymentInTx(");
     expect(fnIdx).toBeGreaterThan(-1);
     const checkIdx = code.indexOf(
-      "const currentFileHash = await computeSlipFileHash(payment.slipImageUrl);",
+      "const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)",
       fnIdx
     );
     expect(checkIdx).toBeGreaterThan(fnIdx);
@@ -62,7 +62,7 @@ describe("orderService.ts approvePaymentInTx: current-byte integrity before clai
     const fnIdx = code.indexOf("async function approvePaymentInTx(");
     const strongIdIdx = code.indexOf("if (!hasStrongIdentifier(identifiers)) {", fnIdx);
     const checkIdx = code.indexOf(
-      "const currentFileHash = await computeSlipFileHash(payment.slipImageUrl);",
+      "const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)",
       fnIdx
     );
     const claimIdx = code.indexOf("const claim = await claimSlip(", fnIdx);
@@ -72,31 +72,34 @@ describe("orderService.ts approvePaymentInTx: current-byte integrity before clai
   });
 
   it("fails closed when the current hash is unavailable - unavailability is never treated as stability", () => {
-    const idx = code.indexOf("const currentFileHash = await computeSlipFileHash(payment.slipImageUrl);");
+    const idx = code.indexOf("const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)");
     const body = code.slice(idx, idx + 700);
     expect(body).toMatch(/if \(!currentFileHash\) \{/);
     expect(body).toMatch(/throw new Error\(\s*\n\s*"SLIP_CURRENT_BYTES_UNAVAILABLE:/);
   });
 
   it("fails closed when a persisted fileHash disagrees with the current hash", () => {
-    const idx = code.indexOf("const currentFileHash = await computeSlipFileHash(payment.slipImageUrl);");
+    const idx = code.indexOf("const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)");
     const body = code.slice(idx, idx + 1400);
     expect(body).toMatch(/if \(persistedFileHash && currentFileHash !== persistedFileHash\) \{/);
     expect(body).toMatch(/throw new Error\(\s*\n\s*"SLIP_INTEGRITY_MISMATCH_AT_APPROVAL:/);
   });
 
   it("binds the freshly confirmed hash into identifiers.fileHash before claimSlip runs", () => {
-    const idx = code.indexOf("const currentFileHash = await computeSlipFileHash(payment.slipImageUrl);");
+    const idx = code.indexOf("const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)");
     const claimIdx = code.indexOf("const claim = await claimSlip(", idx);
     const body = code.slice(idx, claimIdx);
     expect(body).toMatch(/identifiers\.fileHash = currentFileHash;/);
   });
 
-  it("only runs when a slip actually exists - guarded by payment.slipImageUrl", () => {
+  it("only runs when a slip actually exists and keeps legacy absolute URLs out of the hash fetch", () => {
     const idx = code.indexOf("if (payment.slipImageUrl) {");
     expect(idx).toBeGreaterThan(-1);
-    const checkIdx = code.indexOf("const currentFileHash = await computeSlipFileHash", idx);
-    expect(checkIdx - idx).toBeLessThan(400);
+    const compatibilityIdx = code.indexOf("const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)", idx);
+    const privateFetchIdx = code.indexOf(": await computeSlipFileHash(payment.slipImageUrl);", compatibilityIdx);
+    expect(compatibilityIdx).toBeGreaterThan(idx);
+    expect(compatibilityIdx - idx).toBeLessThan(500);
+    expect(privateFetchIdx).toBeGreaterThan(compatibilityIdx);
   });
 });
 

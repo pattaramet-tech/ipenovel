@@ -28,8 +28,8 @@ export default function AdminPaymentsPage() {
       toast.success("Payment approved!");
       refetch();
     },
-    onError: () => {
-      toast.error("Failed to approve payment");
+    onError: (error) => {
+      toast.error(error.message || "Failed to approve payment");
     },
   });
 

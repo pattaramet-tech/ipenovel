@@ -34,6 +34,10 @@ import { isPrivateObjectRef } from "@shared/privateFileRef";
 /** Matches the OCR path's cap - a slip is never legitimately larger. */
 export const MAX_SLIP_HASH_BYTES = 5 * 1024 * 1024;
 export const SLIP_HASH_FETCH_TIMEOUT_MS = 10_000;
+/** Historical Manus storage CDN used by legacy absolute slip URLs. Keeping
+ * this as an exact hostname allowlist (rather than accepting arbitrary
+ * http(s)) lets approval prove current bytes without re-introducing SSRF. */
+export const TRUSTED_LEGACY_SLIP_HOSTS = new Set(["d2xsxph8kpxj0f.cloudfront.net"]);
 
 export type SlipFileHashFailureReason =
   | "SLIP_HASH_NOT_PRIVATE_REF"
@@ -120,6 +124,55 @@ async function readBodyBounded(
  * failed payment submission. Callers treat `undefined` as "no exact-file
  * identifier available".
  */
+/**
+ * Exact-byte hash for the one historical public CDN that legacy Manus slip
+ * rows can reference. This path is intentionally narrower than a generic URL
+ * fetch: HTTPS only, exact hostname allowlist, default port only, no embedded
+ * credentials, and redirects are rejected so an allowlisted URL cannot bounce
+ * the server toward an internal address. Same timeout/size bounds as private
+ * R2 hashing. Returns undefined on every validation/fetch failure.
+ */
+export async function computeTrustedLegacySlipFileHash(
+  rawUrl: string | null | undefined,
+  deps: Pick<ComputeSlipFileHashDeps, "fetchImpl" | "timeoutMs" | "maxBytes"> = {}
+): Promise<string | undefined> {
+  if (!rawUrl) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return undefined;
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    !TRUSTED_LEGACY_SLIP_HOSTS.has(parsed.hostname.toLowerCase()) ||
+    parsed.port !== "" ||
+    parsed.username !== "" ||
+    parsed.password !== ""
+  ) {
+    return undefined;
+  }
+
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const timeoutMs = deps.timeoutMs ?? SLIP_HASH_FETCH_TIMEOUT_MS;
+  const maxBytes = deps.maxBytes ?? MAX_SLIP_HASH_BYTES;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(parsed.toString(), {
+      signal: controller.signal,
+      redirect: "error",
+    });
+    if (!response.ok) return undefined;
+    const bytes = await readBodyBounded(response, maxBytes, controller.signal);
+    return hashSlipBytes(bytes);
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function computeSlipFileHash(
   rawStoredValue: string | null | undefined,
   deps: ComputeSlipFileHashDeps = {}

@@ -8,8 +8,9 @@ import {
   hasStrongIdentifier,
 } from "./slipIdentifierService";
 import { claimSlip, describeClaimFailure } from "./slipClaimService";
-import { computeSlipFileHash } from "./slipFileHashService";
+import { computeSlipFileHash, computeTrustedLegacySlipFileHash } from "./slipFileHashService";
 import { fileHashFromExtractedData } from "./legacySlipCompatibilityService";
+import { isLegacyStorageUrl } from "@shared/privateFileRef";
 
 const COUPON_OWNERSHIP_DENIAL_PATTERNS = [/^coupon not found$/i, /belongs to another user/i];
 
@@ -602,8 +603,14 @@ async function approvePaymentInTx(
   // reference match alone must never bypass current-file integrity when a
   // file is right there to check.
   if (payment.slipImageUrl) {
-    const currentFileHash = await computeSlipFileHash(payment.slipImageUrl);
     const persistedFileHash = fileHashFromExtractedData(persistedExtractedData);
+    // Legacy rows store an absolute URL. Never fetch arbitrary http(s): only
+    // the exact historical Manus CDN hostname is eligible for a bounded,
+    // redirect-free current-byte hash. Everything else fails closed below.
+    // Private `r2p:` refs continue through the existing mandatory re-hash.
+    const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)
+      ? await computeTrustedLegacySlipFileHash(payment.slipImageUrl)
+      : await computeSlipFileHash(payment.slipImageUrl);
 
     if (!currentFileHash) {
       // Unavailability is uncertainty, never proof of stability - fail
