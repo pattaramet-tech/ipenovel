@@ -304,7 +304,23 @@ describe("Order approvePayment: current-byte integrity is REAL, IPE-001-C10", ()
     expect(harness.store.purchases).toHaveLength(0);
   });
 
-  it("C. stable A -> A: approves exactly once, claimed fileHash equals the fresh current hash", async () => {
+  it("C. legacy absolute URL + persisted fileHash approves without unsafe URL fetch and still claims the hash", async () => {
+    const rows = orderRows({
+      extractedData: JSON.stringify({ referenceRaw: REFERENCE, referenceHash: HASH, fileHash: CURRENT_HASH }),
+    });
+    rows.payments[0].slipImageUrl = "https://legacy-storage.example/slips/700.png";
+    const harness = makeDb(rows);
+    dbModule.__setDbForTests(harness.fake);
+
+    await orderService.approvePayment(700, "admin-1", "Admin");
+
+    expect(computeSlipFileHash).not.toHaveBeenCalled();
+    expect(harness.store.payments[0].status).toBe("approved");
+    expect(harness.store.paymentSlipClaims).toHaveLength(1);
+    expect(harness.store.paymentSlipClaims[0].fileHash).toBe(CURRENT_HASH);
+  });
+
+  it("D. stable A -> A: approves exactly once, claimed fileHash equals the fresh current hash", async () => {
     const harness = makeDb(
       orderRows({ extractedData: JSON.stringify({ referenceRaw: REFERENCE, referenceHash: HASH, fileHash: CURRENT_HASH }) })
     );
