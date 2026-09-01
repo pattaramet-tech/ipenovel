@@ -21,14 +21,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./services/slipFileHashService", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./services/slipFileHashService")>();
-  return { ...actual, computeSlipFileHash: vi.fn() };
+  return { ...actual, computeSlipFileHash: vi.fn(), computeTrustedLegacySlipFileHash: vi.fn() };
 });
 
 import * as dbModule from "./db";
 import * as orderService from "./services/orderService";
 import { hashSlipReference } from "./services/slipIdentifierService";
 import * as backfillState from "./services/slipBackfillStateService";
-import { computeSlipFileHash } from "./services/slipFileHashService";
+import { computeSlipFileHash, computeTrustedLegacySlipFileHash } from "./services/slipFileHashService";
 
 const REFERENCE = "manual-approval-c10-ref";
 const HASH = hashSlipReference(REFERENCE)!;
@@ -304,20 +304,55 @@ describe("Order approvePayment: current-byte integrity is REAL, IPE-001-C10", ()
     expect(harness.store.purchases).toHaveLength(0);
   });
 
-  it("C. legacy absolute URL + persisted fileHash approves without unsafe URL fetch and still claims the hash", async () => {
+  it("C. trusted legacy CDN URL approves only after current bytes verify and still claims the fresh hash", async () => {
+    const rows = orderRows({
+      extractedData: JSON.stringify({ referenceRaw: REFERENCE, referenceHash: HASH, fileHash: CURRENT_HASH }),
+    });
+    rows.payments[0].slipImageUrl = "https://d2xsxph8kpxj0f.cloudfront.net/slips/700.png";
+    const harness = makeDb(rows);
+    dbModule.__setDbForTests(harness.fake);
+    (computeTrustedLegacySlipFileHash as any).mockResolvedValue(CURRENT_HASH);
+
+    await orderService.approvePayment(700, "admin-1", "Admin");
+
+    expect(computeSlipFileHash).not.toHaveBeenCalled();
+    expect(computeTrustedLegacySlipFileHash).toHaveBeenCalledWith(rows.payments[0].slipImageUrl);
+    expect(harness.store.payments[0].status).toBe("approved");
+    expect(harness.store.paymentSlipClaims).toHaveLength(1);
+    expect(harness.store.paymentSlipClaims[0].fileHash).toBe(CURRENT_HASH);
+  });
+
+  it("C2. changed trusted legacy CDN bytes fail closed before claim/value", async () => {
+    const rows = orderRows({
+      extractedData: JSON.stringify({ referenceRaw: REFERENCE, referenceHash: HASH, fileHash: STALE_HASH }),
+    });
+    rows.payments[0].slipImageUrl = "https://d2xsxph8kpxj0f.cloudfront.net/slips/700.png";
+    const harness = makeDb(rows);
+    dbModule.__setDbForTests(harness.fake);
+    (computeTrustedLegacySlipFileHash as any).mockResolvedValue(CURRENT_HASH);
+
+    await expect(orderService.approvePayment(700, "admin-1", "Admin")).rejects.toThrow(
+      /SLIP_INTEGRITY_MISMATCH_AT_APPROVAL/
+    );
+    expect(harness.store.payments[0].status).toBe("pending");
+    expect(harness.store.paymentSlipClaims).toHaveLength(0);
+    expect(harness.store.purchases).toHaveLength(0);
+  });
+
+  it("C3. untrusted legacy URL cannot become an SSRF bypass and fails closed", async () => {
     const rows = orderRows({
       extractedData: JSON.stringify({ referenceRaw: REFERENCE, referenceHash: HASH, fileHash: CURRENT_HASH }),
     });
     rows.payments[0].slipImageUrl = "https://legacy-storage.example/slips/700.png";
     const harness = makeDb(rows);
     dbModule.__setDbForTests(harness.fake);
+    (computeTrustedLegacySlipFileHash as any).mockResolvedValue(undefined);
 
-    await orderService.approvePayment(700, "admin-1", "Admin");
-
-    expect(computeSlipFileHash).not.toHaveBeenCalled();
-    expect(harness.store.payments[0].status).toBe("approved");
-    expect(harness.store.paymentSlipClaims).toHaveLength(1);
-    expect(harness.store.paymentSlipClaims[0].fileHash).toBe(CURRENT_HASH);
+    await expect(orderService.approvePayment(700, "admin-1", "Admin")).rejects.toThrow(
+      /SLIP_CURRENT_BYTES_UNAVAILABLE/
+    );
+    expect(harness.store.payments[0].status).toBe("pending");
+    expect(harness.store.paymentSlipClaims).toHaveLength(0);
   });
 
   it("D. stable A -> A: approves exactly once, claimed fileHash equals the fresh current hash", async () => {

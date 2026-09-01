@@ -8,7 +8,7 @@ import {
   hasStrongIdentifier,
 } from "./slipIdentifierService";
 import { claimSlip, describeClaimFailure } from "./slipClaimService";
-import { computeSlipFileHash } from "./slipFileHashService";
+import { computeSlipFileHash, computeTrustedLegacySlipFileHash } from "./slipFileHashService";
 import { fileHashFromExtractedData } from "./legacySlipCompatibilityService";
 import { isLegacyStorageUrl } from "@shared/privateFileRef";
 
@@ -604,13 +604,12 @@ async function approvePaymentInTx(
   // file is right there to check.
   if (payment.slipImageUrl) {
     const persistedFileHash = fileHashFromExtractedData(persistedExtractedData);
-    // Legacy rows store an absolute URL. The hash service intentionally
-    // refuses arbitrary http(s) fetches (SSRF fail-closed), so reuse the
-    // already-persisted exact-file identifier for that representation only.
-    // claimSlip below still enforces anti-replay atomically. Private `r2p:`
-    // refs continue through the mandatory current-byte re-hash unchanged.
+    // Legacy rows store an absolute URL. Never fetch arbitrary http(s): only
+    // the exact historical Manus CDN hostname is eligible for a bounded,
+    // redirect-free current-byte hash. Everything else fails closed below.
+    // Private `r2p:` refs continue through the existing mandatory re-hash.
     const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)
-      ? persistedFileHash
+      ? await computeTrustedLegacySlipFileHash(payment.slipImageUrl)
       : await computeSlipFileHash(payment.slipImageUrl);
 
     if (!currentFileHash) {
