@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   computeSlipFileHash,
+  computeTrustedLegacySlipFileHash,
   describeFileIdentifierStatus,
   hashSlipBytes,
 } from "./slipFileHashService";
@@ -116,6 +117,45 @@ describe("a client cannot forge the file hash", () => {
     });
     expect(hash).toBeUndefined();
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("computeTrustedLegacySlipFileHash - exact legacy CDN allowlist", () => {
+  const trusted = "https://d2xsxph8kpxj0f.cloudfront.net/slips/1.png";
+
+  it("hashes current bytes from the trusted historical CDN and rejects redirects", async () => {
+    const bytes = Buffer.from("legacy-current-bytes");
+    const fetchImpl = vi.fn(async (_url: any, init: any) => {
+      expect(init.redirect).toBe("error");
+      return fakeResponse(bytes);
+    });
+    await expect(
+      computeTrustedLegacySlipFileHash(trusted, { fetchImpl: fetchImpl as unknown as typeof fetch })
+    ).resolves.toBe(hashSlipBytes(bytes));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("never fetches arbitrary hosts, http, credentials, or non-default ports", async () => {
+    const fetchImpl = vi.fn();
+    const invalid = [
+      "https://attacker.example/x.png",
+      "http://d2xsxph8kpxj0f.cloudfront.net/x.png",
+      "https://user:pass@d2xsxph8kpxj0f.cloudfront.net/x.png",
+      "https://d2xsxph8kpxj0f.cloudfront.net:444/x.png",
+    ];
+    for (const url of invalid) {
+      await expect(
+        computeTrustedLegacySlipFileHash(url, { fetchImpl: fetchImpl as unknown as typeof fetch })
+      ).resolves.toBeUndefined();
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when trusted current bytes are unavailable", async () => {
+    const hash = await computeTrustedLegacySlipFileHash(trusted, {
+      fetchImpl: (async () => { throw new Error("network down"); }) as unknown as typeof fetch,
+    });
+    expect(hash).toBeUndefined();
   });
 });
 
