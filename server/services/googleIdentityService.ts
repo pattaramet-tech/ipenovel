@@ -1,7 +1,10 @@
 import { eq } from "drizzle-orm";
 import { users, type User } from "../../drizzle/schema";
 import * as db from "../db";
-import { isDuplicateKeyError } from "../helpers/databaseErrorClassifier";
+import {
+  isDuplicateKeyError,
+  isRetryableTransactionConflict,
+} from "../helpers/databaseErrorClassifier";
 import { normalizeProviderName } from "../_core/providerName";
 
 // Google OpenID Connect account-linking policy - active whenever
@@ -169,9 +172,10 @@ const MAX_RESOLUTION_ATTEMPTS = 2;
  * Concurrent logins (two tabs, a double click, a network retry) are
  * handled by retrying the WHOLE attempt above - never a re-read inside
  * the failed transaction - on a brand-new transaction/snapshot, up to
- * MAX_RESOLUTION_ATTEMPTS (2) times total. If a duplicate-key error is
- * still hit on the final attempt, this function throws - never returns a
- * "logged in" outcome for it, no unbounded retry loop. See
+ * MAX_RESOLUTION_ATTEMPTS (2) times total. Duplicate-key races and exact
+ * MySQL/MariaDB transaction conflicts (1205 lock wait / 1213 deadlock) are
+ * retryable; any of them still hit on the final attempt throws - never
+ * returns a "logged in" outcome and never loops without bound. See
  * resolveGoogleIdentityAttempt's docstring for why a same-transaction
  * re-read is unsafe under REPEATABLE READ and was removed.
  *
@@ -212,15 +216,13 @@ export async function resolveGoogleIdentity(input: GoogleIdentityInput): Promise
       // failed transaction is reused here.
       return await resolveGoogleIdentityAttempt(database, attemptInput);
     } catch (error) {
-      if (!isDuplicateKeyError(error)) throw error;
+      const retryable = isDuplicateKeyError(error) || isRetryableTransactionConflict(error);
+      if (!retryable) throw error;
       if (attempt >= MAX_RESOLUTION_ATTEMPTS) {
-        // Fail closed: still a duplicate on a fresh snapshot after a full
-        // retry - either a persistent conflict (e.g. this user already
-        // has a different Google identity linked) or a genuinely
-        // pathological race that outlasted one retry. Never treated as a
-        // successful login; never mints a session; never creates a
-        // duplicate user/identity, since the failing INSERT's own
-        // transaction was rolled back.
+        // Fail closed: a duplicate/conflict or transaction lock condition
+        // still persists on the second fresh transaction. Never treat that
+        // as a successful login; the failed transaction has already been
+        // rolled back, and no third/unbounded retry is attempted.
         throw error;
       }
       // Fall through to the next loop iteration - attempt 1's transaction
@@ -348,10 +350,9 @@ const MAX_CONNECT_ATTEMPTS = 2;
  * Concurrent connect attempts (case F - e.g. a double click, two tabs)
  * are handled by retrying the WHOLE attempt (never a same-transaction
  * re-read) on a brand-new transaction/snapshot, at most once
- * (MAX_CONNECT_ATTEMPTS = 2 total). A duplicate key still hit on the
- * second, fresh-snapshot attempt is a persistent condition, not a
- * transient race, and fails closed by throwing - never a successful
- * outcome, never a duplicate row.
+ * (MAX_CONNECT_ATTEMPTS = 2 total). Duplicate-key races and exact
+ * transaction conflicts (1205/1213) share that same bounded fresh-tx retry;
+ * anything still failing on attempt 2 throws and stays fail-closed.
  */
 export async function connectGoogleIdentityToUser(
   database: any,
@@ -378,7 +379,8 @@ export async function connectGoogleIdentityToUser(
     try {
       return await connectGoogleIdentityToUserAttempt(database, attemptInput);
     } catch (error) {
-      if (!isDuplicateKeyError(error)) throw error;
+      const retryable = isDuplicateKeyError(error) || isRetryableTransactionConflict(error);
+      if (!retryable) throw error;
       if (attempt >= MAX_CONNECT_ATTEMPTS) {
         // Fail closed - see this function's docstring. Never a successful
         // outcome, never mints anything, never creates a duplicate row

@@ -95,7 +95,7 @@ describe("sdk.authenticateRequest", () => {
     expect(assertDbSpy).not.toHaveBeenCalled();
   });
 
-  it("valid session for a known user returns that user and refreshes lastSignedIn only", async () => {
+  it("valid session for a known user is read-only with respect to users", async () => {
     const token = await sdk.createSessionToken("user-123", { name: "Somchai" });
     const user = fakeUser();
     vi.spyOn(db, "getUserByOpenId").mockResolvedValue(user);
@@ -104,14 +104,7 @@ describe("sdk.authenticateRequest", () => {
     const result = await sdk.authenticateRequest(requestWithCookie(token));
 
     expect(result).toBe(user);
-    expect(upsertSpy).toHaveBeenCalledTimes(1);
-    expect(upsertSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ openId: "user-123" })
-    );
-    // Only lastSignedIn is refreshed for an already-known user - name must
-    // not be part of this call at all (nothing to normalize; the user was
-    // already found by openId, this is not the OAuth-sync path).
-    expect(upsertSpy.mock.calls[0][0]).not.toHaveProperty("name");
+    expect(upsertSpy).not.toHaveBeenCalled();
   });
 
   it("unknown user: syncs from the OAuth provider and omits (never nulls) the name field when the provider sends no usable name", async () => {
@@ -551,12 +544,10 @@ describe("sdk.authenticateRequest", () => {
       expect(result).toBe(user);
       expect(getUserInfoWithJwtSpy).not.toHaveBeenCalled();
       expect(oauthClientPostSpy).not.toHaveBeenCalled();
-      // The one remaining upsertUser call is the pre-existing
-      // "refresh lastSignedIn for an already-known user" call at the very
-      // end of authenticateRequest - unrelated to, and unaffected by, the
-      // orphaned-session sync gate this PR adds.
-      expect(upsertSpy).toHaveBeenCalledTimes(1);
-      expect(upsertSpy).toHaveBeenCalledWith(expect.objectContaining({ openId: "existing-google-user" }));
+      // Routine session authentication is read-only for an existing user;
+      // lastSignedIn belongs to the actual login/callback boundary, not
+      // every auth.me/API request.
+      expect(upsertSpy).not.toHaveBeenCalled();
     });
 
     it("[E] AUTH_PROVIDER=google + database unavailable -> still propagates the infrastructure error, never misclassified as no_user_record, no OAuth sync attempted", async () => {

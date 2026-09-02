@@ -75,6 +75,12 @@ function duplicateKeyError(): Error {
   return Object.assign(new Error("Duplicate entry"), { cause: { errno: 1062, code: "ER_DUP_ENTRY" } });
 }
 
+function lockWaitError(): Error {
+  return Object.assign(new Error("Query failed"), {
+    cause: { errno: 1205, code: "ER_LOCK_WAIT_TIMEOUT", sqlState: "HY000" },
+  });
+}
+
 const GOOGLE_INPUT = {
   sub: "google-sub-123",
   email: "User@Example.com",
@@ -344,6 +350,35 @@ describe("resolveGoogleIdentityAttempt - single attempt never catches a duplicat
 describe("resolveGoogleIdentity - concurrent login retry (blocker fix: no same-transaction re-read under REPEATABLE READ)", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("IPE-019: a lock-wait timeout on attempt 1 retries exactly once on a fresh transaction and can succeed", async () => {
+    const { fakeDb, txObjects } = fakeDbWithFreshTransactions();
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDb as any);
+    const existingUser = { id: 55, openId: "manus-openid-abc", email: "user@example.com" } as any;
+    vi.spyOn(db, "getAuthIdentity")
+      .mockRejectedValueOnce(lockWaitError())
+      .mockResolvedValueOnce({ id: 9, userId: 55, provider: "google", providerSubject: GOOGLE_INPUT.sub } as any);
+    vi.spyOn(db, "getUserById").mockResolvedValue(existingUser);
+
+    const result = await resolveGoogleIdentity(GOOGLE_INPUT);
+
+    expect(result.outcome).toBe("linked_existing_identity");
+    expect(txObjects).toHaveLength(2);
+    expect(txObjects[0]).not.toBe(txObjects[1]);
+  });
+
+  it("IPE-019: a lock-wait timeout on both bounded attempts still fails closed", async () => {
+    const { fakeDb, txObjects } = fakeDbWithFreshTransactions();
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDb as any);
+    vi.spyOn(db, "getAuthIdentity").mockRejectedValue(lockWaitError());
+
+    await expect(resolveGoogleIdentity(GOOGLE_INPUT)).rejects.toMatchObject({
+      cause: expect.objectContaining({ errno: 1205, code: "ER_LOCK_WAIT_TIMEOUT" }),
+    });
+    expect(txObjects).toHaveLength(2);
   });
 
   it("[required test 1+2] a duplicate key on attempt 1 rejects attempt 1's transaction, and attempt 2 runs inside a DIFFERENT, brand-new transaction object", async () => {

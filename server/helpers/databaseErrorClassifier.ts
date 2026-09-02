@@ -34,6 +34,10 @@ const DUPLICATE_ENTRY_ERRNO = 1062;
 /** mysql2/MariaDB duplicate-entry error code. */
 const DUPLICATE_ENTRY_CODE = "ER_DUP_ENTRY";
 
+/** Transaction conflicts that are safe to retry only from a fresh transaction. */
+const RETRYABLE_TRANSACTION_ERRNOS = new Set([1205, 1213]);
+const RETRYABLE_TRANSACTION_CODES = new Set(["ER_LOCK_WAIT_TIMEOUT", "ER_LOCK_DEADLOCK"]);
+
 /**
  * How many `cause` links to follow before giving up. drizzle wraps the
  * driver error exactly once today; the extra headroom covers future
@@ -79,6 +83,37 @@ export function isDuplicateKeyError(error: unknown): boolean {
 
     if (isDuplicateEntryErrno(link.errno)) return true;
     if (link.code === DUPLICATE_ENTRY_CODE) return true;
+
+    current = link.cause;
+  }
+
+  return false;
+}
+
+/**
+ * True only for MySQL/MariaDB transaction conflicts where the failed
+ * transaction must be abandoned and the whole operation may be retried from
+ * a fresh transaction/snapshot. Never matches messages or SQL text.
+ */
+export function isRetryableTransactionConflict(error: unknown): boolean {
+  const visited = new Set<object>();
+  let current: unknown = error;
+
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth += 1) {
+    if (current === null || typeof current !== "object") return false;
+    if (visited.has(current)) return false;
+    visited.add(current);
+
+    const link = current as { errno?: unknown; code?: unknown; cause?: unknown };
+    const errno =
+      typeof link.errno === "number"
+        ? link.errno
+        : typeof link.errno === "string" && /^\s*\d+\s*$/.test(link.errno)
+          ? Number(link.errno.trim())
+          : undefined;
+
+    if (errno !== undefined && RETRYABLE_TRANSACTION_ERRNOS.has(errno)) return true;
+    if (typeof link.code === "string" && RETRYABLE_TRANSACTION_CODES.has(link.code)) return true;
 
     current = link.cause;
   }

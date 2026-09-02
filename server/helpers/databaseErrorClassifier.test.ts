@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isDuplicateKeyError } from "./databaseErrorClassifier";
+import { isDuplicateKeyError, isRetryableTransactionConflict } from "./databaseErrorClassifier";
 
 /**
  * Regression coverage for the dead-guard bug this helper exists to fix.
@@ -154,5 +154,23 @@ describe("isDuplicateKeyError", () => {
     it("handles an object whose cause is null", () => {
       expect(isDuplicateKeyError({ cause: null })).toBe(false);
     });
+  });
+});
+
+describe("isRetryableTransactionConflict", () => {
+  it("detects direct and wrapped lock-wait timeouts", () => {
+    expect(isRetryableTransactionConflict({ errno: 1205, code: "ER_LOCK_WAIT_TIMEOUT" })).toBe(true);
+    expect(isRetryableTransactionConflict({ cause: { errno: "1205" } })).toBe(true);
+  });
+
+  it("detects direct and wrapped deadlocks", () => {
+    expect(isRetryableTransactionConflict({ errno: 1213, code: "ER_LOCK_DEADLOCK" })).toBe(true);
+    expect(isRetryableTransactionConflict({ cause: { code: "ER_LOCK_DEADLOCK" } })).toBe(true);
+  });
+
+  it("does not classify duplicate keys, connection errors, or message-only lookalikes", () => {
+    expect(isRetryableTransactionConflict({ errno: 1062, code: "ER_DUP_ENTRY" })).toBe(false);
+    expect(isRetryableTransactionConflict({ code: "ECONNREFUSED" })).toBe(false);
+    expect(isRetryableTransactionConflict(new Error("Lock wait timeout exceeded"))).toBe(false);
   });
 });

@@ -30,6 +30,22 @@ export function buildManusLoginUrl(manus: ManusLoginUrlParams): string {
 }
 
 /**
+ * Login-page-safe wrapper for transition deployments. A Preview may enable
+ * Google while intentionally omitting the legacy Manus portal variables;
+ * rendering /login must still succeed so the Google button remains usable.
+ * The strict builder above is preserved for callers that REQUIRE Manus and
+ * should still fail loudly on invalid configuration.
+ */
+export function tryBuildManusLoginUrl(manus: ManusLoginUrlParams): string | undefined {
+  if (!manus.oauthPortalUrl || !manus.appId || !manus.redirectUri) return undefined;
+  try {
+    return buildManusLoginUrl(manus);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Pure decision: which literal path/URL getLoginUrl() should return for a
  * given VITE_AUTH_PROVIDER value, given the pieces needed to build the
  * Manus URL. Exported and independently testable (no `import.meta.env`,
