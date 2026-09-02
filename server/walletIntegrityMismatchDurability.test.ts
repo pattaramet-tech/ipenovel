@@ -111,10 +111,10 @@ describe("walletService.ts: the new block is a precondition, not a conflict, IPE
   const code = readCode("server/services/walletService.ts");
 
   it("SLIP_INTEGRITY_MISMATCH_BLOCKED is treated the same as NO_STRONG_IDENTIFIER - a precondition the admin must clear", () => {
-    const idx = code.indexOf("const precondition =");
-    expect(idx).toBeGreaterThan(-1);
-    const body = code.slice(idx, idx + 400);
-    expect(body).toMatch(/error\.code === "SLIP_INTEGRITY_MISMATCH_BLOCKED"/);
+    expect(code).toMatch(/WALLET_APPROVAL_PRECONDITION_CODES/);
+    expect(code).toMatch(/"SLIP_INTEGRITY_MISMATCH_BLOCKED"/);
+    expect(code).toMatch(/"NO_STRONG_IDENTIFIER"/);
+    expect(code).toMatch(/"PRECONDITION_FAILED"/);
   });
 });
 

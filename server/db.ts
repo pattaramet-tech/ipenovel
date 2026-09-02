@@ -5,8 +5,13 @@ import {
   hasStrongIdentifier,
 } from "./services/slipIdentifierService";
 import { claimSlip, describeClaimFailure } from "./services/slipClaimService";
-import { computeSlipFileHash } from "./services/slipFileHashService";
+import {
+  computeSlipFileHash,
+  computeTrustedLegacySlipFileHash,
+  isTrustedLegacySlipUrl,
+} from "./services/slipFileHashService";
 import { fileHashFromExtractedData } from "./services/legacySlipCompatibilityService";
+import { isLegacyStorageUrl, isPrivateObjectRef } from "@shared/privateFileRef";
 import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql, gt, lt, ne, like } from "drizzle-orm";
 
 /**
@@ -22,6 +27,36 @@ export class WalletSlipClaimError extends Error {
     super(message);
     this.name = "WalletSlipClaimError";
     this.code = code;
+  }
+}
+
+const WALLET_BREAK_GLASS_BLOCKING_REVIEW_REASONS = new Set([
+  "DUPLICATE_REFERENCE",
+  "DUPLICATE_FILE",
+  "DUPLICATE_QR",
+  "LEGACY_APPROVED_SLIP_UNRESOLVED",
+  "LEGACY_ALIAS_GROUP_AMBIGUITY",
+  "LEGACY_KNOWN_COLLISION",
+  "LEGACY_REFERENCE_CASE_AMBIGUITY",
+  "LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION",
+  "SLIP_INTEGRITY_MISMATCH",
+]);
+
+function hasKnownWalletBreakGlassConflict(topup: any): boolean {
+  if (WALLET_BREAK_GLASS_BLOCKING_REVIEW_REASONS.has(String(topup?.reviewReason ?? ""))) {
+    return true;
+  }
+  if (!topup?.duplicateStatus) return false;
+  try {
+    const parsed =
+      typeof topup.duplicateStatus === "string"
+        ? JSON.parse(topup.duplicateStatus)
+        : topup.duplicateStatus;
+    return parsed?.isDuplicate === true;
+  } catch {
+    // Malformed durable duplicate evidence is uncertainty, never permission
+    // to use a high-risk override.
+    return true;
   }
 }
 import { alias } from "drizzle-orm/mysql-core";
@@ -4367,6 +4402,14 @@ export async function approveWalletTopup(
       expectedIncomingReferenceHash?: string;
     };
     auditResolution?: (tx: any) => Promise<void>;
+    /**
+     * Separate high-risk path for a genuinely legacy row with no recoverable
+     * replay identifier. Normal Approve never sets this. Eligibility is
+     * revalidated under the same user/subject locks before any value creation.
+     */
+    legacyUnprotectedApproval?: {
+      reason: string;
+    };
   }
 ) {
   const db = await getDb();
@@ -4419,6 +4462,15 @@ export async function approveWalletTopup(
       );
     }
 
+    const legacyBreakGlassReason = options?.legacyUnprotectedApproval?.reason?.trim() ?? "";
+    const breakGlassRequested = options?.legacyUnprotectedApproval !== undefined;
+    if (breakGlassRequested && legacyBreakGlassReason.length < 10) {
+      throw new WalletSlipClaimError(
+        "LEGACY_BREAK_GLASS_REASON_REQUIRED",
+        "A legacy break-glass approval requires an operator reason of at least 10 characters."
+      );
+    }
+
     // Step 1b: ANTI-REPLAY GATE (manual admin approval).
     //
     // The admin's browser is never trusted: identifiers are recomputed
@@ -4438,15 +4490,6 @@ export async function approveWalletTopup(
       const { identifiers, semanticFingerprint } =
         deriveStrongIdentifiersFromExtractedData(persistedExtractedData);
 
-      if (!hasStrongIdentifier(identifiers)) {
-        throw new WalletSlipClaimError(
-          "NO_STRONG_IDENTIFIER",
-          "This top-up has no transaction reference and no readable slip file, so it cannot " +
-            "be protected against replay. It needs the legacy override path (not yet " +
-            "available) rather than a normal approval."
-        );
-      }
-
       // ── CURRENT-BYTE INTEGRITY (IPE-001-C09) ────────────────────────────
       // `topup` is reloaded and row-locked above, but `persistedExtractedData`
       // - and any fileHash within it - describes bytes from an EARLIER
@@ -4461,12 +4504,28 @@ export async function approveWalletTopup(
       // reference-only identifier set: a reference match alone must never
       // bypass current-file integrity when a file is right there to check.
       if (topup.slipImageUrl) {
-        const currentFileHash = await computeSlipFileHash(topup.slipImageUrl as string);
+        const currentFileHash = isLegacyStorageUrl(topup.slipImageUrl as string)
+          ? await computeTrustedLegacySlipFileHash(topup.slipImageUrl as string)
+          : await computeSlipFileHash(topup.slipImageUrl as string);
         const persistedFileHash = fileHashFromExtractedData(persistedExtractedData);
 
-        if (!currentFileHash) {
-          // Unavailability is uncertainty, never proof of stability - fail
-          // closed exactly as a proven mismatch would.
+        if (!currentFileHash && !breakGlassRequested) {
+          // A trusted historical CDN row with NO remaining strong identifier
+          // is the precise case the explicit break-glass UI is for. Surface
+          // that stable precondition instead of a generic file-unavailable
+          // state so the admin can choose the separate audited route. If a
+          // reference/file identifier still exists, keep failing on current-
+          // byte unavailability: break-glass must never be suggested merely
+          // because the file endpoint is temporarily unavailable.
+          if (
+            !hasStrongIdentifier(identifiers) &&
+            isTrustedLegacySlipUrl(topup.slipImageUrl as string)
+          ) {
+            throw new WalletSlipClaimError(
+              "NO_STRONG_IDENTIFIER",
+              "This legacy top-up has no transaction reference and its trusted historical slip bytes cannot be recovered, so normal approval cannot protect it against replay. Use the separate audited legacy break-glass action only after manually confirming the historical evidence."
+            );
+          }
           throw new WalletSlipClaimError(
             "SLIP_CURRENT_BYTES_UNAVAILABLE",
             "The stored slip's current bytes could not be read at approval time, so this " +
@@ -4475,7 +4534,7 @@ export async function approveWalletTopup(
           );
         }
 
-        if (persistedFileHash && currentFileHash !== persistedFileHash) {
+        if (currentFileHash && persistedFileHash && currentFileHash !== persistedFileHash) {
           throw new WalletSlipClaimError(
             "SLIP_INTEGRITY_MISMATCH_AT_APPROVAL",
             "The stored slip's bytes changed after the last successful check and before this " +
@@ -4488,9 +4547,42 @@ export async function approveWalletTopup(
         // actually claims - re-confirms an identifier that already had one,
         // and enriches a reference-only record with one now, atomically
         // inside the SAME transaction that commits the claim and the credit.
-        identifiers.fileHash = currentFileHash;
+        if (currentFileHash) identifiers.fileHash = currentFileHash;
       }
 
+      if (breakGlassRequested) {
+        if (hasStrongIdentifier(identifiers)) {
+          throw new WalletSlipClaimError(
+            "LEGACY_BREAK_GLASS_NOT_ELIGIBLE",
+            "This top-up now has a replay-protectable transaction or file identifier. Use normal Approve so the identifier is claimed atomically."
+          );
+        }
+        if (topup.slipImageUrl && isPrivateObjectRef(topup.slipImageUrl as string)) {
+          throw new WalletSlipClaimError(
+            "LEGACY_BREAK_GLASS_NOT_ELIGIBLE",
+            "This is a modern private slip reference. Replace or recheck the slip instead of using the legacy break-glass path."
+          );
+        }
+        if (topup.slipImageUrl && !isTrustedLegacySlipUrl(topup.slipImageUrl as string)) {
+          throw new WalletSlipClaimError(
+            "LEGACY_BREAK_GLASS_NOT_ELIGIBLE",
+            "This stored slip URL is not the trusted historical CDN format. The legacy break-glass path cannot classify arbitrary URLs as historical records."
+          );
+        }
+        if (hasKnownWalletBreakGlassConflict(topup)) {
+          throw new WalletSlipClaimError(
+            "LEGACY_BREAK_GLASS_CONFLICT",
+            "This top-up already carries duplicate, collision, or integrity evidence that the break-glass path is not allowed to bypass."
+          );
+        }
+      } else if (!hasStrongIdentifier(identifiers)) {
+        throw new WalletSlipClaimError(
+          "NO_STRONG_IDENTIFIER",
+          "This top-up has no transaction reference and no readable slip file, so it cannot be protected against replay by normal approval. Use the separate audited legacy break-glass action only after confirming the historical evidence manually."
+        );
+      }
+
+      if (!breakGlassRequested) {
       const claim = await claimSlip(
         {
           sourceType: "wallet_topup",
@@ -4574,6 +4666,7 @@ export async function approveWalletTopup(
           );
         }
       }
+      }
     }
 
     // Step 2: Conditional status update - ONLY update if still pending or pending_review (idempotency)
@@ -4604,7 +4697,10 @@ export async function approveWalletTopup(
     const affectedRows = (resultHeader as any)?.affectedRows || 0;
     if (affectedRows === 0) {
       // Another request already approved this topup - abort without crediting
-      throw new Error("Wallet top-up already processed by another request");
+      throw new WalletSlipClaimError(
+        "TOPUP_STATE_RACE",
+        "Wallet top-up already processed by another request"
+      );
     }
 
     // Step 2: Use creditedAmount (includes bonus), fallback to requestedAmount for backward compatibility
@@ -4646,6 +4742,9 @@ export async function approveWalletTopup(
       balanceAfter: newBalance,
       referenceType: "topup",
       referenceId: topupId,
+      note: breakGlassRequested
+        ? `HIGH-RISK LEGACY BREAK-GLASS approval by admin ${adminUserId}. Reason: ${legacyBreakGlassReason}`
+        : undefined,
     });
 
     // Step 6: Create topup log (within transaction)
@@ -4656,7 +4755,9 @@ export async function approveWalletTopup(
       total: creditAmount,
       method: "slip" as any,
       reference: `topup-${topupId}`,
-      note: `Slip approved by admin`,
+      note: breakGlassRequested
+        ? `HIGH-RISK LEGACY BREAK-GLASS: ${legacyBreakGlassReason}`
+        : `Slip approved by admin`,
       createdBy: adminUserId,
       createdAt: new Date(),
     });

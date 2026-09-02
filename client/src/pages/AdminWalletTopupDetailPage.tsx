@@ -5,7 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
-import { Loader2, ArrowLeft, Image as ImageIcon, FileText, ExternalLink, Eye, Info } from "lucide-react";
+import { Loader2, ArrowLeft, Image as ImageIcon, FileText, ExternalLink, Eye, Info, AlertTriangle } from "lucide-react";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
@@ -66,6 +66,10 @@ export default function AdminWalletTopupDetailPage() {
   const [legacyReason, setLegacyReason] = useState("");
   const [legacyError, setLegacyError] = useState<string | null>(null);
   const [approveError, setApproveError] = useState<string | null>(null);
+  const [showBreakGlassDialog, setShowBreakGlassDialog] = useState(false);
+  const [breakGlassReason, setBreakGlassReason] = useState("");
+  const [breakGlassConfirmed, setBreakGlassConfirmed] = useState(false);
+  const [breakGlassError, setBreakGlassError] = useState<string | null>(null);
 
   // Fetch topup detail
   const { data, isLoading } = trpc.wallet.admin.detail.useQuery(
@@ -80,6 +84,15 @@ export default function AdminWalletTopupDetailPage() {
     },
     onError: (error: any) => {
       setApproveError(error?.message || "Approval failed.");
+    },
+  });
+
+  const breakGlassMutation = trpc.wallet.admin.approveLegacyUnprotectedTopup.useMutation({
+    onSuccess: () => {
+      navigate("/admin/wallet-topups");
+    },
+    onError: (error: any) => {
+      setBreakGlassError(error?.message || "Legacy break-glass approval failed.");
     },
   });
 
@@ -196,6 +209,8 @@ export default function AdminWalletTopupDetailPage() {
   // instead, so it is excluded here to avoid showing the same finding twice.
   const showGeneralDuplicateBanner =
     duplicate.strength !== "none" && duplicate.strength !== "legacy_case_ambiguity";
+  const noStrongIdentifier =
+    typeof approveError === "string" && approveError.includes("NO_STRONG_IDENTIFIER");
 
   return (
     <AdminLayout>
@@ -290,6 +305,32 @@ export default function AdminWalletTopupDetailPage() {
                 {legacyError}
               </p>
             )}
+          </div>
+        )}
+
+        {noStrongIdentifier && canApproveOrReject && (
+          <div className="rounded-lg border-2 border-red-400 bg-red-50 p-4 space-y-3">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-red-700" />
+              <div className="space-y-1">
+                <p className="text-sm font-bold text-red-900">High-risk legacy approval required</p>
+                <p className="text-sm text-red-800">
+                  Normal approval cannot protect this historical top-up against replay because no
+                  bank transaction reference or readable exact slip file is available. Only use the
+                  audited break-glass action after manually confirming the historical evidence.
+                </p>
+              </div>
+            </div>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                setBreakGlassError(null);
+                setShowBreakGlassDialog(true);
+              }}
+            >
+              Open Legacy Break-glass Approval
+            </Button>
           </div>
         )}
 
@@ -630,6 +671,74 @@ export default function AdminWalletTopupDetailPage() {
               className="w-full rounded border border-slate-300"
             />
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* High-risk legacy break-glass dialog - never part of normal Approve */}
+      <Dialog open={showBreakGlassDialog} onOpenChange={setShowBreakGlassDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>High-risk Legacy Break-glass Approval</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-900">
+              This path can credit a historical top-up without a replay identifier. It is permanently
+              audited and the server will refuse it if a usable identifier or known duplicate evidence
+              is available.
+            </div>
+            <div>
+              <label className="text-sm font-semibold text-slate-900">Operator reason</label>
+              <Textarea
+                placeholder="Explain the manual evidence checked (required, min 10 characters)..."
+                value={breakGlassReason}
+                onChange={(e) => setBreakGlassReason(e.target.value)}
+                className="mt-2"
+                rows={4}
+              />
+            </div>
+            <label className="flex items-start gap-2 text-sm text-slate-800">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={breakGlassConfirmed}
+                onChange={(e) => setBreakGlassConfirmed(e.target.checked)}
+              />
+              <span>
+                I understand this is a high-risk legacy exception and I have manually verified the
+                historical top-up evidence before crediting the wallet.
+              </span>
+            </label>
+            {breakGlassError && (
+              <p className="rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700">
+                {breakGlassError}
+              </p>
+            )}
+            <div className="flex gap-3">
+              <Button
+                variant="destructive"
+                disabled={
+                  breakGlassMutation.isPending ||
+                  !breakGlassConfirmed ||
+                  breakGlassReason.trim().length < 10
+                }
+                onClick={() => {
+                  if (!topupId) return;
+                  setBreakGlassError(null);
+                  breakGlassMutation.mutate({
+                    topupId: parseInt(topupId, 10),
+                    reason: breakGlassReason.trim(),
+                    confirmation: "APPROVE_UNPROTECTED_LEGACY_TOPUP",
+                  });
+                }}
+              >
+                {breakGlassMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Confirm High-risk Approval
+              </Button>
+              <Button variant="outline" onClick={() => setShowBreakGlassDialog(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
 

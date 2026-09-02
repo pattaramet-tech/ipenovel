@@ -3271,6 +3271,27 @@ export const appRouter = router({
           return walletService.adminApproveWalletTopup(input.topupId, ctx.user.id);
         }),
       /**
+       * Explicit high-risk escape hatch for a legacy top-up that still has no
+       * replay identifier after server-side recovery. Kept separate from
+       * normal Approve so it can never be an automatic or silent fallback.
+       */
+      approveLegacyUnprotectedTopup: adminProcedure
+        .input(
+          z.object({
+            topupId: z.number().int().positive(),
+            reason: z.string().trim().min(10).max(1000),
+            confirmation: z.literal("APPROVE_UNPROTECTED_LEGACY_TOPUP"),
+          })
+        )
+        .mutation(async ({ ctx, input }) => {
+          return walletService.adminApproveLegacyUnprotectedWalletTopup(
+            input.topupId,
+            ctx.user.id,
+            input.reason
+          );
+        }),
+
+      /**
        * Wallet equivalent of admin.orders.resolveLegacyCaseAmbiguity.
        *
        * Wallet auto-approval and normal wallet Approve both stop on a legacy

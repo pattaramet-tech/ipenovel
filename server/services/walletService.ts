@@ -8,6 +8,65 @@ import { TRPCError } from "@trpc/server";
 import { submitWalletTopupSlip } from "./walletTopupSubmissionService";
 import { computeSlipFileHash } from "./slipFileHashService";
 
+const WALLET_APPROVAL_PRECONDITION_CODES = new Set([
+  "NO_STRONG_IDENTIFIER",
+  "LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION",
+  "LEGACY_REFERENCE_CASE_AMBIGUITY",
+  "LEGACY_CASE_AMBIGUITY_CHANGED_REVIEW_REQUIRED",
+  "LEGACY_APPROVED_SLIP_UNRESOLVED",
+  "LEGACY_ALIAS_GROUP_AMBIGUITY",
+  "LEGACY_KNOWN_COLLISION",
+  "SLIP_INTEGRITY_MISMATCH_BLOCKED",
+  "SLIP_CURRENT_BYTES_UNAVAILABLE",
+  "SLIP_INTEGRITY_MISMATCH_AT_APPROVAL",
+  "ACCOUNT_MERGE_SOURCE_GUARDED",
+  "LEGACY_BREAK_GLASS_NOT_ELIGIBLE",
+  "LEGACY_BREAK_GLASS_CONFLICT",
+  "LEGACY_BREAK_GLASS_REASON_REQUIRED",
+]);
+
+const WALLET_APPROVAL_CONFLICT_CODES = new Set([
+  "SLIP_ALREADY_CLAIMED",
+  "DUPLICATE_REFERENCE",
+  "DUPLICATE_FILE",
+  "DUPLICATE_QR",
+  "TOPUP_STATE_RACE",
+  "TOPUP_SLIP_VERSION_CHANGED",
+]);
+
+function stableErrorCode(error: unknown): string | undefined {
+  const code = (error as any)?.code;
+  return typeof code === "string" ? code : undefined;
+}
+
+function mapWalletApprovalError(error: unknown): TRPCError {
+  if (error instanceof TRPCError) return error;
+
+  const code = stableErrorCode(error);
+  const message = error instanceof Error ? error.message : String((error as any)?.message ?? "");
+  if (code && WALLET_APPROVAL_PRECONDITION_CODES.has(code)) {
+    return new TRPCError({
+      code: code === "LEGACY_BREAK_GLASS_REASON_REQUIRED" ? "BAD_REQUEST" : "PRECONDITION_FAILED",
+      message: `${code}: ${message || "This top-up cannot be approved until the precondition is resolved."}`,
+    });
+  }
+  if (code && WALLET_APPROVAL_CONFLICT_CODES.has(code)) {
+    return new TRPCError({
+      code: "CONFLICT",
+      message: `${code}: ${message || "This top-up changed or conflicts with another approval."}`,
+    });
+  }
+
+  console.error("[Wallet] Unexpected admin approval failure", {
+    name: error instanceof Error ? error.name : typeof error,
+    code,
+  });
+  return new TRPCError({
+    code: "INTERNAL_SERVER_ERROR",
+    message: "Unable to approve this wallet top-up due to an unexpected server error.",
+  });
+}
+
 export async function createWalletTopupRequest(userId: number, requestedAmount: string, slipImageUrl?: string) {
   // STRICT validation: must be a valid positive number only
   // Reject: "100abc", "NaN", "-100", "0", "", null, undefined, etc.
@@ -193,13 +252,6 @@ export async function adminApproveWalletTopup(topupId: number, adminUserId: numb
     });
   }
 
-  if (!topup.slipImageUrl) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: "Cannot approve top-up without slip image",
-    });
-  }
-
   // CRITICAL: Check if topup is already approved/rejected (prevent re-approval)
   // Allow both pending and pending_review statuses for admin approval
   if (topup.status !== "pending" && topup.status !== "pending_review") {
@@ -212,35 +264,40 @@ export async function adminApproveWalletTopup(topupId: number, adminUserId: numb
   try {
     return await db.approveWalletTopup(topupId, adminUserId);
   } catch (error) {
-    // An anti-replay refusal is an expected business state, not a server
-    // fault: the slip was claimed by another submission (possibly after this
-    // admin loaded the page). Surface it as a CONFLICT with an actionable
-    // message rather than a generic 500, so the UI can prompt a refresh and
-    // point at the submission that already owns the slip.
-    if (error instanceof db.WalletSlipClaimError) {
-      // NO_STRONG_IDENTIFIER is a precondition the admin must resolve (recheck
-      // or legacy override); SLIP_ALREADY_CLAIMED is a conflict with another
-      // submission. Distinct codes so the UI can say the right thing.
-      // NO_STRONG_IDENTIFIER and an unresolved legacy case ambiguity are both
-      // preconditions the admin must clear; SLIP_ALREADY_CLAIMED and a state
-      // race are conflicts with another actor. Distinct codes so the UI can
-      // say the right thing rather than showing one generic failure.
-      const precondition =
-        error.code === "NO_STRONG_IDENTIFIER" ||
-        error.code === "LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION" ||
-        error.code === "LEGACY_REFERENCE_CASE_AMBIGUITY" ||
-        error.code === "SLIP_INTEGRITY_MISMATCH_BLOCKED" ||
-        error.code === "SLIP_CURRENT_BYTES_UNAVAILABLE" ||
-        error.code === "SLIP_INTEGRITY_MISMATCH_AT_APPROVAL";
-      throw new TRPCError({
-        code: precondition ? "PRECONDITION_FAILED" : "CONFLICT",
-        message: `${error.code}: ${error.message}`,
-      });
-    }
+    throw mapWalletApprovalError(error);
+  }
+}
+
+export async function adminApproveLegacyUnprotectedWalletTopup(
+  topupId: number,
+  adminUserId: number,
+  reason: string
+) {
+  const normalizedReason = reason.trim();
+  if (normalizedReason.length < 10) {
     throw new TRPCError({
-      code: "INTERNAL_SERVER_ERROR",
-      message: error instanceof Error ? error.message : "Failed to approve wallet top-up",
+      code: "BAD_REQUEST",
+      message: "Legacy break-glass approval requires a reason of at least 10 characters.",
     });
+  }
+
+  const topup = await db.getWalletTopupById(topupId);
+  if (!topup) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Wallet top-up request not found" });
+  }
+  if (topup.status !== "pending" && topup.status !== "pending_review") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `Cannot break-glass approve a ${topup.status} top-up request`,
+    });
+  }
+
+  try {
+    return await db.approveWalletTopup(topupId, adminUserId, {
+      legacyUnprotectedApproval: { reason: normalizedReason },
+    });
+  } catch (error) {
+    throw mapWalletApprovalError(error);
   }
 }
 

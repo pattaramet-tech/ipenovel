@@ -5,6 +5,7 @@ import * as dbModule from "../db";
 import { findLegacyApprovedDuplicate } from "./legacySlipCompatibilityService";
 import { hashSlipReference } from "./slipIdentifierService";
 import * as backfillState from "./slipBackfillStateService";
+import { hashSlipBytes } from "./slipFileHashService";
 
 /**
  * Round 8. Four findings, all of them ways a hardening step was applied to
@@ -80,6 +81,10 @@ function makeFakeDb(options: {
         from(table: any) {
           const name = tableName(table);
           return {
+            // Some collision/unknown-registry checks are unfiltered bounded
+            // reads (`select().from(table).limit(1)`). This fake has no
+            // historical unknown rows, so the direct form returns empty.
+            limit: async (_n: number) => [],
             where(cond: any) {
               const wanted = boundHashes(cond);
               const cols = targetedColumns(cond);
@@ -328,6 +333,191 @@ describe("wallet confirmed-distinct actually completes", () => {
         },
       })
     ).rejects.toMatchObject({ code: "NO_STRONG_IDENTIFIER" });
+    expect(harness.inserted.walletTransactions).toBeUndefined();
+  });
+});
+
+describe("wallet manual approval legacy-byte parity and break-glass boundaries", () => {
+  beforeEach(() => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+  });
+
+  afterEach(() => {
+    dbModule.__setDbForTests(null);
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("recovers a trusted legacy CDN fileHash before NO_STRONG_IDENTIFIER and credits exactly once", async () => {
+    const bytes = Buffer.from("ipe016-legacy-wallet-current-bytes");
+    const currentHash = hashSlipBytes(bytes);
+    const legacyTopup = {
+      ...pendingTopup,
+      extractedData: JSON.stringify({ amount: 250 }),
+      slipImageUrl: "https://d2xsxph8kpxj0f.cloudfront.net/slips/4242.png",
+      reviewReason: "NO_STRONG_IDENTIFIER",
+      duplicateStatus: null,
+    };
+    const harness = makeFakeDb({ topup: legacyTopup, claims: [] });
+    dbModule.__setDbForTests(harness.fake);
+    const fetchMock = vi.fn(async () => new Response(bytes, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await dbModule.approveWalletTopup(legacyTopup.id, 5);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(harness.inserted.paymentSlipClaims).toHaveLength(1);
+    expect(harness.inserted.paymentSlipClaims[0].fileHash).toBe(currentHash);
+    expect(harness.inserted.walletTransactions).toHaveLength(1);
+    expect(harness.inserted.walletTransactions[0].amount).toBe("260.00");
+    expect(harness.status).toBe("approved");
+  });
+
+  it("fails closed when trusted legacy current bytes disagree with a persisted file hash", async () => {
+    const bytes = Buffer.from("ipe016-changed-wallet-bytes");
+    const legacyTopup = {
+      ...pendingTopup,
+      extractedData: JSON.stringify({ amount: 250, fileHash: FILE_A }),
+      slipImageUrl: "https://d2xsxph8kpxj0f.cloudfront.net/slips/4242.png",
+    };
+    const harness = makeFakeDb({ topup: legacyTopup, claims: [] });
+    dbModule.__setDbForTests(harness.fake);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(bytes, { status: 200 })));
+
+    await expect(dbModule.approveWalletTopup(legacyTopup.id, 5)).rejects.toMatchObject({
+      code: "SLIP_INTEGRITY_MISMATCH_AT_APPROVAL",
+    });
+    expect(harness.inserted.paymentSlipClaims).toBeUndefined();
+    expect(harness.inserted.walletTransactions).toBeUndefined();
+    expect(harness.status).toBe("pending_review");
+  });
+
+  it("surfaces NO_STRONG_IDENTIFIER when trusted legacy bytes are unavailable and no other identifier exists", async () => {
+    const legacyTopup = {
+      ...pendingTopup,
+      extractedData: JSON.stringify({ amount: 250 }),
+      slipImageUrl: "https://d2xsxph8kpxj0f.cloudfront.net/slips/4242.png",
+    };
+    const harness = makeFakeDb({ topup: legacyTopup, claims: [] });
+    dbModule.__setDbForTests(harness.fake);
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("network down"); }));
+
+    await expect(dbModule.approveWalletTopup(legacyTopup.id, 5)).rejects.toMatchObject({
+      code: "NO_STRONG_IDENTIFIER",
+    });
+    expect(harness.inserted.paymentSlipClaims).toBeUndefined();
+    expect(harness.inserted.walletTransactions).toBeUndefined();
+  });
+
+  it("keeps SLIP_CURRENT_BYTES_UNAVAILABLE when a reference exists but trusted legacy bytes cannot be re-read", async () => {
+    const legacyTopup = {
+      ...pendingTopup,
+      extractedData: JSON.stringify({ referenceRaw: MIXED, reference: UPPER, amount: 250 }),
+      slipImageUrl: "https://d2xsxph8kpxj0f.cloudfront.net/slips/4242.png",
+    };
+    const harness = makeFakeDb({ topup: legacyTopup, claims: [] });
+    dbModule.__setDbForTests(harness.fake);
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("network down"); }));
+
+    await expect(dbModule.approveWalletTopup(legacyTopup.id, 5)).rejects.toMatchObject({
+      code: "SLIP_CURRENT_BYTES_UNAVAILABLE",
+    });
+    expect(harness.inserted.paymentSlipClaims).toBeUndefined();
+    expect(harness.inserted.walletTransactions).toBeUndefined();
+  });
+
+  it("never fetches an untrusted absolute legacy URL during normal approval", async () => {
+    const legacyTopup = {
+      ...pendingTopup,
+      extractedData: JSON.stringify({ amount: 250 }),
+      slipImageUrl: "https://attacker.example/slips/4242.png",
+    };
+    const harness = makeFakeDb({ topup: legacyTopup, claims: [] });
+    dbModule.__setDbForTests(harness.fake);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(dbModule.approveWalletTopup(legacyTopup.id, 5)).rejects.toMatchObject({
+      code: "SLIP_CURRENT_BYTES_UNAVAILABLE",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(harness.inserted.walletTransactions).toBeUndefined();
+  });
+
+  it("refuses break-glass for an arbitrary absolute URL that is not the trusted historical CDN", async () => {
+    const legacyTopup = {
+      ...pendingTopup,
+      extractedData: JSON.stringify({ amount: 250 }),
+      slipImageUrl: "https://attacker.example/slips/4242.png",
+      reviewReason: "NO_STRONG_IDENTIFIER",
+      duplicateStatus: null,
+    };
+    const harness = makeFakeDb({ topup: legacyTopup, claims: [] });
+    dbModule.__setDbForTests(harness.fake);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      dbModule.approveWalletTopup(legacyTopup.id, 5, {
+        legacyUnprotectedApproval: { reason: "Attempted legacy override for unknown URL" },
+      })
+    ).rejects.toMatchObject({ code: "LEGACY_BREAK_GLASS_NOT_ELIGIBLE" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(harness.inserted.walletTransactions).toBeUndefined();
+  });
+
+  it("allows a separate audited break-glass only when the legacy row remains truly unprotectable", async () => {
+    const legacyTopup = {
+      ...pendingTopup,
+      extractedData: JSON.stringify({ amount: 250 }),
+      slipImageUrl: null,
+      reviewReason: "NO_STRONG_IDENTIFIER",
+      duplicateStatus: null,
+    };
+    const harness = makeFakeDb({ topup: legacyTopup, claims: [] });
+    dbModule.__setDbForTests(harness.fake);
+
+    await dbModule.approveWalletTopup(legacyTopup.id, 5, {
+      legacyUnprotectedApproval: { reason: "Verified old bank statement manually" },
+    });
+
+    expect(harness.inserted.paymentSlipClaims).toBeUndefined();
+    expect(harness.inserted.walletTransactions).toHaveLength(1);
+    expect(harness.inserted.walletTransactions[0].note).toMatch(/HIGH-RISK LEGACY BREAK-GLASS/);
+    expect(harness.inserted.topupLogs).toHaveLength(1);
+    expect(harness.inserted.topupLogs[0].note).toMatch(/Verified old bank statement manually/);
+    expect(harness.inserted.topupLogs[0].createdBy).toBe(5);
+    expect(harness.status).toBe("approved");
+  });
+
+  it("refuses break-glass when any strong identifier is already available", async () => {
+    const harness = makeFakeDb({ topup: pendingTopup, claims: [] });
+    dbModule.__setDbForTests(harness.fake);
+
+    await expect(
+      dbModule.approveWalletTopup(pendingTopup.id, 5, {
+        legacyUnprotectedApproval: { reason: "Attempted high-risk manual override" },
+      })
+    ).rejects.toMatchObject({ code: "LEGACY_BREAK_GLASS_NOT_ELIGIBLE" });
+    expect(harness.inserted.walletTransactions).toBeUndefined();
+  });
+
+  it("refuses break-glass when durable duplicate evidence is already known", async () => {
+    const legacyTopup = {
+      ...pendingTopup,
+      extractedData: JSON.stringify({ amount: 250 }),
+      slipImageUrl: null,
+      reviewReason: "NO_STRONG_IDENTIFIER",
+      duplicateStatus: JSON.stringify({ isDuplicate: true, type: "file" }),
+    };
+    const harness = makeFakeDb({ topup: legacyTopup, claims: [] });
+    dbModule.__setDbForTests(harness.fake);
+
+    await expect(
+      dbModule.approveWalletTopup(legacyTopup.id, 5, {
+        legacyUnprotectedApproval: { reason: "Manually checked but duplicate flag remains" },
+      })
+    ).rejects.toMatchObject({ code: "LEGACY_BREAK_GLASS_CONFLICT" });
     expect(harness.inserted.walletTransactions).toBeUndefined();
   });
 });
