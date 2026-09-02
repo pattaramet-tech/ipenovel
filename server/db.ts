@@ -5,6 +5,7 @@ import {
   hasStrongIdentifier,
 } from "./services/slipIdentifierService";
 import { claimSlip, describeClaimFailure } from "./services/slipClaimService";
+import { evaluateSlipConflict } from "./services/slipConflictEvaluator";
 import {
   computeSlipFileHash,
   computeTrustedLegacySlipFileHash,
@@ -4410,6 +4411,14 @@ export async function approveWalletTopup(
     legacyUnprotectedApproval?: {
       reason: string;
     };
+    /**
+     * Separate audited acceptance of the residual POST-backfill historical
+     * file-axis coverage risk. Unlike legacyUnprotectedApproval, this path
+     * REQUIRES a freshly verified exact fileHash and still claims it atomically.
+     */
+    legacyFileAxisRiskApproval?: {
+      reason: string;
+    };
   }
 ) {
   const db = await getDb();
@@ -4464,10 +4473,24 @@ export async function approveWalletTopup(
 
     const legacyBreakGlassReason = options?.legacyUnprotectedApproval?.reason?.trim() ?? "";
     const breakGlassRequested = options?.legacyUnprotectedApproval !== undefined;
+    const legacyFileAxisRiskReason = options?.legacyFileAxisRiskApproval?.reason?.trim() ?? "";
+    const fileAxisRiskRequested = options?.legacyFileAxisRiskApproval !== undefined;
+    if (breakGlassRequested && fileAxisRiskRequested) {
+      throw new WalletSlipClaimError(
+        "LEGACY_OVERRIDE_MODE_CONFLICT",
+        "Only one legacy approval exception may be requested at a time."
+      );
+    }
     if (breakGlassRequested && legacyBreakGlassReason.length < 10) {
       throw new WalletSlipClaimError(
         "LEGACY_BREAK_GLASS_REASON_REQUIRED",
         "A legacy break-glass approval requires an operator reason of at least 10 characters."
+      );
+    }
+    if (fileAxisRiskRequested && legacyFileAxisRiskReason.length < 10) {
+      throw new WalletSlipClaimError(
+        "LEGACY_FILE_AXIS_RISK_REASON_REQUIRED",
+        "A legacy file-axis risk override requires an operator reason of at least 10 characters."
       );
     }
 
@@ -4503,8 +4526,9 @@ export async function approveWalletTopup(
       // approvePaymentInTx. Applies whenever a slip exists, even for a
       // reference-only identifier set: a reference match alone must never
       // bypass current-file integrity when a file is right there to check.
+      let currentFileHash: string | undefined;
       if (topup.slipImageUrl) {
-        const currentFileHash = isLegacyStorageUrl(topup.slipImageUrl as string)
+        currentFileHash = isLegacyStorageUrl(topup.slipImageUrl as string)
           ? await computeTrustedLegacySlipFileHash(topup.slipImageUrl as string)
           : await computeSlipFileHash(topup.slipImageUrl as string);
         const persistedFileHash = fileHashFromExtractedData(persistedExtractedData);
@@ -4575,6 +4599,42 @@ export async function approveWalletTopup(
             "This top-up already carries duplicate, collision, or integrity evidence that the break-glass path is not allowed to bypass."
           );
         }
+      } else if (fileAxisRiskRequested) {
+        // This override accepts ONLY the residual post-backfill GLOBAL file-axis
+        // coverage uncertainty. It is not a way to approve without evidence:
+        // current bytes must be readable now, and fileHash must be the sole
+        // strong identifier so the exact hash can still be claimed atomically.
+        if (!currentFileHash || identifiers.fileHash !== currentFileHash) {
+          throw new WalletSlipClaimError(
+            "LEGACY_FILE_AXIS_RISK_NOT_ELIGIBLE",
+            "The current slip bytes could not be bound to a fresh exact file identifier. Recheck or replace the slip instead of using the file-axis risk override."
+          );
+        }
+        if (identifiers.referenceHash || identifiers.qrPayloadHash) {
+          throw new WalletSlipClaimError(
+            "LEGACY_FILE_AXIS_RISK_NOT_ELIGIBLE",
+            "This top-up has a transaction reference or QR identifier. Use normal Approve so all available identifiers are enforced without a legacy risk override."
+          );
+        }
+
+        const currentConflict = await evaluateSlipConflict(
+          {
+            identifiers,
+            rawReference: getRawReferenceForLegacyLookup(persistedExtractedData),
+            sourceType: "wallet_topup",
+            sourceId: topupId,
+          },
+          tx
+        );
+        if (
+          currentConflict.kind !== "unresolved" ||
+          currentConflict.unresolvedScope !== "historical_file_axis_coverage"
+        ) {
+          throw new WalletSlipClaimError(
+            "LEGACY_FILE_AXIS_RISK_NOT_ELIGIBLE",
+            "The current evidence is not blocked solely by the global historical file-axis coverage gap. Refresh and use the normal resolution appropriate to the current finding."
+          );
+        }
       } else if (!hasStrongIdentifier(identifiers)) {
         throw new WalletSlipClaimError(
           "NO_STRONG_IDENTIFIER",
@@ -4601,6 +4661,9 @@ export async function approveWalletTopup(
           // identifier below is still claimed atomically, so an exact
           // reference/file/QR duplicate still blocks.
           legacyCaseAmbiguityResolution: options?.legacyCaseAmbiguityResolution,
+          legacyFileAxisRiskResolution: fileAxisRiskRequested && currentFileHash
+            ? { expectedFileHash: currentFileHash }
+            : undefined,
         },
         tx
       );
@@ -4744,7 +4807,9 @@ export async function approveWalletTopup(
       referenceId: topupId,
       note: breakGlassRequested
         ? `HIGH-RISK LEGACY BREAK-GLASS approval by admin ${adminUserId}. Reason: ${legacyBreakGlassReason}`
-        : undefined,
+        : fileAxisRiskRequested
+          ? `HIGH-RISK LEGACY FILE-AXIS RISK OVERRIDE approval by admin ${adminUserId}. Exact current fileHash was claimed atomically. Reason: ${legacyFileAxisRiskReason}`
+          : undefined,
     });
 
     // Step 6: Create topup log (within transaction)
@@ -4757,7 +4822,9 @@ export async function approveWalletTopup(
       reference: `topup-${topupId}`,
       note: breakGlassRequested
         ? `HIGH-RISK LEGACY BREAK-GLASS: ${legacyBreakGlassReason}`
-        : `Slip approved by admin`,
+        : fileAxisRiskRequested
+          ? `HIGH-RISK LEGACY FILE-AXIS RISK OVERRIDE: exact current fileHash claimed. ${legacyFileAxisRiskReason}`
+          : `Slip approved by admin`,
       createdBy: adminUserId,
       createdAt: new Date(),
     });

@@ -54,6 +54,18 @@ function makeFakeDb(options: {
   claims: any[];
   balance?: string;
   failAfterCredit?: boolean;
+  legacyUnknownRows?: Array<{
+    sourceType: "order_payment" | "wallet_topup";
+    sourceId: number;
+  }>;
+  legacyCollisions?: Array<{
+    kind: "reference" | "file" | "qr";
+    identifierHash: string;
+    sourceType: "order_payment" | "wallet_topup";
+    sourceId: number;
+  }>;
+  accountMergeCase?: { id: number; status: string };
+  approvalAffectedRows?: number;
 }) {
   const inserted: Record<string, any[]> = {};
   const updates: Array<{ table: string; values: any }> = [];
@@ -72,7 +84,9 @@ function makeFakeDb(options: {
       const queryText = (query?.queryChunks ?? [])
         .map((chunk: any) => (Array.isArray(chunk?.value) ? chunk.value.join("") : String(chunk?.value ?? "")))
         .join("");
-      if (queryText.includes("accountMergeCases")) return [[]];
+      if (queryText.includes("accountMergeCases")) {
+        return [options.accountMergeCase ? [{ ...options.accountMergeCase }] : []];
+      }
       locks.push(queryText || "lock");
       return [[{ id: options.topup.id }]];
     },
@@ -81,10 +95,12 @@ function makeFakeDb(options: {
         from(table: any) {
           const name = tableName(table);
           return {
-            // Some collision/unknown-registry checks are unfiltered bounded
-            // reads (`select().from(table).limit(1)`). This fake has no
-            // historical unknown rows, so the direct form returns empty.
-            limit: async (_n: number) => [],
+            // The global legacy file-axis coverage check is an unfiltered
+            // bounded read: there is intentionally no identifier predicate.
+            limit: async (n: number) =>
+              name === "paymentSlipLegacyUnknown"
+                ? (options.legacyUnknownRows ?? []).slice(0, n)
+                : [],
             where(cond: any) {
               const wanted = boundHashes(cond);
               const cols = targetedColumns(cond);
@@ -98,6 +114,13 @@ function makeFakeDb(options: {
                   }
                   if (name === "walletAccounts") {
                     return [{ userId: options.topup.userId, balance: options.balance ?? "0.00" }];
+                  }
+                  if (name === "paymentSlipLegacyCollisions") {
+                    if (!wanted.length) return [];
+                    return (options.legacyCollisions ?? [])
+                      .filter((c) => wanted.includes(c.identifierHash))
+                      .map((c) => ({ sourceType: c.sourceType, sourceId: c.sourceId }))
+                      .slice(0, n);
                   }
                   if (name === "paymentSlipClaims") {
                     if (!wanted.length) return [];
@@ -120,10 +143,14 @@ function makeFakeDb(options: {
           return {
             where() {
               updates.push({ table: name, values });
-              if (name === "walletTopups" && values.status) topupStatus = values.status;
-              // Every conditional update in these scenarios is written while
-              // the row is still reviewable, so it wins.
-              return [{ affectedRows: 1 }];
+              const affectedRows =
+                name === "walletTopups" && values.status === "approved"
+                  ? (options.approvalAffectedRows ?? 1)
+                  : 1;
+              if (name === "walletTopups" && values.status && affectedRows > 0) {
+                topupStatus = values.status;
+              }
+              return [{ affectedRows }];
             },
           };
         },
@@ -522,6 +549,302 @@ describe("wallet manual approval legacy-byte parity and break-glass boundaries",
   });
 });
 
+describe("wallet legacy file-axis risk override", () => {
+  beforeEach(() => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+  });
+
+  afterEach(() => {
+    dbModule.__setDbForTests(null);
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function fileOnlyLegacyTopup(bytes: Buffer, overrides: Record<string, unknown> = {}) {
+    const currentHash = hashSlipBytes(bytes);
+    return {
+      currentHash,
+      topup: {
+        ...pendingTopup,
+        extractedData: JSON.stringify({ amount: 250, fileHash: currentHash }),
+        slipImageUrl: "https://d2xsxph8kpxj0f.cloudfront.net/slips/4242.png",
+        reviewReason: "LEGACY_APPROVED_SLIP_UNRESOLVED",
+        duplicateStatus: null,
+        ...overrides,
+      },
+    };
+  }
+
+  it("reproduces the false blocker: normal Approve stays fail-closed on a global representative unknown row with no exact match", async () => {
+    const bytes = Buffer.from("ipe017-global-file-axis-normal-block");
+    const { topup } = fileOnlyLegacyTopup(bytes);
+    const harness = makeFakeDb({
+      topup,
+      claims: [],
+      legacyUnknownRows: [{ sourceType: "order_payment", sourceId: 11280001 }],
+    });
+    dbModule.__setDbForTests(harness.fake);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(bytes, { status: 200 })));
+
+    await expect(dbModule.approveWalletTopup(topup.id, 5)).rejects.toMatchObject({
+      code: "LEGACY_APPROVED_SLIP_UNRESOLVED",
+      message: expect.stringContaining("representative example"),
+    });
+    expect(harness.inserted.paymentSlipClaims).toBeUndefined();
+    expect(harness.inserted.walletTransactions).toBeUndefined();
+    expect(harness.status).toBe("pending_review");
+  });
+
+  it("accepts only the global file-axis risk, claims the freshly verified exact fileHash, credits once, and persists admin/reason audit context", async () => {
+    const bytes = Buffer.from("ipe017-global-file-axis-override-success");
+    const { topup, currentHash } = fileOnlyLegacyTopup(bytes);
+    const harness = makeFakeDb({
+      topup,
+      claims: [],
+      legacyUnknownRows: [{ sourceType: "order_payment", sourceId: 11280001 }],
+    });
+    dbModule.__setDbForTests(harness.fake);
+    const fetchMock = vi.fn(async () => new Response(bytes, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await dbModule.approveWalletTopup(topup.id, 5, {
+      legacyFileAxisRiskApproval: {
+        reason: "Verified current slip and accept residual legacy file coverage risk",
+      },
+    });
+
+    // One fresh current-byte read; the exact hash produced from those bytes is
+    // still claimed through the ordinary atomic claim path before value.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(harness.inserted.paymentSlipClaims).toHaveLength(1);
+    expect(harness.inserted.paymentSlipClaims[0].fileHash).toBe(currentHash);
+    expect(harness.inserted.paymentSlipClaims[0].referenceHash).toBeNull();
+    expect(harness.inserted.paymentSlipClaims[0].qrPayloadHash).toBeNull();
+    expect(harness.inserted.walletTransactions).toHaveLength(1);
+    expect(harness.inserted.walletTransactions[0].amount).toBe("260.00");
+    expect(harness.inserted.walletTransactions[0].note).toContain(
+      "HIGH-RISK LEGACY FILE-AXIS RISK OVERRIDE approval by admin 5"
+    );
+    expect(harness.inserted.walletTransactions[0].note).toContain(
+      "Verified current slip and accept residual legacy file coverage risk"
+    );
+    expect(harness.inserted.topupLogs).toHaveLength(1);
+    expect(harness.inserted.topupLogs[0].createdBy).toBe(5);
+    expect(harness.inserted.topupLogs[0].note).toContain(
+      "HIGH-RISK LEGACY FILE-AXIS RISK OVERRIDE"
+    );
+    expect(harness.status).toBe("approved");
+  });
+
+  it("refuses the file-axis override when a reference identifier is available", async () => {
+    const bytes = Buffer.from("ipe017-file-axis-reference-ineligible");
+    const currentHash = hashSlipBytes(bytes);
+    const topup = {
+      ...pendingTopup,
+      extractedData: JSON.stringify({ referenceRaw: MIXED, fileHash: currentHash, amount: 250 }),
+      slipImageUrl: "https://d2xsxph8kpxj0f.cloudfront.net/slips/4242.png",
+    };
+    const harness = makeFakeDb({
+      topup,
+      claims: [],
+      legacyUnknownRows: [{ sourceType: "order_payment", sourceId: 11280001 }],
+    });
+    dbModule.__setDbForTests(harness.fake);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(bytes, { status: 200 })));
+
+    await expect(
+      dbModule.approveWalletTopup(topup.id, 5, {
+        legacyFileAxisRiskApproval: { reason: "Attempted risk override despite reference evidence" },
+      })
+    ).rejects.toMatchObject({ code: "LEGACY_FILE_AXIS_RISK_NOT_ELIGIBLE" });
+    expect(harness.inserted.paymentSlipClaims).toBeUndefined();
+    expect(harness.inserted.walletTransactions).toBeUndefined();
+  });
+
+  it("refuses the file-axis override when a QR identifier is available", async () => {
+    const bytes = Buffer.from("ipe017-file-axis-qr-ineligible");
+    const currentHash = hashSlipBytes(bytes);
+    const topup = {
+      ...pendingTopup,
+      extractedData: JSON.stringify({ qrPayloadHash: "c".repeat(64), fileHash: currentHash, amount: 250 }),
+      slipImageUrl: "https://d2xsxph8kpxj0f.cloudfront.net/slips/4242.png",
+    };
+    const harness = makeFakeDb({
+      topup,
+      claims: [],
+      legacyUnknownRows: [{ sourceType: "order_payment", sourceId: 11280001 }],
+    });
+    dbModule.__setDbForTests(harness.fake);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(bytes, { status: 200 })));
+
+    await expect(
+      dbModule.approveWalletTopup(topup.id, 5, {
+        legacyFileAxisRiskApproval: { reason: "Attempted risk override despite QR evidence available" },
+      })
+    ).rejects.toMatchObject({ code: "LEGACY_FILE_AXIS_RISK_NOT_ELIGIBLE" });
+    expect(harness.inserted.paymentSlipClaims).toBeUndefined();
+    expect(harness.inserted.walletTransactions).toBeUndefined();
+  });
+
+  it("refuses an exact file duplicate before any risk waiver or credit", async () => {
+    const bytes = Buffer.from("ipe017-file-axis-exact-duplicate");
+    const { topup, currentHash } = fileOnlyLegacyTopup(bytes);
+    const harness = makeFakeDb({
+      topup,
+      claims: [{ sourceType: "order_payment", sourceId: 88, fileHash: currentHash }],
+      legacyUnknownRows: [{ sourceType: "order_payment", sourceId: 11280001 }],
+    });
+    dbModule.__setDbForTests(harness.fake);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(bytes, { status: 200 })));
+
+    await expect(
+      dbModule.approveWalletTopup(topup.id, 5, {
+        legacyFileAxisRiskApproval: { reason: "Risk acceptance must not bypass exact duplicate" },
+      })
+    ).rejects.toMatchObject({ code: "LEGACY_FILE_AXIS_RISK_NOT_ELIGIBLE" });
+    expect(harness.inserted.paymentSlipClaims).toBeUndefined();
+    expect(harness.inserted.walletTransactions).toBeUndefined();
+  });
+
+  it("refuses a durable known file collision before any risk waiver or credit", async () => {
+    const bytes = Buffer.from("ipe017-file-axis-known-collision");
+    const { topup, currentHash } = fileOnlyLegacyTopup(bytes);
+    const harness = makeFakeDb({
+      topup,
+      claims: [],
+      legacyCollisions: [
+        {
+          kind: "file",
+          identifierHash: currentHash,
+          sourceType: "order_payment",
+          sourceId: 89,
+        },
+      ],
+      legacyUnknownRows: [{ sourceType: "order_payment", sourceId: 11280001 }],
+    });
+    dbModule.__setDbForTests(harness.fake);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(bytes, { status: 200 })));
+
+    await expect(
+      dbModule.approveWalletTopup(topup.id, 5, {
+        legacyFileAxisRiskApproval: { reason: "Risk acceptance must not bypass known collision" },
+      })
+    ).rejects.toMatchObject({ code: "LEGACY_FILE_AXIS_RISK_NOT_ELIGIBLE" });
+    expect(harness.inserted.paymentSlipClaims).toBeUndefined();
+    expect(harness.inserted.walletTransactions).toBeUndefined();
+  });
+
+  it("refuses when current bytes disagree with the persisted fileHash", async () => {
+    const originalBytes = Buffer.from("ipe017-file-axis-original");
+    const changedBytes = Buffer.from("ipe017-file-axis-changed");
+    const { topup } = fileOnlyLegacyTopup(originalBytes);
+    const harness = makeFakeDb({
+      topup,
+      claims: [],
+      legacyUnknownRows: [{ sourceType: "order_payment", sourceId: 11280001 }],
+    });
+    dbModule.__setDbForTests(harness.fake);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(changedBytes, { status: 200 })));
+
+    await expect(
+      dbModule.approveWalletTopup(topup.id, 5, {
+        legacyFileAxisRiskApproval: { reason: "Should fail when bytes changed after extraction" },
+      })
+    ).rejects.toMatchObject({ code: "SLIP_INTEGRITY_MISMATCH_AT_APPROVAL" });
+    expect(harness.inserted.paymentSlipClaims).toBeUndefined();
+    expect(harness.inserted.walletTransactions).toBeUndefined();
+  });
+
+  it("refuses when current bytes are unavailable", async () => {
+    const bytes = Buffer.from("ipe017-file-axis-unavailable");
+    const { topup } = fileOnlyLegacyTopup(bytes);
+    const harness = makeFakeDb({
+      topup,
+      claims: [],
+      legacyUnknownRows: [{ sourceType: "order_payment", sourceId: 11280001 }],
+    });
+    dbModule.__setDbForTests(harness.fake);
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("network down"); }));
+
+    await expect(
+      dbModule.approveWalletTopup(topup.id, 5, {
+        legacyFileAxisRiskApproval: { reason: "Should fail when current slip cannot be read" },
+      })
+    ).rejects.toMatchObject({ code: "SLIP_CURRENT_BYTES_UNAVAILABLE" });
+    expect(harness.inserted.paymentSlipClaims).toBeUndefined();
+    expect(harness.inserted.walletTransactions).toBeUndefined();
+  });
+
+  it("never fetches an arbitrary absolute URL through the file-axis override", async () => {
+    const topup = {
+      ...pendingTopup,
+      extractedData: JSON.stringify({ amount: 250, fileHash: FILE_A }),
+      slipImageUrl: "https://attacker.example/slips/4242.png",
+    };
+    const harness = makeFakeDb({
+      topup,
+      claims: [],
+      legacyUnknownRows: [{ sourceType: "order_payment", sourceId: 11280001 }],
+    });
+    dbModule.__setDbForTests(harness.fake);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      dbModule.approveWalletTopup(topup.id, 5, {
+        legacyFileAxisRiskApproval: { reason: "Arbitrary URL must not become an SSRF fetch route" },
+      })
+    ).rejects.toMatchObject({ code: "SLIP_CURRENT_BYTES_UNAVAILABLE" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(harness.inserted.walletTransactions).toBeUndefined();
+  });
+
+  it("account-merge source guard refuses the override before current-byte work or credit", async () => {
+    const bytes = Buffer.from("ipe017-file-axis-merge-guard");
+    const { topup } = fileOnlyLegacyTopup(bytes);
+    const harness = makeFakeDb({
+      topup,
+      claims: [],
+      legacyUnknownRows: [{ sourceType: "order_payment", sourceId: 11280001 }],
+      accountMergeCase: { id: 991, status: "pending" },
+    });
+    dbModule.__setDbForTests(harness.fake);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      dbModule.approveWalletTopup(topup.id, 5, {
+        legacyFileAxisRiskApproval: { reason: "Must remain behind account merge source guard" },
+      })
+    ).rejects.toMatchObject({ code: "ACCOUNT_MERGE_SOURCE_GUARDED" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(harness.inserted.paymentSlipClaims).toBeUndefined();
+    expect(harness.inserted.walletTransactions).toBeUndefined();
+  });
+
+  it("a lost status race creates no wallet value after the exact-file claim attempt", async () => {
+    const bytes = Buffer.from("ipe017-file-axis-state-race");
+    const { topup } = fileOnlyLegacyTopup(bytes);
+    const harness = makeFakeDb({
+      topup,
+      claims: [],
+      legacyUnknownRows: [{ sourceType: "order_payment", sourceId: 11280001 }],
+      approvalAffectedRows: 0,
+    });
+    dbModule.__setDbForTests(harness.fake);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(bytes, { status: 200 })));
+
+    await expect(
+      dbModule.approveWalletTopup(topup.id, 5, {
+        legacyFileAxisRiskApproval: { reason: "Concurrent winner must keep this request from crediting" },
+      })
+    ).rejects.toMatchObject({ code: "TOPUP_STATE_RACE" });
+    expect(harness.inserted.walletTransactions).toBeUndefined();
+    expect(harness.updates.filter((u) => u.table === "walletAccounts")).toHaveLength(0);
+    expect(harness.status).toBe("pending_review");
+  });
+});
+
 describe("the wallet claim request forwards the override (structural)", () => {
   const code = readCode("server/db.ts");
 
@@ -537,9 +860,84 @@ describe("the wallet claim request forwards the override (structural)", () => {
   });
 
   it("the resolution is only ever an input to claimSlip, never a global skip", () => {
-    // skipLegacyCheck is the blanket switch; the resolution override must
-    // not be wired to it.
+    // skipLegacyCheck is the blanket switch; neither resolution override may
+    // be wired to it.
     expect(code).not.toMatch(/skipLegacyCheck:\s*options\?\.legacyCaseAmbiguityResolution/);
+    expect(code).not.toMatch(/skipLegacyCheck:\s*.*legacyFileAxisRisk/);
+  });
+
+  it("the file-axis risk resolution is bound to the freshly recomputed current fileHash before claimSlip", () => {
+    const start = code.indexOf("export async function approveWalletTopup(");
+    const end = code.indexOf("export async function rejectWalletTopup(");
+    const body = code.slice(start, end);
+    const recomputeIdx = body.indexOf("currentFileHash = isLegacyStorageUrl");
+    const claimIdx = body.indexOf("const claim = await claimSlip(");
+    const resolutionIdx = body.indexOf("legacyFileAxisRiskResolution:", claimIdx);
+    expect(recomputeIdx).toBeGreaterThan(-1);
+    expect(claimIdx).toBeGreaterThan(recomputeIdx);
+    expect(resolutionIdx).toBeGreaterThan(claimIdx);
+    expect(body.slice(resolutionIdx, resolutionIdx + 260)).toMatch(
+      /expectedFileHash:\s*currentFileHash/
+    );
+  });
+
+  it("account-merge guard and subject lock remain ahead of all file-axis risk work", () => {
+    const start = code.indexOf("export async function approveWalletTopup(");
+    const end = code.indexOf("export async function rejectWalletTopup(");
+    const body = code.slice(start, end);
+    const mergeGuardIdx = body.indexOf("assertAccountMergeClassifiedMutationAllowed");
+    const rowLockIdx = body.indexOf("lockWalletTopupForUpdate");
+    const overrideIdx = body.indexOf("} else if (fileAxisRiskRequested) {");
+    expect(mergeGuardIdx).toBeGreaterThan(-1);
+    expect(rowLockIdx).toBeGreaterThan(mergeGuardIdx);
+    expect(overrideIdx).toBeGreaterThan(rowLockIdx);
+  });
+
+  it("claim and conditional approval stay inside the same transaction and precede wallet value creation", () => {
+    const start = code.indexOf("export async function approveWalletTopup(");
+    const end = code.indexOf("export async function rejectWalletTopup(");
+    const body = code.slice(start, end);
+    const transactionIdx = body.indexOf("return await db.transaction");
+    const claimIdx = body.indexOf("const claim = await claimSlip(");
+    const stateUpdateIdx = body.indexOf("status: \"approved\"");
+    const walletCreditIdx = body.indexOf(".update(walletAccounts)");
+    const ledgerIdx = body.indexOf("tx.insert(walletTransactions)");
+    expect(transactionIdx).toBeGreaterThan(-1);
+    expect(claimIdx).toBeGreaterThan(transactionIdx);
+    expect(stateUpdateIdx).toBeGreaterThan(claimIdx);
+    expect(walletCreditIdx).toBeGreaterThan(stateUpdateIdx);
+    expect(ledgerIdx).toBeGreaterThan(walletCreditIdx);
+  });
+});
+
+describe("file-axis risk route and UI boundaries (structural)", () => {
+  const routerCode = readCode("server/routers.ts");
+  const pageCode = readCode("client/src/pages/AdminWalletTopupDetailPage.tsx");
+
+  it("the admin route requires both a reason and the exact explicit confirmation literal", () => {
+    const start = routerCode.indexOf("approveLegacyFileAxisRiskTopup:");
+    expect(start).toBeGreaterThan(-1);
+    const body = routerCode.slice(start, start + 1300);
+    expect(body).toMatch(/reason:\s*z\.string\(\)\.trim\(\)\.min\(10\)\.max\(1000\)/);
+    expect(body).toMatch(/z\.literal\("ACCEPT_LEGACY_FILE_AXIS_RISK"\)/);
+    expect(body).toMatch(/adminApproveLegacyFileAxisRiskWalletTopup/);
+  });
+
+  it("the UI exposes the override only from the specific global file-axis unresolved scope", () => {
+    expect(pageCode).toMatch(
+      /ocrMeta\?\.duplicate\?\.strength === "unresolved"[\s\S]*ocrMeta\?\.duplicate\?\.unresolvedScope === "historical_file_axis_coverage"/
+    );
+    expect(pageCode).toMatch(/fileAxisCoverageRisk && canApproveOrReject/);
+    expect(pageCode).toMatch(/Open Legacy File-Axis Risk Override/);
+    expect(pageCode).toMatch(/not a detected[\s\S]*specific historical order/i);
+    expect(pageCode).toMatch(/confirmation:\s*"ACCEPT_LEGACY_FILE_AXIS_RISK"/);
+  });
+
+  it("the file-axis risk UI remains separate from the NO_STRONG_IDENTIFIER break-glass", () => {
+    expect(pageCode).toMatch(/Open Legacy Break-glass Approval/);
+    expect(pageCode).toMatch(/Open Legacy File-Axis Risk Override/);
+    expect(pageCode).toMatch(/APPROVE_UNPROTECTED_LEGACY_TOPUP/);
+    expect(pageCode).toMatch(/ACCEPT_LEGACY_FILE_AXIS_RISK/);
   });
 });
 

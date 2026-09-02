@@ -1495,6 +1495,7 @@ export const appRouter = router({
                 viaLegacyCompatibility?: boolean;
                 advisory?: true;
                 requiresAdminResolution?: true;
+                unresolvedScope?: "legacy_scan_record" | "historical_file_axis_coverage";
               }
             | undefined;
           let reviewReasonOverride: string | undefined;
@@ -1571,6 +1572,7 @@ export const appRouter = router({
                   matchedSourceType: conflict.matchedSourceType,
                   matchedSourceId: conflict.matchedSourceId,
                   advisory: true,
+                  unresolvedScope: conflict.unresolvedScope,
                 };
                 reviewReasonOverride = "LEGACY_APPROVED_SLIP_UNRESOLVED";
               } else if (conflict.kind === "legacy_case_ambiguity_group") {
@@ -3157,6 +3159,7 @@ export const appRouter = router({
                 viaLegacyCompatibility?: boolean;
                 advisory?: true;
                 requiresAdminResolution?: true;
+                unresolvedScope?: "legacy_scan_record" | "historical_file_axis_coverage";
               }
             | undefined;
           let reviewReasonOverride: string | undefined;
@@ -3204,6 +3207,7 @@ export const appRouter = router({
                   matchedSourceType: conflict.matchedSourceType,
                   matchedSourceId: conflict.matchedSourceId,
                   advisory: true,
+                  unresolvedScope: conflict.unresolvedScope,
                 };
                 reviewReasonOverride = "LEGACY_APPROVED_SLIP_UNRESOLVED";
               } else if (conflict.kind === "legacy_case_ambiguity_group") {
@@ -3285,6 +3289,27 @@ export const appRouter = router({
         )
         .mutation(async ({ ctx, input }) => {
           return walletService.adminApproveLegacyUnprotectedWalletTopup(
+            input.topupId,
+            ctx.user.id,
+            input.reason
+          );
+        }),
+
+      /**
+       * Explicit acceptance of the residual POST-backfill historical file-axis
+       * coverage risk. This is NOT a duplicate waiver: server-side approval
+       * still recomputes and atomically claims the exact current fileHash.
+       */
+      approveLegacyFileAxisRiskTopup: adminProcedure
+        .input(
+          z.object({
+            topupId: z.number().int().positive(),
+            reason: z.string().trim().min(10).max(1000),
+            confirmation: z.literal("ACCEPT_LEGACY_FILE_AXIS_RISK"),
+          })
+        )
+        .mutation(async ({ ctx, input }) => {
+          return walletService.adminApproveLegacyFileAxisRiskWalletTopup(
             input.topupId,
             ctx.user.id,
             input.reason

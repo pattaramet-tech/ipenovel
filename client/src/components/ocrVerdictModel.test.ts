@@ -254,6 +254,26 @@ describe("describeDuplicate", () => {
     expect(d.matchedHref).toBe("/admin/wallet-topups/44");
   });
 
+  it("a post-backfill global file-axis coverage gap never labels its representative row as a match", () => {
+    const d = describeDuplicate(
+      input({
+        duplicate: {
+          strength: "unresolved",
+          matchedSourceType: "order_payment",
+          matchedSourceId: 11280001,
+          matchedOrderId: 999,
+          unresolvedScope: "historical_file_axis_coverage",
+        },
+      })
+    );
+    expect(d.strength).toBe("unresolved");
+    expect(d.headline).toMatch(/file-axis replay coverage is incomplete/i);
+    expect(d.caveat).toMatch(/NOT a detected match/i);
+    expect(d.caveat).toMatch(/global gap/i);
+    expect(d.matchedLabel).toBeUndefined();
+    expect(d.matchedHref).toBeUndefined();
+  });
+
   it("LEGACY_APPROVED_SLIP_UNRESOLVED alone (no duplicate object) still renders the unresolved state", () => {
     const d = describeDuplicate(
       input({ reviewReason: "LEGACY_APPROVED_SLIP_UNRESOLVED", duplicate: null })

@@ -70,6 +70,10 @@ export default function AdminWalletTopupDetailPage() {
   const [breakGlassReason, setBreakGlassReason] = useState("");
   const [breakGlassConfirmed, setBreakGlassConfirmed] = useState(false);
   const [breakGlassError, setBreakGlassError] = useState<string | null>(null);
+  const [showFileAxisRiskDialog, setShowFileAxisRiskDialog] = useState(false);
+  const [fileAxisRiskReason, setFileAxisRiskReason] = useState("");
+  const [fileAxisRiskConfirmed, setFileAxisRiskConfirmed] = useState(false);
+  const [fileAxisRiskError, setFileAxisRiskError] = useState<string | null>(null);
 
   // Fetch topup detail
   const { data, isLoading } = trpc.wallet.admin.detail.useQuery(
@@ -93,6 +97,15 @@ export default function AdminWalletTopupDetailPage() {
     },
     onError: (error: any) => {
       setBreakGlassError(error?.message || "Legacy break-glass approval failed.");
+    },
+  });
+
+  const fileAxisRiskMutation = trpc.wallet.admin.approveLegacyFileAxisRiskTopup.useMutation({
+    onSuccess: () => {
+      navigate("/admin/wallet-topups");
+    },
+    onError: (error: any) => {
+      setFileAxisRiskError(error?.message || "Legacy file-axis risk override failed.");
     },
   });
 
@@ -211,6 +224,9 @@ export default function AdminWalletTopupDetailPage() {
     duplicate.strength !== "none" && duplicate.strength !== "legacy_case_ambiguity";
   const noStrongIdentifier =
     typeof approveError === "string" && approveError.includes("NO_STRONG_IDENTIFIER");
+  const fileAxisCoverageRisk =
+    ocrMeta?.duplicate?.strength === "unresolved" &&
+    ocrMeta?.duplicate?.unresolvedScope === "historical_file_axis_coverage";
 
   return (
     <AdminLayout>
@@ -247,6 +263,38 @@ export default function AdminWalletTopupDetailPage() {
                 )}
               </p>
             )}
+          </div>
+        )}
+
+        {/* Global post-backfill file-axis uncertainty: not a match to any specific row. */}
+        {fileAxisCoverageRisk && canApproveOrReject && (
+          <div className="rounded-lg border-2 border-orange-400 bg-orange-50 p-4 space-y-3">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-orange-700" />
+              <div className="space-y-1">
+                <p className="text-sm font-bold text-orange-950">
+                  High-risk Legacy File-Axis Risk Override available
+                </p>
+                <p className="text-sm text-orange-900">
+                  Normal approval stays blocked because some historical approved records permanently
+                  lost their slip bytes. <strong>This is a global replay-coverage gap, not a detected
+                  match to this top-up or to a specific historical order.</strong> Use this separate
+                  override only after accepting that residual risk. The server will re-read the current
+                  slip, require fileHash-only evidence, re-check exact duplicates/collisions, and atomically
+                  claim the exact current fileHash before any wallet credit.
+                </p>
+              </div>
+            </div>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                setFileAxisRiskError(null);
+                setShowFileAxisRiskDialog(true);
+              }}
+            >
+              Open Legacy File-Axis Risk Override
+            </Button>
           </div>
         )}
 
@@ -671,6 +719,79 @@ export default function AdminWalletTopupDetailPage() {
               className="w-full rounded border border-slate-300"
             />
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* High-risk file-axis risk override - separate from NO_STRONG_IDENTIFIER break-glass. */}
+      <Dialog open={showFileAxisRiskDialog} onOpenChange={setShowFileAxisRiskDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>High-risk Legacy File-Axis Risk Override</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="rounded border border-orange-300 bg-orange-50 p-3 text-sm text-orange-950">
+              This does not confirm that the current slip is distinct from a specific historical
+              transaction. It accepts a residual global replay-coverage risk caused by legacy records
+              whose original slip bytes no longer exist. The server will still re-read the current slip,
+              refuse any exact duplicate/collision or integrity problem, and atomically claim the exact
+              current fileHash before crediting the wallet.
+            </div>
+            <div>
+              <label className="text-sm font-semibold text-slate-900">Operator reason</label>
+              <Textarea
+                placeholder="Explain why the residual historical file-axis risk is accepted (required, min 10 characters)..."
+                value={fileAxisRiskReason}
+                onChange={(e) => setFileAxisRiskReason(e.target.value)}
+                className="mt-2"
+                rows={4}
+              />
+            </div>
+            <label className="flex items-start gap-2 text-sm text-slate-800">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={fileAxisRiskConfirmed}
+                onChange={(e) => setFileAxisRiskConfirmed(e.target.checked)}
+              />
+              <span>
+                I understand this is a high-risk residual-coverage exception, not a Confirm Distinct
+                decision about any specific historical order, and I accept the remaining legacy
+                file-axis replay risk.
+              </span>
+            </label>
+            {fileAxisRiskError && (
+              <p className="rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700">
+                {fileAxisRiskError}
+              </p>
+            )}
+            <div className="flex gap-3">
+              <Button
+                variant="destructive"
+                disabled={
+                  fileAxisRiskMutation.isPending ||
+                  !fileAxisRiskConfirmed ||
+                  fileAxisRiskReason.trim().length < 10
+                }
+                onClick={() => {
+                  if (!topupId) return;
+                  setFileAxisRiskError(null);
+                  fileAxisRiskMutation.mutate({
+                    topupId: parseInt(topupId, 10),
+                    reason: fileAxisRiskReason.trim(),
+                    confirmation: "ACCEPT_LEGACY_FILE_AXIS_RISK",
+                  });
+                }}
+              >
+                {fileAxisRiskMutation.isPending && (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                )}
+                Accept Risk and Approve
+              </Button>
+              <Button variant="outline" onClick={() => setShowFileAxisRiskDialog(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
 

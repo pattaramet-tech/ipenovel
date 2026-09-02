@@ -23,6 +23,9 @@ const WALLET_APPROVAL_PRECONDITION_CODES = new Set([
   "LEGACY_BREAK_GLASS_NOT_ELIGIBLE",
   "LEGACY_BREAK_GLASS_CONFLICT",
   "LEGACY_BREAK_GLASS_REASON_REQUIRED",
+  "LEGACY_FILE_AXIS_RISK_NOT_ELIGIBLE",
+  "LEGACY_FILE_AXIS_RISK_REASON_REQUIRED",
+  "LEGACY_OVERRIDE_MODE_CONFLICT",
 ]);
 
 const WALLET_APPROVAL_CONFLICT_CODES = new Set([
@@ -45,8 +48,12 @@ function mapWalletApprovalError(error: unknown): TRPCError {
   const code = stableErrorCode(error);
   const message = error instanceof Error ? error.message : String((error as any)?.message ?? "");
   if (code && WALLET_APPROVAL_PRECONDITION_CODES.has(code)) {
+    const badRequest =
+      code === "LEGACY_BREAK_GLASS_REASON_REQUIRED" ||
+      code === "LEGACY_FILE_AXIS_RISK_REASON_REQUIRED" ||
+      code === "LEGACY_OVERRIDE_MODE_CONFLICT";
     return new TRPCError({
-      code: code === "LEGACY_BREAK_GLASS_REASON_REQUIRED" ? "BAD_REQUEST" : "PRECONDITION_FAILED",
+      code: badRequest ? "BAD_REQUEST" : "PRECONDITION_FAILED",
       message: `${code}: ${message || "This top-up cannot be approved until the precondition is resolved."}`,
     });
   }
@@ -295,6 +302,39 @@ export async function adminApproveLegacyUnprotectedWalletTopup(
   try {
     return await db.approveWalletTopup(topupId, adminUserId, {
       legacyUnprotectedApproval: { reason: normalizedReason },
+    });
+  } catch (error) {
+    throw mapWalletApprovalError(error);
+  }
+}
+
+export async function adminApproveLegacyFileAxisRiskWalletTopup(
+  topupId: number,
+  adminUserId: number,
+  reason: string
+) {
+  const normalizedReason = reason.trim();
+  if (normalizedReason.length < 10) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Legacy file-axis risk override requires a reason of at least 10 characters.",
+    });
+  }
+
+  const topup = await db.getWalletTopupById(topupId);
+  if (!topup) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Wallet top-up request not found" });
+  }
+  if (topup.status !== "pending" && topup.status !== "pending_review") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `Cannot apply a legacy file-axis risk override to a ${topup.status} top-up request`,
+    });
+  }
+
+  try {
+    return await db.approveWalletTopup(topupId, adminUserId, {
+      legacyFileAxisRiskApproval: { reason: normalizedReason },
     });
   } catch (error) {
     throw mapWalletApprovalError(error);
