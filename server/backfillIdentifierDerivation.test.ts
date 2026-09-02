@@ -43,6 +43,16 @@ const deps = {
 const UPPER_REF = "ABC123DEF456";
 const UPPER_HASH = hashSlipReference(UPPER_REF)!;
 
+function fileRecoveryDeps(computeSlipFileHash: ReturnType<typeof vi.fn>) {
+  return {
+    computeSlipFileHash,
+    computeTrustedLegacySlipFileHash: vi.fn(),
+    isPrivateObjectRef: (raw: string | null | undefined) =>
+      typeof raw === "string" && raw.startsWith("r2p:"),
+    isTrustedLegacySlipUrl: () => false,
+  };
+}
+
 describe("H. legacy_uppercase evidence: no exact referenceHash written from lossy evidence", () => {
   it("identifiers.referenceHash is undefined when only the upper-cased legacy field survives", () => {
     const json = JSON.stringify({ reference: UPPER_REF, amount: 100 });
@@ -133,7 +143,7 @@ describe("I. legacy_uppercase with no persisted fileHash but a recoverable one: 
     const computeSlipFileHash = vi.fn().mockResolvedValue(recoveredHash);
     const recovery = await recoverFileHashIdentifier({
       slipImageUrl: "r2p:payment-slips/legacy-row",
-      computeSlipFileHash,
+      ...fileRecoveryDeps(computeSlipFileHash),
     });
 
     expect(recovery.fileHash).toBe(recoveredHash);
@@ -156,7 +166,7 @@ describe("J. legacy_uppercase with no strong identifier recoverable at all: unre
     const computeSlipFileHash = vi.fn().mockResolvedValue(undefined);
     const recovery = await recoverFileHashIdentifier({
       slipImageUrl: "r2p:payment-slips/legacy-row",
-      computeSlipFileHash,
+      ...fileRecoveryDeps(computeSlipFileHash),
     });
 
     expect(recovery.fileHash).toBeUndefined();
@@ -171,7 +181,7 @@ describe("J. legacy_uppercase with no strong identifier recoverable at all: unre
     const computeSlipFileHash = vi.fn();
     const recovery = await recoverFileHashIdentifier({
       slipImageUrl: null,
-      computeSlipFileHash,
+      ...fileRecoveryDeps(computeSlipFileHash),
     });
 
     expect(recovery.fileHash).toBeUndefined();
