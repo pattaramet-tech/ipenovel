@@ -9091,8 +9091,8 @@ export async function getAdminUserDeleteAssessment(userId: number, tx?: any): Pr
  * `WHERE role = 'admin' ORDER BY id FOR UPDATE` has no way to satisfy
  * either the filter or the sort from an index on MySQL/MariaDB, so it
  * scans (and locks) every row in `users`, not just the small admin set -
- * every unrelated write (including the login-time `upsertUser` update)
- * blocks behind it for as long as the transaction runs. `(role, id)` -
+ * every unrelated per-user write blocks behind it for as long as the
+ * transaction runs. `(role, id)` -
  * role first (matches the WHERE), id second (matches the ORDER BY) - lets
  * one index satisfy both, turning this into a range scan over just the
  * admin rows. Deliberately no `FORCE INDEX` hint here: this query must

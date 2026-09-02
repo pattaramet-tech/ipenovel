@@ -58,6 +58,15 @@ const LOCK_TIMEOUT_SECONDS = 60;
 // the schema incomplete still fails the deploy instead of letting the
 // server boot and serve errors. See docs/DAILY_CHECKIN_DEPLOYMENT_FIX.md.
 export const REQUIRED_TABLES = [
+  // Migration 0036. Admin role-set locking uses WHERE role='admin'
+  // ORDER BY id FOR UPDATE. Without users_role_id_idx MariaDB/MySQL may scan
+  // and lock unrelated user rows, which can block authentication and other
+  // per-user writes. Listing users here also makes the REQUIRED_INDEXES loop
+  // actually verify the index instead of skipping a table absent from this
+  // presence set.
+  "users",
+  // Google login cannot resolve an external subject without migration 0033.
+  "authIdentities",
   "dailyCheckins",
   "dailyCheckinCampaigns",
   "dailyCheckinCouponTemplates",
@@ -69,6 +78,12 @@ export const REQUIRED_TABLES = [
   // presence check below has an entry for it and actually runs the
   // coupons_ownerUserId_idx check instead of silently skipping it.
   "coupons",
+  // Migrations 0037/0038. Both order and wallet approval depend on the
+  // global claim registry, while explicit legacy-case adjudication depends
+  // on the resolution table. A migration journal alone is not proof these
+  // objects still exist, so verify them before the server accepts traffic.
+  "paymentSlipClaims",
+  "paymentSlipReviewResolutions",
   // Migration 0039 (IPE-004). The legacy anti-replay registry: every
   // approval that reaches the strong-identifier gate reads
   // paymentSlipLegacyCollisions to decide `known_collision`, and the
@@ -90,6 +105,7 @@ export const REQUIRED_TABLES = [
   "sportsMatchRewards",
 ];
 export const REQUIRED_COLUMNS = [
+  { table: "paymentSlipClaims", column: "legacyReferenceUpperHash" },
   { table: "coupons", column: "maxDiscountAmount" },
   // Coupon ownership scope (migration 0032, fix/coupon-owner-enforcement).
   // server/db.ts's createCoupon/updateCoupon/validateAndApplyCoupon read and
@@ -131,7 +147,25 @@ export const REQUIRED_NULLABLE_COLUMNS = [
 ];
 
 export const REQUIRED_INDEXES = [
+  { table: "users", index: "users_role_id_idx" },
+  { table: "users", index: "users_email_idx" },
+  { table: "authIdentities", index: "PRIMARY" },
+  { table: "authIdentities", index: "authIdentities_provider_providerSubject_unique" },
+  { table: "authIdentities", index: "authIdentities_userId_provider_unique" },
+  { table: "authIdentities", index: "authIdentities_userId_idx" },
   { table: "coupons", index: "coupons_ownerUserId_idx" },
+  { table: "paymentSlipClaims", index: "PRIMARY" },
+  { table: "paymentSlipClaims", index: "paymentSlipClaims_referenceHash_unique" },
+  { table: "paymentSlipClaims", index: "paymentSlipClaims_fileHash_unique" },
+  { table: "paymentSlipClaims", index: "paymentSlipClaims_qrPayloadHash_unique" },
+  { table: "paymentSlipClaims", index: "paymentSlipClaims_legacyReferenceUpperHash_idx" },
+  { table: "paymentSlipClaims", index: "paymentSlipClaims_semanticFingerprint_idx" },
+  { table: "paymentSlipClaims", index: "paymentSlipClaims_source_idx" },
+  { table: "paymentSlipClaims", index: "paymentSlipClaims_userId_idx" },
+  { table: "paymentSlipReviewResolutions", index: "PRIMARY" },
+  { table: "paymentSlipReviewResolutions", index: "paymentSlipReviewResolutions_subject_unique" },
+  { table: "paymentSlipReviewResolutions", index: "paymentSlipReviewResolutions_adminUserId_idx" },
+  { table: "paymentSlipReviewResolutions", index: "paymentSlipReviewResolutions_createdAt_idx" },
   { table: "dailyCheckins", index: "PRIMARY" },
   { table: "dailyCheckins", index: "unique_daily_checkin_user_date_campaign" },
   { table: "dailyCheckins", index: "unique_daily_checkins_coupon" },

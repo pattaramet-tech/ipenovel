@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { isDuplicateKeyError, isRetryableTransactionConflict } from "./databaseErrorClassifier";
+import {
+  hasDatabaseDriverMetadata,
+  isDuplicateKeyError,
+  isTransactionDeadlock,
+} from "./databaseErrorClassifier";
 
 /**
  * Regression coverage for the dead-guard bug this helper exists to fix.
@@ -157,20 +161,29 @@ describe("isDuplicateKeyError", () => {
   });
 });
 
-describe("isRetryableTransactionConflict", () => {
-  it("detects direct and wrapped lock-wait timeouts", () => {
-    expect(isRetryableTransactionConflict({ errno: 1205, code: "ER_LOCK_WAIT_TIMEOUT" })).toBe(true);
-    expect(isRetryableTransactionConflict({ cause: { errno: "1205" } })).toBe(true);
-  });
-
+describe("isTransactionDeadlock", () => {
   it("detects direct and wrapped deadlocks", () => {
-    expect(isRetryableTransactionConflict({ errno: 1213, code: "ER_LOCK_DEADLOCK" })).toBe(true);
-    expect(isRetryableTransactionConflict({ cause: { code: "ER_LOCK_DEADLOCK" } })).toBe(true);
+    expect(isTransactionDeadlock({ errno: 1213, code: "ER_LOCK_DEADLOCK" })).toBe(true);
+    expect(isTransactionDeadlock({ cause: { code: "ER_LOCK_DEADLOCK" } })).toBe(true);
   });
 
-  it("does not classify duplicate keys, connection errors, or message-only lookalikes", () => {
-    expect(isRetryableTransactionConflict({ errno: 1062, code: "ER_DUP_ENTRY" })).toBe(false);
-    expect(isRetryableTransactionConflict({ code: "ECONNREFUSED" })).toBe(false);
-    expect(isRetryableTransactionConflict(new Error("Lock wait timeout exceeded"))).toBe(false);
+  it("does not classify lock-wait timeouts, duplicate keys, connection errors, or message-only lookalikes", () => {
+    expect(isTransactionDeadlock({ errno: 1205, code: "ER_LOCK_WAIT_TIMEOUT" })).toBe(false);
+    expect(isTransactionDeadlock({ errno: 1062, code: "ER_DUP_ENTRY" })).toBe(false);
+    expect(isTransactionDeadlock({ code: "ECONNREFUSED" })).toBe(false);
+    expect(isTransactionDeadlock(new Error("Deadlock found"))).toBe(false);
+  });
+});
+
+describe("hasDatabaseDriverMetadata", () => {
+  it("detects direct and wrapped driver fields without reading messages", () => {
+    expect(hasDatabaseDriverMetadata({ errno: 1205 })).toBe(true);
+    expect(hasDatabaseDriverMetadata({ cause: { sqlState: "HY000" } })).toBe(true);
+    expect(hasDatabaseDriverMetadata({ cause: { code: "ER_NO_SUCH_TABLE" } })).toBe(true);
+  });
+
+  it("rejects application and connection errors that have no database-driver metadata", () => {
+    expect(hasDatabaseDriverMetadata(new Error("Failed query: select secret"))).toBe(false);
+    expect(hasDatabaseDriverMetadata({ code: "ECONNREFUSED" })).toBe(false);
   });
 });

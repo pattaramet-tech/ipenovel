@@ -49,8 +49,8 @@ export const users = mysqlTable(
     // server/services/adminUserManagementService.ts's updateAdminUserProfile
     // "LOCK HIERARCHY" docstring). Without a supporting index, that query
     // scans (and locks) the entire `users` table on MySQL/MariaDB, blocking
-    // unrelated writes like the login-time upsertUser update for as long as
-    // the transaction runs. `(role, id)` - role first, matching the WHERE
+    // unrelated per-user writes for as long as the transaction runs.
+    // `(role, id)` - role first, matching the WHERE
     // clause; id second, matching the ORDER BY - lets the same index satisfy
     // both, so the query becomes an index range scan over just the admin
     // rows instead of a full-table scan. Migration 0036 adds this index;

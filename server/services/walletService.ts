@@ -7,6 +7,7 @@ import * as db from "../db";
 import { TRPCError } from "@trpc/server";
 import { submitWalletTopupSlip } from "./walletTopupSubmissionService";
 import { computeSlipFileHash } from "./slipFileHashService";
+import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
 
 const WALLET_APPROVAL_PRECONDITION_CODES = new Set([
   "NO_STRONG_IDENTIFIER",
@@ -64,13 +65,11 @@ function mapWalletApprovalError(error: unknown): TRPCError {
     });
   }
 
-  console.error("[Wallet] Unexpected admin approval failure", {
-    name: error instanceof Error ? error.name : typeof error,
-    code,
-  });
+  console.error("[Wallet] Unexpected admin approval failure:", safeErrorSummary(error));
   return new TRPCError({
     code: "INTERNAL_SERVER_ERROR",
     message: "Unable to approve this wallet top-up due to an unexpected server error.",
+    cause: error,
   });
 }
 

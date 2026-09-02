@@ -88,21 +88,26 @@ const LEGACY_REGISTRY_INDEXES = [
 ];
 
 describe("findMissingSchemaObjects - required object lists", () => {
-  it("requires the five daily check-in tables plus coupons and the migration-0039 legacy registry", () => {
+  it("requires auth and payment-approval tables plus the daily-check-in and legacy registries", () => {
     expect(REQUIRED_TABLES).toEqual(expect.arrayContaining([
+      "users",
+      "authIdentities",
       "dailyCheckins",
       "dailyCheckinCampaigns",
       "dailyCheckinCouponTemplates",
       "dailyCheckinRewardRules",
       "dailyCheckinRewardGrants",
       "coupons",
+      "paymentSlipClaims",
+      "paymentSlipReviewResolutions",
       "paymentSlipLegacyCollisions",
       "paymentSlipLegacyUnknown",
     ]));
   });
 
-  it("requires coupons.maxDiscountAmount/scope/ownerUserId and the daily check-in point-reward columns", () => {
+  it("requires the approval alias column, coupon columns and daily-check-in point-reward columns", () => {
     expect(REQUIRED_COLUMNS).toEqual(expect.arrayContaining([
+      { table: "paymentSlipClaims", column: "legacyReferenceUpperHash" },
       { table: "coupons", column: "maxDiscountAmount" },
       { table: "coupons", column: "scope" },
       { table: "coupons", column: "ownerUserId" },
@@ -119,9 +124,18 @@ describe("findMissingSchemaObjects - required object lists", () => {
     expect(REQUIRED_NULLABLE_COLUMNS).toContainEqual({ table: "dailyCheckins", column: "couponId" });
   });
 
-  it("requires coupons_ownerUserId_idx plus the dailyCheckins indexes, reward-grant idempotency guards and the migration-0039 registry indexes", () => {
+  it("requires auth, approval, daily-check-in, reward-grant and migration-0039 indexes", () => {
     expect(REQUIRED_INDEXES).toEqual(expect.arrayContaining([
+      { table: "users", index: "users_role_id_idx" },
+      { table: "users", index: "users_email_idx" },
+      { table: "authIdentities", index: "authIdentities_provider_providerSubject_unique" },
+      { table: "authIdentities", index: "authIdentities_userId_provider_unique" },
       { table: "coupons", index: "coupons_ownerUserId_idx" },
+      { table: "paymentSlipClaims", index: "paymentSlipClaims_referenceHash_unique" },
+      { table: "paymentSlipClaims", index: "paymentSlipClaims_fileHash_unique" },
+      { table: "paymentSlipClaims", index: "paymentSlipClaims_qrPayloadHash_unique" },
+      { table: "paymentSlipClaims", index: "paymentSlipClaims_legacyReferenceUpperHash_idx" },
+      { table: "paymentSlipReviewResolutions", index: "paymentSlipReviewResolutions_subject_unique" },
       { table: "dailyCheckins", index: "PRIMARY" },
       { table: "dailyCheckins", index: "unique_daily_checkin_user_date_campaign" },
       { table: "dailyCheckins", index: "unique_daily_checkins_coupon" },
@@ -135,6 +149,36 @@ describe("findMissingSchemaObjects - required object lists", () => {
       { table: "dailyCheckinCampaigns", index: "dailyCheckinCampaigns_campaignKey_unique" },
       ...LEGACY_REGISTRY_INDEXES,
     ]));
+  });
+
+  it("fails closed when migration 0036's users role index is missing", async () => {
+    const allButUsersRoleIndex = REQUIRED_INDEXES.filter(
+      ({ table, index }) => !(table === "users" && index === "users_role_id_idx")
+    );
+    const { query } = fakeConn("camel", REQUIRED_TABLES, true, allButUsersRoleIndex);
+    const missing = await findMissingSchemaObjects({ query });
+    expect(missing).toEqual(["index users.users_role_id_idx"]);
+  });
+
+  it("fails closed before serving approvals when the global claim table is missing", async () => {
+    const present = REQUIRED_TABLES.filter((table) => table !== "paymentSlipClaims");
+    const { query } = fakeConn("camel", present, true, REQUIRED_INDEXES);
+    const missing = await findMissingSchemaObjects({ query });
+    expect(missing).toEqual(["table paymentSlipClaims"]);
+  });
+
+  it("fails closed when auth or payment anti-replay uniqueness indexes are missing", async () => {
+    const presentIndexes = REQUIRED_INDEXES.filter(
+      ({ index }) =>
+        index !== "authIdentities_provider_providerSubject_unique" &&
+        index !== "paymentSlipClaims_fileHash_unique"
+    );
+    const { query } = fakeConn("camel", REQUIRED_TABLES, true, presentIndexes);
+    const missing = await findMissingSchemaObjects({ query });
+    expect(missing).toEqual([
+      "index authIdentities.authIdentities_provider_providerSubject_unique",
+      "index paymentSlipClaims.paymentSlipClaims_fileHash_unique",
+    ]);
   });
 
   it("requires IPE-009 Sports Vote catalog, reward columns, nullable coupon fields and idempotency indexes", () => {

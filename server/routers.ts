@@ -32,6 +32,7 @@ import {
 } from "./services/checkoutMaintenanceService";
 import { safeErrorSummary } from "../scripts/lib/safeErrorSummary.mjs";
 import { isDuplicateKeyError } from "./helpers/databaseErrorClassifier";
+import { mapOrderPaymentApprovalError } from "./helpers/adminPaymentApprovalError";
 import { fileRouter } from "./routers/fileRouter";
 import { ocrMetricsRouter } from "./routers/ocrMetricsRouter";
 import { r2Put, R2StorageError } from "./services/r2Storage";
@@ -1317,32 +1318,8 @@ export const appRouter = router({
           try {
             await orderService.approvePayment(input.paymentId, String(ctx.user.id));
             return { success: true };
-          } catch (error: any) {
-            // Anti-replay refusal: the slip was claimed by another
-            // submission, possibly after this admin loaded the page. CONFLICT
-            // (not BAD_REQUEST) so the UI can tell "stale page, refresh and
-            // recheck" apart from "this request was malformed".
-            if (typeof error?.message === "string" && error.message.startsWith("SLIP_ALREADY_CLAIMED")) {
-              throw new TRPCError({ code: "CONFLICT", message: error.message });
-            }
-            // No strong identifier: normal Approve must not silently bypass
-            // anti-replay. PRECONDITION_FAILED so the UI can distinguish
-            // "someone else owns this slip" from "this slip cannot be
-            // protected at all and needs the legacy override".
-            if (typeof error?.message === "string" && error.message.startsWith("NO_STRONG_IDENTIFIER")) {
-              throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
-            }
-            // An unresolved legacy case ambiguity. Distinct from a duplicate:
-            // the admin must choose reject-as-duplicate or approve-as-distinct
-            // via resolveLegacyCaseAmbiguity. Normal Approve must neither
-            // bypass it nor fail forever.
-            if (
-              typeof error?.message === "string" &&
-              error.message.startsWith("LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION")
-            ) {
-              throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
-            }
-            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to approve payment. Please try again." });
+          } catch (error) {
+            throw mapOrderPaymentApprovalError(error);
           }
         }),
 

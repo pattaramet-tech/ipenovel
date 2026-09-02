@@ -34,9 +34,9 @@ const DUPLICATE_ENTRY_ERRNO = 1062;
 /** mysql2/MariaDB duplicate-entry error code. */
 const DUPLICATE_ENTRY_CODE = "ER_DUP_ENTRY";
 
-/** Transaction conflicts that are safe to retry only from a fresh transaction. */
-const RETRYABLE_TRANSACTION_ERRNOS = new Set([1205, 1213]);
-const RETRYABLE_TRANSACTION_CODES = new Set(["ER_LOCK_WAIT_TIMEOUT", "ER_LOCK_DEADLOCK"]);
+/** A deadlock may be retried only by abandoning the failed transaction. */
+const DEADLOCK_ERRNO = 1213;
+const DEADLOCK_CODE = "ER_LOCK_DEADLOCK";
 
 /**
  * How many `cause` links to follow before giving up. drizzle wraps the
@@ -91,11 +91,17 @@ export function isDuplicateKeyError(error: unknown): boolean {
 }
 
 /**
- * True only for MySQL/MariaDB transaction conflicts where the failed
- * transaction must be abandoned and the whole operation may be retried from
- * a fresh transaction/snapshot. Never matches messages or SQL text.
+ * True only for a MySQL/MariaDB deadlock, where the server has already picked
+ * this transaction as the victim and rolled it back. A fresh-transaction
+ * retry can therefore make progress without waiting for the same lock again.
+ *
+ * Deliberately does NOT classify ER_LOCK_WAIT_TIMEOUT (1205). A lock-wait
+ * timeout has already consumed the configured wait period and the competing
+ * transaction may still own the lock; immediately repeating the operation
+ * commonly doubles user-visible latency and connection-pool pressure.
+ * Never matches messages or SQL text.
  */
-export function isRetryableTransactionConflict(error: unknown): boolean {
+export function isTransactionDeadlock(error: unknown): boolean {
   const visited = new Set<object>();
   let current: unknown = error;
 
@@ -112,8 +118,33 @@ export function isRetryableTransactionConflict(error: unknown): boolean {
           ? Number(link.errno.trim())
           : undefined;
 
-    if (errno !== undefined && RETRYABLE_TRANSACTION_ERRNOS.has(errno)) return true;
-    if (typeof link.code === "string" && RETRYABLE_TRANSACTION_CODES.has(link.code)) return true;
+    if (errno === DEADLOCK_ERRNO) return true;
+    if (link.code === DEADLOCK_CODE) return true;
+
+    current = link.cause;
+  }
+
+  return false;
+}
+
+/**
+ * Detects a real database-driver shaped error without looking at its message,
+ * SQL text, or parameters. Used only to decide that an unexpected failure
+ * must be treated as an internal server error while its cause remains
+ * available to the sanitized server logger.
+ */
+export function hasDatabaseDriverMetadata(error: unknown): boolean {
+  const visited = new Set<object>();
+  let current: unknown = error;
+
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth += 1) {
+    if (current === null || typeof current !== "object") return false;
+    if (visited.has(current)) return false;
+    visited.add(current);
+
+    const link = current as { errno?: unknown; code?: unknown; sqlState?: unknown; cause?: unknown };
+    if (link.errno !== undefined || link.sqlState !== undefined) return true;
+    if (typeof link.code === "string" && link.code.startsWith("ER_")) return true;
 
     current = link.cause;
   }

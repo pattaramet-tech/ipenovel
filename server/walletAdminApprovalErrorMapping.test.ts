@@ -70,7 +70,12 @@ describe("wallet admin approval error contract", () => {
   });
 
   it("keeps unexpected faults as a safe INTERNAL_SERVER_ERROR without leaking the raw message", async () => {
-    (db.approveWalletTopup as any).mockRejectedValue(new Error("SQL password=do-not-leak"));
+    const rawError = Object.assign(new Error("SQL password=do-not-leak"), {
+      errno: 1205,
+      code: "ER_LOCK_WAIT_TIMEOUT",
+      sqlState: "HY000",
+    });
+    (db.approveWalletTopup as any).mockRejectedValue(rawError);
 
     try {
       await walletService.adminApproveWalletTopup(91, 1);
@@ -79,6 +84,7 @@ describe("wallet admin approval error contract", () => {
       expect(error).toBeInstanceOf(TRPCError);
       expect((error as TRPCError).code).toBe("INTERNAL_SERVER_ERROR");
       expect((error as TRPCError).message).not.toContain("do-not-leak");
+      expect((error as TRPCError).cause).toBe(rawError);
     }
   });
 
