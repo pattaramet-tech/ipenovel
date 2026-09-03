@@ -26,7 +26,7 @@
 // test files that used `Date.now()` alone for uniqueness).
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { users, novels, episodes, orders, orderItems, payments, coupons } from "../../drizzle/schema";
+import { users, accountMutationGuards, pointsAccounts, novels, episodes, orders, orderItems, payments, coupons } from "../../drizzle/schema";
 import { getTestDb } from "./testDb";
 
 /**
@@ -54,14 +54,19 @@ export async function createTestUser(overrides: Partial<{ name: string; email: s
   const db = getTestDb();
   const tag = uniqueTestTag("user");
   const openId = `test-${tag}`;
-  const result = await db.insert(users).values({
-    openId,
-    name: overrides.name ?? `Test User ${tag}`,
-    email: overrides.email ?? `${tag}@example.test`,
-    loginMethod: "test",
-    role: overrides.role ?? "user",
+  return db.transaction(async (tx: any) => {
+    const result = await tx.insert(users).values({
+      openId,
+      name: overrides.name ?? `Test User ${tag}`,
+      email: overrides.email ?? `${tag}@example.test`,
+      loginMethod: "test",
+      role: overrides.role ?? "user",
+    });
+    const id = extractInsertId(result);
+    await tx.insert(accountMutationGuards).values({ userId: id });
+    await tx.insert(pointsAccounts).values({ userId: id });
+    return { id, openId };
   });
-  return { id: extractInsertId(result), openId };
 }
 
 export interface TestNovelFixture {

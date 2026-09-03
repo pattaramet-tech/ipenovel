@@ -481,8 +481,7 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
         await orderService.lockAndRequireReviewablePayment(
           payment.id,
           tx,
-          publishedSlipVersion,
-          "points_exclusive"
+          publishedSlipVersion
         );
 
         const extractedJson = verificationResult.extractedData

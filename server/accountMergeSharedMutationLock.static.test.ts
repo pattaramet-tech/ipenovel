@@ -16,10 +16,14 @@ function bodyBetween(startAnchor: string, endAnchor: string): string {
 }
 
 describe("Account Merge shared mutation barrier", () => {
-  it("ordinary classified mutations take shared user and guard-state locks", () => {
-    const sharedUserLock = bodyBetween(
+  it("ordinary classified mutations acquire the dedicated guard first in SHARE mode, then transitional users/case SHARE locks", () => {
+    const guardLocks = bodyBetween(
+      "export async function lockAccountMutationGuardRows",
+      "async function lockLegacyAccountMergeUsersExclusive"
+    );
+    const sharedBridge = bodyBetween(
       "async function lockAccountMergeMutationUserRows",
-      "export async function getAccountMergeCasesForSourceForUpdate"
+      "export async function activateAccountMutationGuardForMerge"
     );
     const sharedCaseLock = bodyBetween(
       "async function getAccountMergeCasesForSourceForShare",
@@ -27,33 +31,46 @@ describe("Account Merge shared mutation barrier", () => {
     );
     const mutationGuard = bodyBetween(
       "export async function assertAccountMergeClassifiedMutationsAllowed",
-      "async function assertAccountMergePointsMutationAllowed"
+      "export async function assertAccountMergePointsMutationAllowed"
     );
 
-    expect(sharedUserLock).toContain("LOCK IN SHARE MODE");
+    expect(guardLocks).toContain("LOCK IN SHARE MODE");
+    expect(sharedBridge).toContain('lockAccountMutationGuardRows(ordered, tx, "shared")');
+    expect(sharedBridge).toContain("lockLegacyAccountMergeUsersShared(ordered, tx)");
     expect(sharedCaseLock).toContain("LOCK IN SHARE MODE");
-    expect(mutationGuard).toContain(
-      "lockAccountMergeMutationUserRows(userIds, tx)"
-    );
-    expect(mutationGuard).toContain(
-      "getAccountMergeCasesForSourceForShare(sourceUserId, tx)"
-    );
+    expect(mutationGuard).toContain("lockAccountMergeMutationUserRows(userIds, tx)");
+    expect(mutationGuard).toContain("getAccountMergeCasesForSourceForShare(sourceUserId, tx)");
   });
 
-  it("merge lifecycle and points balance mutations retain exclusive locks", () => {
-    const lifecycleUserLock = bodyBetween(
+  it("merge lifecycle keeps guard EXCLUSIVE, while points serialize on pointsAccounts after the shared classified guard", () => {
+    const lifecycleBridge = bodyBetween(
       "export async function lockAccountMergeUserRows",
       "async function lockAccountMergeMutationUserRows"
     );
+    const pointsRows = bodyBetween(
+      "export async function lockPointsAccountRowsForUpdate",
+      "export async function assertAccountMergePointsMutationAllowed"
+    );
     const pointsGuard = bodyBetween(
-      "async function assertAccountMergePointsMutationAllowed",
+      "export async function assertAccountMergePointsMutationAllowed",
       "export async function assertAccountMergeClassifiedMutationAllowed"
     );
 
-    expect(lifecycleUserLock).toContain("FOR UPDATE");
-    expect(pointsGuard).toContain("lockAccountMergeUserRows([userId], tx)");
-    expect(pointsGuard).toContain(
-      "getAccountMergeCasesForSourceForUpdate(userId, tx)"
+    expect(lifecycleBridge).toContain('lockAccountMutationGuardRows(ordered, tx, "exclusive")');
+    expect(lifecycleBridge).toContain("lockLegacyAccountMergeUsersExclusive(ordered, tx)");
+    expect(pointsRows).toContain("FROM pointsAccounts");
+    expect(pointsRows).toContain("FOR UPDATE");
+    expect(pointsGuard).toContain("assertAccountMergeClassifiedMutationAllowed(userId, tx)");
+    expect(pointsGuard).toContain("lockPointsAccountRowsForUpdate([userId], tx)");
+    expect(pointsGuard).not.toContain("lockLegacyAccountMergeUsersExclusive");
+  });
+
+  it("missing dedicated guard fails closed rather than lazily manufacturing open state", () => {
+    const guardLocks = bodyBetween(
+      "export async function lockAccountMutationGuardRows",
+      "async function lockLegacyAccountMergeUsersExclusive"
     );
+    expect(guardLocks).toContain("throw new AccountMutationGuardMissingError(userId)");
+    expect(guardLocks).not.toContain("insert(accountMutationGuards)");
   });
 });

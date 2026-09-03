@@ -90,6 +90,7 @@ function makeDb(rows: Record<string, any[]>, onLock?: (store: Record<string, any
         .join("");
       if (queryText.includes("accountMergeCases")) return [[]];
       if (queryText.includes("FROM users")) return [[{ id: 1 }]];
+      if (queryText.includes("FROM pointsAccounts")) return [[{ userId: 9 }]];
       onLock?.(store);
       snapshot = JSON.parse(JSON.stringify(store));
       return [[{ id: 1 }]];
@@ -188,6 +189,7 @@ function orderRows(paymentStatus = "pending_review") {
     paymentSlipClaims: [],
     orderHistory: [],
     purchases: [],
+    pointsAccounts: [{ userId: 9, balance: "0.00", version: 0 }],
     pointsTransactions: [],
     paymentSlipReviewResolutions: [],
     orderItems: [],
@@ -354,7 +356,7 @@ describe("the guard is ONE shared primitive, not per-caller", () => {
     const start = orderCode.indexOf("export async function lockAndRequireReviewablePayment(");
     expect(start).toBeGreaterThan(-1);
     const body = orderCode.slice(start, start + 1800);
-    const lockIdx = body.indexOf("await db.lockPaymentForUpdate(paymentId, tx)");
+    const lockIdx = body.indexOf("db.lockPaymentForUpdate(paymentId, tx)");
     const reloadIdx = body.indexOf("const payment = await db.getPaymentById(paymentId, tx)");
     const guardIdx = body.indexOf("isReviewablePaymentStatus(payment.status as string)");
     const throwIdx = body.indexOf("throw new PaymentNotReviewableError(paymentId, String(payment.status))");
@@ -367,9 +369,7 @@ describe("the guard is ONE shared primitive, not per-caller", () => {
   it("approvePaymentInTx calls the shared primitive rather than reimplementing it", () => {
     const start = orderCode.indexOf("async function approvePaymentInTx(");
     const body = orderCode.slice(start, start + 3000);
-    expect(body).toMatch(
-      /await lockAndRequireReviewablePayment\(\s*paymentId,\s*tx,\s*undefined,\s*"points_exclusive"/
-    );
+    expect(body).toMatch(/await lockAndRequireReviewablePayment\(paymentId, tx\)/);
     // It must NOT contain its own copy of the guard - only ONE call site.
     expect(body).not.toMatch(/isReviewablePaymentStatus\(payment\.status as string\)/);
   });
@@ -379,7 +379,7 @@ describe("the guard is ONE shared primitive, not per-caller", () => {
     expect(txIdx).toBeGreaterThan(-1);
     const body = slipCode.slice(txIdx, txIdx + 700);
     expect(body).toMatch(
-      /await orderService\.lockAndRequireReviewablePayment\(\s*payment\.id,\s*tx,\s*publishedSlipVersion,\s*"points_exclusive"/
+      /await orderService\.lockAndRequireReviewablePayment\(\s*payment\.id,\s*tx,\s*publishedSlipVersion\s*\)/
     );
   });
 
@@ -389,9 +389,9 @@ describe("the guard is ONE shared primitive, not per-caller", () => {
     // IPE-004 widened this window: approvePaymentInTx grew a new
     // known_collision guard clause (LEGACY_KNOWN_COLLISION), pushing
     // finalizeOrderCompletion's call site further from the function start.
-    const orderBody = orderCode.slice(orderStart, orderStart + 5400);
+    const orderBody = orderCode.slice(orderStart, orderStart + 9000);
     const orderGuardIdx = orderBody.indexOf("await lockAndRequireReviewablePayment(");
-    const orderClaimIdx = orderBody.indexOf("const claim = await claimSlip(");
+    const orderClaimIdx = orderBody.indexOf("const claim = await atOrderPaymentApprovalStage");
     const orderApproveIdx = orderBody.indexOf("ApprovalService.approvePaymentWithSource");
     const orderFinalizeIdx = orderBody.indexOf("await finalizeOrderCompletion(");
     expect(orderClaimIdx).toBeGreaterThan(orderGuardIdx);

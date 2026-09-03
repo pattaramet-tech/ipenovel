@@ -1,5 +1,6 @@
 import {
   int,
+  bigint,
   mysqlEnum,
   mysqlTable,
   text,
@@ -626,6 +627,31 @@ export type CouponUsage = typeof couponUsages.$inferSelect;
 export type InsertCouponUsage = typeof couponUsages.$inferInsert;
 
 /**
+ * Authoritative points balance + serialization row (IPE-021-D / 0046).
+ * Exactly one row exists for every user. The ledger stays immutable history,
+ * while this row is the live balance source and the exclusive points mutex.
+ */
+export const pointsAccounts = mysqlTable(
+  "pointsAccounts",
+  {
+    userId: int("userId").primaryKey(),
+    balance: decimal("balance", { precision: 10, scale: 2 }).default("0.00").notNull(),
+    version: bigint("version", { mode: "number", unsigned: true }).default(0).notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    userFk: foreignKey({
+      name: "pointsAccounts_userId_fk",
+      columns: [table.userId],
+      foreignColumns: [users.id],
+    }).onDelete("cascade"),
+  })
+);
+
+export type PointsAccount = typeof pointsAccounts.$inferSelect;
+export type InsertPointsAccount = typeof pointsAccounts.$inferInsert;
+
+/**
  * Points system transactions
  * Conversion: 100 currency units = 1 point
  * Redemption: 1 point = 1 currency unit
@@ -640,6 +666,10 @@ export const pointsTransactions = mysqlTable(
     balanceAfter: decimal("balanceAfter", { precision: 10, scale: 2 }).notNull(),
     referenceType: varchar("referenceType", { length: 50 }), // e.g., "order", "refund"
     referenceId: int("referenceId"), // e.g., orderId
+    // Optional stable idempotency identity for a financial effect. NULL keeps
+    // legacy/admin free-form adjustments backward compatible; deterministic
+    // runtime effects populate this and are UNIQUE per user.
+    effectKey: varchar("effectKey", { length: 191 }),
     note: text("note"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
@@ -648,6 +678,10 @@ export const pointsTransactions = mysqlTable(
     referenceIdx: index("pointsTransactions_referenceType_referenceId_idx").on(
       table.referenceType,
       table.referenceId
+    ),
+    userEffectUnique: uniqueIndex("pointsTransactions_userId_effectKey_unique").on(
+      table.userId,
+      table.effectKey
     ),
   })
 );
@@ -1407,6 +1441,45 @@ export const accountRecoveryAuditLogs = mysqlTable(
 
 export type AccountRecoveryAuditLog = typeof accountRecoveryAuditLogs.$inferSelect;
 export type InsertAccountRecoveryAuditLog = typeof accountRecoveryAuditLogs.$inferInsert;
+
+/**
+ * IPE-021-D dedicated rendezvous row for Account Merge and every classified
+ * account mutation. This deliberately separates merge exclusion from the
+ * mutable `users` profile row so V2 approvals can coordinate with Account
+ * Merge without turning profile/auth writes into the financial mutex.
+ *
+ * Exactly one row must exist for every user. Migration 0045 backfills the
+ * complete existing user set from authoritative accountMergeCases state;
+ * production user-provisioning paths create this row in the same transaction
+ * as a new user. Mutation guards fail closed when it is missing - no lazy
+ * "assume open" creation is allowed at the financial boundary.
+ *
+ * `generation` changes only when merge exclusion changes (open -> guarded or
+ * guarded -> open). A prepared V2 approval can therefore bind to both state
+ * and generation without depending on users.updatedAt or a lossy merge-case
+ * status snapshot.
+ */
+export const accountMutationGuards = mysqlTable(
+  "accountMutationGuards",
+  {
+    userId: int("userId").primaryKey(),
+    generation: bigint("generation", { mode: "number", unsigned: true }).default(0).notNull(),
+    mergeState: mysqlEnum("mergeState", ["open", "merge_guarded"]).default("open").notNull(),
+    activeMergeCaseId: int("activeMergeCaseId"),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    activeMergeCaseUnique: uniqueIndex("accountMutationGuards_activeMergeCaseId_unique").on(table.activeMergeCaseId),
+    userFk: foreignKey({
+      name: "accountMutationGuards_userId_fk",
+      columns: [table.userId],
+      foreignColumns: [users.id],
+    }).onDelete("cascade"),
+  })
+);
+
+export type AccountMutationGuard = typeof accountMutationGuards.$inferSelect;
+export type InsertAccountMutationGuard = typeof accountMutationGuards.$inferInsert;
 
 /**
  * Advanced Account Merge - Phase 1 (IPE-003) Foundation.
