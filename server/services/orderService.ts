@@ -11,8 +11,19 @@ import { claimSlip, describeClaimFailure } from "./slipClaimService";
 import { computeSlipFileHash, computeTrustedLegacySlipFileHash } from "./slipFileHashService";
 import { fileHashFromExtractedData } from "./legacySlipCompatibilityService";
 import { isLegacyStorageUrl } from "@shared/privateFileRef";
+import {
+  atOrderPaymentApprovalStage,
+  type OrderPaymentApprovalLockStage,
+} from "../helpers/orderPaymentApprovalStage";
 
 const COUPON_OWNERSHIP_DENIAL_PATTERNS = [/^coupon not found$/i, /belongs to another user/i];
+
+// Approval holds the canonical users + payment locks while proving the exact
+// current slip bytes. Keep that proof inside the transaction, but fail closed
+// faster than the generic 10s hash timeout so a slow object-store read cannot
+// monopolize those DB locks for the full storage timeout.
+export const ORDER_APPROVAL_SLIP_HASH_TIMEOUT_MS = 3_000;
+const ORDER_APPROVAL_SLOW_HASH_LOG_MS = 1_000;
 
 /**
  * Maps an internal coupon-validation error to a client-safe message.
@@ -492,12 +503,16 @@ export async function lockAndRequireReviewablePayment(
   const ownerOrder = await db.getOrderById(ownerPayment.orderId, tx);
   if (!ownerOrder?.userId) throw new Error("Payment order owner not found");
   if (accountLockMode === "points_exclusive") {
-    await db.assertAccountMergePointsMutationAllowed(ownerOrder.userId, tx);
+    await atOrderPaymentApprovalStage("points_user_lock", () =>
+      db.assertAccountMergePointsMutationAllowed(ownerOrder.userId, tx)
+    );
   } else {
     await db.assertAccountMergeClassifiedMutationAllowed(ownerOrder.userId, tx);
   }
 
-  await db.lockPaymentForUpdate(paymentId, tx);
+  await atOrderPaymentApprovalStage("payment_lock", () =>
+    db.lockPaymentForUpdate(paymentId, tx)
+  );
 
   const payment = await db.getPaymentById(paymentId, tx);
   if (!payment) {
@@ -622,9 +637,21 @@ async function approvePaymentInTx(
     // the exact historical Manus CDN hostname is eligible for a bounded,
     // redirect-free current-byte hash. Everything else fails closed below.
     // Private `r2p:` refs continue through the existing mandatory re-hash.
+    const currentByteStartedAt = Date.now();
     const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)
-      ? await computeTrustedLegacySlipFileHash(payment.slipImageUrl)
-      : await computeSlipFileHash(payment.slipImageUrl);
+      ? await computeTrustedLegacySlipFileHash(payment.slipImageUrl, {
+          timeoutMs: ORDER_APPROVAL_SLIP_HASH_TIMEOUT_MS,
+        })
+      : await computeSlipFileHash(payment.slipImageUrl, {
+          timeoutMs: ORDER_APPROVAL_SLIP_HASH_TIMEOUT_MS,
+        });
+    const currentByteDurationMs = Date.now() - currentByteStartedAt;
+    if (currentByteDurationMs >= ORDER_APPROVAL_SLOW_HASH_LOG_MS) {
+      console.warn(
+        `[OrderPaymentApproval] stage=current_byte_hash durationMs=${currentByteDurationMs} ` +
+          `storage=${isLegacyStorageUrl(payment.slipImageUrl) ? "legacy" : "private"}`
+      );
+    }
 
     if (!currentFileHash) {
       // Unavailability is uncertainty, never proof of stability - fail
@@ -652,21 +679,23 @@ async function approvePaymentInTx(
     identifiers.fileHash = currentFileHash;
   }
 
-  const claim = await claimSlip(
-    {
-      sourceType: "order_payment",
-      sourceId: payment.id,
-      userId: order.userId,
-      identifiers,
-      semanticFingerprint,
-      // Derived from the PERSISTED extraction, for the legacy lookup only.
-      referenceRawForLegacyLookup: getRawReferenceForLegacyLookup(persistedExtractedData),
-      // BOUND to the exact ambiguity the admin adjudicated, never a bare
-      // boolean: claimSlip waives it only when the fold it finds from
-      // transaction-visible state is identical.
-      legacyCaseAmbiguityResolution: options?.legacyCaseAmbiguityResolution,
-    },
-    tx
+  const claim = await atOrderPaymentApprovalStage("slip_claim", () =>
+    claimSlip(
+      {
+        sourceType: "order_payment",
+        sourceId: payment.id,
+        userId: order.userId,
+        identifiers,
+        semanticFingerprint,
+        // Derived from the PERSISTED extraction, for the legacy lookup only.
+        referenceRawForLegacyLookup: getRawReferenceForLegacyLookup(persistedExtractedData),
+        // BOUND to the exact ambiguity the admin adjudicated, never a bare
+        // boolean: claimSlip waives it only when the fold it finds from
+        // transaction-visible state is identical.
+        legacyCaseAmbiguityResolution: options?.legacyCaseAmbiguityResolution,
+      },
+      tx
+    )
   );
 
   if (!claim.claimed && claim.reason === "legacy_scan_unresolved") {
@@ -734,48 +763,60 @@ async function approvePaymentInTx(
   // Use ApprovalService for manual approval with metadata
   const approvedByNum = parseInt(approvedBy, 10);
   if (!isNaN(approvedByNum)) {
-    await ApprovalService.approvePaymentWithSource(paymentId, "manual", {
-      adminId: approvedByNum,
-      adminLabel: adminLabel || "Admin",
-      reviewedAt: new Date(),
-    }, tx);
+    await atOrderPaymentApprovalStage("payment_update", () =>
+      ApprovalService.approvePaymentWithSource(paymentId, "manual", {
+        adminId: approvedByNum,
+        adminLabel: adminLabel || "Admin",
+        reviewedAt: new Date(),
+      }, tx)
+    );
   } else {
     // Fallback if admin ID is invalid
-    await db.updatePayment(paymentId, {
-      status: "approved",
-    }, tx);
+    await atOrderPaymentApprovalStage("payment_update", () =>
+      db.updatePayment(paymentId, {
+        status: "approved",
+      }, tx)
+    );
   }
 
   // Update order status and payment status
-  await db.updateOrder(order.id, {
-    status: "approved",
-    paymentStatus: "approved"
-  }, tx);
+  await atOrderPaymentApprovalStage("order_update", () =>
+    db.updateOrder(order.id, {
+      status: "approved",
+      paymentStatus: "approved"
+    }, tx)
+  );
 
   // Also update reviewedByUserId for backward compatibility
   if (!isNaN(approvedByNum)) {
-    await db.approvePayment(paymentId, approvedByNum, tx);
+    await atOrderPaymentApprovalStage("payment_update", () =>
+      db.approvePayment(paymentId, approvedByNum, tx)
+    );
   }
 
   // Record order history
-  await db.recordOrderHistory({
-    orderId: order.id,
-    action: "payment_approved",
-    fromStatus: order.status,
-    toStatus: "approved",
-    actorUserId: approvedByNum || undefined,
-    note: "Payment approved by admin",
-  }, tx);
+  await atOrderPaymentApprovalStage("order_history", () =>
+    db.recordOrderHistory({
+      orderId: order.id,
+      action: "payment_approved",
+      fromStatus: order.status,
+      toStatus: "approved",
+      actorUserId: approvedByNum || undefined,
+      note: "Payment approved by admin",
+    }, tx)
+  );
 
   // Finalize order completion (points, purchases, coupon usage)
   if (order.userId) {
-    await finalizeOrderCompletion(order.id, order.userId, tx);
+    await finalizeOrderCompletion(order.id, order.userId, tx, true);
   }
 
   // Audit a legacy-case resolution INSIDE this transaction, after
   // finalization, so the record and the money commit or roll back together.
   if (options?.auditResolution) {
-    await options.auditResolution(tx);
+    await atOrderPaymentApprovalStage("legacy_resolution_audit", () =>
+      options.auditResolution!(tx)
+    );
   }
 
   return { message: `Payment ${paymentId} approved successfully` };
@@ -786,11 +827,22 @@ async function approvePaymentInTx(
  * This is the single source of truth for all order completion flows (manual slip, wallet, etc.)
  * Idempotent: safe to call multiple times for the same order
  */
-export async function finalizeOrderCompletion(orderId: number, userId: number, tx?: any): Promise<void> {
+export async function finalizeOrderCompletion(
+  orderId: number,
+  userId: number,
+  tx?: any,
+  approvalDiagnostics = false
+): Promise<void> {
   const order = await db.getOrderById(orderId, tx);
   if (!order) {
     throw new Error(`Order ${orderId} not found`);
   }
+
+  const runFinalizeStage = <T>(
+    stage: OrderPaymentApprovalLockStage,
+    fn: () => Promise<T>
+  ): Promise<T> =>
+    approvalDiagnostics ? atOrderPaymentApprovalStage(stage, fn) : fn();
 
   // 1. Deduct redeemed points (if any) - only if not already deducted
   const pointsDiscountNum = normalizeMoneyAmount(order.pointsDiscountAmount?.toString() || "0", "pointsDiscountAmount");
@@ -802,7 +854,8 @@ export async function finalizeOrderCompletion(orderId: number, userId: number, t
     // deducted" and both insert a redeem row. When this function is called
     // with no outer tx (e.g. OCR auto-approval), withUserPointsLock opens
     // its own transaction scoped to just this section.
-    await db.withUserPointsLock(userId, tx, async (lockedTx) => {
+    await runFinalizeStage("finalize_points_redeem", () =>
+      db.withUserPointsLock(userId, tx, async (lockedTx) => {
       const alreadyDeducted = await db.hasPointsBeenRedeemedForOrder(orderId, lockedTx);
       if (alreadyDeducted) return;
       const currentBalanceStr = await db.getUserPointsBalance(userId, lockedTx);
@@ -817,11 +870,13 @@ export async function finalizeOrderCompletion(orderId: number, userId: number, t
         referenceId: orderId,
         note: `Points redeemed for order ${order.orderNumber}`,
       }, lockedTx);
-    });
+      })
+    );
   }
 
   // 2. Create purchase records (idempotent: skip if already purchased)
-  const orderItems = await db.getOrderItems(orderId, tx);
+  await runFinalizeStage("finalize_purchases", async () => {
+    const orderItems = await db.getOrderItems(orderId, tx);
   for (const item of orderItems) {
     const episode = (item as any).episode || await db.getEpisodeById(item.episodeId, tx);
     if (episode && userId) {
@@ -832,11 +887,16 @@ export async function finalizeOrderCompletion(orderId: number, userId: number, t
     }
   }
 
+  });
+
   // 3. Award loyalty points (only once per order)
-  await awardPointsForOrder(orderId, userId, order.totalAmount.toString(), tx);
+  await runFinalizeStage("finalize_points_award", () =>
+    awardPointsForOrder(orderId, userId, order.totalAmount.toString(), tx)
+  );
 
   // 4. Record coupon usage (if coupon was used)
-  if (order.couponCodeSnapshot) {
+  await runFinalizeStage("finalize_coupon_usage", async () => {
+    if (order.couponCodeSnapshot) {
     const coupon = await db.getCouponByCode(order.couponCodeSnapshot, tx);
     if (coupon) {
       await db.recordCouponUsage(coupon.id, userId, orderId, tx);
@@ -845,8 +905,9 @@ export async function finalizeOrderCompletion(orderId: number, userId: number, t
       // that reward type, so both are safe to call unconditionally.
       await db.markSportsRewardCouponUsed(coupon.id, userId, tx);
       await db.markDailyCheckinCouponUsed(coupon.id, userId, tx);
+      }
     }
-  }
+  });
 }
 
 /**

@@ -18,10 +18,10 @@ describe("IPE-020 order approval lock contract", () => {
     );
     const body = orderCode.slice(start, start + 3000);
     const exclusive = body.indexOf(
-      "await db.assertAccountMergePointsMutationAllowed(ownerOrder.userId, tx)"
+      "db.assertAccountMergePointsMutationAllowed(ownerOrder.userId, tx)"
     );
     const payment = body.indexOf(
-      "await db.lockPaymentForUpdate(paymentId, tx)"
+      "db.lockPaymentForUpdate(paymentId, tx)"
     );
 
     expect(exclusive).toBeGreaterThan(-1);

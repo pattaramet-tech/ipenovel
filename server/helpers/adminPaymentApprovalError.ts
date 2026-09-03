@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { looksLikeRawDatabaseError } from "../_core/trpc";
 import { hasDatabaseDriverMetadata, isLockWaitTimeout } from "./databaseErrorClassifier";
 import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
+import { getOrderPaymentApprovalLockStage } from "./orderPaymentApprovalStage";
 
 export const ORDER_PAYMENT_BUSY_MESSAGE =
   "This payment is busy with another request. Please wait a moment and try again.";
@@ -26,7 +27,11 @@ export function mapOrderPaymentApprovalError(error: unknown): TRPCError {
   if (error instanceof TRPCError) return error;
 
   if (isLockWaitTimeout(error)) {
-    return lockTimeoutError(error, "Approval", "approval_transaction");
+    return lockTimeoutError(
+      error,
+      "Approval",
+      getOrderPaymentApprovalLockStage(error) ?? "approval_transaction"
+    );
   }
 
   const message = error instanceof Error ? error.message : String((error as any)?.message ?? "");
