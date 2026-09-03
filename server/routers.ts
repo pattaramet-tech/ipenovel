@@ -1658,30 +1658,8 @@ export const appRouter = router({
               String(ctx.user.id),
               ctx.user.name || "Admin"
             );
-          } catch (error: any) {
-            // See admin.payments.approve above - a claimed slip is a
-            // CONFLICT the admin can act on, not a malformed request.
-            if (typeof error?.message === "string" && error.message.startsWith("SLIP_ALREADY_CLAIMED")) {
-              throw new TRPCError({ code: "CONFLICT", message: error.message });
-            }
-            // No strong identifier: normal Approve must not silently bypass
-            // anti-replay. PRECONDITION_FAILED so the UI can distinguish
-            // "someone else owns this slip" from "this slip cannot be
-            // protected at all and needs the legacy override".
-            if (typeof error?.message === "string" && error.message.startsWith("NO_STRONG_IDENTIFIER")) {
-              throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
-            }
-            // An unresolved legacy case ambiguity. Distinct from a duplicate:
-            // the admin must choose reject-as-duplicate or approve-as-distinct
-            // via resolveLegacyCaseAmbiguity. Normal Approve must neither
-            // bypass it nor fail forever.
-            if (
-              typeof error?.message === "string" &&
-              error.message.startsWith("LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION")
-            ) {
-              throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
-            }
-            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to approve payment. Please try again." });
+          } catch (error) {
+            throw mapOrderPaymentApprovalError(error);
           }
           return { success: true };
         }),
