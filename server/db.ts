@@ -6086,7 +6086,7 @@ export async function lockUserForPoints(userId: number, tx?: any) {
   // withUserPointsLock always supplies a transaction (opening one itself when
   // necessary), as do the direct sports/check-in callers.
   if (tx) {
-    await assertAccountMergeClassifiedMutationAllowed(userId, tx);
+    await assertAccountMergePointsMutationAllowed(userId, tx);
     return { id: userId };
   }
 
@@ -8193,6 +8193,27 @@ export async function lockAccountMergeUserRows(userIds: number[], tx: any): Prom
 }
 
 /**
+ * Shared side of the Account Merge barrier for ordinary classified writes.
+ * Ordinary writes only need to exclude the merge lifecycle; they do not need
+ * to exclude one another. Using the exclusive lifecycle lock here made the
+ * users row a per-user global mutex, so a slow approval blocked cart writes.
+ */
+async function lockAccountMergeMutationUserRows(userIds: number[], tx: any): Promise<number[]> {
+  const ordered = Array.from(new Set(userIds)).sort((a, b) => a - b);
+  if (ordered.length === 0) throw new Error("At least one user id is required for account-merge locking");
+
+  for (const userId of ordered) {
+    if (!Number.isInteger(userId) || userId <= 0) throw new Error("Invalid user id for account-merge locking");
+    const rows = unwrapMysqlRows(
+      await tx.execute(sql`SELECT id FROM users WHERE id = ${userId} LOCK IN SHARE MODE`)
+    );
+    if (rows.length !== 1) throw new Error(`User ${userId} not found while acquiring account-merge lock`);
+  }
+
+  return ordered;
+}
+
+/**
  * Locking read of every merge case for one Source. This MUST be a FOR UPDATE
  * read rather than a plain ORM SELECT: after waiting behind another holder of
  * the Source users-row lock, TiDB/MySQL-compatible snapshot semantics can
@@ -8208,6 +8229,29 @@ export async function getAccountMergeCasesForSourceForUpdate(sourceUserId: numbe
   );
 }
 
+/** Current locking read paired with the shared ordinary-mutation barrier. */
+async function getAccountMergeCasesForSourceForShare(sourceUserId: number, tx: any) {
+  return unwrapMysqlRows(
+    await tx.execute(
+      sql`SELECT id, sourceUserId, targetUserId, status, originAccountRecoveryRequestId, createdByAdminId, startedAt, completedAt, failedAt, cancelledAt FROM accountMergeCases WHERE sourceUserId = ${sourceUserId} ORDER BY id LOCK IN SHARE MODE`
+    )
+  );
+}
+
+function assertNoActiveAccountMergeCase(sourceUserId: number, cases: any[]): void {
+  const guardedStatuses = new Set<string>(ACCOUNT_MERGE_GUARDED_STATUSES);
+  const nonCancelled = cases.filter((row: any) => row.status !== "cancelled");
+  if (nonCancelled.length > 1) {
+    throw new Error(`Inconsistent account-merge guard state for source ${sourceUserId}`);
+  }
+  const active = nonCancelled[0];
+  if (!active) return;
+  if (!guardedStatuses.has(active.status)) {
+    throw new Error(`Unknown account-merge guard state '${String(active.status)}' for source ${sourceUserId}`);
+  }
+  throw new AccountMergeWriteGuardError(sourceUserId, Number(active.id), active.status as AccountMergeGuardedStatus);
+}
+
 /**
  * Shared correctness gate for all classified Source-account mutations.
  * Locks every involved user first, then reads merge guards under lock. A
@@ -8218,22 +8262,19 @@ export async function getAccountMergeCasesForSourceForUpdate(sourceUserId: numbe
  * duplicate non-cancelled state fails closed.
  */
 export async function assertAccountMergeClassifiedMutationsAllowed(userIds: number[], tx: any): Promise<void> {
-  const ordered = await lockAccountMergeUserRows(userIds, tx);
-  const guardedStatuses = new Set<string>(ACCOUNT_MERGE_GUARDED_STATUSES);
+  const ordered = await lockAccountMergeMutationUserRows(userIds, tx);
 
   for (const sourceUserId of ordered) {
-    const cases = await getAccountMergeCasesForSourceForUpdate(sourceUserId, tx);
-    const nonCancelled = cases.filter((row: any) => row.status !== "cancelled");
-    if (nonCancelled.length > 1) {
-      throw new Error(`Inconsistent account-merge guard state for source ${sourceUserId}`);
-    }
-    const active = nonCancelled[0];
-    if (!active) continue;
-    if (!guardedStatuses.has(active.status)) {
-      throw new Error(`Unknown account-merge guard state '${String(active.status)}' for source ${sourceUserId}`);
-    }
-    throw new AccountMergeWriteGuardError(sourceUserId, Number(active.id), active.status as AccountMergeGuardedStatus);
+    const cases = await getAccountMergeCasesForSourceForShare(sourceUserId, tx);
+    assertNoActiveAccountMergeCase(sourceUserId, cases);
   }
+}
+
+/** Points live on users, so balance read-modify-write retains exclusivity. */
+async function assertAccountMergePointsMutationAllowed(userId: number, tx: any): Promise<void> {
+  await lockAccountMergeUserRows([userId], tx);
+  const cases = await getAccountMergeCasesForSourceForUpdate(userId, tx);
+  assertNoActiveAccountMergeCase(userId, cases);
 }
 
 export async function assertAccountMergeClassifiedMutationAllowed(userId: number, tx: any): Promise<void> {

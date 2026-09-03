@@ -215,6 +215,55 @@ describe.sequential("IPE-005 Account Merge guard concurrency - real database", (
     expect(ledger).toHaveLength(1);
   }, 30000);
 
+  it("two ordinary classified mutations for one user share the merge barrier instead of blocking each other", async () => {
+    const f = await createBlockedMergePair();
+    fixtures.push(f);
+    const database = await db.getDb();
+    if (!database) throw new Error("Database unavailable");
+
+    const firstHasGuard = deferred();
+    const secondHasGuard = deferred();
+    const releaseBoth = deferred();
+
+    const first = database.transaction(async (tx: any) => {
+      await db.assertAccountMergeClassifiedMutationAllowed(f.sourceId, tx);
+      firstHasGuard.resolve();
+      await releaseBoth.promise;
+    });
+
+    await firstHasGuard.promise;
+    const second = database.transaction(async (tx: any) => {
+      await db.assertAccountMergeClassifiedMutationAllowed(f.sourceId, tx);
+      secondHasGuard.resolve();
+      await releaseBoth.promise;
+    });
+
+    let sharedConcurrently = false;
+    let prepareSettled = false;
+    let prepare: ReturnType<typeof prepareAccountMergeGuard> | undefined;
+    try {
+      sharedConcurrently = await Promise.race([
+        secondHasGuard.promise.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 500)),
+      ]);
+      if (sharedConcurrently) {
+        prepare = prepareAccountMergeGuard({ requestId: f.requestId, targetUserId: f.targetId, actorAdminId: 1 })
+          .then((value) => {
+            prepareSettled = true;
+            return value;
+          });
+        await new Promise((resolve) => setTimeout(resolve, 75));
+      }
+    } finally {
+      releaseBoth.resolve();
+      await Promise.all([first, second]);
+    }
+
+    expect(sharedConcurrently).toBe(true);
+    expect(prepareSettled).toBe(false);
+    expect((await prepare)?.status).toBe("pending");
+  }, 30000);
+
   it("a classified mutation after guard activation is refused before commit and creates no ledger row", async () => {
     const f = await createBlockedMergePair();
     fixtures.push(f);
