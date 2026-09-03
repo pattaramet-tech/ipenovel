@@ -13,6 +13,7 @@ import {
 } from "./services/slipFileHashService";
 import { fileHashFromExtractedData } from "./services/legacySlipCompatibilityService";
 import { isLegacyStorageUrl, isPrivateObjectRef } from "@shared/privateFileRef";
+import { atWalletApprovalStage } from "./helpers/walletApprovalStage";
 import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql, gt, lt, ne, like } from "drizzle-orm";
 
 /**
@@ -30,6 +31,13 @@ export class WalletSlipClaimError extends Error {
     this.code = code;
   }
 }
+
+// Wallet approval holds the shared account-merge users-row barrier plus the
+// top-up row while proving current slip bytes. Keep the integrity proof inside
+// the transaction, but fail closed sooner than the generic 10s storage hash
+// timeout so a slow object-store read cannot hold those DB locks for 10s.
+export const WALLET_APPROVAL_SLIP_HASH_TIMEOUT_MS = 3_000;
+const WALLET_APPROVAL_SLOW_HASH_LOG_MS = 1_000;
 
 const WALLET_BREAK_GLASS_BLOCKING_REVIEW_REASONS = new Set([
   "DUPLICATE_REFERENCE",
@@ -4429,9 +4437,13 @@ export async function approveWalletTopup(
   // REAL DATABASE TRANSACTION: All operations succeed or all rollback.
   // IPE-005 lock hierarchy is users/merge-guard FIRST, subject row SECOND.
   return await db.transaction(async (tx) => {
-    await assertAccountMergeClassifiedMutationAllowed(ownerCandidate.userId, tx);
+    await atWalletApprovalStage("wallet_user_guard", () =>
+      assertAccountMergeClassifiedMutationAllowed(ownerCandidate.userId, tx)
+    );
     // Step 0: LOCK the subject row only after the Source users-row guard.
-    await lockWalletTopupForUpdate(topupId, tx);
+    await atWalletApprovalStage("wallet_topup_lock", () =>
+      lockWalletTopupForUpdate(topupId, tx)
+    );
 
     // Step 1: Fetch topup INSIDE transaction for consistency
     const topupResult = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
@@ -4528,9 +4540,21 @@ export async function approveWalletTopup(
       // bypass current-file integrity when a file is right there to check.
       let currentFileHash: string | undefined;
       if (topup.slipImageUrl) {
+        const currentByteStartedAt = Date.now();
         currentFileHash = isLegacyStorageUrl(topup.slipImageUrl as string)
-          ? await computeTrustedLegacySlipFileHash(topup.slipImageUrl as string)
-          : await computeSlipFileHash(topup.slipImageUrl as string);
+          ? await computeTrustedLegacySlipFileHash(topup.slipImageUrl as string, {
+              timeoutMs: WALLET_APPROVAL_SLIP_HASH_TIMEOUT_MS,
+            })
+          : await computeSlipFileHash(topup.slipImageUrl as string, {
+              timeoutMs: WALLET_APPROVAL_SLIP_HASH_TIMEOUT_MS,
+            });
+        const currentByteDurationMs = Date.now() - currentByteStartedAt;
+        if (currentByteDurationMs >= WALLET_APPROVAL_SLOW_HASH_LOG_MS) {
+          console.warn(
+            `[WalletApproval] stage=wallet_current_byte_hash durationMs=${currentByteDurationMs} ` +
+              `storage=${isLegacyStorageUrl(topup.slipImageUrl as string) ? "legacy" : "private"}`
+          );
+        }
         const persistedFileHash = fileHashFromExtractedData(persistedExtractedData);
 
         if (!currentFileHash && !breakGlassRequested) {
@@ -4643,29 +4667,31 @@ export async function approveWalletTopup(
       }
 
       if (!breakGlassRequested) {
-      const claim = await claimSlip(
-        {
-          sourceType: "wallet_topup",
-          sourceId: topupId,
-          userId: topup.userId,
-          identifiers,
-          semanticFingerprint,
-          // Legacy lookup only - the claim itself still uses the
-          // case-preserving hash derived above.
-          referenceRawForLegacyLookup: getRawReferenceForLegacyLookup(persistedExtractedData),
-          // Set ONLY by the audited resolution flow, and BOUND to the exact
-          // ambiguity a human adjudicated - not a bare boolean. claimSlip
-          // waives it only if the fold it finds from transaction-visible
-          // state is identical (same alias, same matched source); anything
-          // else returns legacy_case_ambiguity_changed. Every exact UNIQUE
-          // identifier below is still claimed atomically, so an exact
-          // reference/file/QR duplicate still blocks.
-          legacyCaseAmbiguityResolution: options?.legacyCaseAmbiguityResolution,
-          legacyFileAxisRiskResolution: fileAxisRiskRequested && currentFileHash
-            ? { expectedFileHash: currentFileHash }
-            : undefined,
-        },
-        tx
+      const claim = await atWalletApprovalStage("wallet_slip_claim", () =>
+        claimSlip(
+          {
+            sourceType: "wallet_topup",
+            sourceId: topupId,
+            userId: topup.userId,
+            identifiers,
+            semanticFingerprint,
+            // Legacy lookup only - the claim itself still uses the
+            // case-preserving hash derived above.
+            referenceRawForLegacyLookup: getRawReferenceForLegacyLookup(persistedExtractedData),
+            // Set ONLY by the audited resolution flow, and BOUND to the exact
+            // ambiguity a human adjudicated - not a bare boolean. claimSlip
+            // waives it only if the fold it finds from transaction-visible
+            // state is identical (same alias, same matched source); anything
+            // else returns legacy_case_ambiguity_changed. Every exact UNIQUE
+            // identifier below is still claimed atomically, so an exact
+            // reference/file/QR duplicate still blocks.
+            legacyCaseAmbiguityResolution: options?.legacyCaseAmbiguityResolution,
+            legacyFileAxisRiskResolution: fileAxisRiskRequested && currentFileHash
+              ? { expectedFileHash: currentFileHash }
+              : undefined,
+          },
+          tx
+        )
       );
 
       if (!claim.claimed && claim.reason === "legacy_scan_unresolved") {
@@ -4735,23 +4761,25 @@ export async function approveWalletTopup(
     // Step 2: Conditional status update - ONLY update if still pending or pending_review (idempotency)
     // CRITICAL: Only the winning concurrent request may proceed
     // Losing requests will have 0 rows affected and must abort immediately
-    const updateResult = await tx
-      .update(walletTopups)
-      .set({
-        status: "approved" as any,
-        reviewedByUserId: adminUserId,
-        reviewedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(walletTopups.id, topupId),
-          or(
-            eq(walletTopups.status, "pending" as any),
-            eq(walletTopups.status, "pending_review" as any)
+    const updateResult = await atWalletApprovalStage("wallet_topup_update", () =>
+      tx
+        .update(walletTopups)
+        .set({
+          status: "approved" as any,
+          reviewedByUserId: adminUserId,
+          reviewedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(walletTopups.id, topupId),
+            or(
+              eq(walletTopups.status, "pending" as any),
+              eq(walletTopups.status, "pending_review" as any)
+            )
           )
         )
-      );
+    );
     
     // CRITICAL: Check if update actually affected a row
     // Drizzle returns [ResultSetHeader, undefined] where ResultSetHeader has affectedRows
@@ -4774,12 +4802,14 @@ export async function approveWalletTopup(
     let account = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, topup.userId)).limit(1);
     if (!account || account.length === 0) {
       // Create wallet account if it doesn't exist (atomic within transaction)
-      await tx.insert(walletAccounts).values({
-        userId: topup.userId,
-        balance: "0.00",
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
+      await atWalletApprovalStage("wallet_balance_update", () =>
+        tx.insert(walletAccounts).values({
+          userId: topup.userId,
+          balance: "0.00",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+      );
       // Fetch the newly created account
       account = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, topup.userId)).limit(1);
       if (!account || account.length === 0) {
@@ -4791,50 +4821,58 @@ export async function approveWalletTopup(
     const newBalance = (currentBalance + creditAmountNum).toFixed(2);
 
     // Step 4: Update wallet balance (within transaction)
-    await tx
-      .update(walletAccounts)
-      .set({ balance: newBalance, updatedAt: new Date() })
-      .where(eq(walletAccounts.userId, topup.userId));
+    await atWalletApprovalStage("wallet_balance_update", () =>
+      tx
+        .update(walletAccounts)
+        .set({ balance: newBalance, updatedAt: new Date() })
+        .where(eq(walletAccounts.userId, topup.userId))
+    );
 
     // Step 5: Create wallet transaction record (within transaction)
-    await tx.insert(walletTransactions).values({
-      userId: topup.userId,
-      type: "topup_approved" as any,
-      amount: creditAmount,
-      balanceBefore: account[0].balance,
-      balanceAfter: newBalance,
-      referenceType: "topup",
-      referenceId: topupId,
-      note: breakGlassRequested
-        ? `HIGH-RISK LEGACY BREAK-GLASS approval by admin ${adminUserId}. Reason: ${legacyBreakGlassReason}`
-        : fileAxisRiskRequested
-          ? `HIGH-RISK LEGACY FILE-AXIS RISK OVERRIDE approval by admin ${adminUserId}. Exact current fileHash was claimed atomically. Reason: ${legacyFileAxisRiskReason}`
-          : undefined,
-    });
+    await atWalletApprovalStage("wallet_transaction_insert", () =>
+      tx.insert(walletTransactions).values({
+        userId: topup.userId,
+        type: "topup_approved" as any,
+        amount: creditAmount,
+        balanceBefore: account[0].balance,
+        balanceAfter: newBalance,
+        referenceType: "topup",
+        referenceId: topupId,
+        note: breakGlassRequested
+          ? `HIGH-RISK LEGACY BREAK-GLASS approval by admin ${adminUserId}. Reason: ${legacyBreakGlassReason}`
+          : fileAxisRiskRequested
+            ? `HIGH-RISK LEGACY FILE-AXIS RISK OVERRIDE approval by admin ${adminUserId}. Exact current fileHash was claimed atomically. Reason: ${legacyFileAxisRiskReason}`
+            : undefined,
+      })
+    );
 
     // Step 6: Create topup log (within transaction)
-    await tx.insert(topupLogs).values({
-      userId: topup.userId,
-      amount: topup.requestedAmount,
-      bonus: bonusAmount,
-      total: creditAmount,
-      method: "slip" as any,
-      reference: `topup-${topupId}`,
-      note: breakGlassRequested
-        ? `HIGH-RISK LEGACY BREAK-GLASS: ${legacyBreakGlassReason}`
-        : fileAxisRiskRequested
-          ? `HIGH-RISK LEGACY FILE-AXIS RISK OVERRIDE: exact current fileHash claimed. ${legacyFileAxisRiskReason}`
-          : `Slip approved by admin`,
-      createdBy: adminUserId,
-      createdAt: new Date(),
-    });
+    await atWalletApprovalStage("wallet_topup_log", () =>
+      tx.insert(topupLogs).values({
+        userId: topup.userId,
+        amount: topup.requestedAmount,
+        bonus: bonusAmount,
+        total: creditAmount,
+        method: "slip" as any,
+        reference: `topup-${topupId}`,
+        note: breakGlassRequested
+          ? `HIGH-RISK LEGACY BREAK-GLASS: ${legacyBreakGlassReason}`
+          : fileAxisRiskRequested
+            ? `HIGH-RISK LEGACY FILE-AXIS RISK OVERRIDE: exact current fileHash claimed. ${legacyFileAxisRiskReason}`
+            : `Slip approved by admin`,
+        createdBy: adminUserId,
+        createdAt: new Date(),
+      })
+    );
 
     // Step 7: Audit a legacy-case resolution INSIDE this transaction, so the
     // successful resolution record and the wallet credit commit together or
     // roll back together. If anything above failed, no resolution row exists
     // and the admin can retry.
     if (options?.auditResolution) {
-      await options.auditResolution(tx);
+      await atWalletApprovalStage("wallet_resolution_audit", () =>
+        options.auditResolution!(tx)
+      );
     }
 
     // Step 8: Return updated topup

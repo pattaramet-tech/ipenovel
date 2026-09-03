@@ -127,5 +127,44 @@ describe.sequential(
 
       expect(recheckHasSharedUserLock).toBe(true);
     }, 30_000);
+
+    it("a wallet-style shared users-row guard blocks order points exclusivity until the wallet transaction releases", async () => {
+      const user = await createTestUser();
+      const order = await createTestOrder(user.id);
+      const payment = await createTestPayment(order.id);
+      fixtures.push({ userId: user.id, orderId: order.id, paymentId: payment.id });
+
+      const database = await db.getDb();
+      if (!database) throw new Error("Database unavailable");
+
+      const walletHasSharedGuard = deferred();
+      const releaseWallet = deferred();
+      let orderHasExclusiveUserLock = false;
+
+      const wallet = database.transaction(async (tx: any) => {
+        // Exact users-row guard used at the start of approveWalletTopup.
+        await db.assertAccountMergeClassifiedMutationAllowed(user.id, tx);
+        walletHasSharedGuard.resolve();
+        await releaseWallet.promise;
+      });
+
+      await walletHasSharedGuard.promise;
+
+      const orderApproval = database.transaction(async (tx: any) => {
+        await db.assertAccountMergePointsMutationAllowed(user.id, tx);
+        orderHasExclusiveUserLock = true;
+      });
+
+      try {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        expect(orderHasExclusiveUserLock).toBe(false);
+      } finally {
+        releaseWallet.resolve();
+        await wallet;
+        await orderApproval;
+      }
+
+      expect(orderHasExclusiveUserLock).toBe(true);
+    }, 30_000);
   }
 );

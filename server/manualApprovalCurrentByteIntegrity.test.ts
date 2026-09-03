@@ -128,9 +128,22 @@ describe("db.ts approveWalletTopup: current-byte integrity before claim, IPE-001
     expect(checkIdx).toBeGreaterThan(fnIdx);
   });
 
+  it("caps wallet approval current-byte hashing at 3s while keeping it inside the approval transaction", () => {
+    expect(code).toMatch(/export const WALLET_APPROVAL_SLIP_HASH_TIMEOUT_MS = 3_000;/);
+    const fnIdx = code.indexOf("export async function approveWalletTopup(");
+    const checkIdx = code.indexOf(
+      "currentFileHash = isLegacyStorageUrl(topup.slipImageUrl as string)",
+      fnIdx
+    );
+    const body = code.slice(checkIdx, checkIdx + 1200);
+    expect(body).toMatch(/computeTrustedLegacySlipFileHash\(topup\.slipImageUrl as string, \{\s*timeoutMs: WALLET_APPROVAL_SLIP_HASH_TIMEOUT_MS/);
+    expect(body).toMatch(/computeSlipFileHash\(topup\.slipImageUrl as string, \{\s*timeoutMs: WALLET_APPROVAL_SLIP_HASH_TIMEOUT_MS/);
+    expect(body).toMatch(/stage=wallet_current_byte_hash/);
+  });
+
   it("recovers current bytes BEFORE the final strong-identifier refusal and BEFORE claimSlip", () => {
     const fnIdx = code.indexOf("export async function approveWalletTopup(");
-    const walletClaimNeedle = "const claim = await claimSlip(";
+    const walletClaimNeedle = 'const claim = await atWalletApprovalStage("wallet_slip_claim"';
     const strongIdIdx = code.indexOf("if (!hasStrongIdentifier(identifiers)) {", fnIdx);
     const checkIdx = code.indexOf(
       "currentFileHash = isLegacyStorageUrl(topup.slipImageUrl as string)",
@@ -153,14 +166,17 @@ describe("db.ts approveWalletTopup: current-byte integrity before claim, IPE-001
 
   it("fails closed when a persisted fileHash disagrees with the current hash", () => {
     const idx = code.indexOf("currentFileHash = isLegacyStorageUrl(topup.slipImageUrl as string)");
-    const body = code.slice(idx, idx + 1600);
+    const body = code.slice(idx, idx + 2600);
     expect(body).toMatch(/if \(currentFileHash && persistedFileHash && currentFileHash !== persistedFileHash\) \{/);
     expect(body).toMatch(/"SLIP_INTEGRITY_MISMATCH_AT_APPROVAL",/);
   });
 
   it("binds the freshly confirmed hash into identifiers.fileHash before claimSlip runs", () => {
     const idx = code.indexOf("currentFileHash = isLegacyStorageUrl(topup.slipImageUrl as string)");
-    const claimIdx = code.indexOf("const claim = await claimSlip(", idx);
+    const claimIdx = code.indexOf(
+      'const claim = await atWalletApprovalStage("wallet_slip_claim"',
+      idx
+    );
     const body = code.slice(idx, claimIdx);
     expect(body).toMatch(/identifiers\.fileHash = currentFileHash;/);
   });
