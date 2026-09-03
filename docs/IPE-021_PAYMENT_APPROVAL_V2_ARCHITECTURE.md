@@ -1,7 +1,7 @@
 # IPE-021 — Payment Approval V2 Architecture and Lock Invariants
 
-**Phase:** IPE-021-A — Architecture & Lock Invariant Design  
-**Baseline:** `b56c849a5860cee97f5d817b31ae032ee2014668` (`fix/wallet-approval-timeout-parity`)  
+**Phase:** IPE-021-A — Architecture & Lock Invariant Design
+**Baseline:** `b56c849a5860cee97f5d817b31ae032ee2014668` (`fix/wallet-approval-timeout-parity`)
 **Status:** Design specification; no production route cutover in this phase.
 
 ## 1. Executive summary
@@ -160,9 +160,7 @@ accountMutationGuards
 
 Exact naming/schema belongs to IPE-021-D, but the semantics are required now.
 
-Ordinary financial commits lock only this small guard row long enough to validate that mutation is allowed. Account Merge locks the same guard rows in ascending `userId`, activates the durable guard, and increments `generation` when guard state changes.
-
-Guard-row existence is itself a correctness invariant, not a lazy convenience. IPE-021-D must backfill exactly one guard row for every existing user, initialize active merge state from authoritative `accountMergeCases`, create the guard in the same logical user-provisioning flow for every new user, and make every V2/bridged V1 mutation **fail closed** if the row is missing. An approval must never "create open on demand" after observing a missing row, because doing so can manufacture an unguarded state while a merge already exists.
+Ordinary financial/classified commits acquire this small guard row in a shared mode (or an equivalent lock that conflicts with Merge activation but not with other ordinary mutations), verify that mutation is allowed, and hold that guard until their transaction commits. Account Merge acquires the same guard rows exclusively in ascending `userId`, activates the durable guard, and increments `generation` when guard state changes. This preserves fail-closed Merge exclusion without recreating an unnecessary same-user global mutex for unrelated ordinary mutations.
 
 The `users` profile row is no longer the common exclusion primitive.
 
@@ -212,7 +210,7 @@ write object with create-only semantics
 persist fileHash + immutable object identity + evidenceVersion atomically when publishing
 ```
 
-At minimum, storage write must reject replacing an already-published object identity with different bytes. If the underlying provider cannot enforce create-only semantics directly, IPE-021-D must add an equivalent durable write-once evidence registry keyed uniquely by object identity and storing the authoritative digest/size/content type. Publishing a subject may reference an object identity only after that registry entry exists; every replacement must mint a new identity and increment `evidenceVersion`. Existing generic `PutObject` must not be treated as proof of immutability merely because generated keys are random.
+At minimum, storage write must reject replacing an already-published object identity with different bytes. If the underlying provider cannot enforce create-only semantics directly, the application needs an equivalent durable write-once registry.
 
 Once this contract is proven, COMMIT does not need network I/O to establish that an unchanged immutable object identity still represents the bytes hashed during PREPARE.
 
@@ -250,7 +248,7 @@ PREPARE may be retried and may take seconds. It creates no financial value.
 8. Capture anti-replay compatibility state used by the decision.
 9. Produce an internal `PreparedApproval` object. It is server-generated and must never trust browser-provided identifiers/hashes.
 
-The browser may carry only an opaque attempt identifier. Authoritative prepared evidence remains server-side; if a prepared payload ever crosses a trust boundary, it must be authenticated (for example MAC/signed), expiry-bound, and bound to the authenticated actor/subject so a client cannot alter identifiers, evidence identity, version, or compatibility state. COMMIT consumes/revalidates the authoritative server-side record; browser fields are never the source of truth.
+The browser may carry an opaque attempt token, but authoritative prepared evidence must be server-verifiable or recomputable.
 
 ## 5.2 COMMIT — short database-only transaction
 
@@ -383,12 +381,12 @@ Required behavior:
 
 IPE-021-D owns the cross-cutting schema/protocol work required to make B/C safe for cutover:
 
-1. dedicated account mutation guard rows + generation semantics, including complete existing-user backfill and new-user creation invariant;
+1. dedicated account mutation guard rows + generation semantics;
 2. a mixed-mode bridge: all still-enabled V1 classified/financial mutations acquire the new account guard first, and Account Merge acquires the same guard before any transitional `users` lock;
 3. migration of Account Merge prepare/cancel/finalize to those guard rows;
 4. dedicated points balance row and migration/backfill from ledger state, with all coexisting points mutators moved to that same mutex before V2 points effects are enabled;
 5. points financial-effect idempotency uniqueness;
-6. modern immutable slip evidence/version contract with durable write-once identity enforcement;
+6. modern immutable slip evidence/version contract;
 7. trusted anti-replay backfill readiness gate required by V2 fast path.
 
 All migration scripts must be idempotent or explicitly guarded and must have rollback/reconciliation instructions.
@@ -438,7 +436,7 @@ C03/C04 diagnostics stay in place during V2 shadow/Preview comparison.
 
 ## 13. Preview rollout / rollback plan
 
-1. Deploy schema/guard/evidence prerequisites without route cutover; backfill every account guard and make new-user provisioning create it.
+1. Deploy schema/guard/evidence prerequisites without route cutover.
 2. Enable the mixed-mode bridge first: V1 classified/financial mutations and Account Merge both acquire the new account guard before any transitional legacy lock; migrate all coexisting points mutators to the new points balance resource.
 3. Backfill/verify points balance and immutable slip evidence as required.
 4. Require trusted anti-replay backfill readiness for V2 fast path.
@@ -469,10 +467,10 @@ The following do not solve the architectural problem and must not be used as the
 
 IPE-021-A is complete when independent review agrees on these implementation decisions:
 
-1. dedicated account mutation guard replaces `users` as Account Merge rendezvous and exists exactly once for every user;
+1. dedicated account mutation guard replaces `users` as Account Merge rendezvous;
 2. mixed-mode bridge makes Account Merge, all still-enabled V1 classified mutations, and V2 rendezvous on that same guard before V2 enablement;
 3. dedicated points balance/idempotency resource replaces `users` as points mutex for every coexisting points mutator;
-4. modern slip evidence becomes immutable/versioned with enforceable write-once identity;
+4. modern slip evidence becomes immutable/versioned;
 5. V2 fast path requires trusted anti-replay backfill readiness;
 6. expensive conflict/legacy preparation runs outside financial commit locks;
 7. COMMIT follows `ACCOUNT_GUARD -> SUBJECT -> CLAIM -> BALANCE -> LEAF` and is database-local;
