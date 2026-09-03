@@ -147,6 +147,7 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
   const publishedSlipVersion = {
     slipImageUrl: (publishedPayment?.slipImageUrl as string | null) ?? input.slipImageUrl,
     slipSubmittedAt: (publishedPayment?.slipSubmittedAt as Date | null) ?? slipSubmittedAt,
+    evidenceVersion: Number(publishedPayment?.evidenceVersion ?? 0),
   };
 
   // Check if OCR is enabled using effective config (Phase 4)
@@ -556,6 +557,7 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
       // Also save OCR metadata to payment record
       await db.updatePayment(payment.id, {
         extractedData: verificationResult.extractedData ? JSON.stringify(verificationResult.extractedData) : null,
+        extractedDataEvidenceVersion: publishedSlipVersion.evidenceVersion,
         reviewReason: null,
         fingerprint: verificationResult.fingerprint || null,
         linkedOrderId: order.id,

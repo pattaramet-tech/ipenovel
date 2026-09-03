@@ -85,7 +85,7 @@ describe("r2PrivateStorage", () => {
       expect(result).toEqual({ key: "payment-slips/42/slip.jpg" });
       expect(sendMock).toHaveBeenCalledTimes(1);
       expect(putObjectCommandMock).toHaveBeenCalledWith(
-        expect.objectContaining({ Bucket: "test-private-bucket", Key: "payment-slips/42/slip.jpg", ContentType: "image/jpeg" })
+        expect.objectContaining({ Bucket: "test-private-bucket", Key: "payment-slips/42/slip.jpg", ContentType: "image/jpeg", IfNoneMatch: "*" })
       );
     });
 

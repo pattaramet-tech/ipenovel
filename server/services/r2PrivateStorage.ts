@@ -236,6 +236,10 @@ export async function putPrivateObject(
         Key: key,
         Body: data,
         ContentType: contentType,
+        // Modern private objects are write-once. A generated key collision or
+        // retry that targets an already-existing identity must fail instead of
+        // silently replacing bytes behind a durable evidence reference.
+        IfNoneMatch: "*",
       })
     );
   } catch (err) {

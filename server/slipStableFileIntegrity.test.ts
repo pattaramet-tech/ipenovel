@@ -77,14 +77,12 @@ describe("slipSubmissionService.ts (order auto-submission) re-hashes before publ
   });
 
   it("the re-hash only runs when a baseline hash actually exists - never a false mismatch from two absent hashes", () => {
-    const idx = code.indexOf(
-      "if (slipFileHash) {\n    const rehash = await computeSlipFileHash("
-    );
-    expect(idx).toBeGreaterThan(-1);
+    expect(code).toMatch(/if \(slipFileHash\) \{\s*const rehash = await computeSlipFileHash\(/);
   });
 
-  it("the pre-existing slip-version guards (publishedSlipVersion / lockAndRequireReviewablePayment) are untouched", () => {
-    expect(code).toMatch(/orderService\.lockAndRequireReviewablePayment\(payment\.id, tx, publishedSlipVersion\)/);
+  it("the slip-version guard still reaches lockAndRequireReviewablePayment with the published monotonic snapshot", () => {
+    expect(code).toMatch(/orderService\.lockAndRequireReviewablePayment\(\s*payment\.id,\s*tx,\s*publishedSlipVersion\s*\)/);
+    expect(code).toMatch(/evidenceVersion:\s*Number\(publishedPayment\?\.evidenceVersion \?\? 0\)/);
   });
 });
 
@@ -144,14 +142,15 @@ describe("walletTopupSubmissionService.ts (wallet auto-submission): class-wide s
   });
 
   it("post-extraction path (the original checkpoint): still runs before duplicate/confidence/amount checks or auto-approval", () => {
-    const checkIdx = code.indexOf(
-      'if (!(await verifyWalletSlipStillStable(slipImageUrl, walletSlipFileHash))) {\n      console.error(\n        `[OCR] slip integrity mismatch for wallet top-up ${topupId}: stored bytes changed during OCR processing`'
-    );
-    expect(checkIdx).toBeGreaterThan(-1);
-    const duplicateCheckIdx = code.indexOf('verificationResult.reviewReason?.includes("DUPLICATE")');
-    const autoApproveIdx = code.indexOf("await autoApproveWalletTopup(");
+    const extractionIdx = code.indexOf("const extractedData = walletSlipFileHash");
+    const checkIdx = code.indexOf("verifyWalletSlipStillStable(slipImageUrl, walletSlipFileHash)", extractionIdx);
+    expect(extractionIdx).toBeGreaterThan(-1);
+    expect(checkIdx).toBeGreaterThan(extractionIdx);
+    const duplicateCheckIdx = code.indexOf('verificationResult.reviewReason?.includes("DUPLICATE")', checkIdx);
+    const autoApproveIdx = code.indexOf("await autoApproveWalletTopup(", checkIdx);
     expect(checkIdx).toBeLessThan(duplicateCheckIdx);
     expect(checkIdx).toBeLessThan(autoApproveIdx);
+    expect(code.slice(checkIdx, duplicateCheckIdx)).toMatch(/SLIP_INTEGRITY_MISMATCH/);
   });
 
   it("outer-catch path: mismatch is checked before handleOCRError persists the stale fallback, regardless of what threw", () => {

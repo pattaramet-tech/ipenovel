@@ -4,8 +4,10 @@
  * Used by payment.uploadSlipFile endpoint and optionally /api/upload fallback
  */
 
+import { createHash } from "node:crypto";
 import { putPrivateObject, R2PrivateStorageError } from "./r2PrivateStorage";
 import { toPrivateObjectRef } from "@shared/privateFileRef";
+import * as db from "../db";
 import { TRPCError } from "@trpc/server";
 import {
   normalizeMimeType,
@@ -176,9 +178,13 @@ export async function uploadPaymentSlipFile(
 
     // Step 6: Prepare file key
     const sanitized = sanitizeFileName(input.fileName);
+    const fileHash = createHash("sha256").update(fileBuffer).digest("hex");
     const timestamp = Date.now();
     const random = Math.random().toString(36).substring(2, 8);
-    const fileKey = `payment-slips/${input.userId}/${timestamp}-${random}-${sanitized}`;
+    // The digest is part of the identity namespace. Random suffixes still
+    // avoid accidental client retries targeting the same key, while the
+    // create-only R2 write below makes any actual key reuse fail closed.
+    const fileKey = `payment-slips/${input.userId}/${fileHash}/${timestamp}-${random}-${sanitized}`;
 
     console.info("[SlipUpload]", requestId, "File ready for upload:", {
       ...context,
@@ -194,6 +200,18 @@ export async function uploadPaymentSlipFile(
     // (admin, OCR) actually needs it - it is never a permanent public URL.
     try {
       const { key } = await putPrivateObject("paymentSlip", fileKey, fileBuffer, normalizedMimeType);
+      // The object becomes eligible for modern_immutable publication only
+      // after its exact identity/bytes are durably registered. If this DB
+      // write fails the R2 object is merely orphaned; no subject ever receives
+      // its reference, so financial evidence cannot depend on an unregistered
+      // object.
+      await db.registerModernSlipEvidenceObject({
+        objectKey: key,
+        ownerUserId: input.userId,
+        fileHash,
+        byteSize: fileBuffer.length,
+        contentType: normalizedMimeType,
+      });
       const slipImageUrl = toPrivateObjectRef(key);
 
       const isPDF = normalizedMimeType === "application/pdf";

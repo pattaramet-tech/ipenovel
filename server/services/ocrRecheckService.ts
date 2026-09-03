@@ -135,7 +135,7 @@ export interface RecheckOcrResult {
 async function verifyStableOrBlock(
   payment: any,
   order: any,
-  slipVersionAtStart: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+  slipVersionAtStart: { slipImageUrl: string | null; slipSubmittedAt: Date | null; evidenceVersion?: number },
   adminUserId: number,
   startedAt: Date,
   config: { maxTimeWindowMinutes: number },
@@ -228,6 +228,7 @@ export async function recheckOrderPaymentOcr(
   const slipVersionAtStart = {
     slipImageUrl: payment.slipImageUrl as string | null,
     slipSubmittedAt: payment.slipSubmittedAt as Date | null,
+    evidenceVersion: Number(payment.evidenceVersion),
   };
 
   // A finalized payment is not rechecked. Re-running OCR against an approved
@@ -778,7 +779,7 @@ export function mergeFileHashInto(
  */
 async function buildSupersededResult(
   originalPayment: any,
-  slipVersionAtStart: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+  slipVersionAtStart: { slipImageUrl: string | null; slipSubmittedAt: Date | null; evidenceVersion?: number },
   orderId: number,
   adminUserId: number,
   startedAt: Date,
@@ -802,6 +803,7 @@ async function buildSupersededResult(
     !sameSlipVersion(slipVersionAtStart, {
       slipImageUrl: current.slipImageUrl as string | null,
       slipSubmittedAt: current.slipSubmittedAt as Date | null,
+      evidenceVersion: Number(current.evidenceVersion),
     });
 
   const reviewReason = slipReplaced

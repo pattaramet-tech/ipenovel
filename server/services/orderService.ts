@@ -388,15 +388,16 @@ export class PaymentNotReviewableError extends Error {
 }
 
 /**
- * Whether two slip versions - the `(slipImageUrl, slipSubmittedAt)` pair -
- * refer to the exact same upload. Used to bind a computation done against
- * one slip snapshot to a write that must only land while that snapshot is
- * still the current one.
+ * Whether two slip versions refer to the exact same upload. New 0047 callers
+ * bind the monotonic `evidenceVersion` in addition to the historical
+ * `(slipImageUrl, slipSubmittedAt)` pair; older callers that do not yet carry
+ * the token preserve the legacy pair comparison during the migration window.
  */
 export function sameSlipVersion(
-  a: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
-  b: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
+  a: { slipImageUrl: string | null; slipSubmittedAt: Date | null; evidenceVersion?: number },
+  b: { slipImageUrl: string | null; slipSubmittedAt: Date | null; evidenceVersion?: number }
 ): boolean {
+  if (a.evidenceVersion !== undefined && a.evidenceVersion !== b.evidenceVersion) return false;
   if (a.slipImageUrl !== b.slipImageUrl) return false;
   const aTime = a.slipSubmittedAt ? a.slipSubmittedAt.getTime() : null;
   const bTime = b.slipSubmittedAt ? b.slipSubmittedAt.getTime() : null;
@@ -494,7 +495,7 @@ export class SlipIntegrityBlockedError extends Error {
 export async function lockAndRequireReviewablePayment(
   paymentId: number,
   tx: any,
-  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null; evidenceVersion?: number }
 ) {
   // Discover the immutable order owner without taking a subject lock, then
   // enter the shared Account Merge guard BEFORE the payment row. The post-lock
@@ -540,6 +541,7 @@ export async function lockAndRequireReviewablePayment(
     !sameSlipVersion(expectedSlipVersion, {
       slipImageUrl: payment.slipImageUrl as string | null,
       slipSubmittedAt: payment.slipSubmittedAt as Date | null,
+      evidenceVersion: Number(payment.evidenceVersion),
     })
   ) {
     throw new SlipVersionChangedError(paymentId, String(payment.status));

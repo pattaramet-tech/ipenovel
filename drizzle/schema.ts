@@ -397,6 +397,31 @@ export type OrderItem = typeof orderItems.$inferSelect;
 export type InsertOrderItem = typeof orderItems.$inferInsert;
 
 /**
+ * IPE-021-D immutable modern slip-object registry. A row is created only
+ * after a create-only private-R2 write succeeds. Subject rows reference the
+ * object key only when owner/hash/size/content-type are durably registered;
+ * legacy/unregistered objects never inherit modern immutability by assumption.
+ */
+export const slipEvidenceObjects = mysqlTable(
+  "slipEvidenceObjects",
+  {
+    objectKey: varchar("objectKey", { length: 512 }).primaryKey(),
+    ownerUserId: int("ownerUserId").notNull(),
+    fileHash: varchar("fileHash", { length: 64 }).notNull(),
+    byteSize: int("byteSize", { unsigned: true }).notNull(),
+    contentType: varchar("contentType", { length: 100 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    ownerIdx: index("slipEvidenceObjects_ownerUserId_idx").on(table.ownerUserId),
+    fileHashIdx: index("slipEvidenceObjects_fileHash_idx").on(table.fileHash),
+  })
+);
+
+export type SlipEvidenceObject = typeof slipEvidenceObjects.$inferSelect;
+export type InsertSlipEvidenceObject = typeof slipEvidenceObjects.$inferInsert;
+
+/**
  * Payment records (one per order)
  * Stores proof of payment and admin verification result
  */
@@ -407,6 +432,11 @@ export const payments = mysqlTable(
     orderId: int("orderId").notNull().unique(),
     slipImageUrl: text("slipImageUrl"),
     slipSubmittedAt: timestamp("slipSubmittedAt"),
+    evidenceVersion: bigint("evidenceVersion", { mode: "number", unsigned: true }).default(0).notNull(),
+    evidenceClass: mysqlEnum("evidenceClass", ["legacy_compatibility_required", "modern_immutable", "legacy_migrated_immutable"]).default("legacy_compatibility_required").notNull(),
+    evidenceObjectKey: varchar("evidenceObjectKey", { length: 512 }),
+    evidenceFileHash: varchar("evidenceFileHash", { length: 64 }),
+    extractedDataEvidenceVersion: bigint("extractedDataEvidenceVersion", { mode: "number", unsigned: true }),
     status: mysqlEnum("status", ["pending", "approved", "rejected", "pending_review"]).default("pending").notNull(),
     rejectionReason: text("rejectionReason"),
     reviewedByUserId: int("reviewedByUserId"),
@@ -438,6 +468,7 @@ export const payments = mysqlTable(
     approvedByAdminIdIdx: index("payments_approvedByAdminId_idx").on(table.approvedByAdminId),
     ocrConfidenceIdx: index("payments_ocrConfidence_idx").on(table.ocrConfidence),
     ocrDecisionIdx: index("payments_ocrDecision_idx").on(table.ocrDecision),
+    evidenceObjectKeyIdx: index("payments_evidenceObjectKey_idx").on(table.evidenceObjectKey),
   })
 );
 
@@ -808,6 +839,11 @@ export const walletTopups = mysqlTable("walletTopups", {
   creditedAmount: decimal("creditedAmount", { precision: 12, scale: 2 }),
   slipImageUrl: text("slipImageUrl"),
   slipSubmittedAt: timestamp("slipSubmittedAt"),
+  evidenceVersion: bigint("evidenceVersion", { mode: "number", unsigned: true }).default(0).notNull(),
+  evidenceClass: mysqlEnum("evidenceClass", ["legacy_compatibility_required", "modern_immutable", "legacy_migrated_immutable"]).default("legacy_compatibility_required").notNull(),
+  evidenceObjectKey: varchar("evidenceObjectKey", { length: 512 }),
+  evidenceFileHash: varchar("evidenceFileHash", { length: 64 }),
+  extractedDataEvidenceVersion: bigint("extractedDataEvidenceVersion", { mode: "number", unsigned: true }),
   status: mysqlEnum("status", ["pending", "pending_review", "approved", "rejected", "cancelled"]).default("pending").notNull(),
   rejectionReason: text("rejectionReason"),
   reviewedByUserId: int("reviewedByUserId"),
@@ -834,6 +870,7 @@ export const walletTopups = mysqlTable("walletTopups", {
   userIdIdx: index("walletTopups_userId_idx").on(table.userId),
   statusIdx: index("walletTopups_status_idx").on(table.status),
   createdAtIdx: index("walletTopups_createdAt_idx").on(table.createdAt),
+  evidenceObjectKeyIdx: index("walletTopups_evidenceObjectKey_idx").on(table.evidenceObjectKey),
 }));
 
 export type WalletTopup = typeof walletTopups.$inferSelect;

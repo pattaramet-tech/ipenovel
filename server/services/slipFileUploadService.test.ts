@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { uploadPaymentSlipFile } from "./slipFileUploadService";
 import * as r2PrivateStorage from "./r2PrivateStorage";
+import * as db from "../db";
 import * as legacyStorage from "../storage";
 import { TRPCError } from "@trpc/server";
 
@@ -13,6 +14,10 @@ vi.mock("./r2PrivateStorage", async () => {
     putPrivateObject: vi.fn(),
   };
 });
+
+vi.mock("../db", () => ({
+  registerModernSlipEvidenceObject: vi.fn(async (input: any) => input),
+}));
 
 // Also mock the legacy module so a static assertion can prove
 // uploadPaymentSlipFile never calls it, without needing real Manus config.
@@ -71,9 +76,18 @@ describe("uploadPaymentSlipFile", () => {
       expect(result.size).toBeGreaterThan(0);
       expect(vi.mocked(r2PrivateStorage.putPrivateObject)).toHaveBeenCalledWith(
         "paymentSlip",
-        expect.stringMatching(/^payment-slips\/123\//),
+        expect.stringMatching(/^payment-slips\/123\/[a-f0-9]{64}\//),
         expect.any(Buffer),
         "image/jpeg"
+      );
+      expect(vi.mocked(db.registerModernSlipEvidenceObject)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          objectKey: "payment-slips/123/xxx-file.jpg",
+          ownerUserId: 123,
+          fileHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+          byteSize: result.size,
+          contentType: "image/jpeg",
+        })
       );
     });
 

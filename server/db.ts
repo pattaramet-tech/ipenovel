@@ -12,7 +12,7 @@ import {
   isTrustedLegacySlipUrl,
 } from "./services/slipFileHashService";
 import { fileHashFromExtractedData } from "./services/legacySlipCompatibilityService";
-import { isLegacyStorageUrl, isPrivateObjectRef } from "@shared/privateFileRef";
+import { extractPrivateObjectKey, isLegacyStorageUrl, isPrivateObjectRef } from "@shared/privateFileRef";
 import { atWalletApprovalStage } from "./helpers/walletApprovalStage";
 import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql, gt, lt, ne, like } from "drizzle-orm";
 
@@ -117,6 +117,7 @@ import {
   accountMergeDataReconciliations,
   adminUserAuditLogs,
   paymentSlipClaims,
+  slipEvidenceObjects,
   Novel,
   couponUsages as couponUsagesTable,
 } from "../drizzle/schema";
@@ -1707,6 +1708,88 @@ export async function getOrderItems(orderId: number, tx?: any) {
   return enriched;
 }
 
+export type PublishedSlipEvidence = {
+  evidenceClass: "legacy_compatibility_required" | "modern_immutable" | "legacy_migrated_immutable";
+  evidenceObjectKey: string | null;
+  evidenceFileHash: string | null;
+};
+
+/**
+ * Durable write-once registry entry created only after a private object upload
+ * succeeds. Re-registering the exact same identity/metadata is idempotent;
+ * any mismatch fails closed rather than redefining an existing identity.
+ */
+export async function registerModernSlipEvidenceObject(
+  input: { objectKey: string; ownerUserId: number; fileHash: string; byteSize: number; contentType: string },
+  tx?: any
+) {
+  if (!/^payment-slips\//.test(input.objectKey)) throw new Error("Invalid slip evidence object key");
+  if (!/^[a-f0-9]{64}$/i.test(input.fileHash)) throw new Error("Invalid slip evidence file hash");
+  if (!Number.isInteger(input.ownerUserId) || input.ownerUserId <= 0) throw new Error("Invalid slip evidence owner");
+  if (!Number.isInteger(input.byteSize) || input.byteSize <= 0) throw new Error("Invalid slip evidence byte size");
+  if (!input.contentType || input.contentType.length > 100) throw new Error("Invalid slip evidence content type");
+
+  const database = tx || (await getDb());
+  if (!database) throw new Error("Database not available");
+  try {
+    await database.insert(slipEvidenceObjects).values(input);
+  } catch (error) {
+    if (!isDuplicateKeyError(error)) throw error;
+    const existing = (await database
+      .select()
+      .from(slipEvidenceObjects)
+      .where(eq(slipEvidenceObjects.objectKey, input.objectKey))
+      .limit(1))[0];
+    if (
+      !existing ||
+      Number(existing.ownerUserId) !== input.ownerUserId ||
+      String(existing.fileHash).toLowerCase() !== input.fileHash.toLowerCase() ||
+      Number(existing.byteSize) !== input.byteSize ||
+      String(existing.contentType) !== input.contentType
+    ) {
+      throw new Error("SLIP_EVIDENCE_OBJECT_IDENTITY_CONFLICT");
+    }
+  }
+  return (await database
+    .select()
+    .from(slipEvidenceObjects)
+    .where(eq(slipEvidenceObjects.objectKey, input.objectKey))
+    .limit(1))[0];
+}
+
+/**
+ * Classify a stored slip reference for publication. Only a registry-backed
+ * private object owned by the subject's user is modern_immutable. Existing
+ * private refs and legacy URLs remain compatibility evidence until explicitly
+ * migrated/verified; they are never upgraded just because their syntax is r2p:.
+ */
+async function resolvePublishedSlipEvidence(
+  slipImageUrl: string | null | undefined,
+  ownerUserId: number,
+  database: any
+): Promise<PublishedSlipEvidence> {
+  if (!slipImageUrl || !isPrivateObjectRef(slipImageUrl)) {
+    return { evidenceClass: "legacy_compatibility_required", evidenceObjectKey: null, evidenceFileHash: null };
+  }
+  const objectKey = extractPrivateObjectKey(slipImageUrl);
+  const registered = (await database
+    .select()
+    .from(slipEvidenceObjects)
+    .where(eq(slipEvidenceObjects.objectKey, objectKey))
+    .limit(1))[0];
+  if (!registered) {
+    return { evidenceClass: "legacy_compatibility_required", evidenceObjectKey: null, evidenceFileHash: null };
+  }
+  if (Number(registered.ownerUserId) !== ownerUserId) {
+    throw new Error("SLIP_EVIDENCE_OWNER_MISMATCH");
+  }
+  return {
+    evidenceClass: "modern_immutable",
+    evidenceObjectKey: objectKey,
+    evidenceFileHash: String(registered.fileHash).toLowerCase(),
+  };
+}
+
 export async function createPayment(
   orderId: number,
   slipImageUrl?: string,
@@ -1719,11 +1802,19 @@ export async function createPayment(
   }
   await withAccountMergeOrderMutationGuard(orderId, tx, async () => undefined);
   const db = tx;
+  const owner = (await db.select({ userId: orders.userId }).from(orders).where(eq(orders.id, orderId)).limit(1))[0];
+  if (!owner?.userId) throw new Error("Order owner not found while creating payment evidence");
+  const publishedEvidence = await resolvePublishedSlipEvidence(slipImageUrl, Number(owner.userId), db);
   const result = await db.insert(payments).values({
     orderId,
     status: "pending",
     slipImageUrl: slipImageUrl || null,
     slipSubmittedAt: slipImageUrl ? new Date() : null,
+    evidenceVersion: slipImageUrl ? 1 : 0,
+    evidenceClass: publishedEvidence.evidenceClass,
+    evidenceObjectKey: publishedEvidence.evidenceObjectKey,
+    evidenceFileHash: publishedEvidence.evidenceFileHash,
+    extractedDataEvidenceVersion: null,
     // Explicit, not relying on the column's own DEFAULT clause: migration
     // 0021 sets `ocrConfidence int NOT NULL DEFAULT 0` and then immediately
     // re-runs `MODIFY COLUMN ocrConfidence int NOT NULL` with no DEFAULT,
@@ -1780,7 +1871,24 @@ export async function updateOrder(orderId: number, data: { status?: string; paym
   });
 }
 
-export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected" | "pending_review"; rejectionReason?: string; extractedData?: string | null; reviewReason?: string | null; fingerprint?: string | null; linkedOrderId?: number | null; linkedPaymentId?: number | null; ocrConfidence?: number | null; ocrDecision?: string | null }, tx?: any) {
+export async function updatePayment(paymentId: number, data: { status?: "pending" | "approved" | "rejected" | "pending_review"; rejectionReason?: string; extractedData?: string | null; extractedDataEvidenceVersion?: number | null; reviewReason?: string | null; fingerprint?: string | null; linkedOrderId?: number | null; linkedPaymentId?: number | null; ocrConfidence?: number | null; ocrDecision?: string | null }, tx?: any) {
+  // Slip identity is intentionally absent from this generic mutation API.
+  // Keep a runtime guard too: `as any`, JavaScript callers, or future refactors
+  // must not be able to smuggle evidence fields through the ORM `.set(data)`.
+  const unsafeEvidenceFields = [
+    "slipImageUrl",
+    "slipSubmittedAt",
+    "evidenceVersion",
+    "evidenceClass",
+    "evidenceObjectKey",
+    "evidenceFileHash",
+  ];
+  if (unsafeEvidenceFields.some((field) => Object.prototype.hasOwnProperty.call(data as any, field))) {
+    throw new Error("SLIP_EVIDENCE_PUBLISH_REQUIRED");
+  }
+  // Genuine replacement must use publishReplacementSlipIfReviewable so the
+  // URL, monotonic evidenceVersion, immutable identity and extraction reset
+  // publish atomically under the subject lock.
   await withAccountMergePaymentMutationGuard(paymentId, tx, async (guardedDb) => {
     await guardedDb.update(payments).set(data).where(eq(payments.id, paymentId));
   });
@@ -2697,7 +2805,7 @@ export async function updatePaymentIfNotFinalized(
    * a status-only CAS would have let a recheck of the OLD slip land its
    * result on the NEW one, since replacing a slip does not change status.
    */
-  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null; evidenceVersion?: number }
 ): Promise<boolean> {
   const database = tx || (await getDb());
   if (!database) return false;
@@ -2720,12 +2828,20 @@ export async function updatePaymentIfNotFinalized(
         ? isNull(payments.slipSubmittedAt)
         : eq(payments.slipSubmittedAt, expectedSlipVersion.slipSubmittedAt)
     );
+    if (expectedSlipVersion.evidenceVersion !== undefined) {
+      conditions.push(eq(payments.evidenceVersion, expectedSlipVersion.evidenceVersion));
+    }
+  }
+
+  const updateFields: any = { ...fields };
+  if (fields.extractedData !== undefined && expectedSlipVersion?.evidenceVersion !== undefined) {
+    updateFields.extractedDataEvidenceVersion = expectedSlipVersion.evidenceVersion;
   }
 
   return withAccountMergePaymentMutationGuard(paymentId, tx, async (guardedDb) => {
     const result = await guardedDb
       .update(payments)
-      .set(fields as any)
+      .set(updateFields)
       .where(and(...conditions));
 
     const header = Array.isArray(result) ? result[0] : result;
@@ -2762,12 +2878,31 @@ export async function publishReplacementSlipIfReviewable(
   const database = await getDb();
   if (!database) return false;
 
-  return withAccountMergePaymentMutationGuard(paymentId, undefined, async (guardedDb) => {
+  return withAccountMergePaymentMutationGuard(paymentId, undefined, async (guardedDb, ownerUserId) => {
+    const current = (await guardedDb
+      .select({ evidenceVersion: payments.evidenceVersion })
+      .from(payments)
+      .where(eq(payments.id, paymentId))
+      .limit(1))[0];
+    if (!current) return false;
+    const nextEvidenceVersion = Number(current.evidenceVersion) + 1;
+    const publishedEvidence = await resolvePublishedSlipEvidence(fields.slipImageUrl, ownerUserId, guardedDb);
+    const extractedFileHash = fileHashFromExtractedData(fields.extractedData);
+    if (publishedEvidence.evidenceFileHash && extractedFileHash && publishedEvidence.evidenceFileHash !== extractedFileHash) {
+      throw new Error("SLIP_EVIDENCE_HASH_MISMATCH");
+    }
+    const evidenceFileHash = publishedEvidence.evidenceFileHash ?? extractedFileHash ?? null;
+
     const result = await guardedDb
       .update(payments)
       .set({
         slipImageUrl: fields.slipImageUrl,
         slipSubmittedAt: fields.slipSubmittedAt,
+        evidenceVersion: nextEvidenceVersion,
+        evidenceClass: publishedEvidence.evidenceClass,
+        evidenceObjectKey: publishedEvidence.evidenceObjectKey,
+        evidenceFileHash,
+        extractedDataEvidenceVersion: fields.extractedData ? nextEvidenceVersion : null,
         status: "pending",
         extractedData: fields.extractedData,
         // Stale OCR verdicts from the replaced slip must not linger next to
@@ -2781,6 +2916,7 @@ export async function publishReplacementSlipIfReviewable(
       .where(
         and(
           eq(payments.id, paymentId),
+          eq(payments.evidenceVersion, Number(current.evidenceVersion)),
           or(eq(payments.status, "pending"), eq(payments.status, "pending_review"))
         )
       );
@@ -4234,6 +4370,7 @@ export async function createWalletTopup(userId: number, requestedAmount: string,
   const now = new Date();
 
   return await withAccountMergeClassifiedMutationGuard(userId, undefined, async (guardedDb) => {
+    const publishedEvidence = await resolvePublishedSlipEvidence(slipImageUrl, userId, guardedDb);
     let result: any;
     try {
       result = await guardedDb.insert(walletTopups).values({
@@ -4243,6 +4380,11 @@ export async function createWalletTopup(userId: number, requestedAmount: string,
         creditedAmount,
         slipImageUrl: slipImageUrl || null,
         slipSubmittedAt: now,
+        evidenceVersion: slipImageUrl ? 1 : 0,
+        evidenceClass: publishedEvidence.evidenceClass,
+        evidenceObjectKey: publishedEvidence.evidenceObjectKey,
+        evidenceFileHash: publishedEvidence.evidenceFileHash,
+        extractedDataEvidenceVersion: null,
         status: "pending" as any,
         approvalSource: "manual",
         createdAt: now,
@@ -4319,11 +4461,12 @@ export async function listPendingWalletTopups(limit: number = 20, offset: number
  * `extractedData` describing whatever slip preceded it, which is exactly the
  * IPE-001 wallet finding.
  */
-export async function updateWalletTopupSlip(topupId: number, slipImageUrl: string) {
-  return withAccountMergeWalletTopupMutationGuard(topupId, undefined, async (guardedDb) => {
-    await guardedDb.update(walletTopups).set({ slipImageUrl }).where(eq(walletTopups.id, topupId));
-    return (await guardedDb.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1))[0];
-  });
+export async function updateWalletTopupSlip(_topupId: number, _slipImageUrl: string) {
+  // 0047 hard-stop: this legacy bare setter can no longer mutate financial
+  // evidence because it cannot advance/bind evidenceVersion or invalidate the
+  // previous extraction atomically. Customer replacement uses the publish
+  // helper below; same-byte legacy storage migration uses its dedicated CAS.
+  throw new Error("SLIP_EVIDENCE_PUBLISH_REQUIRED");
 }
 
 /**
@@ -4350,12 +4493,31 @@ export async function publishWalletTopupReplacementIfReviewable(
     extractedData: string | null;
   }
 ): Promise<boolean> {
-  return withAccountMergeWalletTopupMutationGuard(topupId, undefined, async (guardedDb) => {
+  return withAccountMergeWalletTopupMutationGuard(topupId, undefined, async (guardedDb, ownerUserId) => {
+    const current = (await guardedDb
+      .select({ evidenceVersion: walletTopups.evidenceVersion })
+      .from(walletTopups)
+      .where(eq(walletTopups.id, topupId))
+      .limit(1))[0];
+    if (!current) return false;
+    const nextEvidenceVersion = Number(current.evidenceVersion) + 1;
+    const publishedEvidence = await resolvePublishedSlipEvidence(fields.slipImageUrl, ownerUserId, guardedDb);
+    const extractedFileHash = fileHashFromExtractedData(fields.extractedData);
+    if (publishedEvidence.evidenceFileHash && extractedFileHash && publishedEvidence.evidenceFileHash !== extractedFileHash) {
+      throw new Error("SLIP_EVIDENCE_HASH_MISMATCH");
+    }
+    const evidenceFileHash = publishedEvidence.evidenceFileHash ?? extractedFileHash ?? null;
+
     const result = await guardedDb
       .update(walletTopups)
       .set({
         slipImageUrl: fields.slipImageUrl,
         slipSubmittedAt: fields.slipSubmittedAt,
+        evidenceVersion: nextEvidenceVersion,
+        evidenceClass: publishedEvidence.evidenceClass,
+        evidenceObjectKey: publishedEvidence.evidenceObjectKey,
+        evidenceFileHash,
+        extractedDataEvidenceVersion: fields.extractedData ? nextEvidenceVersion : null,
         status: "pending",
         extractedData: fields.extractedData,
         // Stale OCR verdicts from the replaced slip must not linger next to
@@ -4372,6 +4534,7 @@ export async function publishWalletTopupReplacementIfReviewable(
       .where(
         and(
           eq(walletTopups.id, topupId),
+          eq(walletTopups.evidenceVersion, Number(current.evidenceVersion)),
           or(eq(walletTopups.status, "pending"), eq(walletTopups.status, "pending_review"))
         )
       );
@@ -7284,7 +7447,7 @@ export async function applyWalletTopupOcrUpdate(
    * status-only CAS would have let a run for the OLD slip land its result
    * on the NEW one, since replacing a slip does not change status.
    */
-  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null; evidenceVersion?: number }
 ) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -7326,6 +7489,12 @@ export async function applyWalletTopupOcrUpdate(
         ? isNull(walletTopups.slipSubmittedAt)
         : eq(walletTopups.slipSubmittedAt, expectedSlipVersion.slipSubmittedAt)
     );
+    if (expectedSlipVersion.evidenceVersion !== undefined) {
+      guardConditions.push(eq(walletTopups.evidenceVersion, expectedSlipVersion.evidenceVersion));
+    }
+  }
+  if (updates.extractedData !== undefined && expectedSlipVersion?.evidenceVersion !== undefined) {
+    updateData.extractedDataEvidenceVersion = expectedSlipVersion.evidenceVersion;
   }
   const whereClause = guarded ? and(...guardConditions) : eq(walletTopups.id, topupId);
 
@@ -7451,7 +7620,7 @@ export async function approveWalletTopupWithOCR(
    * order-side SlipVersionChangedError check inside
    * lockAndRequireReviewablePayment.
    */
-  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null; evidenceVersion?: number }
 ) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -7502,7 +7671,9 @@ export async function approveWalletTopupWithOCR(
       const versionMatches =
         currentSlipImageUrl === expectedSlipVersion.slipImageUrl &&
         (currentSlipSubmittedAt?.getTime() ?? null) ===
-          (expectedSlipVersion.slipSubmittedAt?.getTime() ?? null);
+          (expectedSlipVersion.slipSubmittedAt?.getTime() ?? null) &&
+        (expectedSlipVersion.evidenceVersion === undefined ||
+          Number(topup.evidenceVersion) === expectedSlipVersion.evidenceVersion);
       if (!versionMatches) {
         throw new WalletSlipClaimError(
           "TOPUP_SLIP_VERSION_CHANGED",
@@ -7632,6 +7803,9 @@ export async function approveWalletTopupWithOCR(
             ? isNull(walletTopups.slipSubmittedAt)
             : eq(walletTopups.slipSubmittedAt, expectedSlipVersion.slipSubmittedAt)
         );
+        if (expectedSlipVersion.evidenceVersion !== undefined) {
+          approveConditions.push(eq(walletTopups.evidenceVersion, expectedSlipVersion.evidenceVersion));
+        }
       }
       const updateResult = await tx
         .update(walletTopups)
@@ -7639,6 +7813,7 @@ export async function approveWalletTopupWithOCR(
           status: "approved" as any,
           slipSubmittedAt: ocrData.slipSubmittedAt,
           extractedData: ocrData.extractedData,
+          extractedDataEvidenceVersion: expectedSlipVersion?.evidenceVersion ?? Number(topup.evidenceVersion),
           ocrConfidence: ocrData.ocrConfidence ? String(ocrData.ocrConfidence) : undefined,
           visionConfidence: ocrData.visionConfidence ? String(ocrData.visionConfidence) : undefined,
           structuredConfidence: ocrData.structuredConfidence ? String(ocrData.structuredConfidence) : undefined,
@@ -7688,6 +7863,7 @@ export async function approveWalletTopupWithOCR(
           status: "pending_review" as any,
           slipSubmittedAt: ocrData.slipSubmittedAt,
           extractedData: ocrData.extractedData,
+          extractedDataEvidenceVersion: expectedSlipVersion?.evidenceVersion ?? Number(topup.evidenceVersion),
           ocrConfidence: ocrData.ocrConfidence ? String(ocrData.ocrConfidence) : undefined,
           visionConfidence: ocrData.visionConfidence ? String(ocrData.visionConfidence) : undefined,
           structuredConfidence: ocrData.structuredConfidence ? String(ocrData.structuredConfidence) : undefined,

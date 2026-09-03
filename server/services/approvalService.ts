@@ -123,7 +123,7 @@ export class ApprovalService {
     reviewReason: string,
     extractedData?: any,
     fingerprint?: string,
-    expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+    expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null; evidenceVersion?: number },
     tx?: any
   ): Promise<boolean> {
     const conditions = [
@@ -142,6 +142,9 @@ export class ApprovalService {
           ? isNull(payments.slipSubmittedAt)
           : eq(payments.slipSubmittedAt, expectedSlipVersion.slipSubmittedAt)
       );
+      if (expectedSlipVersion.evidenceVersion !== undefined) {
+        conditions.push(eq(payments.evidenceVersion, expectedSlipVersion.evidenceVersion));
+      }
     }
 
     return withAccountMergePaymentMutationGuard(paymentId, tx, async (guardedDb) => {
@@ -151,6 +154,7 @@ export class ApprovalService {
           status: "pending_review",
           reviewReason,
           extractedData: extractedData ? JSON.stringify(extractedData) : null,
+          extractedDataEvidenceVersion: extractedData ? (expectedSlipVersion?.evidenceVersion ?? null) : null,
           fingerprint: fingerprint || null,
           // DO NOT set approval fields
         })
