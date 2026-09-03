@@ -30,9 +30,12 @@
  * explicit, well-formed completion record.
  */
 
+import { createHash } from "node:crypto";
 import { getSetting, setSetting } from "../db";
 
 export const SLIP_BACKFILL_STATE_KEY = "paymentSlipClaims.backfillState";
+export const SLIP_BACKFILL_STATE_VERSION = 1;
+export const TRUSTED_SLIP_BACKFILL_TOOL_VERSION = "backfill-slip-claims@2";
 
 export interface SlipBackfillState {
   /**
@@ -46,10 +49,14 @@ export interface SlipBackfillState {
    * and scripts/lib/backfillCompletionGate.mjs for the exact gate.
    */
   complete: boolean;
+  /** Version of the durable provenance record itself (separate from the tool). */
+  stateVersion?: number;
   /** ISO timestamp of completion, for operator audit. */
   completedAt?: string;
   /** Which tool version wrote it, so a future format change is detectable. */
   toolVersion?: string;
+  /** SHA-256 over the canonical completion provenance fields. */
+  provenanceChecksum?: string;
   /** Highest ids covered, so a later audit can see what was in scope. */
   paymentMaxId?: number;
   walletTopupMaxId?: number;
@@ -66,6 +73,77 @@ export interface SlipBackfillState {
 }
 
 const INCOMPLETE: SlipBackfillState = { complete: false };
+
+function canonicalSlipBackfillProvenance(state: SlipBackfillState): string {
+  return JSON.stringify({
+    stateVersion: state.stateVersion ?? null,
+    completedAt: state.completedAt ?? null,
+    toolVersion: state.toolVersion ?? null,
+    paymentMaxId: state.paymentMaxId ?? null,
+    walletTopupMaxId: state.walletTopupMaxId ?? null,
+    claimsInserted: state.claimsInserted ?? null,
+    collisionMembersRecorded: state.collisionMembersRecorded ?? null,
+    unknownRowsRecorded: state.unknownRowsRecorded ?? null,
+  });
+}
+
+export function computeSlipBackfillProvenanceChecksum(state: SlipBackfillState): string {
+  return createHash("sha256").update(canonicalSlipBackfillProvenance(state)).digest("hex");
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 0;
+}
+
+export type TrustedSlipBackfillReadinessReason =
+  | "NOT_COMPLETE"
+  | "STATE_VERSION_UNTRUSTED"
+  | "TOOL_VERSION_UNTRUSTED"
+  | "COMPLETION_TIMESTAMP_INVALID"
+  | "PROVENANCE_INCOMPLETE"
+  | "PROVENANCE_CHECKSUM_INVALID";
+
+export interface TrustedSlipBackfillReadiness {
+  ready: boolean;
+  reason?: TrustedSlipBackfillReadinessReason;
+  state: SlipBackfillState;
+}
+
+/**
+ * Stricter than `isLegacyScanRequired()`: V1 keeps honoring the historical
+ * complete=true switch for backward compatibility, while V2 requires a
+ * versioned, checksum-valid completion record written by the trusted tool.
+ */
+export function evaluateTrustedSlipBackfillState(state: SlipBackfillState): TrustedSlipBackfillReadiness {
+  if (state.complete !== true) return { ready: false, reason: "NOT_COMPLETE", state };
+  if (state.stateVersion !== SLIP_BACKFILL_STATE_VERSION) {
+    return { ready: false, reason: "STATE_VERSION_UNTRUSTED", state };
+  }
+  if (state.toolVersion !== TRUSTED_SLIP_BACKFILL_TOOL_VERSION) {
+    return { ready: false, reason: "TOOL_VERSION_UNTRUSTED", state };
+  }
+  if (!state.completedAt || Number.isNaN(Date.parse(state.completedAt))) {
+    return { ready: false, reason: "COMPLETION_TIMESTAMP_INVALID", state };
+  }
+  if (
+    !isNonNegativeInteger(state.paymentMaxId) ||
+    !isNonNegativeInteger(state.walletTopupMaxId) ||
+    !isNonNegativeInteger(state.claimsInserted) ||
+    !isNonNegativeInteger(state.collisionMembersRecorded) ||
+    !isNonNegativeInteger(state.unknownRowsRecorded)
+  ) {
+    return { ready: false, reason: "PROVENANCE_INCOMPLETE", state };
+  }
+  const expectedChecksum = computeSlipBackfillProvenanceChecksum(state);
+  if (
+    typeof state.provenanceChecksum !== "string" ||
+    !/^[a-f0-9]{64}$/.test(state.provenanceChecksum) ||
+    state.provenanceChecksum !== expectedChecksum
+  ) {
+    return { ready: false, reason: "PROVENANCE_CHECKSUM_INVALID", state };
+  }
+  return { ready: true, state };
+}
 
 /**
  * Reads the durable state.
@@ -88,8 +166,11 @@ export async function getSlipBackfillState(): Promise<SlipBackfillState> {
 
     return {
       complete: true,
+      stateVersion: Number.isInteger(parsed.stateVersion) ? parsed.stateVersion : undefined,
       completedAt: typeof parsed.completedAt === "string" ? parsed.completedAt : undefined,
       toolVersion: typeof parsed.toolVersion === "string" ? parsed.toolVersion : undefined,
+      provenanceChecksum:
+        typeof parsed.provenanceChecksum === "string" ? parsed.provenanceChecksum : undefined,
       paymentMaxId: Number.isInteger(parsed.paymentMaxId) ? parsed.paymentMaxId : undefined,
       walletTopupMaxId: Number.isInteger(parsed.walletTopupMaxId)
         ? parsed.walletTopupMaxId
@@ -116,6 +197,10 @@ export async function getSlipBackfillState(): Promise<SlipBackfillState> {
 export async function isLegacyScanRequired(): Promise<boolean> {
   const state = await getSlipBackfillState();
   return !state.complete;
+}
+
+export async function getTrustedSlipBackfillReadiness(): Promise<TrustedSlipBackfillReadiness> {
+  return evaluateTrustedSlipBackfillState(await getSlipBackfillState());
 }
 
 /**
@@ -146,6 +231,7 @@ export async function markSlipBackfillComplete(details: {
 }): Promise<void> {
   const state: SlipBackfillState = {
     complete: true,
+    stateVersion: SLIP_BACKFILL_STATE_VERSION,
     completedAt: new Date().toISOString(),
     toolVersion: details.toolVersion,
     paymentMaxId: details.paymentMaxId,
@@ -154,6 +240,7 @@ export async function markSlipBackfillComplete(details: {
     collisionMembersRecorded: details.collisionMembersRecorded,
     unknownRowsRecorded: details.unknownRowsRecorded,
   };
+  state.provenanceChecksum = computeSlipBackfillProvenanceChecksum(state);
 
   await setSetting(
     SLIP_BACKFILL_STATE_KEY,

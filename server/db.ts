@@ -1757,6 +1757,16 @@ export async function registerModernSlipEvidenceObject(
     .limit(1))[0];
 }
 
+export async function getSlipEvidenceObjectByKey(objectKey: string, tx?: any) {
+  const database = tx || (await getDb());
+  if (!database) throw new Error("Database not available");
+  return (await database
+    .select()
+    .from(slipEvidenceObjects)
+    .where(eq(slipEvidenceObjects.objectKey, objectKey))
+    .limit(1))[0];
+}
+
 /**
  * Classify a stored slip reference for publication. Only a registry-backed
  * private object owned by the subject's user is modern_immutable. Existing

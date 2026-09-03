@@ -76,6 +76,7 @@ import {
   startAccountMergeGuard,
 } from "./services/accountMergeGuardService";
 import { updateAdminUserProfile, AdminUserManagementError } from "./services/adminUserManagementService";
+import { getPaymentApprovalV2GlobalReadiness } from "./services/paymentApprovalV2ReadinessService";
 
 // ============ HELPER PROCEDURES ============
 
@@ -1287,6 +1288,10 @@ export const appRouter = router({
     ocr: ocrMetricsRouter,
 
     payments: router({
+      v2Readiness: adminProcedure.query(async () => {
+        return getPaymentApprovalV2GlobalReadiness();
+      }),
+
       pending: adminProcedure.query(async () => {
         const payments = await db.getPendingPayments(50);
 

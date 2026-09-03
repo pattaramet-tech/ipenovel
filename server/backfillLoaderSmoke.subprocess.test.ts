@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import path from "node:path";
 
 /**
@@ -44,7 +45,12 @@ const scriptPath = path.join(repoRoot, "scripts", "backfill-slip-claims.mjs");
 // Invoked directly (node + tsx's own CLI entry) rather than via `npx tsx`:
 // `npx` is a .cmd shim on Windows that spawnSync cannot exec without a
 // shell, which is an environment quirk unrelated to what this test proves.
-const tsxCli = path.join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
+// Resolve the package through Node rather than assuming every isolated Git
+// worktree has its own node_modules/tsx copy; normal module resolution may
+// legitimately find the dependency in the parent project installation.
+const require = createRequire(import.meta.url);
+const tsxPackageJson = require.resolve("tsx/package.json");
+const tsxCli = path.join(path.dirname(tsxPackageJson), "dist", "cli.mjs");
 
 function runWithTsx(args: string[], env: Record<string, string>) {
   return run(process.execPath, [tsxCli, scriptPath, ...args], env);

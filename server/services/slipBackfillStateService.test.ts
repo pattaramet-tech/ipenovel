@@ -4,7 +4,12 @@ import path from "node:path";
 import * as db from "../db";
 import {
   SLIP_BACKFILL_STATE_KEY,
+  SLIP_BACKFILL_STATE_VERSION,
+  TRUSTED_SLIP_BACKFILL_TOOL_VERSION,
+  computeSlipBackfillProvenanceChecksum,
+  evaluateTrustedSlipBackfillState,
   getSlipBackfillState,
+  getTrustedSlipBackfillReadiness,
   isLegacyScanRequired,
   markSlipBackfillComplete,
 } from "./slipBackfillStateService";
@@ -106,6 +111,67 @@ describe("isLegacyScanRequired", () => {
   });
 });
 
+describe("trusted V2 backfill readiness", () => {
+  function trustedState(overrides: Record<string, unknown> = {}) {
+    const state: any = {
+      complete: true,
+      stateVersion: SLIP_BACKFILL_STATE_VERSION,
+      completedAt: "2026-09-04T00:00:00.000Z",
+      toolVersion: TRUSTED_SLIP_BACKFILL_TOOL_VERSION,
+      paymentMaxId: 120,
+      walletTopupMaxId: 30,
+      claimsInserted: 150,
+      collisionMembersRecorded: 4,
+      unknownRowsRecorded: 2,
+      ...overrides,
+    };
+    state.provenanceChecksum = computeSlipBackfillProvenanceChecksum(state);
+    return state;
+  }
+
+  it("does not change V1 compatibility semantics: old complete=true still retires the live scan", async () => {
+    stubSetting(JSON.stringify({ complete: true }));
+    expect(await isLegacyScanRequired()).toBe(false);
+    expect(await getTrustedSlipBackfillReadiness()).toMatchObject({
+      ready: false,
+      reason: "STATE_VERSION_UNTRUSTED",
+    });
+  });
+
+  it("accepts only a versioned, checksum-valid record written by the trusted tool", () => {
+    expect(evaluateTrustedSlipBackfillState(trustedState())).toMatchObject({ ready: true });
+  });
+
+  it("fails closed when the tool version is not trusted", () => {
+    expect(
+      evaluateTrustedSlipBackfillState(trustedState({ toolVersion: "backfill-slip-claims@old" }))
+    ).toMatchObject({ ready: false, reason: "TOOL_VERSION_UNTRUSTED" });
+  });
+
+  it("fails closed when required provenance counters are absent", () => {
+    expect(
+      evaluateTrustedSlipBackfillState(trustedState({ claimsInserted: undefined }))
+    ).toMatchObject({ ready: false, reason: "PROVENANCE_INCOMPLETE" });
+  });
+
+  it("detects any provenance mutation after the checksum was written", () => {
+    const state = trustedState();
+    state.paymentMaxId += 1;
+    expect(evaluateTrustedSlipBackfillState(state)).toMatchObject({
+      ready: false,
+      reason: "PROVENANCE_CHECKSUM_INVALID",
+    });
+  });
+
+  it("a database read failure can never report V2 ready", async () => {
+    vi.spyOn(db, "getSetting").mockRejectedValue(new Error("db down"));
+    expect(await getTrustedSlipBackfillReadiness()).toMatchObject({
+      ready: false,
+      reason: "NOT_COMPLETE",
+    });
+  });
+});
+
 describe("markSlipBackfillComplete", () => {
   it("writes a durable DB record, not memory", async () => {
     const setSetting = vi.spyOn(db, "setSetting").mockResolvedValue(undefined as any);
@@ -122,8 +188,11 @@ describe("markSlipBackfillComplete", () => {
     expect(key).toBe(SLIP_BACKFILL_STATE_KEY);
     const parsed = JSON.parse(value as string);
     expect(parsed.complete).toBe(true);
+    expect(parsed.stateVersion).toBe(SLIP_BACKFILL_STATE_VERSION);
     expect(parsed.completedAt).toBeTruthy();
     expect(parsed.toolVersion).toBe("backfill-slip-claims@2");
+    expect(parsed.provenanceChecksum).toMatch(/^[a-f0-9]{64}$/);
+    expect(parsed.provenanceChecksum).toBe(computeSlipBackfillProvenanceChecksum(parsed));
   });
 
   it("records provenance so an operator can audit what was covered", async () => {
@@ -231,6 +300,8 @@ describe("the switch is durable and operator-gated", () => {
     const idx = scriptCode.indexOf("markSlipBackfillComplete");
     const cleanIdx = scriptCode.indexOf("if (!cleanRun)");
     expect(idx).toBeGreaterThan(cleanIdx);
+    expect(scriptCode).toMatch(/toolVersion:\s*state\.TRUSTED_SLIP_BACKFILL_TOOL_VERSION/);
+    expect(scriptCode).not.toMatch(/const\s+TOOL_VERSION\s*=/);
   });
 
   it("a dry run cannot reach the completion call at all", () => {

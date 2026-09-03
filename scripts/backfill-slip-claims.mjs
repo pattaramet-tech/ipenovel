@@ -84,8 +84,6 @@ import { clearAndVerifyStaleUnknownRow } from "./lib/backfillStaleUnknownCleanup
 import { decideAliasCoverage } from "./lib/backfillAliasCoverage.mjs";
 import { selectPendingClearsToApply } from "./lib/backfillPendingUnknownClearScheduler.mjs";
 
-const TOOL_VERSION = "backfill-slip-claims@2";
-
 let options;
 try {
   options = parseBackfillOptions(process.argv.slice(2));
@@ -1762,7 +1760,7 @@ try {
     } else {
       const state = await import("../server/services/slipBackfillStateService.ts");
       await state.markSlipBackfillComplete({
-        toolVersion: TOOL_VERSION,
+        toolVersion: state.TRUSTED_SLIP_BACKFILL_TOOL_VERSION,
         paymentMaxId: stats.paymentMaxId,
         walletTopupMaxId: stats.walletTopupMaxId,
         claimsInserted: stats.claimed,
