@@ -1,6 +1,19 @@
 import { TRPCError } from "@trpc/server";
 import { looksLikeRawDatabaseError } from "../_core/trpc";
-import { hasDatabaseDriverMetadata } from "./databaseErrorClassifier";
+import { hasDatabaseDriverMetadata, isLockWaitTimeout } from "./databaseErrorClassifier";
+import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
+
+export const ORDER_PAYMENT_BUSY_MESSAGE =
+  "This payment is busy with another request. Please wait a moment and try again.";
+
+function lockTimeoutError(error: unknown, operation: "Approval" | "Recheck", stage: string) {
+  console.error(`[OrderPayment${operation}] lock stage=${stage} ${safeErrorSummary(error)}`);
+  return new TRPCError({
+    code: "SERVICE_UNAVAILABLE",
+    message: ORDER_PAYMENT_BUSY_MESSAGE,
+    cause: error,
+  });
+}
 
 /**
  * Keeps the established admin order-payment error contract while preventing
@@ -11,6 +24,10 @@ import { hasDatabaseDriverMetadata } from "./databaseErrorClassifier";
  */
 export function mapOrderPaymentApprovalError(error: unknown): TRPCError {
   if (error instanceof TRPCError) return error;
+
+  if (isLockWaitTimeout(error)) {
+    return lockTimeoutError(error, "Approval", "approval_transaction");
+  }
 
   const message = error instanceof Error ? error.message : String((error as any)?.message ?? "");
 
@@ -37,5 +54,20 @@ export function mapOrderPaymentApprovalError(error: unknown): TRPCError {
   return new TRPCError({
     code: "BAD_REQUEST",
     message: message || "Failed to approve payment. Please try again.",
+  });
+}
+
+/** Safe API boundary for the diagnostic-only OCR Recheck mutation. */
+export function mapOrderPaymentRecheckError(error: unknown): TRPCError {
+  if (error instanceof TRPCError) return error;
+
+  if (isLockWaitTimeout(error)) {
+    return lockTimeoutError(error, "Recheck", "recheck_persist");
+  }
+
+  return new TRPCError({
+    code: "INTERNAL_SERVER_ERROR",
+    message: "Unable to recheck this order payment due to an unexpected server error.",
+    cause: error,
   });
 }

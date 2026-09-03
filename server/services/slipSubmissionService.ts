@@ -478,7 +478,12 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
         // would pass the reviewability check above (a replacement sets
         // status back to "pending") while still claiming identifiers that
         // belong to the slip it replaced.
-        await orderService.lockAndRequireReviewablePayment(payment.id, tx, publishedSlipVersion);
+        await orderService.lockAndRequireReviewablePayment(
+          payment.id,
+          tx,
+          publishedSlipVersion,
+          "points_exclusive"
+        );
 
         const extractedJson = verificationResult.extractedData
           ? JSON.stringify(verificationResult.extractedData)

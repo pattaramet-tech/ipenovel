@@ -472,11 +472,16 @@ export class SlipIntegrityBlockedError extends Error {
  *
  * Returns the payment as reloaded UNDER the lock - callers must use this row,
  * not one they read earlier.
+ *
+ * Approval paths that will award points must use `points_exclusive`. This
+ * acquires the final users-row lock mode before the payment lock, avoiding a
+ * shared -> exclusive upgrade cycle with OCR Recheck.
  */
 export async function lockAndRequireReviewablePayment(
   paymentId: number,
   tx: any,
-  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+  accountLockMode: "classified_shared" | "points_exclusive" = "classified_shared"
 ) {
   // IPE-005 canonical hierarchy: discover the immutable order owner without
   // taking a subject lock, then lock Source users/merge guard BEFORE the
@@ -486,7 +491,11 @@ export async function lockAndRequireReviewablePayment(
   if (!ownerPayment) throw new Error("Payment not found");
   const ownerOrder = await db.getOrderById(ownerPayment.orderId, tx);
   if (!ownerOrder?.userId) throw new Error("Payment order owner not found");
-  await db.assertAccountMergeClassifiedMutationAllowed(ownerOrder.userId, tx);
+  if (accountLockMode === "points_exclusive") {
+    await db.assertAccountMergePointsMutationAllowed(ownerOrder.userId, tx);
+  } else {
+    await db.assertAccountMergeClassifiedMutationAllowed(ownerOrder.userId, tx);
+  }
 
   await db.lockPaymentForUpdate(paymentId, tx);
 
@@ -547,7 +556,12 @@ async function approvePaymentInTx(
   // before any claim, approval, order update or finalization. The admin's
   // browser may have had this order open for a long time and the OCR panel it
   // renders is display state, not authority; the locked row is.
-  const payment = await lockAndRequireReviewablePayment(paymentId, tx);
+  const payment = await lockAndRequireReviewablePayment(
+    paymentId,
+    tx,
+    undefined,
+    "points_exclusive"
+  );
 
   const order = await db.getOrderById(payment.orderId, tx);
   if (!order) {

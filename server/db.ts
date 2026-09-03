@@ -8270,8 +8270,15 @@ export async function assertAccountMergeClassifiedMutationsAllowed(userIds: numb
   }
 }
 
-/** Points live on users, so balance read-modify-write retains exclusivity. */
-async function assertAccountMergePointsMutationAllowed(userId: number, tx: any): Promise<void> {
+/**
+ * Points live on users, so balance read-modify-write retains exclusivity.
+ *
+ * Exported for workflows such as order approval that must acquire this
+ * exclusive barrier before locking a downstream payment row. Taking only the
+ * shared classified-mutation guard first and upgrading here later can invert
+ * the lock order against OCR Recheck (shared user -> payment).
+ */
+export async function assertAccountMergePointsMutationAllowed(userId: number, tx: any): Promise<void> {
   await lockAccountMergeUserRows([userId], tx);
   const cases = await getAccountMergeCasesForSourceForUpdate(userId, tx);
   assertNoActiveAccountMergeCase(userId, cases);

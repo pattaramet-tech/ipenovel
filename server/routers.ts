@@ -32,7 +32,10 @@ import {
 } from "./services/checkoutMaintenanceService";
 import { safeErrorSummary } from "../scripts/lib/safeErrorSummary.mjs";
 import { isDuplicateKeyError } from "./helpers/databaseErrorClassifier";
-import { mapOrderPaymentApprovalError } from "./helpers/adminPaymentApprovalError";
+import {
+  mapOrderPaymentApprovalError,
+  mapOrderPaymentRecheckError,
+} from "./helpers/adminPaymentApprovalError";
 import { fileRouter } from "./routers/fileRouter";
 import { ocrMetricsRouter } from "./routers/ocrMetricsRouter";
 import { r2Put, R2StorageError } from "./services/r2Storage";
@@ -1694,10 +1697,14 @@ export const appRouter = router({
       recheckOcr: adminProcedure
         .input(z.object({ paymentId: z.number().int().positive() }))
         .mutation(async ({ input, ctx }) => {
-          return recheckOrderPaymentOcr({
-            paymentId: input.paymentId,
-            adminUserId: ctx.user.id,
-          });
+          try {
+            return await recheckOrderPaymentOcr({
+              paymentId: input.paymentId,
+              adminUserId: ctx.user.id,
+            });
+          } catch (error) {
+            throw mapOrderPaymentRecheckError(error);
+          }
         }),
 
       /**

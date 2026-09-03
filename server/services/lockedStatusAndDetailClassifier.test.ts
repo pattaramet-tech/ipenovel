@@ -367,7 +367,9 @@ describe("the guard is ONE shared primitive, not per-caller", () => {
   it("approvePaymentInTx calls the shared primitive rather than reimplementing it", () => {
     const start = orderCode.indexOf("async function approvePaymentInTx(");
     const body = orderCode.slice(start, start + 3000);
-    expect(body).toMatch(/await lockAndRequireReviewablePayment\(paymentId, tx\)/);
+    expect(body).toMatch(
+      /await lockAndRequireReviewablePayment\(\s*paymentId,\s*tx,\s*undefined,\s*"points_exclusive"/
+    );
     // It must NOT contain its own copy of the guard - only ONE call site.
     expect(body).not.toMatch(/isReviewablePaymentStatus\(payment\.status as string\)/);
   });
@@ -376,7 +378,9 @@ describe("the guard is ONE shared primitive, not per-caller", () => {
     const txIdx = slipCode.indexOf("await dbConnection.transaction(async (tx: any) => {");
     expect(txIdx).toBeGreaterThan(-1);
     const body = slipCode.slice(txIdx, txIdx + 700);
-    expect(body).toMatch(/await orderService\.lockAndRequireReviewablePayment\(payment\.id, tx, publishedSlipVersion\)/);
+    expect(body).toMatch(
+      /await orderService\.lockAndRequireReviewablePayment\(\s*payment\.id,\s*tx,\s*publishedSlipVersion,\s*"points_exclusive"/
+    );
   });
 
   it("in BOTH callers, the guard runs before any claim, approval mutation or finalization", () => {
@@ -386,7 +390,7 @@ describe("the guard is ONE shared primitive, not per-caller", () => {
     // known_collision guard clause (LEGACY_KNOWN_COLLISION), pushing
     // finalizeOrderCompletion's call site further from the function start.
     const orderBody = orderCode.slice(orderStart, orderStart + 5400);
-    const orderGuardIdx = orderBody.indexOf("await lockAndRequireReviewablePayment(paymentId, tx)");
+    const orderGuardIdx = orderBody.indexOf("await lockAndRequireReviewablePayment(");
     const orderClaimIdx = orderBody.indexOf("const claim = await claimSlip(");
     const orderApproveIdx = orderBody.indexOf("ApprovalService.approvePaymentWithSource");
     const orderFinalizeIdx = orderBody.indexOf("await finalizeOrderCompletion(");
@@ -397,7 +401,7 @@ describe("the guard is ONE shared primitive, not per-caller", () => {
     // OCR automatic approval.
     const txIdx = slipCode.indexOf("await dbConnection.transaction(async (tx: any) => {");
     const slipGuardIdx = slipCode.indexOf(
-      "await orderService.lockAndRequireReviewablePayment(payment.id, tx, publishedSlipVersion)",
+      "await orderService.lockAndRequireReviewablePayment(",
       txIdx
     );
     const slipClaimIdx = slipCode.indexOf("const claim = await claimSlip(", txIdx);

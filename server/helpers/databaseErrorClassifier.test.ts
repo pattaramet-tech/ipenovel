@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   hasDatabaseDriverMetadata,
   isDuplicateKeyError,
+  isLockWaitTimeout,
   isTransactionDeadlock,
 } from "./databaseErrorClassifier";
 
@@ -172,6 +173,20 @@ describe("isTransactionDeadlock", () => {
     expect(isTransactionDeadlock({ errno: 1062, code: "ER_DUP_ENTRY" })).toBe(false);
     expect(isTransactionDeadlock({ code: "ECONNREFUSED" })).toBe(false);
     expect(isTransactionDeadlock(new Error("Deadlock found"))).toBe(false);
+  });
+});
+
+describe("isLockWaitTimeout", () => {
+  it("detects direct and wrapped lock-wait timeouts", () => {
+    expect(isLockWaitTimeout({ errno: 1205 })).toBe(true);
+    expect(isLockWaitTimeout({ cause: { errno: "1205" } })).toBe(true);
+    expect(isLockWaitTimeout({ cause: { code: "ER_LOCK_WAIT_TIMEOUT" } })).toBe(true);
+  });
+
+  it("rejects message-only lookalikes, deadlocks, and duplicate keys", () => {
+    expect(isLockWaitTimeout(new Error("Lock wait timeout exceeded"))).toBe(false);
+    expect(isLockWaitTimeout({ errno: 1213, code: "ER_LOCK_DEADLOCK" })).toBe(false);
+    expect(isLockWaitTimeout({ errno: 1062, code: "ER_DUP_ENTRY" })).toBe(false);
   });
 });
 

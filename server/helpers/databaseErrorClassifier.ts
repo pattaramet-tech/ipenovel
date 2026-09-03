@@ -38,6 +38,10 @@ const DUPLICATE_ENTRY_CODE = "ER_DUP_ENTRY";
 const DEADLOCK_ERRNO = 1213;
 const DEADLOCK_CODE = "ER_LOCK_DEADLOCK";
 
+/** A lock timeout is retryable by the caller, but never auto-retried here. */
+const LOCK_WAIT_TIMEOUT_ERRNO = 1205;
+const LOCK_WAIT_TIMEOUT_CODE = "ER_LOCK_WAIT_TIMEOUT";
+
 /**
  * How many `cause` links to follow before giving up. drizzle wraps the
  * driver error exactly once today; the extra headroom covers future
@@ -120,6 +124,38 @@ export function isTransactionDeadlock(error: unknown): boolean {
 
     if (errno === DEADLOCK_ERRNO) return true;
     if (link.code === DEADLOCK_CODE) return true;
+
+    current = link.cause;
+  }
+
+  return false;
+}
+
+/**
+ * True only for a MySQL/MariaDB lock-wait timeout. This classifier exists so
+ * API boundaries can return a fixed, retryable response without exposing SQL.
+ * It is intentionally not an automatic retry policy: the competing
+ * transaction may still hold the lock after 1205 is raised.
+ */
+export function isLockWaitTimeout(error: unknown): boolean {
+  const visited = new Set<object>();
+  let current: unknown = error;
+
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth += 1) {
+    if (current === null || typeof current !== "object") return false;
+    if (visited.has(current)) return false;
+    visited.add(current);
+
+    const link = current as { errno?: unknown; code?: unknown; cause?: unknown };
+    const errno =
+      typeof link.errno === "number"
+        ? link.errno
+        : typeof link.errno === "string" && /^\s*\d+\s*$/.test(link.errno)
+          ? Number(link.errno.trim())
+          : undefined;
+
+    if (errno === LOCK_WAIT_TIMEOUT_ERRNO) return true;
+    if (link.code === LOCK_WAIT_TIMEOUT_CODE) return true;
 
     current = link.cause;
   }
