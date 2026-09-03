@@ -162,6 +162,8 @@ Exact naming/schema belongs to IPE-021-D, but the semantics are required now.
 
 Ordinary financial commits lock only this small guard row long enough to validate that mutation is allowed. Account Merge locks the same guard rows in ascending `userId`, activates the durable guard, and increments `generation` when guard state changes.
 
+Guard-row existence is itself a correctness invariant, not a lazy convenience. IPE-021-D must backfill exactly one guard row for every existing user, initialize active merge state from authoritative `accountMergeCases`, create the guard in the same logical user-provisioning flow for every new user, and make every V2/bridged V1 mutation **fail closed** if the row is missing. An approval must never "create open on demand" after observing a missing row, because doing so can manufacture an unguarded state while a merge already exists.
+
 The `users` profile row is no longer the common exclusion primitive.
 
 ### 4.2 Dedicated points balance resource
@@ -210,7 +212,7 @@ write object with create-only semantics
 persist fileHash + immutable object identity + evidenceVersion atomically when publishing
 ```
 
-At minimum, storage write must reject replacing an already-published object identity with different bytes. If the underlying provider cannot enforce create-only semantics directly, the application needs an equivalent durable write-once registry.
+At minimum, storage write must reject replacing an already-published object identity with different bytes. If the underlying provider cannot enforce create-only semantics directly, IPE-021-D must add an equivalent durable write-once evidence registry keyed uniquely by object identity and storing the authoritative digest/size/content type. Publishing a subject may reference an object identity only after that registry entry exists; every replacement must mint a new identity and increment `evidenceVersion`. Existing generic `PutObject` must not be treated as proof of immutability merely because generated keys are random.
 
 Once this contract is proven, COMMIT does not need network I/O to establish that an unchanged immutable object identity still represents the bytes hashed during PREPARE.
 
@@ -248,7 +250,7 @@ PREPARE may be retried and may take seconds. It creates no financial value.
 8. Capture anti-replay compatibility state used by the decision.
 9. Produce an internal `PreparedApproval` object. It is server-generated and must never trust browser-provided identifiers/hashes.
 
-The browser may carry an opaque attempt token, but authoritative prepared evidence must be server-verifiable or recomputable.
+The browser may carry only an opaque attempt identifier. Authoritative prepared evidence remains server-side; if a prepared payload ever crosses a trust boundary, it must be authenticated (for example MAC/signed), expiry-bound, and bound to the authenticated actor/subject so a client cannot alter identifiers, evidence identity, version, or compatibility state. COMMIT consumes/revalidates the authoritative server-side record; browser fields are never the source of truth.
 
 ## 5.2 COMMIT — short database-only transaction
 
@@ -261,10 +263,10 @@ Canonical sequence for a single-user approval:
 3. lock approval subject (`payments` or `walletTopups`);
 4. reload and revalidate exact `SubjectSnapshot`/`evidenceVersion` and reviewability;
 5. validate the PREPARE compatibility epoch/backfill state required by the selected path;
-6. lock the actual balance resource only if this approval changes that balance:
+6. perform authoritative `paymentSlipClaims` insert/ownership check using prepared identifiers;
+7. lock the actual balance resource only if this approval changes that balance:
    - Order points effect → `pointsAccounts(userId)`;
    - Wallet credit → `walletAccounts(userId)`;
-7. perform authoritative `paymentSlipClaims` insert/ownership check using prepared identifiers;
 8. perform subject status writes and financial/entitlement writes;
 9. write idempotency/audit/history records;
 10. commit.
@@ -277,21 +279,25 @@ Account Merge may involve many classified resources. A common dedicated guard ro
 
 For multi-user operations, account guard rows are always locked in ascending `userId`.
 
-### 5.4 Balance lock ordering
+### 5.4 Claim/balance lock ordering and mixed-mode compatibility
 
-Balance rows are taken after the subject so an approval holds them only during value creation. Non-approval points/wallet operations must use the same resource-class ordering when they combine resources.
+The anti-replay claim is taken after the subject but **before** a balance mutex. This order matches the existing V1 financial shape: Order and Wallet establish the claim before their downstream points/wallet balance effect. Keeping that relative order avoids introducing a V1/V2 inversion during the period when an explicitly classified legacy V1 fallback still coexists with V2, and it avoids holding a balance row while waiting on a duplicate-claim decision.
+
+Balance rows are therefore taken only after the authoritative claim succeeds. Non-approval points/wallet operations that never touch a claim simply acquire the account guard and then their balance resource; operations combining more classes must preserve the same relative order.
 
 Global class order for IPE-021 implementation tests:
 
 ```text
 ACCOUNT_GUARD
   -> APPROVAL_SUBJECT
-  -> BALANCE_RESOURCE
   -> ANTI_REPLAY_CLAIM
+  -> BALANCE_RESOURCE
   -> LEAF/LEDGER/AUDIT WRITES
 ```
 
 No path may acquire an earlier class after a later class.
+
+**Mixed-mode bridge is mandatory before V2 enablement.** During migration, every V1 financial/classified mutation that can race Account Merge must begin by acquiring the new `ACCOUNT_GUARD` even if it temporarily still needs a `users` row for a legacy implementation detail. Account Merge must likewise acquire the new guard first and may retain its old `users` locks only as a downstream transitional lock. Once Merge starts treating the new guard as authoritative, no enabled V1 fallback may remain `users`-only. Likewise, all points mutators that can coexist with V2 must be moved onto the new points balance/idempotency resource before V2 points effects are enabled; otherwise V1 and V2 would serialize different representations of the same balance.
 
 The final implementation review must re-evaluate foreign-key side effects and InnoDB unique-index locking against this class order using real-database tests; the class order is a design contract, not a substitute for database concurrency verification.
 
@@ -377,12 +383,13 @@ Required behavior:
 
 IPE-021-D owns the cross-cutting schema/protocol work required to make B/C safe for cutover:
 
-1. dedicated account mutation guard rows + generation semantics;
-2. migration of Account Merge prepare/cancel/finalize to those guard rows;
-3. dedicated points balance row and migration/backfill from ledger state;
-4. points financial-effect idempotency uniqueness;
-5. modern immutable slip evidence/version contract;
-6. trusted anti-replay backfill readiness gate required by V2 fast path.
+1. dedicated account mutation guard rows + generation semantics, including complete existing-user backfill and new-user creation invariant;
+2. a mixed-mode bridge: all still-enabled V1 classified/financial mutations acquire the new account guard first, and Account Merge acquires the same guard before any transitional `users` lock;
+3. migration of Account Merge prepare/cancel/finalize to those guard rows;
+4. dedicated points balance row and migration/backfill from ledger state, with all coexisting points mutators moved to that same mutex before V2 points effects are enabled;
+5. points financial-effect idempotency uniqueness;
+6. modern immutable slip evidence/version contract with durable write-once identity enforcement;
+7. trusted anti-replay backfill readiness gate required by V2 fast path.
 
 All migration scripts must be idempotent or explicitly guarded and must have rollback/reconciliation instructions.
 
@@ -394,6 +401,8 @@ All scenarios below require real MySQL integration coverage, not static tests al
 |---|---|
 | Order V2 vs same Order V2 double click | exactly one approval/value effect; loser gets deterministic state conflict/idempotent result |
 | Wallet V2 vs same Wallet V2 double click | exactly one wallet credit |
+| V1 legacy fallback vs V2, same user/shared claim | no lock inversion or split-brain merge barrier; both acquire the new account guard first and preserve CLAIM-before-BALANCE relative order |
+| V1 fallback vs Account Merge after guard migration | common account guard serializes them; no enabled V1 mutation remains `users`-only |
 | Different Order approvals, same user | no user-profile mutex; serialize only shared points resource when points effect exists |
 | Different Wallet top-ups, same user | serialize on wallet balance row; both can succeed exactly once |
 | Order vs Wallet, same user | no `users` lock blocking; only genuinely shared account guard/financial resources interact |
@@ -429,18 +438,19 @@ C03/C04 diagnostics stay in place during V2 shadow/Preview comparison.
 
 ## 13. Preview rollout / rollback plan
 
-1. Deploy schema/guard/evidence prerequisites without route cutover.
-2. Backfill/verify points balance and immutable slip evidence as required.
-3. Require trusted anti-replay backfill readiness for V2 fast path.
-4. Deploy Order V2 behind feature flag / separate internal endpoint.
-5. Shadow PREPARE against eligible Preview subjects; compare V1/V2 classifications without creating value.
-6. Enable Order V2 commit in Preview; retain V1 fallback only for explicit legacy class.
-7. Repeat for Wallet V2.
-8. Run IPE-021-E real concurrency suite against the deployed schema.
-9. Observe lock waits, deadlocks, commit latency, claim conflicts, and rollback integrity.
-10. Cut over public admin routes only after independent review + Final Verify.
-11. Keep a one-switch rollback to V1 until a stable Preview window passes.
-12. Remove legacy approval architecture only in IPE-021-G after production-readiness verification.
+1. Deploy schema/guard/evidence prerequisites without route cutover; backfill every account guard and make new-user provisioning create it.
+2. Enable the mixed-mode bridge first: V1 classified/financial mutations and Account Merge both acquire the new account guard before any transitional legacy lock; migrate all coexisting points mutators to the new points balance resource.
+3. Backfill/verify points balance and immutable slip evidence as required.
+4. Require trusted anti-replay backfill readiness for V2 fast path.
+5. Deploy Order V2 behind feature flag / separate internal endpoint.
+6. Shadow PREPARE against eligible Preview subjects; compare V1/V2 classifications without creating value.
+7. Enable Order V2 commit in Preview; retain V1 fallback only for explicit legacy class that already participates in the mixed-mode bridge.
+8. Repeat for Wallet V2.
+9. Run IPE-021-E real concurrency suite against the deployed schema, including V1/V2/Account Merge coexistence cases.
+10. Observe lock waits, deadlocks, commit latency, claim conflicts, and rollback integrity.
+11. Cut over public admin routes only after independent review + Final Verify.
+12. Keep a one-switch rollback to bridged V1 until a stable Preview window passes.
+13. Remove legacy approval architecture only in IPE-021-G after production-readiness verification.
 
 ## 14. Explicit non-solutions
 
@@ -459,14 +469,15 @@ The following do not solve the architectural problem and must not be used as the
 
 IPE-021-A is complete when independent review agrees on these implementation decisions:
 
-1. dedicated account mutation guard replaces `users` as Account Merge rendezvous;
-2. dedicated points balance/idempotency resource replaces `users` as points mutex;
-3. modern slip evidence becomes immutable/versioned;
-4. V2 fast path requires trusted anti-replay backfill readiness;
-5. expensive conflict/legacy preparation runs outside financial commit locks;
-6. COMMIT follows the canonical resource-class order and is database-local;
-7. V1 remains only as a temporary, explicitly classified legacy fallback during rollout;
-8. IPE-021-B and C build parallel engines before any admin route cutover.
+1. dedicated account mutation guard replaces `users` as Account Merge rendezvous and exists exactly once for every user;
+2. mixed-mode bridge makes Account Merge, all still-enabled V1 classified mutations, and V2 rendezvous on that same guard before V2 enablement;
+3. dedicated points balance/idempotency resource replaces `users` as points mutex for every coexisting points mutator;
+4. modern slip evidence becomes immutable/versioned with enforceable write-once identity;
+5. V2 fast path requires trusted anti-replay backfill readiness;
+6. expensive conflict/legacy preparation runs outside financial commit locks;
+7. COMMIT follows `ACCOUNT_GUARD -> SUBJECT -> CLAIM -> BALANCE -> LEAF` and is database-local;
+8. V1 remains only as a temporary, explicitly classified **bridged** legacy fallback during rollout;
+9. IPE-021-B and C build parallel engines before any admin route cutover.
 
 ## 16. Handoff sequence and dependency gate
 
