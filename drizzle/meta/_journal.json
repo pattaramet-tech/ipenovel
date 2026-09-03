@@ -316,6 +316,20 @@
       "when": 1788182918549,
       "tag": "0044_add_sports_vote_catalog_points_rewards",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "5",
+      "when": 1788454562794,
+      "tag": "0045_add_payment_v2_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "5",
+      "when": 1788456848950,
+      "tag": "0046_add_points_accounts_mutex",
+      "breakpoints": true
     }
   ]
 }

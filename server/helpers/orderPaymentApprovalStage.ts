@@ -1,6 +1,9 @@
 import { isLockWaitTimeout } from "./databaseErrorClassifier";
 
 export const ORDER_PAYMENT_APPROVAL_LOCK_STAGES = [
+  "account_guard",
+  // Retained as a recognized legacy label for old C03/C04 log/error chains;
+  // 0046 no longer emits it because points do not lock users exclusively.
   "points_user_lock",
   "payment_lock",
   "slip_claim",

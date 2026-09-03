@@ -12,32 +12,32 @@ describe("IPE-020 order approval lock contract", () => {
   const submissionCode = read("server/services/slipSubmissionService.ts");
   const recheckCode = read("server/services/ocrRecheckService.ts");
 
-  it("the approval mode takes the exclusive user/points barrier before payment", () => {
+  it("approval takes only the shared account guard before payment; the points balance mutex is deferred until finalization", () => {
     const start = orderCode.indexOf(
       "export async function lockAndRequireReviewablePayment("
     );
     const body = orderCode.slice(start, start + 3000);
-    const exclusive = body.indexOf(
-      "db.assertAccountMergePointsMutationAllowed(ownerOrder.userId, tx)"
+    const accountGuard = body.indexOf(
+      "db.assertAccountMergeClassifiedMutationAllowed(ownerOrder.userId, tx)"
     );
     const payment = body.indexOf(
       "db.lockPaymentForUpdate(paymentId, tx)"
     );
 
-    expect(exclusive).toBeGreaterThan(-1);
-    expect(payment).toBeGreaterThan(exclusive);
+    expect(accountGuard).toBeGreaterThan(-1);
+    expect(payment).toBeGreaterThan(accountGuard);
+    expect(body).not.toContain("assertAccountMergePointsMutationAllowed");
     expect(dbCode).toMatch(
-      /export async function assertAccountMergePointsMutationAllowed\([\s\S]*lockAccountMergeUserRows\(\[userId\], tx\)/
+      /export async function assertAccountMergePointsMutationAllowed\([\s\S]*assertAccountMergeClassifiedMutationAllowed\(userId, tx\)[\s\S]*lockPointsAccountRowsForUpdate\(\[userId\], tx\)/
     );
   });
 
-  it("manual and automatic approval explicitly request points-exclusive ordering", () => {
+  it("manual and automatic approval use the same shared guard primitive without a points-exclusive mode", () => {
     const manual = orderCode.slice(
       orderCode.indexOf("async function approvePaymentInTx(")
     );
-    expect(manual).toMatch(
-      /lockAndRequireReviewablePayment\(\s*paymentId,\s*tx,\s*undefined,\s*"points_exclusive"/
-    );
+    expect(manual).toMatch(/lockAndRequireReviewablePayment\(paymentId, tx\)/);
+    expect(manual).not.toContain("points_exclusive");
 
     const automatic = submissionCode.slice(
       submissionCode.indexOf(
@@ -45,8 +45,9 @@ describe("IPE-020 order approval lock contract", () => {
       )
     );
     expect(automatic).toMatch(
-      /lockAndRequireReviewablePayment\(\s*payment\.id,\s*tx,\s*publishedSlipVersion,\s*"points_exclusive"/
+      /lockAndRequireReviewablePayment\(\s*payment\.id,\s*tx,\s*publishedSlipVersion\s*\)/
     );
+    expect(automatic).not.toContain("points_exclusive");
   });
 
   it("OCR Recheck remains on the shared mutation path and never asks for the points lock", () => {
