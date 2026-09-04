@@ -203,11 +203,11 @@ export async function assertDatabaseAvailable(): Promise<void> {
 
 /**
  * Creates the IPE-021-D account-mutation guard as part of user provisioning.
- * Existing users should already have a row from migration 0045. If an
- * existing row is unexpectedly missing, derive its state from authoritative
- * accountMergeCases rather than manufacturing `open`: this repair path is
- * deliberately outside financial mutation boundaries and fails closed on
- * ambiguous historical state.
+ * Existing users should already have a row from migration 0045. During the
+ * IPE-022 mixed-version bridge, however, an older instance may create a user
+ * after the one-time backfill. Derive that missing row from authoritative
+ * accountMergeCases rather than manufacturing `open`, and make concurrent
+ * repair idempotent. Ambiguous historical state still fails closed.
  */
 async function ensureProvisionedAccountMutationGuard(userId: number, tx: any): Promise<void> {
   const existing = await tx
@@ -227,12 +227,15 @@ async function ensureProvisionedAccountMutationGuard(userId: number, tx: any): P
   }
 
   const active = cases[0];
-  await tx.insert(accountMutationGuards).values({
-    userId,
-    generation: active ? 1 : 0,
-    mergeState: active ? "merge_guarded" : "open",
-    activeMergeCaseId: active ? Number(active.id) : null,
-  });
+  await tx
+    .insert(accountMutationGuards)
+    .values({
+      userId,
+      generation: active ? 1 : 0,
+      mergeState: active ? "merge_guarded" : "open",
+      activeMergeCaseId: active ? Number(active.id) : null,
+    })
+    .onDuplicateKeyUpdate({ set: { userId } });
 }
 
 /** Provision the 0046 points balance row alongside a user. Migration 0046
@@ -2421,17 +2424,31 @@ export async function getUserPointsBalance(userId: number, tx?: any) {
   const db = tx || await getDb();
   if (!db) return "0.00";
 
-  const result = await db
+  const accounts = await db
     .select({ balance: pointsAccounts.balance })
     .from(pointsAccounts)
     .where(eq(pointsAccounts.userId, userId))
     .limit(1);
-  if (result.length > 0) return result[0].balance.toString();
 
-  // Preserve the historical "unknown/nonexistent user => 0" read behavior,
-  // but fail closed when a real user exists without the required 0046 row.
+  // Compatibility read for a rolling deploy: an older instance can append a
+  // ledger row without updating pointsAccounts. Until every old instance is
+  // drained, the latest committed ledger row is therefore the convergence
+  // source. New writers update account + ledger in one transaction, so no
+  // other session can observe an account-only intermediate state here.
+  const latestLedger = await db
+    .select({ balanceAfter: pointsTransactions.balanceAfter })
+    .from(pointsTransactions)
+    .where(eq(pointsTransactions.userId, userId))
+    .orderBy(desc(pointsTransactions.createdAt), desc(pointsTransactions.id))
+    .limit(1);
+  if (latestLedger.length > 0) return latestLedger[0].balanceAfter.toString();
+  if (accounts.length > 0) return accounts[0].balance.toString();
+
+  // A legacy-created user with no points history has the canonical zero
+  // balance even before its missing mirror is repaired at the next locked
+  // mutation/startup reconciliation. Unknown users retain the same result.
   const user = await db.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1);
-  if (user.length > 0) throw new PointsAccountMissingError(userId);
+  if (user.length > 0) return "0.00";
   return "0.00";
 }
 
@@ -8351,7 +8368,7 @@ export async function lockAccountMutationGuardRows(
   const locked: Array<{ userId: number; generation: number; mergeState: "open" | "merge_guarded"; activeMergeCaseId: number | null }> = [];
 
   for (const userId of ordered) {
-    const rows = unwrapMysqlRows(
+    const acquire = async () => unwrapMysqlRows(
       mode === "exclusive"
         ? await tx.execute(
             sql`SELECT userId, generation, mergeState, activeMergeCaseId FROM accountMutationGuards WHERE userId = ${userId} FOR UPDATE`
@@ -8360,6 +8377,16 @@ export async function lockAccountMutationGuardRows(
             sql`SELECT userId, generation, mergeState, activeMergeCaseId FROM accountMutationGuards WHERE userId = ${userId} LOCK IN SHARE MODE`
           )
     );
+
+    let rows = await acquire();
+    if (rows.length === 0) {
+      // Rolling-deploy bridge: a user committed by an older instance after
+      // the 0045 backfill has no guard yet. Repair only on an observed miss,
+      // derive state from canonical merge cases (never "assume open"), then
+      // immediately acquire the requested lock before allowing any write.
+      await ensureProvisionedAccountMutationGuard(userId, tx);
+      rows = await acquire();
+    }
     if (rows.length !== 1) throw new AccountMutationGuardMissingError(userId);
     const row = rows[0];
     locked.push({
@@ -8555,10 +8582,36 @@ export async function assertAccountMergeClassifiedMutationsAllowed(userIds: numb
 export async function lockPointsAccountRowsForUpdate(userIds: number[], tx: any): Promise<number[]> {
   const ordered = normalizeAccountMutationGuardUserIds(userIds);
   for (const userId of ordered) {
-    const rows = unwrapMysqlRows(
-      await tx.execute(sql`SELECT userId FROM pointsAccounts WHERE userId = ${userId} FOR UPDATE`)
+    const acquire = async () => unwrapMysqlRows(
+      await tx.execute(sql`SELECT userId, balance FROM pointsAccounts WHERE userId = ${userId} FOR UPDATE`)
     );
+
+    let rows = await acquire();
+    if (rows.length === 0) {
+      // The caller already owns the transitional users lock, which blocks the
+      // legacy points writer. Repair only an observed missing row, then lock
+      // it before any arithmetic can proceed.
+      await ensureProvisionedPointsAccount(userId, tx);
+      rows = await acquire();
+    }
     if (rows.length !== 1) throw new PointsAccountMissingError(userId);
+
+    const latest = await tx
+      .select({ balanceAfter: pointsTransactions.balanceAfter })
+      .from(pointsTransactions)
+      .where(eq(pointsTransactions.userId, userId))
+      .orderBy(desc(pointsTransactions.createdAt), desc(pointsTransactions.id))
+      .limit(1);
+    const ledgerBalance = latest[0]?.balanceAfter?.toString() ?? "0.00";
+    if (rows[0].balance != null && Number(rows[0].balance) !== Number(ledgerBalance)) {
+      await tx
+        .update(pointsAccounts)
+        .set({
+          balance: ledgerBalance as any,
+          version: sql`${pointsAccounts.version} + 1`,
+        })
+        .where(eq(pointsAccounts.userId, userId));
+    }
   }
   return ordered;
 }

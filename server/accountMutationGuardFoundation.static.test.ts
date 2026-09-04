@@ -22,7 +22,7 @@ describe("IPE-021-D account mutation guard foundation", () => {
   });
 
   it("backfills every existing user from authoritative non-cancelled merge cases", () => {
-    expect(migration).toContain("CREATE TABLE `accountMutationGuards`");
+    expect(migration).toContain("CREATE TABLE IF NOT EXISTS `accountMutationGuards`");
     expect(migration).toContain("INSERT INTO `accountMutationGuards`");
     expect(migration).toContain("FROM `users` u");
     expect(migration).toContain("LEFT JOIN `accountMergeCases` amc");
@@ -30,7 +30,7 @@ describe("IPE-021-D account mutation guard foundation", () => {
     expect(migration).toContain("CASE WHEN amc.`id` IS NULL THEN 'open' ELSE 'merge_guarded' END");
   });
 
-  it("provisions guards with users but financial guard acquisition itself never creates missing rows", () => {
+  it("provisions guards with users and repairs legacy-created users from canonical merge state", () => {
     const provisioningStart = dbCode.indexOf("async function ensureProvisionedAccountMutationGuard");
     const upsertStart = dbCode.indexOf("export async function upsertUser");
     const guardLockStart = dbCode.indexOf("export async function lockAccountMutationGuardRows");
@@ -42,6 +42,9 @@ describe("IPE-021-D account mutation guard foundation", () => {
     const guardLockBody = dbCode.slice(guardLockStart, legacyLockStart);
     expect(guardLockBody).toContain("throw new AccountMutationGuardMissingError(userId)");
     expect(guardLockBody).not.toContain("insert(accountMutationGuards)");
+    expect(guardLockBody).toContain("ensureProvisionedAccountMutationGuard(userId, tx)");
+    expect(dbCode.slice(provisioningStart, upsertStart)).toContain("accountMergeCases");
+    expect(dbCode.slice(provisioningStart, upsertStart)).toContain("onDuplicateKeyUpdate");
   });
 
   it("bridges both merge lifecycle and ordinary V1 mutations through the new guard before users", () => {

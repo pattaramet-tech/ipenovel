@@ -65,12 +65,13 @@ describe("Account Merge shared mutation barrier", () => {
     expect(pointsGuard).not.toContain("lockLegacyAccountMergeUsersExclusive");
   });
 
-  it("missing dedicated guard fails closed rather than lazily manufacturing open state", () => {
+  it("repairs a legacy-created user's missing guard through the canonical-state provisioner", () => {
     const guardLocks = bodyBetween(
       "export async function lockAccountMutationGuardRows",
       "async function lockLegacyAccountMergeUsersExclusive"
     );
     expect(guardLocks).toContain("throw new AccountMutationGuardMissingError(userId)");
     expect(guardLocks).not.toContain("insert(accountMutationGuards)");
+    expect(guardLocks).toContain("ensureProvisionedAccountMutationGuard(userId, tx)");
   });
 });

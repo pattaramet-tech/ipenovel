@@ -627,9 +627,11 @@ export type CouponUsage = typeof couponUsages.$inferSelect;
 export type InsertCouponUsage = typeof couponUsages.$inferInsert;
 
 /**
- * Authoritative points balance + serialization row (IPE-021-D / 0046).
- * Exactly one row exists for every user. The ledger stays immutable history,
- * while this row is the live balance source and the exclusive points mutex.
+ * Points balance mirror + serialization row (IPE-021-D / 0046). Exactly one
+ * row exists for every user. During the IPE-022 rolling-deploy bridge the
+ * ledger remains the compatibility convergence source because an old
+ * instance can still append ledger-only writes; after old instances drain,
+ * this row remains the live balance source and exclusive points mutex.
  */
 export const pointsAccounts = mysqlTable(
   "pointsAccounts",
@@ -1451,8 +1453,9 @@ export type InsertAccountRecoveryAuditLog = typeof accountRecoveryAuditLogs.$inf
  * Exactly one row must exist for every user. Migration 0045 backfills the
  * complete existing user set from authoritative accountMergeCases state;
  * production user-provisioning paths create this row in the same transaction
- * as a new user. Mutation guards fail closed when it is missing - no lazy
- * "assume open" creation is allowed at the financial boundary.
+ * as a new user. The temporary IPE-022 rolling bridge may repair a row missed
+ * by an older instance, but derives it from canonical merge-case state and
+ * never lazily assumes `open`.
  *
  * `generation` changes only when merge exclusion changes (open -> guarded or
  * guarded -> open). A prepared V2 approval can therefore bind to both state

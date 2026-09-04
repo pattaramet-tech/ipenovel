@@ -37,11 +37,11 @@ describe("IPE-021-D / 0046 pointsAccounts foundation", () => {
     expect(migration).toContain("UNIQUE(`userId`,`effectKey`)");
   });
 
-  it("reads live balance from pointsAccounts instead of deriving it from ledger ordering", () => {
+  it("reads pointsAccounts with a deterministic latest-ledger rolling-deploy fallback", () => {
     const body = between(db, "export async function getUserPointsBalance", "type PointsTransactionWrite");
     expect(body).toContain(".from(pointsAccounts)");
-    expect(body).not.toContain(".from(pointsTransactions)");
-    expect(body).toContain("PointsAccountMissingError");
+    expect(body).toContain(".from(pointsTransactions)");
+    expect(body).toContain("desc(pointsTransactions.createdAt), desc(pointsTransactions.id)");
   });
 
   it("points writes serialize on pointsAccounts FOR UPDATE and never take users FOR UPDATE as the balance mutex", () => {
@@ -49,6 +49,8 @@ describe("IPE-021-D / 0046 pointsAccounts foundation", () => {
     const guard = between(db, "export async function assertAccountMergePointsMutationAllowed", "export async function assertAccountMergeClassifiedMutationAllowed");
     expect(lockRows).toContain("FROM pointsAccounts");
     expect(lockRows).toContain("FOR UPDATE");
+    expect(lockRows).toContain("ensureProvisionedPointsAccount(userId, tx)");
+    expect(lockRows).toContain("ledgerBalance");
     expect(guard).toContain("assertAccountMergeClassifiedMutationAllowed(userId, tx)");
     expect(guard).toContain("lockPointsAccountRowsForUpdate([userId], tx)");
     expect(guard).not.toContain("lockLegacyAccountMergeUsersExclusive");

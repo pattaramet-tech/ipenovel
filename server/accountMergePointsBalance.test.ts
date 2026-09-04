@@ -3,10 +3,9 @@ import * as db from "./db";
 
 /**
  * Connection-free proof that Account Merge reads the authoritative
- * pointsAccounts row introduced by migration 0046. The migration itself
- * proves that this row is backfilled from canonical
- * `(createdAt DESC, id DESC)` ledger chronology; runtime readers must not
- * independently rescan the ledger after cutover.
+ * pointsAccounts row introduced by migration 0046, with the temporary
+ * rolling-deploy ledger fallback required while old instances can still
+ * append ledger-only writes.
  */
 
 /** A minimal drizzle-select chain stand-in. Records the selected projection
@@ -22,6 +21,7 @@ function recordingTx(resultSets: Array<Array<{ balance?: string; id?: number }>>
     },
     from(table: unknown) { recorded.tables.push(table); return chain; },
     where() { return chain; },
+    orderBy() { return chain; },
     limit() { return Promise.resolve(rows); },
   };
   return { chain, recorded };
@@ -41,6 +41,11 @@ describe("getAccountMergePointsBalance - authoritative points account", () => {
   it("returns the current authoritative balance as a string", async () => {
     const { chain } = recordingTx([[{ balance: "1350.75" }]]);
     expect(await db.getAccountMergePointsBalance(7, chain)).toBe("1350.75");
+  });
+
+  it("prefers a newer legacy ledger balance during the mixed-version bridge", async () => {
+    const { chain } = recordingTx([[{ balance: "10.00" }], [{ balanceAfter: "17.00" } as any]]);
+    expect(await db.getAccountMergePointsBalance(7, chain)).toBe("17.00");
   });
 
   it("returns \"0.00\" for an unknown user with no points account", async () => {
