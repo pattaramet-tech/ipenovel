@@ -124,12 +124,13 @@ console.log(
 const { default: mysql } = await import("mysql2/promise");
 const { drizzle } = await import("drizzle-orm/mysql2");
 const { and, asc, eq, gt, or } = await import("drizzle-orm");
-let schema, identifiers, parser, fileHashService, legacyCollisionService;
+let schema, identifiers, parser, fileHashService, legacyCollisionService, privateFileRef;
 try {
   schema = await import("../drizzle/schema.ts");
   identifiers = await import("../server/services/slipIdentifierService.ts");
   parser = await import("../server/ocr-slip-verification-v2.ts");
   fileHashService = await import("../server/services/slipFileHashService.ts");
+  privateFileRef = await import("../shared/privateFileRef.ts");
   legacyCollisionService = await import("../server/services/slipLegacyCollisionService.ts");
 } catch (error) {
   if (error instanceof Error && error.code === "ERR_MODULE_NOT_FOUND") {
@@ -1095,6 +1096,9 @@ async function processRows(sourceType, rows) {
       const recovery = await recoverFileHashIdentifier({
         slipImageUrl: row.slipImageUrl,
         computeSlipFileHash: fileHashService.computeSlipFileHash,
+        computeTrustedLegacySlipFileHash: fileHashService.computeTrustedLegacySlipFileHash,
+        isPrivateObjectRef: privateFileRef.isPrivateObjectRef,
+        isTrustedLegacySlipUrl: fileHashService.isTrustedLegacySlipUrl,
       });
 
       if (recovery.fileHash) {

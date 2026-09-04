@@ -4,7 +4,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { AlertTriangle, Loader2 } from "lucide-react";
-import { buildManusLoginUrl, GOOGLE_LOGIN_START_PATH } from "@/const";
+import { GOOGLE_LOGIN_START_PATH, tryBuildManusLoginUrl } from "@/const";
 import { isMandatoryGoogleConnectionEnabled } from "@/_core/hooks/migrationGate";
 import { isSessionExpiredStatus } from "./loginPagePresentation";
 
@@ -22,9 +22,10 @@ import { isSessionExpiredStatus } from "./loginPagePresentation";
 // all of that is generated, cookied, and redirected from. The "sign in
 // the old way" button is the exact same Manus authorization URL
 // getLoginUrl() itself would have returned before this flag existed
-// (appId, redirectUri, state, type=signIn all identical - see
-// buildManusLoginUrl in const.ts, the same pure function this page and
-// resolveLoginUrl's "manus" branch both call).
+// (appId, redirectUri, state, type=signIn all identical). The page uses
+// tryBuildManusLoginUrl so a Google-enabled Preview with no legacy Manus
+// env can still render; when config exists, that wrapper delegates to the
+// same strict buildManusLoginUrl used by resolveLoginUrl's Manus branch.
 //
 // There is no more separate local (email/password) admin login page (see
 // security/remove-local-admin-password-login) - an unauthenticated visitor
@@ -68,7 +69,7 @@ export default function LoginPage() {
     );
   }
 
-  const manusLoginUrl = buildManusLoginUrl({
+  const manusLoginUrl = tryBuildManusLoginUrl({
     oauthPortalUrl: import.meta.env.VITE_OAUTH_PORTAL_URL,
     appId: import.meta.env.VITE_APP_ID,
     redirectUri: `${window.location.origin}/api/oauth/callback`,
@@ -105,10 +106,12 @@ export default function LoginPage() {
         {mandatoryConnection ? (
           <>
             <div className="flex flex-col gap-3">
-              <Button asChild size="lg" className="w-full">
-                <a href={manusLoginUrl}>เข้าสู่ระบบบัญชีเดิม</a>
-              </Button>
-              <Button asChild variant="outline" size="lg" className="w-full">
+              {manusLoginUrl && (
+                <Button asChild size="lg" className="w-full">
+                  <a href={manusLoginUrl}>เข้าสู่ระบบบัญชีเดิม</a>
+                </Button>
+              )}
+              <Button asChild variant={manusLoginUrl ? "outline" : "default"} size="lg" className="w-full">
                 <a href={GOOGLE_LOGIN_START_PATH}>เข้าสู่ระบบด้วย Google สำหรับสมาชิกใหม่</a>
               </Button>
             </div>
@@ -123,9 +126,11 @@ export default function LoginPage() {
               <Button asChild size="lg" className="w-full">
                 <a href={GOOGLE_LOGIN_START_PATH}>เข้าสู่ระบบด้วย Google</a>
               </Button>
-              <Button asChild variant="outline" size="lg" className="w-full">
-                <a href={manusLoginUrl}>เข้าสู่ระบบด้วยวิธีเดิม</a>
-              </Button>
+              {manusLoginUrl && (
+                <Button asChild variant="outline" size="lg" className="w-full">
+                  <a href={manusLoginUrl}>เข้าสู่ระบบด้วยวิธีเดิม</a>
+                </Button>
+              )}
             </div>
             <p className="mt-8 text-sm text-slate-600 text-center leading-relaxed">
               สมาชิกเดิมยังสามารถเข้าสู่ระบบด้วยวิธีเดิมได้ หากต้องการเปลี่ยนมาใช้ Google

@@ -34,6 +34,14 @@ const DUPLICATE_ENTRY_ERRNO = 1062;
 /** mysql2/MariaDB duplicate-entry error code. */
 const DUPLICATE_ENTRY_CODE = "ER_DUP_ENTRY";
 
+/** A deadlock may be retried only by abandoning the failed transaction. */
+const DEADLOCK_ERRNO = 1213;
+const DEADLOCK_CODE = "ER_LOCK_DEADLOCK";
+
+/** A lock timeout is retryable by the caller, but never auto-retried here. */
+const LOCK_WAIT_TIMEOUT_ERRNO = 1205;
+const LOCK_WAIT_TIMEOUT_CODE = "ER_LOCK_WAIT_TIMEOUT";
+
 /**
  * How many `cause` links to follow before giving up. drizzle wraps the
  * driver error exactly once today; the extra headroom covers future
@@ -79,6 +87,100 @@ export function isDuplicateKeyError(error: unknown): boolean {
 
     if (isDuplicateEntryErrno(link.errno)) return true;
     if (link.code === DUPLICATE_ENTRY_CODE) return true;
+
+    current = link.cause;
+  }
+
+  return false;
+}
+
+/**
+ * True only for a MySQL/MariaDB deadlock, where the server has already picked
+ * this transaction as the victim and rolled it back. A fresh-transaction
+ * retry can therefore make progress without waiting for the same lock again.
+ *
+ * Deliberately does NOT classify ER_LOCK_WAIT_TIMEOUT (1205). A lock-wait
+ * timeout has already consumed the configured wait period and the competing
+ * transaction may still own the lock; immediately repeating the operation
+ * commonly doubles user-visible latency and connection-pool pressure.
+ * Never matches messages or SQL text.
+ */
+export function isTransactionDeadlock(error: unknown): boolean {
+  const visited = new Set<object>();
+  let current: unknown = error;
+
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth += 1) {
+    if (current === null || typeof current !== "object") return false;
+    if (visited.has(current)) return false;
+    visited.add(current);
+
+    const link = current as { errno?: unknown; code?: unknown; cause?: unknown };
+    const errno =
+      typeof link.errno === "number"
+        ? link.errno
+        : typeof link.errno === "string" && /^\s*\d+\s*$/.test(link.errno)
+          ? Number(link.errno.trim())
+          : undefined;
+
+    if (errno === DEADLOCK_ERRNO) return true;
+    if (link.code === DEADLOCK_CODE) return true;
+
+    current = link.cause;
+  }
+
+  return false;
+}
+
+/**
+ * True only for a MySQL/MariaDB lock-wait timeout. This classifier exists so
+ * API boundaries can return a fixed, retryable response without exposing SQL.
+ * It is intentionally not an automatic retry policy: the competing
+ * transaction may still hold the lock after 1205 is raised.
+ */
+export function isLockWaitTimeout(error: unknown): boolean {
+  const visited = new Set<object>();
+  let current: unknown = error;
+
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth += 1) {
+    if (current === null || typeof current !== "object") return false;
+    if (visited.has(current)) return false;
+    visited.add(current);
+
+    const link = current as { errno?: unknown; code?: unknown; cause?: unknown };
+    const errno =
+      typeof link.errno === "number"
+        ? link.errno
+        : typeof link.errno === "string" && /^\s*\d+\s*$/.test(link.errno)
+          ? Number(link.errno.trim())
+          : undefined;
+
+    if (errno === LOCK_WAIT_TIMEOUT_ERRNO) return true;
+    if (link.code === LOCK_WAIT_TIMEOUT_CODE) return true;
+
+    current = link.cause;
+  }
+
+  return false;
+}
+
+/**
+ * Detects a real database-driver shaped error without looking at its message,
+ * SQL text, or parameters. Used only to decide that an unexpected failure
+ * must be treated as an internal server error while its cause remains
+ * available to the sanitized server logger.
+ */
+export function hasDatabaseDriverMetadata(error: unknown): boolean {
+  const visited = new Set<object>();
+  let current: unknown = error;
+
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth += 1) {
+    if (current === null || typeof current !== "object") return false;
+    if (visited.has(current)) return false;
+    visited.add(current);
+
+    const link = current as { errno?: unknown; code?: unknown; sqlState?: unknown; cause?: unknown };
+    if (link.errno !== undefined || link.sqlState !== undefined) return true;
+    if (typeof link.code === "string" && link.code.startsWith("ER_")) return true;
 
     current = link.cause;
   }

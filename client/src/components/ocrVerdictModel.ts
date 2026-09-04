@@ -95,6 +95,12 @@ export interface OcrPanelInput {
     matchedOrderId?: number;
     /** True when found in pre-migration approved records, not the registry. */
     viaLegacyCompatibility?: boolean;
+    /**
+     * For unresolved findings, distinguishes a specific live-scan record from
+     * the post-backfill GLOBAL file-axis coverage gap. A matched source in the
+     * latter case is representative context only, never a detected match.
+     */
+    unresolvedScope?: "legacy_scan_record" | "historical_file_axis_coverage";
   } | null;
   /**
    * The server's recipient verdict (verifySlipData's breakdown). When present
@@ -322,16 +328,27 @@ export function describeDuplicate(input: OcrPanelInput): DuplicatePresentation {
     input.reviewReason === "LEGACY_APPROVED_SLIP_UNRESOLVED" ||
     dup?.strength === "unresolved"
   ) {
-    const matched = matchedSourceNavigation(dup);
+    if (dup?.unresolvedScope === "historical_file_axis_coverage") {
+      return {
+        strength: "unresolved",
+        headline: "Historical file-axis replay coverage is incomplete",
+        caveat:
+          "This is NOT a detected match to any specific historical order or top-up. Some approved " +
+          "legacy records permanently lost their slip bytes, so a new slip with fileHash-only " +
+          "evidence cannot be proven fully replay-safe against that global gap. A bank reference " +
+          "or QR identifier clears the uncertainty automatically; otherwise normal approval must " +
+          "remain blocked unless the applicable admin workflow explicitly accepts that residual risk.",
+      };
+    }
 
+    const matched = matchedSourceNavigation(dup);
     return {
       strength: "unresolved",
-      headline: "Historical record could not be verified",
+      headline: "Historical scan record could not be verified",
       caveat:
-        "An approved record predates the claim registry and its slip image could not be " +
-        "verified server-side, so historical replay protection for it is incomplete. This " +
-        "is NOT a proven duplicate - it cannot be confirmed either way. An admin must " +
-        "review the historical record manually before this can be approved.",
+        "A specific approved record encountered by the active legacy scan could not be verified " +
+        "server-side. This is NOT a proven duplicate, but it requires manual investigation and " +
+        "cannot use the post-backfill file-axis risk override.",
       matchedLabel: matched?.label,
       matchedHref: matched?.href ?? undefined,
     };

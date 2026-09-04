@@ -132,10 +132,7 @@ async function readBodyBounded(
  * the server toward an internal address. Same timeout/size bounds as private
  * R2 hashing. Returns undefined on every validation/fetch failure.
  */
-export async function computeTrustedLegacySlipFileHash(
-  rawUrl: string | null | undefined,
-  deps: Pick<ComputeSlipFileHashDeps, "fetchImpl" | "timeoutMs" | "maxBytes"> = {}
-): Promise<string | undefined> {
+function parseTrustedLegacySlipUrl(rawUrl: string | null | undefined): URL | undefined {
   if (!rawUrl) return undefined;
   let parsed: URL;
   try {
@@ -152,6 +149,20 @@ export async function computeTrustedLegacySlipFileHash(
   ) {
     return undefined;
   }
+  return parsed;
+}
+
+/** True only for the exact historical CDN URL shape eligible for legacy handling. */
+export function isTrustedLegacySlipUrl(rawUrl: string | null | undefined): boolean {
+  return parseTrustedLegacySlipUrl(rawUrl) !== undefined;
+}
+
+export async function computeTrustedLegacySlipFileHash(
+  rawUrl: string | null | undefined,
+  deps: Pick<ComputeSlipFileHashDeps, "fetchImpl" | "timeoutMs" | "maxBytes"> = {}
+): Promise<string | undefined> {
+  const parsed = parseTrustedLegacySlipUrl(rawUrl);
+  if (!parsed) return undefined;
 
   const fetchImpl = deps.fetchImpl ?? fetch;
   const timeoutMs = deps.timeoutMs ?? SLIP_HASH_FETCH_TIMEOUT_MS;

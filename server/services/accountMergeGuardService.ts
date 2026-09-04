@@ -144,8 +144,11 @@ export async function prepareAccountMergeGuard(params: {
         Number(existing.originAccountRecoveryRequestId) === params.requestId &&
         Number(existing.targetUserId) === params.targetUserId
       ) {
-        // Retried prepare after a lost response: the durable case is already
-        // authoritative. Never append a second audit event for a no-op retry.
+        // Retried prepare after a lost response: both durable representations
+        // must already agree. Never accept an old case row while the new
+        // account-mutation guard points elsewhere (or is missing).
+        await db.assertAccountMutationGuardBoundToMergeCase(sourceUserId, Number(existing.id), tx);
+        // Never append a second audit event for a no-op retry.
         return existing;
       }
       throw new AccountMergeLifecycleError("SOURCE_ALREADY_GUARDED", "Source already belongs to another merge case");
@@ -163,6 +166,12 @@ export async function prepareAccountMergeGuard(params: {
     if (!Number.isInteger(mergeCaseId) || mergeCaseId <= 0) {
       throw new AccountMergeLifecycleError("CASE_CREATE_FAILED", "Unable to create merge case");
     }
+
+    // Publish the dedicated guard in the SAME transaction as the case row.
+    // The Source guard was locked exclusively before the legacy users rows,
+    // so no bridged V1 mutation or another merge can observe an intermediate
+    // state. Generation advances exactly once for open -> merge_guarded.
+    await db.activateAccountMutationGuardForMerge(sourceUserId, mergeCaseId, tx);
 
     maybeInjectLifecycleFault("after_case_insert");
 
@@ -205,6 +214,15 @@ async function transitionGuardCase(params: {
     }
 
     const status = current.status as AccountMergeLifecycleStatus;
+    if (status !== "cancelled") {
+      // Every still-guarded legacy case must remain bound to the exact new
+      // accountMutationGuards row before privileged lifecycle work proceeds.
+      await db.assertAccountMutationGuardBoundToMergeCase(
+        Number(current.sourceUserId),
+        params.caseId,
+        tx
+      );
+    }
     const now = new Date();
     let nextStatus: AccountMergeLifecycleStatus;
     let updates: Record<string, unknown>;
@@ -258,6 +276,16 @@ async function transitionGuardCase(params: {
     const header = Array.isArray(updateResult) ? updateResult[0] : updateResult;
     if ((header?.affectedRows ?? 0) !== 1) {
       throw new AccountMergeLifecycleError("STATE_RACE", "Merge case state changed while transition was in progress");
+    }
+
+    if (params.transition === "cancel") {
+      // Cancellation is the only release transition. The case update and
+      // guard open/generation increment commit or roll back together.
+      await db.releaseAccountMutationGuardFromMerge(
+        Number(current.sourceUserId),
+        params.caseId,
+        tx
+      );
     }
 
     maybeInjectLifecycleFault("after_transition_update");

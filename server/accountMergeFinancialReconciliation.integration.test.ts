@@ -7,6 +7,7 @@ import {
   accountRecoveryRequests,
   authIdentities,
   paymentSlipClaims,
+  pointsAccounts,
   pointsTransactions,
   walletAccounts,
   walletTopups,
@@ -162,6 +163,13 @@ async function seedBalances(
     note: "immutable target points history",
     createdAt,
   });
+
+  // 0046 makes pointsAccounts the authoritative live balance. Keep the direct
+  // historical ledger inserts above because this fixture explicitly verifies
+  // they remain byte-for-byte immutable, then seed the matching authoritative
+  // balance rows separately to represent the same pre-merge economic state.
+  await t.update(pointsAccounts).set({ balance: sourcePoints, version: 1 }).where(eq(pointsAccounts.userId, f.sourceId));
+  await t.update(pointsAccounts).set({ balance: targetPoints, version: 1 }).where(eq(pointsAccounts.userId, f.targetId));
 
   const topupResult: any = await t.insert(walletTopups).values({
     userId: f.sourceId,

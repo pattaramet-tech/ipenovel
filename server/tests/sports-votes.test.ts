@@ -86,7 +86,9 @@ describe("IPE-009 Sports Vote settlement contracts", () => {
     const start = db.indexOf("if (rewardKind === \"points\")", winnerRewardCheck);
     const end = db.indexOf("} else {", start);
     const pointsBranch = db.slice(start, end);
-    expect(pointsBranch).toContain("lockUserForPoints(vote.userId, tx)");
+    const settle = db.slice(settleStart, end);
+    expect(settle).toContain("lockPointsAccountRowsForUpdate(pointWinnerUserIds, tx)");
+    expect(pointsBranch).not.toContain("lockUserForPoints(vote.userId, tx)");
     expect(pointsBranch).toContain("recordPointsTransactionReturningId");
     expect(pointsBranch).toContain('referenceType: "sports_reward"');
     expect(pointsBranch).toContain("couponId: null");

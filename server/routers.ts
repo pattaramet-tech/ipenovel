@@ -32,6 +32,10 @@ import {
 } from "./services/checkoutMaintenanceService";
 import { safeErrorSummary } from "../scripts/lib/safeErrorSummary.mjs";
 import { isDuplicateKeyError } from "./helpers/databaseErrorClassifier";
+import {
+  mapOrderPaymentApprovalError,
+  mapOrderPaymentRecheckError,
+} from "./helpers/adminPaymentApprovalError";
 import { fileRouter } from "./routers/fileRouter";
 import { ocrMetricsRouter } from "./routers/ocrMetricsRouter";
 import { r2Put, R2StorageError } from "./services/r2Storage";
@@ -1317,32 +1321,8 @@ export const appRouter = router({
           try {
             await orderService.approvePayment(input.paymentId, String(ctx.user.id));
             return { success: true };
-          } catch (error: any) {
-            // Anti-replay refusal: the slip was claimed by another
-            // submission, possibly after this admin loaded the page. CONFLICT
-            // (not BAD_REQUEST) so the UI can tell "stale page, refresh and
-            // recheck" apart from "this request was malformed".
-            if (typeof error?.message === "string" && error.message.startsWith("SLIP_ALREADY_CLAIMED")) {
-              throw new TRPCError({ code: "CONFLICT", message: error.message });
-            }
-            // No strong identifier: normal Approve must not silently bypass
-            // anti-replay. PRECONDITION_FAILED so the UI can distinguish
-            // "someone else owns this slip" from "this slip cannot be
-            // protected at all and needs the legacy override".
-            if (typeof error?.message === "string" && error.message.startsWith("NO_STRONG_IDENTIFIER")) {
-              throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
-            }
-            // An unresolved legacy case ambiguity. Distinct from a duplicate:
-            // the admin must choose reject-as-duplicate or approve-as-distinct
-            // via resolveLegacyCaseAmbiguity. Normal Approve must neither
-            // bypass it nor fail forever.
-            if (
-              typeof error?.message === "string" &&
-              error.message.startsWith("LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION")
-            ) {
-              throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
-            }
-            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to approve payment. Please try again." });
+          } catch (error) {
+            throw mapOrderPaymentApprovalError(error);
           }
         }),
 
@@ -1495,6 +1475,7 @@ export const appRouter = router({
                 viaLegacyCompatibility?: boolean;
                 advisory?: true;
                 requiresAdminResolution?: true;
+                unresolvedScope?: "legacy_scan_record" | "historical_file_axis_coverage";
               }
             | undefined;
           let reviewReasonOverride: string | undefined;
@@ -1571,6 +1552,7 @@ export const appRouter = router({
                   matchedSourceType: conflict.matchedSourceType,
                   matchedSourceId: conflict.matchedSourceId,
                   advisory: true,
+                  unresolvedScope: conflict.unresolvedScope,
                 };
                 reviewReasonOverride = "LEGACY_APPROVED_SLIP_UNRESOLVED";
               } else if (conflict.kind === "legacy_case_ambiguity_group") {
@@ -1676,30 +1658,8 @@ export const appRouter = router({
               String(ctx.user.id),
               ctx.user.name || "Admin"
             );
-          } catch (error: any) {
-            // See admin.payments.approve above - a claimed slip is a
-            // CONFLICT the admin can act on, not a malformed request.
-            if (typeof error?.message === "string" && error.message.startsWith("SLIP_ALREADY_CLAIMED")) {
-              throw new TRPCError({ code: "CONFLICT", message: error.message });
-            }
-            // No strong identifier: normal Approve must not silently bypass
-            // anti-replay. PRECONDITION_FAILED so the UI can distinguish
-            // "someone else owns this slip" from "this slip cannot be
-            // protected at all and needs the legacy override".
-            if (typeof error?.message === "string" && error.message.startsWith("NO_STRONG_IDENTIFIER")) {
-              throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
-            }
-            // An unresolved legacy case ambiguity. Distinct from a duplicate:
-            // the admin must choose reject-as-duplicate or approve-as-distinct
-            // via resolveLegacyCaseAmbiguity. Normal Approve must neither
-            // bypass it nor fail forever.
-            if (
-              typeof error?.message === "string" &&
-              error.message.startsWith("LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION")
-            ) {
-              throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
-            }
-            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to approve payment. Please try again." });
+          } catch (error) {
+            throw mapOrderPaymentApprovalError(error);
           }
           return { success: true };
         }),
@@ -1715,10 +1675,14 @@ export const appRouter = router({
       recheckOcr: adminProcedure
         .input(z.object({ paymentId: z.number().int().positive() }))
         .mutation(async ({ input, ctx }) => {
-          return recheckOrderPaymentOcr({
-            paymentId: input.paymentId,
-            adminUserId: ctx.user.id,
-          });
+          try {
+            return await recheckOrderPaymentOcr({
+              paymentId: input.paymentId,
+              adminUserId: ctx.user.id,
+            });
+          } catch (error) {
+            throw mapOrderPaymentRecheckError(error);
+          }
         }),
 
       /**
@@ -3157,6 +3121,7 @@ export const appRouter = router({
                 viaLegacyCompatibility?: boolean;
                 advisory?: true;
                 requiresAdminResolution?: true;
+                unresolvedScope?: "legacy_scan_record" | "historical_file_axis_coverage";
               }
             | undefined;
           let reviewReasonOverride: string | undefined;
@@ -3204,6 +3169,7 @@ export const appRouter = router({
                   matchedSourceType: conflict.matchedSourceType,
                   matchedSourceId: conflict.matchedSourceId,
                   advisory: true,
+                  unresolvedScope: conflict.unresolvedScope,
                 };
                 reviewReasonOverride = "LEGACY_APPROVED_SLIP_UNRESOLVED";
               } else if (conflict.kind === "legacy_case_ambiguity_group") {
@@ -3270,6 +3236,48 @@ export const appRouter = router({
         .mutation(async ({ ctx, input }) => {
           return walletService.adminApproveWalletTopup(input.topupId, ctx.user.id);
         }),
+      /**
+       * Explicit high-risk escape hatch for a legacy top-up that still has no
+       * replay identifier after server-side recovery. Kept separate from
+       * normal Approve so it can never be an automatic or silent fallback.
+       */
+      approveLegacyUnprotectedTopup: adminProcedure
+        .input(
+          z.object({
+            topupId: z.number().int().positive(),
+            reason: z.string().trim().min(10).max(1000),
+            confirmation: z.literal("APPROVE_UNPROTECTED_LEGACY_TOPUP"),
+          })
+        )
+        .mutation(async ({ ctx, input }) => {
+          return walletService.adminApproveLegacyUnprotectedWalletTopup(
+            input.topupId,
+            ctx.user.id,
+            input.reason
+          );
+        }),
+
+      /**
+       * Explicit acceptance of the residual POST-backfill historical file-axis
+       * coverage risk. This is NOT a duplicate waiver: server-side approval
+       * still recomputes and atomically claims the exact current fileHash.
+       */
+      approveLegacyFileAxisRiskTopup: adminProcedure
+        .input(
+          z.object({
+            topupId: z.number().int().positive(),
+            reason: z.string().trim().min(10).max(1000),
+            confirmation: z.literal("ACCEPT_LEGACY_FILE_AXIS_RISK"),
+          })
+        )
+        .mutation(async ({ ctx, input }) => {
+          return walletService.adminApproveLegacyFileAxisRiskWalletTopup(
+            input.topupId,
+            ctx.user.id,
+            input.reason
+          );
+        }),
+
       /**
        * Wallet equivalent of admin.orders.resolveLegacyCaseAmbiguity.
        *

@@ -30,6 +30,7 @@ import path from "node:path";
 function readCode(relativePath: string): string {
   return fs
     .readFileSync(path.resolve(process.cwd(), relativePath), "utf-8")
+    .replace(/\r\n/g, "\n")
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^[ \t]*\/\/.*$/gm, "");
 }

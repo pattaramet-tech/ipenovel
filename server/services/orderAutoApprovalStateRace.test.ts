@@ -140,14 +140,16 @@ function makeDb(rows: Record<string, any[]>, onLock?: (store: Record<string, any
           const name = tableName(table);
           return {
             where(cond: any) {
-              const wanted = boundHashes(cond);
-              const cols = targetedColumns(cond);
               const all = store[name] ?? [];
               const filtered =
                 name === "paymentSlipClaims"
-                  ? wanted.length
-                    ? all.filter((r) => cols.some((c) => r[c] && wanted.includes(r[c])))
-                    : []
+                  ? (() => {
+                      const wanted = boundHashes(cond);
+                      const cols = targetedColumns(cond);
+                      return wanted.length
+                        ? all.filter((r) => cols.some((c) => r[c] && wanted.includes(r[c])))
+                        : [];
+                    })()
                   : all;
               return {
                 orderBy: () => ({ limit: async () => filtered }),
@@ -228,6 +230,7 @@ function orderRows(paymentStatus = "pending") {
     paymentSlipClaims: [] as any[],
     orderHistory: [] as any[],
     purchases: [] as any[],
+    pointsAccounts: [{ userId: 11, balance: "0.00", version: 0 }],
     pointsTransactions: [] as any[],
     orderItems: [] as any[],
     coupons: [] as any[],
@@ -502,9 +505,7 @@ describe("the auto-approval race handler never lets a claim survive without valu
   it("the guard runs INSIDE the transaction, before claimSlip, so a lost race rolls back", () => {
     const code = readCode("server/services/slipSubmissionService.ts");
     const txIdx = code.indexOf("await dbConnection.transaction(async (tx: any) => {");
-    const guardIdx = code.indexOf(
-      "await orderService.lockAndRequireReviewablePayment(payment.id, tx, publishedSlipVersion)"
-    );
+    const guardIdx = code.indexOf("await orderService.lockAndRequireReviewablePayment(", txIdx);
     const claimIdx = code.indexOf("const claim = await claimSlip(", txIdx);
     expect(guardIdx).toBeGreaterThan(txIdx);
     expect(claimIdx).toBeGreaterThan(guardIdx);

@@ -195,6 +195,96 @@ describe("A/B. NULL-extraction legacy row, matching image -> strong duplicate, n
   });
 });
 
+describe("IPE-018 reproduction: trusted legacy CDN recovery must not use the private-only primitive", () => {
+  const TRUSTED = "https://d2xsxph8kpxj0f.cloudfront.net/payment-slips/11280001.jpg";
+
+  it("trusted CDN readable bytes that match the incoming file become an exact duplicate", async () => {
+    const privateSpy = vi.spyOn(slipFileHashService, "computeSlipFileHash").mockResolvedValue(undefined);
+    const trustedSpy = vi
+      .spyOn(slipFileHashService, "computeTrustedLegacySlipFileHash")
+      .mockResolvedValue(FILE_A);
+    const tx = makeFakeTx({
+      approvedPayments: [{ id: 11280001, extractedData: null, slipImageUrl: TRUSTED }],
+    });
+
+    const outcome = await claimSlip(
+      { sourceType: "wallet_topup", sourceId: 19590007, userId: 1, identifiers: { fileHash: FILE_A } },
+      tx
+    );
+
+    expect(privateSpy).not.toHaveBeenCalled();
+    expect(trustedSpy).toHaveBeenCalledWith(TRUSTED);
+    expect(outcome.claimed).toBe(false);
+    if (!outcome.claimed) {
+      expect(outcome.reason).toBe("already_claimed");
+      if (outcome.reason === "already_claimed") {
+        expect(outcome.existingSourceType).toBe("order_payment");
+        expect(outcome.existingSourceId).toBe(11280001);
+      }
+    }
+  });
+
+  it("trusted CDN readable bytes that differ from the incoming file prove this row is a nonmatch", async () => {
+    const privateSpy = vi.spyOn(slipFileHashService, "computeSlipFileHash").mockResolvedValue(undefined);
+    const trustedSpy = vi
+      .spyOn(slipFileHashService, "computeTrustedLegacySlipFileHash")
+      .mockResolvedValue(FILE_B);
+    const tx = makeFakeTx({
+      approvedPayments: [{ id: 11280001, extractedData: null, slipImageUrl: TRUSTED }],
+    });
+
+    const outcome = await claimSlip(
+      { sourceType: "wallet_topup", sourceId: 19590007, userId: 1, identifiers: { fileHash: FILE_A } },
+      tx
+    );
+
+    expect(privateSpy).not.toHaveBeenCalled();
+    expect(trustedSpy).toHaveBeenCalledWith(TRUSTED);
+    expect(outcome.claimed).toBe(true);
+  });
+
+  it("trusted CDN bytes that are genuinely unavailable remain unresolved", async () => {
+    const privateSpy = vi.spyOn(slipFileHashService, "computeSlipFileHash").mockResolvedValue(undefined);
+    const trustedSpy = vi
+      .spyOn(slipFileHashService, "computeTrustedLegacySlipFileHash")
+      .mockResolvedValue(undefined);
+    const tx = makeFakeTx({
+      approvedPayments: [{ id: 11280001, extractedData: null, slipImageUrl: TRUSTED }],
+    });
+
+    const outcome = await claimSlip(
+      { sourceType: "wallet_topup", sourceId: 19590007, userId: 1, identifiers: { fileHash: FILE_A } },
+      tx
+    );
+
+    expect(privateSpy).not.toHaveBeenCalled();
+    expect(trustedSpy).toHaveBeenCalledWith(TRUSTED);
+    expect(outcome.claimed).toBe(false);
+    if (!outcome.claimed) expect(outcome.reason).toBe("legacy_scan_unresolved");
+  });
+
+  it("an arbitrary external URL is never sent to either recovery fetch primitive and fails closed", async () => {
+    const arbitrary = "https://attacker.example/slip.jpg";
+    const privateSpy = vi.spyOn(slipFileHashService, "computeSlipFileHash").mockResolvedValue(FILE_A);
+    const trustedSpy = vi
+      .spyOn(slipFileHashService, "computeTrustedLegacySlipFileHash")
+      .mockResolvedValue(FILE_A);
+    const tx = makeFakeTx({
+      approvedPayments: [{ id: 44, extractedData: null, slipImageUrl: arbitrary }],
+    });
+
+    const outcome = await claimSlip(
+      { sourceType: "wallet_topup", sourceId: 19590007, userId: 1, identifiers: { fileHash: FILE_A } },
+      tx
+    );
+
+    expect(privateSpy).not.toHaveBeenCalled();
+    expect(trustedSpy).not.toHaveBeenCalled();
+    expect(outcome.claimed).toBe(false);
+    if (!outcome.claimed) expect(outcome.reason).toBe("legacy_scan_unresolved");
+  });
+});
+
 describe("C. NULL-extraction legacy row, DIFFERENT recovered image -> genuinely no conflict", () => {
   it("recovery succeeds and proves the rows are different files", async () => {
     vi.spyOn(slipFileHashService, "computeSlipFileHash").mockResolvedValue(FILE_B);
