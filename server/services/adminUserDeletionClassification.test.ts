@@ -117,6 +117,13 @@ describe("ADMIN_USER_DELETION_CLASSIFICATION is exhaustive and up to date", () =
     );
     expect(entry?.category).toBe("never_blocks");
   });
+
+  it("does not let always-provisioned cascade rows block deletion of every otherwise-empty account", () => {
+    expect(ADMIN_USER_DELETION_CLASSIFICATION).toEqual(expect.arrayContaining([
+      expect.objectContaining({ table: "pointsAccounts", column: "userId", category: "never_blocks" }),
+      expect.objectContaining({ table: "accountMutationGuards", column: "userId", category: "never_blocks" }),
+    ]));
+  });
 });
 
 describe("indirect (no-direct-column) tables are documented and real", () => {

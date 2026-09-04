@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  REQUIRED_COLUMNS,
   REQUIRED_COLUMN_SHAPES,
   REQUIRED_FOREIGN_KEYS,
   REQUIRED_INDEXES,
@@ -57,11 +58,15 @@ describe("migration 0047 immutable/versioned evidence static contract", () => {
         deleteRule: "RESTRICT",
       }),
     ]));
-    expect(REQUIRED_COLUMN_SHAPES).toContainEqual(expect.objectContaining({
-      table: "payments",
-      column: "slipEvidenceClass",
-      nullable: "NO",
-    }));
+    const migration0047SecurityColumns = REQUIRED_COLUMNS.filter(({ table }) =>
+      table === "payments" ||
+      table === "walletTopups" ||
+      table === "slipEvidenceUploads" ||
+      table === "slipEvidenceBindings"
+    );
+    for (const required of migration0047SecurityColumns) {
+      expect(REQUIRED_COLUMN_SHAPES).toContainEqual(expect.objectContaining(required));
+    }
   });
 
   it("keeps both registries append-only in application code", () => {

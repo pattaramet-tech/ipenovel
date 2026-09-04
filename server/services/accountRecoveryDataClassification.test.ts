@@ -91,6 +91,13 @@ describe("ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION is exhaustive and up to date
     expect(discoveredKeys.has("payments.approvedByLabel")).toBe(false);
     expect(classifiedKeys.has("payments.approvedByLabel")).toBe(false);
   });
+
+  it("classifies the always-provisioned points and account-guard rows as infrastructure, not source-owned activity", () => {
+    expect(ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION).toEqual(expect.arrayContaining([
+      expect.objectContaining({ table: "pointsAccounts", column: "userId", category: "deliberately_ignored" }),
+      expect.objectContaining({ table: "accountMutationGuards", column: "userId", category: "merge_internal" }),
+    ]));
+  });
 });
 
 describe("indirect (no-direct-column) tables are documented and real", () => {

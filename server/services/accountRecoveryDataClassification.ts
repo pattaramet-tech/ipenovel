@@ -164,6 +164,13 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     category: "merge_internal",
     reason: "IPE-007's durable data-reconciliation receipt records the merge workflow's own Target participant, not unrelated user-owned data.",
   },
+  {
+    table: "accountMutationGuards",
+    column: "userId",
+    category: "merge_internal",
+    reason:
+      "The per-user Account Merge serialization row is infrastructure created for every user and cascade-deleted with users; its presence is not evidence that the account owns data.",
+  },
   // ---- deliberately_ignored: admin/system actor identities, never the source's own data ----
   {
     table: "accountMergeCases",
@@ -287,6 +294,13 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     category: "deliberately_ignored",
     reason:
       "An immutable historical owner snapshot bound to a payment/top-up evidence version. The underlying order or top-up already blocks unsafe recovery, and changing this audit identity would destroy the evidence chain.",
+  },
+  {
+    table: "pointsAccounts",
+    column: "userId",
+    category: "deliberately_ignored",
+    reason:
+      "Migration 0046 creates this authoritative mutex/mirror row for every user, including empty zero-balance accounts. Actual points activity is already an economic hard block through pointsTransactions; the singleton row alone is not evidence of owned data.",
   },
 
   // ---- economic_hard_block: Category A - wallet/points/purchases/orders/payments/transactions/coupons ----

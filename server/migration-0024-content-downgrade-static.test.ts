@@ -123,8 +123,14 @@ describe("migration 0024 - safety invariants unchanged", () => {
     expect(entry.when).toBe(1783511891807);
   });
 
-  it("drizzle/meta/_journal.json is byte-identical to the branch point (no entry, timestamp, or ordering changed)", () => {
-    expect(isByteIdenticalToBase("drizzle/meta/_journal.json")).toBe(true);
+  it("preserves the branch-point journal as an exact prefix while allowing later migrations to append", () => {
+    const baseline = JSON.parse(gitBlob(BASE_SHA, "drizzle/meta/_journal.json").toString("utf8"));
+    const current = JSON.parse(gitBlob("HEAD", "drizzle/meta/_journal.json").toString("utf8"));
+
+    expect(current.version).toBe(baseline.version);
+    expect(current.dialect).toBe(baseline.dialect);
+    expect(current.entries.slice(0, baseline.entries.length)).toEqual(baseline.entries);
+    expect(current.entries.length).toBeGreaterThanOrEqual(baseline.entries.length);
   });
 
   it("drizzle/meta/0030_snapshot.json is byte-identical to the branch point", () => {

@@ -54,8 +54,9 @@
  *   transaction deletes it together with the users row in the same
  *   transaction (see deleteAdminUserTransaction).
  * - "never_blocks": every other column that structurally cannot represent
- *   real, protectable data about the target account - an unverified,
- *   user-typed claim (accountRecoveryRequests.requestedLegacyUserId), or
+ *   real, protectable data about the target account - an automatically
+ *   provisioned, cascade-deleted mutex/mirror row, an unverified user-typed
+ *   claim (accountRecoveryRequests.requestedLegacyUserId), or
  *   this feature's OWN audit trail's `targetUserId` (adminUserAuditLogs),
  *   which is deliberately built with no foreign key specifically so it
  *   survives a target user's hard delete (see drizzle/schema.ts's
@@ -207,6 +208,22 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
     category: "never_blocks",
     reference: "Admin User Audit Logs",
     reason: "This feature's OWN append-only audit trail, deliberately built with no foreign key specifically so it survives a target user's hard delete (see drizzle/schema.ts's adminUserAuditLogs doc comment) - the record of what was done TO this user must remain readable after they're gone, so this column alone must never block that deletion. Contrast actorAdminId above, which protects a different identity (WHO did it) and IS a blocker.",
+  },
+  {
+    table: "pointsAccounts",
+    column: "userId",
+    category: "never_blocks",
+    reference: "Points Account Infrastructure",
+    reason:
+      "Migration 0046 provisions this zero-balance mutex/mirror row for every user and its user foreign key cascades on deletion. Real points activity blocks separately through pointsTransactions, so mere singleton-row presence cannot block every otherwise-empty account.",
+  },
+  {
+    table: "accountMutationGuards",
+    column: "userId",
+    category: "never_blocks",
+    reference: "Account Mutation Guard Infrastructure",
+    reason:
+      "Migration 0045 provisions this serialization guard for every user and its user foreign key cascades on deletion. It is concurrency infrastructure, not user-owned or audit data, so its unavoidable presence must not make all hard deletion impossible.",
   },
 ];
 

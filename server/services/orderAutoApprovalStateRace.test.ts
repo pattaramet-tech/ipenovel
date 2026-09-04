@@ -127,6 +127,8 @@ function targetedColumns(cond: any): string[] {
 function makeDb(rows: Record<string, any[]>, onLock?: (store: Record<string, any[]>) => void) {
   const store: Record<string, any[]> = JSON.parse(JSON.stringify(rows));
   let snapshot: Record<string, any[]> = JSON.parse(JSON.stringify(store));
+  const lockQueries: string[] = [];
+  let minimalPaymentLockCount = 0;
 
   const executor = (): any => ({
     execute: async (query: any) => {
@@ -135,8 +137,20 @@ function makeDb(rows: Record<string, any[]>, onLock?: (store: Record<string, any
         .join("");
       if (queryText.includes("accountMergeCases")) return [[]];
       if (queryText.includes("FROM users")) return [[{ id: 1 }]];
-      onLock?.(store);
-      snapshot = JSON.parse(JSON.stringify(store));
+      if (queryText.includes("FROM payments") && queryText.includes("FOR UPDATE")) {
+        lockQueries.push(queryText);
+      }
+      // Publication first takes the Account Merge wrapper's minimal subject
+      // lock, then a rich current-row lock. Approval later takes its own
+      // minimal subject lock in a separate transaction. The injected admin
+      // decision belongs only in that second minimal (approval) window.
+      if (queryText.includes("SELECT id FROM payments") && queryText.includes("FOR UPDATE")) {
+        minimalPaymentLockCount += 1;
+        if (minimalPaymentLockCount === 2) {
+          onLock?.(store);
+          snapshot = JSON.parse(JSON.stringify(store));
+        }
+      }
       if (queryText.includes("SELECT id,status,slipImageUrl,evidenceVersion,slipEvidenceId")) {
         return [[store.payments[0]]];
       }
@@ -210,7 +224,7 @@ function makeDb(rows: Record<string, any[]>, onLock?: (store: Record<string, any
       }
     },
   };
-  return { fake, store };
+  return { fake, store, lockQueries };
 }
 
 function orderRows(paymentStatus = "pending") {
@@ -309,6 +323,10 @@ describe("automatic OCR approval cannot resurrect a finalized payment", () => {
     expect(result.isAutoApproved).toBe(false);
     expect((result as any).supersededByFinalization).toBe(true);
     expect(result.status).toBe("rejected");
+    expect(harness.lockQueries).toHaveLength(3);
+    expect(harness.lockQueries[0]).toContain("SELECT id FROM payments");
+    expect(harness.lockQueries[1]).toContain("SELECT id,status,slipImageUrl,evidenceVersion,slipEvidenceId");
+    expect(harness.lockQueries[2]).toContain("SELECT id FROM payments");
 
     // The human decision stands, untouched.
     expect(harness.store.payments[0].status).toBe("rejected");
@@ -335,6 +353,10 @@ describe("automatic OCR approval cannot resurrect a finalized payment", () => {
 
     expect(result.reviewReason).toBe("OCR_SUPERSEDED_BY_FINALIZATION");
     expect(result.status).toBe("approved");
+    expect(harness.lockQueries).toHaveLength(3);
+    expect(harness.lockQueries[0]).toContain("SELECT id FROM payments");
+    expect(harness.lockQueries[1]).toContain("SELECT id,status,slipImageUrl,evidenceVersion,slipEvidenceId");
+    expect(harness.lockQueries[2]).toContain("SELECT id FROM payments");
 
     expect(harness.store.payments[0].status).toBe("approved");
     // No second claim, no duplicate purchase, no duplicate points row.
