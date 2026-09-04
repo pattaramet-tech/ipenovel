@@ -42,8 +42,8 @@ const productionGuardEvidence: Record<string, string[]> = {
   walletTopups: ["withAccountMergeWalletTopupMutationGuard(topupId"],
   topupLogs: ["withAccountMergeClassifiedMutationGuard(userId, undefined"],
   pointsTransactions: [
-    "withAccountMergeClassifiedMutationGuard(data.userId, tx",
-    "assertAccountMergeClassifiedMutationAllowed(userId, tx)",
+    "await writePointsTransactionUnderLock(data, tx)",
+    "withUserPointsLock(data.userId, undefined",
   ],
   couponUsages: ["recordCouponUsage(couponId, userId, orderId, guardedTx)"],
   coupons: [

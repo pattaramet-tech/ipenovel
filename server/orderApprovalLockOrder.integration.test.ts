@@ -63,7 +63,7 @@ describe.sequential(
       }
     });
 
-    it("approval owns the exclusive user lock before payment, so Recheck cannot form the opposite half of a cycle", async () => {
+    it("approval can take the points mutex while Recheck shares the account guard and waits on payment", async () => {
       const user = await createTestUser();
       const order = await createTestOrder(user.id);
       const payment = await createTestPayment(order.id);
@@ -85,35 +85,42 @@ describe.sequential(
         await orderService.lockAndRequireReviewablePayment(
           payment.id,
           tx,
-          undefined,
-          "points_exclusive"
+          undefined
         );
         approvalHasCanonicalLocks.resolve();
 
         await exercisePointsRelock.promise;
-        // finalizeOrderCompletion reaches this lock later in the same approval
-        // transaction. It must be a re-entrant exclusive acquisition, never a
-        // shared -> exclusive upgrade after the payment row is already owned.
-        await db.lockUserForPoints(user.id, tx);
+        // finalizeOrderCompletion reaches the dedicated points mutex later in
+        // the same approval transaction. A concurrent Recheck may already
+        // share the account guard, but it must not block this independent
+        // balance lock while it waits on the payment row.
+        await db.assertAccountMergePointsMutationAllowed(user.id, tx);
         pointsRelockCompleted.resolve();
         await releaseApproval.promise;
       });
 
       await approvalHasCanonicalLocks.promise;
 
-      let recheckHasSharedUserLock = false;
+      let recheckHasSharedAccountGuard = false;
       const recheck = database.transaction(async (tx: any) => {
         await db.assertAccountMergeClassifiedMutationAllowed(user.id, tx);
-        recheckHasSharedUserLock = true;
+        recheckHasSharedAccountGuard = true;
         await db.lockPaymentForUpdate(payment.id, tx);
       });
 
       try {
-        // Recheck must wait at the FIRST lock (user), not acquire a shared user
-        // lock and then wait at payment while approval later waits to upgrade
-        // that same user row.
-        await new Promise(resolve => setTimeout(resolve, 100));
-        expect(recheckHasSharedUserLock).toBe(false);
+        // Both paths can share ACCOUNT_GUARD. Recheck then waits on the
+        // approval-owned payment row, while approval remains free to acquire
+        // the distinct pointsAccounts mutex: no users-row lock upgrade and no
+        // opposite half of a cycle.
+        expect(await settlesWithin(
+          (async () => {
+            while (!recheckHasSharedAccountGuard) {
+              await new Promise(resolve => setTimeout(resolve, 10));
+            }
+          })(),
+          500
+        )).toBe(true);
 
         exercisePointsRelock.resolve();
         expect(await settlesWithin(pointsRelockCompleted.promise, 500)).toBe(
@@ -125,10 +132,10 @@ describe.sequential(
         await recheck;
       }
 
-      expect(recheckHasSharedUserLock).toBe(true);
+      expect(recheckHasSharedAccountGuard).toBe(true);
     }, 30_000);
 
-    it("a wallet-style shared users-row guard blocks order points exclusivity until the wallet transaction releases", async () => {
+    it("a wallet-style shared account guard does not block the dedicated order points mutex", async () => {
       const user = await createTestUser();
       const order = await createTestOrder(user.id);
       const payment = await createTestPayment(order.id);
@@ -139,7 +146,7 @@ describe.sequential(
 
       const walletHasSharedGuard = deferred();
       const releaseWallet = deferred();
-      let orderHasExclusiveUserLock = false;
+      let orderHasPointsLock = false;
 
       const wallet = database.transaction(async (tx: any) => {
         // Exact users-row guard used at the start of approveWalletTopup.
@@ -152,19 +159,19 @@ describe.sequential(
 
       const orderApproval = database.transaction(async (tx: any) => {
         await db.assertAccountMergePointsMutationAllowed(user.id, tx);
-        orderHasExclusiveUserLock = true;
+        orderHasPointsLock = true;
       });
 
       try {
-        await new Promise(resolve => setTimeout(resolve, 100));
-        expect(orderHasExclusiveUserLock).toBe(false);
+        expect(await settlesWithin(orderApproval, 500)).toBe(true);
+        expect(orderHasPointsLock).toBe(true);
       } finally {
         releaseWallet.resolve();
         await wallet;
         await orderApproval;
       }
 
-      expect(orderHasExclusiveUserLock).toBe(true);
+      expect(orderHasPointsLock).toBe(true);
     }, 30_000);
   }
 );

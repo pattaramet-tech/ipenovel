@@ -6381,12 +6381,24 @@ export async function settleSportsMatch(matchId: number, result: SportsPredictio
       .from(sportsMatchVotes)
       .where(eq(sportsMatchVotes.matchId, matchId));
 
-    // Acquire all Source-account guards in canonical order before mutating any
-    // winner. Point winners then take the same user lock before their balance
-    // read-modify-write, matching every other points writer in this repository.
-    const pendingUserIds = votes.filter((vote: any) => vote.status === "pending").map((vote: any) => vote.userId);
+    // Acquire every ordinary Source-account guard in canonical order first.
+    // Only point WINNERS need balance serialization; losers merely change
+    // vote status and must remain on the shared account barrier. Pre-lock the
+    // actual point-mutating users as one sorted set before entering the loop
+    // so two settlements with overlapping winners cannot acquire points rows
+    // in opposite vote-order and deadlock.
+    const pendingVotes = votes.filter((vote: any) => vote.status === "pending");
+    const pendingUserIds = pendingVotes.map((vote: any) => vote.userId);
     if (pendingUserIds.length > 0) {
       await assertAccountMergeClassifiedMutationsAllowed(pendingUserIds, tx);
+    }
+    if (rewardKind === "points") {
+      const pointWinnerUserIds = pendingVotes
+        .filter((vote: any) => vote.prediction === result)
+        .map((vote: any) => vote.userId);
+      if (pointWinnerUserIds.length > 0) {
+        await lockPointsAccountRowsForUpdate(pointWinnerUserIds, tx);
+      }
     }
 
     let winnerCount = 0;
@@ -6412,7 +6424,8 @@ export async function settleSportsMatch(matchId: number, result: SportsPredictio
 
       if (rewardKind === "points") {
         const amount = pointsRewardAmount!;
-        await lockUserForPoints(vote.userId, tx);
+        // All point-winner balances were locked as one canonical ascending
+        // userId set before entering this loop.
         const currentBalance = await getUserPointsBalance(vote.userId, tx);
         const balanceAfter = formatMoney(moneyAdd(currentBalance, amount), "sportsRewardBalanceAfter");
 
@@ -6506,17 +6519,16 @@ export async function cancelSportsMatch(matchId: number) {
       .where(and(eq(sportsMatchVotes.matchId, matchId), eq(sportsMatchVotes.status, "pending")));
 
     if (pendingVotes.length > 0) {
-      await assertAccountMergeClassifiedMutationsAllowed(pendingVotes.map((vote: any) => vote.userId), tx);
+      const refundUserIds = pendingVotes.map((vote: any) => vote.userId);
+      await assertAccountMergeClassifiedMutationsAllowed(refundUserIds, tx);
+      // Every pending vote is refunded on cancellation, so every involved
+      // user really is a points mutator. Lock the complete set in canonical
+      // ascending userId order before the loop rather than following vote row
+      // order and risking opposite-order points mutex acquisition.
+      await lockPointsAccountRowsForUpdate(refundUserIds, tx);
     }
 
     for (const vote of pendingVotes) {
-      // Lock this voter's row BEFORE reading their balance - refunding N
-      // voters in a loop with no lock is a real read-modify-write race
-      // against any other concurrent points writer for the same user
-      // (this refund loop was already inside a real transaction, it just
-      // never took the row lock that makes that transaction's isolation
-      // actually protect the balance arithmetic).
-      await lockUserForPoints(vote.userId, tx);
       const refundAmount = Number(vote.pointsSpent || 0);
       const currentBalance = Number(await getUserPointsBalance(vote.userId, tx));
       const newBalance = (currentBalance + refundAmount).toFixed(2);
@@ -8994,20 +9006,12 @@ export async function getAccountMergeWalletBalance(userId: number, tx?: any): Pr
   return rows[0]?.balance ?? "0.00";
 }
 
-/** Current points balance for one user - the most recent
- *  pointsTransactions.balanceAfter (the ledger's own running total, the
- *  same source of truth every points-spending code path already reads),
- *  "0.00" when the user has never had a points transaction.
- *
- *  Delegates verbatim to the canonical getUserPointsBalance so the merge
- *  preview projects EXACTLY the balance production shows: the latest row by
- *  `(createdAt DESC, id DESC)`, never by `id` alone. pointsTransactions
- *  .createdAt is a second-precision MySQL timestamp, and an imported or
- *  backfilled ledger can carry rows whose `id` order does not match their
- *  chronological order - ordering on `id` alone would then read a stale
- *  balanceAfter and mis-project both the per-account balance and the merged
- *  total. The `id DESC` tiebreaker still disambiguates same-second rows.
- *  See getUserPointsBalance's own doc comment for the full rationale. */
+/** Current points balance for one user from the authoritative pointsAccounts
+ * row introduced by migration 0046. That migration backfills each row from
+ * the latest pointsTransactions entry by `(createdAt DESC, id DESC)`; all
+ * subsequent writers serialize and advance this dedicated balance resource.
+ * Delegating to getUserPointsBalance keeps Account Merge preview and
+ * reconciliation on the same post-cutover source of truth. */
 export async function getAccountMergePointsBalance(userId: number, tx?: any): Promise<string> {
   return getUserPointsBalance(userId, tx);
 }

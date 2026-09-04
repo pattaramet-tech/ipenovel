@@ -871,11 +871,13 @@ describe("the wallet claim request forwards the override (structural)", () => {
     const end = code.indexOf("export async function rejectWalletTopup(");
     const body = code.slice(start, end);
     const recomputeIdx = body.indexOf("currentFileHash = isLegacyStorageUrl");
-    const claimIdx = body.indexOf("const claim = await claimSlip(");
+    const claimIdx = body.indexOf('const claim = await atWalletApprovalStage("wallet_slip_claim"');
+    const claimSlipIdx = body.indexOf("claimSlip(", claimIdx);
     const resolutionIdx = body.indexOf("legacyFileAxisRiskResolution:", claimIdx);
     expect(recomputeIdx).toBeGreaterThan(-1);
     expect(claimIdx).toBeGreaterThan(recomputeIdx);
-    expect(resolutionIdx).toBeGreaterThan(claimIdx);
+    expect(claimSlipIdx).toBeGreaterThan(claimIdx);
+    expect(resolutionIdx).toBeGreaterThan(claimSlipIdx);
     expect(body.slice(resolutionIdx, resolutionIdx + 260)).toMatch(
       /expectedFileHash:\s*currentFileHash/
     );
@@ -898,12 +900,14 @@ describe("the wallet claim request forwards the override (structural)", () => {
     const end = code.indexOf("export async function rejectWalletTopup(");
     const body = code.slice(start, end);
     const transactionIdx = body.indexOf("return await db.transaction");
-    const claimIdx = body.indexOf("const claim = await claimSlip(");
+    const claimIdx = body.indexOf('const claim = await atWalletApprovalStage("wallet_slip_claim"');
+    const claimSlipIdx = body.indexOf("claimSlip(", claimIdx);
     const stateUpdateIdx = body.indexOf("status: \"approved\"");
     const walletCreditIdx = body.indexOf(".update(walletAccounts)");
     const ledgerIdx = body.indexOf("tx.insert(walletTransactions)");
     expect(transactionIdx).toBeGreaterThan(-1);
     expect(claimIdx).toBeGreaterThan(transactionIdx);
+    expect(claimSlipIdx).toBeGreaterThan(claimIdx);
     expect(stateUpdateIdx).toBeGreaterThan(claimIdx);
     expect(walletCreditIdx).toBeGreaterThan(stateUpdateIdx);
     expect(ledgerIdx).toBeGreaterThan(walletCreditIdx);

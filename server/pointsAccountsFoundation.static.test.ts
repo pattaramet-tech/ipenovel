@@ -72,4 +72,16 @@ describe("IPE-021-D / 0046 pointsAccounts foundation", () => {
     expect(merge).toContain(".update(pointsAccounts)");
     expect(merge).toContain("effectKey: `account_merge:${params.caseId}:points_transfer`");
   });
+
+  it("Sports pre-locks only actual point mutators as canonical multi-user sets", () => {
+    const settle = between(db, "export async function settleSportsMatch", "export async function cancelSportsMatch");
+    const cancel = between(db, "export async function cancelSportsMatch", "export async function markSportsRewardCouponUsed");
+    expect(settle).toContain("const pointWinnerUserIds = pendingVotes");
+    expect(settle).toContain(".filter((vote: any) => vote.prediction === result)");
+    expect(settle).toContain("lockPointsAccountRowsForUpdate(pointWinnerUserIds, tx)");
+    expect(settle).not.toContain("await lockUserForPoints(vote.userId, tx)");
+    expect(cancel).toContain("const refundUserIds = pendingVotes.map((vote: any) => vote.userId)");
+    expect(cancel).toContain("lockPointsAccountRowsForUpdate(refundUserIds, tx)");
+    expect(cancel).not.toContain("await lockUserForPoints(vote.userId, tx)");
+  });
 });
