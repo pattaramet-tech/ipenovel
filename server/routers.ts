@@ -60,6 +60,7 @@ import {
   startAccountMergeGuard,
 } from "./services/accountMergeGuardService";
 import { updateAdminUserProfile, AdminUserManagementError } from "./services/adminUserManagementService";
+import { workspaceRouter } from "./workspace/router";
 
 // ============ HELPER PROCEDURES ============
 
@@ -317,6 +318,7 @@ const dashboardRouter = router({
 
 export const appRouter = router({
   system: systemRouter,
+  workspace: workspaceRouter,
 
   // ============ HOME PAGE ============
   home: router({

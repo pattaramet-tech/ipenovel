@@ -1669,3 +1669,156 @@ export const adminUserAuditLogs = mysqlTable(
 
 export type AdminUserAuditLog = typeof adminUserAuditLogs.$inferSelect;
 export type InsertAdminUserAuditLog = typeof adminUserAuditLogs.$inferInsert;
+
+/** IpeNovel Workspace M01 bounded collaboration root. */
+export const workspaceWorkspaces = mysqlTable(
+  "workspaceWorkspaces",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    name: varchar("name", { length: 160 }).notNull(),
+    ownerUserId: int("ownerUserId").notNull(),
+    status: mysqlEnum("status", ["active", "suspended", "archived"]).default("active").notNull(),
+    version: int("version").default(1).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+    deletedAt: timestamp("deletedAt"),
+  },
+  (table) => ({
+    ownerStatusIdx: index("workspaceWorkspaces_owner_status_idx").on(table.ownerUserId, table.status),
+    ownerUserFk: foreignKey({
+      name: "workspaceWorkspaces_ownerUserId_users_id_fk",
+      columns: [table.ownerUserId],
+      foreignColumns: [users.id],
+    }),
+  })
+);
+
+export const workspaceMembers = mysqlTable(
+  "workspaceMembers",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workspaceId: int("workspaceId").notNull(),
+    userId: int("userId").notNull(),
+    role: mysqlEnum("role", ["owner", "editor", "reviewer", "viewer"]).notNull(),
+    status: mysqlEnum("status", ["active", "invited", "suspended", "removed"]).default("active").notNull(),
+    version: int("version").default(1).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    workspaceUserUnique: uniqueIndex("workspaceMembers_workspace_user_unique").on(table.workspaceId, table.userId),
+    userStatusIdx: index("workspaceMembers_user_status_idx").on(table.userId, table.status),
+    workspaceFk: foreignKey({
+      name: "workspaceMembers_workspaceId_workspaceWorkspaces_id_fk",
+      columns: [table.workspaceId],
+      foreignColumns: [workspaceWorkspaces.id],
+    }).onDelete("cascade"),
+    userFk: foreignKey({
+      name: "workspaceMembers_userId_users_id_fk",
+      columns: [table.userId],
+      foreignColumns: [users.id],
+    }),
+  })
+);
+
+/** Read-only association to the current publication novel; M01 has no episode write path. */
+export const workspaceNovels = mysqlTable(
+  "workspaceNovels",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workspaceId: int("workspaceId").notNull(),
+    novelId: int("novelId").notNull(),
+    status: mysqlEnum("status", ["active", "paused", "unlinked"]).default("active").notNull(),
+    version: int("version").default(1).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    workspaceNovelUnique: uniqueIndex("workspaceNovels_workspace_novel_unique").on(table.workspaceId, table.novelId),
+    novelStatusIdx: index("workspaceNovels_novel_status_idx").on(table.novelId, table.status),
+    workspaceFk: foreignKey({
+      name: "workspaceNovels_workspaceId_workspaceWorkspaces_id_fk",
+      columns: [table.workspaceId],
+      foreignColumns: [workspaceWorkspaces.id],
+    }).onDelete("cascade"),
+    novelFk: foreignKey({
+      name: "workspaceNovels_novelId_novels_id_fk",
+      columns: [table.novelId],
+      foreignColumns: [novels.id],
+    }),
+  })
+);
+
+/**
+ * Synthetic, read-only source binding used only to prove the M01 contract.
+ * M02 replaces this with authenticated Google document bindings; no provider
+ * document ID, OAuth credential, or document body can be written here.
+ */
+export const workspaceReadOnlyBindings = mysqlTable(
+  "workspaceReadOnlyBindings",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workspaceNovelId: int("workspaceNovelId").notNull(),
+    sourceKind: mysqlEnum("sourceKind", ["synthetic"]).default("synthetic").notNull(),
+    sourceKey: varchar("sourceKey", { length: 255 }).notNull(),
+    displayName: varchar("displayName", { length: 500 }).notNull(),
+    role: mysqlEnum("role", ["source", "chapter", "glossary", "reference"]).default("source").notNull(),
+    sequence: int("sequence").default(1).notNull(),
+    status: mysqlEnum("status", ["active", "paused", "removed"]).default("active").notNull(),
+    version: int("version").default(1).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    workspaceNovelSourceUnique: uniqueIndex("workspaceReadOnlyBindings_novel_source_unique").on(
+      table.workspaceNovelId,
+      table.sourceKind,
+      table.sourceKey
+    ),
+    workspaceNovelRoleSequenceUnique: uniqueIndex("workspaceReadOnlyBindings_novel_role_sequence_unique").on(
+      table.workspaceNovelId,
+      table.role,
+      table.sequence
+    ),
+    workspaceNovelFk: foreignKey({
+      name: "workspaceReadOnlyBindings_workspaceNovelId_workspaceNovels_id_fk",
+      columns: [table.workspaceNovelId],
+      foreignColumns: [workspaceNovels.id],
+    }).onDelete("cascade"),
+  })
+);
+
+/** M01 initializes all capability ownership to Sheets and exposes no mutator. */
+export const workspaceMigrationRegistry = mysqlTable(
+  "workspaceMigrationRegistry",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workspaceNovelId: int("workspaceNovelId").notNull(),
+    capability: mysqlEnum("capability", ["kanban", "checker", "ai_queue", "export", "publish"]).notNull(),
+    owner: mysqlEnum("owner", ["sheets", "workspace", "paused"]).default("sheets").notNull(),
+    cutoverEpoch: int("cutoverEpoch").default(0).notNull(),
+    version: int("version").default(1).notNull(),
+    changedAt: timestamp("changedAt").defaultNow().notNull(),
+    changedBy: int("changedBy"),
+  },
+  (table) => ({
+    workspaceNovelCapabilityUnique: uniqueIndex("workspaceMigrationRegistry_workspaceNovel_capability_unique").on(table.workspaceNovelId, table.capability),
+    ownerCapabilityIdx: index("workspaceMigrationRegistry_owner_capability_idx").on(table.owner, table.capability),
+    workspaceNovelFk: foreignKey({
+      name: "workspaceMigrationRegistry_workspaceNovelId_workspaceNovels_id_fk",
+      columns: [table.workspaceNovelId],
+      foreignColumns: [workspaceNovels.id],
+    }).onDelete("cascade"),
+    changedByFk: foreignKey({
+      name: "workspaceMigrationRegistry_changedBy_users_id_fk",
+      columns: [table.changedBy],
+      foreignColumns: [users.id],
+    }),
+  })
+);
+
+export type WorkspaceWorkspace = typeof workspaceWorkspaces.$inferSelect;
+export type WorkspaceMember = typeof workspaceMembers.$inferSelect;
+export type WorkspaceNovel = typeof workspaceNovels.$inferSelect;
+export type WorkspaceReadOnlyBinding = typeof workspaceReadOnlyBindings.$inferSelect;
+export type WorkspaceMigrationRegistryEntry = typeof workspaceMigrationRegistry.$inferSelect;

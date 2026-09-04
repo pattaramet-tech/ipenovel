@@ -50,6 +50,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import Navbar from "./components/Navbar";
 import MigrationGate from "./components/MigrationGate";
 import MaintenanceAnnouncementBanner from "./components/MaintenanceAnnouncementBanner";
+import WorkspacePage from "./pages/WorkspacePage";
 
 function Router() {
   return (
@@ -88,6 +89,7 @@ function Router() {
         <Route path={"/wallet"} component={WalletPage} />
         <Route path={"/payment/:orderId"} component={PaymentPage} />
         <Route path={"/sports-votes"} component={SportsVotesPage} />
+        <Route path={"/workspace"} component={WorkspacePage} />
         <Route path={"/admin"} component={AdminDashboard} />
         <Route path={"/admin/novels/:novelId"} component={AdminNovelManagePage} />
         <Route path={"/admin/novels"} component={AdminNovelsPage} />
