@@ -163,10 +163,20 @@ export const REQUIRED_NULLABLE_COLUMNS = [
 ];
 
 export const REQUIRED_INDEXES = [
-  { table: "accountMutationGuards", index: "PRIMARY", unique: true },
-  { table: "accountMutationGuards", index: "accountMutationGuards_activeMergeCaseId_unique", unique: true },
-  { table: "pointsAccounts", index: "PRIMARY", unique: true },
-  { table: "pointsTransactions", index: "pointsTransactions_userId_effectKey_unique", unique: true },
+  { table: "accountMutationGuards", index: "PRIMARY", unique: true, columns: ["userId"] },
+  {
+    table: "accountMutationGuards",
+    index: "accountMutationGuards_activeMergeCaseId_unique",
+    unique: true,
+    columns: ["activeMergeCaseId"],
+  },
+  { table: "pointsAccounts", index: "PRIMARY", unique: true, columns: ["userId"] },
+  {
+    table: "pointsTransactions",
+    index: "pointsTransactions_userId_effectKey_unique",
+    unique: true,
+    columns: ["userId", "effectKey"],
+  },
   { table: "users", index: "users_role_id_idx" },
   { table: "users", index: "users_email_idx" },
   { table: "authIdentities", index: "PRIMARY" },
@@ -307,17 +317,32 @@ export async function findMissingSchemaObjects(conn) {
     }
   }
 
-  for (const { table, index, unique } of REQUIRED_INDEXES) {
+  for (const { table, index, unique, columns } of REQUIRED_INDEXES) {
     // An index on a missing table is already reported as a missing table -
     // don't report the same root cause twice. Same case-insensitive
     // comparison as the table check above, for the same reason.
     if (!presentTables.has(table.toLowerCase())) continue;
     const [indexRows] = await conn.query(
-      `SELECT DISTINCT index_name AS name FROM information_schema.statistics
-       WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?${unique ? " AND non_unique = 0" : ""}`,
+      `SELECT index_name AS name,
+              column_name AS columnName,
+              seq_in_index AS sequence
+       FROM information_schema.statistics
+       WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?${unique ? " AND non_unique = 0" : ""}
+       ORDER BY seq_in_index`,
       [table, index]
     );
-    if (!indexRows || indexRows.length === 0) missing.push(`index ${table}.${index}`);
+    const actualColumns = (indexRows ?? [])
+      .slice()
+      .sort((left, right) => Number(left.sequence) - Number(right.sequence))
+      .map((row) => String(row.columnName).toLowerCase());
+    const expectedColumns = columns?.map((column) => column.toLowerCase());
+    const hasExpectedShape =
+      !expectedColumns ||
+      (actualColumns.length === expectedColumns.length &&
+        actualColumns.every((column, position) => column === expectedColumns[position]));
+    if (!indexRows || indexRows.length === 0 || !hasExpectedShape) {
+      missing.push(`index ${table}.${index}`);
+    }
   }
 
   for (const foreignKey of REQUIRED_FOREIGN_KEYS) {

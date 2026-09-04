@@ -6,6 +6,7 @@ import { eq } from "drizzle-orm";
 import { accountMutationGuards, pointsAccounts } from "../drizzle/schema";
 import * as db from "./db";
 import {
+  findMissingSchemaObjects,
   findPaymentV2FoundationDataMismatches,
   reconcilePaymentV2FoundationData,
 } from "../scripts/migrate.mjs";
@@ -156,6 +157,19 @@ describe.sequential("IPE-022 restart-safe and mixed-version foundation - real di
           [legacyUser.insertId]
         );
         expect(finalPoints[0].balance).toBe("29.00");
+
+        // A constraint name alone is not the invariant. Prove the production
+        // verifier rejects a unique index that keeps the expected name but
+        // adds another column to the financial-effect identity.
+        await conn.query(
+          "ALTER TABLE pointsTransactions DROP INDEX pointsTransactions_userId_effectKey_unique"
+        );
+        await conn.query(
+          "ALTER TABLE pointsTransactions ADD CONSTRAINT pointsTransactions_userId_effectKey_unique UNIQUE(userId,referenceId,effectKey)"
+        );
+        expect(await findMissingSchemaObjects(conn)).toContain(
+          "index pointsTransactions.pointsTransactions_userId_effectKey_unique"
+        );
       } finally {
         await resetToMigrationCutoff(conn, requireTestUrl(), migrationsFolder, MIGRATION_0046);
         await closeMysqlConnectionSafely(conn);

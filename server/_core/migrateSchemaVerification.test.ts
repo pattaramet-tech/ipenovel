@@ -30,6 +30,12 @@ interface FakeQuery {
   params: unknown[];
 }
 
+type FakeIndex = string | {
+  table: string;
+  index: string;
+  columns?: string[];
+};
+
 /**
  * `indexesPresent` accepts either bare index names (matched on the name
  * alone) or explicit {table, index} pairs. The pair form exists because
@@ -43,7 +49,7 @@ function fakeConn(
   tableNameCase: "camel" | "lower",
   tablesPresent: string[],
   columnsPresent: boolean,
-  indexesPresent: Array<string | { table: string; index: string }>,
+  indexesPresent: FakeIndex[],
   nullableColumnsAreNullable = true,
   foreignKeysPresent: Array<{ table: string; constraint: string }> = REQUIRED_FOREIGN_KEYS
 ) {
@@ -66,12 +72,23 @@ function fakeConn(
     }
     if (sql.includes("information_schema.statistics")) {
       const [tableName, indexName] = params;
-      const present = indexesPresent.some((entry) =>
+      const present = indexesPresent.find((entry) =>
         typeof entry === "string"
           ? entry === String(indexName)
           : entry.table === String(tableName) && entry.index === String(indexName)
       );
-      return [present ? [{ name: indexName }] : []];
+      if (!present) return [[]];
+      const expected = REQUIRED_INDEXES.find(
+        (entry) => entry.table === String(tableName) && entry.index === String(indexName)
+      );
+      const columns = typeof present === "string" ? expected?.columns : present.columns;
+      return [
+        columns?.map((columnName, position) => ({
+          name: indexName,
+          columnName,
+          sequence: position + 1,
+        })) ?? [{ name: indexName, columnName: undefined, sequence: 1 }],
+      ];
     }
     if (sql.includes("information_schema.key_column_usage")) {
       const [tableName, constraintName] = params;
@@ -170,10 +187,20 @@ describe("findMissingSchemaObjects - required object lists", () => {
       { table: "dailyCheckinRewardRules", index: "dailyCheckinRewardRules_campaign_dedupe_unique" },
       { table: "dailyCheckinCampaigns", index: "dailyCheckinCampaigns_campaignKey_unique" },
       ...LEGACY_REGISTRY_INDEXES,
-      { table: "accountMutationGuards", index: "PRIMARY", unique: true },
-      { table: "accountMutationGuards", index: "accountMutationGuards_activeMergeCaseId_unique", unique: true },
-      { table: "pointsAccounts", index: "PRIMARY", unique: true },
-      { table: "pointsTransactions", index: "pointsTransactions_userId_effectKey_unique", unique: true },
+      { table: "accountMutationGuards", index: "PRIMARY", unique: true, columns: ["userId"] },
+      {
+        table: "accountMutationGuards",
+        index: "accountMutationGuards_activeMergeCaseId_unique",
+        unique: true,
+        columns: ["activeMergeCaseId"],
+      },
+      { table: "pointsAccounts", index: "PRIMARY", unique: true, columns: ["userId"] },
+      {
+        table: "pointsTransactions",
+        index: "pointsTransactions_userId_effectKey_unique",
+        unique: true,
+        columns: ["userId", "effectKey"],
+      },
     ]));
   });
 
@@ -220,6 +247,35 @@ describe("findMissingSchemaObjects - required object lists", () => {
       ({ params }) => params[0] === "pointsTransactions" && params[1] === "pointsTransactions_userId_effectKey_unique"
     );
     expect(effectUniqueProbe?.sql).toContain("non_unique = 0");
+  });
+
+  it("fails closed when a same-name per-user PRIMARY index has the wrong column", async () => {
+    const wrongShape = REQUIRED_INDEXES.map((entry) =>
+      entry.table === "pointsAccounts" && entry.index === "PRIMARY"
+        ? { ...entry, columns: ["balance"] }
+        : entry
+    );
+    const { query } = fakeConn("camel", REQUIRED_TABLES, true, wrongShape);
+
+    expect(await findMissingSchemaObjects({ query })).toContain("index pointsAccounts.PRIMARY");
+  });
+
+  it.each([
+    ["reordered", ["effectKey", "userId"]],
+    ["missing", ["userId"]],
+    ["extra", ["userId", "effectKey", "id"]],
+    ["substituted", ["userId", "referenceId"]],
+  ])("fails closed when the effect idempotency index is %s under the expected name", async (_case, columns) => {
+    const wrongShape = REQUIRED_INDEXES.map((entry) =>
+      entry.table === "pointsTransactions" && entry.index === "pointsTransactions_userId_effectKey_unique"
+        ? { ...entry, columns }
+        : entry
+    );
+    const { query } = fakeConn("camel", REQUIRED_TABLES, true, wrongShape);
+
+    expect(await findMissingSchemaObjects({ query })).toContain(
+      "index pointsTransactions.pointsTransactions_userId_effectKey_unique"
+    );
   });
 
   it("fails closed when migration 0036's users role index is missing", async () => {
