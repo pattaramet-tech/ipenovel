@@ -90,9 +90,14 @@ function tableName(table: any): string {
 
 function boundHashes(cond: any): string[] {
   const found: string[] = [];
+  const seen = new WeakSet<object>();
   const walk = (n: any, d = 0) => {
     if (!n || d > 12) return;
     if (typeof n === "string" && /^[0-9a-f]{64}$/.test(n)) found.push(n);
+    if (typeof n === "object") {
+      if (seen.has(n)) return;
+      seen.add(n);
+    }
     if (Array.isArray(n)) return n.forEach((x) => walk(x, d + 1));
     if (typeof n === "object") for (const k of Object.keys(n)) walk((n as any)[k], d + 1);
   };
@@ -257,6 +262,7 @@ function walletRows(status = "pending") {
         status,
         slipImageUrl: B_URL,
         slipSubmittedAt: T_B,
+        evidenceVersion: 0,
         extractedData: null,
       },
     ],
@@ -272,6 +278,7 @@ function walletRows(status = "pending") {
 function simulateReplacement(harness: ReturnType<typeof makeDb>) {
   harness.store.walletTopups[0].slipImageUrl = C_URL;
   harness.store.walletTopups[0].slipSubmittedAt = new Date("2026-01-02T00:00:00Z");
+  harness.store.walletTopups[0].evidenceVersion += 1;
   harness.store.walletTopups[0].status = "pending";
 }
 

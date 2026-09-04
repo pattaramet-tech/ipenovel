@@ -91,9 +91,14 @@ function tableName(table: any): string {
 
 function boundHashes(cond: any): string[] {
   const found: string[] = [];
+  const seen = new WeakSet<object>();
   const walk = (n: any, d = 0) => {
     if (!n || d > 12) return;
     if (typeof n === "string" && /^[0-9a-f]{64}$/.test(n)) found.push(n);
+    if (typeof n === "object") {
+      if (seen.has(n)) return;
+      seen.add(n);
+    }
     if (Array.isArray(n)) return n.forEach((x) => walk(x, d + 1));
     if (typeof n === "object") for (const k of Object.keys(n)) walk((n as any)[k], d + 1);
   };
@@ -122,6 +127,8 @@ function targetedColumns(cond: any): string[] {
 function makeDb(rows: Record<string, any[]>, onLock?: (store: Record<string, any[]>) => void) {
   const store: Record<string, any[]> = JSON.parse(JSON.stringify(rows));
   let snapshot: Record<string, any[]> = JSON.parse(JSON.stringify(store));
+  const lockQueries: string[] = [];
+  let minimalPaymentLockCount = 0;
 
   const executor = (): any => ({
     execute: async (query: any) => {
@@ -130,8 +137,23 @@ function makeDb(rows: Record<string, any[]>, onLock?: (store: Record<string, any
         .join("");
       if (queryText.includes("accountMergeCases")) return [[]];
       if (queryText.includes("FROM users")) return [[{ id: 1 }]];
-      onLock?.(store);
-      snapshot = JSON.parse(JSON.stringify(store));
+      if (queryText.includes("FROM payments") && queryText.includes("FOR UPDATE")) {
+        lockQueries.push(queryText);
+      }
+      // Publication first takes the Account Merge wrapper's minimal subject
+      // lock, then a rich current-row lock. Approval later takes its own
+      // minimal subject lock in a separate transaction. The injected admin
+      // decision belongs only in that second minimal (approval) window.
+      if (queryText.includes("SELECT id FROM payments") && queryText.includes("FOR UPDATE")) {
+        minimalPaymentLockCount += 1;
+        if (minimalPaymentLockCount === 2) {
+          onLock?.(store);
+          snapshot = JSON.parse(JSON.stringify(store));
+        }
+      }
+      if (queryText.includes("SELECT id,status,slipImageUrl,evidenceVersion,slipEvidenceId")) {
+        return [[store.payments[0]]];
+      }
       return [[{ id: 1 }]];
     },
     select() {
@@ -202,7 +224,7 @@ function makeDb(rows: Record<string, any[]>, onLock?: (store: Record<string, any
       }
     },
   };
-  return { fake, store };
+  return { fake, store, lockQueries };
 }
 
 function orderRows(paymentStatus = "pending") {
@@ -214,6 +236,7 @@ function orderRows(paymentStatus = "pending") {
         userId: 11,
         status: paymentStatus,
         slipImageUrl: "r2p:payment-slips/11/slip.png",
+        evidenceVersion: 0,
       },
     ],
     orders: [
@@ -300,6 +323,10 @@ describe("automatic OCR approval cannot resurrect a finalized payment", () => {
     expect(result.isAutoApproved).toBe(false);
     expect((result as any).supersededByFinalization).toBe(true);
     expect(result.status).toBe("rejected");
+    expect(harness.lockQueries).toHaveLength(3);
+    expect(harness.lockQueries[0]).toContain("SELECT id FROM payments");
+    expect(harness.lockQueries[1]).toContain("SELECT id,status,slipImageUrl,evidenceVersion,slipEvidenceId");
+    expect(harness.lockQueries[2]).toContain("SELECT id FROM payments");
 
     // The human decision stands, untouched.
     expect(harness.store.payments[0].status).toBe("rejected");
@@ -326,6 +353,10 @@ describe("automatic OCR approval cannot resurrect a finalized payment", () => {
 
     expect(result.reviewReason).toBe("OCR_SUPERSEDED_BY_FINALIZATION");
     expect(result.status).toBe("approved");
+    expect(harness.lockQueries).toHaveLength(3);
+    expect(harness.lockQueries[0]).toContain("SELECT id FROM payments");
+    expect(harness.lockQueries[1]).toContain("SELECT id,status,slipImageUrl,evidenceVersion,slipEvidenceId");
+    expect(harness.lockQueries[2]).toContain("SELECT id FROM payments");
 
     expect(harness.store.payments[0].status).toBe("approved");
     // No second claim, no duplicate purchase, no duplicate points row.
@@ -430,6 +461,7 @@ describe("automatic OCR approval cannot resurrect a finalized payment", () => {
       // replacement having already committed by then.
       store.payments[0].slipImageUrl = C_URL;
       store.payments[0].slipSubmittedAt = new Date("2026-06-01T00:00:00Z");
+      store.payments[0].evidenceVersion += 1;
       store.payments[0].extractedData = JSON.stringify({ fileHash: "c".repeat(64) });
       // status stays "pending" - a replacement re-opens it, never changes it.
     });
@@ -460,6 +492,39 @@ describe("automatic OCR approval cannot resurrect a finalized payment", () => {
     expect(harness.store.pointsTransactions).toHaveLength(0);
     expect(harness.store.orderHistory).toHaveLength(0);
     expect(harness.store.orders[0].status).toBe("pending");
+  });
+
+  it("G. evidenceVersion-only replacement while processing is refused and reports slip superseded", async () => {
+    // The slip was replaced in a way that rekeys evidenceVersion without changing
+    // the visible URL. Without an evidenceVersion CAS in sendToReview, this old
+    // OCR run can write stale extraction metadata into the newer row. The new
+    // write must be rejected and the previous extractedData retained.
+    mockAutoApprovingOcrPipeline();
+    const harness = makeDb(orderRows("pending"), (store) => {
+      store.payments[0].evidenceVersion += 1;
+      store.payments[0].extractedData = JSON.stringify({ fileHash: "v2".repeat(32) });
+      store.payments[0].extractedEvidenceVersion = 2;
+    });
+    dbModule.__setDbForTests(harness.fake);
+
+    const result = await submitPaymentSlip({
+      orderId: 90,
+      slipImageUrl: "r2p:payment-slips/11/slip.png",
+      userId: 11,
+    });
+
+    expect(result.reviewReason).toBe("OCR_SUPERSEDED_BY_SLIP_REPLACEMENT");
+    expect(result.isAutoApproved).toBe(false);
+    expect(harness.store.payments[0].status).toBe("pending");
+    expect(harness.store.payments[0].evidenceVersion).toBe(2);
+    expect(JSON.parse(harness.store.payments[0].extractedData)).toEqual({
+      fileHash: "v2".repeat(32),
+    });
+    expect(harness.store.payments[0].extractedEvidenceVersion).toBe(2);
+    expect(harness.store.paymentSlipClaims).toHaveLength(0);
+    expect(harness.store.purchases).toHaveLength(0);
+    expect(harness.store.pointsTransactions).toHaveLength(0);
+    expect(harness.store.orderHistory).toHaveLength(0);
   });
 
   it("the classification helper is the STATE one, not a provider fault", async () => {

@@ -119,7 +119,8 @@ export async function createWalletTopupRequest(userId: number, requestedAmount: 
 
   let topup: any;
   try {
-    topup = await db.createWalletTopup(userId, requestedAmount, slipImageUrl);
+    const slipFileHash = slipImageUrl ? await computeSlipFileHash(slipImageUrl) : undefined;
+    topup = await db.createWalletTopup(userId, requestedAmount, slipImageUrl, slipFileHash);
     if (!topup) {
       throw new TRPCError({
         code: "INTERNAL_SERVER_ERROR",
@@ -219,6 +220,7 @@ export async function uploadWalletTopupSlip(topupId: number, userId: number, sli
     slipImageUrl,
     slipSubmittedAt,
     extractedData: slipFileHash ? JSON.stringify({ fileHash: slipFileHash }) : null,
+    fileHash: slipFileHash,
   });
 
   if (!published) {

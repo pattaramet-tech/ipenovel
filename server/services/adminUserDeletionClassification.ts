@@ -54,8 +54,9 @@
  *   transaction deletes it together with the users row in the same
  *   transaction (see deleteAdminUserTransaction).
  * - "never_blocks": every other column that structurally cannot represent
- *   real, protectable data about the target account - an unverified,
- *   user-typed claim (accountRecoveryRequests.requestedLegacyUserId), or
+ *   real, protectable data about the target account - an automatically
+ *   provisioned, cascade-deleted mutex/mirror row, an unverified user-typed
+ *   claim (accountRecoveryRequests.requestedLegacyUserId), or
  *   this feature's OWN audit trail's `targetUserId` (adminUserAuditLogs),
  *   which is deliberately built with no foreign key specifically so it
  *   survives a target user's hard delete (see drizzle/schema.ts's
@@ -176,6 +177,22 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
     reason:
       "A claim row is proof this account consumed a real bank transaction to create financial value (an order payment or a wallet top-up), so it is economic evidence in its own right - and such an account is already blocked by the underlying payments/orders/walletTopups rows anyway. Critically, the claim row itself must NEVER be deleted along with the user: paymentSlipClaims is the global anti-replay registry, and removing a user's claims would re-open every slip they ever used for replay by anyone. Like adminUserAuditLogs it carries no foreign key precisely so it outlives the accounts it references; unlike that table it also BLOCKS deletion, because it represents money rather than a record of administration.",
   },
+  {
+    table: "slipEvidenceUploads",
+    column: "ownerUserId",
+    category: "economic",
+    reference: "Immutable Slip Evidence",
+    reason:
+      "The write-once upload registry preserves who supplied exact payment evidence. Hard deletion must not orphan or erase that durable financial provenance.",
+  },
+  {
+    table: "slipEvidenceBindings",
+    column: "ownerUserId",
+    category: "economic",
+    reference: "Immutable Slip Evidence",
+    reason:
+      "A versioned binding is durable proof tying an account to the exact bytes used for a financial review. It must outlive and therefore block hard deletion.",
+  },
 
   // ---- never_blocks: unverified claims and this feature's own self-outliving audit trail ----
   {
@@ -191,6 +208,22 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
     category: "never_blocks",
     reference: "Admin User Audit Logs",
     reason: "This feature's OWN append-only audit trail, deliberately built with no foreign key specifically so it survives a target user's hard delete (see drizzle/schema.ts's adminUserAuditLogs doc comment) - the record of what was done TO this user must remain readable after they're gone, so this column alone must never block that deletion. Contrast actorAdminId above, which protects a different identity (WHO did it) and IS a blocker.",
+  },
+  {
+    table: "pointsAccounts",
+    column: "userId",
+    category: "never_blocks",
+    reference: "Points Account Infrastructure",
+    reason:
+      "Migration 0046 provisions this zero-balance mutex/mirror row for every user and its user foreign key cascades on deletion. Real points activity blocks separately through pointsTransactions, so mere singleton-row presence cannot block every otherwise-empty account.",
+  },
+  {
+    table: "accountMutationGuards",
+    column: "userId",
+    category: "never_blocks",
+    reference: "Account Mutation Guard Infrastructure",
+    reason:
+      "Migration 0045 provisions this serialization guard for every user and its user foreign key cascades on deletion. It is concurrency infrastructure, not user-owned or audit data, so its unavoidable presence must not make all hard deletion impossible.",
   },
 ];
 

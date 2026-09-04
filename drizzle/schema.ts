@@ -397,6 +397,79 @@ export type OrderItem = typeof orderItems.$inferSelect;
 export type InsertOrderItem = typeof orderItems.$inferInsert;
 
 /**
+ * Write-once registry for exact payment-slip objects uploaded by the server.
+ * Rows are created from server-held bytes before a browser can reference the
+ * object. Application code never updates or deletes them; objectIdentity is
+ * globally unique and the storage write uses create-only semantics.
+ */
+export const slipEvidenceUploads = mysqlTable(
+  "slipEvidenceUploads",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    objectIdentity: varchar("objectIdentity", { length: 512 }).notNull(),
+    ownerUserId: int("ownerUserId").notNull(),
+    fileHash: varchar("fileHash", { length: 64 }).notNull(),
+    objectSize: int("objectSize", { unsigned: true }).notNull(),
+    mimeType: varchar("mimeType", { length: 100 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    objectIdentityUnique: uniqueIndex("slipEvidenceUploads_objectIdentity_unique").on(
+      table.objectIdentity
+    ),
+    ownerUserIdIdx: index("slipEvidenceUploads_ownerUserId_idx").on(table.ownerUserId),
+  })
+);
+
+export type SlipEvidenceUpload = typeof slipEvidenceUploads.$inferSelect;
+
+/**
+ * Immutable publication history. One row binds an upload's exact bytes and
+ * object identity to one approval subject, owner, and monotonic version.
+ * Legacy migrations may use a NULL uploadId only after independently proving
+ * and recording the immutable object identity/hash.
+ */
+export const slipEvidenceBindings = mysqlTable(
+  "slipEvidenceBindings",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    uploadId: int("uploadId"),
+    sourceType: mysqlEnum("sourceType", ["order_payment", "wallet_topup"]).notNull(),
+    sourceId: int("sourceId").notNull(),
+    ownerUserId: int("ownerUserId").notNull(),
+    evidenceVersion: bigint("evidenceVersion", { mode: "number", unsigned: true }).notNull(),
+    evidenceClass: mysqlEnum("evidenceClass", [
+      "modern_immutable",
+      "legacy_migrated_immutable",
+    ]).notNull(),
+    objectIdentity: varchar("objectIdentity", { length: 512 }).notNull(),
+    fileHash: varchar("fileHash", { length: 64 }).notNull(),
+    objectSize: int("objectSize", { unsigned: true }),
+    mimeType: varchar("mimeType", { length: 100 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    uploadUnique: uniqueIndex("slipEvidenceBindings_uploadId_unique").on(table.uploadId),
+    objectIdentityUnique: uniqueIndex("slipEvidenceBindings_objectIdentity_unique").on(
+      table.objectIdentity
+    ),
+    sourceVersionUnique: uniqueIndex("slipEvidenceBindings_source_version_unique").on(
+      table.sourceType,
+      table.sourceId,
+      table.evidenceVersion
+    ),
+    ownerUserIdIdx: index("slipEvidenceBindings_ownerUserId_idx").on(table.ownerUserId),
+    uploadFk: foreignKey({
+      name: "slipEvidenceBindings_uploadId_fk",
+      columns: [table.uploadId],
+      foreignColumns: [slipEvidenceUploads.id],
+    }).onDelete("restrict"),
+  })
+);
+
+export type SlipEvidenceBinding = typeof slipEvidenceBindings.$inferSelect;
+
+/**
  * Payment records (one per order)
  * Stores proof of payment and admin verification result
  */
@@ -407,6 +480,14 @@ export const payments = mysqlTable(
     orderId: int("orderId").notNull().unique(),
     slipImageUrl: text("slipImageUrl"),
     slipSubmittedAt: timestamp("slipSubmittedAt"),
+    evidenceVersion: bigint("evidenceVersion", { mode: "number", unsigned: true }).default(0).notNull(),
+    slipEvidenceClass: mysqlEnum("slipEvidenceClass", [
+      "modern_immutable",
+      "legacy_migrated_immutable",
+      "legacy_compatibility_required",
+    ]).default("legacy_compatibility_required").notNull(),
+    slipEvidenceId: int("slipEvidenceId"),
+    extractedEvidenceVersion: bigint("extractedEvidenceVersion", { mode: "number", unsigned: true }),
     status: mysqlEnum("status", ["pending", "approved", "rejected", "pending_review"]).default("pending").notNull(),
     rejectionReason: text("rejectionReason"),
     reviewedByUserId: int("reviewedByUserId"),
@@ -438,6 +519,12 @@ export const payments = mysqlTable(
     approvedByAdminIdIdx: index("payments_approvedByAdminId_idx").on(table.approvedByAdminId),
     ocrConfidenceIdx: index("payments_ocrConfidence_idx").on(table.ocrConfidence),
     ocrDecisionIdx: index("payments_ocrDecision_idx").on(table.ocrDecision),
+    slipEvidenceIdIdx: uniqueIndex("payments_slipEvidenceId_unique").on(table.slipEvidenceId),
+    slipEvidenceFk: foreignKey({
+      name: "payments_slipEvidenceId_fk",
+      columns: [table.slipEvidenceId],
+      foreignColumns: [slipEvidenceBindings.id],
+    }).onDelete("restrict"),
   })
 );
 
@@ -810,6 +897,14 @@ export const walletTopups = mysqlTable("walletTopups", {
   creditedAmount: decimal("creditedAmount", { precision: 12, scale: 2 }),
   slipImageUrl: text("slipImageUrl"),
   slipSubmittedAt: timestamp("slipSubmittedAt"),
+  evidenceVersion: bigint("evidenceVersion", { mode: "number", unsigned: true }).default(0).notNull(),
+  slipEvidenceClass: mysqlEnum("slipEvidenceClass", [
+    "modern_immutable",
+    "legacy_migrated_immutable",
+    "legacy_compatibility_required",
+  ]).default("legacy_compatibility_required").notNull(),
+  slipEvidenceId: int("slipEvidenceId"),
+  extractedEvidenceVersion: bigint("extractedEvidenceVersion", { mode: "number", unsigned: true }),
   status: mysqlEnum("status", ["pending", "pending_review", "approved", "rejected", "cancelled"]).default("pending").notNull(),
   rejectionReason: text("rejectionReason"),
   reviewedByUserId: int("reviewedByUserId"),
@@ -836,6 +931,12 @@ export const walletTopups = mysqlTable("walletTopups", {
   userIdIdx: index("walletTopups_userId_idx").on(table.userId),
   statusIdx: index("walletTopups_status_idx").on(table.status),
   createdAtIdx: index("walletTopups_createdAt_idx").on(table.createdAt),
+  slipEvidenceIdIdx: uniqueIndex("walletTopups_slipEvidenceId_unique").on(table.slipEvidenceId),
+  slipEvidenceFk: foreignKey({
+    name: "walletTopups_slipEvidenceId_fk",
+    columns: [table.slipEvidenceId],
+    foreignColumns: [slipEvidenceBindings.id],
+  }).onDelete("restrict"),
 }));
 
 export type WalletTopup = typeof walletTopups.$inferSelect;

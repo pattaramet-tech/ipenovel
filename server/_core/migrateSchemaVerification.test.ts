@@ -6,6 +6,7 @@ import {
   REQUIRED_INDEXES,
   REQUIRED_NULLABLE_COLUMNS,
   REQUIRED_FOREIGN_KEYS,
+  REQUIRED_COLUMN_SHAPES,
 } from "../../scripts/migrate.mjs";
 
 /**
@@ -36,6 +37,14 @@ type FakeIndex = string | {
   columns?: string[];
 };
 
+type FakeColumnShape = {
+  table: string;
+  column: string;
+  columnType: string;
+  nullable: "YES" | "NO";
+  defaultValue: string | null;
+};
+
 /**
  * `indexesPresent` accepts either bare index names (matched on the name
  * alone) or explicit {table, index} pairs. The pair form exists because
@@ -51,7 +60,8 @@ function fakeConn(
   columnsPresent: boolean,
   indexesPresent: FakeIndex[],
   nullableColumnsAreNullable = true,
-  foreignKeysPresent: Array<{ table: string; constraint: string }> = REQUIRED_FOREIGN_KEYS
+  foreignKeysPresent: Array<{ table: string; constraint: string }> = REQUIRED_FOREIGN_KEYS,
+  columnShapeOverrides: FakeColumnShape[] = []
 ) {
   const calls: FakeQuery[] = [];
   const query = async (sql: string, params: unknown[] = []): Promise<[any[]]> => {
@@ -61,6 +71,20 @@ function fakeConn(
       return [rows];
     }
     if (sql.includes("information_schema.columns")) {
+      if (sql.includes("column_type AS columnType")) {
+        if (!columnsPresent) return [[]];
+        const expected = REQUIRED_COLUMN_SHAPES.find(
+          (entry: any) => entry.table === String(params[0]) && entry.column === String(params[1])
+        );
+        const actual = columnShapeOverrides.find(
+          (entry) => entry.table === String(params[0]) && entry.column === String(params[1])
+        ) ?? expected;
+        return [actual ? [{
+          columnType: actual.columnType,
+          nullable: actual.nullable,
+          defaultValue: actual.defaultValue,
+        }] : []];
+      }
       // Two different probes hit information_schema.columns: the presence
       // check selects column_name, the nullability check selects
       // is_nullable. They must be told apart here, or the nullability check
@@ -347,6 +371,64 @@ describe("findMissingSchemaObjects - required object lists", () => {
     const missing = await findMissingSchemaObjects({ query });
     expect(missing).toEqual(["index coupons.coupons_ownerUserId_idx"]);
   });
+});
+
+describe("findMissingSchemaObjects - migration 0047 security column shapes", () => {
+  const migration0047SecurityShapes = REQUIRED_COLUMNS.filter(({ table }) =>
+    table === "payments" ||
+    table === "walletTopups" ||
+    table === "slipEvidenceUploads" ||
+    table === "slipEvidenceBindings"
+  ).map(({ table, column }) => {
+    const shape = REQUIRED_COLUMN_SHAPES.find(
+      (entry) => entry.table === table && entry.column === column
+    );
+    if (!shape) throw new Error(`missing test fixture for ${table}.${column}`);
+    return shape as FakeColumnShape;
+  });
+
+  async function expectRejectedShape(
+    expected: FakeColumnShape,
+    override: Partial<Pick<FakeColumnShape, "columnType" | "nullable" | "defaultValue">>
+  ) {
+    const { query } = fakeConn(
+      "camel",
+      REQUIRED_TABLES,
+      true,
+      REQUIRED_INDEXES,
+      true,
+      REQUIRED_FOREIGN_KEYS,
+      [{ ...expected, ...override }]
+    );
+    expect(await findMissingSchemaObjects({ query })).toContain(
+      `column shape ${expected.table}.${expected.column}`
+    );
+  }
+
+  it.each(migration0047SecurityShapes)(
+    "rejects the wrong SQL type for $table.$column",
+    async (expected) => {
+      await expectRejectedShape(expected, { columnType: "varchar(255)" });
+    }
+  );
+
+  it.each(migration0047SecurityShapes)(
+    "rejects the wrong nullability for $table.$column",
+    async (expected) => {
+      await expectRejectedShape(expected, {
+        nullable: expected.nullable === "NO" ? "YES" : "NO",
+      });
+    }
+  );
+
+  it.each(migration0047SecurityShapes)(
+    "rejects the wrong default for $table.$column",
+    async (expected) => {
+      await expectRejectedShape(expected, {
+        defaultValue: expected.defaultValue === null ? "unexpected" : null,
+      });
+    }
+  );
 });
 
 describe("findMissingSchemaObjects - case-insensitive table name comparison (regression)", () => {

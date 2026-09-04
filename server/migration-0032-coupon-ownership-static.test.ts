@@ -270,6 +270,21 @@ describe("boot-time schema verifier (scripts/migrate.mjs findMissingSchemaObject
         return [REQUIRED_TABLES.map((t: string) => ({ name: t }))];
       }
       if (sql.includes("information_schema.columns") && sql.includes("is_nullable")) {
+        if (sql.includes("column_type AS columnType")) {
+          const { REQUIRED_COLUMN_SHAPES } = require("../scripts/migrate.mjs");
+          const expected = REQUIRED_COLUMN_SHAPES.find(
+            (entry: any) => entry.table === String(params[0]) && entry.column === String(params[1])
+          );
+          return [
+            expected
+              ? [{
+                  columnType: expected.columnType,
+                  nullable: expected.nullable,
+                  defaultValue: expected.defaultValue,
+                }]
+              : [],
+          ];
+        }
         return [[{ nullable: "YES" }]];
       }
       if (sql.includes("information_schema.columns")) {
@@ -277,8 +292,22 @@ describe("boot-time schema verifier (scripts/migrate.mjs findMissingSchemaObject
         return [missingColumns.includes(column) ? [] : [{ name: column }]];
       }
       if (sql.includes("information_schema.statistics")) {
-        const [, indexName] = params as [string, string];
-        return [missingIndexes.includes(String(indexName)) ? [] : [{ name: indexName }]];
+        const [tableName, indexName] = params as [string, string];
+        if (missingIndexes.includes(String(indexName))) return [[]];
+        const { REQUIRED_INDEXES } = require("../scripts/migrate.mjs");
+        const expected = REQUIRED_INDEXES.find(
+          (entry: any) => entry.table === tableName && entry.index === indexName
+        );
+        return [
+          expected?.columns?.map((columnName: string, position: number) => ({
+            name: indexName,
+            columnName,
+            sequence: position + 1,
+          })) ?? [{ name: indexName, columnName: undefined, sequence: 1 }],
+        ];
+      }
+      if (sql.includes("information_schema.key_column_usage")) {
+        return [[{ name: params[1] }]];
       }
       throw new Error(`unexpected query in fake connection: ${sql}`);
     };

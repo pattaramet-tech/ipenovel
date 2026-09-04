@@ -124,7 +124,7 @@ describe("db.ts publishWalletTopupReplacementIfReviewable: the recovery path, IP
   it("accepts a pending_review row - a customer with a genuinely stable slip is never permanently stuck", () => {
     const idx = code.indexOf("export async function publishWalletTopupReplacementIfReviewable(");
     expect(idx).toBeGreaterThan(-1);
-    const body = code.slice(idx, idx + 1200);
+    const body = code.slice(idx, code.indexOf("\nexport async function ", idx + 10));
     expect(body).toMatch(
       /or\(eq\(walletTopups\.status, "pending"\), eq\(walletTopups\.status, "pending_review"\)\)/
     );
@@ -132,7 +132,7 @@ describe("db.ts publishWalletTopupReplacementIfReviewable: the recovery path, IP
 
   it("unconditionally clears reviewReason as part of the same atomic write that publishes the replacement", () => {
     const idx = code.indexOf("export async function publishWalletTopupReplacementIfReviewable(");
-    const body = code.slice(idx, idx + 1200);
+    const body = code.slice(idx, code.indexOf("\nexport async function ", idx + 10));
     expect(body).toMatch(/reviewReason: null,/);
   });
 });

@@ -394,12 +394,18 @@ export class PaymentNotReviewableError extends Error {
  * still the current one.
  */
 export function sameSlipVersion(
-  a: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
-  b: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
+  a: { slipImageUrl: string | null; slipSubmittedAt: Date | null; evidenceVersion?: number },
+  b: { slipImageUrl: string | null; slipSubmittedAt: Date | null; evidenceVersion?: number }
 ): boolean {
   if (a.slipImageUrl !== b.slipImageUrl) return false;
-  const aTime = a.slipSubmittedAt ? a.slipSubmittedAt.getTime() : null;
-  const bTime = b.slipSubmittedAt ? b.slipSubmittedAt.getTime() : null;
+  if (a.evidenceVersion !== undefined && a.evidenceVersion !== b.evidenceVersion) return false;
+  const toEpoch = (value: Date | null) => value == null
+    ? null
+    : value instanceof Date
+      ? value.getTime()
+      : new Date(value as any).getTime();
+  const aTime = toEpoch(a.slipSubmittedAt);
+  const bTime = toEpoch(b.slipSubmittedAt);
   return aTime === bTime;
 }
 
@@ -494,7 +500,11 @@ export class SlipIntegrityBlockedError extends Error {
 export async function lockAndRequireReviewablePayment(
   paymentId: number,
   tx: any,
-  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
+  expectedSlipVersion?: {
+    slipImageUrl: string | null;
+    slipSubmittedAt: Date | null;
+    evidenceVersion?: number;
+  }
 ) {
   // Discover the immutable order owner without taking a subject lock, then
   // enter the shared Account Merge guard BEFORE the payment row. The post-lock
@@ -540,6 +550,7 @@ export async function lockAndRequireReviewablePayment(
     !sameSlipVersion(expectedSlipVersion, {
       slipImageUrl: payment.slipImageUrl as string | null,
       slipSubmittedAt: payment.slipSubmittedAt as Date | null,
+      evidenceVersion: Number(payment.evidenceVersion ?? 0),
     })
   ) {
     throw new SlipVersionChangedError(paymentId, String(payment.status));

@@ -164,6 +164,13 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     category: "merge_internal",
     reason: "IPE-007's durable data-reconciliation receipt records the merge workflow's own Target participant, not unrelated user-owned data.",
   },
+  {
+    table: "accountMutationGuards",
+    column: "userId",
+    category: "merge_internal",
+    reason:
+      "The per-user Account Merge serialization row is infrastructure created for every user and cascade-deleted with users; its presence is not evidence that the account owns data.",
+  },
   // ---- deliberately_ignored: admin/system actor identities, never the source's own data ----
   {
     table: "accountMergeCases",
@@ -273,6 +280,27 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     category: "deliberately_ignored",
     reason:
       "The global anti-replay claim registry. A claim row records that ONE bank transaction was consumed by ONE submission; it is not user-owned data this workflow moves or must protect, and any account with a claim is ALREADY hard-blocked transitively by the orders/walletTopups row that created it. Note the Admin Users Management inventory classifies this same column as \"economic\" instead - deliberately, because hard-DELETING a user must never remove their claims (that would re-open every slip they used for replay), which is a different question from whether account RECOVERY needs to inspect them.",
+  },
+  {
+    table: "slipEvidenceUploads",
+    column: "ownerUserId",
+    category: "deliberately_ignored",
+    reason:
+      "An immutable historical uploader identity in the write-once evidence registry. Account workflows must never re-parent or delete it; a bound upload's financial subject is already covered by orders/walletTopups, while an unbound upload carries no financial value.",
+  },
+  {
+    table: "slipEvidenceBindings",
+    column: "ownerUserId",
+    category: "deliberately_ignored",
+    reason:
+      "An immutable historical owner snapshot bound to a payment/top-up evidence version. The underlying order or top-up already blocks unsafe recovery, and changing this audit identity would destroy the evidence chain.",
+  },
+  {
+    table: "pointsAccounts",
+    column: "userId",
+    category: "deliberately_ignored",
+    reason:
+      "Migration 0046 creates this authoritative mutex/mirror row for every user, including empty zero-balance accounts. Actual points activity is already an economic hard block through pointsTransactions; the singleton row alone is not evidence of owned data.",
   },
 
   // ---- economic_hard_block: Category A - wallet/points/purchases/orders/payments/transactions/coupons ----

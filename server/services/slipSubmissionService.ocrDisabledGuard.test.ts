@@ -128,6 +128,7 @@ describe("submitPaymentSlip - OCR_DISABLED guard occurs before any provider call
       {
         slipImageUrl: "r2p:payment-slips/6/slip.png",
         slipSubmittedAt: new Date("2026-01-01T00:00:00Z"),
+        evidenceVersion: 0,
       }
     );
 

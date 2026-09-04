@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { uploadPaymentSlipFile } from "./slipFileUploadService";
 import * as r2PrivateStorage from "./r2PrivateStorage";
+import * as db from "../db";
 import * as legacyStorage from "../storage";
 import { TRPCError } from "@trpc/server";
 
@@ -10,8 +11,13 @@ vi.mock("./r2PrivateStorage", async () => {
   const actual = await vi.importActual<typeof import("./r2PrivateStorage")>("./r2PrivateStorage");
   return {
     ...actual,
-    putPrivateObject: vi.fn(),
+    putPrivateObjectCreateOnly: vi.fn(),
   };
+});
+
+vi.mock("../db", async () => {
+  const actual = await vi.importActual<typeof import("../db")>("../db");
+  return { ...actual, registerImmutableSlipUpload: vi.fn() };
 });
 
 // Also mock the legacy module so a static assertion can prove
@@ -24,6 +30,7 @@ vi.mock("../storage", () => ({
 describe("uploadPaymentSlipFile", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.registerImmutableSlipUpload).mockResolvedValue(1);
   });
 
   // Helper to create base64 file
@@ -52,7 +59,7 @@ describe("uploadPaymentSlipFile", () => {
 
   describe("Valid uploads", () => {
     it("should upload valid JPEG file to the private bucket and return an r2p: reference", async () => {
-      vi.mocked(r2PrivateStorage.putPrivateObject).mockResolvedValueOnce({
+      vi.mocked(r2PrivateStorage.putPrivateObjectCreateOnly).mockResolvedValueOnce({
         key: "payment-slips/123/xxx-file.jpg",
       });
 
@@ -69,7 +76,7 @@ describe("uploadPaymentSlipFile", () => {
       expect(result.mimeType).toBe("image/jpeg");
       expect(result.isPDF).toBe(false);
       expect(result.size).toBeGreaterThan(0);
-      expect(vi.mocked(r2PrivateStorage.putPrivateObject)).toHaveBeenCalledWith(
+      expect(vi.mocked(r2PrivateStorage.putPrivateObjectCreateOnly)).toHaveBeenCalledWith(
         "paymentSlip",
         expect.stringMatching(/^payment-slips\/123\//),
         expect.any(Buffer),
@@ -78,7 +85,7 @@ describe("uploadPaymentSlipFile", () => {
     });
 
     it("should upload valid PNG file and return an r2p: reference", async () => {
-      vi.mocked(r2PrivateStorage.putPrivateObject).mockResolvedValueOnce({
+      vi.mocked(r2PrivateStorage.putPrivateObjectCreateOnly).mockResolvedValueOnce({
         key: "payment-slips/123/xxx-file.png",
       });
 
@@ -96,7 +103,7 @@ describe("uploadPaymentSlipFile", () => {
     });
 
     it("should upload valid PDF file and return manual review message", async () => {
-      vi.mocked(r2PrivateStorage.putPrivateObject).mockResolvedValueOnce({
+      vi.mocked(r2PrivateStorage.putPrivateObjectCreateOnly).mockResolvedValueOnce({
         key: "payment-slips/123/xxx-file.pdf",
       });
 
@@ -117,7 +124,7 @@ describe("uploadPaymentSlipFile", () => {
 
   describe("MIME type validation", () => {
     it("should normalize image/jpg to image/jpeg", async () => {
-      vi.mocked(r2PrivateStorage.putPrivateObject).mockResolvedValueOnce({
+      vi.mocked(r2PrivateStorage.putPrivateObjectCreateOnly).mockResolvedValueOnce({
         key: "payment-slips/123/xxx-file.jpg",
       });
 
@@ -130,7 +137,7 @@ describe("uploadPaymentSlipFile", () => {
       });
 
       expect(result.mimeType).toBe("image/jpeg");
-      const call = vi.mocked(r2PrivateStorage.putPrivateObject).mock.calls[0];
+      const call = vi.mocked(r2PrivateStorage.putPrivateObjectCreateOnly).mock.calls[0];
       expect(call[3]).toBe("image/jpeg");
     });
 
@@ -184,7 +191,7 @@ describe("uploadPaymentSlipFile", () => {
 
     it("should accept files exactly at 5MB limit", async () => {
       const maxBase64 = createBase64File("image/jpeg", 5 * 1024 * 1024);
-      vi.mocked(r2PrivateStorage.putPrivateObject).mockResolvedValueOnce({
+      vi.mocked(r2PrivateStorage.putPrivateObjectCreateOnly).mockResolvedValueOnce({
         key: "payment-slips/123/xxx-file.jpg",
       });
 
@@ -276,14 +283,14 @@ describe("uploadPaymentSlipFile", () => {
         expect(error.code).toBe("BAD_REQUEST");
         expect(error.message).toContain("ไฟล์ไม่ถูกต้อง");
       }
-      expect(r2PrivateStorage.putPrivateObject).not.toHaveBeenCalled();
+      expect(r2PrivateStorage.putPrivateObjectCreateOnly).not.toHaveBeenCalled();
     });
   });
 
   describe("Storage error handling", () => {
     it("should return SERVICE_UNAVAILABLE with the config-unavailable Thai message for missing private R2 config", async () => {
       const { R2PrivateStorageError } = await import("./r2PrivateStorage");
-      vi.mocked(r2PrivateStorage.putPrivateObject).mockRejectedValueOnce(
+      vi.mocked(r2PrivateStorage.putPrivateObjectCreateOnly).mockRejectedValueOnce(
         new R2PrivateStorageError(
           "Private R2 storage is not configured - missing env var(s): R2_PRIVATE_BUCKET_NAME",
           "not_configured",
@@ -312,7 +319,7 @@ describe("uploadPaymentSlipFile", () => {
 
     it("should never leak the underlying error message to the client on a missing-config failure", async () => {
       const { R2PrivateStorageError } = await import("./r2PrivateStorage");
-      vi.mocked(r2PrivateStorage.putPrivateObject).mockRejectedValueOnce(
+      vi.mocked(r2PrivateStorage.putPrivateObjectCreateOnly).mockRejectedValueOnce(
         new R2PrivateStorageError("Private R2 storage is not configured - missing env var(s): R2_PRIVATE_SECRET_ACCESS_KEY", "not_configured")
       );
 
@@ -333,7 +340,7 @@ describe("uploadPaymentSlipFile", () => {
 
     it("should return SERVICE_UNAVAILABLE with the temporary-retry Thai message for a retryable upload failure", async () => {
       const { R2PrivateStorageError } = await import("./r2PrivateStorage");
-      vi.mocked(r2PrivateStorage.putPrivateObject).mockRejectedValueOnce(
+      vi.mocked(r2PrivateStorage.putPrivateObjectCreateOnly).mockRejectedValueOnce(
         new R2PrivateStorageError("Private R2 upload failed", "upload_failed", {
           key: "payment-slips/123/x.jpg",
           context: "paymentSlip",
@@ -361,7 +368,7 @@ describe("uploadPaymentSlipFile", () => {
 
     it("should return SERVICE_UNAVAILABLE with the config/admin Thai message for a non-retryable (e.g. access-denied) upload failure", async () => {
       const { R2PrivateStorageError } = await import("./r2PrivateStorage");
-      vi.mocked(r2PrivateStorage.putPrivateObject).mockRejectedValueOnce(
+      vi.mocked(r2PrivateStorage.putPrivateObjectCreateOnly).mockRejectedValueOnce(
         new R2PrivateStorageError("Private R2 upload failed", "upload_failed", {
           key: "payment-slips/123/x.jpg",
           context: "paymentSlip",
@@ -388,7 +395,7 @@ describe("uploadPaymentSlipFile", () => {
 
   describe("Order total validation", () => {
     it("should accept valid order total", async () => {
-      vi.mocked(r2PrivateStorage.putPrivateObject).mockResolvedValueOnce({
+      vi.mocked(r2PrivateStorage.putPrivateObjectCreateOnly).mockResolvedValueOnce({
         key: "payment-slips/123/xxx-file.jpg",
       });
 
@@ -420,7 +427,7 @@ describe("uploadPaymentSlipFile", () => {
 
   describe("Data URL handling", () => {
     it("should handle data URL format", async () => {
-      vi.mocked(r2PrivateStorage.putPrivateObject).mockResolvedValueOnce({
+      vi.mocked(r2PrivateStorage.putPrivateObjectCreateOnly).mockResolvedValueOnce({
         key: "payment-slips/123/xxx-file.jpg",
       });
 
@@ -441,7 +448,7 @@ describe("uploadPaymentSlipFile", () => {
 
   describe("Manus storage removal (static assertion)", () => {
     it("never calls the legacy storagePut, for any successful upload", async () => {
-      vi.mocked(r2PrivateStorage.putPrivateObject).mockResolvedValueOnce({
+      vi.mocked(r2PrivateStorage.putPrivateObjectCreateOnly).mockResolvedValueOnce({
         key: "payment-slips/123/xxx-file.jpg",
       });
 
@@ -454,7 +461,7 @@ describe("uploadPaymentSlipFile", () => {
       });
 
       expect(legacyStorage.storagePut).not.toHaveBeenCalled();
-      expect(r2PrivateStorage.putPrivateObject).toHaveBeenCalledTimes(1);
+      expect(r2PrivateStorage.putPrivateObjectCreateOnly).toHaveBeenCalledTimes(1);
     });
 
     it("never calls the legacy storagePut, even when the upload path is never reached (validation failure)", async () => {

@@ -43,9 +43,14 @@ function tableName(table: any): string {
 
 function boundHashes(cond: any): string[] {
   const found: string[] = [];
+  const seen = new WeakSet<object>();
   const walk = (n: any, d = 0) => {
     if (!n || d > 12) return;
     if (typeof n === "string" && /^[0-9a-f]{64}$/.test(n)) found.push(n);
+    if (typeof n === "object") {
+      if (seen.has(n)) return;
+      seen.add(n);
+    }
     if (Array.isArray(n)) return n.forEach((x) => walk(x, d + 1));
     if (typeof n === "object") for (const k of Object.keys(n)) walk((n as any)[k], d + 1);
   };
@@ -213,6 +218,7 @@ function orderRows(overrides: { extractedData: string | null }) {
         status: "pending",
         slipImageUrl: SLIP_URL,
         slipSubmittedAt: SUBMITTED_AT,
+        evidenceVersion: 0,
         extractedData: overrides.extractedData,
       },
     ],
@@ -231,6 +237,7 @@ function orderRows(overrides: { extractedData: string | null }) {
     orderHistory: [] as any[],
     purchases: [] as any[],
     pointsTransactions: [] as any[],
+    pointsAccounts: [{ userId: 11, balance: "0.00", version: 0 }],
     orderItems: [] as any[],
     coupons: [] as any[],
     users: [{ id: 11, pointsBalance: "0" }],
@@ -249,6 +256,7 @@ function walletRows(overrides: { extractedData: string | null }) {
         status: "pending",
         slipImageUrl: SLIP_URL,
         slipSubmittedAt: SUBMITTED_AT,
+        evidenceVersion: 0,
         extractedData: overrides.extractedData,
       },
     ],
@@ -316,7 +324,9 @@ describe("Order approvePayment: current-byte integrity is REAL, IPE-001-C10", ()
     await orderService.approvePayment(700, "admin-1", "Admin");
 
     expect(computeSlipFileHash).not.toHaveBeenCalled();
-    expect(computeTrustedLegacySlipFileHash).toHaveBeenCalledWith(rows.payments[0].slipImageUrl);
+    expect(computeTrustedLegacySlipFileHash).toHaveBeenCalledWith(rows.payments[0].slipImageUrl, {
+      timeoutMs: 3_000,
+    });
     expect(harness.store.payments[0].status).toBe("approved");
     expect(harness.store.paymentSlipClaims).toHaveLength(1);
     expect(harness.store.paymentSlipClaims[0].fileHash).toBe(CURRENT_HASH);

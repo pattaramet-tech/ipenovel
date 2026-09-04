@@ -123,9 +123,20 @@ export class ApprovalService {
     reviewReason: string,
     extractedData?: any,
     fingerprint?: string,
-    expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+    expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null; evidenceVersion?: number },
     tx?: any
   ): Promise<boolean> {
+    const updateData: any = {
+      status: "pending_review",
+      reviewReason,
+      extractedData: extractedData ? JSON.stringify(extractedData) : null,
+      fingerprint: fingerprint || null,
+      // DO NOT set approval fields
+      extractedEvidenceVersion: extractedData == null
+        ? null
+        : (expectedSlipVersion?.evidenceVersion ?? undefined),
+    };
+
     const conditions = [
       eq(payments.id, paymentId),
       or(eq(payments.status, "pending"), eq(payments.status, "pending_review")),
@@ -142,18 +153,15 @@ export class ApprovalService {
           ? isNull(payments.slipSubmittedAt)
           : eq(payments.slipSubmittedAt, expectedSlipVersion.slipSubmittedAt)
       );
+      if (expectedSlipVersion.evidenceVersion !== undefined) {
+        conditions.push(eq(payments.evidenceVersion, expectedSlipVersion.evidenceVersion));
+      }
     }
 
     return withAccountMergePaymentMutationGuard(paymentId, tx, async (guardedDb) => {
       const result = await guardedDb
         .update(payments)
-        .set({
-          status: "pending_review",
-          reviewReason,
-          extractedData: extractedData ? JSON.stringify(extractedData) : null,
-          fingerprint: fingerprint || null,
-          // DO NOT set approval fields
-        })
+        .set(updateData)
         .where(and(...conditions));
 
       const header = Array.isArray(result) ? result[0] : result;

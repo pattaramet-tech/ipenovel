@@ -57,9 +57,14 @@ function tableName(table: any): string {
 
 function boundHashes(cond: any): string[] {
   const found: string[] = [];
+  const seen = new WeakSet<object>();
   const walk = (n: any, d = 0) => {
     if (!n || d > 12) return;
     if (typeof n === "string" && /^[0-9a-f]{64}$/.test(n)) found.push(n);
+    if (typeof n === "object") {
+      if (seen.has(n)) return;
+      seen.add(n);
+    }
     if (Array.isArray(n)) return n.forEach((x) => walk(x, d + 1));
     if (typeof n === "object") for (const k of Object.keys(n)) walk((n as any)[k], d + 1);
   };
@@ -228,6 +233,7 @@ function orderRows(paymentStatus = "pending") {
         status: paymentStatus,
         slipImageUrl: A_URL,
         slipSubmittedAt: T_A,
+        evidenceVersion: 0,
         extractedData: JSON.stringify({ referenceRaw: REFERENCE_A, referenceHash: HASH_A }),
       },
     ],
@@ -246,6 +252,7 @@ function orderRows(paymentStatus = "pending") {
     orderHistory: [] as any[],
     purchases: [] as any[],
     pointsTransactions: [] as any[],
+    pointsAccounts: [{ userId: 11, balance: "0.00", version: 0 }],
     orderItems: [] as any[],
     coupons: [] as any[],
     users: [{ id: 11, pointsBalance: "0" }],

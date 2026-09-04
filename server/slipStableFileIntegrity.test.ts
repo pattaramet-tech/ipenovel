@@ -77,14 +77,13 @@ describe("slipSubmissionService.ts (order auto-submission) re-hashes before publ
   });
 
   it("the re-hash only runs when a baseline hash actually exists - never a false mismatch from two absent hashes", () => {
-    const idx = code.indexOf(
-      "if (slipFileHash) {\n    const rehash = await computeSlipFileHash("
-    );
-    expect(idx).toBeGreaterThan(-1);
+    expect(code).toMatch(/if \(slipFileHash\) \{\s*const rehash = await computeSlipFileHash\(/);
   });
 
   it("the pre-existing slip-version guards (publishedSlipVersion / lockAndRequireReviewablePayment) are untouched", () => {
-    expect(code).toMatch(/orderService\.lockAndRequireReviewablePayment\(payment\.id, tx, publishedSlipVersion\)/);
+    expect(code).toMatch(
+      /orderService\.lockAndRequireReviewablePayment\(\s*payment\.id,\s*tx,\s*publishedSlipVersion\s*\)/
+    );
   });
 });
 
@@ -144,10 +143,13 @@ describe("walletTopupSubmissionService.ts (wallet auto-submission): class-wide s
   });
 
   it("post-extraction path (the original checkpoint): still runs before duplicate/confidence/amount checks or auto-approval", () => {
+    const extractionIdx = code.indexOf("const rawExtracted = extractSlipData(");
     const checkIdx = code.indexOf(
-      'if (!(await verifyWalletSlipStillStable(slipImageUrl, walletSlipFileHash))) {\n      console.error(\n        `[OCR] slip integrity mismatch for wallet top-up ${topupId}: stored bytes changed during OCR processing`'
+      "if (!(await verifyWalletSlipStillStable(slipImageUrl, walletSlipFileHash))) {",
+      extractionIdx
     );
-    expect(checkIdx).toBeGreaterThan(-1);
+    expect(extractionIdx).toBeGreaterThan(-1);
+    expect(checkIdx).toBeGreaterThan(extractionIdx);
     const duplicateCheckIdx = code.indexOf('verificationResult.reviewReason?.includes("DUPLICATE")');
     const autoApproveIdx = code.indexOf("await autoApproveWalletTopup(");
     expect(checkIdx).toBeLessThan(duplicateCheckIdx);

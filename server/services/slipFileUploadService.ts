@@ -4,7 +4,9 @@
  * Used by payment.uploadSlipFile endpoint and optionally /api/upload fallback
  */
 
-import { putPrivateObject, R2PrivateStorageError } from "./r2PrivateStorage";
+import { createHash } from "node:crypto";
+import { putPrivateObjectCreateOnly, R2PrivateStorageError } from "./r2PrivateStorage";
+import { registerImmutableSlipUpload } from "../db";
 import { toPrivateObjectRef } from "@shared/privateFileRef";
 import { TRPCError } from "@trpc/server";
 import {
@@ -176,9 +178,10 @@ export async function uploadPaymentSlipFile(
 
     // Step 6: Prepare file key
     const sanitized = sanitizeFileName(input.fileName);
+    const fileHash = createHash("sha256").update(fileBuffer).digest("hex");
     const timestamp = Date.now();
     const random = Math.random().toString(36).substring(2, 8);
-    const fileKey = `payment-slips/${input.userId}/${timestamp}-${random}-${sanitized}`;
+    const fileKey = `payment-slips/${input.userId}/${fileHash}/${timestamp}-${random}-${sanitized}`;
 
     console.info("[SlipUpload]", requestId, "File ready for upload:", {
       ...context,
@@ -193,8 +196,19 @@ export async function uploadPaymentSlipFile(
     // via resolveStoredFileValue() at the moment an authorized reader
     // (admin, OCR) actually needs it - it is never a permanent public URL.
     try {
-      const { key } = await putPrivateObject("paymentSlip", fileKey, fileBuffer, normalizedMimeType);
+      const { key } = await putPrivateObjectCreateOnly("paymentSlip", fileKey, fileBuffer, normalizedMimeType);
       const slipImageUrl = toPrivateObjectRef(key);
+
+      // The browser receives only a reference. The authoritative owner/hash
+      // binding comes from this server-side registry row made from the bytes
+      // just written, and is revalidated when a subject publishes it.
+      await registerImmutableSlipUpload({
+        objectIdentity: slipImageUrl,
+        ownerUserId: input.userId,
+        fileHash,
+        objectSize: fileBuffer.length,
+        mimeType: normalizedMimeType,
+      });
 
       const isPDF = normalizedMimeType === "application/pdf";
       const userMessage = isPDF
