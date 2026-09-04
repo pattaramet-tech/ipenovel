@@ -450,7 +450,7 @@ describe("a failed resolution never consumes the subject slot", () => {
 
   it("order approval invokes the audit inside its transaction, after finalization", () => {
     const finalizeIdx = orderCode.indexOf("finalizeOrderCompletion(order.id");
-    const auditIdx = orderCode.indexOf("await options.auditResolution(tx)");
+    const auditIdx = orderCode.indexOf("options.auditResolution!(tx)");
     expect(auditIdx).toBeGreaterThan(finalizeIdx);
   });
 

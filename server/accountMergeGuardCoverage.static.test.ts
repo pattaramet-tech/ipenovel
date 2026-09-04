@@ -42,8 +42,8 @@ const productionGuardEvidence: Record<string, string[]> = {
   walletTopups: ["withAccountMergeWalletTopupMutationGuard(topupId"],
   topupLogs: ["withAccountMergeClassifiedMutationGuard(userId, undefined"],
   pointsTransactions: [
-    "withAccountMergeClassifiedMutationGuard(data.userId, tx",
-    "assertAccountMergeClassifiedMutationAllowed(userId, tx)",
+    "await writePointsTransactionUnderLock(data, tx)",
+    "withUserPointsLock(data.userId, undefined",
   ],
   couponUsages: ["recordCouponUsage(couponId, userId, orderId, guardedTx)"],
   coupons: [
@@ -120,7 +120,6 @@ describe("IPE-005 classified mutation reflection coverage", () => {
       const matchLock = body.indexOf("lockSportsMatchForAccountMutation(matchId, tx)");
       const userLockCandidates = [
         body.indexOf("lockUserForPoints(userId, tx)"),
-        body.indexOf("assertAccountMergePointsMutationsAllowed("),
         body.indexOf("assertAccountMergeClassifiedMutationsAllowed("),
       ].filter((value) => value >= 0);
       expect(matchLock).toBeGreaterThanOrEqual(0);

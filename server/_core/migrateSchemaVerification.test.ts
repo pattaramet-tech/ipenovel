@@ -5,6 +5,7 @@ import {
   REQUIRED_COLUMNS,
   REQUIRED_INDEXES,
   REQUIRED_NULLABLE_COLUMNS,
+  REQUIRED_FOREIGN_KEYS,
 } from "../../scripts/migrate.mjs";
 
 /**
@@ -29,6 +30,12 @@ interface FakeQuery {
   params: unknown[];
 }
 
+type FakeIndex = string | {
+  table: string;
+  index: string;
+  columns?: string[];
+};
+
 /**
  * `indexesPresent` accepts either bare index names (matched on the name
  * alone) or explicit {table, index} pairs. The pair form exists because
@@ -42,8 +49,9 @@ function fakeConn(
   tableNameCase: "camel" | "lower",
   tablesPresent: string[],
   columnsPresent: boolean,
-  indexesPresent: Array<string | { table: string; index: string }>,
-  nullableColumnsAreNullable = true
+  indexesPresent: FakeIndex[],
+  nullableColumnsAreNullable = true,
+  foreignKeysPresent: Array<{ table: string; constraint: string }> = REQUIRED_FOREIGN_KEYS
 ) {
   const calls: FakeQuery[] = [];
   const query = async (sql: string, params: unknown[] = []): Promise<[any[]]> => {
@@ -64,12 +72,30 @@ function fakeConn(
     }
     if (sql.includes("information_schema.statistics")) {
       const [tableName, indexName] = params;
-      const present = indexesPresent.some((entry) =>
+      const present = indexesPresent.find((entry) =>
         typeof entry === "string"
           ? entry === String(indexName)
           : entry.table === String(tableName) && entry.index === String(indexName)
       );
-      return [present ? [{ name: indexName }] : []];
+      if (!present) return [[]];
+      const expected = REQUIRED_INDEXES.find(
+        (entry) => entry.table === String(tableName) && entry.index === String(indexName)
+      );
+      const columns = typeof present === "string" ? expected?.columns : present.columns;
+      return [
+        columns?.map((columnName, position) => ({
+          name: indexName,
+          columnName,
+          sequence: position + 1,
+        })) ?? [{ name: indexName, columnName: undefined, sequence: 1 }],
+      ];
+    }
+    if (sql.includes("information_schema.key_column_usage")) {
+      const [tableName, constraintName] = params;
+      const present = foreignKeysPresent.some(
+        (entry) => entry.table === String(tableName) && entry.constraint === String(constraintName)
+      );
+      return [present ? [{ name: constraintName }] : []];
     }
     throw new Error(`unexpected query in fake connection: ${sql}`);
   };
@@ -102,6 +128,9 @@ describe("findMissingSchemaObjects - required object lists", () => {
       "paymentSlipReviewResolutions",
       "paymentSlipLegacyCollisions",
       "paymentSlipLegacyUnknown",
+      "accountMutationGuards",
+      "pointsAccounts",
+      "pointsTransactions",
     ]));
   });
 
@@ -114,6 +143,16 @@ describe("findMissingSchemaObjects - required object lists", () => {
       { table: "dailyCheckins", column: "couponId" },
       { table: "dailyCheckinRewardGrants", column: "pointsTransactionId" },
       { table: "dailyCheckinRewardGrants", column: "streakCountAtGrant" },
+      { table: "accountMutationGuards", column: "userId" },
+      { table: "accountMutationGuards", column: "generation" },
+      { table: "accountMutationGuards", column: "mergeState" },
+      { table: "accountMutationGuards", column: "activeMergeCaseId" },
+      { table: "accountMutationGuards", column: "updatedAt" },
+      { table: "pointsAccounts", column: "userId" },
+      { table: "pointsAccounts", column: "balance" },
+      { table: "pointsAccounts", column: "version" },
+      { table: "pointsAccounts", column: "updatedAt" },
+      { table: "pointsTransactions", column: "effectKey" },
     ]));
   });
 
@@ -148,7 +187,95 @@ describe("findMissingSchemaObjects - required object lists", () => {
       { table: "dailyCheckinRewardRules", index: "dailyCheckinRewardRules_campaign_dedupe_unique" },
       { table: "dailyCheckinCampaigns", index: "dailyCheckinCampaigns_campaignKey_unique" },
       ...LEGACY_REGISTRY_INDEXES,
+      { table: "accountMutationGuards", index: "PRIMARY", unique: true, columns: ["userId"] },
+      {
+        table: "accountMutationGuards",
+        index: "accountMutationGuards_activeMergeCaseId_unique",
+        unique: true,
+        columns: ["activeMergeCaseId"],
+      },
+      { table: "pointsAccounts", index: "PRIMARY", unique: true, columns: ["userId"] },
+      {
+        table: "pointsTransactions",
+        index: "pointsTransactions_userId_effectKey_unique",
+        unique: true,
+        columns: ["userId", "effectKey"],
+      },
     ]));
+  });
+
+  it("requires both IPE-021-D user foreign keys with their exact targets", () => {
+    expect(REQUIRED_FOREIGN_KEYS).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        table: "accountMutationGuards",
+        constraint: "accountMutationGuards_userId_fk",
+        referencedTable: "users",
+        referencedColumn: "id",
+        deleteRule: "CASCADE",
+      }),
+      expect.objectContaining({
+        table: "pointsAccounts",
+        constraint: "pointsAccounts_userId_fk",
+        referencedTable: "users",
+        referencedColumn: "id",
+        deleteRule: "CASCADE",
+      }),
+    ]));
+  });
+
+  it("fails closed when an IPE-021-D foreign key is missing", async () => {
+    const presentForeignKeys = REQUIRED_FOREIGN_KEYS.filter(
+      ({ constraint }) => constraint !== "pointsAccounts_userId_fk"
+    );
+    const { query } = fakeConn(
+      "camel",
+      REQUIRED_TABLES,
+      true,
+      REQUIRED_INDEXES,
+      true,
+      presentForeignKeys
+    );
+    expect(await findMissingSchemaObjects({ query })).toEqual([
+      "foreign key pointsAccounts.pointsAccounts_userId_fk",
+    ]);
+  });
+
+  it("verifies the new named uniqueness constraints are actually unique", async () => {
+    const { query, calls } = fakeConn("camel", REQUIRED_TABLES, true, REQUIRED_INDEXES);
+    expect(await findMissingSchemaObjects({ query })).toEqual([]);
+    const effectUniqueProbe = calls.find(
+      ({ params }) => params[0] === "pointsTransactions" && params[1] === "pointsTransactions_userId_effectKey_unique"
+    );
+    expect(effectUniqueProbe?.sql).toContain("non_unique = 0");
+  });
+
+  it("fails closed when a same-name per-user PRIMARY index has the wrong column", async () => {
+    const wrongShape = REQUIRED_INDEXES.map((entry) =>
+      entry.table === "pointsAccounts" && entry.index === "PRIMARY"
+        ? { ...entry, columns: ["balance"] }
+        : entry
+    );
+    const { query } = fakeConn("camel", REQUIRED_TABLES, true, wrongShape);
+
+    expect(await findMissingSchemaObjects({ query })).toContain("index pointsAccounts.PRIMARY");
+  });
+
+  it.each([
+    ["reordered", ["effectKey", "userId"]],
+    ["missing", ["userId"]],
+    ["extra", ["userId", "effectKey", "id"]],
+    ["substituted", ["userId", "referenceId"]],
+  ])("fails closed when the effect idempotency index is %s under the expected name", async (_case, columns) => {
+    const wrongShape = REQUIRED_INDEXES.map((entry) =>
+      entry.table === "pointsTransactions" && entry.index === "pointsTransactions_userId_effectKey_unique"
+        ? { ...entry, columns }
+        : entry
+    );
+    const { query } = fakeConn("camel", REQUIRED_TABLES, true, wrongShape);
+
+    expect(await findMissingSchemaObjects({ query })).toContain(
+      "index pointsTransactions.pointsTransactions_userId_effectKey_unique"
+    );
   });
 
   it("fails closed when migration 0036's users role index is missing", async () => {

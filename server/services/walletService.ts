@@ -8,6 +8,11 @@ import { TRPCError } from "@trpc/server";
 import { submitWalletTopupSlip } from "./walletTopupSubmissionService";
 import { computeSlipFileHash } from "./slipFileHashService";
 import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
+import { isLockWaitTimeout } from "../helpers/databaseErrorClassifier";
+import { getWalletApprovalLockStage } from "../helpers/walletApprovalStage";
+
+export const WALLET_APPROVAL_BUSY_MESSAGE =
+  "This wallet top-up is busy with another request. Please wait a moment and try again.";
 
 const WALLET_APPROVAL_PRECONDITION_CODES = new Set([
   "NO_STRONG_IDENTIFIER",
@@ -43,8 +48,18 @@ function stableErrorCode(error: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
-function mapWalletApprovalError(error: unknown): TRPCError {
+export function mapWalletApprovalError(error: unknown): TRPCError {
   if (error instanceof TRPCError) return error;
+
+  if (isLockWaitTimeout(error)) {
+    const stage = getWalletApprovalLockStage(error) ?? "wallet_approval_transaction";
+    console.error(`[WalletApproval] lock stage=${stage} ${safeErrorSummary(error)}`);
+    return new TRPCError({
+      code: "SERVICE_UNAVAILABLE",
+      message: WALLET_APPROVAL_BUSY_MESSAGE,
+      cause: error,
+    });
+  }
 
   const code = stableErrorCode(error);
   const message = error instanceof Error ? error.message : String((error as any)?.message ?? "");

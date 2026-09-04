@@ -32,7 +32,10 @@ import {
 } from "./services/checkoutMaintenanceService";
 import { safeErrorSummary } from "../scripts/lib/safeErrorSummary.mjs";
 import { isDuplicateKeyError } from "./helpers/databaseErrorClassifier";
-import { mapOrderPaymentApprovalError } from "./helpers/adminPaymentApprovalError";
+import {
+  mapOrderPaymentApprovalError,
+  mapOrderPaymentRecheckError,
+} from "./helpers/adminPaymentApprovalError";
 import { fileRouter } from "./routers/fileRouter";
 import { ocrMetricsRouter } from "./routers/ocrMetricsRouter";
 import { r2Put, R2StorageError } from "./services/r2Storage";
@@ -848,26 +851,15 @@ export const appRouter = router({
             throw new Error("Insufficient wallet balance");
           }
 
-          const checkoutMutatesPoints = orderService.orderCompletionMayMutatePoints({
-            pointsDiscountAmount,
-            totalAmount,
-          });
-
           // STEP 3-8: ATOMIC TRANSACTION - All operations succeed or all rollback
           // This prevents orphan orders if debit/finalization fails after order creation
           const dbConnection = await db.getDb();
           if (!dbConnection) throw new Error("Database connection failed");
           
           const order = await dbConnection.transaction(async (tx) => {
-            // Point-capable wallet checkout must take the exclusive points
-            // barrier before any nested ordinary guard. Non-points checkout
-            // keeps the shared barrier so unrelated ordinary writes can run
-            // concurrently for the same user.
-            if (checkoutMutatesPoints) {
-              await db.lockUserForPoints(ctx.user.id, tx);
-            } else {
-              await db.assertAccountMergeClassifiedMutationAllowed(ctx.user.id, tx);
-            }
+            // IPE-005: serialize the full wallet/order/finalization mutation
+            // before any classified Source write in this transaction.
+            await db.assertAccountMergeClassifiedMutationAllowed(ctx.user.id, tx);
             // STEP 3: Create order (within transaction)
             // Pass tx so all writes use the same transaction
             const newOrder = await orderService.createOrderFromCart(String(ctx.user.id), cartItems, input.couponCode, input.pointsToRedeem, undefined, tx);
@@ -1666,30 +1658,8 @@ export const appRouter = router({
               String(ctx.user.id),
               ctx.user.name || "Admin"
             );
-          } catch (error: any) {
-            // See admin.payments.approve above - a claimed slip is a
-            // CONFLICT the admin can act on, not a malformed request.
-            if (typeof error?.message === "string" && error.message.startsWith("SLIP_ALREADY_CLAIMED")) {
-              throw new TRPCError({ code: "CONFLICT", message: error.message });
-            }
-            // No strong identifier: normal Approve must not silently bypass
-            // anti-replay. PRECONDITION_FAILED so the UI can distinguish
-            // "someone else owns this slip" from "this slip cannot be
-            // protected at all and needs the legacy override".
-            if (typeof error?.message === "string" && error.message.startsWith("NO_STRONG_IDENTIFIER")) {
-              throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
-            }
-            // An unresolved legacy case ambiguity. Distinct from a duplicate:
-            // the admin must choose reject-as-duplicate or approve-as-distinct
-            // via resolveLegacyCaseAmbiguity. Normal Approve must neither
-            // bypass it nor fail forever.
-            if (
-              typeof error?.message === "string" &&
-              error.message.startsWith("LEGACY_CASE_AMBIGUITY_REQUIRES_RESOLUTION")
-            ) {
-              throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
-            }
-            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to approve payment. Please try again." });
+          } catch (error) {
+            throw mapOrderPaymentApprovalError(error);
           }
           return { success: true };
         }),
@@ -1705,10 +1675,14 @@ export const appRouter = router({
       recheckOcr: adminProcedure
         .input(z.object({ paymentId: z.number().int().positive() }))
         .mutation(async ({ input, ctx }) => {
-          return recheckOrderPaymentOcr({
-            paymentId: input.paymentId,
-            adminUserId: ctx.user.id,
-          });
+          try {
+            return await recheckOrderPaymentOcr({
+              paymentId: input.paymentId,
+              adminUserId: ctx.user.id,
+            });
+          } catch (error) {
+            throw mapOrderPaymentRecheckError(error);
+          }
         }),
 
       /**

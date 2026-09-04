@@ -13,6 +13,7 @@ import {
 } from "./services/slipFileHashService";
 import { fileHashFromExtractedData } from "./services/legacySlipCompatibilityService";
 import { isLegacyStorageUrl, isPrivateObjectRef } from "@shared/privateFileRef";
+import { atWalletApprovalStage } from "./helpers/walletApprovalStage";
 import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql, gt, lt, ne, like } from "drizzle-orm";
 
 /**
@@ -30,6 +31,13 @@ export class WalletSlipClaimError extends Error {
     this.code = code;
   }
 }
+
+// Wallet approval holds the shared account-merge users-row barrier plus the
+// top-up row while proving current slip bytes. Keep the integrity proof inside
+// the transaction, but fail closed sooner than the generic 10s storage hash
+// timeout so a slow object-store read cannot hold those DB locks for 10s.
+export const WALLET_APPROVAL_SLIP_HASH_TIMEOUT_MS = 3_000;
+const WALLET_APPROVAL_SLOW_HASH_LOG_MS = 1_000;
 
 const WALLET_BREAK_GLASS_BLOCKING_REVIEW_REASONS = new Set([
   "DUPLICATE_REFERENCE",
@@ -81,6 +89,7 @@ import {
   purchases,
   coupons,
   couponUsages,
+  pointsAccounts,
   pointsTransactions,
   wishlists,
   banners,
@@ -101,6 +110,7 @@ import {
   dailyCheckinRewardGrants,
   accountRecoveryRequests,
   accountRecoveryAuditLogs,
+  accountMutationGuards,
   accountMergeCases,
   accountMergeAuditLogs,
   accountMergeFinancialReconciliations,
@@ -191,6 +201,69 @@ export async function assertDatabaseAvailable(): Promise<void> {
   }
 }
 
+/**
+ * Creates the IPE-021-D account-mutation guard as part of user provisioning.
+ * Existing users should already have a row from migration 0045. During the
+ * IPE-022 mixed-version bridge, however, an older instance may create a user
+ * after the one-time backfill. Derive that missing row from authoritative
+ * accountMergeCases rather than manufacturing `open`, and make concurrent
+ * repair idempotent. Ambiguous historical state still fails closed.
+ */
+async function ensureProvisionedAccountMutationGuard(userId: number, tx: any): Promise<void> {
+  const existing = await tx
+    .select({ userId: accountMutationGuards.userId })
+    .from(accountMutationGuards)
+    .where(eq(accountMutationGuards.userId, userId))
+    .limit(1);
+  if (existing.length === 1) return;
+
+  const cases = unwrapMysqlRows(
+    await tx.execute(
+      sql`SELECT id, status FROM accountMergeCases WHERE sourceUserId = ${userId} AND status <> 'cancelled' ORDER BY id FOR UPDATE`
+    )
+  );
+  if (cases.length > 1) {
+    throw new Error(`Cannot provision account mutation guard for user ${userId}: multiple active merge cases`);
+  }
+
+  const active = cases[0];
+  await tx
+    .insert(accountMutationGuards)
+    .values({
+      userId,
+      generation: active ? 1 : 0,
+      mergeState: active ? "merge_guarded" : "open",
+      activeMergeCaseId: active ? Number(active.id) : null,
+    })
+    .onDuplicateKeyUpdate({ set: { userId } });
+}
+
+/** Provision the 0046 points balance row alongside a user. Migration 0046
+ * backfills every existing user; this path mainly covers brand-new users and
+ * can repair an unexpected missing row from the latest immutable ledger
+ * snapshot without ever overwriting a concurrently-created balance row. */
+async function ensureProvisionedPointsAccount(userId: number, tx: any): Promise<void> {
+  const existing = await tx
+    .select({ userId: pointsAccounts.userId })
+    .from(pointsAccounts)
+    .where(eq(pointsAccounts.userId, userId))
+    .limit(1);
+  if (existing.length === 1) return;
+
+  const latest = await tx
+    .select({ balanceAfter: pointsTransactions.balanceAfter })
+    .from(pointsTransactions)
+    .where(eq(pointsTransactions.userId, userId))
+    .orderBy(desc(pointsTransactions.createdAt), desc(pointsTransactions.id))
+    .limit(1);
+  const balance = latest[0]?.balanceAfter?.toString() ?? "0.00";
+
+  await tx
+    .insert(pointsAccounts)
+    .values({ userId, balance, version: 0 })
+    .onDuplicateKeyUpdate({ set: { userId } });
+}
+
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) {
     throw new Error("User openId is required for upsert");
@@ -241,8 +314,22 @@ export async function upsertUser(user: InsertUser): Promise<void> {
       updateSet.lastSignedIn = new Date();
     }
 
-    await db.insert(users).values(values).onDuplicateKeyUpdate({
-      set: updateSet,
+    await db.transaction(async (tx: any) => {
+      await tx.insert(users).values(values).onDuplicateKeyUpdate({
+        set: updateSet,
+      });
+
+      const provisioned = await tx
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.openId, user.openId))
+        .limit(1);
+      const provisionedUserId = Number(provisioned[0]?.id);
+      if (!Number.isInteger(provisionedUserId) || provisionedUserId <= 0) {
+        throw new Error("Failed to resolve user ID while provisioning account mutation guard");
+      }
+      await ensureProvisionedAccountMutationGuard(provisionedUserId, tx);
+      await ensureProvisionedPointsAccount(provisionedUserId, tx);
     });
   } catch (error) {
     console.error("[Database] Failed to upsert user:", safeErrorSummary(error));
@@ -469,6 +556,13 @@ export async function createGoogleUserWithIdentity(
   if (!createdUser) {
     throw new Error("Failed to load newly created Google user");
   }
+
+  // Same transaction as the brand-new user and identity. A newly created
+  // user cannot legitimately have an Account Merge case yet, so this must
+  // publish its required open guard before the provisioning transaction can
+  // commit.
+  await ensureProvisionedAccountMutationGuard(createdUser.id, db);
+  await ensureProvisionedPointsAccount(createdUser.id, db);
 
   await db.insert(authIdentities).values({
     userId: createdUser.id,
@@ -2318,85 +2412,105 @@ export async function getCouponUsageByOrderId(orderId: number) {
 
 // ============ POINTS ============
 
+export class PointsAccountMissingError extends Error {
+  readonly code = "POINTS_ACCOUNT_MISSING";
+  constructor(readonly userId: number) {
+    super(`Points account is missing for user ${userId}`);
+    this.name = "PointsAccountMissingError";
+  }
+}
+
 export async function getUserPointsBalance(userId: number, tx?: any) {
   const db = tx || await getDb();
   if (!db) return "0.00";
 
-  // `id DESC` is a required tiebreaker, not decoration: pointsTransactions
-  // .createdAt is a MySQL `timestamp` with second-level precision, so two
-  // transactions written in the same second carry an identical createdAt.
-  // Ordering by createdAt alone leaves those rows tied, and which one the
-  // engine returns for LIMIT 1 is then unspecified - it could hand back a
-  // stale balanceAfter and silently rewind the user's balance. The
-  // autoincrement id is strictly monotonic per insert, so (createdAt DESC,
-  // id DESC) makes "the latest transaction" deterministic.
-  const result = await db
+  const accounts = await db
+    .select({ balance: pointsAccounts.balance })
+    .from(pointsAccounts)
+    .where(eq(pointsAccounts.userId, userId))
+    .limit(1);
+
+  // Compatibility read for a rolling deploy: an older instance can append a
+  // ledger row without updating pointsAccounts. Until every old instance is
+  // drained, the latest committed ledger row is therefore the convergence
+  // source. New writers update account + ledger in one transaction, so no
+  // other session can observe an account-only intermediate state here.
+  const latestLedger = await db
     .select({ balanceAfter: pointsTransactions.balanceAfter })
     .from(pointsTransactions)
     .where(eq(pointsTransactions.userId, userId))
     .orderBy(desc(pointsTransactions.createdAt), desc(pointsTransactions.id))
     .limit(1);
+  if (latestLedger.length > 0) return latestLedger[0].balanceAfter.toString();
+  if (accounts.length > 0) return accounts[0].balance.toString();
 
-  return result.length > 0 ? result[0].balanceAfter.toString() : "0.00";
+  // A legacy-created user with no points history has the canonical zero
+  // balance even before its missing mirror is repaired at the next locked
+  // mutation/startup reconciliation. Unknown users retain the same result.
+  const user = await db.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1);
+  if (user.length > 0) return "0.00";
+  return "0.00";
 }
 
-export async function recordPointsTransaction(data: {
+type PointsTransactionWrite = {
   userId: number;
   type: "earn" | "redeem" | "adjust" | "refund";
   amount: string;
   balanceAfter: string;
   referenceType?: string;
   referenceId?: number;
+  effectKey?: string;
   note?: string;
-}, tx?: any) {
-  await withAccountMergeClassifiedMutationGuard(data.userId, tx, async (guardedDb) => {
-    await guardedDb.insert(pointsTransactions).values({
-      userId: data.userId,
-      type: data.type,
-      amount: data.amount as any,
-      balanceAfter: data.balanceAfter as any,
-      referenceType: data.referenceType,
-      referenceId: data.referenceId,
-      note: data.note,
-    });
+};
+
+async function writePointsTransactionUnderLock(data: PointsTransactionWrite, lockedDb: any): Promise<number> {
+  // pointsAccounts is authoritative. The caller must already hold this row
+  // FOR UPDATE (withUserPointsLock / lockUserForPoints / merge reconciliation).
+  const updateResult: any = await lockedDb
+    .update(pointsAccounts)
+    .set({
+      balance: data.balanceAfter as any,
+      version: sql`${pointsAccounts.version} + 1`,
+    })
+    .where(eq(pointsAccounts.userId, data.userId));
+  const header = Array.isArray(updateResult) ? updateResult[0] : updateResult;
+  if ((header?.affectedRows ?? 0) !== 1) throw new PointsAccountMissingError(data.userId);
+
+  const result = await lockedDb.insert(pointsTransactions).values({
+    userId: data.userId,
+    type: data.type,
+    amount: data.amount as any,
+    balanceAfter: data.balanceAfter as any,
+    referenceType: data.referenceType,
+    referenceId: data.referenceId,
+    effectKey: data.effectKey,
+    note: data.note,
   });
+  return extractInsertId(result);
 }
 
 /**
- * Same insert as recordPointsTransaction, but returns the new row's id.
- *
- * Added rather than changing recordPointsTransaction's signature so every
- * existing caller keeps working untouched. The id is required by the Daily
- * Check-in point reward, which stores it on dailyCheckinRewardGrants
- * .pointsTransactionId (a UNIQUE column) - that link is both the audit trail
- * back to the exact ledger row and one of the guards that makes a second
- * credit for the same grant structurally impossible.
- *
- * Callers must compute balanceAfter INSIDE the same transaction, after
- * taking the user lock - this helper deliberately does not read the balance
- * itself, so the read-modify-write stays in one place under one lock.
+ * Writes the authoritative points balance and immutable ledger atomically.
+ * If `tx` is supplied, the caller must already have acquired the user's
+ * pointsAccounts row through lockUserForPoints/withUserPointsLock. Without a
+ * tx this helper opens the short locked transaction itself.
  */
-export async function recordPointsTransactionReturningId(data: {
-  userId: number;
-  type: "earn" | "redeem" | "adjust" | "refund";
-  amount: string;
-  balanceAfter: string;
-  referenceType?: string;
-  referenceId?: number;
-  note?: string;
-}, tx?: any): Promise<number> {
-  return withAccountMergeClassifiedMutationGuard(data.userId, tx, async (guardedDb) => {
-    const result = await guardedDb.insert(pointsTransactions).values({
-      userId: data.userId,
-      type: data.type,
-      amount: data.amount as any,
-      balanceAfter: data.balanceAfter as any,
-      referenceType: data.referenceType,
-      referenceId: data.referenceId,
-      note: data.note,
-    });
-    return extractInsertId(result);
+export async function recordPointsTransaction(data: PointsTransactionWrite, tx?: any) {
+  if (tx) {
+    await writePointsTransactionUnderLock(data, tx);
+    return;
+  }
+  await withUserPointsLock(data.userId, undefined, async (lockedDb) => {
+    await writePointsTransactionUnderLock(data, lockedDb);
   });
+}
+
+/** Same atomic write as recordPointsTransaction, returning the ledger id. */
+export async function recordPointsTransactionReturningId(data: PointsTransactionWrite, tx?: any): Promise<number> {
+  if (tx) return writePointsTransactionUnderLock(data, tx);
+  return withUserPointsLock(data.userId, undefined, async (lockedDb) =>
+    writePointsTransactionUnderLock(data, lockedDb)
+  );
 }
 
 export async function getPointsHistory(userId: number, limit?: number) {
@@ -2420,16 +2534,18 @@ export async function addPointsTransaction(
   referenceType: string,
   note: string
 ): Promise<void> {
-  const currentBalance = await getUserPointsBalance(userId);
-  const currentBalanceNum = parseFloat(currentBalance || "0");
-  const newBalance = (currentBalanceNum + amount).toFixed(2);
-  await recordPointsTransaction({
-    userId,
-    type: amount >= 0 ? "earn" : "redeem",
-    amount: Math.abs(amount).toString(),
-    balanceAfter: newBalance,
-    referenceType,
-    note,
+  await withUserPointsLock(userId, undefined, async (tx) => {
+    const currentBalance = await getUserPointsBalance(userId, tx);
+    const currentBalanceNum = parseFloat(currentBalance || "0");
+    const newBalance = (currentBalanceNum + amount).toFixed(2);
+    await recordPointsTransaction({
+      userId,
+      type: amount >= 0 ? "earn" : "redeem",
+      amount: Math.abs(amount).toString(),
+      balanceAfter: newBalance,
+      referenceType,
+      note,
+    }, tx);
   });
 }
 
@@ -4429,9 +4545,13 @@ export async function approveWalletTopup(
   // REAL DATABASE TRANSACTION: All operations succeed or all rollback.
   // IPE-005 lock hierarchy is users/merge-guard FIRST, subject row SECOND.
   return await db.transaction(async (tx) => {
-    await assertAccountMergeClassifiedMutationAllowed(ownerCandidate.userId, tx);
+    await atWalletApprovalStage("wallet_user_guard", () =>
+      assertAccountMergeClassifiedMutationAllowed(ownerCandidate.userId, tx)
+    );
     // Step 0: LOCK the subject row only after the Source users-row guard.
-    await lockWalletTopupForUpdate(topupId, tx);
+    await atWalletApprovalStage("wallet_topup_lock", () =>
+      lockWalletTopupForUpdate(topupId, tx)
+    );
 
     // Step 1: Fetch topup INSIDE transaction for consistency
     const topupResult = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
@@ -4528,9 +4648,21 @@ export async function approveWalletTopup(
       // bypass current-file integrity when a file is right there to check.
       let currentFileHash: string | undefined;
       if (topup.slipImageUrl) {
+        const currentByteStartedAt = Date.now();
         currentFileHash = isLegacyStorageUrl(topup.slipImageUrl as string)
-          ? await computeTrustedLegacySlipFileHash(topup.slipImageUrl as string)
-          : await computeSlipFileHash(topup.slipImageUrl as string);
+          ? await computeTrustedLegacySlipFileHash(topup.slipImageUrl as string, {
+              timeoutMs: WALLET_APPROVAL_SLIP_HASH_TIMEOUT_MS,
+            })
+          : await computeSlipFileHash(topup.slipImageUrl as string, {
+              timeoutMs: WALLET_APPROVAL_SLIP_HASH_TIMEOUT_MS,
+            });
+        const currentByteDurationMs = Date.now() - currentByteStartedAt;
+        if (currentByteDurationMs >= WALLET_APPROVAL_SLOW_HASH_LOG_MS) {
+          console.warn(
+            `[WalletApproval] stage=wallet_current_byte_hash durationMs=${currentByteDurationMs} ` +
+              `storage=${isLegacyStorageUrl(topup.slipImageUrl as string) ? "legacy" : "private"}`
+          );
+        }
         const persistedFileHash = fileHashFromExtractedData(persistedExtractedData);
 
         if (!currentFileHash && !breakGlassRequested) {
@@ -4643,29 +4775,31 @@ export async function approveWalletTopup(
       }
 
       if (!breakGlassRequested) {
-      const claim = await claimSlip(
-        {
-          sourceType: "wallet_topup",
-          sourceId: topupId,
-          userId: topup.userId,
-          identifiers,
-          semanticFingerprint,
-          // Legacy lookup only - the claim itself still uses the
-          // case-preserving hash derived above.
-          referenceRawForLegacyLookup: getRawReferenceForLegacyLookup(persistedExtractedData),
-          // Set ONLY by the audited resolution flow, and BOUND to the exact
-          // ambiguity a human adjudicated - not a bare boolean. claimSlip
-          // waives it only if the fold it finds from transaction-visible
-          // state is identical (same alias, same matched source); anything
-          // else returns legacy_case_ambiguity_changed. Every exact UNIQUE
-          // identifier below is still claimed atomically, so an exact
-          // reference/file/QR duplicate still blocks.
-          legacyCaseAmbiguityResolution: options?.legacyCaseAmbiguityResolution,
-          legacyFileAxisRiskResolution: fileAxisRiskRequested && currentFileHash
-            ? { expectedFileHash: currentFileHash }
-            : undefined,
-        },
-        tx
+      const claim = await atWalletApprovalStage("wallet_slip_claim", () =>
+        claimSlip(
+          {
+            sourceType: "wallet_topup",
+            sourceId: topupId,
+            userId: topup.userId,
+            identifiers,
+            semanticFingerprint,
+            // Legacy lookup only - the claim itself still uses the
+            // case-preserving hash derived above.
+            referenceRawForLegacyLookup: getRawReferenceForLegacyLookup(persistedExtractedData),
+            // Set ONLY by the audited resolution flow, and BOUND to the exact
+            // ambiguity a human adjudicated - not a bare boolean. claimSlip
+            // waives it only if the fold it finds from transaction-visible
+            // state is identical (same alias, same matched source); anything
+            // else returns legacy_case_ambiguity_changed. Every exact UNIQUE
+            // identifier below is still claimed atomically, so an exact
+            // reference/file/QR duplicate still blocks.
+            legacyCaseAmbiguityResolution: options?.legacyCaseAmbiguityResolution,
+            legacyFileAxisRiskResolution: fileAxisRiskRequested && currentFileHash
+              ? { expectedFileHash: currentFileHash }
+              : undefined,
+          },
+          tx
+        )
       );
 
       if (!claim.claimed && claim.reason === "legacy_scan_unresolved") {
@@ -4735,23 +4869,25 @@ export async function approveWalletTopup(
     // Step 2: Conditional status update - ONLY update if still pending or pending_review (idempotency)
     // CRITICAL: Only the winning concurrent request may proceed
     // Losing requests will have 0 rows affected and must abort immediately
-    const updateResult = await tx
-      .update(walletTopups)
-      .set({
-        status: "approved" as any,
-        reviewedByUserId: adminUserId,
-        reviewedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(walletTopups.id, topupId),
-          or(
-            eq(walletTopups.status, "pending" as any),
-            eq(walletTopups.status, "pending_review" as any)
+    const updateResult = await atWalletApprovalStage("wallet_topup_update", () =>
+      tx
+        .update(walletTopups)
+        .set({
+          status: "approved" as any,
+          reviewedByUserId: adminUserId,
+          reviewedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(walletTopups.id, topupId),
+            or(
+              eq(walletTopups.status, "pending" as any),
+              eq(walletTopups.status, "pending_review" as any)
+            )
           )
         )
-      );
+    );
     
     // CRITICAL: Check if update actually affected a row
     // Drizzle returns [ResultSetHeader, undefined] where ResultSetHeader has affectedRows
@@ -4774,12 +4910,14 @@ export async function approveWalletTopup(
     let account = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, topup.userId)).limit(1);
     if (!account || account.length === 0) {
       // Create wallet account if it doesn't exist (atomic within transaction)
-      await tx.insert(walletAccounts).values({
-        userId: topup.userId,
-        balance: "0.00",
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
+      await atWalletApprovalStage("wallet_balance_update", () =>
+        tx.insert(walletAccounts).values({
+          userId: topup.userId,
+          balance: "0.00",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+      );
       // Fetch the newly created account
       account = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, topup.userId)).limit(1);
       if (!account || account.length === 0) {
@@ -4791,50 +4929,58 @@ export async function approveWalletTopup(
     const newBalance = (currentBalance + creditAmountNum).toFixed(2);
 
     // Step 4: Update wallet balance (within transaction)
-    await tx
-      .update(walletAccounts)
-      .set({ balance: newBalance, updatedAt: new Date() })
-      .where(eq(walletAccounts.userId, topup.userId));
+    await atWalletApprovalStage("wallet_balance_update", () =>
+      tx
+        .update(walletAccounts)
+        .set({ balance: newBalance, updatedAt: new Date() })
+        .where(eq(walletAccounts.userId, topup.userId))
+    );
 
     // Step 5: Create wallet transaction record (within transaction)
-    await tx.insert(walletTransactions).values({
-      userId: topup.userId,
-      type: "topup_approved" as any,
-      amount: creditAmount,
-      balanceBefore: account[0].balance,
-      balanceAfter: newBalance,
-      referenceType: "topup",
-      referenceId: topupId,
-      note: breakGlassRequested
-        ? `HIGH-RISK LEGACY BREAK-GLASS approval by admin ${adminUserId}. Reason: ${legacyBreakGlassReason}`
-        : fileAxisRiskRequested
-          ? `HIGH-RISK LEGACY FILE-AXIS RISK OVERRIDE approval by admin ${adminUserId}. Exact current fileHash was claimed atomically. Reason: ${legacyFileAxisRiskReason}`
-          : undefined,
-    });
+    await atWalletApprovalStage("wallet_transaction_insert", () =>
+      tx.insert(walletTransactions).values({
+        userId: topup.userId,
+        type: "topup_approved" as any,
+        amount: creditAmount,
+        balanceBefore: account[0].balance,
+        balanceAfter: newBalance,
+        referenceType: "topup",
+        referenceId: topupId,
+        note: breakGlassRequested
+          ? `HIGH-RISK LEGACY BREAK-GLASS approval by admin ${adminUserId}. Reason: ${legacyBreakGlassReason}`
+          : fileAxisRiskRequested
+            ? `HIGH-RISK LEGACY FILE-AXIS RISK OVERRIDE approval by admin ${adminUserId}. Exact current fileHash was claimed atomically. Reason: ${legacyFileAxisRiskReason}`
+            : undefined,
+      })
+    );
 
     // Step 6: Create topup log (within transaction)
-    await tx.insert(topupLogs).values({
-      userId: topup.userId,
-      amount: topup.requestedAmount,
-      bonus: bonusAmount,
-      total: creditAmount,
-      method: "slip" as any,
-      reference: `topup-${topupId}`,
-      note: breakGlassRequested
-        ? `HIGH-RISK LEGACY BREAK-GLASS: ${legacyBreakGlassReason}`
-        : fileAxisRiskRequested
-          ? `HIGH-RISK LEGACY FILE-AXIS RISK OVERRIDE: exact current fileHash claimed. ${legacyFileAxisRiskReason}`
-          : `Slip approved by admin`,
-      createdBy: adminUserId,
-      createdAt: new Date(),
-    });
+    await atWalletApprovalStage("wallet_topup_log", () =>
+      tx.insert(topupLogs).values({
+        userId: topup.userId,
+        amount: topup.requestedAmount,
+        bonus: bonusAmount,
+        total: creditAmount,
+        method: "slip" as any,
+        reference: `topup-${topupId}`,
+        note: breakGlassRequested
+          ? `HIGH-RISK LEGACY BREAK-GLASS: ${legacyBreakGlassReason}`
+          : fileAxisRiskRequested
+            ? `HIGH-RISK LEGACY FILE-AXIS RISK OVERRIDE: exact current fileHash claimed. ${legacyFileAxisRiskReason}`
+            : `Slip approved by admin`,
+        createdBy: adminUserId,
+        createdAt: new Date(),
+      })
+    );
 
     // Step 7: Audit a legacy-case resolution INSIDE this transaction, so the
     // successful resolution record and the wallet credit commit together or
     // roll back together. If anything above failed, no resolution row exists
     // and the admin can retry.
     if (options?.auditResolution) {
-      await options.auditResolution(tx);
+      await atWalletApprovalStage("wallet_resolution_audit", () =>
+        options.auditResolution!(tx)
+      );
     }
 
     // Step 8: Return updated topup
@@ -6073,36 +6219,34 @@ export function parseStrictPositiveDecimal(value: any, fieldName: string): numbe
 }
 
 /**
- * Shared helper to lock user row for points-changing operations.
- * Prevents concurrent overspend by acquiring SELECT FOR UPDATE lock.
+ * Shared helper to lock the authoritative pointsAccounts row for a points-
+ * changing operation. With a real transaction it first participates in the
+ * Account Merge classified guard, then takes pointsAccounts FOR UPDATE.
  */
 export async function lockUserForPoints(userId: number, tx?: any) {
   const database = tx || (await getDb());
   if (!database) throw new Error("Database not available");
 
-  // IPE-005: every points-changing path is also a classified Source-account
-  // mutation. When a real transaction is supplied, acquire the canonical
-  // users-row + merge-case guard instead of a points-only users-row lock.
-  // withUserPointsLock always supplies a transaction (opening one itself when
-  // necessary), as do the direct sports/check-in callers.
   if (tx) {
     await assertAccountMergePointsMutationAllowed(userId, tx);
-    return { id: userId };
+    return { userId };
   }
 
-  // Legacy fallback for any read/diagnostic caller that invokes this helper
-  // without a transaction. The lock cannot outlive this statement, exactly
-  // as before IPE-005; mutation entry points must use withUserPointsLock.
-  const rawResult: any = await database.execute(sql`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`);
-  const userRow = Array.isArray(rawResult?.[0]) ? rawResult[0] : rawResult;
-  if (!userRow || userRow.length === 0) throw new Error("User not found");
-  return userRow[0];
+  // Diagnostic compatibility only: without an enclosing transaction this
+  // statement-level lock cannot protect a later write. Mutation entry points
+  // must use withUserPointsLock or pass their own transaction.
+  const rawResult: any = await database.execute(
+    sql`SELECT userId FROM pointsAccounts WHERE userId = ${userId} FOR UPDATE`
+  );
+  const rows = unwrapMysqlRows(rawResult);
+  if (rows.length !== 1) throw new PointsAccountMissingError(userId);
+  return rows[0];
 }
 
 /**
- * Runs `fn` with the given user's row locked (via lockUserForPoints) for the
- * duration - the shared coordination point every points balance
- * read-modify-write must go through.
+ * Runs `fn` with the given user's pointsAccounts row locked (via
+ * lockUserForPoints) for the duration - the shared coordination point every
+ * points balance read-modify-write must go through.
  *
  * - If `tx` is already an open transaction, the lock is taken inside it and
  *   `fn` runs on that same tx - it is only ever meaningful because the
@@ -6186,6 +6330,7 @@ export async function castSportsVote(userId: number, matchId: number, prediction
       balanceAfter: newBalance,
       referenceType: "sports_vote",
       referenceId: voteId,
+      effectKey: `sports_vote:${voteId}:spend`,
       note: `Sports vote for match #${matchId}`,
     }, tx);
 
@@ -6253,15 +6398,23 @@ export async function settleSportsMatch(matchId: number, result: SportsPredictio
       .from(sportsMatchVotes)
       .where(eq(sportsMatchVotes.matchId, matchId));
 
-    // Acquire all Source-account guards in canonical order before mutating any
-    // winner. Point winners then take the same user lock before their balance
-    // read-modify-write, matching every other points writer in this repository.
-    const pendingUserIds = votes.filter((vote: any) => vote.status === "pending").map((vote: any) => vote.userId);
+    // Acquire every ordinary Source-account guard in canonical order first.
+    // Only point WINNERS need balance serialization; losers merely change
+    // vote status and must remain on the shared account barrier. Pre-lock the
+    // actual point-mutating users as one sorted set before entering the loop
+    // so two settlements with overlapping winners cannot acquire points rows
+    // in opposite vote-order and deadlock.
+    const pendingVotes = votes.filter((vote: any) => vote.status === "pending");
+    const pendingUserIds = pendingVotes.map((vote: any) => vote.userId);
     if (pendingUserIds.length > 0) {
-      if (rewardKind === "points") {
-        await assertAccountMergePointsMutationsAllowed(pendingUserIds, tx);
-      } else {
-        await assertAccountMergeClassifiedMutationsAllowed(pendingUserIds, tx);
+      await assertAccountMergeClassifiedMutationsAllowed(pendingUserIds, tx);
+    }
+    if (rewardKind === "points") {
+      const pointWinnerUserIds = pendingVotes
+        .filter((vote: any) => vote.prediction === result)
+        .map((vote: any) => vote.userId);
+      if (pointWinnerUserIds.length > 0) {
+        await lockPointsAccountRowsForUpdate(pointWinnerUserIds, tx);
       }
     }
 
@@ -6288,7 +6441,8 @@ export async function settleSportsMatch(matchId: number, result: SportsPredictio
 
       if (rewardKind === "points") {
         const amount = pointsRewardAmount!;
-        await lockUserForPoints(vote.userId, tx);
+        // All point-winner balances were locked as one canonical ascending
+        // userId set before entering this loop.
         const currentBalance = await getUserPointsBalance(vote.userId, tx);
         const balanceAfter = formatMoney(moneyAdd(currentBalance, amount), "sportsRewardBalanceAfter");
 
@@ -6314,6 +6468,7 @@ export async function settleSportsMatch(matchId: number, result: SportsPredictio
           balanceAfter,
           referenceType: "sports_reward",
           referenceId: rewardId,
+          effectKey: `sports_reward:${rewardId}:earn`,
           note: `Sports prediction reward for match #${matchId}`,
         }, tx);
         await tx
@@ -6381,17 +6536,16 @@ export async function cancelSportsMatch(matchId: number) {
       .where(and(eq(sportsMatchVotes.matchId, matchId), eq(sportsMatchVotes.status, "pending")));
 
     if (pendingVotes.length > 0) {
-      await assertAccountMergePointsMutationsAllowed(pendingVotes.map((vote: any) => vote.userId), tx);
+      const refundUserIds = pendingVotes.map((vote: any) => vote.userId);
+      await assertAccountMergeClassifiedMutationsAllowed(refundUserIds, tx);
+      // Every pending vote is refunded on cancellation, so every involved
+      // user really is a points mutator. Lock the complete set in canonical
+      // ascending userId order before the loop rather than following vote row
+      // order and risking opposite-order points mutex acquisition.
+      await lockPointsAccountRowsForUpdate(refundUserIds, tx);
     }
 
     for (const vote of pendingVotes) {
-      // Lock this voter's row BEFORE reading their balance - refunding N
-      // voters in a loop with no lock is a real read-modify-write race
-      // against any other concurrent points writer for the same user
-      // (this refund loop was already inside a real transaction, it just
-      // never took the row lock that makes that transaction's isolation
-      // actually protect the balance arithmetic).
-      await lockUserForPoints(vote.userId, tx);
       const refundAmount = Number(vote.pointsSpent || 0);
       const currentBalance = Number(await getUserPointsBalance(vote.userId, tx));
       const newBalance = (currentBalance + refundAmount).toFixed(2);
@@ -6403,6 +6557,7 @@ export async function cancelSportsMatch(matchId: number) {
         balanceAfter: newBalance,
         referenceType: "sports_vote_refund",
         referenceId: vote.id,
+        effectKey: `sports_vote:${vote.id}:refund`,
         note: `Refund for cancelled sports match #${matchId}`,
       }, tx);
 
@@ -7032,6 +7187,7 @@ async function claimDailyCheckinPointReward(
         balanceAfter,
         referenceType: DAILY_CHECKIN_POINTS_REFERENCE_TYPE,
         referenceId: dailyCheckinId,
+        effectKey: `daily_checkin:${dailyCheckinId}:earn`,
         // Non-PII: a Bangkok business date and nothing else.
         note: `Daily check-in reward ${checkinDate}`,
       },
@@ -8173,96 +8329,194 @@ function unwrapMysqlRows(rawResult: any): any[] {
   return Array.isArray(rows) ? rows : [];
 }
 
-export class AccountMergeLockUpgradeError extends Error {
-  readonly code = "ACCOUNT_MERGE_LOCK_UPGRADE_FORBIDDEN";
-  readonly userId: number;
-
-  constructor(userId: number) {
-    super(
-      `ACCOUNT_MERGE_LOCK_UPGRADE_FORBIDDEN: transaction already holds the shared ` +
-        `Account Merge barrier for user ${userId}; it must not later request the exclusive ` +
-        `points/users lock. Point-capable flows must acquire the exclusive barrier up front.`
-    );
-    this.name = "AccountMergeLockUpgradeError";
-    this.userId = userId;
+/** Stable fail-closed error when the one-row-per-user IPE-021-D invariant is
+ * broken. Financial/classified mutation paths must never infer "open" from a
+ * missing guard or create one lazily after observing the absence. */
+export class AccountMutationGuardMissingError extends Error {
+  readonly code = "ACCOUNT_MUTATION_GUARD_MISSING";
+  constructor(readonly userId: number) {
+    super(`Account mutation guard is missing for user ${userId}`);
+    this.name = "AccountMutationGuardMissingError";
   }
 }
 
-type AccountMergeTxLockMode = "shared" | "exclusive";
-const accountMergeTxLockModes = new WeakMap<object, Map<number, AccountMergeTxLockMode>>();
-
-function accountMergeTxLockModeMap(tx: any): Map<number, AccountMergeTxLockMode> | undefined {
-  if (tx == null || (typeof tx !== "object" && typeof tx !== "function")) return undefined;
-  let modes = accountMergeTxLockModes.get(tx as object);
-  if (!modes) {
-    modes = new Map<number, AccountMergeTxLockMode>();
-    accountMergeTxLockModes.set(tx as object, modes);
-  }
-  return modes;
-}
-
-function markAccountMergeTxLockMode(tx: any, userIds: number[], mode: AccountMergeTxLockMode): void {
-  const modes = accountMergeTxLockModeMap(tx);
-  if (!modes) return;
-  for (const userId of userIds) {
-    const current = modes.get(userId);
-    if (current === "exclusive") continue;
-    modes.set(userId, mode);
-  }
-}
-
-function assertNoAccountMergeSharedToExclusiveUpgrade(tx: any, userIds: number[]): void {
-  const modes = accountMergeTxLockModeMap(tx);
-  if (!modes) return;
-  for (const userId of userIds) {
-    if (modes.get(userId) === "shared") {
-      throw new AccountMergeLockUpgradeError(userId);
-    }
-  }
-}
-
-/**
- * Canonical account-merge user lock hierarchy. Every multi-account merge
- * lifecycle operation and every multi-user classified mutation must acquire
- * `users` rows in ascending id order before touching merge-case rows or any
- * classified table. That one ordering rule prevents the source/target and
- * multi-reward deadlock shapes from acquiring the same two users in opposite
- * order.
- */
-export async function lockAccountMergeUserRows(userIds: number[], tx: any): Promise<number[]> {
+function normalizeAccountMutationGuardUserIds(userIds: number[]): number[] {
   const ordered = Array.from(new Set(userIds)).sort((a, b) => a - b);
   if (ordered.length === 0) throw new Error("At least one user id is required for account-merge locking");
-
   for (const userId of ordered) {
-    if (!Number.isInteger(userId) || userId <= 0) throw new Error("Invalid user id for account-merge locking");
-    const rows = unwrapMysqlRows(
-      await tx.execute(sql`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`)
-    );
-    if (rows.length !== 1) throw new Error(`User ${userId} not found while acquiring account-merge lock`);
+    if (!Number.isInteger(userId) || userId <= 0) {
+      throw new Error("Invalid user id for account-merge locking");
+    }
   }
-
   return ordered;
 }
 
 /**
- * Shared side of the Account Merge barrier for ordinary classified writes.
- * Ordinary writes only need to exclude the merge lifecycle; they do not need
- * to exclude one another. Using the exclusive lifecycle lock here made the
- * users row a per-user global mutex, so a slow approval blocked cart writes.
+ * New IPE-021-D rendezvous resource. Ordinary classified/financial mutations
+ * take SHARE locks so they can still run concurrently with each other;
+ * Account Merge lifecycle work takes UPDATE locks. Both lock rows in ascending
+ * userId order. This is the mixed-mode bridge: the dedicated guard is always
+ * acquired BEFORE the transitional legacy `users` lock, so no enabled V1 path
+ * remains users-only while V2/Account Merge begins depending on this resource.
  */
-async function lockAccountMergeMutationUserRows(userIds: number[], tx: any): Promise<number[]> {
-  const ordered = Array.from(new Set(userIds)).sort((a, b) => a - b);
-  if (ordered.length === 0) throw new Error("At least one user id is required for account-merge locking");
+export async function lockAccountMutationGuardRows(
+  userIds: number[],
+  tx: any,
+  mode: "shared" | "exclusive"
+): Promise<Array<{ userId: number; generation: number; mergeState: "open" | "merge_guarded"; activeMergeCaseId: number | null }>> {
+  const ordered = normalizeAccountMutationGuardUserIds(userIds);
+  const locked: Array<{ userId: number; generation: number; mergeState: "open" | "merge_guarded"; activeMergeCaseId: number | null }> = [];
 
   for (const userId of ordered) {
-    if (!Number.isInteger(userId) || userId <= 0) throw new Error("Invalid user id for account-merge locking");
+    const acquire = async () => unwrapMysqlRows(
+      mode === "exclusive"
+        ? await tx.execute(
+            sql`SELECT userId, generation, mergeState, activeMergeCaseId FROM accountMutationGuards WHERE userId = ${userId} FOR UPDATE`
+          )
+        : await tx.execute(
+            sql`SELECT userId, generation, mergeState, activeMergeCaseId FROM accountMutationGuards WHERE userId = ${userId} LOCK IN SHARE MODE`
+          )
+    );
+
+    let rows = await acquire();
+    if (rows.length === 0) {
+      // Rolling-deploy bridge: a user committed by an older instance after
+      // the 0045 backfill has no guard yet. Repair only on an observed miss,
+      // derive state from canonical merge cases (never "assume open"), then
+      // immediately acquire the requested lock before allowing any write.
+      await ensureProvisionedAccountMutationGuard(userId, tx);
+      rows = await acquire();
+    }
+    if (rows.length !== 1) throw new AccountMutationGuardMissingError(userId);
+    const row = rows[0];
+    locked.push({
+      userId: Number(row.userId),
+      generation: Number(row.generation),
+      mergeState: row.mergeState as "open" | "merge_guarded",
+      activeMergeCaseId: row.activeMergeCaseId == null ? null : Number(row.activeMergeCaseId),
+    });
+  }
+
+  return locked;
+}
+
+async function lockLegacyAccountMergeUsersExclusive(ordered: number[], tx: any): Promise<void> {
+  for (const userId of ordered) {
+    const rows = unwrapMysqlRows(await tx.execute(sql`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`));
+    if (rows.length !== 1) throw new Error(`User ${userId} not found while acquiring account-merge lock`);
+  }
+}
+
+async function lockLegacyAccountMergeUsersShared(ordered: number[], tx: any): Promise<void> {
+  for (const userId of ordered) {
     const rows = unwrapMysqlRows(
       await tx.execute(sql`SELECT id FROM users WHERE id = ${userId} LOCK IN SHARE MODE`)
     );
     if (rows.length !== 1) throw new Error(`User ${userId} not found while acquiring account-merge lock`);
   }
+}
 
+/**
+ * Canonical Account Merge lifecycle hierarchy during the IPE-021 mixed-mode
+ * bridge: dedicated guard EXCLUSIVE first, then the old users-row exclusive
+ * lock. The legacy users lock remains temporarily as the mixed-mode bridge for
+ * still-existing V1 classified mutations and Account Merge data reconciliation;
+ * points balance serialization itself has moved to pointsAccounts in 0046.
+ */
+export async function lockAccountMergeUserRows(userIds: number[], tx: any): Promise<number[]> {
+  const ordered = normalizeAccountMutationGuardUserIds(userIds);
+  await lockAccountMutationGuardRows(ordered, tx, "exclusive");
+  await lockLegacyAccountMergeUsersExclusive(ordered, tx);
   return ordered;
+}
+
+/**
+ * Shared side of the mixed-mode bridge for ordinary classified writes. The
+ * new guard share-lock is the first rendezvous with Account Merge, while the
+ * old users share-lock remains downstream solely for compatibility. SHARE /
+ * SHARE still permits independent V1 mutations for the same user to overlap.
+ */
+async function lockAccountMergeMutationUserRows(userIds: number[], tx: any): Promise<number[]> {
+  const ordered = normalizeAccountMutationGuardUserIds(userIds);
+  await lockAccountMutationGuardRows(ordered, tx, "shared");
+  await lockLegacyAccountMergeUsersShared(ordered, tx);
+  return ordered;
+}
+
+/** Bind an already-exclusive-locked Source guard to a newly created merge
+ * case. The conditional update is a second fail-closed check against drift;
+ * only open/unbound can become guarded. */
+export async function activateAccountMutationGuardForMerge(
+  userId: number,
+  mergeCaseId: number,
+  tx: any
+): Promise<void> {
+  const result: any = await tx
+    .update(accountMutationGuards)
+    .set({
+      mergeState: "merge_guarded",
+      activeMergeCaseId: mergeCaseId,
+      generation: sql`${accountMutationGuards.generation} + 1`,
+    })
+    .where(
+      and(
+        eq(accountMutationGuards.userId, userId),
+        eq(accountMutationGuards.mergeState, "open"),
+        isNull(accountMutationGuards.activeMergeCaseId)
+      )
+    );
+  const header = Array.isArray(result) ? result[0] : result;
+  if ((header?.affectedRows ?? 0) !== 1) {
+    throw new Error(`Account mutation guard for user ${userId} is not open for merge ${mergeCaseId}`);
+  }
+}
+
+/** Existing case retries and lifecycle transitions must prove the dedicated
+ * guard still names that exact case before privileged merge work continues. */
+export async function assertAccountMutationGuardBoundToMergeCase(
+  userId: number,
+  mergeCaseId: number,
+  tx: any
+): Promise<void> {
+  const rows = unwrapMysqlRows(
+    await tx.execute(
+      sql`SELECT userId, mergeState, activeMergeCaseId FROM accountMutationGuards WHERE userId = ${userId} FOR UPDATE`
+    )
+  );
+  if (rows.length !== 1) throw new AccountMutationGuardMissingError(userId);
+  const guard = rows[0];
+  if (guard.mergeState !== "merge_guarded" || Number(guard.activeMergeCaseId) !== mergeCaseId) {
+    throw new Error(`Account mutation guard for user ${userId} is not bound to merge ${mergeCaseId}`);
+  }
+}
+
+/** Cancellation is the only current lifecycle transition that releases merge
+ * exclusion. It increments generation atomically so stale prepared approval
+ * work can detect that a guard epoch changed even though the final state is
+ * open again. */
+export async function releaseAccountMutationGuardFromMerge(
+  userId: number,
+  mergeCaseId: number,
+  tx: any
+): Promise<void> {
+  const result: any = await tx
+    .update(accountMutationGuards)
+    .set({
+      mergeState: "open",
+      activeMergeCaseId: null,
+      generation: sql`${accountMutationGuards.generation} + 1`,
+    })
+    .where(
+      and(
+        eq(accountMutationGuards.userId, userId),
+        eq(accountMutationGuards.mergeState, "merge_guarded"),
+        eq(accountMutationGuards.activeMergeCaseId, mergeCaseId)
+      )
+    );
+  const header = Array.isArray(result) ? result[0] : result;
+  if ((header?.affectedRows ?? 0) !== 1) {
+    throw new Error(`Account mutation guard for user ${userId} cannot release merge ${mergeCaseId}`);
+  }
 }
 
 /**
@@ -8320,31 +8574,58 @@ export async function assertAccountMergeClassifiedMutationsAllowed(userIds: numb
     const cases = await getAccountMergeCasesForSourceForShare(sourceUserId, tx);
     assertNoActiveAccountMergeCase(sourceUserId, cases);
   }
-  markAccountMergeTxLockMode(tx, ordered, "shared");
+}
+
+/** Lock one or more authoritative points balance rows in ascending userId.
+ * Account Merge uses this directly after its exclusive account guard; normal
+ * point mutations reach it through assertAccountMergePointsMutationAllowed. */
+export async function lockPointsAccountRowsForUpdate(userIds: number[], tx: any): Promise<number[]> {
+  const ordered = normalizeAccountMutationGuardUserIds(userIds);
+  for (const userId of ordered) {
+    const acquire = async () => unwrapMysqlRows(
+      await tx.execute(sql`SELECT userId, balance FROM pointsAccounts WHERE userId = ${userId} FOR UPDATE`)
+    );
+
+    let rows = await acquire();
+    if (rows.length === 0) {
+      // The caller already owns the transitional users lock, which blocks the
+      // legacy points writer. Repair only an observed missing row, then lock
+      // it before any arithmetic can proceed.
+      await ensureProvisionedPointsAccount(userId, tx);
+      rows = await acquire();
+    }
+    if (rows.length !== 1) throw new PointsAccountMissingError(userId);
+
+    const latest = await tx
+      .select({ balanceAfter: pointsTransactions.balanceAfter })
+      .from(pointsTransactions)
+      .where(eq(pointsTransactions.userId, userId))
+      .orderBy(desc(pointsTransactions.createdAt), desc(pointsTransactions.id))
+      .limit(1);
+    const ledgerBalance = latest[0]?.balanceAfter?.toString() ?? "0.00";
+    if (rows[0].balance != null && Number(rows[0].balance) !== Number(ledgerBalance)) {
+      await tx
+        .update(pointsAccounts)
+        .set({
+          balance: ledgerBalance as any,
+          version: sql`${pointsAccounts.version} + 1`,
+        })
+        .where(eq(pointsAccounts.userId, userId));
+    }
+  }
+  return ordered;
 }
 
 /**
- * Points live on users, so balance read-modify-write retains exclusivity.
- * Point-capable multi-user flows must acquire all user rows in canonical order
- * up front. Attempting to upgrade a shared ordinary barrier in-place is
- * rejected before issuing SQL because two concurrent S-to-X upgrades can
- * deadlock even though both individual lock modes are otherwise correct.
+ * 0046 points mutation barrier: Account Merge exclusion remains the shared
+ * classified guard, but points arithmetic now serializes on pointsAccounts
+ * rather than taking `users FOR UPDATE`. The transitional `users` lock inside
+ * the classified guard is SHARE-only, so unrelated wallet/order work for the
+ * same user can coexist while points writers remain lossless.
  */
-export async function assertAccountMergePointsMutationsAllowed(userIds: number[], tx: any): Promise<void> {
-  const ordered = Array.from(new Set(userIds)).sort((a, b) => a - b);
-  if (ordered.length === 0) throw new Error("At least one user id is required for points mutation locking");
-  assertNoAccountMergeSharedToExclusiveUpgrade(tx, ordered);
-
-  const locked = await lockAccountMergeUserRows(ordered, tx);
-  for (const sourceUserId of locked) {
-    const cases = await getAccountMergeCasesForSourceForUpdate(sourceUserId, tx);
-    assertNoActiveAccountMergeCase(sourceUserId, cases);
-  }
-  markAccountMergeTxLockMode(tx, locked, "exclusive");
-}
-
-async function assertAccountMergePointsMutationAllowed(userId: number, tx: any): Promise<void> {
-  return assertAccountMergePointsMutationsAllowed([userId], tx);
+export async function assertAccountMergePointsMutationAllowed(userId: number, tx: any): Promise<void> {
+  await assertAccountMergeClassifiedMutationAllowed(userId, tx);
+  await lockPointsAccountRowsForUpdate([userId], tx);
 }
 
 export async function assertAccountMergeClassifiedMutationAllowed(userId: number, tx: any): Promise<void> {
@@ -8778,20 +9059,12 @@ export async function getAccountMergeWalletBalance(userId: number, tx?: any): Pr
   return rows[0]?.balance ?? "0.00";
 }
 
-/** Current points balance for one user - the most recent
- *  pointsTransactions.balanceAfter (the ledger's own running total, the
- *  same source of truth every points-spending code path already reads),
- *  "0.00" when the user has never had a points transaction.
- *
- *  Delegates verbatim to the canonical getUserPointsBalance so the merge
- *  preview projects EXACTLY the balance production shows: the latest row by
- *  `(createdAt DESC, id DESC)`, never by `id` alone. pointsTransactions
- *  .createdAt is a second-precision MySQL timestamp, and an imported or
- *  backfilled ledger can carry rows whose `id` order does not match their
- *  chronological order - ordering on `id` alone would then read a stale
- *  balanceAfter and mis-project both the per-account balance and the merged
- *  total. The `id DESC` tiebreaker still disambiguates same-second rows.
- *  See getUserPointsBalance's own doc comment for the full rationale. */
+/** Current points balance for one user from the authoritative pointsAccounts
+ * row introduced by migration 0046. That migration backfills each row from
+ * the latest pointsTransactions entry by `(createdAt DESC, id DESC)`; all
+ * subsequent writers serialize and advance this dedicated balance resource.
+ * Delegating to getUserPointsBalance keeps Account Merge preview and
+ * reconciliation on the same post-cutover source of truth. */
 export async function getAccountMergePointsBalance(userId: number, tx?: any): Promise<string> {
   return getUserPointsBalance(userId, tx);
 }

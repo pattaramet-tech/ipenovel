@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { TRPCError } from "@trpc/server";
-import { mapOrderPaymentApprovalError } from "./adminPaymentApprovalError";
+import {
+  mapOrderPaymentApprovalError,
+  mapOrderPaymentRecheckError,
+  ORDER_PAYMENT_BUSY_MESSAGE,
+} from "./adminPaymentApprovalError";
 
 describe("mapOrderPaymentApprovalError", () => {
   it.each([
@@ -21,7 +25,7 @@ describe("mapOrderPaymentApprovalError", () => {
     });
   });
 
-  it("maps a wrapped lock timeout to safe INTERNAL_SERVER_ERROR and retains the raw cause server-side", () => {
+  it("maps a wrapped lock timeout to a fixed retryable response and retains the raw cause server-side", () => {
     const driver = Object.assign(new Error("Lock wait timeout exceeded; try restarting transaction"), {
       errno: 1205,
       code: "ER_LOCK_WAIT_TIMEOUT",
@@ -34,7 +38,8 @@ describe("mapOrderPaymentApprovalError", () => {
     const mapped = mapOrderPaymentApprovalError(wrapped);
 
     expect(mapped).toBeInstanceOf(TRPCError);
-    expect(mapped.code).toBe("INTERNAL_SERVER_ERROR");
+    expect(mapped.code).toBe("SERVICE_UNAVAILABLE");
+    expect(mapped.message).toBe(ORDER_PAYMENT_BUSY_MESSAGE);
     expect(mapped.message).not.toContain("payments");
     expect(mapped.cause).toBe(wrapped);
   });
@@ -48,5 +53,39 @@ describe("mapOrderPaymentApprovalError", () => {
       code: "INTERNAL_SERVER_ERROR",
       cause: wrapped,
     });
+  });
+});
+
+describe("mapOrderPaymentRecheckError", () => {
+  it("preserves deliberate TRPC errors", () => {
+    const original = new TRPCError({ code: "NOT_FOUND", message: "Payment not found" });
+    expect(mapOrderPaymentRecheckError(original)).toBe(original);
+  });
+
+  it("maps wrapped 1205 to the same fixed retryable contract", () => {
+    const driver = Object.assign(new Error("secret driver detail"), {
+      errno: 1205,
+      code: "ER_LOCK_WAIT_TIMEOUT",
+      sqlState: "HY000",
+    });
+    const wrapped = Object.assign(new Error("Failed query"), { cause: driver });
+
+    const mapped = mapOrderPaymentRecheckError(wrapped);
+    expect(mapped).toMatchObject({
+      code: "SERVICE_UNAVAILABLE",
+      message: ORDER_PAYMENT_BUSY_MESSAGE,
+      cause: wrapped,
+    });
+  });
+
+  it("maps other unexpected failures to a fixed internal response", () => {
+    const original = new Error("provider secret");
+    const mapped = mapOrderPaymentRecheckError(original);
+    expect(mapped).toMatchObject({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "Unable to recheck this order payment due to an unexpected server error.",
+      cause: original,
+    });
+    expect(mapped.message).not.toContain("secret");
   });
 });
