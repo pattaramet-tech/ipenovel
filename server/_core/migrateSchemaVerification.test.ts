@@ -429,6 +429,25 @@ describe("findMissingSchemaObjects - migration 0047 security column shapes", () 
       });
     }
   );
+
+  it.each(migration0047SecurityShapes)(
+    "accepts provider SQL-literal default formatting for $table.$column",
+    async (expected) => {
+      const providerDefault = expected.defaultValue === null
+        ? "NULL"
+        : `'${expected.defaultValue.replace(/'/g, "''")}'`;
+      const { query } = fakeConn(
+        "camel",
+        REQUIRED_TABLES,
+        true,
+        REQUIRED_INDEXES,
+        true,
+        REQUIRED_FOREIGN_KEYS,
+        [{ ...expected, defaultValue: providerDefault }]
+      );
+      expect(await findMissingSchemaObjects({ query })).toEqual([]);
+    }
+  );
 });
 
 describe("findMissingSchemaObjects - case-insensitive table name comparison (regression)", () => {

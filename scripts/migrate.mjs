@@ -418,13 +418,26 @@ export async function findMissingSchemaObjects(conn) {
     // Absence is already reported by REQUIRED_COLUMNS.
     if (!shapeRows || shapeRows.length === 0) continue;
     const actual = shapeRows[0];
-    const normalize = (value) => value == null
+    const normalizeType = (value) => value == null
       ? null
       : String(value).toLowerCase().replace(/\b(bigint|int)\(\d+\)/g, "$1");
+    // MySQL-compatible providers disagree on how COLUMN_DEFAULT is exposed:
+    // some return SQL literals (`'value'` / `NULL`) while mysql2 against
+    // MariaDB returns the semantic value (`value` / JS null). Compare the
+    // semantics while keeping type and nullability checks exact.
+    const normalizeDefault = (value) => {
+      if (value == null) return null;
+      const normalized = String(value).trim().toLowerCase();
+      if (normalized === "null") return null;
+      if (normalized.length >= 2 && normalized.startsWith("'") && normalized.endsWith("'")) {
+        return normalized.slice(1, -1).replace(/''/g, "'");
+      }
+      return normalized;
+    };
     if (
-      normalize(actual.columnType) !== normalize(shape.columnType) ||
+      normalizeType(actual.columnType) !== normalizeType(shape.columnType) ||
       String(actual.nullable).toUpperCase() !== shape.nullable ||
-      normalize(actual.defaultValue) !== normalize(shape.defaultValue)
+      normalizeDefault(actual.defaultValue) !== normalizeDefault(shape.defaultValue)
     ) {
       missing.push(`column shape ${shape.table}.${shape.column}`);
     }
