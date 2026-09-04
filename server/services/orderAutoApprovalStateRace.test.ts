@@ -140,14 +140,16 @@ function makeDb(rows: Record<string, any[]>, onLock?: (store: Record<string, any
           const name = tableName(table);
           return {
             where(cond: any) {
-              const wanted = boundHashes(cond);
-              const cols = targetedColumns(cond);
               const all = store[name] ?? [];
               const filtered =
                 name === "paymentSlipClaims"
-                  ? wanted.length
-                    ? all.filter((r) => cols.some((c) => r[c] && wanted.includes(r[c])))
-                    : []
+                  ? (() => {
+                      const wanted = boundHashes(cond);
+                      const cols = targetedColumns(cond);
+                      return wanted.length
+                        ? all.filter((r) => cols.some((c) => r[c] && wanted.includes(r[c])))
+                        : [];
+                    })()
                   : all;
               return {
                 orderBy: () => ({ limit: async () => filtered }),

@@ -222,6 +222,7 @@ function orderRows() {
     ocrVerificationAttempts: [] as any[],
     orderHistory: [] as any[],
     purchases: [] as any[],
+    pointsAccounts: [{ userId: 11, balance: "0.00", version: 0 }],
     pointsTransactions: [] as any[],
     orderItems: [] as any[],
     coupons: [] as any[],

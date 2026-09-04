@@ -102,8 +102,6 @@ function makeFakeDb(options: {
                 ? (options.legacyUnknownRows ?? []).slice(0, n)
                 : [],
             where(cond: any) {
-              const wanted = boundHashes(cond);
-              const cols = targetedColumns(cond);
               return {
                 orderBy() {
                   return { limit: async () => [] };
@@ -116,6 +114,7 @@ function makeFakeDb(options: {
                     return [{ userId: options.topup.userId, balance: options.balance ?? "0.00" }];
                   }
                   if (name === "paymentSlipLegacyCollisions") {
+                    const wanted = boundHashes(cond);
                     if (!wanted.length) return [];
                     return (options.legacyCollisions ?? [])
                       .filter((c) => wanted.includes(c.identifierHash))
@@ -123,6 +122,8 @@ function makeFakeDb(options: {
                       .slice(0, n);
                   }
                   if (name === "paymentSlipClaims") {
+                    const wanted = boundHashes(cond);
+                    const cols = targetedColumns(cond);
                     if (!wanted.length) return [];
                     return options.claims
                       .filter((c) => cols.some((col) => c[col] && wanted.includes(c[col])))
