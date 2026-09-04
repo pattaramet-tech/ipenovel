@@ -494,6 +494,39 @@ describe("automatic OCR approval cannot resurrect a finalized payment", () => {
     expect(harness.store.orders[0].status).toBe("pending");
   });
 
+  it("G. evidenceVersion-only replacement while processing is refused and reports slip superseded", async () => {
+    // The slip was replaced in a way that rekeys evidenceVersion without changing
+    // the visible URL. Without an evidenceVersion CAS in sendToReview, this old
+    // OCR run can write stale extraction metadata into the newer row. The new
+    // write must be rejected and the previous extractedData retained.
+    mockAutoApprovingOcrPipeline();
+    const harness = makeDb(orderRows("pending"), (store) => {
+      store.payments[0].evidenceVersion += 1;
+      store.payments[0].extractedData = JSON.stringify({ fileHash: "v2".repeat(32) });
+      store.payments[0].extractedEvidenceVersion = 2;
+    });
+    dbModule.__setDbForTests(harness.fake);
+
+    const result = await submitPaymentSlip({
+      orderId: 90,
+      slipImageUrl: "r2p:payment-slips/11/slip.png",
+      userId: 11,
+    });
+
+    expect(result.reviewReason).toBe("OCR_SUPERSEDED_BY_SLIP_REPLACEMENT");
+    expect(result.isAutoApproved).toBe(false);
+    expect(harness.store.payments[0].status).toBe("pending");
+    expect(harness.store.payments[0].evidenceVersion).toBe(2);
+    expect(JSON.parse(harness.store.payments[0].extractedData)).toEqual({
+      fileHash: "v2".repeat(32),
+    });
+    expect(harness.store.payments[0].extractedEvidenceVersion).toBe(2);
+    expect(harness.store.paymentSlipClaims).toHaveLength(0);
+    expect(harness.store.purchases).toHaveLength(0);
+    expect(harness.store.pointsTransactions).toHaveLength(0);
+    expect(harness.store.orderHistory).toHaveLength(0);
+  });
+
   it("the classification helper is the STATE one, not a provider fault", async () => {
     // Covered functionally by test A/B (reviewReason assertions); this test
     // pins the classification vocabulary itself is the STATE one, not a
