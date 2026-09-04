@@ -337,6 +337,13 @@
       "when": 1788550940950,
       "tag": "0047_add_immutable_slip_evidence",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "5",
+      "when": 1788660000000,
+      "tag": "0048_repair_immutable_slip_evidence",
+      "breakpoints": true
     }
   ]
 }
