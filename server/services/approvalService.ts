@@ -123,7 +123,7 @@ export class ApprovalService {
     reviewReason: string,
     extractedData?: any,
     fingerprint?: string,
-    expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+    expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null; evidenceVersion?: number },
     tx?: any
   ): Promise<boolean> {
     const conditions = [

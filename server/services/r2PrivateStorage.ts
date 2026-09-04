@@ -7,6 +7,7 @@
 // short-lived presigned GetObject URL and nothing else is ever handed to a
 // client.
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import { createHash } from "node:crypto";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { ENV } from "../_core/env";
 import { isPrivateObjectRef, extractPrivateObjectKey } from "@shared/privateFileRef";
@@ -55,6 +56,7 @@ export class R2PrivateStorageError extends Error {
     public readonly reason:
       | "not_configured"
       | "upload_failed"
+      | "object_already_exists"
       | "download_failed"
       | "delete_failed"
       | "invalid_reference",
@@ -246,6 +248,51 @@ export async function putPrivateObject(
     const classified = classifyStorageSdkError(err);
     console.error("[R2PrivateStorage] Operation failed", { operation: "put", context, reason: "upload_failed", ...classified });
     throw new R2PrivateStorageError("Private R2 upload failed", "upload_failed", { key, context, operation: "put", ...classified });
+  }
+
+  return { key };
+}
+
+/**
+ * Payment-evidence writer. `IfNoneMatch: "*"` makes the provider reject an
+ * overwrite even when a caller accidentally reuses a key. Only payment slips
+ * use this contract; episode/media migration keeps the legacy put helper.
+ */
+export async function putPrivateObjectCreateOnly(
+  context: "paymentSlip",
+  relKey: string,
+  data: Buffer,
+  contentType: string
+): Promise<{ key: string }> {
+  const { client, bucketName } = getPrivateR2Client();
+  const key = assertSafeObjectKey(relKey, context);
+
+  try {
+    await client.send(
+      new PutObjectCommand({
+        Bucket: bucketName,
+        Key: key,
+        Body: data,
+        ContentType: contentType,
+        IfNoneMatch: "*",
+        Metadata: { "ipenovel-sha256": createHash("sha256").update(data).digest("hex") },
+      })
+    );
+  } catch (err) {
+    const classified = classifyStorageSdkError(err);
+    const alreadyExists = classified.httpStatusCode === 412;
+    console.error("[R2PrivateStorage] Operation failed", {
+      operation: "put",
+      context,
+      reason: alreadyExists ? "object_already_exists" : "upload_failed",
+      ...classified,
+      retryable: !alreadyExists && classified.retryable,
+    });
+    throw new R2PrivateStorageError(
+      alreadyExists ? "Private R2 object identity already exists" : "Private R2 upload failed",
+      alreadyExists ? "object_already_exists" : "upload_failed",
+      { key, context, operation: "put", ...classified, retryable: !alreadyExists && classified.retryable }
+    );
   }
 
   return { key };

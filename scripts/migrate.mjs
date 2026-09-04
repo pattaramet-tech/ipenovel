@@ -102,6 +102,10 @@ export const REQUIRED_TABLES = [
   "accountMutationGuards",
   "pointsAccounts",
   "pointsTransactions",
+  "payments",
+  "walletTopups",
+  "slipEvidenceUploads",
+  "slipEvidenceBindings",
   // IPE-009 Sports Vote catalog/reward runtime dependencies. The match list,
   // admin catalog, and points settlement read these tables unconditionally.
   "sportsCompetitions",
@@ -121,6 +125,26 @@ export const REQUIRED_COLUMNS = [
   { table: "pointsAccounts", column: "version" },
   { table: "pointsAccounts", column: "updatedAt" },
   { table: "pointsTransactions", column: "effectKey" },
+  { table: "payments", column: "evidenceVersion" },
+  { table: "payments", column: "slipEvidenceClass" },
+  { table: "payments", column: "slipEvidenceId" },
+  { table: "payments", column: "extractedEvidenceVersion" },
+  { table: "walletTopups", column: "evidenceVersion" },
+  { table: "walletTopups", column: "slipEvidenceClass" },
+  { table: "walletTopups", column: "slipEvidenceId" },
+  { table: "walletTopups", column: "extractedEvidenceVersion" },
+  { table: "slipEvidenceUploads", column: "objectIdentity" },
+  { table: "slipEvidenceUploads", column: "ownerUserId" },
+  { table: "slipEvidenceUploads", column: "fileHash" },
+  { table: "slipEvidenceUploads", column: "objectSize" },
+  { table: "slipEvidenceBindings", column: "uploadId" },
+  { table: "slipEvidenceBindings", column: "sourceType" },
+  { table: "slipEvidenceBindings", column: "sourceId" },
+  { table: "slipEvidenceBindings", column: "ownerUserId" },
+  { table: "slipEvidenceBindings", column: "evidenceVersion" },
+  { table: "slipEvidenceBindings", column: "evidenceClass" },
+  { table: "slipEvidenceBindings", column: "objectIdentity" },
+  { table: "slipEvidenceBindings", column: "fileHash" },
   { table: "paymentSlipClaims", column: "legacyReferenceUpperHash" },
   { table: "coupons", column: "maxDiscountAmount" },
   // Coupon ownership scope (migration 0032, fix/coupon-owner-enforcement).
@@ -144,6 +168,26 @@ export const REQUIRED_COLUMNS = [
   { table: "sportsMatchRewards", column: "rewardKind" },
   { table: "sportsMatchRewards", column: "pointsAmount" },
   { table: "sportsMatchRewards", column: "pointsTransactionId" },
+];
+
+// Exact security-sensitive shapes. Presence alone is not enough: a signed
+// evidenceVersion, nullable class, or expanded enum would weaken the
+// fail-closed contract while still passing a name-only startup check.
+export const REQUIRED_COLUMN_SHAPES = [
+  { table: "payments", column: "evidenceVersion", columnType: "bigint unsigned", nullable: "NO", defaultValue: "0" },
+  { table: "payments", column: "slipEvidenceClass", columnType: "enum('modern_immutable','legacy_migrated_immutable','legacy_compatibility_required')", nullable: "NO", defaultValue: "legacy_compatibility_required" },
+  { table: "payments", column: "slipEvidenceId", columnType: "int", nullable: "YES", defaultValue: null },
+  { table: "payments", column: "extractedEvidenceVersion", columnType: "bigint unsigned", nullable: "YES", defaultValue: null },
+  { table: "walletTopups", column: "evidenceVersion", columnType: "bigint unsigned", nullable: "NO", defaultValue: "0" },
+  { table: "walletTopups", column: "slipEvidenceClass", columnType: "enum('modern_immutable','legacy_migrated_immutable','legacy_compatibility_required')", nullable: "NO", defaultValue: "legacy_compatibility_required" },
+  { table: "walletTopups", column: "slipEvidenceId", columnType: "int", nullable: "YES", defaultValue: null },
+  { table: "walletTopups", column: "extractedEvidenceVersion", columnType: "bigint unsigned", nullable: "YES", defaultValue: null },
+  { table: "slipEvidenceUploads", column: "objectIdentity", columnType: "varchar(512)", nullable: "NO", defaultValue: null },
+  { table: "slipEvidenceUploads", column: "fileHash", columnType: "varchar(64)", nullable: "NO", defaultValue: null },
+  { table: "slipEvidenceBindings", column: "evidenceVersion", columnType: "bigint unsigned", nullable: "NO", defaultValue: null },
+  { table: "slipEvidenceBindings", column: "evidenceClass", columnType: "enum('modern_immutable','legacy_migrated_immutable')", nullable: "NO", defaultValue: null },
+  { table: "slipEvidenceBindings", column: "objectIdentity", columnType: "varchar(512)", nullable: "NO", defaultValue: null },
+  { table: "slipEvidenceBindings", column: "fileHash", columnType: "varchar(64)", nullable: "NO", defaultValue: null },
 ];
 
 /**
@@ -171,6 +215,16 @@ export const REQUIRED_INDEXES = [
     columns: ["activeMergeCaseId"],
   },
   { table: "pointsAccounts", index: "PRIMARY", unique: true, columns: ["userId"] },
+  { table: "slipEvidenceUploads", index: "PRIMARY", unique: true, columns: ["id"] },
+  { table: "slipEvidenceUploads", index: "slipEvidenceUploads_objectIdentity_unique", unique: true, columns: ["objectIdentity"] },
+  { table: "slipEvidenceUploads", index: "slipEvidenceUploads_ownerUserId_idx", unique: false, columns: ["ownerUserId"] },
+  { table: "slipEvidenceBindings", index: "PRIMARY", unique: true, columns: ["id"] },
+  { table: "slipEvidenceBindings", index: "slipEvidenceBindings_uploadId_unique", unique: true, columns: ["uploadId"] },
+  { table: "slipEvidenceBindings", index: "slipEvidenceBindings_objectIdentity_unique", unique: true, columns: ["objectIdentity"] },
+  { table: "slipEvidenceBindings", index: "slipEvidenceBindings_source_version_unique", unique: true, columns: ["sourceType", "sourceId", "evidenceVersion"] },
+  { table: "slipEvidenceBindings", index: "slipEvidenceBindings_ownerUserId_idx", unique: false, columns: ["ownerUserId"] },
+  { table: "payments", index: "payments_slipEvidenceId_unique", unique: true, columns: ["slipEvidenceId"] },
+  { table: "walletTopups", index: "walletTopups_slipEvidenceId_unique", unique: true, columns: ["slipEvidenceId"] },
   {
     table: "pointsTransactions",
     index: "pointsTransactions_userId_effectKey_unique",
@@ -247,6 +301,7 @@ export const REQUIRED_FOREIGN_KEYS = [
     referencedTable: "users",
     referencedColumn: "id",
     deleteRule: "CASCADE",
+    updateRule: "NO ACTION",
   },
   {
     table: "pointsAccounts",
@@ -255,6 +310,34 @@ export const REQUIRED_FOREIGN_KEYS = [
     referencedTable: "users",
     referencedColumn: "id",
     deleteRule: "CASCADE",
+    updateRule: "NO ACTION",
+  },
+  {
+    table: "slipEvidenceBindings",
+    constraint: "slipEvidenceBindings_uploadId_fk",
+    column: "uploadId",
+    referencedTable: "slipEvidenceUploads",
+    referencedColumn: "id",
+    deleteRule: "RESTRICT",
+    updateRule: "NO ACTION",
+  },
+  {
+    table: "payments",
+    constraint: "payments_slipEvidenceId_fk",
+    column: "slipEvidenceId",
+    referencedTable: "slipEvidenceBindings",
+    referencedColumn: "id",
+    deleteRule: "RESTRICT",
+    updateRule: "NO ACTION",
+  },
+  {
+    table: "walletTopups",
+    constraint: "walletTopups_slipEvidenceId_fk",
+    column: "slipEvidenceId",
+    referencedTable: "slipEvidenceBindings",
+    referencedColumn: "id",
+    deleteRule: "RESTRICT",
+    updateRule: "NO ACTION",
   },
 ];
 
@@ -317,6 +400,30 @@ export async function findMissingSchemaObjects(conn) {
     }
   }
 
+  for (const shape of REQUIRED_COLUMN_SHAPES) {
+    const [shapeRows] = await conn.query(
+      `SELECT column_type AS columnType,
+              is_nullable AS nullable,
+              column_default AS defaultValue
+       FROM information_schema.columns
+       WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+      [shape.table, shape.column]
+    );
+    // Absence is already reported by REQUIRED_COLUMNS.
+    if (!shapeRows || shapeRows.length === 0) continue;
+    const actual = shapeRows[0];
+    const normalize = (value) => value == null
+      ? null
+      : String(value).toLowerCase().replace(/\b(bigint|int)\(\d+\)/g, "$1");
+    if (
+      normalize(actual.columnType) !== normalize(shape.columnType) ||
+      String(actual.nullable).toUpperCase() !== shape.nullable ||
+      normalize(actual.defaultValue) !== normalize(shape.defaultValue)
+    ) {
+      missing.push(`column shape ${shape.table}.${shape.column}`);
+    }
+  }
+
   for (const { table, index, unique, columns } of REQUIRED_INDEXES) {
     // An index on a missing table is already reported as a missing table -
     // don't report the same root cause twice. Same case-insensitive
@@ -360,7 +467,8 @@ export async function findMissingSchemaObjects(conn) {
          AND kcu.column_name = ?
          AND kcu.referenced_table_name = ?
          AND kcu.referenced_column_name = ?
-         AND rc.delete_rule = ?`,
+         AND rc.delete_rule = ?
+         AND rc.update_rule = ?`,
       [
         foreignKey.table,
         foreignKey.constraint,
@@ -368,6 +476,7 @@ export async function findMissingSchemaObjects(conn) {
         foreignKey.referencedTable,
         foreignKey.referencedColumn,
         foreignKey.deleteRule,
+        foreignKey.updateRule,
       ]
     );
     if (!foreignKeyRows || foreignKeyRows.length === 0) {

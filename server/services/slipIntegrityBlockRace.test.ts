@@ -202,6 +202,7 @@ function orderRows() {
         status: "pending",
         slipImageUrl: A_URL,
         slipSubmittedAt: T_A,
+        evidenceVersion: 0,
         createdAt: T_A,
         extractedData: JSON.stringify({ fileHash: HASH_A }),
       },

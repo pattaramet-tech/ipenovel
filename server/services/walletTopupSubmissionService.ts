@@ -128,6 +128,7 @@ export async function submitWalletTopupSlip(
   const expectedSlipVersion = {
     slipImageUrl: topup.slipImageUrl as string | null,
     slipSubmittedAt: topup.slipSubmittedAt as Date | null,
+    evidenceVersion: Number(topup.evidenceVersion ?? 0),
   };
 
   const ocrConfig = await getEffectiveOCRConfig();
@@ -706,7 +707,7 @@ async function autoApproveWalletTopup(
   fingerprint: string,
   verificationResult: VerificationResult,
   parseResult?: any,
-  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null }
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null; evidenceVersion?: number }
 ): Promise<WalletTopupSubmissionResult> {
   // Fetch topup to get bonus amount
   const topup = await db.getWalletTopupById(topupId);
@@ -790,7 +791,7 @@ async function autoApproveWalletTopup(
  */
 async function buildSupersededResult(
   topupId: number,
-  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null; evidenceVersion?: number },
   /**
    * When supplied, records exactly ONE STATE attempt for this run - the
    * terminal outcome now that the guarded write's refusal is known. Omitted
@@ -812,7 +813,9 @@ async function buildSupersededResult(
     !(
       (current.slipImageUrl as string | null) === expectedSlipVersion.slipImageUrl &&
       ((current.slipSubmittedAt as Date | null)?.getTime() ?? null) ===
-        (expectedSlipVersion.slipSubmittedAt?.getTime() ?? null)
+        (expectedSlipVersion.slipSubmittedAt?.getTime() ?? null) &&
+      (expectedSlipVersion.evidenceVersion === undefined ||
+        Number(current.evidenceVersion ?? 0) === expectedSlipVersion.evidenceVersion)
     );
 
   const reviewReason = slipReplaced
@@ -857,7 +860,7 @@ async function handlePendingReview(
   verificationResult?: VerificationResult,
   parseResult?: any,
   topup?: any, // Topup object for Discord notification
-  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null; evidenceVersion?: number },
   /**
    * The attempt history recorder and the OUTCOME this call intended, passed
    * through rather than recorded by the caller before this write runs. Only
@@ -985,7 +988,7 @@ async function handleDuplicate(
   userMessage: string,
   parseResult?: any,
   topup?: any, // Topup object for Discord notification
-  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null; evidenceVersion?: number },
   recordAttempt?: WalletAttemptRecorder,
   intendedReason: string = "WEAK_DUPLICATE_RISK",
   intendedCategory: string | null = "DATA",
@@ -1094,7 +1097,7 @@ async function handleOCRError(
    * approval - which now refuses such records - could never clear it.
    */
   extractedData?: ExtractedSlipData,
-  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null },
+  expectedSlipVersion?: { slipImageUrl: string | null; slipSubmittedAt: Date | null; evidenceVersion?: number },
   recordAttempt?: WalletAttemptRecorder
 ): Promise<WalletTopupSubmissionResult> {
   const updateData: any = {

@@ -100,7 +100,7 @@ describe("recheck writes are conditional on the payment still being reviewable",
     // narrows the WHERE clause, and is never passed to `.set()`.
     const signature = dbCode.slice(idx, fieldsEndIdx + 500);
     expect(signature).toMatch(/expectedSlipVersion\?:/);
-    const setIdx = dbCode.indexOf(".set(fields as any)", fieldsEndIdx);
+    const setIdx = dbCode.indexOf(".set(updateFields)", fieldsEndIdx);
     expect(setIdx).toBeGreaterThan(-1);
   });
 

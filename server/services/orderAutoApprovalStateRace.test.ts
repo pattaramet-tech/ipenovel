@@ -91,9 +91,14 @@ function tableName(table: any): string {
 
 function boundHashes(cond: any): string[] {
   const found: string[] = [];
+  const seen = new WeakSet<object>();
   const walk = (n: any, d = 0) => {
     if (!n || d > 12) return;
     if (typeof n === "string" && /^[0-9a-f]{64}$/.test(n)) found.push(n);
+    if (typeof n === "object") {
+      if (seen.has(n)) return;
+      seen.add(n);
+    }
     if (Array.isArray(n)) return n.forEach((x) => walk(x, d + 1));
     if (typeof n === "object") for (const k of Object.keys(n)) walk((n as any)[k], d + 1);
   };
@@ -132,6 +137,9 @@ function makeDb(rows: Record<string, any[]>, onLock?: (store: Record<string, any
       if (queryText.includes("FROM users")) return [[{ id: 1 }]];
       onLock?.(store);
       snapshot = JSON.parse(JSON.stringify(store));
+      if (queryText.includes("SELECT id,status,slipImageUrl,evidenceVersion,slipEvidenceId")) {
+        return [[store.payments[0]]];
+      }
       return [[{ id: 1 }]];
     },
     select() {
@@ -214,6 +222,7 @@ function orderRows(paymentStatus = "pending") {
         userId: 11,
         status: paymentStatus,
         slipImageUrl: "r2p:payment-slips/11/slip.png",
+        evidenceVersion: 0,
       },
     ],
     orders: [
@@ -430,6 +439,7 @@ describe("automatic OCR approval cannot resurrect a finalized payment", () => {
       // replacement having already committed by then.
       store.payments[0].slipImageUrl = C_URL;
       store.payments[0].slipSubmittedAt = new Date("2026-06-01T00:00:00Z");
+      store.payments[0].evidenceVersion += 1;
       store.payments[0].extractedData = JSON.stringify({ fileHash: "c".repeat(64) });
       // status stays "pending" - a replacement re-opens it, never changes it.
     });

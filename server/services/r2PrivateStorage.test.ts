@@ -89,6 +89,41 @@ describe("r2PrivateStorage", () => {
       );
     });
 
+    it("uses provider-enforced create-only semantics for immutable payment evidence", async () => {
+      sendMock.mockResolvedValueOnce({});
+      const mod = await freshModule();
+      const bytes = Buffer.from("immutable exact bytes");
+
+      await mod.putPrivateObjectCreateOnly(
+        "paymentSlip",
+        "payment-slips/42/hash/slip.jpg",
+        bytes,
+        "image/jpeg"
+      );
+
+      expect(putObjectCommandMock).toHaveBeenCalledWith(expect.objectContaining({
+        IfNoneMatch: "*",
+        Metadata: {
+          "ipenovel-sha256": "14bf726c15c975c9e81d8ea78908b1e9db62df4c71e4872c3fd95efffec484d8",
+        },
+      }));
+    });
+
+    it("reports a precondition failure as an immutable identity collision", async () => {
+      sendMock.mockRejectedValueOnce({
+        name: "PreconditionFailed",
+        $metadata: { httpStatusCode: 412 },
+      });
+      const mod = await freshModule();
+
+      await expect(mod.putPrivateObjectCreateOnly(
+        "paymentSlip",
+        "payment-slips/42/hash/slip.jpg",
+        Buffer.from("different bytes"),
+        "image/jpeg"
+      )).rejects.toMatchObject({ reason: "object_already_exists" });
+    });
+
     it("rejects a leading-slash key instead of silently stripping it, and never calls S3", async () => {
       const mod = await freshModule();
       await expect(

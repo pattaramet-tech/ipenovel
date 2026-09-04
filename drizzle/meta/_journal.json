@@ -330,6 +330,13 @@
       "when": 1788456848950,
       "tag": "0046_add_points_accounts_mutex",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "5",
+      "when": 1788550940950,
+      "tag": "0047_add_immutable_slip_evidence",
+      "breakpoints": true
     }
   ]
 }

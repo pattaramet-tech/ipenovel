@@ -129,6 +129,13 @@ function makeDb(rows: Record<string, any[]>) {
   const store: Record<string, any[]> = JSON.parse(JSON.stringify(rows));
 
   const fake: any = {
+    execute: async (query: any) => {
+      const queryText = (query?.queryChunks ?? [])
+        .map((chunk: any) => (Array.isArray(chunk?.value) ? chunk.value.join("") : String(chunk?.value ?? "")))
+        .join("");
+      if (queryText.includes("accountMergeCases")) return [[]];
+      return [[{ id: 1 }]];
+    },
     select() {
       return {
         from(table: any) {
@@ -172,6 +179,7 @@ function makeDb(rows: Record<string, any[]>) {
       };
     },
   };
+  fake.transaction = async (fn: any) => fn(fake);
   return { fake, store };
 }
 
@@ -185,6 +193,7 @@ function recheckRows() {
         status: "pending",
         slipImageUrl: A_URL,
         slipSubmittedAt: T_A,
+        evidenceVersion: 0,
         createdAt: T_A,
         extractedData: null,
       },
@@ -218,6 +227,7 @@ function mockOcrConfig() {
 function applyReplacement(store: Record<string, any[]>) {
   store.payments[0].slipImageUrl = B_URL;
   store.payments[0].slipSubmittedAt = T_B;
+  store.payments[0].evidenceVersion += 1;
   store.payments[0].status = "pending"; // a replacement re-opens status, never changes it here
   store.payments[0].extractedData = JSON.stringify({ fileHash: B_HASH });
 }

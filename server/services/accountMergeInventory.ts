@@ -90,6 +90,12 @@ export const ACCOUNT_MERGE_EXCLUDED_INDIRECT_TABLES: Array<{
     reason:
       "Audited human overrides of an automated anti-replay signal on a payment/top-up. An admin-adjudication audit trail, not the source account's own data; the underlying payment's ownership is already inventoried via orders/payments. IPE-003 scope forbids any anti-replay change.",
   },
+  {
+    table: "slipEvidenceBindings",
+    via: "sourceId -> payments.id / walletTopups.id (ownerUserId is an immutable historical snapshot)",
+    reason:
+      "The write-once evidence chain for exact uploaded bytes and its historical owner. Account merges must leave it immutable; ownership of the underlying financial subject is already inventoried through orders/payments or walletTopups.",
+  },
 ];
 
 /**

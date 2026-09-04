@@ -149,6 +149,7 @@ describe("submitPaymentSlip - OCR image preparation failure (I)", () => {
       {
         slipImageUrl: "r2p:payment-slips/5/slip.png",
         slipSubmittedAt: new Date("2026-01-01T00:00:00Z"),
+        evidenceVersion: 0,
       }
     );
 

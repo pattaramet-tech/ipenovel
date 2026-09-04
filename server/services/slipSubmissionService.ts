@@ -130,6 +130,7 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
     slipImageUrl: input.slipImageUrl,
     slipSubmittedAt,
     extractedData: slipFileHash ? JSON.stringify({ fileHash: slipFileHash }) : null,
+    fileHash: slipFileHash,
   });
 
   if (!published) {
@@ -147,6 +148,7 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
   const publishedSlipVersion = {
     slipImageUrl: (publishedPayment?.slipImageUrl as string | null) ?? input.slipImageUrl,
     slipSubmittedAt: (publishedPayment?.slipSubmittedAt as Date | null) ?? slipSubmittedAt,
+    evidenceVersion: Number(publishedPayment?.evidenceVersion ?? 0),
   };
 
   // Check if OCR is enabled using effective config (Phase 4)
@@ -422,6 +424,7 @@ export async function submitPaymentSlip(input: SlipSubmissionInput): Promise<Sli
       !orderService.sameSlipVersion(publishedSlipVersion, {
         slipImageUrl: currentPayment.slipImageUrl as string | null,
         slipSubmittedAt: currentPayment.slipSubmittedAt as Date | null,
+        evidenceVersion: Number(currentPayment.evidenceVersion ?? 0),
       })
     ) {
       // A later upload already replaced the slip this OCR run processed.

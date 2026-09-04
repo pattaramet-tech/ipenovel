@@ -176,6 +176,22 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
     reason:
       "A claim row is proof this account consumed a real bank transaction to create financial value (an order payment or a wallet top-up), so it is economic evidence in its own right - and such an account is already blocked by the underlying payments/orders/walletTopups rows anyway. Critically, the claim row itself must NEVER be deleted along with the user: paymentSlipClaims is the global anti-replay registry, and removing a user's claims would re-open every slip they ever used for replay by anyone. Like adminUserAuditLogs it carries no foreign key precisely so it outlives the accounts it references; unlike that table it also BLOCKS deletion, because it represents money rather than a record of administration.",
   },
+  {
+    table: "slipEvidenceUploads",
+    column: "ownerUserId",
+    category: "economic",
+    reference: "Immutable Slip Evidence",
+    reason:
+      "The write-once upload registry preserves who supplied exact payment evidence. Hard deletion must not orphan or erase that durable financial provenance.",
+  },
+  {
+    table: "slipEvidenceBindings",
+    column: "ownerUserId",
+    category: "economic",
+    reference: "Immutable Slip Evidence",
+    reason:
+      "A versioned binding is durable proof tying an account to the exact bytes used for a financial review. It must outlive and therefore block hard deletion.",
+  },
 
   // ---- never_blocks: unverified claims and this feature's own self-outliving audit trail ----
   {

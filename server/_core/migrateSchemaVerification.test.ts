@@ -6,6 +6,7 @@ import {
   REQUIRED_INDEXES,
   REQUIRED_NULLABLE_COLUMNS,
   REQUIRED_FOREIGN_KEYS,
+  REQUIRED_COLUMN_SHAPES,
 } from "../../scripts/migrate.mjs";
 
 /**
@@ -61,6 +62,17 @@ function fakeConn(
       return [rows];
     }
     if (sql.includes("information_schema.columns")) {
+      if (sql.includes("column_type AS columnType")) {
+        if (!columnsPresent) return [[]];
+        const expected = REQUIRED_COLUMN_SHAPES.find(
+          (entry: any) => entry.table === String(params[0]) && entry.column === String(params[1])
+        );
+        return [expected ? [{
+          columnType: expected.columnType,
+          nullable: expected.nullable,
+          defaultValue: expected.defaultValue,
+        }] : []];
+      }
       // Two different probes hit information_schema.columns: the presence
       // check selects column_name, the nullability check selects
       // is_nullable. They must be told apart here, or the nullability check
