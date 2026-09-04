@@ -5,6 +5,7 @@ import {
   REQUIRED_COLUMNS,
   REQUIRED_INDEXES,
   REQUIRED_NULLABLE_COLUMNS,
+  REQUIRED_FOREIGN_KEYS,
 } from "../../scripts/migrate.mjs";
 
 /**
@@ -29,6 +30,12 @@ interface FakeQuery {
   params: unknown[];
 }
 
+type FakeIndex = string | {
+  table: string;
+  index: string;
+  columns?: string[];
+};
+
 /**
  * `indexesPresent` accepts either bare index names (matched on the name
  * alone) or explicit {table, index} pairs. The pair form exists because
@@ -42,8 +49,9 @@ function fakeConn(
   tableNameCase: "camel" | "lower",
   tablesPresent: string[],
   columnsPresent: boolean,
-  indexesPresent: Array<string | { table: string; index: string }>,
-  nullableColumnsAreNullable = true
+  indexesPresent: FakeIndex[],
+  nullableColumnsAreNullable = true,
+  foreignKeysPresent: Array<{ table: string; constraint: string }> = REQUIRED_FOREIGN_KEYS
 ) {
   const calls: FakeQuery[] = [];
   const query = async (sql: string, params: unknown[] = []): Promise<[any[]]> => {
@@ -64,12 +72,30 @@ function fakeConn(
     }
     if (sql.includes("information_schema.statistics")) {
       const [tableName, indexName] = params;
-      const present = indexesPresent.some((entry) =>
+      const present = indexesPresent.find((entry) =>
         typeof entry === "string"
           ? entry === String(indexName)
           : entry.table === String(tableName) && entry.index === String(indexName)
       );
-      return [present ? [{ name: indexName }] : []];
+      if (!present) return [[]];
+      const expected = REQUIRED_INDEXES.find(
+        (entry) => entry.table === String(tableName) && entry.index === String(indexName)
+      );
+      const columns = typeof present === "string" ? expected?.columns : present.columns;
+      return [
+        columns?.map((columnName, position) => ({
+          name: indexName,
+          columnName,
+          sequence: position + 1,
+        })) ?? [{ name: indexName, columnName: undefined, sequence: 1 }],
+      ];
+    }
+    if (sql.includes("information_schema.key_column_usage")) {
+      const [tableName, constraintName] = params;
+      const present = foreignKeysPresent.some(
+        (entry) => entry.table === String(tableName) && entry.constraint === String(constraintName)
+      );
+      return [present ? [{ name: constraintName }] : []];
     }
     throw new Error(`unexpected query in fake connection: ${sql}`);
   };
@@ -88,27 +114,45 @@ const LEGACY_REGISTRY_INDEXES = [
 ];
 
 describe("findMissingSchemaObjects - required object lists", () => {
-  it("requires the five daily check-in tables plus coupons and the migration-0039 legacy registry", () => {
+  it("requires auth and payment-approval tables plus the daily-check-in and legacy registries", () => {
     expect(REQUIRED_TABLES).toEqual(expect.arrayContaining([
+      "users",
+      "authIdentities",
       "dailyCheckins",
       "dailyCheckinCampaigns",
       "dailyCheckinCouponTemplates",
       "dailyCheckinRewardRules",
       "dailyCheckinRewardGrants",
       "coupons",
+      "paymentSlipClaims",
+      "paymentSlipReviewResolutions",
       "paymentSlipLegacyCollisions",
       "paymentSlipLegacyUnknown",
+      "accountMutationGuards",
+      "pointsAccounts",
+      "pointsTransactions",
     ]));
   });
 
-  it("requires coupons.maxDiscountAmount/scope/ownerUserId and the daily check-in point-reward columns", () => {
+  it("requires the approval alias column, coupon columns and daily-check-in point-reward columns", () => {
     expect(REQUIRED_COLUMNS).toEqual(expect.arrayContaining([
+      { table: "paymentSlipClaims", column: "legacyReferenceUpperHash" },
       { table: "coupons", column: "maxDiscountAmount" },
       { table: "coupons", column: "scope" },
       { table: "coupons", column: "ownerUserId" },
       { table: "dailyCheckins", column: "couponId" },
       { table: "dailyCheckinRewardGrants", column: "pointsTransactionId" },
       { table: "dailyCheckinRewardGrants", column: "streakCountAtGrant" },
+      { table: "accountMutationGuards", column: "userId" },
+      { table: "accountMutationGuards", column: "generation" },
+      { table: "accountMutationGuards", column: "mergeState" },
+      { table: "accountMutationGuards", column: "activeMergeCaseId" },
+      { table: "accountMutationGuards", column: "updatedAt" },
+      { table: "pointsAccounts", column: "userId" },
+      { table: "pointsAccounts", column: "balance" },
+      { table: "pointsAccounts", column: "version" },
+      { table: "pointsAccounts", column: "updatedAt" },
+      { table: "pointsTransactions", column: "effectKey" },
     ]));
   });
 
@@ -119,9 +163,18 @@ describe("findMissingSchemaObjects - required object lists", () => {
     expect(REQUIRED_NULLABLE_COLUMNS).toContainEqual({ table: "dailyCheckins", column: "couponId" });
   });
 
-  it("requires coupons_ownerUserId_idx plus the dailyCheckins indexes, reward-grant idempotency guards and the migration-0039 registry indexes", () => {
+  it("requires auth, approval, daily-check-in, reward-grant and migration-0039 indexes", () => {
     expect(REQUIRED_INDEXES).toEqual(expect.arrayContaining([
+      { table: "users", index: "users_role_id_idx" },
+      { table: "users", index: "users_email_idx" },
+      { table: "authIdentities", index: "authIdentities_provider_providerSubject_unique" },
+      { table: "authIdentities", index: "authIdentities_userId_provider_unique" },
       { table: "coupons", index: "coupons_ownerUserId_idx" },
+      { table: "paymentSlipClaims", index: "paymentSlipClaims_referenceHash_unique" },
+      { table: "paymentSlipClaims", index: "paymentSlipClaims_fileHash_unique" },
+      { table: "paymentSlipClaims", index: "paymentSlipClaims_qrPayloadHash_unique" },
+      { table: "paymentSlipClaims", index: "paymentSlipClaims_legacyReferenceUpperHash_idx" },
+      { table: "paymentSlipReviewResolutions", index: "paymentSlipReviewResolutions_subject_unique" },
       { table: "dailyCheckins", index: "PRIMARY" },
       { table: "dailyCheckins", index: "unique_daily_checkin_user_date_campaign" },
       { table: "dailyCheckins", index: "unique_daily_checkins_coupon" },
@@ -134,7 +187,125 @@ describe("findMissingSchemaObjects - required object lists", () => {
       { table: "dailyCheckinRewardRules", index: "dailyCheckinRewardRules_campaign_dedupe_unique" },
       { table: "dailyCheckinCampaigns", index: "dailyCheckinCampaigns_campaignKey_unique" },
       ...LEGACY_REGISTRY_INDEXES,
+      { table: "accountMutationGuards", index: "PRIMARY", unique: true, columns: ["userId"] },
+      {
+        table: "accountMutationGuards",
+        index: "accountMutationGuards_activeMergeCaseId_unique",
+        unique: true,
+        columns: ["activeMergeCaseId"],
+      },
+      { table: "pointsAccounts", index: "PRIMARY", unique: true, columns: ["userId"] },
+      {
+        table: "pointsTransactions",
+        index: "pointsTransactions_userId_effectKey_unique",
+        unique: true,
+        columns: ["userId", "effectKey"],
+      },
     ]));
+  });
+
+  it("requires both IPE-021-D user foreign keys with their exact targets", () => {
+    expect(REQUIRED_FOREIGN_KEYS).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        table: "accountMutationGuards",
+        constraint: "accountMutationGuards_userId_fk",
+        referencedTable: "users",
+        referencedColumn: "id",
+        deleteRule: "CASCADE",
+      }),
+      expect.objectContaining({
+        table: "pointsAccounts",
+        constraint: "pointsAccounts_userId_fk",
+        referencedTable: "users",
+        referencedColumn: "id",
+        deleteRule: "CASCADE",
+      }),
+    ]));
+  });
+
+  it("fails closed when an IPE-021-D foreign key is missing", async () => {
+    const presentForeignKeys = REQUIRED_FOREIGN_KEYS.filter(
+      ({ constraint }) => constraint !== "pointsAccounts_userId_fk"
+    );
+    const { query } = fakeConn(
+      "camel",
+      REQUIRED_TABLES,
+      true,
+      REQUIRED_INDEXES,
+      true,
+      presentForeignKeys
+    );
+    expect(await findMissingSchemaObjects({ query })).toEqual([
+      "foreign key pointsAccounts.pointsAccounts_userId_fk",
+    ]);
+  });
+
+  it("verifies the new named uniqueness constraints are actually unique", async () => {
+    const { query, calls } = fakeConn("camel", REQUIRED_TABLES, true, REQUIRED_INDEXES);
+    expect(await findMissingSchemaObjects({ query })).toEqual([]);
+    const effectUniqueProbe = calls.find(
+      ({ params }) => params[0] === "pointsTransactions" && params[1] === "pointsTransactions_userId_effectKey_unique"
+    );
+    expect(effectUniqueProbe?.sql).toContain("non_unique = 0");
+  });
+
+  it("fails closed when a same-name per-user PRIMARY index has the wrong column", async () => {
+    const wrongShape = REQUIRED_INDEXES.map((entry) =>
+      entry.table === "pointsAccounts" && entry.index === "PRIMARY"
+        ? { ...entry, columns: ["balance"] }
+        : entry
+    );
+    const { query } = fakeConn("camel", REQUIRED_TABLES, true, wrongShape);
+
+    expect(await findMissingSchemaObjects({ query })).toContain("index pointsAccounts.PRIMARY");
+  });
+
+  it.each([
+    ["reordered", ["effectKey", "userId"]],
+    ["missing", ["userId"]],
+    ["extra", ["userId", "effectKey", "id"]],
+    ["substituted", ["userId", "referenceId"]],
+  ])("fails closed when the effect idempotency index is %s under the expected name", async (_case, columns) => {
+    const wrongShape = REQUIRED_INDEXES.map((entry) =>
+      entry.table === "pointsTransactions" && entry.index === "pointsTransactions_userId_effectKey_unique"
+        ? { ...entry, columns }
+        : entry
+    );
+    const { query } = fakeConn("camel", REQUIRED_TABLES, true, wrongShape);
+
+    expect(await findMissingSchemaObjects({ query })).toContain(
+      "index pointsTransactions.pointsTransactions_userId_effectKey_unique"
+    );
+  });
+
+  it("fails closed when migration 0036's users role index is missing", async () => {
+    const allButUsersRoleIndex = REQUIRED_INDEXES.filter(
+      ({ table, index }) => !(table === "users" && index === "users_role_id_idx")
+    );
+    const { query } = fakeConn("camel", REQUIRED_TABLES, true, allButUsersRoleIndex);
+    const missing = await findMissingSchemaObjects({ query });
+    expect(missing).toEqual(["index users.users_role_id_idx"]);
+  });
+
+  it("fails closed before serving approvals when the global claim table is missing", async () => {
+    const present = REQUIRED_TABLES.filter((table) => table !== "paymentSlipClaims");
+    const { query } = fakeConn("camel", present, true, REQUIRED_INDEXES);
+    const missing = await findMissingSchemaObjects({ query });
+    expect(missing).toEqual(["table paymentSlipClaims"]);
+  });
+
+  it("fails closed when auth or payment anti-replay uniqueness indexes are missing", async () => {
+    const presentIndexes = REQUIRED_INDEXES.filter(
+      ({ index }) =>
+        index !== "authIdentities_provider_providerSubject_unique" &&
+        index !== "paymentSlipClaims_fileHash_unique"
+    );
+    const { query } = fakeConn("camel", REQUIRED_TABLES, true, presentIndexes);
+    const missing = await findMissingSchemaObjects({ query });
+    expect(missing).toEqual([
+      "index authIdentities.authIdentities_provider_providerSubject_unique",
+      "index paymentSlipClaims.paymentSlipClaims_fileHash_unique",
+    ]);
   });
 
   it("requires IPE-009 Sports Vote catalog, reward columns, nullable coupon fields and idempotency indexes", () => {

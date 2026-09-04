@@ -11,6 +11,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ApprovalService } from "./services/approvalService";
 
+vi.mock("./db", () => ({
+  withAccountMergePaymentMutationGuard: async (
+    _paymentId: number,
+    tx: any,
+    fn: (guardedDb: any) => Promise<unknown>
+  ) => fn(tx),
+}));
+
 // ============================================================
 // ApprovalService.getDisplayMetadata — field name consistency
 // ============================================================

@@ -509,11 +509,12 @@ class SDKServer {
       throw new AnonymousCredentialError("No user record for this session", "no_user_record");
     }
 
-    await db.upsertUser({
-      openId: user.openId,
-      lastSignedIn: signedInAt,
-    });
-
+    // Routine session authentication must stay read-only with respect to the
+    // users row. Updating lastSignedIn on every auth.me/API request turns a
+    // harmless session check into a write-lock dependency and can strand the
+    // login page behind unrelated transactions. Real login boundaries already
+    // update lastSignedIn (Manus OAuth sync/callback and Google identity
+    // resolution), so simply return the verified backing user here.
     return user;
   }
 }

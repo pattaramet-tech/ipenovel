@@ -38,7 +38,12 @@ import { payments, walletTopups } from "../../drizzle/schema";
 import { and, asc, eq, gt } from "drizzle-orm";
 import { hashSlipReference } from "./slipIdentifierService";
 import { extractSlipData } from "../ocr-slip-verification-v2";
-import { computeSlipFileHash } from "./slipFileHashService";
+import {
+  computeSlipFileHash,
+  computeTrustedLegacySlipFileHash,
+  isTrustedLegacySlipUrl,
+} from "./slipFileHashService";
+import { isPrivateObjectRef } from "@shared/privateFileRef";
 
 export type LegacySourceType = "order_payment" | "wallet_topup";
 
@@ -436,11 +441,22 @@ export async function findLegacyApprovedDuplicate(
         }
 
         // Recover it, server-side, from the row's OWN stored bytes - never a
-        // client value, URL text, filename, or weak fingerprint.
-        resolvedFileHash = await computeSlipFileHash(row.slipImageUrl);
+        // client value, URL text, filename, or weak fingerprint. Route by the
+        // persisted reference class: modern private R2 references use the
+        // private-only signer/fetch primitive; the exact allowlisted historical
+        // CDN uses the separately bounded legacy fetcher. Arbitrary absolute
+        // URLs are never fetched and remain unresolved fail-closed.
+        if (isPrivateObjectRef(row.slipImageUrl)) {
+          resolvedFileHash = await computeSlipFileHash(row.slipImageUrl);
+        } else if (isTrustedLegacySlipUrl(row.slipImageUrl)) {
+          resolvedFileHash = await computeTrustedLegacySlipFileHash(row.slipImageUrl);
+        } else {
+          return { sourceType, sourceId: row.id, kind: "unresolved", matchedBy: "unresolved" };
+        }
         if (!resolvedFileHash) {
           // Recovery was attempted and failed (missing bytes, fetch/timeout,
-          // oversized, not a private ref). Still unknown - fail closed.
+          // oversized body, or trusted historical bytes are gone). Still
+          // unknown - fail closed.
           return { sourceType, sourceId: row.id, kind: "unresolved", matchedBy: "unresolved" };
         }
       }

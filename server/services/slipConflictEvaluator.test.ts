@@ -1076,6 +1076,74 @@ describe("post-completion: fileHash-only submissions still fail closed against p
     if (conflict.kind === "unresolved") {
       expect(conflict.matchedSourceType).toBe("order_payment");
       expect(conflict.matchedSourceId).toBe(555);
+      expect(conflict.unresolvedScope).toBe("historical_file_axis_coverage");
+      const description = describeSlipConflict(conflict);
+      expect(description).toContain("representative example");
+      expect(description).toContain("NO evidence that this submission matches that record");
+    }
+  });
+
+  it("the server-bound exact-file risk resolution waives ONLY the global post-completion coverage gate", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [],
+      legacyUnknownRows: [{ sourceType: "order_payment", sourceId: 555 }],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      {
+        identifiers: { fileHash: FILE_A },
+        legacyFileAxisRiskResolution: { expectedFileHash: FILE_A },
+        ...self,
+      },
+      tx
+    );
+
+    expect(conflict).toEqual({ kind: "none" });
+  });
+
+  it("a file-axis waiver bound to any other hash does not waive the global coverage gate", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(false);
+    const tx = makeTx({
+      claims: [],
+      legacyUnknownRows: [{ sourceType: "order_payment", sourceId: 555 }],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      {
+        identifiers: { fileHash: FILE_A },
+        legacyFileAxisRiskResolution: { expectedFileHash: "b".repeat(64) },
+        ...self,
+      },
+      tx
+    );
+
+    expect(conflict.kind).toBe("unresolved");
+    if (conflict.kind === "unresolved") {
+      expect(conflict.unresolvedScope).toBe("historical_file_axis_coverage");
+    }
+  });
+
+  it("the post-completion waiver never bypasses a pre-backfill specific unresolved scan record", async () => {
+    vi.spyOn(backfillState, "isLegacyScanRequired").mockResolvedValue(true);
+    const tx = makeTx({
+      claims: [],
+      approvedPayments: [{ id: 77, extractedData: null as any }],
+    });
+
+    const conflict = await evaluateSlipConflict(
+      {
+        identifiers: { fileHash: FILE_A },
+        legacyFileAxisRiskResolution: { expectedFileHash: FILE_A },
+        ...self,
+      },
+      tx
+    );
+
+    expect(conflict.kind).toBe("unresolved");
+    if (conflict.kind === "unresolved") {
+      expect(conflict.unresolvedScope).toBe("legacy_scan_record");
+      expect(conflict.matchedSourceId).toBe(77);
     }
   });
 

@@ -41,6 +41,7 @@ import path from "node:path";
 function readCode(relativePath: string): string {
   return fs
     .readFileSync(path.resolve(process.cwd(), relativePath), "utf-8")
+    .replace(/\r\n/g, "\n")
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^[ \t]*\/\/.*$/gm, "");
 }
@@ -65,15 +66,26 @@ describe("orderService.ts approvePaymentInTx: current-byte integrity before clai
       "const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)",
       fnIdx
     );
-    const claimIdx = code.indexOf("const claim = await claimSlip(", fnIdx);
+    const claimIdx = code.indexOf(
+      'const claim = await atOrderPaymentApprovalStage("slip_claim"',
+      fnIdx
+    );
     expect(strongIdIdx).toBeGreaterThan(fnIdx);
     expect(checkIdx).toBeGreaterThan(strongIdIdx);
     expect(checkIdx).toBeLessThan(claimIdx);
   });
 
+  it("caps the locked current-byte fetch below the generic storage timeout without moving it outside the transaction", () => {
+    expect(code).toMatch(/export const ORDER_APPROVAL_SLIP_HASH_TIMEOUT_MS = 3_000;/);
+    const idx = code.indexOf("const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)");
+    const body = code.slice(idx, idx + 1200);
+    expect(body).toMatch(/computeTrustedLegacySlipFileHash\(payment\.slipImageUrl, \{\s*timeoutMs: ORDER_APPROVAL_SLIP_HASH_TIMEOUT_MS/);
+    expect(body).toMatch(/computeSlipFileHash\(payment\.slipImageUrl, \{\s*timeoutMs: ORDER_APPROVAL_SLIP_HASH_TIMEOUT_MS/);
+  });
+
   it("fails closed when the current hash is unavailable - unavailability is never treated as stability", () => {
     const idx = code.indexOf("const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)");
-    const body = code.slice(idx, idx + 700);
+    const body = code.slice(idx, idx + 1400);
     expect(body).toMatch(/if \(!currentFileHash\) \{/);
     expect(body).toMatch(/throw new Error\(\s*\n\s*"SLIP_CURRENT_BYTES_UNAVAILABLE:/);
   });
@@ -96,7 +108,7 @@ describe("orderService.ts approvePaymentInTx: current-byte integrity before clai
     const idx = code.indexOf("if (payment.slipImageUrl) {");
     expect(idx).toBeGreaterThan(-1);
     const compatibilityIdx = code.indexOf("const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)", idx);
-    const privateFetchIdx = code.indexOf(": await computeSlipFileHash(payment.slipImageUrl);", compatibilityIdx);
+    const privateFetchIdx = code.indexOf(": await computeSlipFileHash(payment.slipImageUrl, {", compatibilityIdx);
     expect(compatibilityIdx).toBeGreaterThan(idx);
     expect(compatibilityIdx - idx).toBeLessThan(500);
     expect(privateFetchIdx).toBeGreaterThan(compatibilityIdx);
@@ -110,53 +122,74 @@ describe("db.ts approveWalletTopup: current-byte integrity before claim, IPE-001
     const fnIdx = code.indexOf("export async function approveWalletTopup(");
     expect(fnIdx).toBeGreaterThan(-1);
     const checkIdx = code.indexOf(
-      "const currentFileHash = await computeSlipFileHash(topup.slipImageUrl as string);",
+      "currentFileHash = isLegacyStorageUrl(topup.slipImageUrl as string)",
       fnIdx
     );
     expect(checkIdx).toBeGreaterThan(fnIdx);
   });
 
-  it("runs AFTER the strong-identifier check but BEFORE claimSlip", () => {
+  it("caps wallet approval current-byte hashing at 3s while keeping it inside the approval transaction", () => {
+    expect(code).toMatch(/export const WALLET_APPROVAL_SLIP_HASH_TIMEOUT_MS = 3_000;/);
     const fnIdx = code.indexOf("export async function approveWalletTopup(");
-    const strongIdIdx = code.indexOf("if (!hasStrongIdentifier(identifiers)) {", fnIdx);
     const checkIdx = code.indexOf(
-      "const currentFileHash = await computeSlipFileHash(topup.slipImageUrl as string);",
+      "currentFileHash = isLegacyStorageUrl(topup.slipImageUrl as string)",
       fnIdx
     );
-    const claimIdx = code.indexOf("const claim = await claimSlip(", fnIdx);
-    expect(strongIdIdx).toBeGreaterThan(fnIdx);
-    expect(checkIdx).toBeGreaterThan(strongIdIdx);
-    expect(checkIdx).toBeLessThan(claimIdx);
+    const body = code.slice(checkIdx, checkIdx + 1200);
+    expect(body).toMatch(/computeTrustedLegacySlipFileHash\(topup\.slipImageUrl as string, \{\s*timeoutMs: WALLET_APPROVAL_SLIP_HASH_TIMEOUT_MS/);
+    expect(body).toMatch(/computeSlipFileHash\(topup\.slipImageUrl as string, \{\s*timeoutMs: WALLET_APPROVAL_SLIP_HASH_TIMEOUT_MS/);
+    expect(body).toMatch(/stage=wallet_current_byte_hash/);
   });
 
-  it("fails closed when the current hash is unavailable", () => {
-    const idx = code.indexOf("const currentFileHash = await computeSlipFileHash(topup.slipImageUrl as string);");
-    const body = code.slice(idx, idx + 700);
-    expect(body).toMatch(/if \(!currentFileHash\) \{/);
+  it("recovers current bytes BEFORE the final strong-identifier refusal and BEFORE claimSlip", () => {
+    const fnIdx = code.indexOf("export async function approveWalletTopup(");
+    const walletClaimNeedle = 'const claim = await atWalletApprovalStage("wallet_slip_claim"';
+    const strongIdIdx = code.indexOf("if (!hasStrongIdentifier(identifiers)) {", fnIdx);
+    const checkIdx = code.indexOf(
+      "currentFileHash = isLegacyStorageUrl(topup.slipImageUrl as string)",
+      fnIdx
+    );
+    const claimIdx = code.indexOf(walletClaimNeedle, fnIdx);
+    expect(strongIdIdx).toBeGreaterThan(fnIdx);
+    expect(checkIdx).toBeGreaterThan(fnIdx);
+    expect(checkIdx).toBeLessThan(strongIdIdx);
+    expect(strongIdIdx).toBeLessThan(claimIdx);
+  });
+
+  it("fails closed when the current hash is unavailable on normal approval", () => {
+    const idx = code.indexOf("currentFileHash = isLegacyStorageUrl(topup.slipImageUrl as string)");
+    const body = code.slice(idx, idx + 2200);
+    expect(body).toMatch(/if \(!currentFileHash && !breakGlassRequested\) \{/);
+    expect(body).toMatch(/"NO_STRONG_IDENTIFIER",/);
     expect(body).toMatch(/"SLIP_CURRENT_BYTES_UNAVAILABLE",/);
   });
 
   it("fails closed when a persisted fileHash disagrees with the current hash", () => {
-    const idx = code.indexOf("const currentFileHash = await computeSlipFileHash(topup.slipImageUrl as string);");
-    const body = code.slice(idx, idx + 1400);
-    expect(body).toMatch(/if \(persistedFileHash && currentFileHash !== persistedFileHash\) \{/);
+    const idx = code.indexOf("currentFileHash = isLegacyStorageUrl(topup.slipImageUrl as string)");
+    const body = code.slice(idx, idx + 2600);
+    expect(body).toMatch(/if \(currentFileHash && persistedFileHash && currentFileHash !== persistedFileHash\) \{/);
     expect(body).toMatch(/"SLIP_INTEGRITY_MISMATCH_AT_APPROVAL",/);
   });
 
   it("binds the freshly confirmed hash into identifiers.fileHash before claimSlip runs", () => {
-    const idx = code.indexOf("const currentFileHash = await computeSlipFileHash(topup.slipImageUrl as string);");
-    const claimIdx = code.indexOf("const claim = await claimSlip(", idx);
+    const idx = code.indexOf("currentFileHash = isLegacyStorageUrl(topup.slipImageUrl as string)");
+    const claimIdx = code.indexOf(
+      'const claim = await atWalletApprovalStage("wallet_slip_claim"',
+      idx
+    );
     const body = code.slice(idx, claimIdx);
     expect(body).toMatch(/identifiers\.fileHash = currentFileHash;/);
   });
 
-  it("the new error codes are treated as admin preconditions, not actor conflicts", () => {
+  it("known integrity codes are deterministically mapped as admin preconditions", () => {
     const walletServiceCode = readCode("server/services/walletService.ts");
-    const idx = walletServiceCode.indexOf("const precondition =");
-    expect(idx).toBeGreaterThan(-1);
-    const body = walletServiceCode.slice(idx, idx + 500);
-    expect(body).toMatch(/error\.code === "SLIP_CURRENT_BYTES_UNAVAILABLE"/);
-    expect(body).toMatch(/error\.code === "SLIP_INTEGRITY_MISMATCH_AT_APPROVAL"/);
+    expect(walletServiceCode).toMatch(/WALLET_APPROVAL_PRECONDITION_CODES/);
+    expect(walletServiceCode).toMatch(/"SLIP_CURRENT_BYTES_UNAVAILABLE"/);
+    expect(walletServiceCode).toMatch(/"SLIP_INTEGRITY_MISMATCH_AT_APPROVAL"/);
+    expect(walletServiceCode).toMatch(/const badRequest =/);
+    expect(walletServiceCode).toMatch(/code === "LEGACY_BREAK_GLASS_REASON_REQUIRED"/);
+    expect(walletServiceCode).toMatch(/code === "LEGACY_FILE_AXIS_RISK_REASON_REQUIRED"/);
+    expect(walletServiceCode).toMatch(/code: badRequest \? "BAD_REQUEST" : "PRECONDITION_FAILED"/);
   });
 });
 
@@ -180,7 +213,10 @@ describe("confirmed-distinct legacy-case resolution routes through the same curr
   it("neither resolution path can skip the current-byte gate via legacyCaseAmbiguityResolution - that option only waives the advisory alias check inside claimSlip, never this pre-claim gate", () => {
     const orderCode = readCode("server/services/orderService.ts");
     const gateIdx = orderCode.indexOf("if (payment.slipImageUrl) {");
-    const claimIdx = orderCode.indexOf("const claim = await claimSlip(", gateIdx);
+    const claimIdx = orderCode.indexOf(
+      'const claim = await atOrderPaymentApprovalStage("slip_claim"',
+      gateIdx
+    );
     const gateBody = orderCode.slice(gateIdx, claimIdx);
     expect(gateBody).not.toMatch(/legacyCaseAmbiguityResolution/);
   });

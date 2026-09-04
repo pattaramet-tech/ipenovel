@@ -58,6 +58,15 @@ const LOCK_TIMEOUT_SECONDS = 60;
 // the schema incomplete still fails the deploy instead of letting the
 // server boot and serve errors. See docs/DAILY_CHECKIN_DEPLOYMENT_FIX.md.
 export const REQUIRED_TABLES = [
+  // Migration 0036. Admin role-set locking uses WHERE role='admin'
+  // ORDER BY id FOR UPDATE. Without users_role_id_idx MariaDB/MySQL may scan
+  // and lock unrelated user rows, which can block authentication and other
+  // per-user writes. Listing users here also makes the REQUIRED_INDEXES loop
+  // actually verify the index instead of skipping a table absent from this
+  // presence set.
+  "users",
+  // Google login cannot resolve an external subject without migration 0033.
+  "authIdentities",
   "dailyCheckins",
   "dailyCheckinCampaigns",
   "dailyCheckinCouponTemplates",
@@ -69,6 +78,12 @@ export const REQUIRED_TABLES = [
   // presence check below has an entry for it and actually runs the
   // coupons_ownerUserId_idx check instead of silently skipping it.
   "coupons",
+  // Migrations 0037/0038. Both order and wallet approval depend on the
+  // global claim registry, while explicit legacy-case adjudication depends
+  // on the resolution table. A migration journal alone is not proof these
+  // objects still exist, so verify them before the server accepts traffic.
+  "paymentSlipClaims",
+  "paymentSlipReviewResolutions",
   // Migration 0039 (IPE-004). The legacy anti-replay registry: every
   // approval that reaches the strong-identifier gate reads
   // paymentSlipLegacyCollisions to decide `known_collision`, and the
@@ -81,6 +96,12 @@ export const REQUIRED_TABLES = [
   // boot so an incomplete 0039 stops the deploy instead.
   "paymentSlipLegacyCollisions",
   "paymentSlipLegacyUnknown",
+  // IPE-021-D / IPE-022-C02. These tables and the legacy ledger participate
+  // in the rolling-deploy bridge, so absence must stop startup before the
+  // application can mistake a missing mutex/mirror for an empty account.
+  "accountMutationGuards",
+  "pointsAccounts",
+  "pointsTransactions",
   // IPE-009 Sports Vote catalog/reward runtime dependencies. The match list,
   // admin catalog, and points settlement read these tables unconditionally.
   "sportsCompetitions",
@@ -90,6 +111,17 @@ export const REQUIRED_TABLES = [
   "sportsMatchRewards",
 ];
 export const REQUIRED_COLUMNS = [
+  { table: "accountMutationGuards", column: "userId" },
+  { table: "accountMutationGuards", column: "generation" },
+  { table: "accountMutationGuards", column: "mergeState" },
+  { table: "accountMutationGuards", column: "activeMergeCaseId" },
+  { table: "accountMutationGuards", column: "updatedAt" },
+  { table: "pointsAccounts", column: "userId" },
+  { table: "pointsAccounts", column: "balance" },
+  { table: "pointsAccounts", column: "version" },
+  { table: "pointsAccounts", column: "updatedAt" },
+  { table: "pointsTransactions", column: "effectKey" },
+  { table: "paymentSlipClaims", column: "legacyReferenceUpperHash" },
   { table: "coupons", column: "maxDiscountAmount" },
   // Coupon ownership scope (migration 0032, fix/coupon-owner-enforcement).
   // server/db.ts's createCoupon/updateCoupon/validateAndApplyCoupon read and
@@ -131,7 +163,39 @@ export const REQUIRED_NULLABLE_COLUMNS = [
 ];
 
 export const REQUIRED_INDEXES = [
+  { table: "accountMutationGuards", index: "PRIMARY", unique: true, columns: ["userId"] },
+  {
+    table: "accountMutationGuards",
+    index: "accountMutationGuards_activeMergeCaseId_unique",
+    unique: true,
+    columns: ["activeMergeCaseId"],
+  },
+  { table: "pointsAccounts", index: "PRIMARY", unique: true, columns: ["userId"] },
+  {
+    table: "pointsTransactions",
+    index: "pointsTransactions_userId_effectKey_unique",
+    unique: true,
+    columns: ["userId", "effectKey"],
+  },
+  { table: "users", index: "users_role_id_idx" },
+  { table: "users", index: "users_email_idx" },
+  { table: "authIdentities", index: "PRIMARY" },
+  { table: "authIdentities", index: "authIdentities_provider_providerSubject_unique" },
+  { table: "authIdentities", index: "authIdentities_userId_provider_unique" },
+  { table: "authIdentities", index: "authIdentities_userId_idx" },
   { table: "coupons", index: "coupons_ownerUserId_idx" },
+  { table: "paymentSlipClaims", index: "PRIMARY" },
+  { table: "paymentSlipClaims", index: "paymentSlipClaims_referenceHash_unique" },
+  { table: "paymentSlipClaims", index: "paymentSlipClaims_fileHash_unique" },
+  { table: "paymentSlipClaims", index: "paymentSlipClaims_qrPayloadHash_unique" },
+  { table: "paymentSlipClaims", index: "paymentSlipClaims_legacyReferenceUpperHash_idx" },
+  { table: "paymentSlipClaims", index: "paymentSlipClaims_semanticFingerprint_idx" },
+  { table: "paymentSlipClaims", index: "paymentSlipClaims_source_idx" },
+  { table: "paymentSlipClaims", index: "paymentSlipClaims_userId_idx" },
+  { table: "paymentSlipReviewResolutions", index: "PRIMARY" },
+  { table: "paymentSlipReviewResolutions", index: "paymentSlipReviewResolutions_subject_unique" },
+  { table: "paymentSlipReviewResolutions", index: "paymentSlipReviewResolutions_adminUserId_idx" },
+  { table: "paymentSlipReviewResolutions", index: "paymentSlipReviewResolutions_createdAt_idx" },
   { table: "dailyCheckins", index: "PRIMARY" },
   { table: "dailyCheckins", index: "unique_daily_checkin_user_date_campaign" },
   { table: "dailyCheckins", index: "unique_daily_checkins_coupon" },
@@ -173,6 +237,25 @@ export const REQUIRED_INDEXES = [
   { table: "sportsMatches", index: "sportsMatches_competitionId_idx" },
   { table: "sportsMatchRewards", index: "unique_sports_match_rewards_vote" },
   { table: "sportsMatchRewards", index: "unique_sports_match_rewards_points_tx" },
+];
+
+export const REQUIRED_FOREIGN_KEYS = [
+  {
+    table: "accountMutationGuards",
+    constraint: "accountMutationGuards_userId_fk",
+    column: "userId",
+    referencedTable: "users",
+    referencedColumn: "id",
+    deleteRule: "CASCADE",
+  },
+  {
+    table: "pointsAccounts",
+    constraint: "pointsAccounts_userId_fk",
+    column: "userId",
+    referencedTable: "users",
+    referencedColumn: "id",
+    deleteRule: "CASCADE",
+  },
 ];
 
 /**
@@ -234,20 +317,202 @@ export async function findMissingSchemaObjects(conn) {
     }
   }
 
-  for (const { table, index } of REQUIRED_INDEXES) {
+  for (const { table, index, unique, columns } of REQUIRED_INDEXES) {
     // An index on a missing table is already reported as a missing table -
     // don't report the same root cause twice. Same case-insensitive
     // comparison as the table check above, for the same reason.
     if (!presentTables.has(table.toLowerCase())) continue;
     const [indexRows] = await conn.query(
-      `SELECT DISTINCT index_name AS name FROM information_schema.statistics
-       WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?`,
+      `SELECT index_name AS name,
+              column_name AS columnName,
+              seq_in_index AS sequence
+       FROM information_schema.statistics
+       WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?${unique ? " AND non_unique = 0" : ""}
+       ORDER BY seq_in_index`,
       [table, index]
     );
-    if (!indexRows || indexRows.length === 0) missing.push(`index ${table}.${index}`);
+    const actualColumns = (indexRows ?? [])
+      .slice()
+      .sort((left, right) => Number(left.sequence) - Number(right.sequence))
+      .map((row) => String(row.columnName).toLowerCase());
+    const expectedColumns = columns?.map((column) => column.toLowerCase());
+    const hasExpectedShape =
+      !expectedColumns ||
+      (actualColumns.length === expectedColumns.length &&
+        actualColumns.every((column, position) => column === expectedColumns[position]));
+    if (!indexRows || indexRows.length === 0 || !hasExpectedShape) {
+      missing.push(`index ${table}.${index}`);
+    }
+  }
+
+  for (const foreignKey of REQUIRED_FOREIGN_KEYS) {
+    if (!presentTables.has(foreignKey.table.toLowerCase())) continue;
+    const [foreignKeyRows] = await conn.query(
+      `SELECT kcu.constraint_name AS name
+       FROM information_schema.key_column_usage kcu
+       INNER JOIN information_schema.referential_constraints rc
+         ON rc.constraint_schema = kcu.constraint_schema
+        AND rc.table_name = kcu.table_name
+        AND rc.constraint_name = kcu.constraint_name
+       WHERE kcu.table_schema = DATABASE()
+         AND kcu.table_name = ?
+         AND kcu.constraint_name = ?
+         AND kcu.column_name = ?
+         AND kcu.referenced_table_name = ?
+         AND kcu.referenced_column_name = ?
+         AND rc.delete_rule = ?`,
+      [
+        foreignKey.table,
+        foreignKey.constraint,
+        foreignKey.column,
+        foreignKey.referencedTable,
+        foreignKey.referencedColumn,
+        foreignKey.deleteRule,
+      ]
+    );
+    if (!foreignKeyRows || foreignKeyRows.length === 0) {
+      missing.push(`foreign key ${foreignKey.table}.${foreignKey.constraint}`);
+    }
   }
 
   return missing;
+}
+
+/**
+ * Converge the two additive IPE-021-D mirrors after migrations and before the
+ * process listens. Every statement is safe to repeat. Existing guards are
+ * deliberately not rewritten (generation/binding is lifecycle state), while
+ * pointsAccounts is reconciled from the latest immutable compatibility-ledger
+ * row using the same `(createdAt DESC, id DESC)` ordering as the legacy app.
+ */
+export async function reconcilePaymentV2FoundationData(conn) {
+  await conn.query("START TRANSACTION");
+  try {
+    // Briefly quiesce legacy writers. Every legacy classified/points mutation
+    // rendezvous on users, while new points writers acquire users before
+    // pointsAccounts. Taking the same order prevents a stale snapshot from
+    // overwriting a balance that another live instance just committed.
+    await conn.query("SELECT id FROM users ORDER BY id FOR UPDATE");
+
+    await conn.query(
+      `INSERT IGNORE INTO accountMutationGuards (userId, generation, mergeState, activeMergeCaseId)
+       SELECT u.id,
+              CASE WHEN amc.id IS NULL THEN 0 ELSE 1 END,
+              CASE WHEN amc.id IS NULL THEN 'open' ELSE 'merge_guarded' END,
+              amc.id
+       FROM users u
+       LEFT JOIN accountMutationGuards g ON g.userId = u.id
+       LEFT JOIN accountMergeCases amc
+         ON amc.sourceUserId = u.id AND amc.status <> 'cancelled'
+       WHERE g.userId IS NULL`
+    );
+
+    await conn.query(
+      `INSERT IGNORE INTO pointsAccounts (userId, balance, version)
+       SELECT u.id,
+              COALESCE((
+                SELECT pt.balanceAfter
+                FROM pointsTransactions pt
+                WHERE pt.userId = u.id
+                ORDER BY pt.createdAt DESC, pt.id DESC
+                LIMIT 1
+              ), '0.00'),
+              0
+       FROM users u
+       LEFT JOIN pointsAccounts pa ON pa.userId = u.id
+       WHERE pa.userId IS NULL`
+    );
+
+    await conn.query("SELECT userId FROM pointsAccounts ORDER BY userId FOR UPDATE");
+    await conn.query(
+      `UPDATE pointsAccounts pa
+       SET pa.balance = COALESCE((
+         SELECT pt.balanceAfter
+         FROM pointsTransactions pt
+         WHERE pt.userId = pa.userId
+         ORDER BY pt.createdAt DESC, pt.id DESC
+         LIMIT 1
+       ), '0.00'),
+           pa.version = pa.version + 1
+       WHERE NOT (pa.balance <=> COALESCE((
+         SELECT pt.balanceAfter
+         FROM pointsTransactions pt
+         WHERE pt.userId = pa.userId
+         ORDER BY pt.createdAt DESC, pt.id DESC
+         LIMIT 1
+       ), '0.00'))`
+    );
+    await conn.query("COMMIT");
+  } catch (error) {
+    await conn.query("ROLLBACK").catch(() => {});
+    throw error;
+  }
+}
+
+function readMismatchCount(rows) {
+  return Number(rows?.[0]?.mismatchCount ?? 0);
+}
+
+/**
+ * Read-only authority-switch readiness check. A non-empty result is precise
+ * proof that the additive foundation is not ready: every user must have one
+ * guard and one points row, guard state must match the canonical active merge
+ * case, and the points mirror must equal the deterministic latest ledger row.
+ */
+export async function findPaymentV2FoundationDataMismatches(conn) {
+  const findings = [];
+
+  const [missingGuardRows] = await conn.query(
+    `SELECT COUNT(*) AS mismatchCount
+     FROM users u
+     LEFT JOIN accountMutationGuards g ON g.userId = u.id
+     WHERE g.userId IS NULL`
+  );
+  const missingGuards = readMismatchCount(missingGuardRows);
+  if (missingGuards > 0) findings.push(`accountMutationGuards missing rows=${missingGuards}`);
+
+  const [guardStateRows] = await conn.query(
+    `SELECT COUNT(*) AS mismatchCount
+     FROM users u
+     INNER JOIN accountMutationGuards g ON g.userId = u.id
+     LEFT JOIN accountMergeCases amc
+       ON amc.sourceUserId = u.id AND amc.status <> 'cancelled'
+     WHERE (amc.id IS NULL AND (g.mergeState <> 'open' OR g.activeMergeCaseId IS NOT NULL))
+        OR (amc.id IS NOT NULL AND
+            (g.mergeState <> 'merge_guarded' OR NOT (g.activeMergeCaseId <=> amc.id)))`
+  );
+  const guardStateMismatches = readMismatchCount(guardStateRows);
+  if (guardStateMismatches > 0) {
+    findings.push(`accountMutationGuards state mismatches=${guardStateMismatches}`);
+  }
+
+  const [missingPointsRows] = await conn.query(
+    `SELECT COUNT(*) AS mismatchCount
+     FROM users u
+     LEFT JOIN pointsAccounts pa ON pa.userId = u.id
+     WHERE pa.userId IS NULL`
+  );
+  const missingPoints = readMismatchCount(missingPointsRows);
+  if (missingPoints > 0) findings.push(`pointsAccounts missing rows=${missingPoints}`);
+
+  const [pointsBalanceRows] = await conn.query(
+    `SELECT COUNT(*) AS mismatchCount
+     FROM users u
+     INNER JOIN pointsAccounts pa ON pa.userId = u.id
+     WHERE NOT (pa.balance <=> COALESCE((
+       SELECT pt.balanceAfter
+       FROM pointsTransactions pt
+       WHERE pt.userId = u.id
+       ORDER BY pt.createdAt DESC, pt.id DESC
+       LIMIT 1
+     ), '0.00'))`
+  );
+  const pointsBalanceMismatches = readMismatchCount(pointsBalanceRows);
+  if (pointsBalanceMismatches > 0) {
+    findings.push(`pointsAccounts latest-ledger balance mismatches=${pointsBalanceMismatches}`);
+  }
+
+  return findings;
 }
 
 async function main() {
@@ -301,6 +566,19 @@ async function main() {
     if (missing.length > 0) {
       // Only the object names - never the query, the schema name, or any row.
       console.error(`[migrate] Migration failed: schema verification found missing object(s): ${missing.join(", ")}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log("[migrate] Reconciling Payment V2 foundation mirrors (restart-safe)...");
+    await reconcilePaymentV2FoundationData(conn);
+
+    console.log("[migrate] Verifying Payment V2 foundation readiness (read-only)...");
+    const dataMismatches = await findPaymentV2FoundationDataMismatches(conn);
+    if (dataMismatches.length > 0) {
+      console.error(
+        `[migrate] Migration failed: Payment V2 foundation readiness found mismatch(es): ${dataMismatches.join(", ")}`
+      );
       process.exitCode = 1;
       return;
     }

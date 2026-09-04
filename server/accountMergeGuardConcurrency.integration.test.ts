@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import {
   accountMergeAuditLogs,
   accountMergeCases,
+  accountMutationGuards,
   accountRecoveryRequests,
   authIdentities,
   pointsTransactions,
@@ -15,6 +16,7 @@ import { createTestUser, deleteFixtures, uniqueTestTag } from "./test-helpers/fi
 import { reviewAccountRecoveryRequest } from "./services/accountRecoveryService";
 import {
   __setAccountMergeLifecycleFaultForTests,
+  cancelAccountMergeGuard,
   completeAccountMergeGuard,
   prepareAccountMergeGuard,
   startAccountMergeGuard,
@@ -111,6 +113,14 @@ describe.sequential("IPE-005 Account Merge guard concurrency - real database", (
     expect(raw.status).toBe("pending");
     expect(raw.guardedSourceMarker).toBe(f.sourceId);
 
+    const mutationGuard = (await requireTestDb()
+      .select()
+      .from(accountMutationGuards)
+      .where(eq(accountMutationGuards.userId, f.sourceId)))[0];
+    expect(mutationGuard.mergeState).toBe("merge_guarded");
+    expect(mutationGuard.activeMergeCaseId).toBe(prepared.id);
+    expect(Number(mutationGuard.generation)).toBe(1);
+
     await db.getDb().then(async (database) => {
       if (!database) throw new Error("Database unavailable");
       await expect(
@@ -176,6 +186,11 @@ describe.sequential("IPE-005 Account Merge guard concurrency - real database", (
     const releaseMutation = deferred();
 
     const mutation = database.transaction(async (tx: any) => {
+      // 0046: a tx-supplied ledger write assumes the pointsAccounts mutex is
+      // already held. Take the real points lock first so this scenario still
+      // models an ordinary mutation that began before Merge prepare and keeps
+      // the shared account guard until its transaction commits.
+      await db.lockUserForPoints(f.sourceId, tx);
       await db.recordPointsTransaction(
         {
           userId: f.sourceId,
@@ -200,10 +215,15 @@ describe.sequential("IPE-005 Account Merge guard concurrency - real database", (
         return value;
       });
 
-    await new Promise((resolve) => setTimeout(resolve, 75));
-    expect(prepareSettled).toBe(false);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(prepareSettled).toBe(false);
+    } finally {
+      // Never leave the DB transaction waiting if the assertion above fails;
+      // otherwise fixture cleanup itself blocks behind our own leaked lock.
+      releaseMutation.resolve();
+    }
 
-    releaseMutation.resolve();
     await mutation;
     const prepared = await prepare;
     expect(prepared.status).toBe("pending");
@@ -213,6 +233,55 @@ describe.sequential("IPE-005 Account Merge guard concurrency - real database", (
       .from(pointsTransactions)
       .where(and(eq(pointsTransactions.userId, f.sourceId), eq(pointsTransactions.referenceType, "ipe005_before_guard")));
     expect(ledger).toHaveLength(1);
+  }, 30000);
+
+  it("two ordinary classified mutations for one user share the merge barrier instead of blocking each other", async () => {
+    const f = await createBlockedMergePair();
+    fixtures.push(f);
+    const database = await db.getDb();
+    if (!database) throw new Error("Database unavailable");
+
+    const firstHasGuard = deferred();
+    const secondHasGuard = deferred();
+    const releaseBoth = deferred();
+
+    const first = database.transaction(async (tx: any) => {
+      await db.assertAccountMergeClassifiedMutationAllowed(f.sourceId, tx);
+      firstHasGuard.resolve();
+      await releaseBoth.promise;
+    });
+
+    await firstHasGuard.promise;
+    const second = database.transaction(async (tx: any) => {
+      await db.assertAccountMergeClassifiedMutationAllowed(f.sourceId, tx);
+      secondHasGuard.resolve();
+      await releaseBoth.promise;
+    });
+
+    let sharedConcurrently = false;
+    let prepareSettled = false;
+    let prepare: ReturnType<typeof prepareAccountMergeGuard> | undefined;
+    try {
+      sharedConcurrently = await Promise.race([
+        secondHasGuard.promise.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 500)),
+      ]);
+      if (sharedConcurrently) {
+        prepare = prepareAccountMergeGuard({ requestId: f.requestId, targetUserId: f.targetId, actorAdminId: 1 })
+          .then((value) => {
+            prepareSettled = true;
+            return value;
+          });
+        await new Promise((resolve) => setTimeout(resolve, 75));
+      }
+    } finally {
+      releaseBoth.resolve();
+      await Promise.all([first, second]);
+    }
+
+    expect(sharedConcurrently).toBe(true);
+    expect(prepareSettled).toBe(false);
+    expect((await prepare)?.status).toBe("pending");
   }, 30000);
 
   it("a classified mutation after guard activation is refused before commit and creates no ledger row", async () => {
@@ -236,6 +305,34 @@ describe.sequential("IPE-005 Account Merge guard concurrency - real database", (
       .from(pointsTransactions)
       .where(and(eq(pointsTransactions.userId, f.sourceId), eq(pointsTransactions.referenceType, "ipe005_after_guard")));
     expect(rows).toHaveLength(0);
+  }, 30000);
+
+  it("cancelling a pending case releases the dedicated guard and advances generation exactly once", async () => {
+    const f = await createBlockedMergePair();
+    fixtures.push(f);
+    const prepared = await prepareAccountMergeGuard({ requestId: f.requestId, targetUserId: f.targetId, actorAdminId: 1 });
+
+    const cancelled = await cancelAccountMergeGuard(prepared.id, 2, "test cancellation before merge starts");
+    expect(cancelled.status).toBe("cancelled");
+
+    const mutationGuard = (await requireTestDb()
+      .select()
+      .from(accountMutationGuards)
+      .where(eq(accountMutationGuards.userId, f.sourceId)))[0];
+    expect(mutationGuard.mergeState).toBe("open");
+    expect(mutationGuard.activeMergeCaseId).toBeNull();
+    expect(Number(mutationGuard.generation)).toBe(2);
+
+    // The released Source can mutate again; this proves V1 now observes the
+    // dedicated guard epoch and the legacy case state consistently.
+    await db.recordPointsTransaction({
+      userId: f.sourceId,
+      type: "earn",
+      amount: "1.00",
+      balanceAfter: "1.00",
+      referenceType: "ipe021_after_cancel",
+      referenceId: 21,
+    });
   }, 30000);
 
   it("completed Source remains fail-closed to a stale-session classified mutation", async () => {
@@ -269,8 +366,15 @@ describe.sequential("IPE-005 Account Merge guard concurrency - real database", (
 
     const cases = await requireTestDb().select().from(accountMergeCases).where(eq(accountMergeCases.sourceUserId, f.sourceId));
     const audits = await requireTestDb().select().from(accountMergeAuditLogs).where(eq(accountMergeAuditLogs.sourceUserId, f.sourceId));
+    const mutationGuard = (await requireTestDb()
+      .select()
+      .from(accountMutationGuards)
+      .where(eq(accountMutationGuards.userId, f.sourceId)))[0];
     expect(cases).toHaveLength(0);
     expect(audits).toHaveLength(0);
+    expect(mutationGuard.mergeState).toBe("open");
+    expect(mutationGuard.activeMergeCaseId).toBeNull();
+    expect(Number(mutationGuard.generation)).toBe(0);
   }, 30000);
 
   it("injected failure AFTER transition update rolls status/timestamp back and appends no transition audit", async () => {

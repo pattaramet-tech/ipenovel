@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   computeSlipFileHash,
   computeTrustedLegacySlipFileHash,
+  isTrustedLegacySlipUrl,
   describeFileIdentifierStatus,
   hashSlipBytes,
 } from "./slipFileHashService";
@@ -122,6 +123,14 @@ describe("a client cannot forge the file hash", () => {
 
 describe("computeTrustedLegacySlipFileHash - exact legacy CDN allowlist", () => {
   const trusted = "https://d2xsxph8kpxj0f.cloudfront.net/slips/1.png";
+
+  it("exposes the same exact URL eligibility policy for non-fetching break-glass classification", () => {
+    expect(isTrustedLegacySlipUrl(trusted)).toBe(true);
+    expect(isTrustedLegacySlipUrl("https://attacker.example/x.png")).toBe(false);
+    expect(isTrustedLegacySlipUrl("http://d2xsxph8kpxj0f.cloudfront.net/x.png")).toBe(false);
+    expect(isTrustedLegacySlipUrl("https://user:pass@d2xsxph8kpxj0f.cloudfront.net/x.png")).toBe(false);
+    expect(isTrustedLegacySlipUrl("https://d2xsxph8kpxj0f.cloudfront.net:444/x.png")).toBe(false);
+  });
 
   it("hashes current bytes from the trusted historical CDN and rejects redirects", async () => {
     const bytes = Buffer.from("legacy-current-bytes");

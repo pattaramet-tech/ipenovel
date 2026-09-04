@@ -102,6 +102,15 @@ export interface SlipClaimRequest {
      */
     expectedIncomingReferenceHash?: string;
   };
+  /**
+   * Server-generated waiver for the post-completion GLOBAL historical
+   * file-axis coverage gap only. Bound to the exact current fileHash that the
+   * approving transaction recomputed immediately before this claim. Exact
+   * duplicates/collisions and the pre-completion live scan are never waived.
+   */
+  legacyFileAxisRiskResolution?: {
+    expectedFileHash: string;
+  };
 }
 
 export type SlipClaimOutcome =
@@ -184,6 +193,7 @@ export type SlipClaimOutcome =
       reason: "legacy_scan_unresolved";
       matchedSourceType?: SlipClaimSourceType;
       matchedSourceId?: number;
+      unresolvedScope?: "legacy_scan_record" | "historical_file_axis_coverage";
       requiresAdminResolution: true;
     }
   | {
@@ -476,6 +486,7 @@ export async function claimSlip(
         rawReference: request.referenceRawForLegacyLookup,
         sourceType: request.sourceType,
         sourceId: request.sourceId,
+        legacyFileAxisRiskResolution: request.legacyFileAxisRiskResolution,
       },
       tx
     );
@@ -501,6 +512,7 @@ export async function claimSlip(
         reason: "legacy_scan_unresolved",
         matchedSourceType: conflict.matchedSourceType,
         matchedSourceId: conflict.matchedSourceId,
+        unresolvedScope: conflict.unresolvedScope,
         requiresAdminResolution: true,
       };
     }
@@ -657,11 +669,21 @@ export function describeClaimFailure(outcome: SlipClaimOutcome): string {
           : ` wallet top-up #${outcome.matchedSourceId}`
         : " an earlier approved record";
 
+    if (outcome.unresolvedScope === "historical_file_axis_coverage") {
+      return (
+        `Historical replay coverage is incomplete on the file axis because at least one approved ` +
+        `record permanently lost its slip bytes.${where} is only a representative example of that ` +
+        `global coverage gap - there is NO evidence that this submission matches that record. This ` +
+        `submission is not a proven duplicate, but normal approval remains fail-closed while its ` +
+        `only strong evidence is fileHash.`
+      );
+    }
+
     return (
-      `An approved${where} predates the claim registry and its slip image could not be ` +
-      `verified server-side, so replay protection for it is incomplete. This is NOT a proven ` +
-      `duplicate - it cannot be confirmed either way from stored data. Manual review is ` +
-      `required until the historical backfill resolves this record.`
+      `An approved${where} encountered by the active legacy scan predates the claim registry and ` +
+      `its slip image could not be verified server-side, so replay protection for that specific ` +
+      `record is incomplete. This is NOT a proven duplicate - it cannot be confirmed either way ` +
+      `from stored data. Manual investigation of that scan record is required.`
     );
   }
 

@@ -3,6 +3,7 @@ import {
   accountMergeAuditLogs,
   accountMergeCases,
   accountMergeFinancialReconciliations,
+  pointsAccounts,
   pointsTransactions,
   walletAccounts,
   walletTransactions,
@@ -163,6 +164,13 @@ export async function reconcileAccountMergeFinancialsInTransaction(
       );
     }
 
+    // Account Merge already owns the exclusive account guards. Lock the new
+    // authoritative points rows in ascending userId before reading either
+    // balance so reconciliation uses the same mutex as every ordinary points
+    // writer and cannot race a pre-cutover transaction that reached balance
+    // locking before the merge guard was acquired.
+    await db.lockPointsAccountRowsForUpdate([sourceUserId, targetUserId], tx);
+
     const [sourceWallet, targetWallet, sourcePointsRaw, targetPointsRaw] = await Promise.all([
       readWalletAccount(sourceUserId, tx),
       readWalletAccount(targetUserId, tx),
@@ -241,6 +249,15 @@ export async function reconcileAccountMergeFinancialsInTransaction(
     maybeInjectFinancialFault("after_wallet");
 
     if (points.leftMinor > 0) {
+      await tx
+        .update(pointsAccounts)
+        .set({ balance: "0.00", version: sql`${pointsAccounts.version} + 1` })
+        .where(eq(pointsAccounts.userId, sourceUserId));
+      await tx
+        .update(pointsAccounts)
+        .set({ balance: pointsTargetAfter, version: sql`${pointsAccounts.version} + 1` })
+        .where(eq(pointsAccounts.userId, targetUserId));
+
       await tx.insert(pointsTransactions).values([
         {
           userId: sourceUserId,
@@ -249,6 +266,7 @@ export async function reconcileAccountMergeFinancialsInTransaction(
           balanceAfter: "0.00",
           referenceType: FINANCIAL_REFERENCE_TYPE,
           referenceId: params.caseId,
+          effectKey: `account_merge:${params.caseId}:points_transfer`,
           note: `Account merge #${params.caseId}: points transferred to target ${targetUserId}`,
         },
         {
@@ -258,6 +276,7 @@ export async function reconcileAccountMergeFinancialsInTransaction(
           balanceAfter: pointsTargetAfter,
           referenceType: FINANCIAL_REFERENCE_TYPE,
           referenceId: params.caseId,
+          effectKey: `account_merge:${params.caseId}:points_transfer`,
           note: `Account merge #${params.caseId}: points received from source ${sourceUserId}`,
         },
       ]);

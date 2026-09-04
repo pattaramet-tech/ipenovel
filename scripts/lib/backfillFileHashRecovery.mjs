@@ -29,15 +29,38 @@ export const UNRESOLVED_NO_SLIP_URL = "no_slip_image_url";
 export const UNRESOLVED_HASH_RECOVERY_FAILED = "file_hash_recovery_failed";
 
 /**
- * @param {{ slipImageUrl?: string | null, computeSlipFileHash: (raw: string | null | undefined) => Promise<string | undefined> }} input
+ * @param {{
+ *   slipImageUrl?: string | null,
+ *   computeSlipFileHash: (raw: string | null | undefined) => Promise<string | undefined>,
+ *   computeTrustedLegacySlipFileHash: (raw: string | null | undefined) => Promise<string | undefined>,
+ *   isPrivateObjectRef: (raw: string | null | undefined) => boolean,
+ *   isTrustedLegacySlipUrl: (raw: string | null | undefined) => boolean,
+ * }} input
  * @returns {Promise<{ fileHash?: string, unresolvedReason?: string }>}
  */
-export async function recoverFileHashIdentifier({ slipImageUrl, computeSlipFileHash }) {
+export async function recoverFileHashIdentifier({
+  slipImageUrl,
+  computeSlipFileHash,
+  computeTrustedLegacySlipFileHash,
+  isPrivateObjectRef,
+  isTrustedLegacySlipUrl,
+}) {
   if (!slipImageUrl) {
     return { fileHash: undefined, unresolvedReason: UNRESOLVED_NO_SLIP_URL };
   }
 
-  const fileHash = await computeSlipFileHash(slipImageUrl);
+  let fileHash;
+  if (isPrivateObjectRef(slipImageUrl)) {
+    fileHash = await computeSlipFileHash(slipImageUrl);
+  } else if (isTrustedLegacySlipUrl(slipImageUrl) && computeTrustedLegacySlipFileHash) {
+    fileHash = await computeTrustedLegacySlipFileHash(slipImageUrl);
+  } else {
+    // Arbitrary absolute/external URLs are never passed to either fetch/hash
+    // primitive. They remain unresolved so the backfill fails closed without
+    // turning generic URL fetching into an SSRF surface.
+    return { fileHash: undefined, unresolvedReason: UNRESOLVED_HASH_RECOVERY_FAILED };
+  }
+
   if (!fileHash) {
     return { fileHash: undefined, unresolvedReason: UNRESOLVED_HASH_RECOVERY_FAILED };
   }

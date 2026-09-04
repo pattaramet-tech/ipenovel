@@ -26,12 +26,23 @@ function readCode(relativePath: string): string {
 
 const HASH = "f".repeat(64);
 
+function recoveryDeps(computeSlipFileHash: ReturnType<typeof vi.fn>) {
+  return {
+    computeSlipFileHash,
+    computeTrustedLegacySlipFileHash: vi.fn(),
+    isPrivateObjectRef: (raw: string | null | undefined) =>
+      typeof raw === "string" && raw.startsWith("r2p:"),
+    isTrustedLegacySlipUrl: (raw: string | null | undefined) =>
+      typeof raw === "string" && raw.startsWith("https://d2xsxph8kpxj0f.cloudfront.net/"),
+  };
+}
+
 describe("recoverFileHashIdentifier", () => {
   it("A. no slipImageUrl at all -> unresolved, computeSlipFileHash never called", async () => {
     const computeSlipFileHash = vi.fn();
     const result = await recoverFileHashIdentifier({
       slipImageUrl: undefined,
-      computeSlipFileHash,
+      ...recoveryDeps(computeSlipFileHash),
     });
     expect(result.fileHash).toBeUndefined();
     expect(result.unresolvedReason).toBe(UNRESOLVED_NO_SLIP_URL);
@@ -42,7 +53,7 @@ describe("recoverFileHashIdentifier", () => {
     const computeSlipFileHash = vi.fn();
     const result = await recoverFileHashIdentifier({
       slipImageUrl: null,
-      computeSlipFileHash,
+      ...recoveryDeps(computeSlipFileHash),
     });
     expect(result.unresolvedReason).toBe(UNRESOLVED_NO_SLIP_URL);
     expect(computeSlipFileHash).not.toHaveBeenCalled();
@@ -52,18 +63,73 @@ describe("recoverFileHashIdentifier", () => {
     const computeSlipFileHash = vi.fn().mockResolvedValue(HASH);
     const result = await recoverFileHashIdentifier({
       slipImageUrl: "r2p:payment-slips/abc",
-      computeSlipFileHash,
+      ...recoveryDeps(computeSlipFileHash),
     });
     expect(result.fileHash).toBe(HASH);
     expect(result.unresolvedReason).toBeUndefined();
     expect(computeSlipFileHash).toHaveBeenCalledWith("r2p:payment-slips/abc");
   });
 
+  it("IPE-018: trusted historical CDN uses the trusted recovery primitive, never the private-only one", async () => {
+    const trusted = "https://d2xsxph8kpxj0f.cloudfront.net/payment-slips/11280001.jpg";
+    const computeSlipFileHash = vi.fn().mockRejectedValue(new Error("private helper must not receive HTTPS"));
+    const computeTrustedLegacySlipFileHash = vi.fn().mockResolvedValue(HASH);
+    const isPrivateObjectRef = vi.fn().mockReturnValue(false);
+    const isTrustedLegacySlipUrl = vi.fn().mockReturnValue(true);
+
+    const result = await recoverFileHashIdentifier({
+      slipImageUrl: trusted,
+      computeSlipFileHash,
+      computeTrustedLegacySlipFileHash,
+      isPrivateObjectRef,
+      isTrustedLegacySlipUrl,
+    });
+
+    expect(result.fileHash).toBe(HASH);
+    expect(computeSlipFileHash).not.toHaveBeenCalled();
+    expect(computeTrustedLegacySlipFileHash).toHaveBeenCalledWith(trusted);
+  });
+
+  it("IPE-018: trusted historical CDN with unavailable bytes remains unresolved and never falls back to private recovery", async () => {
+    const trusted = "https://d2xsxph8kpxj0f.cloudfront.net/payment-slips/gone.jpg";
+    const computeSlipFileHash = vi.fn().mockResolvedValue(HASH);
+    const computeTrustedLegacySlipFileHash = vi.fn().mockResolvedValue(undefined);
+    const result = await recoverFileHashIdentifier({
+      slipImageUrl: trusted,
+      computeSlipFileHash,
+      computeTrustedLegacySlipFileHash,
+      isPrivateObjectRef: () => false,
+      isTrustedLegacySlipUrl: () => true,
+    });
+
+    expect(result.fileHash).toBeUndefined();
+    expect(result.unresolvedReason).toBe(UNRESOLVED_HASH_RECOVERY_FAILED);
+    expect(computeSlipFileHash).not.toHaveBeenCalled();
+    expect(computeTrustedLegacySlipFileHash).toHaveBeenCalledWith(trusted);
+  });
+
+  it("IPE-018: arbitrary external URLs are not passed to either recovery primitive", async () => {
+    const computeSlipFileHash = vi.fn().mockResolvedValue(HASH);
+    const computeTrustedLegacySlipFileHash = vi.fn().mockResolvedValue(HASH);
+    const result = await recoverFileHashIdentifier({
+      slipImageUrl: "https://attacker.example/slip.jpg",
+      computeSlipFileHash,
+      computeTrustedLegacySlipFileHash,
+      isPrivateObjectRef: () => false,
+      isTrustedLegacySlipUrl: () => false,
+    });
+
+    expect(result.fileHash).toBeUndefined();
+    expect(result.unresolvedReason).toBe(UNRESOLVED_HASH_RECOVERY_FAILED);
+    expect(computeSlipFileHash).not.toHaveBeenCalled();
+    expect(computeTrustedLegacySlipFileHash).not.toHaveBeenCalled();
+  });
+
   it("D. slipImageUrl present, hash recovery fails (undefined) -> unresolved, fails closed", async () => {
     const computeSlipFileHash = vi.fn().mockResolvedValue(undefined);
     const result = await recoverFileHashIdentifier({
       slipImageUrl: "r2p:payment-slips/abc",
-      computeSlipFileHash,
+      ...recoveryDeps(computeSlipFileHash),
     });
     expect(result.fileHash).toBeUndefined();
     expect(result.unresolvedReason).toBe(UNRESOLVED_HASH_RECOVERY_FAILED);
@@ -73,7 +139,7 @@ describe("recoverFileHashIdentifier", () => {
     const computeSlipFileHash = vi.fn();
     const result = await recoverFileHashIdentifier({
       slipImageUrl: "",
-      computeSlipFileHash,
+      ...recoveryDeps(computeSlipFileHash),
     });
     expect(result.unresolvedReason).toBe(UNRESOLVED_NO_SLIP_URL);
     expect(computeSlipFileHash).not.toHaveBeenCalled();
@@ -83,12 +149,15 @@ describe("recoverFileHashIdentifier", () => {
 describe("the backfill script wires recovery in for every row with no strong identifier", () => {
   const script = readCode("scripts/backfill-slip-claims.mjs");
 
-  it("imports recoverFileHashIdentifier and the real slipFileHashService primitive", () => {
+  it("imports recovery plus the real private/trusted reference classifiers and hash primitives", () => {
     expect(script).toMatch(
       /import \{[\s\S]*?recoverFileHashIdentifier[\s\S]*?\} from "\.\/lib\/backfillFileHashRecovery\.mjs"/
     );
     expect(script).toMatch(
       /fileHashService = await import\("\.\.\/server\/services\/slipFileHashService\.ts"\)/
+    );
+    expect(script).toMatch(
+      /privateFileRef = await import\("\.\.\/shared\/privateFileRef\.ts"\)/
     );
   });
 
@@ -103,6 +172,9 @@ describe("the backfill script wires recovery in for every row with no strong ide
     expect(body).toMatch(/const recovery = await recoverFileHashIdentifier\(/);
     expect(body).toMatch(/slipImageUrl: row\.slipImageUrl/);
     expect(body).toMatch(/computeSlipFileHash: fileHashService\.computeSlipFileHash/);
+    expect(body).toMatch(/computeTrustedLegacySlipFileHash: fileHashService\.computeTrustedLegacySlipFileHash/);
+    expect(body).toMatch(/isPrivateObjectRef: privateFileRef\.isPrivateObjectRef/);
+    expect(body).toMatch(/isTrustedLegacySlipUrl: fileHashService\.isTrustedLegacySlipUrl/);
     expect(body).toMatch(/stats\.fileHashRecovered \+= 1/);
     // IPE-004 fix: only ONE branch increments noIdentifier now - the row that
     // has no strong identifier at all AND no recoverable fileHash. A row that

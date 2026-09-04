@@ -138,6 +138,13 @@ export type SlipConflict =
       kind: "unresolved";
       matchedSourceType: SlipConflictSourceType;
       matchedSourceId: number;
+      /**
+       * Distinguishes a specific pre-completion scan row that could not be
+       * evaluated from the post-completion GLOBAL file-axis coverage gap.
+       * A representative row in the latter case is diagnostic context only -
+       * it is NOT evidence that the current slip matches that row.
+       */
+      unresolvedScope: "legacy_scan_record" | "historical_file_axis_coverage";
     };
 
 export interface EvaluateSlipConflictInput {
@@ -152,6 +159,15 @@ export interface EvaluateSlipConflictInput {
    * identical from the caller's point of view.
    */
   includeLegacyScanIfRequired?: boolean;
+  /**
+   * Narrow, server-generated waiver for the POST-completion global unknown
+   * file-axis sufficiency gate only. It is bound to the exact current fileHash
+   * that the approving transaction just recomputed. It does NOT waive exact
+   * claims, known collisions, the live legacy scan, or reference ambiguities.
+   */
+  legacyFileAxisRiskResolution?: {
+    expectedFileHash: string;
+  };
 }
 
 /**
@@ -304,6 +320,7 @@ export async function evaluateSlipConflict(
         kind: "unresolved",
         matchedSourceType: scanHit.sourceType,
         matchedSourceId: scanHit.sourceId,
+        unresolvedScope: "legacy_scan_record",
       };
     }
   }
@@ -389,11 +406,17 @@ export async function evaluateSlipConflict(
     if (onlyFileEvidence) {
       const unknownRow = await findAnyLegacyFileIdentityUnknown(tx);
       if (unknownRow) {
-        return {
-          kind: "unresolved",
-          matchedSourceType: unknownRow.sourceType,
-          matchedSourceId: unknownRow.sourceId,
-        };
+        const waiverMatchesCurrentFile =
+          Boolean(input.legacyFileAxisRiskResolution?.expectedFileHash) &&
+          input.legacyFileAxisRiskResolution?.expectedFileHash === input.identifiers.fileHash;
+        if (!waiverMatchesCurrentFile) {
+          return {
+            kind: "unresolved",
+            matchedSourceType: unknownRow.sourceType,
+            matchedSourceId: unknownRow.sourceId,
+            unresolvedScope: "historical_file_axis_coverage",
+          };
+        }
       }
     }
   }
@@ -420,13 +443,23 @@ export function describeSlipConflict(conflict: SlipConflict): string {
   }
 
   if (conflict.kind === "unresolved") {
+    if (conflict.unresolvedScope === "historical_file_axis_coverage") {
+      return (
+        `Historical replay coverage is incomplete on the file axis because at least one approved ` +
+        `record permanently lost its slip bytes. ${where} is only a representative example of ` +
+        `that global coverage gap - there is NO evidence that this submission matches that record. ` +
+        `This submission is not a proven duplicate, but fileHash-only replay safety cannot be proven ` +
+        `complete. A bank reference or QR identifier would clear this uncertainty automatically; ` +
+        `otherwise normal approval must remain fail-closed unless the applicable admin workflow ` +
+        `explicitly accepts that residual risk.`
+      );
+    }
     return (
-      `At least one approved historical record (for example ${where}) cannot have its slip ` +
-      `image verified server-side - its bytes are gone - so its exact file identity is in no ` +
-      `registry and cannot be compared against this submission's slip image. This submission ` +
-      `therefore cannot be confirmed clean OR a duplicate on the file axis. This is NOT a ` +
-      `proven duplicate. An admin must review it manually; a verified bank reference or QR ` +
-      `payload on the slip would let it clear automatically.`
+      `An approved historical record (${where}) encountered by the active legacy scan cannot have ` +
+      `its slip image verified server-side, so this submission cannot be confirmed clean OR a ` +
+      `duplicate on the file axis. This is NOT a proven duplicate. An admin must investigate the ` +
+      `specific historical scan record; the post-completion file-axis risk override does not waive ` +
+      `this state.`
     );
   }
 
