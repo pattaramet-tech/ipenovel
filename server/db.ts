@@ -6258,7 +6258,11 @@ export async function settleSportsMatch(matchId: number, result: SportsPredictio
     // read-modify-write, matching every other points writer in this repository.
     const pendingUserIds = votes.filter((vote: any) => vote.status === "pending").map((vote: any) => vote.userId);
     if (pendingUserIds.length > 0) {
-      await assertAccountMergeClassifiedMutationsAllowed(pendingUserIds, tx);
+      if (rewardKind === "points") {
+        await assertAccountMergePointsMutationsAllowed(pendingUserIds, tx);
+      } else {
+        await assertAccountMergeClassifiedMutationsAllowed(pendingUserIds, tx);
+      }
     }
 
     let winnerCount = 0;
@@ -6377,7 +6381,7 @@ export async function cancelSportsMatch(matchId: number) {
       .where(and(eq(sportsMatchVotes.matchId, matchId), eq(sportsMatchVotes.status, "pending")));
 
     if (pendingVotes.length > 0) {
-      await assertAccountMergeClassifiedMutationsAllowed(pendingVotes.map((vote: any) => vote.userId), tx);
+      await assertAccountMergePointsMutationsAllowed(pendingVotes.map((vote: any) => vote.userId), tx);
     }
 
     for (const vote of pendingVotes) {
@@ -8169,6 +8173,54 @@ function unwrapMysqlRows(rawResult: any): any[] {
   return Array.isArray(rows) ? rows : [];
 }
 
+export class AccountMergeLockUpgradeError extends Error {
+  readonly code = "ACCOUNT_MERGE_LOCK_UPGRADE_FORBIDDEN";
+  readonly userId: number;
+
+  constructor(userId: number) {
+    super(
+      `ACCOUNT_MERGE_LOCK_UPGRADE_FORBIDDEN: transaction already holds the shared ` +
+        `Account Merge barrier for user ${userId}; it must not later request the exclusive ` +
+        `points/users lock. Point-capable flows must acquire the exclusive barrier up front.`
+    );
+    this.name = "AccountMergeLockUpgradeError";
+    this.userId = userId;
+  }
+}
+
+type AccountMergeTxLockMode = "shared" | "exclusive";
+const accountMergeTxLockModes = new WeakMap<object, Map<number, AccountMergeTxLockMode>>();
+
+function accountMergeTxLockModeMap(tx: any): Map<number, AccountMergeTxLockMode> | undefined {
+  if (tx == null || (typeof tx !== "object" && typeof tx !== "function")) return undefined;
+  let modes = accountMergeTxLockModes.get(tx as object);
+  if (!modes) {
+    modes = new Map<number, AccountMergeTxLockMode>();
+    accountMergeTxLockModes.set(tx as object, modes);
+  }
+  return modes;
+}
+
+function markAccountMergeTxLockMode(tx: any, userIds: number[], mode: AccountMergeTxLockMode): void {
+  const modes = accountMergeTxLockModeMap(tx);
+  if (!modes) return;
+  for (const userId of userIds) {
+    const current = modes.get(userId);
+    if (current === "exclusive") continue;
+    modes.set(userId, mode);
+  }
+}
+
+function assertNoAccountMergeSharedToExclusiveUpgrade(tx: any, userIds: number[]): void {
+  const modes = accountMergeTxLockModeMap(tx);
+  if (!modes) return;
+  for (const userId of userIds) {
+    if (modes.get(userId) === "shared") {
+      throw new AccountMergeLockUpgradeError(userId);
+    }
+  }
+}
+
 /**
  * Canonical account-merge user lock hierarchy. Every multi-account merge
  * lifecycle operation and every multi-user classified mutation must acquire
@@ -8268,13 +8320,31 @@ export async function assertAccountMergeClassifiedMutationsAllowed(userIds: numb
     const cases = await getAccountMergeCasesForSourceForShare(sourceUserId, tx);
     assertNoActiveAccountMergeCase(sourceUserId, cases);
   }
+  markAccountMergeTxLockMode(tx, ordered, "shared");
 }
 
-/** Points live on users, so balance read-modify-write retains exclusivity. */
+/**
+ * Points live on users, so balance read-modify-write retains exclusivity.
+ * Point-capable multi-user flows must acquire all user rows in canonical order
+ * up front. Attempting to upgrade a shared ordinary barrier in-place is
+ * rejected before issuing SQL because two concurrent S-to-X upgrades can
+ * deadlock even though both individual lock modes are otherwise correct.
+ */
+export async function assertAccountMergePointsMutationsAllowed(userIds: number[], tx: any): Promise<void> {
+  const ordered = Array.from(new Set(userIds)).sort((a, b) => a - b);
+  if (ordered.length === 0) throw new Error("At least one user id is required for points mutation locking");
+  assertNoAccountMergeSharedToExclusiveUpgrade(tx, ordered);
+
+  const locked = await lockAccountMergeUserRows(ordered, tx);
+  for (const sourceUserId of locked) {
+    const cases = await getAccountMergeCasesForSourceForUpdate(sourceUserId, tx);
+    assertNoActiveAccountMergeCase(sourceUserId, cases);
+  }
+  markAccountMergeTxLockMode(tx, locked, "exclusive");
+}
+
 async function assertAccountMergePointsMutationAllowed(userId: number, tx: any): Promise<void> {
-  await lockAccountMergeUserRows([userId], tx);
-  const cases = await getAccountMergeCasesForSourceForUpdate(userId, tx);
-  assertNoActiveAccountMergeCase(userId, cases);
+  return assertAccountMergePointsMutationsAllowed([userId], tx);
 }
 
 export async function assertAccountMergeClassifiedMutationAllowed(userId: number, tx: any): Promise<void> {

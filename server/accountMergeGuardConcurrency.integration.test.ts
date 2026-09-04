@@ -264,6 +264,75 @@ describe.sequential("IPE-005 Account Merge guard concurrency - real database", (
     expect((await prepare)?.status).toBe("pending");
   }, 30000);
 
+  it("shared-to-exclusive upgrade is rejected before SQL instead of becoming a two-transaction deadlock", async () => {
+    const f = await createBlockedMergePair();
+    fixtures.push(f);
+    const database = await db.getDb();
+    if (!database) throw new Error("Database unavailable");
+
+    let sharedCount = 0;
+    const bothHaveSharedBarrier = deferred();
+
+    const runLegacyUpgradeShape = () =>
+      database.transaction(async (tx: any) => {
+        await db.assertAccountMergeClassifiedMutationAllowed(f.sourceId, tx);
+        sharedCount += 1;
+        if (sharedCount === 2) bothHaveSharedBarrier.resolve();
+        await bothHaveSharedBarrier.promise;
+        await db.lockUserForPoints(f.sourceId, tx);
+      });
+
+    const results = await Promise.allSettled([runLegacyUpgradeShape(), runLegacyUpgradeShape()]);
+    expect(results).toHaveLength(2);
+    for (const result of results) {
+      expect(result.status).toBe("rejected");
+      if (result.status === "rejected") {
+        expect(result.reason).toMatchObject({
+          code: "ACCOUNT_MERGE_LOCK_UPGRADE_FORBIDDEN",
+          userId: f.sourceId,
+        });
+      }
+    }
+  }, 30000);
+
+  it("two point-capable same-user transactions serialize on the exclusive barrier before nested points work", async () => {
+    const f = await createBlockedMergePair();
+    fixtures.push(f);
+    const database = await db.getDb();
+    if (!database) throw new Error("Database unavailable");
+
+    const firstHasExclusiveBarrier = deferred();
+    const secondHasExclusiveBarrier = deferred();
+    const releaseFirst = deferred();
+
+    const first = database.transaction(async (tx: any) => {
+      await db.assertAccountMergePointsMutationsAllowed([f.sourceId], tx);
+      firstHasExclusiveBarrier.resolve();
+      // Production point-capable flows may call lockUserForPoints again inside
+      // nested finalization. Re-entering an already-exclusive barrier is safe.
+      await db.lockUserForPoints(f.sourceId, tx);
+      await releaseFirst.promise;
+    });
+
+    await firstHasExclusiveBarrier.promise;
+    const second = database.transaction(async (tx: any) => {
+      await db.assertAccountMergePointsMutationsAllowed([f.sourceId], tx);
+      secondHasExclusiveBarrier.resolve();
+      await db.lockUserForPoints(f.sourceId, tx);
+    });
+
+    const secondEnteredEarly = await Promise.race([
+      secondHasExclusiveBarrier.promise.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 150)),
+    ]);
+    expect(secondEnteredEarly).toBe(false);
+
+    releaseFirst.resolve();
+    await first;
+    await secondHasExclusiveBarrier.promise;
+    await second;
+  }, 30000);
+
   it("a classified mutation after guard activation is refused before commit and creates no ledger row", async () => {
     const f = await createBlockedMergePair();
     fixtures.push(f);

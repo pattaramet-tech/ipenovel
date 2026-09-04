@@ -848,15 +848,26 @@ export const appRouter = router({
             throw new Error("Insufficient wallet balance");
           }
 
+          const checkoutMutatesPoints = orderService.orderCompletionMayMutatePoints({
+            pointsDiscountAmount,
+            totalAmount,
+          });
+
           // STEP 3-8: ATOMIC TRANSACTION - All operations succeed or all rollback
           // This prevents orphan orders if debit/finalization fails after order creation
           const dbConnection = await db.getDb();
           if (!dbConnection) throw new Error("Database connection failed");
           
           const order = await dbConnection.transaction(async (tx) => {
-            // IPE-005: serialize the full wallet/order/finalization mutation
-            // before any classified Source write in this transaction.
-            await db.assertAccountMergeClassifiedMutationAllowed(ctx.user.id, tx);
+            // Point-capable wallet checkout must take the exclusive points
+            // barrier before any nested ordinary guard. Non-points checkout
+            // keeps the shared barrier so unrelated ordinary writes can run
+            // concurrently for the same user.
+            if (checkoutMutatesPoints) {
+              await db.lockUserForPoints(ctx.user.id, tx);
+            } else {
+              await db.assertAccountMergeClassifiedMutationAllowed(ctx.user.id, tx);
+            }
             // STEP 3: Create order (within transaction)
             // Pass tx so all writes use the same transaction
             const newOrder = await orderService.createOrderFromCart(String(ctx.user.id), cartItems, input.couponCode, input.pointsToRedeem, undefined, tx);

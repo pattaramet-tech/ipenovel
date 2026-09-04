@@ -358,6 +358,21 @@ export function isReviewablePaymentStatus(status: string | null | undefined): bo
 }
 
 /**
+ * Whether completing this order can mutate the user's points balance.
+ * Order financial terms are established at creation; approval uses this
+ * pre-lock snapshot only to choose the Account Merge lock mode, then verifies
+ * the same decision from the current order before creating value.
+ */
+export function orderCompletionMayMutatePoints(order: {
+  pointsDiscountAmount?: unknown;
+  totalAmount?: unknown;
+}): boolean {
+  const redeemed = normalizeMoneyAmount(order.pointsDiscountAmount ?? "0", "pointsDiscountAmount");
+  const total = normalizeMoneyAmount(order.totalAmount ?? "0", "totalAmount");
+  return redeemed > 0 || Math.floor(total / 100) > 0;
+}
+
+/**
  * Raised when a payment is no longer reviewable at the moment its approval
  * transaction acquires the row lock. Typed so callers can tell a lost STATE
  * race apart from a provider fault or a duplicate.
@@ -486,7 +501,16 @@ export async function lockAndRequireReviewablePayment(
   if (!ownerPayment) throw new Error("Payment not found");
   const ownerOrder = await db.getOrderById(ownerPayment.orderId, tx);
   if (!ownerOrder?.userId) throw new Error("Payment order owner not found");
-  await db.assertAccountMergeClassifiedMutationAllowed(ownerOrder.userId, tx);
+  const pointsLockRequired = orderCompletionMayMutatePoints(ownerOrder);
+  if (pointsLockRequired) {
+    // Point-capable approvals must take the exclusive points/users barrier
+    // before any shared Account Merge guard could be acquired. Taking the
+    // shared barrier first and upgrading during finalizeOrderCompletion lets
+    // two same-user approvals deadlock as simultaneous S-to-X upgrades.
+    await db.lockUserForPoints(ownerOrder.userId, tx);
+  } else {
+    await db.assertAccountMergeClassifiedMutationAllowed(ownerOrder.userId, tx);
+  }
 
   await db.lockPaymentForUpdate(paymentId, tx);
 
@@ -500,6 +524,9 @@ export async function lockAndRequireReviewablePayment(
   const lockedOrder = await db.getOrderById(payment.orderId, tx);
   if (!lockedOrder || lockedOrder.userId !== ownerOrder.userId) {
     throw new Error("Payment order owner changed while approval was waiting for account lock");
+  }
+  if (orderCompletionMayMutatePoints(lockedOrder) !== pointsLockRequired) {
+    throw new Error("Order points mutation profile changed while approval was waiting for account lock");
   }
 
   if (!isReviewablePaymentStatus(payment.status as string)) {
