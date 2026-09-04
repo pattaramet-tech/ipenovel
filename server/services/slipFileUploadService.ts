@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { putPrivateObjectCreateOnly, R2PrivateStorageError } from "./r2PrivateStorage";
 import { registerImmutableSlipUpload } from "../db";
+import { hashSlipBytes } from "./slipFileHashService";
 import { toPrivateObjectRef } from "@shared/privateFileRef";
 import { TRPCError } from "@trpc/server";
 import {
@@ -178,10 +179,14 @@ export async function uploadPaymentSlipFile(
 
     // Step 6: Prepare file key
     const sanitized = sanitizeFileName(input.fileName);
-    const fileHash = createHash("sha256").update(fileBuffer).digest("hex");
+    const objectContentHash = createHash("sha256").update(fileBuffer).digest("hex");
+    // Evidence and anti-replay identifiers must match the hash recomputed by
+    // submission, Recheck and approval. The object key/metadata use a raw
+    // content digest; the evidence identifier uses the existing slip namespace.
+    const fileHash = hashSlipBytes(fileBuffer);
     const timestamp = Date.now();
     const random = Math.random().toString(36).substring(2, 8);
-    const fileKey = `payment-slips/${input.userId}/${fileHash}/${timestamp}-${random}-${sanitized}`;
+    const fileKey = `payment-slips/${input.userId}/${objectContentHash}/${timestamp}-${random}-${sanitized}`;
 
     console.info("[SlipUpload]", requestId, "File ready for upload:", {
       ...context,

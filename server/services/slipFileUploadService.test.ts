@@ -4,6 +4,7 @@ import * as r2PrivateStorage from "./r2PrivateStorage";
 import * as db from "../db";
 import * as legacyStorage from "../storage";
 import { TRPCError } from "@trpc/server";
+import { computeSlipFileHash } from "./slipFileHashService";
 
 // Mock the PRIVATE R2 adapter - payment slips must never touch the legacy
 // Manus storage proxy (server/storage.ts) after this change.
@@ -58,6 +59,39 @@ describe("uploadPaymentSlipFile", () => {
   }
 
   describe("Valid uploads", () => {
+    it.each(["image/jpeg", "image/png", "application/pdf"])(
+      "registers the same %s identifier that submission recomputes from stored bytes",
+      async (mimeType) => {
+        let storedBytes: Uint8Array | undefined;
+        vi.mocked(r2PrivateStorage.putPrivateObjectCreateOnly).mockImplementationOnce(
+          async (_context, key, bytes) => {
+            storedBytes = Uint8Array.from(bytes as Buffer);
+            return { key };
+          }
+        );
+        const result = await uploadPaymentSlipFile({
+          userId: 123,
+          fileName: "slip",
+          mimeType,
+          fileBase64: createBase64File(mimeType),
+          context: "checkout",
+        });
+        expect(storedBytes).toBeDefined();
+        const recomputedHash = await computeSlipFileHash(result.slipImageUrl, {
+          resolveStoredFileValueFn: async () => "https://signed.example/slip",
+          fetchImpl: vi.fn(async () => new Response(storedBytes!)),
+        });
+        expect(recomputedHash).toMatch(/^[a-f0-9]{64}$/);
+        expect(db.registerImmutableSlipUpload).toHaveBeenCalledWith({
+          objectIdentity: result.slipImageUrl,
+          ownerUserId: 123,
+          fileHash: recomputedHash,
+          objectSize: storedBytes!.byteLength,
+          mimeType,
+        });
+      }
+    );
+
     it("should upload valid JPEG file to the private bucket and return an r2p: reference", async () => {
       vi.mocked(r2PrivateStorage.putPrivateObjectCreateOnly).mockResolvedValueOnce({
         key: "payment-slips/123/xxx-file.jpg",
