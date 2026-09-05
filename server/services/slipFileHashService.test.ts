@@ -28,6 +28,7 @@ function fakeResponse(bytes: Buffer) {
             return { done: false, value: new Uint8Array(bytes) };
           },
           async cancel() {},
+          releaseLock() {},
         };
       },
     },

@@ -42,8 +42,10 @@ import {
   computeSlipFileHash,
   computeTrustedLegacySlipFileHash,
   isTrustedLegacySlipUrl,
+  SLIP_HASH_FETCH_TIMEOUT_MS,
 } from "./slipFileHashService";
 import { isPrivateObjectRef } from "@shared/privateFileRef";
+import type { OrderApprovalVerificationBudget } from "../helpers/orderApprovalExecution";
 
 export type LegacySourceType = "order_payment" | "wallet_topup";
 
@@ -298,7 +300,8 @@ async function scanApproved<T extends LegacyDuplicateMatch>(
     slipImageUrl: string | null;
   }) => Promise<T | undefined>,
   /** Return false to keep scanning (a fallback), true to stop now. */
-  shouldStop: (hit: T) => boolean = () => true
+  shouldStop: (hit: T) => boolean = () => true,
+  budget?: OrderApprovalVerificationBudget
 ): Promise<T | undefined> {
   let fallback: T | undefined;
   let cursor = 0;
@@ -314,12 +317,14 @@ async function scanApproved<T extends LegacyDuplicateMatch>(
   // hash) or must be reported unresolved - the scan predicate's only job is
   // completeness.
   for (;;) {
+    budget?.throwIfExpired();
     const page = await tx
       .select({ id: idColumn, extractedData: extractedDataColumn, slipImageUrl: slipImageUrlColumn })
       .from(table)
       .where(and(eq(statusColumn, "approved"), gt(idColumn, cursor)))
       .orderBy(asc(idColumn))
       .limit(SCAN_PAGE_SIZE);
+    budget?.throwIfExpired();
 
     // TERMINAL EMPTY PAGE. Reached when the eligible row count is an exact
     // multiple of SCAN_PAGE_SIZE, so the previous page was full and this one
@@ -332,7 +337,9 @@ async function scanApproved<T extends LegacyDuplicateMatch>(
     if (!page || page.length === 0) return fallback;
 
     for (const row of page) {
+      budget?.throwIfExpired();
       const hit = await onRow(row);
+      budget?.throwIfExpired();
       if (hit !== undefined) {
         if (shouldStop(hit)) return hit;
         // Remember the more cautious fallback but keep looking for a
@@ -364,8 +371,10 @@ async function scanApproved<T extends LegacyDuplicateMatch>(
 export async function findLegacyApprovedDuplicate(
   identifiers: LegacyLookupIdentifiers,
   excludeSource: { sourceType: LegacySourceType; sourceId: number } | undefined,
-  tx: any
+  tx: any,
+  budget?: OrderApprovalVerificationBudget
 ): Promise<LegacyDuplicateMatch | undefined> {
+  budget?.throwIfExpired();
   if (!identifiers.referenceHash && !identifiers.fileHash) return undefined;
 
   const inspect =
@@ -447,12 +456,18 @@ export async function findLegacyApprovedDuplicate(
         // CDN uses the separately bounded legacy fetcher. Arbitrary absolute
         // URLs are never fetched and remain unresolved fail-closed.
         if (isPrivateObjectRef(row.slipImageUrl)) {
-          resolvedFileHash = await computeSlipFileHash(row.slipImageUrl);
+          resolvedFileHash = await computeSlipFileHash(row.slipImageUrl, budget
+            ? { timeoutMs: budget.remainingMs(SLIP_HASH_FETCH_TIMEOUT_MS) } : undefined);
         } else if (isTrustedLegacySlipUrl(row.slipImageUrl)) {
-          resolvedFileHash = await computeTrustedLegacySlipFileHash(row.slipImageUrl);
+          resolvedFileHash = await computeTrustedLegacySlipFileHash(row.slipImageUrl, budget
+            ? { timeoutMs: budget.remainingMs(SLIP_HASH_FETCH_TIMEOUT_MS) } : undefined);
         } else {
           return { sourceType, sourceId: row.id, kind: "unresolved", matchedBy: "unresolved" };
         }
+        // The hash helper deliberately returns undefined for ordinary I/O
+        // failure. An exhausted aggregate budget is a different outcome:
+        // abort the scan, not an unresolved row followed by more fetches.
+        budget?.throwIfExpired();
         if (!resolvedFileHash) {
           // Recovery was attempted and failed (missing bytes, fetch/timeout,
           // oversized body, or trusted historical bytes are gone). Still
@@ -489,7 +504,8 @@ export async function findLegacyApprovedDuplicate(
     payments.extractedData,
     payments.slipImageUrl,
     inspect("order_payment"),
-    isStrongMatch
+    isStrongMatch,
+    budget
   );
   // Only a STRONG payment hit short-circuits. A lossy/unresolved one is held
   // back so an exact duplicate in the wallet table can still outrank it.
@@ -503,7 +519,8 @@ export async function findLegacyApprovedDuplicate(
     walletTopups.extractedData,
     walletTopups.slipImageUrl,
     inspect("wallet_topup"),
-    isStrongMatch
+    isStrongMatch,
+    budget
   );
 
   if (topupHit && isStrongMatch(topupHit)) return topupHit;
@@ -552,8 +569,10 @@ export interface LegacyAliasGroupMember {
 export async function findLegacyAliasGroupMembers(
   aliasHash: string,
   excludeSource: { sourceType: LegacySourceType; sourceId: number } | undefined,
-  tx: any
+  tx: any,
+  budget?: OrderApprovalVerificationBudget
 ): Promise<LegacyAliasGroupMember[]> {
+  budget?.throwIfExpired();
   const members: LegacyAliasGroupMember[] = [];
 
   async function scanTable(
@@ -565,16 +584,19 @@ export async function findLegacyAliasGroupMembers(
   ): Promise<void> {
     let cursor = 0;
     for (;;) {
+      budget?.throwIfExpired();
       const page = await tx
         .select({ id: idColumn, extractedData: extractedDataColumn })
         .from(table)
         .where(and(eq(statusColumn, "approved"), gt(idColumn, cursor)))
         .orderBy(asc(idColumn))
         .limit(SCAN_PAGE_SIZE);
+      budget?.throwIfExpired();
 
       if (!page || page.length === 0) return;
 
       for (const row of page) {
+        budget?.throwIfExpired();
         if (excludeSource?.sourceType === sourceType && excludeSource.sourceId === row.id) {
           continue;
         }

@@ -53,7 +53,7 @@ describe("orderService.ts approvePaymentInTx: current-byte integrity before clai
     const fnIdx = code.indexOf("async function approvePaymentInTx(");
     expect(fnIdx).toBeGreaterThan(-1);
     const checkIdx = code.indexOf(
-      "const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)",
+      'const currentFileHash = await traceOrderApprovalStage("current_byte_hash", async () => isLegacyStorageUrl(payment.slipImageUrl)',
       fnIdx
     );
     expect(checkIdx).toBeGreaterThan(fnIdx);
@@ -63,7 +63,7 @@ describe("orderService.ts approvePaymentInTx: current-byte integrity before clai
     const fnIdx = code.indexOf("async function approvePaymentInTx(");
     const strongIdIdx = code.indexOf("if (!hasStrongIdentifier(identifiers)) {", fnIdx);
     const checkIdx = code.indexOf(
-      "const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)",
+      'const currentFileHash = await traceOrderApprovalStage("current_byte_hash", async () => isLegacyStorageUrl(payment.slipImageUrl)',
       fnIdx
     );
     const claimIdx = code.indexOf(
@@ -77,29 +77,30 @@ describe("orderService.ts approvePaymentInTx: current-byte integrity before clai
 
   it("caps the locked current-byte fetch below the generic storage timeout without moving it outside the transaction", () => {
     expect(code).toMatch(/export const ORDER_APPROVAL_SLIP_HASH_TIMEOUT_MS = 3_000;/);
-    const idx = code.indexOf("const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)");
+    const idx = code.indexOf('const currentFileHash = await traceOrderApprovalStage("current_byte_hash"');
     const body = code.slice(idx, idx + 1200);
-    expect(body).toMatch(/computeTrustedLegacySlipFileHash\(payment\.slipImageUrl, \{\s*timeoutMs: ORDER_APPROVAL_SLIP_HASH_TIMEOUT_MS/);
-    expect(body).toMatch(/computeSlipFileHash\(payment\.slipImageUrl, \{\s*timeoutMs: ORDER_APPROVAL_SLIP_HASH_TIMEOUT_MS/);
+    expect(body).toMatch(/computeTrustedLegacySlipFileHash\(payment\.slipImageUrl, \{\s*timeoutMs: verificationBudget\.remainingMs\(ORDER_APPROVAL_SLIP_HASH_TIMEOUT_MS\)/);
+    expect(body).toMatch(/computeSlipFileHash\(payment\.slipImageUrl, \{\s*timeoutMs: verificationBudget\.remainingMs\(ORDER_APPROVAL_SLIP_HASH_TIMEOUT_MS\)/);
   });
 
   it("fails closed when the current hash is unavailable - unavailability is never treated as stability", () => {
-    const idx = code.indexOf("const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)");
-    const body = code.slice(idx, idx + 1400);
+    const idx = code.indexOf('const currentFileHash = await traceOrderApprovalStage("current_byte_hash"');
+    const body = code.slice(idx, code.indexOf('const claim = await atOrderPaymentApprovalStage("slip_claim"', idx));
     expect(body).toMatch(/if \(!currentFileHash\) \{/);
     expect(body).toMatch(/throw new Error\(\s*\n\s*"SLIP_CURRENT_BYTES_UNAVAILABLE:/);
   });
 
   it("fails closed when a persisted fileHash disagrees with the current hash", () => {
-    const idx = code.indexOf("const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)");
-    const body = code.slice(idx, idx + 1400);
+    const idx = code.indexOf('const currentFileHash = await traceOrderApprovalStage("current_byte_hash"');
+    const body = code.slice(idx, code.indexOf('const claim = await atOrderPaymentApprovalStage("slip_claim"', idx));
     expect(body).toMatch(/if \(persistedFileHash && currentFileHash !== persistedFileHash\) \{/);
     expect(body).toMatch(/throw new Error\(\s*\n\s*"SLIP_INTEGRITY_MISMATCH_AT_APPROVAL:/);
   });
 
   it("binds the freshly confirmed hash into identifiers.fileHash before claimSlip runs", () => {
-    const idx = code.indexOf("const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)");
-    const claimIdx = code.indexOf("const claim = await claimSlip(", idx);
+    const idx = code.indexOf('const currentFileHash = await traceOrderApprovalStage("current_byte_hash"');
+    const claimIdx = code.indexOf('const claim = await atOrderPaymentApprovalStage("slip_claim"', idx);
+    expect(claimIdx).toBeGreaterThan(idx);
     const body = code.slice(idx, claimIdx);
     expect(body).toMatch(/identifiers\.fileHash = currentFileHash;/);
   });
@@ -107,7 +108,7 @@ describe("orderService.ts approvePaymentInTx: current-byte integrity before clai
   it("only runs when a slip actually exists and keeps legacy absolute URLs out of the hash fetch", () => {
     const idx = code.indexOf("if (payment.slipImageUrl) {");
     expect(idx).toBeGreaterThan(-1);
-    const compatibilityIdx = code.indexOf("const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)", idx);
+    const compatibilityIdx = code.indexOf('const currentFileHash = await traceOrderApprovalStage("current_byte_hash", async () => isLegacyStorageUrl(payment.slipImageUrl)', idx);
     const privateFetchIdx = code.indexOf(": await computeSlipFileHash(payment.slipImageUrl, {", compatibilityIdx);
     expect(compatibilityIdx).toBeGreaterThan(idx);
     expect(compatibilityIdx - idx).toBeLessThan(500);

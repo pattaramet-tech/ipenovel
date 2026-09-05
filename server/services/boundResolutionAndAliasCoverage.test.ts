@@ -350,7 +350,7 @@ describe("H. the subject is locked across revalidation and commit", () => {
 
   it("the order approval locks BEFORE reading the evidence it decides on", () => {
     const lockIdx = orderCode.indexOf("db.lockPaymentForUpdate(paymentId, tx)");
-    const readIdx = orderCode.indexOf("const payment = await db.getPaymentByIdForUpdate(paymentId, tx)");
+    const readIdx = orderCode.indexOf('const payment = await traceOrderApprovalStage("payment_current_read", () => db.getPaymentByIdForUpdate(paymentId, tx))');
     const claimIdx = orderCode.indexOf("const claim = await atOrderPaymentApprovalStage");
     expect(lockIdx).toBeGreaterThan(-1);
     expect(readIdx).toBeGreaterThan(lockIdx);

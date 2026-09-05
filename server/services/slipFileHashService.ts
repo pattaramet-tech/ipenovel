@@ -76,6 +76,31 @@ function logFailure(reason: SlipFileHashFailureReason): void {
   console.warn(`[SlipHash] could not compute file identifier: ${reason}`);
 }
 
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw new Error("SLIP_HASH_FETCH_TIMEOUT");
+}
+
+function checkDeadline(controller: AbortController, expiresAt: number): void {
+  // Also reject elapsed deadlines before the event loop has run the timer,
+  // e.g. if a signer or a ready body completes through queued microtasks.
+  if (performance.now() >= expiresAt) controller.abort();
+  throwIfAborted(controller.signal);
+}
+
+/** Cleanup must not extend the read deadline if a source never finishes canceling. */
+function cancelWithoutWaiting(cancel: () => Promise<unknown>): void {
+  try {
+    // Observe asynchronous rejection without awaiting an uncooperative source.
+    void cancel().catch(() => {});
+  } catch {
+    // A synchronous cleanup failure cannot turn this into a usable identifier.
+  }
+}
+
+function cancelResponseBody(response: Response): void {
+  if (response.body) cancelWithoutWaiting(() => response.body!.cancel());
+}
+
 async function readBodyBounded(
   response: Response,
   maxBytes: number,
@@ -88,10 +113,24 @@ async function readBodyBounded(
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let canceled = false;
+  const cancelReader = () => {
+    if (canceled) return;
+    canceled = true;
+    cancelWithoutWaiting(() => reader.cancel());
+  };
+
+  // A fetch may have returned headers before its body stalls. Canceling the
+  // reader also settles a pending read when the source's cancel promise hangs.
+  signal.addEventListener("abort", cancelReader, { once: true });
 
   try {
+    throwIfAborted(signal);
     while (true) {
       const { done, value } = await reader.read();
+      // cancel() can resolve read() with done=true after some chunks arrived;
+      // those partial bytes must never become a successful file identifier.
+      throwIfAborted(signal);
       if (done) break;
       if (value && value.byteLength > 0) {
         total += value.byteLength;
@@ -101,14 +140,16 @@ async function readBodyBounded(
         chunks.push(value);
       }
     }
+    if (total === 0) throw new Error("SLIP_HASH_EMPTY_BODY");
+    return Buffer.concat(chunks.map((c) => Buffer.from(c)));
   } catch (error) {
-    await reader.cancel().catch(() => {});
-    if (signal.aborted) throw new Error("SLIP_HASH_FETCH_TIMEOUT");
+    cancelReader();
+    throwIfAborted(signal);
     throw error;
+  } finally {
+    signal.removeEventListener("abort", cancelReader);
+    reader.releaseLock();
   }
-
-  if (total === 0) throw new Error("SLIP_HASH_EMPTY_BODY");
-  return Buffer.concat(chunks.map((c) => Buffer.from(c)));
 }
 
 /**
@@ -168,14 +209,20 @@ export async function computeTrustedLegacySlipFileHash(
   const timeoutMs = deps.timeoutMs ?? SLIP_HASH_FETCH_TIMEOUT_MS;
   const maxBytes = deps.maxBytes ?? MAX_SLIP_HASH_BYTES;
   const controller = new AbortController();
+  const expiresAt = performance.now() + timeoutMs;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    checkDeadline(controller, expiresAt);
     const response = await fetchImpl(parsed.toString(), {
       signal: controller.signal,
       redirect: "error",
     });
-    if (!response.ok) return undefined;
+    if (!response.ok) {
+      cancelResponseBody(response);
+      return undefined;
+    }
     const bytes = await readBodyBounded(response, maxBytes, controller.signal);
+    checkDeadline(controller, expiresAt);
     return hashSlipBytes(bytes);
   } catch {
     return undefined;
@@ -201,28 +248,35 @@ export async function computeSlipFileHash(
     return undefined;
   }
 
-  let signedUrl: string | null;
-  try {
-    signedUrl = await resolveFn(rawStoredValue, "paymentSlip");
-  } catch {
-    signedUrl = null;
-  }
-  if (!signedUrl) {
-    logFailure("SLIP_HASH_SIGNED_URL_FAILED");
-    return undefined;
-  }
-
   const controller = new AbortController();
+  const expiresAt = performance.now() + timeoutMs;
+  // Include signing in the budget. The production signer uses local static
+  // credentials; an injected/noncooperative signer cannot be forcibly canceled,
+  // so await it but refuse any result that arrives after this deadline.
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    let signedUrl: string | null;
+    try {
+      signedUrl = await resolveFn(rawStoredValue, "paymentSlip");
+    } catch {
+      signedUrl = null;
+    }
+    checkDeadline(controller, expiresAt);
+    if (!signedUrl) {
+      logFailure("SLIP_HASH_SIGNED_URL_FAILED");
+      return undefined;
+    }
+
     const response = await fetchImpl(signedUrl, { signal: controller.signal });
     if (!response.ok) {
+      cancelResponseBody(response);
       logFailure("SLIP_HASH_FETCH_FAILED");
       return undefined;
     }
 
     const bytes = await readBodyBounded(response, maxBytes, controller.signal);
+    checkDeadline(controller, expiresAt);
     return hashSlipBytes(bytes);
   } catch (error) {
     const message = error instanceof Error ? error.message : "";

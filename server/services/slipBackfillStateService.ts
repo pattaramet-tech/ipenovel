@@ -31,6 +31,7 @@
  */
 
 import { getSetting, setSetting } from "../db";
+import { sql } from "drizzle-orm";
 
 export const SLIP_BACKFILL_STATE_KEY = "paymentSlipClaims.backfillState";
 
@@ -70,13 +71,22 @@ const INCOMPLETE: SlipBackfillState = { complete: false };
 /**
  * Reads the durable state.
  *
- * Never throws: a read failure is reported as NOT complete so the caller
- * keeps the safe (scanning) behavior rather than silently skipping the
- * historical check because the database hiccuped.
+ * Standalone read failures report NOT complete. Transactional read failures
+ * propagate: a deadlock may already have rolled the transaction back, so it
+ * is never safe to continue financial work on that failed transaction.
+ * Missing/malformed completion values always keep the historical scan on.
  */
-export async function getSlipBackfillState(): Promise<SlipBackfillState> {
+export async function getSlipBackfillState(tx?: any): Promise<SlipBackfillState> {
+  // Approval already holds a payment lock: never request a second pool
+  // connection here. A CURRENT shared read also prevents an old RR snapshot
+  // from retaining complete:true after an operator cleared completion.
+  // MariaDB uses LOCK IN SHARE MODE (not MySQL 8's FOR SHARE syntax).
+  // Keep this await OUTSIDE the malformed-value/standalone-read fallback.
+  const transactionalRow = tx
+    ? (await tx.execute(sql`SELECT value FROM settings WHERE \`key\` = ${SLIP_BACKFILL_STATE_KEY} LOCK IN SHARE MODE`))?.[0]?.[0]
+    : undefined;
   try {
-    const row = await getSetting(SLIP_BACKFILL_STATE_KEY);
+    const row = tx ? transactionalRow : await getSetting(SLIP_BACKFILL_STATE_KEY);
     if (!row?.value) return INCOMPLETE;
 
     const parsed = JSON.parse(row.value);
@@ -113,8 +123,8 @@ export async function getSlipBackfillState(): Promise<SlipBackfillState> {
  * This is the single question the claim path asks. Phrased positively around
  * the SAFE outcome so that every failure mode above returns `true`.
  */
-export async function isLegacyScanRequired(): Promise<boolean> {
-  const state = await getSlipBackfillState();
+export async function isLegacyScanRequired(tx?: any): Promise<boolean> {
+  const state = await getSlipBackfillState(tx);
   return !state.complete;
 }
 

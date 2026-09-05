@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import { MySqlDialect } from "drizzle-orm/mysql-core";
 import * as db from "../db";
 import {
   SLIP_BACKFILL_STATE_KEY,
@@ -29,6 +30,25 @@ function stubSetting(value: string | null | undefined) {
 }
 
 describe("getSlipBackfillState fails safe", () => {
+  it("uses the caller's current shared read without acquiring another pool connection", async () => {
+    const pooledRead = vi.spyOn(db, "getSetting").mockRejectedValue(new Error("No spare pool connection"));
+    const tx = { execute: vi.fn().mockResolvedValue([[{ value: JSON.stringify({ complete: false }) }], []]) };
+    expect(await isLegacyScanRequired(tx)).toBe(true);
+    expect(pooledRead).not.toHaveBeenCalled();
+    const query = new MySqlDialect().sqlToQuery(tx.execute.mock.calls[0][0]);
+    expect(query.sql).toMatch(/SELECT value FROM settings WHERE `key` = \? LOCK IN SHARE MODE/);
+    expect(query.params).toEqual([SLIP_BACKFILL_STATE_KEY]);
+  });
+
+  it("honours only a current boolean completion and propagates a failed transaction", async () => {
+    const tx = { execute: vi.fn().mockResolvedValue([[{ value: JSON.stringify({ complete: true }) }], []]) };
+    expect(await isLegacyScanRequired(tx)).toBe(false);
+    tx.execute.mockResolvedValueOnce([[{ value: JSON.stringify({ complete: "true" }) }], []]);
+    expect(await isLegacyScanRequired(tx)).toBe(true);
+    const error = Object.assign(new Error("deadlock"), { errno: 1213 });
+    tx.execute.mockRejectedValueOnce(error);
+    await expect(isLegacyScanRequired(tx)).rejects.toBe(error);
+  });
   it("no row -> not complete", async () => {
     stubSetting(undefined);
     expect((await getSlipBackfillState()).complete).toBe(false);

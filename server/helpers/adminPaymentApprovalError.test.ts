@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TRPCError } from "@trpc/server";
+import { OrderApprovalVerificationTimeoutError } from "./orderApprovalExecution";
 import {
   mapOrderPaymentApprovalError,
   mapOrderPaymentRecheckError,
@@ -7,6 +8,13 @@ import {
 } from "./adminPaymentApprovalError";
 
 describe("mapOrderPaymentApprovalError", () => {
+  it("distinguishes an exhausted verification budget from another request's lock", () => {
+    const original = new OrderApprovalVerificationTimeoutError();
+    const mapped = mapOrderPaymentApprovalError(original);
+    expect(mapped).toMatchObject({ code: "SERVICE_UNAVAILABLE", message: original.message, cause: original });
+    expect(mapped.message).not.toBe(ORDER_PAYMENT_BUSY_MESSAGE);
+    expect(mapped.message).toContain("Nothing was approved");
+  });
   it.each([
     ["SLIP_ALREADY_CLAIMED: claimed elsewhere", "CONFLICT"],
     ["NO_STRONG_IDENTIFIER: recheck required", "PRECONDITION_FAILED"],

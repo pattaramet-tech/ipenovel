@@ -180,7 +180,7 @@ function makeDb(rows: Record<string, any[]>, onLock?: (store: Record<string, any
   return { fake, store };
 }
 
-function orderRows(paymentStatus = "pending_review") {
+function orderRows(paymentStatus = "pending_review"): Record<string, any[]> {
   return {
     payments: [
       {
@@ -397,9 +397,9 @@ describe("the guard is ONE shared primitive, not per-caller", () => {
   it("lockAndRequireReviewablePayment is the single implementation: lock, reload, require reviewable", () => {
     const start = orderCode.indexOf("export async function lockAndRequireReviewablePayment(");
     expect(start).toBeGreaterThan(-1);
-    const body = orderCode.slice(start, start + 1800);
+    const body = orderCode.slice(start, orderCode.indexOf("async function approvePaymentInTx(", start));
     const lockIdx = body.indexOf("db.lockPaymentForUpdate(paymentId, tx)");
-    const reloadIdx = body.indexOf("const payment = await db.getPaymentByIdForUpdate(paymentId, tx)");
+    const reloadIdx = body.indexOf('const payment = await traceOrderApprovalStage("payment_current_read", () => db.getPaymentByIdForUpdate(paymentId, tx))');
     const guardIdx = body.indexOf("isReviewablePaymentStatus(payment.status as string)");
     const throwIdx = body.indexOf("throw new PaymentNotReviewableError(paymentId, String(payment.status))");
     expect(lockIdx).toBeGreaterThan(-1);

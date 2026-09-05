@@ -37,6 +37,7 @@ import {
   isLegacyStrongMatch,
 } from "./legacySlipCompatibilityService";
 import { isLegacyScanRequired } from "./slipBackfillStateService";
+import { traceOrderApprovalStage, type OrderApprovalVerificationBudget } from "../helpers/orderApprovalExecution";
 import { hashSlipReference, type SlipStrongIdentifiers } from "./slipIdentifierService";
 import {
   findKnownLegacyCollisionAxes,
@@ -148,6 +149,7 @@ export type SlipConflict =
     };
 
 export interface EvaluateSlipConflictInput {
+  verificationBudget?: OrderApprovalVerificationBudget;
   identifiers: SlipStrongIdentifiers;
   /** RAW, case-preserving reference. Used ONLY to derive the lossy fold. */
   rawReference?: string;
@@ -194,6 +196,8 @@ export async function evaluateSlipConflict(
   input: EvaluateSlipConflictInput,
   tx: any
 ): Promise<SlipConflict> {
+  const budget = input.verificationBudget;
+  budget?.throwIfExpired();
   const self = { sourceType: input.sourceType, sourceId: input.sourceId };
 
   // ── 1. Durable known-collision registry (indexed, no scan) ─────────────
@@ -280,20 +284,23 @@ export async function evaluateSlipConflict(
     : undefined;
 
   // ── 3. Exact historical match (temporary scan) ─────────────────────────
-  const scanRequired =
-    input.includeLegacyScanIfRequired === false ? false : await isLegacyScanRequired();
+  const scanRequired = input.includeLegacyScanIfRequired === false ? false
+    : await traceOrderApprovalStage("legacy_scan_state", () => budget ? isLegacyScanRequired(tx) : isLegacyScanRequired());
+  budget?.throwIfExpired();
 
   let scanHit: Awaited<ReturnType<typeof findLegacyApprovedDuplicate>>;
   if (scanRequired) {
-    scanHit = await findLegacyApprovedDuplicate(
+    scanHit = await traceOrderApprovalStage("legacy_duplicate_scan", () => findLegacyApprovedDuplicate(
       {
         referenceHash: input.identifiers.referenceHash,
         fileHash: input.identifiers.fileHash,
         referenceHashUpperCandidate: legacyAliasHash,
       },
       self,
-      tx
-    );
+      tx,
+      budget
+    ));
+    budget?.throwIfExpired();
 
     // Only an EXACT historical hit is a duplicate. An uppercase-only hit and
     // an unresolved row are handled below - collapsing either one here would
@@ -349,7 +356,9 @@ export async function evaluateSlipConflict(
       aliasMatches.map((m) => ({ sourceType: m.sourceType, sourceId: m.sourceId }));
 
     if (scanRequired && members.length <= 1) {
-      const scanMembers = await findLegacyAliasGroupMembers(legacyAliasHash, self, tx);
+      const scanMembers = await traceOrderApprovalStage("legacy_alias_scan", () =>
+        findLegacyAliasGroupMembers(legacyAliasHash, self, tx, budget));
+      budget?.throwIfExpired();
       for (const m of scanMembers) {
         const alreadyCounted = members.some(
           (x) => x.sourceType === m.sourceType && x.sourceId === m.sourceId
@@ -421,6 +430,7 @@ export async function evaluateSlipConflict(
     }
   }
 
+  budget?.throwIfExpired();
   return { kind: "none" };
 }
 

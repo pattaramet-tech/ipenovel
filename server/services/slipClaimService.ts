@@ -44,10 +44,13 @@ import { paymentSlipClaims } from "../../drizzle/schema";
 import { eq, or } from "drizzle-orm";
 import { evaluateSlipConflict } from "./slipConflictEvaluator";
 import type { SlipStrongIdentifiers, StrongDuplicateKind } from "./slipIdentifierService";
+import { traceOrderApprovalStage, type OrderApprovalVerificationBudget } from "../helpers/orderApprovalExecution";
 
 export type SlipClaimSourceType = "order_payment" | "wallet_topup";
 
 export interface SlipClaimRequest {
+  /** Server-only cooperative bound; expiration aborts, never skips replay checks. */
+  verificationBudget?: OrderApprovalVerificationBudget;
   sourceType: SlipClaimSourceType;
   sourceId: number;
   userId: number;
@@ -457,6 +460,7 @@ export async function claimSlip(
   request: SlipClaimRequest,
   tx: any
 ): Promise<SlipClaimOutcome> {
+  request.verificationBudget?.throwIfExpired();
   const kinds = presentKinds(request.identifiers);
 
   if (kinds.length === 0) {
@@ -487,9 +491,11 @@ export async function claimSlip(
         sourceType: request.sourceType,
         sourceId: request.sourceId,
         legacyFileAxisRiskResolution: request.legacyFileAxisRiskResolution,
+        verificationBudget: request.verificationBudget,
       },
       tx
     );
+    request.verificationBudget?.throwIfExpired();
 
     if (conflict.kind === "strong_duplicate") {
       return {
@@ -596,8 +602,9 @@ export async function claimSlip(
     }
   }
 
+  request.verificationBudget?.throwIfExpired();
   try {
-    const inserted = await tx.insert(paymentSlipClaims).values({
+    const inserted = await traceOrderApprovalStage("claim_insert", async () => tx.insert(paymentSlipClaims).values({
       sourceType: request.sourceType,
       sourceId: request.sourceId,
       userId: request.userId,
@@ -612,7 +619,8 @@ export async function claimSlip(
       qrPayloadHash: request.identifiers.qrPayloadHash ?? null,
       semanticFingerprint: request.semanticFingerprint ?? null,
       claimedAt: new Date(),
-    });
+    }));
+    request.verificationBudget?.throwIfExpired();
 
     const claimId = Number((inserted as any)?.[0]?.insertId ?? (inserted as any)?.insertId ?? 0);
     return { claimed: true, claimId, claimedKinds: kinds };

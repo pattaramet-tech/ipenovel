@@ -1,4 +1,5 @@
 import * as db from "../db";
+import { sql } from "drizzle-orm";
 
 import { ApprovalService } from "./approvalService";
 import { normalizeMoneyAmount, formatMoney } from "../helpers/moneyNormalizer";
@@ -15,6 +16,12 @@ import {
   atOrderPaymentApprovalStage,
   type OrderPaymentApprovalLockStage,
 } from "../helpers/orderPaymentApprovalStage";
+import {
+  createOrderApprovalVerificationBudget,
+  setOrderApprovalConnectionId,
+  traceOrderApprovalStage,
+  withOrderApprovalExecution,
+} from "../helpers/orderApprovalExecution";
 
 const COUPON_OWNERSHIP_DENIAL_PATTERNS = [/^coupon not found$/i, /belongs to another user/i];
 
@@ -348,14 +355,21 @@ export async function approvePayment(
     auditResolution?: (tx: any) => Promise<void>;
   }
 ): Promise<{ message: string }> {
-  if (tx) {
-    return approvePaymentInTx(paymentId, approvedBy, adminLabel, tx, options);
-  }
-  const database = await db.getDb();
-  if (!database) throw new Error("Database not available");
-  return database.transaction((newTx: any) =>
-    approvePaymentInTx(paymentId, approvedBy, adminLabel, newTx, options)
-  );
+  return withOrderApprovalExecution(paymentId, !tx, async () => {
+    const run = async (approvalTx: any) => {
+      await traceOrderApprovalStage("connection_id", async () => {
+        // Same connection as the financial transaction; no extra pool lease.
+        const result = await approvalTx.execute(sql`SELECT CONNECTION_ID() AS connectionId`);
+        setOrderApprovalConnectionId(result?.[0]?.[0]?.connectionId);
+      });
+      return approvePaymentInTx(paymentId, approvedBy, adminLabel, approvalTx, options);
+    };
+    if (tx) return run(tx);
+    const database = await db.getDb();
+    if (!database) throw new Error("Database not available");
+    // Trace completion only after COMMIT/ROLLBACK has actually settled.
+    return database.transaction(run);
+  });
 }
 
 /**
@@ -509,7 +523,7 @@ export async function lockAndRequireReviewablePayment(
   // Discover the immutable order owner without taking a subject lock, then
   // enter the shared Account Merge guard BEFORE the payment row. The post-lock
   // owner check below makes the pre-read advisory only.
-  const ownerPayment = await db.getPaymentById(paymentId, tx);
+  const ownerPayment = await traceOrderApprovalStage("owner_read", () => db.getPaymentById(paymentId, tx));
   if (!ownerPayment) throw new Error("Payment not found");
   const ownerOrder = await db.getOrderById(ownerPayment.orderId, tx);
   if (!ownerOrder?.userId) throw new Error("Payment order owner not found");
@@ -524,7 +538,7 @@ export async function lockAndRequireReviewablePayment(
   // The advisory owner reads above may have established an older REPEATABLE
   // READ snapshot before we waited. Locking only the id does not refresh it:
   // decision-bearing fields must come from a current locking read as well.
-  const payment = await db.getPaymentByIdForUpdate(paymentId, tx);
+  const payment = await traceOrderApprovalStage("payment_current_read", () => db.getPaymentByIdForUpdate(paymentId, tx));
   if (!payment) {
     throw new Error("Payment not found");
   }
@@ -583,6 +597,10 @@ async function approvePaymentInTx(
   // browser may have had this order open for a long time and the OCR panel it
   // renders is display state, not authority; the locked row is.
   const payment = await lockAndRequireReviewablePayment(paymentId, tx);
+  // One budget across current-byte verification AND both historical scans,
+  // not a fresh full timeout for every old slip. SQL waits still use the
+  // database's own timeout; no detached transaction work/Promise.race.
+  const verificationBudget = createOrderApprovalVerificationBudget();
 
   const order = await db.getOrderById(payment.orderId, tx);
   if (!order) {
@@ -644,13 +662,14 @@ async function approvePaymentInTx(
     // redirect-free current-byte hash. Everything else fails closed below.
     // Private `r2p:` refs continue through the existing mandatory re-hash.
     const currentByteStartedAt = Date.now();
-    const currentFileHash = isLegacyStorageUrl(payment.slipImageUrl)
+    const currentFileHash = await traceOrderApprovalStage("current_byte_hash", async () => isLegacyStorageUrl(payment.slipImageUrl)
       ? await computeTrustedLegacySlipFileHash(payment.slipImageUrl, {
-          timeoutMs: ORDER_APPROVAL_SLIP_HASH_TIMEOUT_MS,
+          timeoutMs: verificationBudget.remainingMs(ORDER_APPROVAL_SLIP_HASH_TIMEOUT_MS),
         })
       : await computeSlipFileHash(payment.slipImageUrl, {
-          timeoutMs: ORDER_APPROVAL_SLIP_HASH_TIMEOUT_MS,
-        });
+          timeoutMs: verificationBudget.remainingMs(ORDER_APPROVAL_SLIP_HASH_TIMEOUT_MS),
+        }));
+    verificationBudget.throwIfExpired();
     const currentByteDurationMs = Date.now() - currentByteStartedAt;
     if (currentByteDurationMs >= ORDER_APPROVAL_SLOW_HASH_LOG_MS) {
       console.warn(
@@ -699,10 +718,13 @@ async function approvePaymentInTx(
         // boolean: claimSlip waives it only when the fold it finds from
         // transaction-visible state is identical.
         legacyCaseAmbiguityResolution: options?.legacyCaseAmbiguityResolution,
+        verificationBudget,
       },
       tx
     )
   );
+
+  verificationBudget.throwIfExpired();
 
   if (!claim.claimed && claim.reason === "legacy_scan_unresolved") {
     // An approved historical row exists that could not be verified - not a
@@ -825,6 +847,9 @@ async function approvePaymentInTx(
     );
   }
 
+  // A deadline reached during an awaited SQL/finalization step must still
+  // unwind the transaction, never commit a partially timed-out approval.
+  verificationBudget.throwIfExpired();
   return { message: `Payment ${paymentId} approved successfully` };
 }
 

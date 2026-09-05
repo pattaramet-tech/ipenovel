@@ -1,4 +1,5 @@
 import { isLockWaitTimeout } from "./databaseErrorClassifier";
+import { traceOrderApprovalStage } from "./orderApprovalExecution";
 
 export const ORDER_PAYMENT_APPROVAL_LOCK_STAGES = [
   "account_guard",
@@ -33,7 +34,7 @@ export async function atOrderPaymentApprovalStage<T>(
   fn: () => Promise<T>
 ): Promise<T> {
   try {
-    return await fn();
+    return await traceOrderApprovalStage(stage, fn);
   } catch (error) {
     if (!isLockWaitTimeout(error)) throw error;
     const wrapped = new Error(`ORDER_PAYMENT_APPROVAL_LOCK_STAGE:${stage}`, {
