@@ -19,7 +19,7 @@ export interface BulkRelinkArgs {
   type: BulkRelinkSourceType | "all";
 }
 
-const APPLY_CONFIRMATION = "--confirm-bulk-relink-approved-legacy-slips";
+const APPLY_CONFIRMATION = "--confirm-bulk-relink-all-legacy-slips";
 
 export function parseBulkRelinkArgs(argv: readonly string[]): BulkRelinkArgs {
   const flags = new Set(argv);

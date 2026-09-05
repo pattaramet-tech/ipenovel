@@ -220,7 +220,7 @@ async function readRows(
   for (const sourceType of selected) {
     const table = sourceType === "payments" ? "payments" : "walletTopups";
     const [raw] = await connection.query<any[]>({
-      sql: `SELECT id, slipImageUrl FROM ${table} WHERE status = 'approved' AND slipImageUrl IS NOT NULL AND slipImageUrl <> '' ORDER BY id`,
+      sql: `SELECT id, slipImageUrl FROM ${table} WHERE slipImageUrl IS NOT NULL AND slipImageUrl <> '' ORDER BY id`,
       timeout: 15_000,
     });
     for (const item of raw) {
@@ -244,7 +244,7 @@ async function updateOne(
 ) {
   const table = row.sourceType === "payments" ? "payments" : "walletTopups";
   const [result] = await connection.query<any>({
-    sql: `UPDATE ${table} SET slipImageUrl = ? WHERE id = ? AND status = 'approved' AND BINARY slipImageUrl = BINARY ?`,
+    sql: `UPDATE ${table} SET slipImageUrl = ? WHERE id = ? AND BINARY slipImageUrl = BINARY ?`,
     values: [nextValue, row.id, row.currentValue],
     timeout: 5_000,
   });
@@ -261,7 +261,7 @@ export async function main(
   } catch {
     console.error(
       "Usage: --dry-run|--apply --confirm-preview --type=payments|wallet|all " +
-        "[--confirm-bulk-relink-approved-legacy-slips (required for --apply)]"
+        "[--confirm-bulk-relink-all-legacy-slips (required for --apply)]"
     );
     return 2;
   }
@@ -337,7 +337,7 @@ export async function main(
       JSON.stringify({
         type: "summary",
         mode: args.mode,
-        target: "PREVIEW_APPROVED_LEGACY_SLIPS",
+        target: "PREVIEW_ALL_LEGACY_SLIPS",
         sourceTypes: selectedTypes,
         legacyRows: inventory.rows.length,
         alreadyPrivate: inventory.alreadyPrivate,

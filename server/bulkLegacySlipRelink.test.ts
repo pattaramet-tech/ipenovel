@@ -17,7 +17,7 @@ describe("bulk legacy slip relink", () => {
         "--apply",
         "--confirm-preview",
         "--type=payments",
-        "--confirm-bulk-relink-approved-legacy-slips",
+        "--confirm-bulk-relink-all-legacy-slips",
       ])
     ).toEqual({ mode: "apply", type: "payments" });
     for (const args of [
