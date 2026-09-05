@@ -17,8 +17,10 @@ The other nine rows, payment `82350007`, IPE-013, financial approvals, OCR,
 claim backfill and historical completion flags are excluded.
 
 **No live repair or schema change is authorized by this implementation run.**
-There is no apply/live CLI mode or application endpoint. The writer is an
-isolated, tested library for a later separately approved execution entry point.
+The original preparation CLI has no apply/live mode. A separate disabled
+execution candidate and read-only recovery entry point are now documented in
+[the candidate runbook](LEGACY_SLIP_LIVE_REPAIR_CANDIDATE.md). They do not authorize
+a live operation or expose an application endpoint.
 The manual audit DDL is outside `drizzle/` and the migration journal, so app
 deployment, attestation and dry-run cannot create that table automatically.
 
@@ -126,12 +128,14 @@ Exit 0 means attestation recorded or dry-run matched; 1 means blocked; 2 means
 input/preflight/output/fatal failure. Public summaries omit keys, URLs, slip
 hashes, operator identity and financial context. Share only those summaries.
 
-## 3. Guarded writer core — NOT currently callable from the CLI
+## 3. Guarded writer core — execution release gate remains disabled
 
 `scripts/lib/legacySlipRepairWriter.ts` is an isolated future execution core.
-No application route or CLI imports it. Adding an execution entry point needs
-another explicit live-work approval and review; do not invoke the library by
-hand to bypass this boundary.
+No application route imports it. The separate candidate CLI has a source-code
+release gate that rejects execution before private-file/environment/network
+access; its read-only recovery path cannot invoke a mutation. Releasing execution
+still needs separate review and approval; do not invoke the library by hand to
+bypass this boundary. See the candidate runbook for isolated verification.
 
 Prerequisites for any future live run include:
 
@@ -178,4 +182,6 @@ cannot establish real Linux filesystem/DB concurrency behavior from mocks.
 Before enabling a live entry point, separately verify the audit DDL and writer
 against an isolated MariaDB 11.4 test database, including lock contention,
 rollback and commit acknowledgement loss, plus real Linux private-file handling.
-This work does not start Docker/WSL, deploy, execute DDL or connect to Preview.
+The initial preparation run did not start Docker/WSL, deploy, execute DDL or
+connect to Preview. The subsequent candidate verification uses only disposable
+local Docker databases and synthetic data; no live DDL/repair is authorized.

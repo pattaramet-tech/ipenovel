@@ -161,6 +161,10 @@ type Controls = {
   badIndex?: boolean;
   snapshotTooShort?: boolean;
   trigger?: boolean;
+  hiddenTriggers?: boolean;
+  lateTrigger?: boolean;
+  lateEngineChange?: boolean;
+  extraPaymentColumn?: boolean;
   crossConflict?: boolean;
   connectFailure?: boolean;
   failQuery?: string;
@@ -190,12 +194,24 @@ function harness(input = inputFixture(), controls: Controls = {}) {
           if (controls.failQuery && sql.includes(controls.failQuery))
             throw new Error("PRIVATE_DATABASE_PASSWORD");
           let result: any = [];
-          if (sql.includes("information_schema.tables"))
+          if (sql === "SHOW GRANTS")
+            result = [
+              {
+                grants: controls.hiddenTriggers
+                  ? "GRANT SELECT, UPDATE, INSERT ON `ipenovel`.* TO `fixture`@`%`"
+                  : "GRANT ALL PRIVILEGES ON *.* TO `fixture`@`%`",
+              },
+            ];
+          else if (sql.includes("information_schema.tables"))
             result = controls.tablesMissing
               ? []
               : TABLES.map(name => ({
                   name,
-                  engine: "InnoDB",
+                  engine:
+                    controls.lateEngineChange &&
+                    calls.some(c => c.sql === "START TRANSACTION")
+                      ? "MyISAM"
+                      : "InnoDB",
                   comment:
                     name === "legacySlipReferenceRepairAudit"
                       ? "legacy-slip-reference-repair-audit/v1"
@@ -217,6 +233,16 @@ function harness(input = inputFixture(), controls: Controls = {}) {
                     subPart: null,
                   }))
                 );
+          else if (
+            sql.includes("information_schema.columns") &&
+            sql.includes("TABLE_NAME = 'payments'")
+          )
+            result = [
+              ...Object.keys(input.intent.before.record),
+              ...(controls.extraPaymentColumn
+                ? ["unreviewedAutoUpdatedField"]
+                : []),
+            ].map(name => ({ name }));
           else if (sql.includes("information_schema.columns"))
             result = AUDIT_COLS.map(name => ({
               name,
@@ -224,7 +250,12 @@ function harness(input = inputFixture(), controls: Controls = {}) {
               nullable: "NO",
             }));
           else if (sql.includes("information_schema.triggers"))
-            result = controls.trigger ? [{ name: "unreviewed" }] : [];
+            result =
+              controls.trigger ||
+              (controls.lateTrigger &&
+                calls.some(c => c.sql === "START TRANSACTION"))
+                ? [{ name: "unreviewed" }]
+                : [];
           else if (sql === "START TRANSACTION") {
             saved = structuredClone(state);
             savedAudit = audit && structuredClone(audit);
@@ -407,7 +438,12 @@ describe("future single-payment guarded writer (fake connections only)", () => {
     expect(
       h.calls
         .slice(first + 1)
-        .filter(c => c.sql.startsWith("SELECT"))
+        // Rechecked metadata is protected by already-held table metadata locks;
+        // every source/account/registry/audit row read remains a locking read.
+        .filter(
+          c =>
+            c.sql.startsWith("SELECT") && !c.sql.includes("information_schema.")
+        )
         .every(c => /FOR UPDATE$|LOCK IN SHARE MODE$/.test(c.sql))
     ).toBe(true);
   });
@@ -671,6 +707,38 @@ describe("future single-payment guarded writer (fake connections only)", () => {
       /PASSWORD|fixture|cloudfront|payment-slips/
     );
   });
+  it("cannot trust an empty trigger list without metadata visibility", async () => {
+    const h = harness(inputFixture(), { hiddenTriggers: true });
+    expect(await h.run()).toEqual({
+      status: "BLOCKED",
+      code: "TRIGGER_VISIBILITY_NOT_ESTABLISHED",
+    });
+    expect(
+      h.calls.some(
+        c => c.sql === "START TRANSACTION" || c.sql.startsWith("UPDATE")
+      )
+    ).toBe(false);
+  });
+  it("refuses unreviewed payment columns rather than claiming they were preserved", async () => {
+    const h = harness(inputFixture(), { extraPaymentColumn: true });
+    expect(await h.run()).toEqual({
+      status: "BLOCKED",
+      code: "UNREVIEWED_PAYMENT_SCHEMA",
+    });
+    expect(h.calls.some(c => c.sql === "START TRANSACTION")).toBe(false);
+  });
+  it.each([
+    [{ lateTrigger: true }, "UNREVIEWED_TRIGGER"],
+    [{ lateEngineChange: true }, "AUDIT_SCHEMA_NOT_READY"],
+  ] as const)(
+    "revalidates metadata after acquiring table locks %#",
+    async (controls, code) => {
+      const h = harness(inputFixture(), controls);
+      expect(await h.run()).toEqual({ status: "ROLLED_BACK", code });
+      expect(h.calls.filter(c => c.sql === "SHOW GRANTS")).toHaveLength(2);
+      expect(h.calls.some(c => c.sql.startsWith("UPDATE"))).toBe(false);
+    }
+  );
   it("keeps DDL manual and never issues DDL during execution", async () => {
     const ddl = readFileSync(
       new URL(

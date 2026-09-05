@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { types } from "node:util";
+import { hasRepairTriggerVisibility } from "./legacySlipRepairTriggerVisibility";
 import mysql, { type Connection } from "mysql2/promise";
 import type { LegacySlipAuditEnvironment } from "./legacySlipAuditOptions";
 import { relinkTargetFingerprint } from "./legacySlipRelinkPlan";
@@ -61,6 +62,7 @@ export interface RepairWriterInput {
   authorization: RepairLiveAuthorization;
   preflight: RepairFreshPreflight;
 }
+export type RepairAuthorityInput = Omit<RepairWriterInput, "preflight">;
 export type RepairWriterResult = {
   status: "APPLIED" | "ALREADY_APPLIED" | "BLOCKED" | "ROLLED_BACK" | "UNKNOWN";
   code: string;
@@ -212,19 +214,21 @@ function unchangedExceptReference(
   return canonical(expected) === canonical(after);
 }
 
-type Validated = {
+type ValidatedAuthority = {
   intent: RepairIntent;
-  input: RepairWriterInput;
+  input: RepairAuthorityInput;
   primarySha: string;
   secondSha: string;
   authSha: string;
   checkFresh(): void;
 };
-function validateInput(
-  input: RepairWriterInput,
+/** Pure authority validation BEFORE any network/preflight; never invents a
+ * preflight or changes the operator's dates to make stale authority pass. */
+function prepareRepairAuthority(
+  input: RepairAuthorityInput,
   config: LegacySlipAuditEnvironment,
-  now: () => number
-): Validated {
+  now: () => number = Date.now
+): ValidatedAuthority {
   // Clone before any await; callers cannot mutate authorization while locks wait.
   requirePlainInput(input);
   const cloned = structuredClone(input);
@@ -263,7 +267,6 @@ function validateInput(
   const primarySha = digest(cloned.operatorAttestationBytes);
   const r = cloned.secondReview;
   const a = cloned.authorization;
-  const p = cloned.preflight;
   exactKeys(r, [
     "schema",
     "reviewer",
@@ -291,14 +294,6 @@ function validateInput(
     "expiresAt",
     "scope",
   ]);
-  exactKeys(p, [
-    "intentSha256",
-    "targetFingerprint",
-    "checkedAt",
-    "expiresAt",
-    "candidate",
-    "allCrossReferencesClear",
-  ]);
   const secondSha = digestRepairSecondReview(r);
   if (
     r.schema !== "legacy-slip-independent-review/v1" ||
@@ -320,11 +315,7 @@ function validateInput(
     !identity(a.maintenance.assertionId) ||
     !identity(a.maintenance.assertedBy) ||
     a.maintenance.scope !==
-      "ALL_PAYMENT_ORDER_ACCOUNT_MERGE_EVIDENCE_AND_R2_WRITERS_STOPPED" ||
-    p.intentSha256 !== intent.intentSha256 ||
-    p.targetFingerprint !== intent.targetFingerprint ||
-    p.allCrossReferencesClear !== true ||
-    canonical(p.candidate) !== canonical(intent.candidate)
+      "ALL_PAYMENT_ORDER_ACCOUNT_MERGE_EVIDENCE_AND_R2_WRITERS_STOPPED"
   )
     fail("INVALID_AUTHORIZATION");
   const reviewAt = timestamp(r.reviewedAt);
@@ -332,35 +323,114 @@ function validateInput(
     authExpiry = timestamp(a.expiresAt);
   const freezeAt = timestamp(a.maintenance.assertedAt),
     freezeExpiry = timestamp(a.maintenance.expiresAt);
-  const checkedAt = timestamp(p.checkedAt),
-    preflightExpiry = timestamp(p.expiresAt);
+  if (
+    reviewAt > authAt ||
+    authAt - reviewAt > 86_400_000 ||
+    reviewAt < timestamp(primary.recordedAt) ||
+    authExpiry <= authAt ||
+    freezeExpiry <= freezeAt ||
+    authExpiry - authAt > 900_000 ||
+    freezeExpiry - freezeAt > 900_000
+  )
+    fail("INVALID_AUTHORIZATION");
   const checkFresh = () => {
     const current = now();
     if (
       !Number.isFinite(current) ||
       reviewAt > authAt ||
       authAt > current ||
-      freezeAt > checkedAt ||
-      checkedAt > current ||
+      freezeAt > current ||
       authExpiry <= current ||
       freezeExpiry <= current ||
-      preflightExpiry <= current ||
       authExpiry - authAt > 900_000 ||
       freezeExpiry - freezeAt > 900_000 ||
-      preflightExpiry - checkedAt > 60_000 ||
-      current - checkedAt > 60_000 ||
       current - reviewAt > 86_400_000 ||
       reviewAt < timestamp(primary.recordedAt)
     )
       fail("AUTHORIZATION_OR_PREFLIGHT_EXPIRED");
   };
-  checkFresh();
   return {
     intent,
     input: cloned,
     primarySha,
     secondSha,
     authSha: digest(canonical(a)),
+    checkFresh,
+  };
+}
+
+/** Exact private record bindings and original chronology only. READ-ONLY
+ * reconciliation may inspect expired records. This is NEVER write authority. */
+export function validateRepairAuthorityRecords(
+  input: RepairAuthorityInput,
+  config: LegacySlipAuditEnvironment
+): Omit<ValidatedAuthority, "checkFresh"> {
+  const { checkFresh: _unused, ...records } = prepareRepairAuthority(
+    input,
+    config,
+    Date.now
+  );
+  return records;
+}
+
+/** Pure current write authority validation, before all network access. */
+export function validateRepairAuthority(
+  input: RepairAuthorityInput,
+  config: LegacySlipAuditEnvironment,
+  now: () => number = Date.now
+): ValidatedAuthority {
+  const validated = prepareRepairAuthority(input, config, now);
+  validated.checkFresh();
+  return validated;
+}
+
+type Validated = Omit<ValidatedAuthority, "input"> & {
+  input: RepairWriterInput;
+};
+function validateInput(
+  input: RepairWriterInput,
+  config: LegacySlipAuditEnvironment,
+  now: () => number
+): Validated {
+  requirePlainInput(input);
+  const { preflight: p, ...authority } = structuredClone(input);
+  const validated = validateRepairAuthority(authority, config, now);
+  exactKeys(p, [
+    "intentSha256",
+    "targetFingerprint",
+    "checkedAt",
+    "expiresAt",
+    "candidate",
+    "allCrossReferencesClear",
+  ]);
+  if (
+    p.intentSha256 !== validated.intent.intentSha256 ||
+    p.targetFingerprint !== validated.intent.targetFingerprint ||
+    p.allCrossReferencesClear !== true ||
+    canonical(p.candidate) !== canonical(validated.intent.candidate)
+  )
+    fail("INVALID_AUTHORIZATION");
+  const checkedAt = timestamp(p.checkedAt),
+    expiry = timestamp(p.expiresAt);
+  const freezeAt = timestamp(
+    validated.input.authorization.maintenance.assertedAt
+  );
+  const checkFresh = () => {
+    validated.checkFresh();
+    const current = now();
+    if (
+      freezeAt > checkedAt ||
+      checkedAt > current ||
+      expiry <= current ||
+      expiry - checkedAt > 60_000 ||
+      current - checkedAt > 60_000
+    )
+      fail("AUTHORIZATION_OR_PREFLIGHT_EXPIRED");
+  };
+  checkFresh();
+  return {
+    ...validated,
+    input: { ...validated.input, preflight: p },
     checkFresh,
   };
 }
@@ -458,80 +528,99 @@ export async function executeLegacySlipRepair(
     );
   try {
     c = await connect(options);
-    const tables = await query(
-      "SELECT TABLE_NAME AS name, ENGINE AS engine, TABLE_COMMENT AS comment FROM information_schema.tables WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('payments','orders','accountMutationGuards','users','accountMergeCases','paymentSlipClaims','slipEvidenceBindings','slipEvidenceUploads','paymentSlipLegacyUnknown','paymentSlipLegacyCollisions','walletTopups','legacySlipReferenceRepairAudit')"
-    );
-    const expectedTables = [
-      "payments",
-      "orders",
-      "accountMutationGuards",
-      "users",
-      "accountMergeCases",
-      "paymentSlipClaims",
-      "slipEvidenceBindings",
-      "slipEvidenceUploads",
-      "paymentSlipLegacyUnknown",
-      "paymentSlipLegacyCollisions",
-      "walletTopups",
-      TABLE,
-    ];
-    if (
-      !Array.isArray(tables) ||
-      tables.length !== expectedTables.length ||
-      expectedTables.some(
-        name =>
-          !tables.some(
-            (r: any) =>
-              r.name === name &&
-              r.engine === "InnoDB" &&
-              (name !== TABLE || r.comment === SCHEMA_MARKER)
-          )
-      )
-    )
-      fail("AUDIT_SCHEMA_NOT_READY");
-    const indexes = await query(
-      "SELECT INDEX_NAME AS name, NON_UNIQUE AS nonUnique, SEQ_IN_INDEX AS position, COLUMN_NAME AS columnName, SUB_PART AS subPart FROM information_schema.statistics WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'legacySlipReferenceRepairAudit' ORDER BY INDEX_NAME, SEQ_IN_INDEX"
-    );
-    for (const [name, columns] of [
-      ["uq_legacy_repair_source", ["sourceType", "sourceId"]],
-      ["uq_legacy_repair_intent", ["intentSha256"]],
-      ["uq_legacy_repair_operation", ["operationId"]],
-    ] as const) {
-      const rows = indexes.filter((r: any) => r.name === name);
+    const requireSchema = async () => {
+      // Metadata is privilege-filtered: an empty trigger list alone is not proof.
+      if (!hasRepairTriggerVisibility(await query("SHOW GRANTS")))
+        fail("TRIGGER_VISIBILITY_NOT_ESTABLISHED");
+      const tables = await query(
+        "SELECT TABLE_NAME AS name, ENGINE AS engine, TABLE_COMMENT AS comment FROM information_schema.tables WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('payments','orders','accountMutationGuards','users','accountMergeCases','paymentSlipClaims','slipEvidenceBindings','slipEvidenceUploads','paymentSlipLegacyUnknown','paymentSlipLegacyCollisions','walletTopups','legacySlipReferenceRepairAudit')"
+      );
+      const expectedTables = [
+        "payments",
+        "orders",
+        "accountMutationGuards",
+        "users",
+        "accountMergeCases",
+        "paymentSlipClaims",
+        "slipEvidenceBindings",
+        "slipEvidenceUploads",
+        "paymentSlipLegacyUnknown",
+        "paymentSlipLegacyCollisions",
+        "walletTopups",
+        TABLE,
+      ];
       if (
-        rows.length !== columns.length ||
-        rows.some(
-          (r: any, i: number) =>
-            Number(r.nonUnique) !== 0 ||
-            Number(r.position) !== i + 1 ||
-            r.columnName !== columns[i] ||
-            r.subPart !== null
+        !Array.isArray(tables) ||
+        tables.length !== expectedTables.length ||
+        expectedTables.some(
+          name =>
+            !tables.some(
+              (r: any) =>
+                r.name === name &&
+                r.engine === "InnoDB" &&
+                (name !== TABLE || r.comment === SCHEMA_MARKER)
+            )
         )
       )
         fail("AUDIT_SCHEMA_NOT_READY");
-    }
-    const columns = await query(
-      "SELECT COLUMN_NAME AS name, DATA_TYPE AS dataType, IS_NULLABLE AS nullable FROM information_schema.columns WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'legacySlipReferenceRepairAudit'"
-    );
-    if (
-      !Array.isArray(columns) ||
-      columns.length !== AUDIT_COLUMNS.length ||
-      AUDIT_COLUMNS.some(
-        name =>
-          !columns.some(
-            (r: any) =>
-              r.name === name &&
-              r.nullable === "NO" &&
-              (!["beforeSnapshot", "afterSnapshot"].includes(name) ||
-                r.dataType === "longtext")
+      const indexes = await query(
+        "SELECT INDEX_NAME AS name, NON_UNIQUE AS nonUnique, SEQ_IN_INDEX AS position, COLUMN_NAME AS columnName, SUB_PART AS subPart FROM information_schema.statistics WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'legacySlipReferenceRepairAudit' ORDER BY INDEX_NAME, SEQ_IN_INDEX"
+      );
+      for (const [name, columns] of [
+        ["uq_legacy_repair_source", ["sourceType", "sourceId"]],
+        ["uq_legacy_repair_intent", ["intentSha256"]],
+        ["uq_legacy_repair_operation", ["operationId"]],
+      ] as const) {
+        const rows = indexes.filter((r: any) => r.name === name);
+        if (
+          rows.length !== columns.length ||
+          rows.some(
+            (r: any, i: number) =>
+              Number(r.nonUnique) !== 0 ||
+              Number(r.position) !== i + 1 ||
+              r.columnName !== columns[i] ||
+              r.subPart !== null
           )
+        )
+          fail("AUDIT_SCHEMA_NOT_READY");
+      }
+      const columns = await query(
+        "SELECT COLUMN_NAME AS name, DATA_TYPE AS dataType, IS_NULLABLE AS nullable FROM information_schema.columns WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'legacySlipReferenceRepairAudit'"
+      );
+      if (
+        !Array.isArray(columns) ||
+        columns.length !== AUDIT_COLUMNS.length ||
+        AUDIT_COLUMNS.some(
+          name =>
+            !columns.some(
+              (r: any) =>
+                r.name === name &&
+                r.nullable === "NO" &&
+                (!["beforeSnapshot", "afterSnapshot"].includes(name) ||
+                  r.dataType === "longtext")
+            )
+        )
       )
-    )
-      fail("AUDIT_SCHEMA_NOT_READY");
-    const triggers = await query(
-      "SELECT TRIGGER_NAME AS name FROM information_schema.triggers WHERE TRIGGER_SCHEMA = DATABASE() AND EVENT_OBJECT_TABLE IN ('payments','legacySlipReferenceRepairAudit') LIMIT 1"
-    );
-    if (!Array.isArray(triggers) || triggers.length) fail("UNREVIEWED_TRIGGER");
+        fail("AUDIT_SCHEMA_NOT_READY");
+      const paymentColumns = await query(
+        "SELECT COLUMN_NAME AS name FROM information_schema.columns WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'payments'"
+      );
+      const expectedPaymentColumns = Object.keys(v.intent.before.record);
+      if (
+        !Array.isArray(paymentColumns) ||
+        paymentColumns.length !== expectedPaymentColumns.length ||
+        expectedPaymentColumns.some(
+          name => !paymentColumns.some((row: any) => row.name === name)
+        )
+      )
+        fail("UNREVIEWED_PAYMENT_SCHEMA");
+      const triggers = await query(
+        "SELECT TRIGGER_NAME AS name FROM information_schema.triggers WHERE TRIGGER_SCHEMA = DATABASE() AND EVENT_OBJECT_TABLE IN ('payments','legacySlipReferenceRepairAudit') LIMIT 1"
+      );
+      if (!Array.isArray(triggers) || triggers.length)
+        fail("UNREVIEWED_TRIGGER");
+    };
+    await requireSchema();
     await query("SET SESSION innodb_lock_wait_timeout = 5");
     await query("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED");
     await query("START TRANSACTION");
@@ -623,6 +712,10 @@ export async function executeLegacySlipRepair(
       ].some(rows => rows.length)
     )
       fail("CROSS_REFERENCE_CONFLICT");
+    // Source, audit, registries and account tables now have transaction metadata
+    // locks. Recheck after acquiring them so intervening DDL cannot invalidate
+    // the earlier InnoDB/unique-audit/no-trigger guarantees before UPDATE.
+    await requireSchema();
     const newRef = `r2p:${v.intent.candidate.key}`;
     const result = await query(
       "UPDATE payments SET slipImageUrl = ? WHERE id = ? AND orderId = ? AND BINARY slipImageUrl = BINARY ? AND status = 'approved' AND evidenceVersion = 0 AND slipEvidenceClass = 'legacy_compatibility_required' AND slipEvidenceId IS NULL AND extractedEvidenceVersion IS NULL AND extractedData IS NULL",
