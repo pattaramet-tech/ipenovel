@@ -39,6 +39,7 @@ import { redactDatabaseUrl } from "../server/test-helpers/testDatabaseGuard";
 import { assertLiveTestDatabaseName } from "../server/test-helpers/liveTestDatabaseCheck";
 import { buildTestDbConnectionOptions, parseTestDbTransportMode } from "../server/test-helpers/testDbConnectionOptions";
 import { resetTestDatabase } from "../server/test-helpers/resetTestDatabase";
+import { resetToEmptySchema } from "../server/test-helpers/resetToEmptySchema";
 import { runTestDbMigration } from "./migrate-test-db";
 import { closeMysqlConnectionSafely } from "../server/test-helpers/closeMysqlConnectionSafely";
 import {
@@ -73,6 +74,15 @@ async function main() {
   // scripts/migrate-test-db.ts - so schema changes never run before that
   // check passes). Its own connection's create/close diagnostics and
   // resource snapshots are logged from within that module.
+  // Reset the guarded disposable schema before migration so a stale journal
+  // can never cause physical Workspace tables to be skipped.
+  const schemaResetConnection = await mysql.createConnection(options);
+  try {
+    await resetToEmptySchema(schemaResetConnection, testUrl);
+  } finally {
+    await closeMysqlConnectionSafely(schemaResetConnection);
+  }
+
   await runTestDbMigration();
 
   // 3. Reset/seed - a separate, short-lived connection, re-verified live

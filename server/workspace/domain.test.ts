@@ -5,7 +5,7 @@ import {
   canManageMembers,
   runWorkspaceSyntheticFixture,
   validateMembershipChange,
-  WORKSPACE_CAPABILITIES,
+  WORKSPACE_MIGRATION_FIXTURE_ID,
 } from "./domain";
 
 describe("workspace M01 domain contract", () => {
@@ -38,14 +38,23 @@ describe("workspace M01 domain contract", () => {
     })).toBe("OWNER_ROLE_REQUIRED");
   });
 
-  it("uses a deterministic zero-side-effect fixture with Sheets ownership", () => {
+  it("executes the approved deterministic zero-side-effect migration fixture twice", () => {
     const first = runWorkspaceSyntheticFixture();
-    const second = runWorkspaceSyntheticFixture();
-    expect(first).toEqual(second);
+    const second = runWorkspaceSyntheticFixture(first);
+
+    expect(first.fixtureId).toBe(WORKSPACE_MIGRATION_FIXTURE_ID);
+    expect(first.fixtureId).toBe("workspace-migration-v1");
     expect(first.networkCalls).toBe(0);
     expect(first.liveCredentials).toBe(0);
-    expect(first.ownership).toHaveLength(WORKSPACE_CAPABILITIES.length);
+    expect(first.inputRecordsObserved).toBe(7);
+    expect(first.import).toEqual({ created: 3, updated: 0, unchanged: 0, duplicateIgnored: 1, quarantineCreated: 3 });
+    expect(first.counts).toEqual({ documentIdentities: 3, bindings: 3, snapshots: 3, currentFingerprints: 3, migrationRegistryEntries: 3, quarantines: 3 });
+    expect(first.ownership).toHaveLength(3);
     expect(first.ownership.every((entry) => entry.owner === "sheets")).toBe(true);
     expect(first.sideEffects).toEqual({ checkerRuns: 0, aiJobs: 0, publishRuns: 0, outboxEvents: 0 });
+    expect(second.import).toEqual({ created: 0, updated: 0, unchanged: 3, duplicateIgnored: 1, quarantineUnchanged: 3 });
+    expect(second.stableIds).toEqual(first.stableIds);
+    expect(second.counts).toEqual(first.counts);
+    expect(second.reconciliation).toEqual({ missing: 0, unexpected: 0, hashMismatch: 0, ownershipMismatch: 0 });
   });
 });

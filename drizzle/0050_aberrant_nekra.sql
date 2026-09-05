@@ -67,11 +67,11 @@ CREATE TABLE `workspaceWorkspaces` (
 --> statement-breakpoint
 ALTER TABLE `workspaceMembers` ADD CONSTRAINT `workspaceMembers_workspaceId_workspaceWorkspaces_id_fk` FOREIGN KEY (`workspaceId`) REFERENCES `workspaceWorkspaces`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `workspaceMembers` ADD CONSTRAINT `workspaceMembers_userId_users_id_fk` FOREIGN KEY (`userId`) REFERENCES `users`(`id`) ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE `workspaceMigrationRegistry` ADD CONSTRAINT `workspaceMigrationRegistry_workspaceNovelId_workspaceNovels_id_fk` FOREIGN KEY (`workspaceNovelId`) REFERENCES `workspaceNovels`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE `workspaceMigrationRegistry` ADD CONSTRAINT `wmr_workspace_novel_fk` FOREIGN KEY (`workspaceNovelId`) REFERENCES `workspaceNovels`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `workspaceMigrationRegistry` ADD CONSTRAINT `workspaceMigrationRegistry_changedBy_users_id_fk` FOREIGN KEY (`changedBy`) REFERENCES `users`(`id`) ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `workspaceNovels` ADD CONSTRAINT `workspaceNovels_workspaceId_workspaceWorkspaces_id_fk` FOREIGN KEY (`workspaceId`) REFERENCES `workspaceWorkspaces`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `workspaceNovels` ADD CONSTRAINT `workspaceNovels_novelId_novels_id_fk` FOREIGN KEY (`novelId`) REFERENCES `novels`(`id`) ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE `workspaceReadOnlyBindings` ADD CONSTRAINT `workspaceReadOnlyBindings_workspaceNovelId_workspaceNovels_id_fk` FOREIGN KEY (`workspaceNovelId`) REFERENCES `workspaceNovels`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE `workspaceReadOnlyBindings` ADD CONSTRAINT `wrob_workspace_novel_fk` FOREIGN KEY (`workspaceNovelId`) REFERENCES `workspaceNovels`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `workspaceWorkspaces` ADD CONSTRAINT `workspaceWorkspaces_ownerUserId_users_id_fk` FOREIGN KEY (`ownerUserId`) REFERENCES `users`(`id`) ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX `workspaceMembers_user_status_idx` ON `workspaceMembers` (`userId`,`status`);--> statement-breakpoint
 CREATE INDEX `workspaceMigrationRegistry_owner_capability_idx` ON `workspaceMigrationRegistry` (`owner`,`capability`);--> statement-breakpoint

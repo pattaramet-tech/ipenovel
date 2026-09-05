@@ -1781,7 +1781,7 @@ export const workspaceReadOnlyBindings = mysqlTable(
       table.sequence
     ),
     workspaceNovelFk: foreignKey({
-      name: "workspaceReadOnlyBindings_workspaceNovelId_workspaceNovels_id_fk",
+      name: "wrob_workspace_novel_fk",
       columns: [table.workspaceNovelId],
       foreignColumns: [workspaceNovels.id],
     }).onDelete("cascade"),
@@ -1805,7 +1805,7 @@ export const workspaceMigrationRegistry = mysqlTable(
     workspaceNovelCapabilityUnique: uniqueIndex("workspaceMigrationRegistry_workspaceNovel_capability_unique").on(table.workspaceNovelId, table.capability),
     ownerCapabilityIdx: index("workspaceMigrationRegistry_owner_capability_idx").on(table.owner, table.capability),
     workspaceNovelFk: foreignKey({
-      name: "workspaceMigrationRegistry_workspaceNovelId_workspaceNovels_id_fk",
+      name: "wmr_workspace_novel_fk",
       columns: [table.workspaceNovelId],
       foreignColumns: [workspaceNovels.id],
     }).onDelete("cascade"),
