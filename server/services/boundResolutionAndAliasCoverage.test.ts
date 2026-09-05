@@ -349,9 +349,9 @@ describe("H. the subject is locked across revalidation and commit", () => {
   });
 
   it("the order approval locks BEFORE reading the evidence it decides on", () => {
-    const lockIdx = orderCode.indexOf("await db.lockPaymentForUpdate(paymentId, tx)");
-    const readIdx = orderCode.indexOf("const payment = await db.getPaymentById(paymentId, tx)");
-    const claimIdx = orderCode.indexOf("const claim = await claimSlip(");
+    const lockIdx = orderCode.indexOf("db.lockPaymentForUpdate(paymentId, tx)");
+    const readIdx = orderCode.indexOf("const payment = await db.getPaymentByIdForUpdate(paymentId, tx)");
+    const claimIdx = orderCode.indexOf("const claim = await atOrderPaymentApprovalStage");
     expect(lockIdx).toBeGreaterThan(-1);
     expect(readIdx).toBeGreaterThan(lockIdx);
     expect(claimIdx).toBeGreaterThan(readIdx);
@@ -360,7 +360,7 @@ describe("H. the subject is locked across revalidation and commit", () => {
   it("the wallet approval locks before its in-transaction reload", () => {
     const start = dbCode.indexOf("export async function approveWalletTopup(");
     const body = dbCode.slice(start, start + 2500);
-    const lockIdx = body.indexOf("await lockWalletTopupForUpdate(topupId, tx)");
+    const lockIdx = body.indexOf("lockWalletTopupForUpdate(topupId, tx)");
     const readIdx = body.indexOf("const topupResult = await tx.select()");
     expect(lockIdx).toBeGreaterThan(-1);
     expect(readIdx).toBeGreaterThan(lockIdx);
@@ -368,7 +368,7 @@ describe("H. the subject is locked across revalidation and commit", () => {
 
   it("both rejection transactions lock too", () => {
     expect(svc).toMatch(/await orderService\.lockAndRequireReviewablePayment\(input\.subjectId, tx\)/);
-    expect(orderCode).toMatch(/await db\.lockPaymentForUpdate\(paymentId, tx\)/);
+    expect(orderCode).toMatch(/db\.lockPaymentForUpdate\(paymentId, tx\)/);
     const start = dbCode.indexOf("export async function rejectWalletTopup(");
     const body = dbCode.slice(start, start + 1200);
     expect(body).toMatch(/await lockWalletTopupForUpdate\(topupId, tx\)/);

@@ -1785,6 +1785,20 @@ export async function getPaymentById(paymentId: number, tx?: any) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+/**
+ * Current, mapped payment read for an approval transaction that already owns
+ * the account guard and payment lock. Under REPEATABLE READ a plain SELECT
+ * can still see the snapshot established before waiting for those locks.
+ * FOR UPDATE reads the latest row; Drizzle retains Date/column mapping.
+ * Never fall back to an independent connection or lock before the account
+ * guard. The primary-key predicate returns at most one payment.
+ */
+export async function getPaymentByIdForUpdate(paymentId: number, tx: any): Promise<typeof payments.$inferSelect | undefined> {
+  if (!tx) throw new Error("Current payment read requires a transaction");
+  const result = await tx.select().from(payments).where(eq(payments.id, paymentId)).for("update");
+  return result[0];
+}
+
 export async function updateOrder(orderId: number, data: { status?: string; paymentStatus?: string; notes?: string }, tx?: any) {
   const updateData: any = {};
   if (data.status !== undefined) updateData.status = data.status;

@@ -116,6 +116,16 @@ function makeDb(rows: Record<string, any[]>, onLock?: (store: Record<string, any
                     : []
                   : all;
               return {
+                for: async (lockMode: string) => {
+                  expect(lockMode).toBe("update");
+                  expect(name).toBe("payments");
+                  const chunks = cond.queryChunks;
+                  expect(chunks[1].name).toBe("id");
+                  expect(chunks[2].value).toEqual([" = "]);
+                  // Resolve from the live store when the locking query runs,
+                  // not from an earlier consistent-read result.
+                  return (store[name] ?? []).filter((row) => row.id === chunks[3].value);
+                },
                 orderBy: () => ({ limit: async () => filtered }),
                 limit: async (n: number) => filtered.slice(0, n),
                 // Some callers await the builder directly, with no limit.
@@ -214,6 +224,33 @@ describe("a finalized payment can never be resurrected by an approval", () => {
   afterEach(() => {
     dbModule.__setDbForTests(null);
     vi.restoreAllMocks();
+  });
+
+  it("the current mapped reload rejects a missing transaction instead of falling back to a connection", async () => {
+    await expect(dbModule.getPaymentByIdForUpdate(500, undefined)).rejects.toThrow(
+      "Current payment read requires a transaction"
+    );
+  });
+
+  it("the current mapped reload returns only the requested payment and its latest evidence", async () => {
+    const rows = orderRows();
+    rows.payments.unshift({
+      ...rows.payments[0],
+      id: 499,
+      extractedData: JSON.stringify({ fileHash: "d".repeat(64) }),
+    });
+    const harness = makeDb(rows);
+    const updatedExtraction = JSON.stringify({ referenceRaw: REFERENCE, fileHash: "b".repeat(64) });
+
+    await harness.fake.transaction(async (tx: any) => {
+      const initial = await dbModule.getPaymentByIdForUpdate(500, tx);
+      expect(initial?.id).toBe(500);
+      expect(initial?.extractedData).toBe(rows.payments[1].extractedData);
+      harness.store.payments[1].extractedData = updatedExtraction;
+      const current = await dbModule.getPaymentByIdForUpdate(500, tx);
+      expect(current?.extractedData).toBe(updatedExtraction);
+      expect(await dbModule.getPaymentByIdForUpdate(999, tx)).toBeUndefined();
+    });
   });
 
   it("A/C. another admin REJECTS in the lock window -> approval refused, nothing created", async () => {
@@ -362,13 +399,25 @@ describe("the guard is ONE shared primitive, not per-caller", () => {
     expect(start).toBeGreaterThan(-1);
     const body = orderCode.slice(start, start + 1800);
     const lockIdx = body.indexOf("db.lockPaymentForUpdate(paymentId, tx)");
-    const reloadIdx = body.indexOf("const payment = await db.getPaymentById(paymentId, tx)");
+    const reloadIdx = body.indexOf("const payment = await db.getPaymentByIdForUpdate(paymentId, tx)");
     const guardIdx = body.indexOf("isReviewablePaymentStatus(payment.status as string)");
     const throwIdx = body.indexOf("throw new PaymentNotReviewableError(paymentId, String(payment.status))");
     expect(lockIdx).toBeGreaterThan(-1);
     expect(reloadIdx).toBeGreaterThan(lockIdx);
     expect(guardIdx).toBeGreaterThan(reloadIdx);
     expect(throwIdx).toBeGreaterThan(guardIdx);
+    const accountGuardIdx = body.indexOf("db.assertAccountMergeClassifiedMutationAllowed(ownerOrder.userId, tx)");
+    expect(accountGuardIdx).toBeGreaterThan(-1);
+    expect(lockIdx).toBeGreaterThan(accountGuardIdx);
+  });
+
+  it("the evidence reload uses the supplied transaction's mapped current locking read", () => {
+    const dbCode = readCode("server/db.ts");
+    const start = dbCode.indexOf("export async function getPaymentByIdForUpdate(");
+    expect(start).toBeGreaterThan(-1);
+    const body = dbCode.slice(start, dbCode.indexOf("\n}", start) + 2);
+    expect(body).toMatch(/await tx\s*\.select\(\)\s*\.from\(payments\)\s*\.where\(eq\(payments\.id, paymentId\)\)\s*\.for\("update"\)/);
+    expect(body).not.toMatch(/getDb\(|getPaymentById\(|\.limit\(/);
   });
 
   it("approvePaymentInTx calls the shared primitive rather than reimplementing it", () => {

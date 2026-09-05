@@ -170,6 +170,10 @@ function makeDb(rows: Record<string, any[]>) {
                     : []
                   : all;
               return {
+                for: async (lockMode: string) => {
+                  expect(lockMode).toBe("update");
+                  return (store[name] ?? []).filter((row) => matchesWhere(cond, row));
+                },
                 orderBy: () => ({ limit: async () => filtered }),
                 limit: async (n: number) => filtered.slice(0, n),
                 then: (resolve: any, reject: any) =>

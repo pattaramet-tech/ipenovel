@@ -174,6 +174,14 @@ function makeDb(rows: Record<string, any[]>, onLock?: (store: Record<string, any
                     })()
                   : all;
               return {
+                for: async (lockMode: string) => {
+                  expect(lockMode).toBe("update");
+                  expect(name).toBe("payments");
+                  const chunks = cond.queryChunks;
+                  expect(chunks[1].name).toBe("id");
+                  expect(chunks[2].value).toEqual([" = "]);
+                  return (store[name] ?? []).filter((row) => row.id === chunks[3].value);
+                },
                 orderBy: () => ({ limit: async () => filtered }),
                 limit: async (n: number) => filtered.slice(0, n),
                 then: (resolve: any, reject: any) =>

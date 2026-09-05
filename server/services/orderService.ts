@@ -521,7 +521,10 @@ export async function lockAndRequireReviewablePayment(
     db.lockPaymentForUpdate(paymentId, tx)
   );
 
-  const payment = await db.getPaymentById(paymentId, tx);
+  // The advisory owner reads above may have established an older REPEATABLE
+  // READ snapshot before we waited. Locking only the id does not refresh it:
+  // decision-bearing fields must come from a current locking read as well.
+  const payment = await db.getPaymentByIdForUpdate(paymentId, tx);
   if (!payment) {
     throw new Error("Payment not found");
   }

@@ -134,8 +134,12 @@ function makeDb(rows: Record<string, any[]>) {
           const name = tableName(table);
           const all = store[name] ?? [];
           return {
-            where() {
+            where(cond: any) {
               return {
+                for: async (lockMode: string) => {
+                  expect(lockMode).toBe("update");
+                  return (store[name] ?? []).filter((row) => matchesWhere(cond, row));
+                },
                 orderBy: () => ({
                   limit: async (n?: number) => (n ? all.slice(0, n) : all),
                   then: (resolve: any, reject: any) => Promise.resolve(all).then(resolve, reject),
