@@ -3,6 +3,7 @@ param([switch]$KeepResources)
 # Synthetic, local Docker release gate ONLY. Never loads .env, private plans,
 # application credentials, an existing database volume or Docker socket.
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'lib/legacySlipRepairDockerOwnership.ps1')
 $repoPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $testSuffix = [guid]::NewGuid().ToString('N').Substring(0, 12)
 $testPrefix = "ipe-legacy-repair-$testSuffix"
@@ -106,14 +107,12 @@ finally {
   if (-not $KeepResources) {
     foreach ($entry in @(@($testRunnerContainer, $createdRunner), @($testDatabaseContainer, $createdDatabase))) {
       if ($entry[1]) {
-        $label = & docker --context $testDockerContext inspect --format '{{index .Config.Labels "com.ipenovel.isolated-repair"}}' $entry[0]
-        if ($LASTEXITCODE -ne 0 -or $label -ne $testSuffix) { throw 'CONTAINER_CLEANUP_OWNERSHIP_NOT_PROVEN' }
+        Assert-LegacyRepairDockerOwnership -Context $testDockerContext -Kind container -Name $entry[0] -Suffix $testSuffix
         Invoke-TestDocker rm -f $entry[0]
       }
     }
     if ($createdNetwork) {
-      $label = & docker --context $testDockerContext network inspect --format '{{index .Labels "com.ipenovel.isolated-repair"}}' $testNetwork
-      if ($LASTEXITCODE -ne 0 -or $label -ne $testSuffix) { throw 'NETWORK_CLEANUP_OWNERSHIP_NOT_PROVEN' }
+      Assert-LegacyRepairDockerOwnership -Context $testDockerContext -Kind network -Name $testNetwork -Suffix $testSuffix
       Invoke-TestDocker network rm $testNetwork
     }
   } else {

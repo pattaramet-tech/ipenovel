@@ -137,7 +137,21 @@ host-published database ports, production volumes, Docker socket mounts, private
 plans, `.env`, application credentials or connections to Preview. Only allowlisted
 source files are copied. Dependency installation uses the repository lockfile on
 a temporary bridge connection; the runner disconnects that bridge before joining
-the database's internal-only network. Cleanup checks exact resource ownership.
+the database's internal-only network. Cleanup checks the exact resource name and
+ownership label from Docker inspect JSON; it does not use quote-sensitive Go
+templates for labels. Both Windows PowerShell 5.1 and PowerShell 7 are supported.
+The function-only ownership helper never removes resources itself.
+
+Run the no-Docker ownership regression tests on both installed shells:
+
+```powershell
+powershell -NoProfile -File scripts/test-legacy-slip-repair-cleanup.ps1
+pwsh -NoProfile -File scripts/test-legacy-slip-repair-cleanup.ps1
+```
+
+These tests reject wrong/missing labels, mismatched resource names, invalid
+targets, malformed or multiple inspection results, and Docker failures. They
+complement, but do not replace, the full runner and its actual cleanup checks.
 
 The dedicated Vitest project has no ordinary app/integration global setup or
 migrator. It rejects Windows, ambient `DATABASE_URL`/`TEST_DATABASE_URL`, external
@@ -175,8 +189,29 @@ this is not a claim that a new commit has been pushed or deployed.
   checks passed. Independent code reviewer reran **260/260 targeted tests** and
   reported no blocking code finding; this was not a human mapping attestation.
 - Reusable local-Docker endpoint override rejection passed. A complete fresh
-  runner invocation passed all 42 gates and performed label-verified cleanup of
-  only its containers, internal network and source staging directory.
+  PowerShell 7 runner invocation passed all 42 gates and performed label-verified
+  cleanup of only its containers, internal network and source staging directory.
+
+### Windows PowerShell cleanup correction
+
+Independent review of `a8cebc0f3d9d8662f9b11115c8e074d6c7e9d735` found that
+the documented Windows PowerShell 5.1 invocation passed all 42 tests but failed
+during cleanup: native argument handling stripped quotes from the Go-template
+label lookup. That invocation was **not** a successful complete runner gate.
+
+The correction changes only local verification tooling and documentation, not
+the live repair implementation or release gate. Verification of the correction:
+
+- Ownership regression: **26/26 passed** on Windows PowerShell **5.1.26100.9168**
+  and **26/26 passed** on PowerShell **7.6.5**.
+- The exact documented `powershell -NoProfile -File` full runner: **42/42 passed,
+  zero skips, process exit 0** against fresh isolated MariaDB/Linux containers.
+- Post-run checks confirmed no containers or network bearing that run's unique
+  label (`beae0a15c855`) and no corresponding source staging directory remained.
+- Existing repair library/CLI regression: **260/260 passed**.
+
+This is implementer verification of the cleanup correction, not an independent
+re-review of a new commit, a private mapping attestation, or live authorization.
 
 Execution remains source-gated off. No Preview/Production connection or database
 mutation, R2 read/write, live DDL, redeploy, financial approval or backfill occurred
