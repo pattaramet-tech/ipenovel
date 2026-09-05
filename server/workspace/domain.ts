@@ -28,10 +28,7 @@ export function validateMembershipChange(input: {
 }): string | undefined {
   if (!canManageMembers(input.actorRole)) return "OWNER_ROLE_REQUIRED";
   if (input.nextRole === "owner") return "OWNER_TRANSFER_NOT_AVAILABLE";
-  if (
-    input.currentRole === "owner" &&
-    input.activeOwnerCount <= 1
-  ) {
+  if (input.currentRole === "owner" && input.activeOwnerCount <= 1) {
     return "LAST_OWNER_MUST_REMAIN";
   }
   if (input.targetUserId === input.actorUserId) {
@@ -50,67 +47,243 @@ export function buildInitialMigrationOwnership() {
 
 export const WORKSPACE_MIGRATION_FIXTURE_ID = "workspace-migration-v1";
 export const WORKSPACE_MIGRATION_FIXTURE_CLOCK = "2026-01-15T00:00:00Z";
+export const WORKSPACE_MIGRATION_FIXTURE_SPREADSHEET_ID = "sheet_fixture_001";
+export const WORKSPACE_MIGRATION_FIXTURE_EPOCH = "epoch_001";
+export const WORKSPACE_MIGRATION_FIXTURE_WORKSPACE_ID = "ws_001";
+export const WORKSPACE_MIGRATION_FIXTURE_NOVEL_ID = "novel_101";
 
-const FIXTURE_DOCUMENTS = [
-  { legacyRowId: "row_001", documentId: "doc_alpha", revision: "rev_1", normalizedHash: "sha_alpha_v1", capability: "checker" },
-  { legacyRowId: "row_002", documentId: "doc_beta", revision: "rev_4", normalizedHash: "sha_beta_v4", capability: "ai_queue" },
-  { legacyRowId: "row_003", documentId: "doc_gamma", revision: "rev_2", normalizedHash: "sha_gamma_v2", capability: "publish" },
-] as const;
+type FixtureCapability = "checker" | "ai_queue" | "publish";
+type FixtureQuarantineReason =
+  | "MISSING_NOVEL_KEY"
+  | "UNKNOWN_CAPABILITY"
+  | "NOVEL_NOT_BOUND";
 
-const FIXTURE_QUARANTINE = ["MISSING_NOVEL_KEY", "UNKNOWN_CAPABILITY", "NOVEL_NOT_BOUND"] as const;
-
-/**
- * Deterministic, in-memory contract for the M00 migration dry run. It models
- * no provider, database, or runtime workflow; its sole purpose is to keep the
- * approved fixture executable while Sheets owns every action capability.
- */
-export interface WorkspaceMigrationFixturePreviousRun {
-  stableIds: Array<{
-    legacyIdentity: string;
-    documentIdentityId: string;
-    bindingId: string;
-    snapshotId: string;
-    fingerprintId: string;
-  }>;
+interface FixtureRow {
+  legacyRowId: string;
+  novelId: string;
+  capability: string;
+  actionOwner: typeof INITIAL_MIGRATION_OWNER;
+  documentId: string;
+  revision: string;
+  normalizedHash: string;
 }
 
-export function runWorkspaceSyntheticFixture(previous?: WorkspaceMigrationFixturePreviousRun) {
-  const stableIds = previous?.stableIds ?? FIXTURE_DOCUMENTS.map((entry, index) => ({
-    legacyIdentity: `sheet_fixture_001:${entry.legacyRowId}:epoch_001`,
-    documentIdentityId: `document_${index + 1}`,
-    bindingId: `binding_${index + 1}`,
-    snapshotId: `snapshot_${index + 1}`,
-    fingerprintId: `fingerprint_${index + 1}`,
-  }));
+interface FixtureDocumentMetadata {
+  documentId: string;
+  revision: string;
+  normalizedHash: string;
+}
+
+interface FixtureStableIds {
+  legacyIdentity: string;
+  documentIdentityId: string;
+  bindingId: string;
+  snapshotId: string;
+  fingerprintId: string;
+  registryId: string;
+}
+
+interface FixtureQuarantine {
+  legacyIdentity: string;
+  quarantineId: string;
+  reason: FixtureQuarantineReason;
+}
+
+export interface WorkspaceMigrationFixtureState {
+  workspaceNovelBindingId?: string;
+  stableIds: FixtureStableIds[];
+  quarantines: FixtureQuarantine[];
+}
+
+/** Exact, committed M00 fixture input. It contains no credentials or body text. */
+export const WORKSPACE_MIGRATION_FIXTURE_ROWS: readonly FixtureRow[] = [
+  { legacyRowId: "row_001", novelId: "novel_101", capability: "checker", actionOwner: "sheets", documentId: "doc_alpha", revision: "rev_1", normalizedHash: "sha_alpha_v1" },
+  { legacyRowId: "row_002", novelId: "novel_101", capability: "ai_queue", actionOwner: "sheets", documentId: "doc_beta", revision: "rev_4", normalizedHash: "sha_beta_v4" },
+  { legacyRowId: "row_003", novelId: "novel_101", capability: "publish", actionOwner: "sheets", documentId: "doc_gamma", revision: "rev_2", normalizedHash: "sha_gamma_v2" },
+  { legacyRowId: "row_002", novelId: "novel_101", capability: "ai_queue", actionOwner: "sheets", documentId: "doc_beta", revision: "rev_4", normalizedHash: "sha_beta_v4" },
+  { legacyRowId: "row_004", novelId: "", capability: "checker", actionOwner: "sheets", documentId: "doc_orphan", revision: "rev_1", normalizedHash: "sha_orphan" },
+  { legacyRowId: "row_005", novelId: "novel_101", capability: "unknown_action", actionOwner: "sheets", documentId: "doc_unknown", revision: "rev_1", normalizedHash: "sha_unknown" },
+  { legacyRowId: "row_006", novelId: "novel_999", capability: "checker", actionOwner: "sheets", documentId: "doc_unbound", revision: "rev_1", normalizedHash: "sha_unbound" },
+];
+
+export const WORKSPACE_MIGRATION_FIXTURE_DOCS: readonly FixtureDocumentMetadata[] = [
+  { documentId: "doc_alpha", revision: "rev_1", normalizedHash: "sha_alpha_v1" },
+  { documentId: "doc_beta", revision: "rev_4", normalizedHash: "sha_beta_v4" },
+  { documentId: "doc_gamma", revision: "rev_2", normalizedHash: "sha_gamma_v2" },
+];
+
+function legacyIdentity(row: FixtureRow): string {
+  return `${WORKSPACE_MIGRATION_FIXTURE_SPREADSHEET_ID}:${row.legacyRowId}:${WORKSPACE_MIGRATION_FIXTURE_EPOCH}`;
+}
+
+function quarantineReason(row: FixtureRow): FixtureQuarantineReason | undefined {
+  if (!row.novelId) return "MISSING_NOVEL_KEY";
+  if (!WORKSPACE_CAPABILITIES.includes(row.capability as WorkspaceCapability)) {
+    return "UNKNOWN_CAPABILITY";
+  }
+  if (row.novelId !== WORKSPACE_MIGRATION_FIXTURE_NOVEL_ID) {
+    return "NOVEL_NOT_BOUND";
+  }
+  return undefined;
+}
+
+function stableIdsFor(row: FixtureRow, index: number): FixtureStableIds {
+  const identity = legacyIdentity(row);
+  const suffix = index + 1;
+  return {
+    legacyIdentity: identity,
+    documentIdentityId: `document_${suffix}`,
+    bindingId: `binding_${suffix}`,
+    snapshotId: `snapshot_${suffix}`,
+    fingerprintId: `fingerprint_${suffix}`,
+    registryId: `registry_${suffix}`,
+  };
+}
+
+function quarantineFor(row: FixtureRow): FixtureQuarantine {
+  const reason = quarantineReason(row);
+  if (!reason) throw new Error("Expected a quarantine reason");
+  const identity = legacyIdentity(row);
+  return {
+    legacyIdentity: identity,
+    quarantineId: `quarantine:${identity}:${reason}`,
+    reason,
+  };
+}
+
+/**
+ * Runs the committed M00 migration fixture entirely in memory. It deliberately
+ * exposes only mock Docs metadata, never document bodies or provider adapters.
+ */
+export function runWorkspaceSyntheticFixture(
+  previous?: WorkspaceMigrationFixtureState,
+) {
+  const existing = previous ?? { stableIds: [], quarantines: [] };
+  const stableIds = [...existing.stableIds];
+  const quarantines = [...existing.quarantines];
+  const seenInputIdentities = new Set<string>();
+  let created = 0;
+  let unchanged = 0;
+  let duplicateIgnored = 0;
+  let quarantineCreated = 0;
+  let quarantineUnchanged = 0;
+
+  for (const row of WORKSPACE_MIGRATION_FIXTURE_ROWS) {
+    const identity = legacyIdentity(row);
+    if (seenInputIdentities.has(identity)) {
+      duplicateIgnored += 1;
+      continue;
+    }
+    seenInputIdentities.add(identity);
+
+    const reason = quarantineReason(row);
+    if (reason) {
+      const quarantine = quarantineFor(row);
+      if (quarantines.some((entry) => entry.quarantineId === quarantine.quarantineId)) {
+        quarantineUnchanged += 1;
+      } else {
+        quarantines.push(quarantine);
+        quarantineCreated += 1;
+      }
+      continue;
+    }
+
+    const metadata = WORKSPACE_MIGRATION_FIXTURE_DOCS.find(
+      (entry) => entry.documentId === row.documentId,
+    );
+    if (
+      !metadata ||
+      metadata.revision !== row.revision ||
+      metadata.normalizedHash !== row.normalizedHash
+    ) {
+      throw new Error(`Mock Docs metadata mismatch for ${row.documentId}`);
+    }
+
+    if (stableIds.some((entry) => entry.legacyIdentity === identity)) {
+      unchanged += 1;
+    } else {
+      stableIds.push(stableIdsFor(row, stableIds.length));
+      created += 1;
+    }
+  }
+
+  const state: WorkspaceMigrationFixtureState = {
+    workspaceNovelBindingId:
+      existing.workspaceNovelBindingId ?? "workspace_novel_binding_1",
+    stableIds,
+    quarantines,
+  };
   const isRepeat = Boolean(previous);
+  const importedDocuments = WORKSPACE_MIGRATION_FIXTURE_ROWS.slice(0, 3).map(
+    ({ legacyRowId, documentId, revision, normalizedHash, capability }) => ({
+      legacyRowId,
+      documentId,
+      revision,
+      normalizedHash,
+      capability: capability as FixtureCapability,
+    }),
+  );
 
   return {
     fixtureId: WORKSPACE_MIGRATION_FIXTURE_ID,
     frozenClock: WORKSPACE_MIGRATION_FIXTURE_CLOCK,
-    networkCalls: 0,
-    liveCredentials: 0,
-    inputRecordsObserved: 7,
-    import: isRepeat
-      ? { created: 0, updated: 0, unchanged: 3, duplicateIgnored: 1, quarantineUnchanged: 3 }
-      : { created: 3, updated: 0, unchanged: 0, duplicateIgnored: 1, quarantineCreated: 3 },
-    workspaceNovelBindingsCreatedOrReused: 1,
-    documents: FIXTURE_DOCUMENTS,
-    stableIds,
-    counts: {
-      documentIdentities: 3,
-      bindings: 3,
-      snapshots: 3,
-      currentFingerprints: 3,
-      migrationRegistryEntries: 3,
-      quarantines: 3,
+    source: {
+      spreadsheetId: WORKSPACE_MIGRATION_FIXTURE_SPREADSHEET_ID,
+      epoch: WORKSPACE_MIGRATION_FIXTURE_EPOCH,
+      workspaceId: WORKSPACE_MIGRATION_FIXTURE_WORKSPACE_ID,
+      novelId: WORKSPACE_MIGRATION_FIXTURE_NOVEL_ID,
     },
-    ownership: FIXTURE_DOCUMENTS.map((entry) => ({
+    inputRows: WORKSPACE_MIGRATION_FIXTURE_ROWS,
+    mockDocsMetadata: WORKSPACE_MIGRATION_FIXTURE_DOCS,
+    inputRecordsObserved: WORKSPACE_MIGRATION_FIXTURE_ROWS.length,
+    import: isRepeat
+      ? { created, updated: 0, unchanged, duplicateIgnored, quarantineUnchanged }
+      : { created, updated: 0, unchanged, duplicateIgnored, quarantineCreated },
+    workspaceNovelBindingsCreatedOrReused: 1,
+    workspaceNovelBindingId: state.workspaceNovelBindingId,
+    documents: importedDocuments,
+    stableIds: state.stableIds,
+    quarantines: state.quarantines,
+    counts: {
+      documentIdentities: state.stableIds.length,
+      bindings: state.stableIds.length,
+      snapshots: state.stableIds.length,
+      currentFingerprints: state.stableIds.length,
+      migrationRegistryEntries: state.stableIds.length,
+      quarantines: state.quarantines.length,
+    },
+    ownership: importedDocuments.map((entry) => ({
       capability: entry.capability,
       owner: INITIAL_MIGRATION_OWNER,
-      cutoverEpoch: "epoch_001",
+      cutoverEpoch: WORKSPACE_MIGRATION_FIXTURE_EPOCH,
     })),
-    quarantineReasons: FIXTURE_QUARANTINE,
-    sideEffects: { checkerRuns: 0, aiJobs: 0, publishRuns: 0, outboxEvents: 0 },
-    reconciliation: { missing: 0, unexpected: 0, hashMismatch: 0, ownershipMismatch: 0 },
+    sideEffects: {
+      checkerRuns: 0,
+      aiJobs: 0,
+      publishRuns: 0,
+      outboxEvents: 0,
+      publishItems: 0,
+    },
+    networkCalls: 0,
+    liveCredentials: 0,
+    reconciliation: {
+      missing: 0,
+      unexpected: 0,
+      hashMismatch: 0,
+      ownershipMismatch: 0,
+    },
+    noNewRecords: isRepeat
+      ? {
+          snapshots: 0,
+          bindings: 0,
+          registryEntries: 0,
+          quarantines: 0,
+          jobs: 0,
+          checkerRuns: 0,
+          outboxEvents: 0,
+          publishItems: 0,
+        }
+      : undefined,
+    state,
   };
 }
