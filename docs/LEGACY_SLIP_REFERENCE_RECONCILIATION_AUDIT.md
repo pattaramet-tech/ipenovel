@@ -114,6 +114,11 @@ unproven record, 2 = arguments, configuration, or fatal execution error.
 Exit 0 is **not** completion of reference repair, backfill, payment refactoring,
 or production readiness. Unit-test fixtures are not live Preview evidence.
 
+For the observed version-0 legacy rows with readable R2 candidates but no historical
+hash, see [the drift investigation and reference-only relink procedure](LEGACY_SLIP_REFERENCE_DRIFT_AND_RELINK_PLAN.md).
+That separate procedure does not weaken this audit's identity gate and does not
+require another pre-migration image copy as its only provenance route.
+
 ## Required stop and later work
 
 Share the sanitized report for independent review, then stop. No reference repair
