@@ -37,10 +37,21 @@ interface UnknownRow {
 }
 
 /** Minimal drizzle-shaped fake covering only what this service touches. */
-function makeFakeTx() {
+function makeFakeTx({
+  wrapDuplicate = false,
+}: { wrapDuplicate?: boolean } = {}) {
   const collisions: CollisionRow[] = [];
   const unknowns: UnknownRow[] = [];
   let nextId = 1;
+
+  const duplicate = (message: string) => {
+    const driverError = new FakeDupError(message);
+    return wrapDuplicate
+      ? new Error("Failed query: insert into durable legacy registry", {
+          cause: driverError,
+        })
+      : driverError;
+  };
 
   const tx = {
     insert(table: any) {
@@ -49,21 +60,21 @@ function makeFakeTx() {
         async values(v: any) {
           if (name === "paymentSlipLegacyCollisions") {
             const dup = collisions.some(
-              (c) =>
+              c =>
                 c.kind === v.kind &&
                 c.identifierHash === v.identifierHash &&
                 c.sourceType === v.sourceType &&
                 c.sourceId === v.sourceId
             );
-            if (dup) throw new FakeDupError("Duplicate entry for key 'member_unique'");
+            if (dup) throw duplicate("Duplicate entry for key 'member_unique'");
             collisions.push({ id: nextId++, ...v });
             return [{ insertId: nextId }];
           }
           if (name === "paymentSlipLegacyUnknown") {
             const dup = unknowns.some(
-              (u) => u.sourceType === v.sourceType && u.sourceId === v.sourceId
+              u => u.sourceType === v.sourceType && u.sourceId === v.sourceId
             );
-            if (dup) throw new FakeDupError("Duplicate entry for key 'source_unique'");
+            if (dup) throw duplicate("Duplicate entry for key 'source_unique'");
             unknowns.push({ id: nextId++, ...v });
             return [{ insertId: nextId }];
           }
@@ -85,14 +96,20 @@ function makeFakeTx() {
                     const kind = get("kind");
                     const identifierHash = get("identifierHash");
                     return collisions
-                      .filter((c) => c.kind === kind && c.identifierHash === identifierHash)
+                      .filter(
+                        c =>
+                          c.kind === kind && c.identifierHash === identifierHash
+                      )
                       .slice(0, n);
                   }
                   if (name === "paymentSlipLegacyUnknown") {
                     const sourceType = get("sourceType");
                     const sourceId = get("sourceId");
                     return unknowns
-                      .filter((u) => u.sourceType === sourceType && u.sourceId === sourceId)
+                      .filter(
+                        u =>
+                          u.sourceType === sourceType && u.sourceId === sourceId
+                      )
                       .slice(0, n);
                   }
                   return [];
@@ -113,7 +130,10 @@ function makeFakeTx() {
             const sourceType = get("sourceType");
             const sourceId = get("sourceId");
             for (let i = unknowns.length - 1; i >= 0; i--) {
-              if (unknowns[i].sourceType === sourceType && unknowns[i].sourceId === sourceId) {
+              if (
+                unknowns[i].sourceType === sourceType &&
+                unknowns[i].sourceId === sourceId
+              ) {
                 unknowns.splice(i, 1);
               }
             }
@@ -137,7 +157,11 @@ function makeFakeTx() {
  * with its sibling Param chunk (has `.value`, not an array - a StringChunk's
  * `.value` is always an array of literal SQL text).
  */
-function extractColumnValuePairs(node: any, pairs: Array<[string, unknown]> = [], depth = 0) {
+function extractColumnValuePairs(
+  node: any,
+  pairs: Array<[string, unknown]> = [],
+  depth = 0
+) {
   if (!node || depth > 15 || typeof node !== "object") return pairs;
   if (Array.isArray(node.queryChunks)) {
     let col: string | undefined;
@@ -145,15 +169,23 @@ function extractColumnValuePairs(node: any, pairs: Array<[string, unknown]> = []
     let hasParam = false;
     for (const chunk of node.queryChunks) {
       if (!chunk || typeof chunk !== "object") continue;
-      if (typeof chunk.name === "string" && typeof chunk.columnType === "string") {
+      if (
+        typeof chunk.name === "string" &&
+        typeof chunk.columnType === "string"
+      ) {
         col = chunk.name;
-      } else if ("value" in chunk && !("columnType" in chunk) && !Array.isArray(chunk.value)) {
+      } else if (
+        "value" in chunk &&
+        !("columnType" in chunk) &&
+        !Array.isArray(chunk.value)
+      ) {
         param = chunk.value;
         hasParam = true;
       }
     }
     if (col && hasParam) pairs.push([col, param]);
-    for (const chunk of node.queryChunks) extractColumnValuePairs(chunk, pairs, depth + 1);
+    for (const chunk of node.queryChunks)
+      extractColumnValuePairs(chunk, pairs, depth + 1);
     return pairs;
   }
   return pairs;
@@ -172,7 +204,12 @@ describe("findKnownLegacyCollision", () => {
   it("finds a durably recorded reference collision by indexed lookup", async () => {
     const tx = makeFakeTx();
     await recordLegacyCollisionMember(
-      { kind: "reference", identifierHash: HASH_A, sourceType: "order_payment", sourceId: 7 },
+      {
+        kind: "reference",
+        identifierHash: HASH_A,
+        sourceType: "order_payment",
+        sourceId: 7,
+      },
       tx
     );
 
@@ -188,7 +225,12 @@ describe("findKnownLegacyCollision", () => {
   it("finds a durably recorded file collision", async () => {
     const tx = makeFakeTx();
     await recordLegacyCollisionMember(
-      { kind: "file", identifierHash: HASH_B, sourceType: "wallet_topup", sourceId: 3 },
+      {
+        kind: "file",
+        identifierHash: HASH_B,
+        sourceType: "wallet_topup",
+        sourceId: 3,
+      },
       tx
     );
     const match = await findKnownLegacyCollision({ fileHash: HASH_B }, tx);
@@ -199,7 +241,12 @@ describe("findKnownLegacyCollision", () => {
   it("a reference collision on one hash never matches an unrelated fileHash", async () => {
     const tx = makeFakeTx();
     await recordLegacyCollisionMember(
-      { kind: "reference", identifierHash: HASH_A, sourceType: "order_payment", sourceId: 7 },
+      {
+        kind: "reference",
+        identifierHash: HASH_A,
+        sourceType: "order_payment",
+        sourceId: 7,
+      },
       tx
     );
     const match = await findKnownLegacyCollision({ fileHash: HASH_A }, tx);
@@ -217,11 +264,21 @@ describe("recordLegacyCollisionMember - idempotent, no winner picked", () => {
   it("records both sides of a clash under the same hash - no single owner", async () => {
     const tx = makeFakeTx();
     await recordLegacyCollisionMember(
-      { kind: "reference", identifierHash: HASH_A, sourceType: "order_payment", sourceId: 1 },
+      {
+        kind: "reference",
+        identifierHash: HASH_A,
+        sourceType: "order_payment",
+        sourceId: 1,
+      },
       tx
     );
     await recordLegacyCollisionMember(
-      { kind: "reference", identifierHash: HASH_A, sourceType: "wallet_topup", sourceId: 2 },
+      {
+        kind: "reference",
+        identifierHash: HASH_A,
+        sourceType: "wallet_topup",
+        sourceId: 2,
+      },
       tx
     );
     expect((tx as any)._collisions).toHaveLength(2);
@@ -230,15 +287,41 @@ describe("recordLegacyCollisionMember - idempotent, no winner picked", () => {
   it("re-recording the SAME member twice is a no-op, not a duplicate row", async () => {
     const tx = makeFakeTx();
     const first = await recordLegacyCollisionMember(
-      { kind: "file", identifierHash: HASH_A, sourceType: "order_payment", sourceId: 1 },
+      {
+        kind: "file",
+        identifierHash: HASH_A,
+        sourceType: "order_payment",
+        sourceId: 1,
+      },
       tx
     );
     const second = await recordLegacyCollisionMember(
-      { kind: "file", identifierHash: HASH_A, sourceType: "order_payment", sourceId: 1 },
+      {
+        kind: "file",
+        identifierHash: HASH_A,
+        sourceType: "order_payment",
+        sourceId: 1,
+      },
       tx
     );
     expect(first).toEqual({ recorded: true, alreadyPresent: false });
     expect(second).toEqual({ recorded: true, alreadyPresent: true });
+    expect((tx as any)._collisions).toHaveLength(1);
+  });
+
+  it("recognizes a Drizzle-wrapped duplicate after confirming the exact member exists", async () => {
+    const tx = makeFakeTx({ wrapDuplicate: true });
+    const member = {
+      kind: "file" as const,
+      identifierHash: HASH_A,
+      sourceType: "order_payment" as const,
+      sourceId: 1,
+    };
+    await recordLegacyCollisionMember(member, tx);
+    await expect(recordLegacyCollisionMember(member, tx)).resolves.toEqual({
+      recorded: true,
+      alreadyPresent: true,
+    });
     expect((tx as any)._collisions).toHaveLength(1);
   });
 
@@ -260,7 +343,11 @@ describe("recordLegacyCollisionMember - idempotent, no winner picked", () => {
 describe("recordLegacyUnknownRow / clearLegacyUnknownRow", () => {
   it("records a permanently-unresolvable row exactly once, idempotently", async () => {
     const tx = makeFakeTx();
-    const row = { sourceType: "order_payment" as const, sourceId: 42, reason: "no_slip_image_url" };
+    const row = {
+      sourceType: "order_payment" as const,
+      sourceId: 42,
+      reason: "no_slip_image_url",
+    };
     const first = await recordLegacyUnknownRow(row, tx);
     const second = await recordLegacyUnknownRow(row, tx);
     expect(first.recorded).toBe(true);
@@ -268,14 +355,58 @@ describe("recordLegacyUnknownRow / clearLegacyUnknownRow", () => {
     expect((tx as any)._unknowns).toHaveLength(1);
   });
 
+  it("recognizes a Drizzle-wrapped duplicate after confirming the same reason exists", async () => {
+    const tx = makeFakeTx({ wrapDuplicate: true });
+    const row = {
+      sourceType: "order_payment" as const,
+      sourceId: 42,
+      reason: "no_slip_image_url",
+    };
+    await recordLegacyUnknownRow(row, tx);
+    await expect(recordLegacyUnknownRow(row, tx)).resolves.toEqual({
+      recorded: true,
+      alreadyPresent: true,
+    });
+    expect((tx as any)._unknowns).toHaveLength(1);
+  });
+
+  it("does not treat a duplicate source carrying a different reason as idempotent", async () => {
+    const tx = makeFakeTx({ wrapDuplicate: true });
+    await recordLegacyUnknownRow(
+      {
+        sourceType: "order_payment",
+        sourceId: 42,
+        reason: "file_hash_recovery_failed",
+      },
+      tx
+    );
+    await expect(
+      recordLegacyUnknownRow(
+        {
+          sourceType: "order_payment",
+          sourceId: 42,
+          reason: "no_slip_image_url",
+        },
+        tx
+      )
+    ).rejects.toThrow(/Failed query/);
+  });
+
   it("clearing removes the record so a later-resolved row is not stuck showing unknown", async () => {
     const tx = makeFakeTx();
     await recordLegacyUnknownRow(
-      { sourceType: "wallet_topup", sourceId: 9, reason: "file_hash_recovery_failed" },
+      {
+        sourceType: "wallet_topup",
+        sourceId: 9,
+        reason: "file_hash_recovery_failed",
+      },
       tx
     );
     expect((tx as any)._unknowns).toHaveLength(1);
-    await clearLegacyUnknownRow({ sourceType: "wallet_topup", sourceId: 9 }, tx);
+    await clearLegacyUnknownRow(
+      { sourceType: "wallet_topup", sourceId: 9 },
+      tx
+    );
     expect((tx as any)._unknowns).toHaveLength(0);
   });
 

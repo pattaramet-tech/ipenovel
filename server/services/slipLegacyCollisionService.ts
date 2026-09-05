@@ -47,9 +47,16 @@
  * here - it only reads, via the indexed lookups below.
  */
 
-import { paymentSlipLegacyCollisions, paymentSlipLegacyUnknown } from "../../drizzle/schema";
+import {
+  paymentSlipLegacyCollisions,
+  paymentSlipLegacyUnknown,
+} from "../../drizzle/schema";
 import { and, eq } from "drizzle-orm";
-import type { StrongDuplicateKind, SlipStrongIdentifiers } from "./slipIdentifierService";
+import { isDuplicateKeyError } from "../helpers/databaseErrorClassifier";
+import type {
+  StrongDuplicateKind,
+  SlipStrongIdentifiers,
+} from "./slipIdentifierService";
 
 export type LegacyCollisionSourceType = "order_payment" | "wallet_topup";
 
@@ -127,7 +134,10 @@ export async function findKnownLegacyCollisionAxes(
       .select()
       .from(paymentSlipLegacyCollisions)
       .where(
-        and(eq(paymentSlipLegacyCollisions.kind, kind), eq(paymentSlipLegacyCollisions.identifierHash, hash))
+        and(
+          eq(paymentSlipLegacyCollisions.kind, kind),
+          eq(paymentSlipLegacyCollisions.identifierHash, hash)
+        )
       )
       .limit(5);
 
@@ -136,7 +146,12 @@ export async function findKnownLegacyCollisionAxes(
     // Prefer a member that is NOT the caller for display; fall back to any.
     const row =
       all.find(
-        (r) => !(self && r.sourceType === self.sourceType && r.sourceId === self.sourceId)
+        r =>
+          !(
+            self &&
+            r.sourceType === self.sourceType &&
+            r.sourceId === self.sourceId
+          )
       ) ?? all[0];
     matches.push({
       kind,
@@ -167,7 +182,9 @@ export async function findKnownLegacyCollisionAxes(
  */
 export async function findAnyLegacyFileIdentityUnknown(
   tx: any
-): Promise<{ sourceType: LegacyCollisionSourceType; sourceId: number } | undefined> {
+): Promise<
+  { sourceType: LegacyCollisionSourceType; sourceId: number } | undefined
+> {
   const rows = await tx.select().from(paymentSlipLegacyUnknown).limit(1);
   const row = (rows ?? [])[0];
   return row
@@ -205,7 +222,27 @@ export async function recordLegacyCollisionMember(
     return { recorded: true, alreadyPresent: false };
   } catch (error) {
     if (isDuplicateKeyError(error)) {
-      return { recorded: true, alreadyPresent: true };
+      // Drizzle wraps the mysql2 ER_DUP_ENTRY under `cause`. Do not merely
+      // swallow every duplicate, though: confirm that the exact durable
+      // member already exists before declaring this retry successful.
+      const existing = await tx
+        .select()
+        .from(paymentSlipLegacyCollisions)
+        .where(
+          and(
+            eq(paymentSlipLegacyCollisions.kind, member.kind),
+            eq(
+              paymentSlipLegacyCollisions.identifierHash,
+              member.identifierHash
+            ),
+            eq(paymentSlipLegacyCollisions.sourceType, member.sourceType),
+            eq(paymentSlipLegacyCollisions.sourceId, member.sourceId)
+          )
+        )
+        .limit(1);
+      if ((existing ?? []).length > 0) {
+        return { recorded: true, alreadyPresent: true };
+      }
     }
     throw error;
   }
@@ -219,7 +256,11 @@ export async function recordLegacyCollisionMember(
  * Never called by a live approval - only the backfill tool.
  */
 export async function recordLegacyUnknownRow(
-  row: { sourceType: LegacyCollisionSourceType; sourceId: number; reason: string },
+  row: {
+    sourceType: LegacyCollisionSourceType;
+    sourceId: number;
+    reason: string;
+  },
   tx: any
 ): Promise<{ recorded: boolean; alreadyPresent: boolean }> {
   try {
@@ -231,7 +272,25 @@ export async function recordLegacyUnknownRow(
     return { recorded: true, alreadyPresent: false };
   } catch (error) {
     if (isDuplicateKeyError(error)) {
-      return { recorded: true, alreadyPresent: true };
+      // The UNIQUE key omits `reason`, so verify the existing classification
+      // is identical. A stale/different reason must keep blocking completion.
+      const existing = await tx
+        .select()
+        .from(paymentSlipLegacyUnknown)
+        .where(
+          and(
+            eq(paymentSlipLegacyUnknown.sourceType, row.sourceType),
+            eq(paymentSlipLegacyUnknown.sourceId, row.sourceId)
+          )
+        )
+        .limit(1);
+      if (
+        (existing ?? []).some(
+          (saved: { reason?: unknown }) => saved.reason === row.reason
+        )
+      ) {
+        return { recorded: true, alreadyPresent: true };
+      }
     }
     throw error;
   }
@@ -259,18 +318,6 @@ export async function clearLegacyUnknownRow(
         eq(paymentSlipLegacyUnknown.sourceId, source.sourceId)
       )
     );
-}
-
-/**
- * MySQL/MariaDB duplicate-key signals. Checked structurally rather than by
- * message text so a locale-translated server message still classifies.
- */
-function isDuplicateKeyError(error: unknown): boolean {
-  const e = error as { code?: string; errno?: number; message?: string } | null;
-  if (!e) return false;
-  if (e.code === "ER_DUP_ENTRY") return true;
-  if (e.errno === 1062) return true;
-  return typeof e.message === "string" && /duplicate entry/i.test(e.message);
 }
 
 /** Admin-safe description of a known collision. Never leaks a hash. */
