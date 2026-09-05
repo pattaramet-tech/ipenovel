@@ -590,6 +590,22 @@ describe("private legacy slip relink artifact", () => {
     }
   );
 
+  it("publishes a real operator-attestation shape without granting write authority", async () => {
+    const { createRepairFixture } =
+      await import("./fixtures/legacySlipRepairFixtures");
+    const { attestation } = createRepairFixture();
+    const output = await createPrivateRelinkOutput();
+    const result = await output.writePlan(attestation);
+    const saved = state.entries.get(result.path)!;
+    expect(JSON.parse(saved.bytes.toString("utf8"))).toEqual(attestation);
+    expect(result.sha256).toBe(
+      createHash("sha256").update(saved.bytes).digest("hex")
+    );
+    expect(saved).toMatchObject({ mode: 0o600, uid: UID, nlink: 1 });
+    expect(attestation.independentReview).toBeNull();
+    expect(attestation.writeAuthorized).toBe(false);
+  });
+
   it.skipIf(actualPlatform !== "linux")(
     "writes a real POSIX private fixture with exact final hash and permissions",
     async () => {

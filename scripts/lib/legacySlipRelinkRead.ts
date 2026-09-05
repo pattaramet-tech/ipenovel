@@ -492,3 +492,26 @@ export function createRelinkDatabaseReaders(
 
   return { readSource, readCrossReferences };
 }
+
+/**
+ * CURRENT locking reads on a caller-owned transaction. No connection is opened
+ * or closed here. Every underlying SELECT receives FOR UPDATE, including
+ * source-related registry and global collision/reference reads. This adapter
+ * does not itself acquire account-merge guards; the caller MUST do so first.
+ */
+export function createLockedRelinkDatabaseReaders(connection: Connection) {
+  const ownedAdapter = {
+    async query(options: { sql: string; values: unknown[]; timeout: number }) {
+      if (!/^SELECT /i.test(options.sql) || /;/.test(options.sql))
+        throw new RelinkReadError("SOURCE_READ_FAILED");
+      return connection.query({ ...options, sql: `${options.sql} FOR UPDATE` });
+    },
+    destroy() {
+      // Transaction ownership stays with the writer, including failure paths.
+    },
+  } as unknown as Connection;
+  return createRelinkDatabaseReaders(
+    {} as LegacySlipAuditEnvironment["db"],
+    async () => ownedAdapter
+  );
+}

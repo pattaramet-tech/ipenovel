@@ -22,6 +22,7 @@
     "backfill:slip-claims": "tsx scripts/backfill-slip-claims.mjs",
     "audit:legacy-slip-references": "tsx scripts/audit-legacy-slip-references.ts",
     "prepare:legacy-slip-relink": "tsx scripts/prepare-legacy-slip-relink-plan.ts",
+    "repair:legacy-slip-reference": "tsx scripts/repair-legacy-slip-reference.ts",
     "migrate:media:dry": "tsx scripts/migrate-media-to-r2.ts --dry-run --limit=20 --type=all",
     "migrate:media": "tsx scripts/migrate-media-to-r2.ts --limit=20 --type=all",
     "migrate:legacy-manus-assets:dry": "tsx scripts/migrate-legacy-manus-assets-to-r2.ts --dry-run --limit=20 --type=all"

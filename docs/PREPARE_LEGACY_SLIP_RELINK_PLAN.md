@@ -138,10 +138,14 @@ artifact หรือเขียนทับไฟล์เดิมอัต�
 2. บันทึก migration provenance ที่เชื่อม exact mapping ได้ หรือการตรวจยืนยันแบบ
    `ATTESTED` พร้อมเหตุผล/ข้อขัดแย้ง ให้ผู้ตรวจอีกคน review และผูกกับ **plan digest**
 3. เก็บ review record แยกจาก plan เดิม ไม่แก้ `approval`/`writeAuthorized` ใน JSON
-   เพื่อทำให้ดูเหมือนระบบอนุมัติแล้ว; ตอนนี้ไม่มีโปรแกรมรับ attestation หรือ apply
+   เพื่อทำให้ดูเหมือนระบบอนุมัติแล้ว; เครื่องมือ prepare นี้ไม่รับ attestation หรือ apply
 4. เมื่อ mapping ผ่าน จึงขออนุมัติ implementation ของ guarded reference-only
    writer แยกต่างหากตามเอกสารแผน ก่อนใช้จริงต้อง revalidate ทั้ง DB/R2 อีกครั้ง
 5. ยังไม่ approve payment `82350007`, ไม่ backfill live และไม่ mark completion
+
+สำหรับคำยืนยันของผู้ดูแลเฉพาะ `11280001` มี
+[เครื่องมือบันทึกคำยืนยันและ dry-run แยก](REPAIR_LEGACY_SLIP_11280001.md)
+ซึ่งยังไม่มี apply CLI ไม่อนุมัติอีก 9 รายการ และไม่แทนการทบทวน mapping คนที่สอง
 
 ## Verification ในเครื่องพัฒนา
 

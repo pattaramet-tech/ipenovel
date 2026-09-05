@@ -156,7 +156,9 @@ writer สำหรับยกระดับ legacy เหล่านี้�
 
 ## 5. ขั้นเขียนข้อมูล — ต้องมี implementation/review และอนุมัติแยกก่อน
 
-ขั้นนี้ **ยังไม่ได้สร้างหรือรัน** ไม่มี safe apply command ในเครื่องมือ audit ปัจจุบัน
+ขั้นนี้ **ยังไม่ได้รันจริง** ไม่มี apply command ในเครื่องมือ audit/prepare ปัจจุบัน
+ตัวเขียนแบบ library ที่ยังไม่เชื่อม CLI สำหรับเฉพาะ `11280001` ดู
+[implementation และ release gates แยก](REPAIR_LEGACY_SLIP_11280001.md)
 
 1. อนุมัติ exact plan, scope/ช่วงเวลา, ผู้ดำเนินการ และแผนกู้คืนเฉพาะแถว
    เก็บ restricted before-image และการอนุมัติไว้ ไม่ใช้ bulk DB restore เป็น rollback
