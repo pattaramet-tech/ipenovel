@@ -22,8 +22,8 @@ import type {
 } from "./legacySlipRepairWriter";
 
 /** Reviewed source-code release switch, NOT an env/CLI/operator override.
- * Remains false until real Linux/MariaDB gates and a separate release review. */
-export const LEGACY_REPAIR_EXECUTION_RELEASED = false;
+ * Set true only in the approved implementation-release branch/run. */
+export const LEGACY_REPAIR_EXECUTION_RELEASED = true;
 
 export interface RepairExecutionArgs {
   mode: "execute" | "reconcile";
