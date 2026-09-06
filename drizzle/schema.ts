@@ -1817,6 +1817,196 @@ export const workspaceMigrationRegistry = mysqlTable(
   })
 );
 
+/** M02 user-owned, server-only incremental Google Docs authorization. */
+export const workspaceGoogleConnections = mysqlTable(
+  "workspaceGoogleConnections",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    providerSubject: varchar("providerSubject", { length: 255 }).notNull(),
+    encryptedRefreshToken: text("encryptedRefreshToken"),
+    keyVersion: int("keyVersion").notNull(),
+    grantedScopes: text("grantedScopes").notNull(),
+    tokenExpiresAt: timestamp("tokenExpiresAt"),
+    status: mysqlEnum("status", ["active", "reconnect_required", "revoked"])
+      .default("active")
+      .notNull(),
+    version: int("version").default(1).notNull(),
+    lastUsedAt: timestamp("lastUsedAt"),
+    revokedAt: timestamp("revokedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    userSubjectUnique: uniqueIndex("wgc_user_subject_unique").on(
+      table.userId,
+      table.providerSubject
+    ),
+    statusExpiryIdx: index("wgc_status_expiry_idx").on(
+      table.status,
+      table.tokenExpiresAt
+    ),
+    userFk: foreignKey({
+      name: "wgc_user_fk",
+      columns: [table.userId],
+      foreignColumns: [users.id],
+    }),
+  })
+);
+
+export const workspaceDocuments = mysqlTable(
+  "workspaceDocuments",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    connectionId: int("connectionId").notNull(),
+    providerFileId: varchar("providerFileId", { length: 255 }).notNull(),
+    mimeType: varchar("mimeType", { length: 160 }).notNull(),
+    titleCache: varchar("titleCache", { length: 500 }).notNull(),
+    status: mysqlEnum("status", [
+      "active",
+      "inaccessible",
+      "deleted",
+      "unbound",
+    ])
+      .default("active")
+      .notNull(),
+    version: int("version").default(1).notNull(),
+    lastObservedAt: timestamp("lastObservedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    connectionFileUnique: uniqueIndex("wd_connection_file_unique").on(
+      table.connectionId,
+      table.providerFileId
+    ),
+    connectionStatusIdx: index("wd_connection_status_idx").on(
+      table.connectionId,
+      table.status
+    ),
+    connectionFk: foreignKey({
+      name: "wd_connection_fk",
+      columns: [table.connectionId],
+      foreignColumns: [workspaceGoogleConnections.id],
+    }).onDelete("cascade"),
+  })
+);
+
+export const workspaceDocumentBindings = mysqlTable(
+  "workspaceDocumentBindings",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workspaceNovelId: int("workspaceNovelId").notNull(),
+    documentId: int("documentId").notNull(),
+    role: mysqlEnum("role", ["source", "chapter", "glossary", "reference"])
+      .default("source")
+      .notNull(),
+    sequence: int("sequence").default(1).notNull(),
+    status: mysqlEnum("status", ["active", "paused", "removed"])
+      .default("active")
+      .notNull(),
+    version: int("version").default(1).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    novelDocumentRoleUnique: uniqueIndex("wdb_novel_document_role_unique").on(
+      table.workspaceNovelId,
+      table.documentId,
+      table.role
+    ),
+    novelRoleSequenceUnique: uniqueIndex("wdb_novel_role_sequence_unique").on(
+      table.workspaceNovelId,
+      table.role,
+      table.sequence
+    ),
+    documentStatusIdx: index("wdb_document_status_idx").on(
+      table.documentId,
+      table.status
+    ),
+    workspaceNovelFk: foreignKey({
+      name: "wdb_workspace_novel_fk",
+      columns: [table.workspaceNovelId],
+      foreignColumns: [workspaceNovels.id],
+    }).onDelete("cascade"),
+    documentFk: foreignKey({
+      name: "wdb_document_fk",
+      columns: [table.documentId],
+      foreignColumns: [workspaceDocuments.id],
+    }).onDelete("cascade"),
+  })
+);
+
+export const workspaceDocumentSnapshots = mysqlTable(
+  "workspaceDocumentSnapshots",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    documentId: int("documentId").notNull(),
+    providerRevisionId: varchar("providerRevisionId", {
+      length: 255,
+    }).notNull(),
+    normalizedSha256: varchar("normalizedSha256", { length: 64 }).notNull(),
+    normalizationVersion: int("normalizationVersion").notNull(),
+    byteLength: int("byteLength").notNull(),
+    observedAt: timestamp("observedAt").defaultNow().notNull(),
+  },
+  table => ({
+    documentRevisionUnique: uniqueIndex("wds_document_revision_unique").on(
+      table.documentId,
+      table.providerRevisionId
+    ),
+    documentHashVersionUnique: uniqueIndex(
+      "wds_document_hash_version_unique"
+    ).on(table.documentId, table.normalizedSha256, table.normalizationVersion),
+    documentObservedIdx: index("wds_document_observed_idx").on(
+      table.documentId,
+      table.observedAt
+    ),
+    documentFk: foreignKey({
+      name: "wds_document_fk",
+      columns: [table.documentId],
+      foreignColumns: [workspaceDocuments.id],
+    }).onDelete("cascade"),
+  })
+);
+
+export const workspaceAuditEvents = mysqlTable(
+  "workspaceAuditEvents",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workspaceId: int("workspaceId").notNull(),
+    actorUserId: int("actorUserId"),
+    eventType: varchar("eventType", { length: 120 }).notNull(),
+    entityType: varchar("entityType", { length: 120 }).notNull(),
+    entityId: varchar("entityId", { length: 255 }).notNull(),
+    correlationId: varchar("correlationId", { length: 255 }).notNull(),
+    metadataJson: text("metadataJson").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    workspaceCreatedIdx: index("wae_workspace_created_idx").on(
+      table.workspaceId,
+      table.createdAt
+    ),
+    entityCreatedIdx: index("wae_entity_created_idx").on(
+      table.entityType,
+      table.entityId,
+      table.createdAt
+    ),
+    correlationIdx: index("wae_correlation_idx").on(table.correlationId),
+    workspaceFk: foreignKey({
+      name: "wae_workspace_fk",
+      columns: [table.workspaceId],
+      foreignColumns: [workspaceWorkspaces.id],
+    }).onDelete("cascade"),
+    actorFk: foreignKey({
+      name: "wae_actor_fk",
+      columns: [table.actorUserId],
+      foreignColumns: [users.id],
+    }),
+  })
+);
+
 export type WorkspaceWorkspace = typeof workspaceWorkspaces.$inferSelect;
 export type WorkspaceMember = typeof workspaceMembers.$inferSelect;
 export type WorkspaceNovel = typeof workspaceNovels.$inferSelect;
