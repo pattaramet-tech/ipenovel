@@ -1,8 +1,8 @@
 {
   "version": "5",
   "dialect": "mysql",
-  "id": "f383a392-a4a9-448f-8ccd-fd60fd3917d9",
-  "prevId": "ec5729c8-e3ca-4e08-9f36-d5e8705f6854",
+  "id": "a223cb3b-3222-48e6-8d8f-0a62adb50657",
+  "prevId": "6e00a547-dd26-4783-a642-11c0b717f83b",
   "tables": {
     "accountMergeAuditLogs": {
       "name": "accountMergeAuditLogs",
