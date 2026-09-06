@@ -260,6 +260,69 @@
       "when": 1787256834694,
       "tag": "0036_add_users_role_id_index",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "5",
+      "when": 1787919487827,
+      "tag": "0040_add_account_merge_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "5",
+      "when": 1787939153092,
+      "tag": "0041_add_account_merge_guard_concurrency",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "5",
+      "when": 1788020144269,
+      "tag": "0042_add_account_merge_financial_reconciliation",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "5",
+      "when": 1788027469369,
+      "tag": "0043_broken_madrox",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "5",
+      "when": 1788182918549,
+      "tag": "0044_add_sports_vote_catalog_points_rewards",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "5",
+      "when": 1788561151155,
+      "tag": "0050_aberrant_nekra",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "5",
+      "when": 1788699548518,
+      "tag": "0051_spooky_lady_ursula",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "5",
+      "when": 1788701924728,
+      "tag": "0052_slippery_expediter",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "5",
+      "when": 1788715387301,
+      "tag": "0053_reconstruct_pr45_workspace_baseline",
+      "breakpoints": true
     }
   ]
 }
