@@ -14,6 +14,8 @@ import {
   verifyWalletTopupWithProvider,
 } from "./services/paymentProviderVerificationService";
 import { uploadPaymentSlipFile } from "./services/slipFileUploadService";
+import { paymentQrRouter, paymentQrSettingsRouter } from "./payments/qrRouter";
+
 import {
   assertCheckoutAvailable,
   assertSlipCheckoutAvailable,
@@ -646,6 +648,7 @@ export const appRouter = router({
   }),
 
   // ============ CHECKOUT & ORDERS ============
+  paymentQr: paymentQrRouter,
   checkout: router({
     maintenanceStatus: publicProcedure.query(async () => {
       return getCheckoutMaintenanceStatus();
@@ -2500,6 +2503,7 @@ export const appRouter = router({
     }),
 
     settings: router({
+      paymentQr: paymentQrSettingsRouter,
       getCheckoutMaintenance: adminProcedure.query(async () => {
         return getCheckoutMaintenanceStatus();
       }),
@@ -2518,6 +2522,12 @@ export const appRouter = router({
       set: adminProcedure
         .input(z.object({ key: z.string(), value: z.string(), description: z.string().optional() }))
         .mutation(async ({ input }) => {
+          if (input.key.startsWith("paymentQr.")) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Use settings.paymentQr.update with expectedRevision and reason",
+            });
+          }
           await db.setSetting(input.key, input.value, input.description);
           return { success: true };
         }),

@@ -21,7 +21,8 @@ import {
 import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { useEffect, useState } from "react";
-import { QR_PAYMENT_IMAGE, PAYMENT_DETAILS } from "@/constants/payment";
+import { PAYMENT_DETAILS } from "@/constants/payment";
+import { PaymentQr } from "@/components/PaymentQr";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
 import { resolveUploadFailureMessage, resolveCheckoutFailureMessage, resolveCheckoutSuccessMessage } from "./checkoutOutcome";
 import { CheckoutMaintenanceBanner } from "@/components/CheckoutMaintenanceBanner";
@@ -514,7 +515,7 @@ export default function CartPage() {
 
               <div className="bg-white p-4 rounded-lg border border-slate-200">
                 <p className="text-sm font-medium text-slate-700 mb-3">{t("payment.qrPayment")}</p>
-                <img src={QR_PAYMENT_IMAGE || undefined} alt="QR Code" className="w-48 h-48 mx-auto rounded" />
+                <PaymentQr request={{ kind: "cart", couponCode: appliedCouponCode || undefined, pointsToRedeem: safePointsToRedeem.toString() }} expectedAmount={total} />
               </div>
 
               <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 text-sm">

@@ -42,9 +42,16 @@ describe("Payment QR image - Manus CDN removal static assertions", () => {
     }
   });
 
-  it.each(PAYMENT_PAGES)("%s imports the canonical QR_PAYMENT_IMAGE from constants/payment", (fileName) => {
+  it.each(PAYMENT_PAGES)("%s uses the shared payment QR component", (fileName) => {
     const source = readPageSource(fileName);
-    expect(source).toMatch(/import\s*\{[^}]*\bQR_PAYMENT_IMAGE\b[^}]*\}\s*from\s+["']@\/constants\/payment["']/);
+    expect(source).toContain('import { PaymentQr } from "@/components/PaymentQr"');
+    expect(source).toContain("<PaymentQr ");
+  });
+  it("shared payment QR component preserves the canonical original image", () => {
+    const source = readFileSync(join(__dirname, "..", "components", "PaymentQr.tsx"), "utf8");
+    expect(source).toContain('import { QR_PAYMENT_IMAGE } from "@/constants/payment"');
+    expect(source).not.toContain(MANUS_QR_CDN_HOSTNAME);
+    expect(source).not.toMatch(/src=\{QR_PAYMENT_IMAGE\}/);
   });
 
   it.each(PAYMENT_PAGES)("%s never renders the QR image with an empty-string src (avoids the src=\"\" reload footgun)", (fileName) => {

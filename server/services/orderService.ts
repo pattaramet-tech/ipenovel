@@ -157,18 +157,10 @@ export async function hasAccessToEpisode(userId: number, episodeId: number, tx?:
   return !!purchase;
 }
 
-/**
- * Create order from cart
- */
-export async function createOrderFromCart(
-  userId: string,
-  cartItems: any[],
-  couponCode?: string,
-  pointsToRedeem?: string,
-  slipImageUrl?: string,
-  tx?: any,
-  userIdNum?: number
-): Promise<any> {
+/** Read-only pricing shared by checkout and QR preview; no order or payment writes. */
+export async function quoteCartPricing(
+  userId: string, cartItems: any[], couponCode?: string, pointsToRedeem?: string, tx?: any, userIdNum?: number
+) {
   // Parse userId first
   const userIdNumParsed = userIdNum ?? parseInt(userId, 10);
   if (!Number.isFinite(userIdNumParsed)) {
@@ -239,6 +231,21 @@ export async function createOrderFromCart(
 
   // Calculate total
   const totalAmount = Math.max(0, subtotal - discountAmount - pointsDiscountAmount);
+
+  return { userIdNumParsed, subtotal, discountAmount, pointsDiscountAmount, totalAmount, normalizedCouponCode };
+}
+
+export async function createOrderFromCart(
+  userId: string,
+  cartItems: any[],
+  couponCode?: string,
+  pointsToRedeem?: string,
+  slipImageUrl?: string,
+  tx?: any,
+  userIdNum?: number
+): Promise<any> {
+  const { userIdNumParsed, subtotal, discountAmount, pointsDiscountAmount, totalAmount, normalizedCouponCode } =
+    await quoteCartPricing(userId, cartItems, couponCode, pointsToRedeem, tx, userIdNum);
 
   // Create order
   const orderNumber = generateOrderNumber();

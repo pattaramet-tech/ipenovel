@@ -11,7 +11,7 @@ import { Upload, CheckCircle, AlertCircle, QrCode } from "lucide-react";
 import { toast } from "sonner";
 import { getLoginUrl } from "@/const";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
-import { QR_PAYMENT_IMAGE } from "@/constants/payment";
+import { PaymentQr } from "@/components/PaymentQr";
 
 export default function PaymentPage() {
   useDocumentHead({ robots: "noindex,nofollow" });
@@ -269,7 +269,7 @@ export default function PaymentPage() {
             <CardTitle>{t("payment.qrPayment")}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <img src={QR_PAYMENT_IMAGE || undefined} alt="QR Code" className="w-64 h-64 mx-auto" />
+            <PaymentQr request={{ kind: "order", orderId: order.id }} expectedAmount={String(order.totalAmount)} />
             <p className="text-sm text-slate-600 text-center">{t("payment.scanQr")}</p>
           </CardContent>
         </Card>

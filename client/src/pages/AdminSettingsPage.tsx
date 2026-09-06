@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useState, useEffect } from "react";
+import { AdminPaymentQrSettings } from "@/components/AdminPaymentQrSettings";
 import { toast } from "sonner";
 import { Loader2, AlertCircle, CheckCircle2, Info } from "lucide-react";
 import { trpc } from "@/lib/trpc";
@@ -238,18 +239,7 @@ export default function AdminSettingsPage() {
           </div>
         </Card>
 
-        {/* Payment Settings */}
-        <Card className="p-6">
-          <h2 className="text-lg font-semibold mb-4">Payment Settings</h2>
-          <div className="space-y-4">
-            <div className="p-4 bg-blue-50 rounded">
-              <p className="text-sm text-blue-900">
-                Payment processing is configured through Manus built-in payment system.
-                No additional configuration needed.
-              </p>
-            </div>
-          </div>
-        </Card>
+        <AdminPaymentQrSettings />
 
         <Card className="p-6">
           <h2 className="text-lg font-semibold mb-4">ระบบแจ้งเตือนหน้าชำระเงิน</h2>

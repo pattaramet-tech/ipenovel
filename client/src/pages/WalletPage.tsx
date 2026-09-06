@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { Upload, CheckCircle, AlertCircle, X, Loader2 } from "lucide-react";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
-import { QR_PAYMENT_IMAGE } from "@/constants/payment";
+import { PaymentQr } from "@/components/PaymentQr";
 
 /**
  * Map technical storage errors to user-friendly Thai messages
@@ -405,11 +405,9 @@ export default function WalletPage() {
               <h3 className="text-lg font-semibold mb-3 text-slate-800">{t("wallet.scanQRToPayment")}</h3>
               <Card className="p-6 bg-slate-50 border-2 border-slate-200">
                 <div className="flex flex-col items-center">
-                  <img
-                    src={QR_PAYMENT_IMAGE || undefined}
-                    alt="QR Payment"
-                    className="w-full max-w-sm aspect-square object-contain rounded-lg"
-                  />
+                  {topupAmount && /^\d+(\.\d{1,2})?$/.test(topupAmount.trim()) && Number(topupAmount) > 0 ? (
+                    <PaymentQr request={{ kind: "wallet", amount: topupAmount }} expectedAmount={topupAmount} />
+                  ) : <p className="text-sm text-slate-600">กรอกยอดเติมเงินเพื่อแสดง QR รับเงิน</p>}
                 </div>
               </Card>
               <p className="text-sm text-slate-600 mt-3 text-center">
