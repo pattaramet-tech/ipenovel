@@ -3588,7 +3588,7 @@ export async function getTopUsersBySpending(period: "all" | "today" | "7d" | "30
  * Count approved payments by source (wallet/auto/manual)
  * Returns accurate breakdown for dashboard metrics
  */
-export async function getPaymentSourceCounts(): Promise<{
+export async function getPaymentSourceCounts(range?: { start: Date; end: Date } | null): Promise<{
   walletCount: number;
   ocrCount: number;
   transferCount: number;
@@ -3599,21 +3599,25 @@ export async function getPaymentSourceCounts(): Promise<{
   const db = await getDb();
   if (!db) return { walletCount: 0, ocrCount: 0, transferCount: 0, unknownCount: 0, totalApproved: 0, totalPending: 0 };
 
-  // Count approved payments grouped by approvalSource
+  const periodCondition = range
+    ? and(gte(payments.createdAt, range.start), lt(payments.createdAt, range.end))
+    : undefined;
+
+  // Count approved payments grouped by approvalSource within the selected reporting period.
   const sourceCounts = await db
     .select({
       approvalSource: payments.approvalSource,
       count: count(),
     })
     .from(payments)
-    .where(eq(payments.status, "approved"))
+    .where(and(eq(payments.status, "approved"), periodCondition))
     .groupBy(payments.approvalSource);
 
-  // Count pending payments (for review queue)
+  // Count pending payments (for review queue) within the same reporting period.
   const pendingResult = await db
     .select({ count: count() })
     .from(payments)
-    .where(eq(payments.status, "pending"));
+    .where(and(eq(payments.status, "pending"), periodCondition));
 
   let walletCount = 0;
   let ocrCount = 0;
@@ -3736,9 +3740,10 @@ export async function getDashboardAnalytics(period: DashboardPeriod = "all", mon
 }
 
 export async function getDashboardSummary(period: DashboardPeriod = "all", month?: string) {
+  const range = resolveDashboardRange(period, month);
   const [totalNovels, paymentSources, analytics] = await Promise.all([
     countAllNovels(),
-    getPaymentSourceCounts(),
+    getPaymentSourceCounts(range),
     getDashboardAnalytics(period, month),
   ]);
 

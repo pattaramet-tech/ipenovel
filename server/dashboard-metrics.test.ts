@@ -206,6 +206,13 @@ describe("Dashboard Metrics - Count Helpers", () => {
     const database = await getDb();
     if (!database) throw new Error("Database not available");
 
+    const before = await db.getDashboardAnalytics("custom_month", "2099-01");
+    const beforeMonthly = before.monthlySlips.find((row) => row.month === "2099-01") ?? {
+      month: "2099-01",
+      orderPayments: 0,
+      walletTopups: 0,
+      total: 0,
+    };
     const createdAt = new Date("2099-01-10T10:00:00");
     const slipSubmittedAt = new Date("2099-01-11T10:00:00");
     const orderResult = await database.insert(orders).values({
@@ -238,24 +245,85 @@ describe("Dashboard Metrics - Count Helpers", () => {
 
     try {
       const analytics = await db.getDashboardAnalytics("custom_month", "2099-01");
-      expect(analytics.totalOrders).toBe(1);
-      expect(analytics.payments.total).toBe(1);
-      expect(analytics.payments.pending).toBe(1);
-      expect(analytics.walletTopups.total).toBe(1);
-      expect(analytics.walletTopups.pending).toBe(1);
-      expect(analytics.slips.orderPayments).toBe(1);
-      expect(analytics.slips.walletTopups).toBe(1);
-      expect(analytics.slips.total).toBe(2);
+      expect(analytics.totalOrders).toBe(before.totalOrders + 1);
+      expect(analytics.payments.total).toBe(before.payments.total + 1);
+      expect(analytics.payments.pending).toBe(before.payments.pending + 1);
+      expect(analytics.walletTopups.total).toBe(before.walletTopups.total + 1);
+      expect(analytics.walletTopups.pending).toBe(before.walletTopups.pending + 1);
+      expect(analytics.slips.orderPayments).toBe(before.slips.orderPayments + 1);
+      expect(analytics.slips.walletTopups).toBe(before.slips.walletTopups + 1);
+      expect(analytics.slips.total).toBe(before.slips.total + 2);
       expect(analytics.monthlySlips.find((row) => row.month === "2099-01")).toEqual({
         month: "2099-01",
-        orderPayments: 1,
-        walletTopups: 1,
-        total: 2,
+        orderPayments: beforeMonthly.orderPayments + 1,
+        walletTopups: beforeMonthly.walletTopups + 1,
+        total: beforeMonthly.total + 2,
       });
     } finally {
       await database.delete(walletTopups).where(eq(walletTopups.id, topupId));
       await database.delete(payments).where(eq(payments.id, paymentId));
       await database.delete(orders).where(eq(orders.id, orderId));
+    }
+  });
+
+  it("uses inclusive-start/exclusive-end month boundaries for orders and payment sources", async () => {
+    const database = await getDb();
+    if (!database) throw new Error("Database not available");
+
+    const januaryBefore = await db.getDashboardSummary("custom_month", "2098-01");
+    const februaryBefore = await db.getDashboardSummary("custom_month", "2098-02");
+
+    const januaryOrder = await database.insert(orders).values({
+      orderNumber: `TEST-DASHBOARD-BOUNDARY-JAN-${Date.now()}`,
+      userId: testUserId,
+      subtotal: "10.00",
+      totalAmount: "10.00",
+      status: "approved",
+      paymentStatus: "approved",
+      createdAt: new Date("2098-01-01T00:00:00"),
+    });
+    const januaryOrderId = (januaryOrder as any).insertId;
+    const januaryPayment = await database.insert(payments).values({
+      orderId: januaryOrderId,
+      status: "approved",
+      approvalSource: "manual",
+      createdAt: new Date("2098-01-01T00:00:00"),
+    });
+    const januaryPaymentId = (januaryPayment as any).insertId;
+
+    const februaryOrder = await database.insert(orders).values({
+      orderNumber: `TEST-DASHBOARD-BOUNDARY-FEB-${Date.now()}`,
+      userId: testUserId,
+      subtotal: "10.00",
+      totalAmount: "10.00",
+      status: "approved",
+      paymentStatus: "approved",
+      createdAt: new Date("2098-02-01T00:00:00"),
+    });
+    const februaryOrderId = (februaryOrder as any).insertId;
+    const februaryPayment = await database.insert(payments).values({
+      orderId: februaryOrderId,
+      status: "approved",
+      approvalSource: "manual",
+      createdAt: new Date("2098-02-01T00:00:00"),
+    });
+    const februaryPaymentId = (februaryPayment as any).insertId;
+
+    try {
+      const january = await db.getDashboardSummary("custom_month", "2098-01");
+      expect(january.totalOrders).toBe(januaryBefore.totalOrders + 1);
+      expect(january.approvedPayments).toBe(januaryBefore.approvedPayments + 1);
+      expect(january.paymentSources.transferCount).toBe(januaryBefore.paymentSources.transferCount + 1);
+
+      const february = await db.getDashboardSummary("custom_month", "2098-02");
+      expect(february.totalOrders).toBe(februaryBefore.totalOrders + 1);
+      expect(february.approvedPayments).toBe(februaryBefore.approvedPayments + 1);
+      expect(february.paymentSources.transferCount).toBe(februaryBefore.paymentSources.transferCount + 1);
+    } finally {
+      await database.delete(payments).where(eq(payments.id, februaryPaymentId));
+      await database.delete(orders).where(eq(orders.id, februaryOrderId));
+      await database.delete(payments).where(eq(payments.id, januaryPaymentId));
+      await database.delete(orders).where(eq(orders.id, januaryOrderId));
     }
   });
 });

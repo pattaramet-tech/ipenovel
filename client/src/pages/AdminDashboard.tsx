@@ -175,40 +175,53 @@ export default function AdminDashboard() {
             title="Payments & Slip Activity"
             description="Filtered operational volume based on order/payment creation and actual slip submission timestamps"
           />
-          <div className="grid grid-cols-2 lg:grid-cols-3 gap-2 md:gap-4">
-            <StatCard label="Payment Orders" value={paymentOrders} icon={ShoppingCart} color="green" />
-            <StatCard label="Payment Rows" value={paymentTotal} icon={ReceiptText} color="blue" />
-            <StatCard label="Wallet Top-ups" value={topupTotal} icon={Wallet} color="purple" />
-            <StatCard label="Order Slips Uploaded" value={orderSlipCount} icon={ScanLine} color="blue" />
-            <StatCard label="Top-up Slips Uploaded" value={topupSlipCount} icon={FileSpreadsheet} color="green" />
-            <StatCard label="Total Slips Uploaded" value={totalSlipCount} icon={ReceiptText} color="purple" />
-          </div>
-          <Card className="mt-4">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm md:text-base">Slip uploads by month</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {(analytics?.monthlySlips ?? []).length === 0 ? (
-                <p className="text-sm text-slate-500">No uploaded slips found.</p>
-              ) : (
-                (analytics?.monthlySlips ?? []).map((row) => (
-                  <div key={row.month} className="grid grid-cols-4 gap-2 border-b py-2 text-xs md:text-sm last:border-0">
-                    <span className="font-medium">{row.month}</span>
-                    <span>Orders: {row.orderPayments}</span>
-                    <span>Top-ups: {row.walletTopups}</span>
-                    <span className="text-right font-semibold">Total: {row.total}</span>
-                  </div>
-                ))
-              )}
-            </CardContent>
-          </Card>
+          {summaryLoading ? (
+            <div className="space-y-4" aria-label="Loading payment and slip analytics">
+              <div className="grid grid-cols-2 lg:grid-cols-3 gap-2 md:gap-4">
+                {Array.from({ length: 6 }).map((_, index) => (
+                  <Skeleton key={index} className="h-24 w-full rounded-lg" />
+                ))}
+              </div>
+              <Skeleton className="h-40 w-full rounded-lg" />
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 lg:grid-cols-3 gap-2 md:gap-4">
+                <StatCard label="Payment Orders" value={paymentOrders} icon={ShoppingCart} color="green" />
+                <StatCard label="Payment Rows" value={paymentTotal} icon={ReceiptText} color="blue" />
+                <StatCard label="Wallet Top-ups" value={topupTotal} icon={Wallet} color="purple" />
+                <StatCard label="Order Slips Uploaded" value={orderSlipCount} icon={ScanLine} color="blue" />
+                <StatCard label="Top-up Slips Uploaded" value={topupSlipCount} icon={FileSpreadsheet} color="green" />
+                <StatCard label="Total Slips Uploaded" value={totalSlipCount} icon={ReceiptText} color="purple" />
+              </div>
+              <Card className="mt-4">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm md:text-base">Slip uploads by month</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {(analytics?.monthlySlips ?? []).length === 0 ? (
+                    <p className="text-sm text-slate-500">No uploaded slips found.</p>
+                  ) : (
+                    (analytics?.monthlySlips ?? []).map((row) => (
+                      <div key={row.month} className="grid grid-cols-4 gap-2 border-b py-2 text-xs md:text-sm last:border-0">
+                        <span className="font-medium">{row.month}</span>
+                        <span>Orders: {row.orderPayments}</span>
+                        <span>Top-ups: {row.walletTopups}</span>
+                        <span className="text-right font-semibold">Total: {row.total}</span>
+                      </div>
+                    ))
+                  )}
+                </CardContent>
+              </Card>
+            </>
+          )}
         </div>
 
         {/* Payment Source Metrics */}
         <div>
           <SectionHeader
             title="Payment Sources"
-            description="Breakdown of approved payments by source"
+            description="Approved payments by source for the selected reporting period"
           />
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-4">
             <StatCard
