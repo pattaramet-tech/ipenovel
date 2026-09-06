@@ -307,9 +307,16 @@ export async function optimizeAndUploadToR2(
   // ============ MAIN ROUTER ============
 
 const dashboardRouter = router({
-  summary: adminProcedure.query(async () => {
-    return db.getDashboardSummary();
-  }),
+  summary: adminProcedure
+    .input(
+      z.object({
+        period: z.enum(["all", "today", "7d", "30d", "month", "custom_month"]).default("all"),
+        month: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+      }).optional()
+    )
+    .query(async ({ input }) => {
+      return db.getDashboardSummary(input?.period ?? "all", input?.month);
+    }),
   topUsers: adminProcedure
     .input(
       z.object({

@@ -8,7 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
-import { CheckCircle, XCircle, Clock, BookOpen, ShoppingCart, TrendingUp, AlertCircle, Wallet, ScanLine, ArrowLeftRight, Trophy, FileSpreadsheet } from "lucide-react";
+import { CheckCircle, XCircle, Clock, BookOpen, ShoppingCart, TrendingUp, AlertCircle, Wallet, ScanLine, ArrowLeftRight, Trophy, FileSpreadsheet, ReceiptText } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
 import { StatCard, SectionHeader, StatusBadge, EmptyState } from "@/components/AdminComponents";
@@ -22,6 +22,11 @@ export default function AdminDashboard() {
     const [rejectingPaymentId, setRejectingPaymentId] = useState<number | null>(null);
   const [rejectionReason, setRejectionReason] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
+  const [dashboardPeriod, setDashboardPeriod] = useState<"all" | "today" | "7d" | "30d" | "month" | "custom_month">("month");
+  const [dashboardMonth, setDashboardMonth] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  });
 
   // Same rule AdminLayout (which wraps this page's content below) uses to
   // decide whether to render admin content at all - this only controls
@@ -33,7 +38,7 @@ export default function AdminDashboard() {
 
   // Query hooks with enabled flag - they won't fetch until auth is resolved and user is admin
   const { data: dashboardSummary, isLoading: summaryLoading } = trpc.admin.dashboard.summary.useQuery(
-    undefined,
+    { period: dashboardPeriod, month: dashboardPeriod === "custom_month" && /^\d{4}-\d{2}$/.test(dashboardMonth) ? dashboardMonth : undefined },
     { enabled: shouldFetchAdminData }
   );
   const { data: pendingPayments, isLoading: paymentsLoading, refetch: refetchPayments } = trpc.admin.payments.pending.useQuery(
@@ -92,6 +97,13 @@ export default function AdminDashboard() {
   const ocrCount = dashboardSummary?.paymentSources?.ocrCount ?? 0;
   const transferCount = dashboardSummary?.paymentSources?.transferCount ?? 0;
   const unknownCount = dashboardSummary?.paymentSources?.unknownCount ?? 0;
+  const analytics = dashboardSummary?.analytics;
+  const paymentOrders = analytics?.totalOrders ?? 0;
+  const paymentTotal = analytics?.payments.total ?? 0;
+  const topupTotal = analytics?.walletTopups.total ?? 0;
+  const orderSlipCount = analytics?.slips.orderPayments ?? 0;
+  const topupSlipCount = analytics?.slips.walletTopups ?? 0;
+  const totalSlipCount = analytics?.slips.total ?? 0;
 
   return (
     <AdminLayout>
@@ -102,6 +114,34 @@ export default function AdminDashboard() {
             title="Dashboard Overview" 
             description="Key metrics and recent activity"
           />
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            {([
+              ["today", "Today"],
+              ["7d", "7 days"],
+              ["30d", "30 days"],
+              ["month", "This month"],
+              ["all", "All time"],
+            ] as const).map(([value, label]) => (
+              <Button
+                key={value}
+                size="sm"
+                variant={dashboardPeriod === value ? "default" : "outline"}
+                onClick={() => setDashboardPeriod(value)}
+              >
+                {label}
+              </Button>
+            ))}
+            <Input
+              type="month"
+              value={dashboardMonth}
+              onChange={(event) => {
+                setDashboardMonth(event.target.value);
+                setDashboardPeriod("custom_month");
+              }}
+              className="h-9 w-[160px]"
+              aria-label="Select dashboard month"
+            />
+          </div>
           <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-2 md:gap-4">
             <StatCard
               label="Total Novels"
@@ -128,6 +168,40 @@ export default function AdminDashboard() {
               color="purple"
             />
           </div>
+        </div>
+
+        <div>
+          <SectionHeader
+            title="Payments & Slip Activity"
+            description="Filtered operational volume based on order/payment creation and actual slip submission timestamps"
+          />
+          <div className="grid grid-cols-2 lg:grid-cols-3 gap-2 md:gap-4">
+            <StatCard label="Payment Orders" value={paymentOrders} icon={ShoppingCart} color="green" />
+            <StatCard label="Payment Rows" value={paymentTotal} icon={ReceiptText} color="blue" />
+            <StatCard label="Wallet Top-ups" value={topupTotal} icon={Wallet} color="purple" />
+            <StatCard label="Order Slips Uploaded" value={orderSlipCount} icon={ScanLine} color="blue" />
+            <StatCard label="Top-up Slips Uploaded" value={topupSlipCount} icon={FileSpreadsheet} color="green" />
+            <StatCard label="Total Slips Uploaded" value={totalSlipCount} icon={ReceiptText} color="purple" />
+          </div>
+          <Card className="mt-4">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm md:text-base">Slip uploads by month</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {(analytics?.monthlySlips ?? []).length === 0 ? (
+                <p className="text-sm text-slate-500">No uploaded slips found.</p>
+              ) : (
+                (analytics?.monthlySlips ?? []).map((row) => (
+                  <div key={row.month} className="grid grid-cols-4 gap-2 border-b py-2 text-xs md:text-sm last:border-0">
+                    <span className="font-medium">{row.month}</span>
+                    <span>Orders: {row.orderPayments}</span>
+                    <span>Top-ups: {row.walletTopups}</span>
+                    <span className="text-right font-semibold">Total: {row.total}</span>
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
         </div>
 
         {/* Payment Source Metrics */}

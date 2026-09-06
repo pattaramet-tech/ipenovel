@@ -3635,21 +3635,120 @@ export async function getPaymentSourceCounts(): Promise<{
   return { walletCount, ocrCount, transferCount, unknownCount, totalApproved, totalPending };
 }
 
-export async function getDashboardSummary() {
-  const [totalOrders, totalNovels, pendingPayments, approvedPayments, paymentSources] = await Promise.all([
-    countAllOrders(),
+export type DashboardPeriod = "all" | "today" | "7d" | "30d" | "month" | "custom_month";
+
+function resolveDashboardRange(period: DashboardPeriod, month?: string) {
+  if (period === "all") return null;
+  const now = new Date();
+  if (period === "today") {
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    return { start, end: new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1) };
+  }
+  if (period === "7d" || period === "30d") {
+    const days = period === "7d" ? 7 : 30;
+    return { start: new Date(now.getTime() - days * 24 * 60 * 60 * 1000), end: now };
+  }
+  const base = period === "custom_month" && month && /^\d{4}-\d{2}$/.test(month)
+    ? new Date(`${month}-01T00:00:00`)
+    : new Date(now.getFullYear(), now.getMonth(), 1);
+  return { start: base, end: new Date(base.getFullYear(), base.getMonth() + 1, 1) };
+}
+
+function dashboardDateWhere(column: any, range: ReturnType<typeof resolveDashboardRange>) {
+  return range ? and(gte(column, range.start), lt(column, range.end)) : undefined;
+}
+
+export async function getDashboardAnalytics(period: DashboardPeriod = "all", month?: string) {
+  const db = await getDb();
+  if (!db) {
+    return {
+      period,
+      month: month ?? null,
+      totalOrders: 0,
+      payments: { total: 0, pending: 0, approved: 0, rejected: 0 },
+      walletTopups: { total: 0, pending: 0, approved: 0, rejected: 0 },
+      slips: { orderPayments: 0, walletTopups: 0, total: 0 },
+      monthlySlips: [],
+    };
+  }
+
+  const range = resolveDashboardRange(period, month);
+  const orderWhere = dashboardDateWhere(orders.createdAt, range);
+  const paymentWhere = dashboardDateWhere(payments.createdAt, range);
+  const topupWhere = dashboardDateWhere(walletTopups.createdAt, range);
+  const paymentSlipWhere = dashboardDateWhere(payments.slipSubmittedAt, range);
+  const topupSlipWhere = dashboardDateWhere(walletTopups.slipSubmittedAt, range);
+
+  const [orderRows, paymentRows, topupRows, paymentSlipRows, topupSlipRows, paymentMonthlyRows, topupMonthlyRows] = await Promise.all([
+    db.select({ count: count() }).from(orders).where(orderWhere),
+    db.select({ status: payments.status, count: count() }).from(payments).where(paymentWhere).groupBy(payments.status),
+    db.select({ status: walletTopups.status, count: count() }).from(walletTopups).where(topupWhere).groupBy(walletTopups.status),
+    db.select({ count: count() }).from(payments).where(and(isNotNull(payments.slipSubmittedAt), paymentSlipWhere)),
+    db.select({ count: count() }).from(walletTopups).where(and(isNotNull(walletTopups.slipSubmittedAt), topupSlipWhere)),
+    db.select({ month: sql<string>`DATE_FORMAT(${payments.slipSubmittedAt}, '%Y-%m')`, count: count() })
+      .from(payments)
+      .where(isNotNull(payments.slipSubmittedAt))
+      .groupBy(sql`DATE_FORMAT(${payments.slipSubmittedAt}, '%Y-%m')`)
+      .orderBy(sql`DATE_FORMAT(${payments.slipSubmittedAt}, '%Y-%m') DESC`)
+      .limit(12),
+    db.select({ month: sql<string>`DATE_FORMAT(${walletTopups.slipSubmittedAt}, '%Y-%m')`, count: count() })
+      .from(walletTopups)
+      .where(isNotNull(walletTopups.slipSubmittedAt))
+      .groupBy(sql`DATE_FORMAT(${walletTopups.slipSubmittedAt}, '%Y-%m')`)
+      .orderBy(sql`DATE_FORMAT(${walletTopups.slipSubmittedAt}, '%Y-%m') DESC`)
+      .limit(12),
+  ]);
+
+  const statusCounts = (rows: Array<{ status: string; count: number }>) => {
+    const map = new Map(rows.map((row) => [row.status, Number(row.count) || 0]));
+    return {
+      total: Array.from(map.values()).reduce((sum, value) => sum + value, 0),
+      pending: (map.get("pending") || 0) + (map.get("pending_review") || 0),
+      approved: map.get("approved") || 0,
+      rejected: map.get("rejected") || 0,
+    };
+  };
+
+  const monthly = new Map<string, { month: string; orderPayments: number; walletTopups: number; total: number }>();
+  for (const row of paymentMonthlyRows) {
+    if (!row.month) continue;
+    monthly.set(row.month, { month: row.month, orderPayments: Number(row.count) || 0, walletTopups: 0, total: Number(row.count) || 0 });
+  }
+  for (const row of topupMonthlyRows) {
+    if (!row.month) continue;
+    const current = monthly.get(row.month) || { month: row.month, orderPayments: 0, walletTopups: 0, total: 0 };
+    current.walletTopups = Number(row.count) || 0;
+    current.total = current.orderPayments + current.walletTopups;
+    monthly.set(row.month, current);
+  }
+
+  const orderPaymentSlips = Number(paymentSlipRows[0]?.count) || 0;
+  const walletTopupSlips = Number(topupSlipRows[0]?.count) || 0;
+  return {
+    period,
+    month: month ?? null,
+    totalOrders: Number(orderRows[0]?.count) || 0,
+    payments: statusCounts(paymentRows as any),
+    walletTopups: statusCounts(topupRows as any),
+    slips: { orderPayments: orderPaymentSlips, walletTopups: walletTopupSlips, total: orderPaymentSlips + walletTopupSlips },
+    monthlySlips: Array.from(monthly.values()).sort((a, b) => b.month.localeCompare(a.month)).slice(0, 12),
+  };
+}
+
+export async function getDashboardSummary(period: DashboardPeriod = "all", month?: string) {
+  const [totalNovels, paymentSources, analytics] = await Promise.all([
     countAllNovels(),
-    countPendingPayments(),
-    countApprovedPayments(),
     getPaymentSourceCounts(),
+    getDashboardAnalytics(period, month),
   ]);
 
   return {
-    totalOrders,
+    totalOrders: analytics.totalOrders,
     totalNovels,
-    pendingPayments,
-    approvedPayments,
+    pendingPayments: analytics.payments.pending,
+    approvedPayments: analytics.payments.approved,
     paymentSources,
+    analytics,
   };
 }
 

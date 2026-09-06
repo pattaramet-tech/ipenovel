@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as db from "./db";
 import { getDb } from "./db";
-import { orders, payments, novels, users } from "../drizzle/schema";
+import { orders, payments, novels, users, walletTopups } from "../drizzle/schema";
 import { eq } from "drizzle-orm";
 
 describe("Dashboard Metrics - Count Helpers", () => {
@@ -200,5 +200,62 @@ describe("Dashboard Metrics - Count Helpers", () => {
 
     // Verify we got valid results
     expect(summary.totalOrders).toBeGreaterThanOrEqual(0);
+  });
+
+  it("counts uploaded order and top-up slips by selected month without counting null slips", async () => {
+    const database = await getDb();
+    if (!database) throw new Error("Database not available");
+
+    const createdAt = new Date("2099-01-10T10:00:00");
+    const slipSubmittedAt = new Date("2099-01-11T10:00:00");
+    const orderResult = await database.insert(orders).values({
+      orderNumber: `TEST-DASHBOARD-SLIP-${Date.now()}`,
+      userId: testUserId,
+      subtotal: "20.00",
+      totalAmount: "20.00",
+      status: "pending",
+      paymentStatus: "pending",
+      createdAt,
+    });
+    const orderId = (orderResult as any).insertId;
+    const paymentResult = await database.insert(payments).values({
+      orderId,
+      status: "pending_review",
+      slipImageUrl: "private://test-order-slip",
+      slipSubmittedAt,
+      createdAt,
+    });
+    const paymentId = (paymentResult as any).insertId;
+    const topupResult = await database.insert(walletTopups).values({
+      userId: testUserId,
+      requestedAmount: "100.00",
+      status: "pending_review",
+      slipImageUrl: "private://test-topup-slip",
+      slipSubmittedAt,
+      createdAt,
+    });
+    const topupId = (topupResult as any).insertId;
+
+    try {
+      const analytics = await db.getDashboardAnalytics("custom_month", "2099-01");
+      expect(analytics.totalOrders).toBe(1);
+      expect(analytics.payments.total).toBe(1);
+      expect(analytics.payments.pending).toBe(1);
+      expect(analytics.walletTopups.total).toBe(1);
+      expect(analytics.walletTopups.pending).toBe(1);
+      expect(analytics.slips.orderPayments).toBe(1);
+      expect(analytics.slips.walletTopups).toBe(1);
+      expect(analytics.slips.total).toBe(2);
+      expect(analytics.monthlySlips.find((row) => row.month === "2099-01")).toEqual({
+        month: "2099-01",
+        orderPayments: 1,
+        walletTopups: 1,
+        total: 2,
+      });
+    } finally {
+      await database.delete(walletTopups).where(eq(walletTopups.id, topupId));
+      await database.delete(payments).where(eq(payments.id, paymentId));
+      await database.delete(orders).where(eq(orders.id, orderId));
+    }
   });
 });
