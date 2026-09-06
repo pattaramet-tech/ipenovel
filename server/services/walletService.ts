@@ -5,7 +5,7 @@
 
 import * as db from "../db";
 import { TRPCError } from "@trpc/server";
-import { submitWalletTopupSlip } from "./walletTopupSubmissionService";
+import { verifyWalletTopupWithProvider } from "./paymentProviderVerificationService";
 
 export async function createWalletTopupRequest(userId: number, requestedAmount: string, slipImageUrl?: string) {
   // STRICT validation: must be a valid positive number only
@@ -65,32 +65,26 @@ export async function createWalletTopupRequest(userId: number, requestedAmount: 
     });
   }
 
-  // Wire OCR into active flow: submit slip for OCR processing
+  // Provider-only verification. Storage is used only to obtain the submitted
+  // bytes; no legacy/R2 identity, OCR, local hash, or Payment V2 gate decides
+  // whether this request may reach the payment provider.
   try {
-    const ocrResult = await submitWalletTopupSlip(userId, topup.id, requestedAmount, slipImageUrl);
+    const providerVerification = await verifyWalletTopupWithProvider(topup.id);
     return {
       ...topup,
-      // Return OCR result to frontend
-      ocrStatus: ocrResult.status,
-      ocrDecision: ocrResult.ocrDecision,
-      ocrConfidence: ocrResult.ocrConfidence,
-      finalConfidence: ocrResult.finalConfidence,
-      reviewReason: ocrResult.reviewReason,
-      duplicateStatus: ocrResult.duplicateStatus,
-      userMessage: ocrResult.userMessage,
-      creditedAmount: ocrResult.creditedAmount,
+      providerVerification,
     };
-  } catch (ocrError) {
-    // OCR error should not crash the flow - log and return pending status
-    console.error("[Wallet OCR] Submission error:", {
-      message: ocrError instanceof Error ? ocrError.message : String(ocrError),
-      topupId: topup.id,
-      userId,
-      error: ocrError,
-    });
-    // If topup was created but OCR failed, return the topup anyway
-    // User will see it as pending_review
-    return topup;
+  } catch {
+    // The top-up request is durable even when the external provider is down.
+    // Leave it pending for a later provider retry or explicit admin review.
+    return {
+      ...topup,
+      providerVerification: {
+        provider: "slip2go" as const,
+        outcome: "ERROR" as const,
+        recipientCheckApplied: false,
+      },
+    };
   }
 }
 
@@ -117,7 +111,9 @@ export async function uploadWalletTopupSlip(topupId: number, userId: number, sli
     });
   }
 
-  return db.updateWalletTopupSlip(topupId, slipImageUrl);
+  await db.updateWalletTopupSlip(topupId, slipImageUrl);
+  const providerVerification = await verifyWalletTopupWithProvider(topupId);
+  return { success: true, topupId, slipImageUrl, providerVerification };
 }
 
 export async function adminApproveWalletTopup(topupId: number, adminUserId: number) {

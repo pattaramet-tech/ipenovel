@@ -194,9 +194,6 @@ async function completedResult(
     tableActions: Array.isArray(completionMetadata.tableActions)
       ? completionMetadata.tableActions
       : [],
-    paymentSlipClaimsPreserved: Number(
-      completionMetadata.paymentSlipClaimsPreserved ?? 0
-    ),
     identityMoved: true as const,
   };
 }
@@ -525,7 +522,6 @@ export async function executeAccountMerge(params: {
       financial: financialDto(financial.reconciliation),
       dataSummary: parseSafeSummary(data.reconciliation.safeSummary),
       tableActions,
-      paymentSlipClaimsPreserved: preview.paymentSlipClaims.sourceCount,
     };
     const auditInsert: any = await tx.insert(accountMergeAuditLogs).values({
       mergeCaseId: caseId,
@@ -549,7 +545,6 @@ export async function executeAccountMerge(params: {
       financial: financialDto(financial.reconciliation),
       dataSummary: parseSafeSummary(data.reconciliation.safeSummary),
       tableActions,
-      paymentSlipClaimsPreserved: preview.paymentSlipClaims.sourceCount,
       identityMoved: true as const,
     };
   });

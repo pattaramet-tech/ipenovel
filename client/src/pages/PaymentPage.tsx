@@ -108,25 +108,17 @@ export default function PaymentPage() {
         slipImageUrl: uploadResult.slipImageUrl,
       });
 
-      // Show message based on OCR/payment result, not upload result
+      // Provider verification is advisory evidence for the admin approval flow.
+      // This page never treats a provider response as a financial approval.
       setIsUploading(false);
       if (submitResult) {
-        let msg = "Payment submitted successfully.";
-        
-        if (submitResult.status === "approved") {
-          msg = "Payment approved automatically! Your order is confirmed.";
-        } else if (submitResult.status === "pending_review") {
-          if (submitResult.reviewReason === "OCR_PROCESSING_ERROR") {
-            msg = "Payment slip received. Our system encountered an issue, but our team will review it manually.";
-          } else if (submitResult.duplicateStatus?.isDuplicateReference || submitResult.duplicateStatus?.isDuplicateFingerprint) {
-            msg = "Payment slip received. It appears to be a duplicate, but our team will review it.";
-          } else if (submitResult.ocrConfidence && submitResult.ocrConfidence < 85) {
-            msg = `Payment slip received (confidence: ${submitResult.ocrConfidence}%). Our team will review it shortly.`;
-          } else {
-            msg = "Payment slip received. Our team will review and approve it shortly.";
-          }
-        }
-        
+        const outcome = submitResult.providerVerification?.outcome;
+        const msg =
+          outcome === "VERIFIED"
+            ? "Payment slip verified by the payment provider and is awaiting admin approval."
+            : outcome === "REVIEW_REQUIRED"
+              ? "Payment slip received. The payment provider requires admin review."
+              : "Payment slip received. Provider verification is currently unavailable; the order remains pending for review.";
         toast.success(msg);
       } else {
         toast.success("Payment slip submitted successfully.");

@@ -660,7 +660,7 @@ export default function AdminAccountRecoveryDetailPage() {
 
                 <p className="text-xs text-muted-foreground">
                   paymentSlipClaims preserved:{" "}
-                  {mergePreviewQuery.data.paymentSlipClaims.sourceCount} row(s)
+                  
                   — anti-replay evidence จะไม่ถูกย้าย/ลบ/เขียนใหม่
                 </p>
               </>

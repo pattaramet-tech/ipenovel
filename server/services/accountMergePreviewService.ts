@@ -169,9 +169,6 @@ function deriveTableWarnings(
   return [];
 }
 
-const PAYMENT_SLIP_CLAIMS_NOTE =
-  "Informational only - the anti-replay claim registry is never touched by any account workflow (recovery or merge); a later execution phase must leave these rows exactly as they are, see accountRecoveryDataClassification.ts's paymentSlipClaims.userId entry.";
-
 /**
  * Assembles the full read-only merge preview for one (blocked recovery
  * request, candidate target) pair. Stops at target validation - an invalid
@@ -200,18 +197,16 @@ export async function buildAccountMergePreview(
       tableFindings: [],
       walletProjection: EMPTY_BALANCE_PROJECTION,
       pointsProjection: EMPTY_BALANCE_PROJECTION,
-      paymentSlipClaims: { sourceCount: 0, note: PAYMENT_SLIP_CLAIMS_NOTE },
       hardBlockers: [...targetValidation.blockers],
       warnings: [],
       isPreviewValid: false,
     };
   }
 
-  const [rawFindings, walletProjection, pointsProjection, paymentSlipClaimsCount] = await Promise.all([
+  const [rawFindings, walletProjection, pointsProjection] = await Promise.all([
     db.findAccountMergeTableInventory(sourceUserId, targetUserId, tx),
     buildBalanceProjection(db.getAccountMergeWalletBalance, sourceUserId, targetUserId, tx),
     buildBalanceProjection(db.getAccountMergePointsBalance, sourceUserId, targetUserId, tx),
-    db.getAccountMergePaymentSlipClaimsCount(sourceUserId, tx),
   ]);
 
   const tableFindings: AccountMergeTableFinding[] = rawFindings.map((finding) => {
@@ -242,7 +237,6 @@ export async function buildAccountMergePreview(
     tableFindings,
     walletProjection,
     pointsProjection,
-    paymentSlipClaims: { sourceCount: paymentSlipClaimsCount, note: PAYMENT_SLIP_CLAIMS_NOTE },
     hardBlockers,
     warnings: [],
     isPreviewValid: true,

@@ -122,15 +122,6 @@ export type AccountMergeTargetValidation = {
   isValid: boolean;
 };
 
-/** Informational only - proves paymentSlipClaims/OCR anti-replay evidence
- *  was READ, never written, and documents why a later merge execution
- *  phase must never touch or rewrite these rows (the anti-replay
- *  invariant they enforce is orthogonal to which `users` row owns them). */
-export type AccountMergePaymentSlipClaimsInfo = {
-  sourceCount: number;
-  note: string;
-};
-
 /**
  * The full read-only merge preview response for one (blocked recovery
  * request, candidate target) pair - see accountMergePreviewService.ts's
@@ -149,7 +140,6 @@ export type AccountMergePreview = {
   tableFindings: AccountMergeTableFinding[];
   walletProjection: AccountMergeBalanceProjection;
   pointsProjection: AccountMergeBalanceProjection;
-  paymentSlipClaims: AccountMergePaymentSlipClaimsInfo;
   /** Aggregated from targetValidation.blockers when the pairing itself is
    *  invalid, or from every tableFindings[] entry a later phase could not
    *  auto-resolve today (a non-empty conflictCount, singleton or

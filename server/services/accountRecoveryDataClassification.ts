@@ -304,12 +304,10 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
  * user column AND its rows are wholly owned by a single classified parent
  * row. orderHistory qualifies even though it also carries an actorUserId
  * (an actor, not an owner - classified deliberately_ignored above). Tables
- * that merely reference a payment/top-up by id but represent
- * cross-account, globally-scoped anti-replay or OCR-diagnostic state
- * (paymentSlipClaims, paymentSlipLegacyCollisions, paymentSlipLegacyUnknown,
- * ocrVerificationAttempts, paymentSlipReviewResolutions) are deliberately
- * NOT here - see accountMergeInventory.ts's
- * ACCOUNT_MERGE_EXCLUDED_INDIRECT_TABLES for each one's reasoned exclusion.
+ * Provider verification added by the PR #45 reconstruction does not add a
+ * user-owned descendant table here: it reads the existing payment/top-up
+ * subject and returns provider evidence without introducing the removed
+ * post-PR45 legacy/OCR/anti-replay tables.
  */
 export const ACCOUNT_RECOVERY_INDIRECT_TABLES: Array<{
   table: string;

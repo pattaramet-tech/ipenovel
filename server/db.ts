@@ -46,7 +46,6 @@ import {
   accountMergeFinancialReconciliations,
   accountMergeDataReconciliations,
   adminUserAuditLogs,
-  paymentSlipClaims,
   Novel,
   couponUsages as couponUsagesTable,
 } from "../drizzle/schema";
@@ -3841,6 +3840,25 @@ export async function updateWalletTopupSlip(topupId: number, slipImageUrl: strin
   return (await db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1))[0];
 }
 
+/** Persist only the sanitized Provider API verdict in PR #45-era columns.
+ * This intentionally does not create a Payment V2 evidence/approval model. */
+export async function updateWalletTopupProviderVerification(
+  topupId: number,
+  data: { extractedData: string; reviewReason: string }
+) {
+  const database = await getDb();
+  if (!database) throw new Error("Database not available");
+  await database
+    .update(walletTopups)
+    .set({
+      status: "pending_review",
+      extractedData: data.extractedData,
+      reviewReason: data.reviewReason,
+      updatedAt: new Date(),
+    })
+    .where(eq(walletTopups.id, topupId));
+}
+
 export async function createWalletTransaction(
   userId: number,
   type: string,
@@ -7303,20 +7321,6 @@ export async function getAccountMergePointsBalance(userId: number, tx?: any): Pr
   return getUserPointsBalance(userId, tx);
 }
 
-/** Read-only count of paymentSlipClaims rows owned by the source account -
- *  see accountRecoveryDataClassification.ts's paymentSlipClaims.userId
- *  entry for why this registry is never itself moved/merged/deleted by any
- *  account workflow: doing so would reopen every slip the source ever used
- *  for anti-replay. This function only ever SELECTs - proof (together with
- *  every other function in this section) that the merge preview is
- *  read-only with respect to paymentSlipClaims/OCR anti-replay evidence. */
-export async function getAccountMergePaymentSlipClaimsCount(userId: number, tx?: any): Promise<number> {
-  const database = tx ?? (await getDb());
-  if (!database) return 0;
-  const rows = await database.select({ value: count() }).from(paymentSlipClaims).where(eq(paymentSlipClaims.userId, userId));
-  return Number(rows[0]?.value ?? 0);
-}
-
 /**
  * Minimal stale-session lookup for IPE-008. A completed merge deliberately
  * keeps the Source users row/openId so historical references remain valid,
@@ -7808,6 +7812,72 @@ export async function deleteUsersRowChecked(userId: number, tx: any): Promise<nu
   const deleteResult = await tx.delete(users).where(eq(users.id, userId));
   const resultHeader = Array.isArray(deleteResult) ? deleteResult[0] : deleteResult;
   return (resultHeader as any)?.affectedRows || 0;
+}
+
+// ============ ADVANCED ACCOUNT MERGE - GENERIC LOCK BARRIER ============
+// These helpers belong to Account Merge, not Payment. They are transplanted
+// explicitly because the original feature branch was developed on top of a
+// payment-heavy base. Keeping them here avoids importing any post-PR45 payment
+// approval/evidence implementation just to satisfy the merge guard contract.
+export const ACCOUNT_MERGE_GUARDED_STATUSES = ["pending", "in_progress", "completed", "failed"] as const;
+export type AccountMergeGuardedStatus = (typeof ACCOUNT_MERGE_GUARDED_STATUSES)[number];
+
+export class AccountMergeWriteGuardError extends Error {
+  readonly code = "ACCOUNT_MERGE_SOURCE_GUARDED";
+  constructor(
+    readonly sourceUserId: number,
+    readonly mergeCaseId: number,
+    readonly mergeStatus: AccountMergeGuardedStatus
+  ) {
+    super(`Classified account mutation refused while merge case ${mergeCaseId} is ${mergeStatus}`);
+    this.name = "AccountMergeWriteGuardError";
+  }
+}
+
+function unwrapAccountMergeMysqlRows(rawResult: any): any[] {
+  const rows = Array.isArray(rawResult?.[0]) ? rawResult[0] : rawResult;
+  return Array.isArray(rows) ? rows : [];
+}
+
+export async function lockAccountMergeUserRows(userIds: number[], tx: any): Promise<number[]> {
+  const ordered = Array.from(new Set(userIds)).sort((a, b) => a - b);
+  if (ordered.length === 0) throw new Error("At least one user id is required for account-merge locking");
+  for (const userId of ordered) {
+    if (!Number.isInteger(userId) || userId <= 0) throw new Error("Invalid user id for account-merge locking");
+    const rows = unwrapAccountMergeMysqlRows(
+      await tx.execute(sql`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`)
+    );
+    if (rows.length !== 1) throw new Error(`User ${userId} not found while acquiring account-merge lock`);
+  }
+  return ordered;
+}
+
+export async function getAccountMergeCasesForSourceForUpdate(sourceUserId: number, tx: any) {
+  return unwrapAccountMergeMysqlRows(
+    await tx.execute(
+      sql`SELECT id, sourceUserId, targetUserId, status, originAccountRecoveryRequestId, createdByAdminId, startedAt, completedAt, failedAt, cancelledAt FROM accountMergeCases WHERE sourceUserId = ${sourceUserId} ORDER BY id FOR UPDATE`
+    )
+  );
+}
+
+export async function assertAccountMergeClassifiedMutationsAllowed(userIds: number[], tx: any): Promise<void> {
+  const ordered = await lockAccountMergeUserRows(userIds, tx);
+  const guardedStatuses = new Set<string>(ACCOUNT_MERGE_GUARDED_STATUSES);
+  for (const sourceUserId of ordered) {
+    const cases = await getAccountMergeCasesForSourceForUpdate(sourceUserId, tx);
+    const nonCancelled = cases.filter((row: any) => row.status !== "cancelled");
+    if (nonCancelled.length > 1) throw new Error(`Inconsistent account-merge guard state for source ${sourceUserId}`);
+    const active = nonCancelled[0];
+    if (!active) continue;
+    if (!guardedStatuses.has(active.status)) {
+      throw new Error(`Unknown account-merge guard state '${String(active.status)}' for source ${sourceUserId}`);
+    }
+    throw new AccountMergeWriteGuardError(sourceUserId, Number(active.id), active.status as AccountMergeGuardedStatus);
+  }
+}
+
+export async function assertAccountMergeClassifiedMutationAllowed(userId: number, tx: any): Promise<void> {
+  return assertAccountMergeClassifiedMutationsAllowed([userId], tx);
 }
 
 /** Append-only audit log write for the Admin Users Management page - see

@@ -9,7 +9,10 @@ import * as db from "./db";
 import * as orderService from "./services/orderService";
 import * as walletService from "./services/walletService";
 import { ApprovalService } from "./services/approvalService";
-import { submitPaymentSlip } from "./services/slipSubmissionService";
+import {
+  verifyOrderPaymentWithProvider,
+  verifyWalletTopupWithProvider,
+} from "./services/paymentProviderVerificationService";
 import { uploadPaymentSlipFile } from "./services/slipFileUploadService";
 import {
   assertCheckoutAvailable,
@@ -761,11 +764,18 @@ export const appRouter = router({
         let slipResult: any = undefined;
         if (input.slipImageUrl) {
           try {
-            slipResult = await submitPaymentSlip({
+            const payment = await db.getPaymentByOrderId(order.id);
+            if (!payment) throw new Error("PAYMENT_NOT_FOUND");
+            const providerResult = await verifyOrderPaymentWithProvider(payment.id);
+            slipResult = {
+              success: true,
               orderId: order.id,
+              paymentId: payment.id,
+              status: "pending_review",
               slipImageUrl: input.slipImageUrl,
-              userId: ctx.user.id,
-            });
+              providerVerification: providerResult,
+              processingDeferred: providerResult.outcome === "ERROR",
+            };
           } catch (error: any) {
             console.error(
               `[checkout.create] Post-commit slip processing failed for order ${order.id}: ${safeErrorSummary(error)}`
@@ -935,14 +945,29 @@ export const appRouter = router({
       .input(z.object({ orderId: z.number(), slipImageUrl: requiredStoredFileRefSchema("Payment slip is required") }))
       .mutation(async ({ input, ctx }) => {
         await assertSlipCheckoutAvailable("orders.uploadPaymentSlip");
-        // Use shared slip submission service
-        const result = await submitPaymentSlip({
-          orderId: input.orderId,
-          slipImageUrl: input.slipImageUrl,
-          userId: ctx.user.id,
-        });
+        const order = await db.getOrderById(input.orderId);
+        if (!order) throw new TRPCError({ code: "NOT_FOUND" });
+        if (order.userId !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN" });
+        const payment = await db.getPaymentByOrderId(input.orderId);
+        if (!payment) throw new TRPCError({ code: "NOT_FOUND", message: "Payment not found" });
 
-        return result;
+        await db.updatePayment(payment.id, {
+          slipImageUrl: input.slipImageUrl,
+          slipSubmittedAt: new Date(),
+          status: "pending_review",
+          reviewReason: "PROVIDER_VERIFICATION_PENDING",
+        });
+        await db.updateOrder(order.id, { paymentStatus: "submitted" });
+
+        const providerVerification = await verifyOrderPaymentWithProvider(payment.id);
+        return {
+          success: true,
+          orderId: order.id,
+          paymentId: payment.id,
+          status: "pending_review",
+          slipImageUrl: input.slipImageUrl,
+          providerVerification,
+        };
       }),
   }),
 
@@ -1300,6 +1325,19 @@ export const appRouter = router({
 
         return enriched;
       }),
+
+      verifyWithProvider: adminProcedure
+        .input(z.object({ paymentId: z.number().int().positive() }))
+        .mutation(async ({ input }) => {
+          try {
+            return await verifyOrderPaymentWithProvider(input.paymentId);
+          } catch {
+            throw new TRPCError({
+              code: "SERVICE_UNAVAILABLE",
+              message: "Payment provider verification is unavailable",
+            });
+          }
+        }),
 
       approve: adminProcedure
         .input(z.object({ paymentId: z.number() }))
@@ -2854,6 +2892,19 @@ export const appRouter = router({
             logs: logs || [],
           };
         }),
+      verifyWithProvider: adminProcedure
+        .input(z.object({ topupId: z.number().int().positive() }))
+        .mutation(async ({ input }) => {
+          try {
+            return await verifyWalletTopupWithProvider(input.topupId);
+          } catch {
+            throw new TRPCError({
+              code: "SERVICE_UNAVAILABLE",
+              message: "Payment provider verification is unavailable",
+            });
+          }
+        }),
+
       approveTopup: adminProcedure
         .input(z.object({ topupId: z.number() }))
         .mutation(async ({ ctx, input }) => {

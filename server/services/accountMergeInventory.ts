@@ -55,42 +55,14 @@ export const ACCOUNT_MERGE_INDIRECT_TABLES: string[] = ACCOUNT_RECOVERY_INDIRECT
  *
  * Audited against drizzle/schema.ts for IPE-003-C02.
  */
+// This PR #45 reconstruction deliberately excludes every post-PR45 legacy
+// payment/OCR/anti-replay table. There are therefore no payment-descendant
+// tables to exempt from Account Merge inventory in this branch.
 export const ACCOUNT_MERGE_EXCLUDED_INDIRECT_TABLES: Array<{
   table: string;
   via: string;
   reason: string;
-}> = [
-  {
-    table: "paymentSlipClaims",
-    via: "userId (direct) + sourceId -> payments.id / walletTopups.id",
-    reason:
-      "The GLOBAL anti-replay claim registry: one row = one bank transaction consumed once, across every account. It is never re-parented, moved, or deleted by any account workflow - doing so would re-open every slip the source ever used for replay (see accountRecoveryDataClassification.ts's paymentSlipClaims.userId entry). The merge preview still surfaces the source's row count for the admin via getAccountMergePaymentSlipClaimsCount + an explanatory note; it is reported, not inventoried for transfer. IPE-003 scope forbids any anti-replay change.",
-  },
-  {
-    table: "paymentSlipLegacyCollisions",
-    via: "sourceId -> payments.id / walletTopups.id",
-    reason:
-      "Backfill-only, immutable record of a KNOWN historical strong-identifier collision across two or more already-approved financial rows. Global anti-replay state, never written by a live approval and never account-scoped - a merge must leave it byte-for-byte untouched. IPE-003 scope forbids any anti-replay change.",
-  },
-  {
-    table: "paymentSlipLegacyUnknown",
-    via: "sourceId -> payments.id / walletTopups.id",
-    reason:
-      "Backfill-only, immutable record that a historical row's file identity is permanently unrecoverable. Global anti-replay bookkeeping, explicitly 'never consulted to block or approve anything' and never account-scoped - a merge must not touch it. IPE-003 scope forbids any anti-replay change.",
-  },
-  {
-    table: "ocrVerificationAttempts",
-    via: "subjectId -> payments.id / walletTopups.id (initiatedByUserId is an admin actor, classified deliberately_ignored)",
-    reason:
-      "Sanitized OCR attempt diagnostics for a payment/top-up. Not user-owned economic or entitlement data - it is provider-outage-vs-bad-slip telemetry keyed to the subject, and the subject's own ownership is already inventoried via orders/payments. Re-parenting diagnostics rows carries no user-visible value and IPE-003 keeps OCR/anti-replay behavior unchanged.",
-  },
-  {
-    table: "paymentSlipReviewResolutions",
-    via: "subjectId -> payments.id / walletTopups.id (adminUserId is an admin actor, classified deliberately_ignored)",
-    reason:
-      "Audited human overrides of an automated anti-replay signal on a payment/top-up. An admin-adjudication audit trail, not the source account's own data; the underlying payment's ownership is already inventoried via orders/payments. IPE-003 scope forbids any anti-replay change.",
-  },
-];
+}> = [];
 
 /**
  * Tables enforcing UNIQUE(userId) - at most one row per account. A source
