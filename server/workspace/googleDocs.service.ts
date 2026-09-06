@@ -1,20 +1,27 @@
 import { createHash } from "node:crypto";
-import { and, eq, or } from "drizzle-orm";
+import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
 import {
   workspaceAuditEvents,
   workspaceDocumentBindings,
   workspaceDocuments,
   workspaceDocumentSnapshots,
   workspaceGoogleConnections,
+  workspaceGoogleConsentAttempts,
   workspaceMembers,
   workspaceNovels,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import {
+  buildDocsAuthorizationUrl,
+  createDocsConsentAttempt,
   hasRequiredDocsScopes,
   observeDocsSnapshot,
+  revokeDocsConnection,
+  rotateRefreshCredential,
+  verifyConsentState,
   type StoredGoogleCredential,
   type WorkspaceDocsAdapter,
+  type WorkspaceTokenCipher,
 } from "./googleDocs.domain";
 
 export class WorkspaceDocsServiceError extends Error {
@@ -27,7 +34,9 @@ export class WorkspaceDocsServiceError extends Error {
       | "CONNECTION_OWNERSHIP_REQUIRED"
       | "DOCS_SCOPE_REQUIRED"
       | "WORKSPACE_NOVEL_NOT_FOUND"
-      | "BINDING_NOT_FOUND",
+      | "BINDING_NOT_FOUND"
+      | "CONSENT_ATTEMPT_INVALID"
+      | "CONNECTION_VERSION_CONFLICT",
     message: string
   ) {
     super(message);
@@ -43,6 +52,26 @@ async function database(): Promise<any> {
       "Workspace Docs is temporarily unavailable."
     );
   return db;
+}
+
+function affectedRows(result: any): number {
+  return Number(result?.[0]?.affectedRows ?? result?.affectedRows ?? 0);
+}
+
+function isDuplicateEntry(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (!current || typeof current !== "object") return false;
+    if (
+      ("code" in current &&
+        (current as { code?: string }).code === "ER_DUP_ENTRY") ||
+      ("errno" in current && (current as { errno?: number }).errno === 1062)
+    ) {
+      return true;
+    }
+    current = "cause" in current ? (current as { cause?: unknown }).cause : null;
+  }
+  return false;
 }
 
 function insertId(result: any): number {
@@ -99,6 +128,96 @@ async function requireOwnedConnection(
   return rows[0];
 }
 
+export async function createGoogleConsentAttempt(input: {
+  userId: number;
+  authorizationEndpoint: string;
+  clientId: string;
+  fixedRedirectUri: string;
+  cipher: WorkspaceTokenCipher;
+  now?: Date;
+  ttlMs?: number;
+}) {
+  const db = await database();
+  const attempt = createDocsConsentAttempt();
+  const encryptedVerifier = input.cipher.encrypt(attempt.verifier);
+  const now = input.now ?? new Date();
+  const expiresAt = new Date(now.getTime() + (input.ttlMs ?? 10 * 60_000));
+  await db.insert(workspaceGoogleConsentAttempts).values({
+    userId: input.userId,
+    stateHash: attempt.stateHash,
+    encryptedCodeVerifier: encryptedVerifier.encryptedRefreshToken,
+    keyVersion: encryptedVerifier.keyVersion,
+    fixedRedirectUri: input.fixedRedirectUri,
+    scope: attempt.scope,
+    expiresAt,
+  });
+  return {
+    authorizationUrl: buildDocsAuthorizationUrl({
+      authorizationEndpoint: input.authorizationEndpoint,
+      clientId: input.clientId,
+      fixedRedirectUri: input.fixedRedirectUri,
+      attempt,
+    }),
+    expiresAt,
+  };
+}
+
+export async function consumeGoogleConsentAttempt(input: {
+  userId: number;
+  state: string;
+  cipher: WorkspaceTokenCipher;
+  now?: Date;
+}) {
+  const db = await database();
+  const stateHash = createHash("sha256").update(input.state).digest("hex");
+  const now = input.now ?? new Date();
+  return db.transaction(async (tx: any) => {
+    const rows = await tx
+      .select()
+      .from(workspaceGoogleConsentAttempts)
+      .where(
+        and(
+          eq(workspaceGoogleConsentAttempts.userId, input.userId),
+          eq(workspaceGoogleConsentAttempts.stateHash, stateHash),
+          isNull(workspaceGoogleConsentAttempts.consumedAt),
+          gt(workspaceGoogleConsentAttempts.expiresAt, now)
+        )
+      )
+      .limit(1);
+    const attempt = rows[0];
+    if (!attempt || !verifyConsentState(attempt.stateHash, input.state)) {
+      throw new WorkspaceDocsServiceError(
+        "CONSENT_ATTEMPT_INVALID",
+        "The Google consent attempt is invalid, expired, or already consumed."
+      );
+    }
+    const updateResult = await tx
+      .update(workspaceGoogleConsentAttempts)
+      .set({ consumedAt: now })
+      .where(
+        and(
+          eq(workspaceGoogleConsentAttempts.id, attempt.id),
+          isNull(workspaceGoogleConsentAttempts.consumedAt),
+          gt(workspaceGoogleConsentAttempts.expiresAt, now)
+        )
+      );
+    if (affectedRows(updateResult) !== 1) {
+      throw new WorkspaceDocsServiceError(
+        "CONSENT_ATTEMPT_INVALID",
+        "The Google consent attempt is invalid, expired, or already consumed."
+      );
+    }
+    return {
+      codeVerifier: input.cipher.decrypt({
+        encryptedRefreshToken: attempt.encryptedCodeVerifier,
+        keyVersion: attempt.keyVersion,
+      }),
+      fixedRedirectUri: attempt.fixedRedirectUri,
+      scope: attempt.scope,
+    };
+  });
+}
+
 export async function saveGoogleConnection(input: {
   userId: number;
   providerSubject: string;
@@ -150,6 +269,126 @@ export async function saveGoogleConnection(input: {
     })
   );
   return { connectionId, created: true };
+}
+
+export async function rotateGoogleConnectionCredential(input: {
+  actorUserId: number;
+  connectionId: number;
+  expectedVersion: number;
+  returnedRefreshToken?: string | null;
+  cipher: WorkspaceTokenCipher;
+}) {
+  const db = await database();
+  const connection = await requireOwnedConnection(
+    db,
+    input.connectionId,
+    input.actorUserId
+  );
+  if (!connection.encryptedRefreshToken) {
+    throw new WorkspaceDocsServiceError(
+      "CONNECTION_NOT_FOUND",
+      "The Google connection has no active refresh credential."
+    );
+  }
+  const credential = rotateRefreshCredential({
+    current: {
+      encryptedRefreshToken: connection.encryptedRefreshToken,
+      keyVersion: connection.keyVersion,
+    },
+    returnedRefreshToken: input.returnedRefreshToken,
+    cipher: input.cipher,
+  });
+  const result = await db
+    .update(workspaceGoogleConnections)
+    .set({
+      encryptedRefreshToken: credential.encryptedRefreshToken,
+      keyVersion: credential.keyVersion,
+      version: input.expectedVersion + 1,
+    })
+    .where(
+      and(
+        eq(workspaceGoogleConnections.id, input.connectionId),
+        eq(workspaceGoogleConnections.userId, input.actorUserId),
+        eq(workspaceGoogleConnections.version, input.expectedVersion),
+        eq(workspaceGoogleConnections.status, "active")
+      )
+    );
+  if (affectedRows(result) !== 1) {
+    throw new WorkspaceDocsServiceError(
+      "CONNECTION_VERSION_CONFLICT",
+      "The Google connection changed while rotating its credential."
+    );
+  }
+  return { credential, version: input.expectedVersion + 1 };
+}
+
+export async function revokeGoogleConnection(input: {
+  actorUserId: number;
+  workspaceId: number;
+  connectionId: number;
+  correlationId: string;
+  cipher: WorkspaceTokenCipher;
+  adapter: WorkspaceDocsAdapter;
+}) {
+  const db = await database();
+  await requireMembership(db, input.workspaceId, input.actorUserId);
+  const connection = await requireOwnedConnection(
+    db,
+    input.connectionId,
+    input.actorUserId
+  );
+  if (!connection.encryptedRefreshToken) {
+    throw new WorkspaceDocsServiceError(
+      "CONNECTION_NOT_FOUND",
+      "The Google connection has no refresh credential."
+    );
+  }
+  const revoked = await revokeDocsConnection({
+    credential: {
+      encryptedRefreshToken: connection.encryptedRefreshToken,
+      keyVersion: connection.keyVersion,
+    },
+    cipher: input.cipher,
+    adapter: input.adapter,
+  });
+  return db.transaction(async (tx: any) => {
+    const updateResult = await tx
+      .update(workspaceGoogleConnections)
+      .set({
+        status: revoked.status,
+        encryptedRefreshToken: revoked.encryptedRefreshToken,
+        revokedAt: revoked.revokedAt,
+        version: connection.version + 1,
+      })
+      .where(
+        and(
+          eq(workspaceGoogleConnections.id, connection.id),
+          eq(workspaceGoogleConnections.userId, input.actorUserId),
+          eq(workspaceGoogleConnections.version, connection.version)
+        )
+      );
+    if (affectedRows(updateResult) !== 1) {
+      throw new WorkspaceDocsServiceError(
+        "CONNECTION_VERSION_CONFLICT",
+        "The Google connection changed while it was being revoked."
+      );
+    }
+    await tx.insert(workspaceAuditEvents).values({
+      workspaceId: input.workspaceId,
+      actorUserId: input.actorUserId,
+      eventType: "workspace.docs.connection_revoked",
+      entityType: "workspaceGoogleConnection",
+      entityId: String(connection.id),
+      correlationId: input.correlationId,
+      metadataJson: JSON.stringify({
+        providerRevocationSucceeded: revoked.providerRevocationSucceeded,
+      }),
+    });
+    return {
+      status: revoked.status,
+      providerRevocationSucceeded: revoked.providerRevocationSucceeded,
+    };
+  });
 }
 
 export async function bindGoogleDocument(input: {
@@ -205,17 +444,42 @@ export async function bindGoogleDocument(input: {
         )
       )
       .limit(1);
-    const documentId =
-      existingDocuments[0]?.id ??
-      insertId(
-        await tx.insert(workspaceDocuments).values({
+    let documentId = existingDocuments[0]?.id;
+    if (!documentId) {
+      await tx
+        .insert(workspaceDocuments)
+        .values({
           connectionId: input.connectionId,
           providerFileId: input.providerFileId,
           mimeType: input.mimeType,
           titleCache: input.title,
           status: "active",
         })
-      );
+        .onDuplicateKeyUpdate({
+          set: {
+            mimeType: input.mimeType,
+            titleCache: input.title,
+            status: "active",
+          },
+        });
+      const persistedDocuments = await tx
+        .select()
+        .from(workspaceDocuments)
+        .where(
+          and(
+            eq(workspaceDocuments.connectionId, input.connectionId),
+            eq(workspaceDocuments.providerFileId, input.providerFileId)
+          )
+        )
+        .limit(1);
+      documentId = persistedDocuments[0]?.id;
+      if (!documentId) {
+        throw new WorkspaceDocsServiceError(
+          "DATABASE_UNAVAILABLE",
+          "Workspace document was not persisted."
+        );
+      }
+    }
     const existingBindings = await tx
       .select()
       .from(workspaceDocumentBindings)
@@ -230,18 +494,41 @@ export async function bindGoogleDocument(input: {
         )
       )
       .limit(1);
-    const bindingId =
-      existingBindings[0]?.id ??
-      insertId(
-        await tx.insert(workspaceDocumentBindings).values({
-          workspaceNovelId: input.workspaceNovelId,
-          documentId,
-          role: input.role,
-          sequence: input.sequence,
-          status: "active",
-        })
-      );
-    if (!existingBindings[0]) {
+    let bindingId = existingBindings[0]?.id;
+    let bindingCreated = false;
+    if (!bindingId) {
+      try {
+        bindingId = insertId(
+          await tx.insert(workspaceDocumentBindings).values({
+            workspaceNovelId: input.workspaceNovelId,
+            documentId,
+            role: input.role,
+            sequence: input.sequence,
+            status: "active",
+          })
+        );
+        bindingCreated = true;
+      } catch (error) {
+        if (!isDuplicateEntry(error)) throw error;
+        const persistedBindings = await tx
+          .select()
+          .from(workspaceDocumentBindings)
+          .where(
+            and(
+              eq(
+                workspaceDocumentBindings.workspaceNovelId,
+                input.workspaceNovelId
+              ),
+              eq(workspaceDocumentBindings.documentId, documentId),
+              eq(workspaceDocumentBindings.role, input.role)
+            )
+          )
+          .limit(1);
+        bindingId = persistedBindings[0]?.id;
+        if (!bindingId) throw error;
+      }
+    }
+    if (bindingCreated) {
       await tx.insert(workspaceAuditEvents).values({
         workspaceId: input.workspaceId,
         actorUserId: input.actorUserId,
@@ -258,7 +545,7 @@ export async function bindGoogleDocument(input: {
         }),
       });
     }
-    return { documentId, bindingId, created: !existingBindings[0] };
+    return { documentId, bindingId, created: bindingCreated };
   });
 }
 
@@ -350,39 +637,48 @@ export async function observeBoundGoogleDocument(input: {
         )
       )
       .limit(1);
-    const snapshotId =
-      existing[0]?.id ??
-      insertId(
-        await tx.insert(workspaceDocumentSnapshots).values({
+    let snapshotId = existing[0]?.id;
+    let created = false;
+    if (!snapshotId) {
+      const insertResult = await tx
+        .insert(workspaceDocumentSnapshots)
+        .values({
           documentId: row.document.id,
           providerRevisionId: fingerprint.revision,
           normalizedSha256: fingerprint.contentHash,
           normalizationVersion: fingerprint.normalizationVersion,
           byteLength: fingerprint.byteLength,
         })
-      );
+        .onDuplicateKeyUpdate({
+          set: {
+            id: sql`LAST_INSERT_ID(${workspaceDocumentSnapshots.id})`,
+          },
+        });
+      snapshotId = insertId(insertResult);
+      created = affectedRows(insertResult) === 1;
+    }
     await tx
       .update(workspaceDocuments)
       .set({
         mimeType: fingerprint.mimeType,
         titleCache: fingerprint.title,
         lastObservedAt: new Date(),
-        version: row.document.version + 1,
+        version: sql`${workspaceDocuments.version} + 1`,
       })
       .where(eq(workspaceDocuments.id, row.document.id));
     await tx
       .update(workspaceGoogleConnections)
       .set({
         lastUsedAt: new Date(),
-        version: row.connection.version + 1,
+        version: sql`${workspaceGoogleConnections.version} + 1`,
       })
       .where(eq(workspaceGoogleConnections.id, row.connection.id));
     await tx.insert(workspaceAuditEvents).values({
       workspaceId: input.workspaceId,
       actorUserId: input.actorUserId,
-      eventType: existing[0]
-        ? "workspace.docs.snapshot_reused"
-        : "workspace.docs.snapshot_created",
+      eventType: created
+        ? "workspace.docs.snapshot_created"
+        : "workspace.docs.snapshot_reused",
       entityType: "workspaceDocumentSnapshot",
       entityId: String(snapshotId),
       correlationId: input.correlationId,
@@ -393,6 +689,6 @@ export async function observeBoundGoogleDocument(input: {
         normalizationVersion: fingerprint.normalizationVersion,
       }),
     });
-    return { snapshotId, created: !existing[0], fingerprint };
+    return { snapshotId, created, fingerprint };
   });
 }

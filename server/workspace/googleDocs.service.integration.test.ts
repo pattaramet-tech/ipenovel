@@ -3,6 +3,8 @@ import { eq } from "drizzle-orm";
 import {
   novels,
   users,
+  workspaceAuditEvents,
+  workspaceDocumentSnapshots,
   workspaceGoogleConnections,
   workspaceWorkspaces,
 } from "../../drizzle/schema";
@@ -16,11 +18,18 @@ import {
 } from "./service";
 import {
   bindGoogleDocument,
+  consumeGoogleConsentAttempt,
+  createGoogleConsentAttempt,
   observeBoundGoogleDocument,
+  revokeGoogleConnection,
+  rotateGoogleConnectionCredential,
   saveGoogleConnection,
   WorkspaceDocsServiceError,
 } from "./googleDocs.service";
-import { GOOGLE_DOC_MIME_TYPE } from "./googleDocs.domain";
+import {
+  createAesGcmTokenCipher,
+  GOOGLE_DOC_MIME_TYPE,
+} from "./googleDocs.domain";
 
 describe.sequential("workspace M02 Docs persistence integration", () => {
   it("enforces membership/connection ownership and persists repeat observations idempotently", async () => {
@@ -44,7 +53,8 @@ describe.sequential("workspace M02 Docs persistence integration", () => {
           keyVersion: 1,
           encryptedRefreshToken: "v1.redacted.ciphertext.tag",
         },
-        grantedScopes: "https://www.googleapis.com/auth/drive.metadata.readonly https://www.googleapis.com/auth/documents.readonly",
+        grantedScopes:
+          "https://www.googleapis.com/auth/drive.metadata.readonly https://www.googleapis.com/auth/documents.readonly",
       });
       const binding = await bindGoogleDocument({
         actorUserId: owner.id,
@@ -68,30 +78,101 @@ describe.sequential("workspace M02 Docs persistence integration", () => {
         getNormalizedText: vi.fn(async () => "chapter body"),
         revoke: vi.fn(async () => undefined),
       };
-      const first = await observeBoundGoogleDocument({
-        actorUserId: owner.id,
-        workspaceId: workspace.workspaceId,
-        bindingId: binding.bindingId,
-        accessToken: "server-only",
-        correlationId: "observe-1",
-        adapter,
-      });
-      const second = await observeBoundGoogleDocument({
-        actorUserId: owner.id,
-        workspaceId: workspace.workspaceId,
-        bindingId: binding.bindingId,
-        accessToken: "server-only",
-        correlationId: "observe-2",
-        adapter,
-      });
-      expect(first.created).toBe(true);
-      expect(second).toEqual(
-        expect.objectContaining({
-          snapshotId: first.snapshotId,
-          created: false,
-        })
-      );
+      const [first, second] = await Promise.all([
+        observeBoundGoogleDocument({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          bindingId: binding.bindingId,
+          accessToken: "server-only",
+          correlationId: "observe-1",
+          adapter,
+        }),
+        observeBoundGoogleDocument({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          bindingId: binding.bindingId,
+          accessToken: "server-only",
+          correlationId: "observe-2",
+          adapter,
+        }),
+      ]);
+      expect(first.snapshotId).toBe(second.snapshotId);
+      const snapshots = await db
+        .select()
+        .from(workspaceDocumentSnapshots)
+        .where(eq(workspaceDocumentSnapshots.documentId, binding.documentId));
+      expect(snapshots).toHaveLength(1);
       expect(JSON.stringify(second)).not.toContain("chapter body");
+
+      const cipher = createAesGcmTokenCipher(
+        new Map([[1, Buffer.alloc(32, 9)]]),
+        1
+      );
+      const consent = await createGoogleConsentAttempt({
+        userId: owner.id,
+        authorizationEndpoint: "https://accounts.google.test/o/oauth2/auth",
+        clientId: "workspace-client",
+        fixedRedirectUri: "https://ipenovel.test/api/workspace/google/callback",
+        cipher,
+      });
+      const state = new URL(consent.authorizationUrl).searchParams.get("state");
+      expect(state).toBeTruthy();
+      const consumed = await consumeGoogleConsentAttempt({
+        userId: owner.id,
+        state: state!,
+        cipher,
+      });
+      expect(consumed.codeVerifier).toBeTruthy();
+      await expect(
+        consumeGoogleConsentAttempt({
+          userId: owner.id,
+          state: state!,
+          cipher,
+        })
+      ).rejects.toMatchObject<Partial<WorkspaceDocsServiceError>>({
+        code: "CONSENT_ATTEMPT_INVALID",
+      });
+
+      const [connectionBeforeRotation] = await db
+        .select()
+        .from(workspaceGoogleConnections)
+        .where(eq(workspaceGoogleConnections.id, connection.connectionId));
+      const rotated = await rotateGoogleConnectionCredential({
+        actorUserId: owner.id,
+        connectionId: connection.connectionId,
+        expectedVersion: connectionBeforeRotation.version,
+        returnedRefreshToken: "rotated-refresh-token",
+        cipher,
+      });
+      expect(rotated.version).toBe(connectionBeforeRotation.version + 1);
+      const revoke = vi.fn(async () => undefined);
+      const revocation = await revokeGoogleConnection({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        connectionId: connection.connectionId,
+        correlationId: "revoke-1",
+        cipher,
+        adapter: {
+          getMetadata: vi.fn(),
+          getNormalizedText: vi.fn(),
+          revoke,
+        },
+      });
+      expect(revocation).toEqual({
+        status: "revoked",
+        providerRevocationSucceeded: true,
+      });
+      const [storedConnection] = await db
+        .select()
+        .from(workspaceGoogleConnections)
+        .where(eq(workspaceGoogleConnections.id, connection.connectionId));
+      expect(storedConnection.encryptedRefreshToken).toBeNull();
+      expect(storedConnection.status).toBe("revoked");
+      const auditRows = await db
+        .select()
+        .from(workspaceAuditEvents)
+        .where(eq(workspaceAuditEvents.correlationId, "revoke-1"));
+      expect(auditRows).toHaveLength(1);
 
       await addOrUpdateMember({
         actorUserId: owner.id,

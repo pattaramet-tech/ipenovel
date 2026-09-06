@@ -1817,6 +1817,35 @@ export const workspaceMigrationRegistry = mysqlTable(
   })
 );
 
+/** M02 short-lived, one-time incremental consent state kept server-side. */
+export const workspaceGoogleConsentAttempts = mysqlTable(
+  "workspaceGoogleConsentAttempts",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    stateHash: varchar("stateHash", { length: 64 }).notNull(),
+    encryptedCodeVerifier: text("encryptedCodeVerifier").notNull(),
+    keyVersion: int("keyVersion").notNull(),
+    fixedRedirectUri: varchar("fixedRedirectUri", { length: 500 }).notNull(),
+    scope: text("scope").notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+    consumedAt: timestamp("consumedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    stateHashUnique: uniqueIndex("wgca_state_hash_unique").on(table.stateHash),
+    userExpiryIdx: index("wgca_user_expiry_idx").on(
+      table.userId,
+      table.expiresAt
+    ),
+    userFk: foreignKey({
+      name: "wgca_user_fk",
+      columns: [table.userId],
+      foreignColumns: [users.id],
+    }).onDelete("cascade"),
+  })
+);
+
 /** M02 user-owned, server-only incremental Google Docs authorization. */
 export const workspaceGoogleConnections = mysqlTable(
   "workspaceGoogleConnections",
