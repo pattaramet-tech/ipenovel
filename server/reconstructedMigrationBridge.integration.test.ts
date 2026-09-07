@@ -3,7 +3,9 @@ import mysql from "mysql2/promise";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   bridgeLegacySelectedFeatureMigration,
+  LEGACY_ACCOUNT_SPORTS_MIGRATION_CREATED_AT,
   LEGACY_SELECTED_MIGRATION_CREATED_AT,
+  LEGACY_WORKSPACE_REQUIRED_TABLES,
   RECONSTRUCTED_SELECTED_MIGRATION,
 } from "../scripts/lib/reconstructedMigrationBridge.mjs";
 import { buildTestDbConnectionOptions, parseTestDbTransportMode } from "./test-helpers/testDbConnectionOptions";
@@ -35,13 +37,24 @@ async function restoreCurrentSchema(conn: mysql.Connection): Promise<void> {
   await runFullChain(conn);
 }
 
-async function replaceCurrentMarkerWithLegacyLineage(conn: mysql.Connection, markerCount: number): Promise<void> {
+async function replaceCurrentMarkerWithMarkers(conn: mysql.Connection, markers: number[]): Promise<void> {
   await conn.query("DELETE FROM `__drizzle_migrations` WHERE created_at = ?", [RECONSTRUCTED_SELECTED_MIGRATION.createdAt]);
-  for (const createdAt of LEGACY_SELECTED_MIGRATION_CREATED_AT.slice(0, markerCount)) {
+  for (const createdAt of markers) {
     await conn.query("INSERT INTO `__drizzle_migrations` (hash, created_at) VALUES (?, ?)", [
       `legacy-selected-${createdAt}`,
       createdAt,
     ]);
+  }
+}
+
+async function removeWorkspaceSchema(conn: mysql.Connection): Promise<void> {
+  await conn.query("SET FOREIGN_KEY_CHECKS = 0");
+  try {
+    for (const table of LEGACY_WORKSPACE_REQUIRED_TABLES) {
+      await conn.query(`DROP TABLE \`${table}\``);
+    }
+  } finally {
+    await conn.query("SET FOREIGN_KEY_CHECKS = 1");
   }
 }
 
@@ -70,14 +83,10 @@ describe.sequential("reconstructed migration bridge against a real disposable da
       await conn.query(
         "INSERT INTO `accountMergeAuditLogs` (`action`, `safeMetadata`) VALUES ('legacy_bridge_sentinel', 'keep-me')"
       );
-      await replaceCurrentMarkerWithLegacyLineage(conn, LEGACY_SELECTED_MIGRATION_CREATED_AT.length);
+      await replaceCurrentMarkerWithMarkers(conn, LEGACY_SELECTED_MIGRATION_CREATED_AT);
 
       const result = await bridgeLegacySelectedFeatureMigration(conn, migrationsFolder);
       expect(result).toEqual({ bridged: true, reason: "legacy-selected-lineage-verified" });
-
-      // This is the exact resume step that used to replay reconstructed 0037
-      // and fail with ER_TABLE_EXISTS_ERROR. With the verified bridge marker
-      // in place it must be a no-op for 0037.
       await runFullChain(conn);
 
       const [sentinelRows]: any = await conn.query(
@@ -90,26 +99,67 @@ describe.sequential("reconstructed migration bridge against a real disposable da
         [RECONSTRUCTED_SELECTED_MIGRATION.createdAt]
       );
       expect(Number(currentMarkerRows[0].n)).toBe(1);
-
-      const [legacyMarkerRows]: any = await conn.query(
-        `SELECT COUNT(*) AS n FROM \`__drizzle_migrations\` WHERE created_at IN (${LEGACY_SELECTED_MIGRATION_CREATED_AT.map(
-          () => "?"
-        ).join(",")})`,
-        LEGACY_SELECTED_MIGRATION_CREATED_AT
-      );
-      expect(Number(legacyMarkerRows[0].n)).toBe(LEGACY_SELECTED_MIGRATION_CREATED_AT.length);
     },
     TIMEOUT
   );
 
   it(
-    "refuses a partial legacy lineage and does not write the reconstructed marker",
+    "reconciles the Preview 5/8 state by creating only the missing Workspace schema and preserving existing rows",
     async () => {
       await restoreCurrentSchema(conn);
-      await replaceCurrentMarkerWithLegacyLineage(conn, 1);
+      await conn.query(
+        "INSERT INTO `accountMergeAuditLogs` (`action`, `safeMetadata`) VALUES ('preview_5_of_8_sentinel', 'keep-me-too')"
+      );
+      await removeWorkspaceSchema(conn);
+      await replaceCurrentMarkerWithMarkers(conn, LEGACY_ACCOUNT_SPORTS_MIGRATION_CREATED_AT);
+
+      const [beforeWorkspaceRows]: any = await conn.query(
+        "SELECT COUNT(*) AS n FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE 'workspace%'"
+      );
+      expect(Number(beforeWorkspaceRows[0].n)).toBe(0);
+
+      const result = await bridgeLegacySelectedFeatureMigration(conn, migrationsFolder);
+      expect(result).toEqual({ bridged: true, reason: "legacy-account-sports-with-workspace-reconciled" });
+      await runFullChain(conn);
+
+      const [sentinelRows]: any = await conn.query(
+        "SELECT `safeMetadata` FROM `accountMergeAuditLogs` WHERE `action` = 'preview_5_of_8_sentinel'"
+      );
+      expect(sentinelRows).toEqual([{ safeMetadata: "keep-me-too" }]);
+
+      const [workspaceRows]: any = await conn.query(
+        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE 'workspace%'"
+      );
+      const workspaceNames = new Set(workspaceRows.map((row: any) => String(row.name).toLowerCase()));
+      for (const table of LEGACY_WORKSPACE_REQUIRED_TABLES) expect(workspaceNames.has(table.toLowerCase())).toBe(true);
+
+      const [legacyMarkerRows]: any = await conn.query(
+        `SELECT created_at AS createdAt FROM \`__drizzle_migrations\` WHERE created_at IN (${LEGACY_SELECTED_MIGRATION_CREATED_AT.map(
+          () => "?"
+        ).join(",")})`,
+        LEGACY_SELECTED_MIGRATION_CREATED_AT
+      );
+      expect(legacyMarkerRows.map((row: any) => Number(row.createdAt)).sort()).toEqual(
+        [...LEGACY_ACCOUNT_SPORTS_MIGRATION_CREATED_AT].sort()
+      );
+
+      const [currentMarkerRows]: any = await conn.query(
+        "SELECT COUNT(*) AS n FROM `__drizzle_migrations` WHERE created_at = ?",
+        [RECONSTRUCTED_SELECTED_MIGRATION.createdAt]
+      );
+      expect(Number(currentMarkerRows[0].n)).toBe(1);
+    },
+    TIMEOUT
+  );
+
+  it(
+    "refuses an unsupported partial legacy lineage and does not write the reconstructed marker",
+    async () => {
+      await restoreCurrentSchema(conn);
+      await replaceCurrentMarkerWithMarkers(conn, LEGACY_SELECTED_MIGRATION_CREATED_AT.slice(0, 1));
 
       await expect(bridgeLegacySelectedFeatureMigration(conn, migrationsFolder)).rejects.toThrow(
-        /legacy selected-feature migration lineage is partial/i
+        /not the supported 0040-0044-only state/i
       );
 
       const [currentMarkerRows]: any = await conn.query(

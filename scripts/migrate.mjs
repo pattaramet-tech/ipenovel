@@ -229,9 +229,15 @@ async function main() {
 
     const bridgeResult = await bridgeLegacySelectedFeatureMigration(conn, migrationsFolder);
     if (bridgeResult.bridged) {
-      console.log(
-        "[migrate] Verified legacy selected-feature migration lineage and reconciled it to the reconstructed migration marker; application data was not modified."
-      );
+      if (bridgeResult.reason === "legacy-account-sports-with-workspace-reconciled") {
+        console.log(
+          "[migrate] Verified legacy Account Merge/Sports lineage, created the missing Workspace/Google Docs schema from reconstructed 0037, and recorded the reconstructed migration marker; existing application rows were not modified."
+        );
+      } else {
+        console.log(
+          "[migrate] Verified legacy selected-feature migration lineage and reconciled it to the reconstructed migration marker; application data was not modified."
+        );
+      }
     }
 
     console.log("[migrate] Lock acquired. Running pending migrations (existing, committed migration files only)...");
