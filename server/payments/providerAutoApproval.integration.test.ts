@@ -9,6 +9,7 @@ import { createOrder, approveWalletTopup, updateOrder, updatePayment } from "../
 import { approvePayment, rejectPayment } from "../services/orderService";
 import type { PaymentProviderVerificationResult } from "../services/paymentProviderVerificationService";
 
+import { findDuplicatePayments, duplicateConfirmationKey } from "./duplicateException";
 const db = getTestDb();
 const result = (ref = randomUUID()): PaymentProviderVerificationResult => ({
  provider: "slip2go", outcome: "VERIFIED", reason: "CHECKS_PASSED", httpStatus: 201,
@@ -35,6 +36,24 @@ beforeEach(async () => {
   .onDuplicateKeyUpdate({set:{value:JSON.stringify({enabled:true,revision:1})}});
 });
 describe("provider auto approval on real MariaDB", () => {
+ it("requires explicit duplicate confirmation, preserves owner and approves only once", async()=>{
+  const r=result(), first:any=await fixture("wallet",r), second:any=await fixture("order",r);
+  await approveWalletTopup(first.id,1);
+  await expect(approvePayment(second.id,"1")).rejects.toThrow("PROVIDER_TRANSACTION_ALREADY_USED");
+  const duplicates=await findDuplicatePayments(db,r.bankTransactionReference!,second.id);
+  expect(duplicates.some(d=>d.subjectType==="wallet" && Number(d.subjectId)===first.id)).toBe(true);
+  const exception={confirmed:true,reason:"Verified separate settlement by administrator",confirmationKey:duplicateConfirmationKey(r.bankTransactionReference!,duplicates,second.id)};
+  await expect(approvePayment(second.id,"1",undefined,undefined,{...exception,confirmed:false})).rejects.toThrow("REASON_REQUIRED");
+  await expect(approvePayment(second.id,"1",undefined,undefined,{...exception,confirmationKey:"x".repeat(64)})).rejects.toThrow("RECONFIRM");
+  await Promise.all([approvePayment(second.id,"1",undefined,undefined,exception),approvePayment(second.id,"1",undefined,undefined,exception)]);
+  const [saved]=await db.select().from(payments).where(eq(payments.id,second.id));
+  expect(saved.status).toBe("approved");
+  expect(JSON.parse(saved.extractedData!).duplicateApprovalException.reason).toBe(exception.reason);
+  expect(await db.select().from(pointsTransactions).where(eq(pointsTransactions.referenceId,second.orderId))).toHaveLength(1);
+  const third:any=await fixture("order",r);
+  await expect(approvePayment(third.id,"1")).rejects.toThrow("PROVIDER_TRANSACTION_ALREADY_USED");
+ });
+
  it("credits bonus and ledger once across repeated and concurrent verification", async () => {
   const row:any=await fixture("wallet"), r=result();
   const values=await Promise.all([persistAndAutoApprove("wallet",row,r),persistAndAutoApprove("wallet",row,r)]);

@@ -5,6 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
+import { PaymentApprovalAction } from "@/components/PaymentApprovalAction";
 import { Loader2, ArrowLeft, Eye, FileText, ExternalLink } from "lucide-react";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -433,14 +434,7 @@ export default function AdminOrderDetailPage() {
         {order.order.status === "pending" && (
           <Card className="p-6">
             <div className="flex gap-4">
-              <Button
-                onClick={handleApprove}
-                disabled={isApproving}
-                className="bg-green-600 hover:bg-green-700"
-              >
-                {isApproving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                Approve Order
-              </Button>
+              {order.payment && <PaymentApprovalAction paymentId={order.payment.id} onApproved={() => window.location.reload()} />}
               <Button
                 onClick={() => setShowRejectDialog(true)}
                 disabled={isRejecting}

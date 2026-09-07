@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
+import { PaymentApprovalAction } from "@/components/PaymentApprovalAction";
 import { useLocation } from "wouter";
 import { CheckCircle, XCircle, Clock, BookOpen, ShoppingCart, TrendingUp, AlertCircle, Wallet, ScanLine, ArrowLeftRight, Trophy, FileSpreadsheet, ReceiptText } from "lucide-react";
 import { toast } from "sonner";
@@ -432,14 +433,7 @@ export default function AdminDashboard() {
 
                       {/* Actions - stack on mobile */}
                       <div className="flex gap-2 pt-2 border-t flex-col sm:flex-row">
-                        <Button
-                          className="flex-1 h-8 md:h-9 text-xs md:text-sm"
-                          onClick={() => approveMutation.mutate({ paymentId: payment.id })}
-                          disabled={approveMutation.isPending}
-                        >
-                          <CheckCircle className="w-3 h-3 md:w-4 md:h-4 mr-1" />
-                          Approve
-                        </Button>
+                        <PaymentApprovalAction paymentId={payment.id} onApproved={() => { void refetchPayments(); }} />
                         <Button
                           variant="destructive"
                           className="flex-1 h-8 md:h-9 text-xs md:text-sm"

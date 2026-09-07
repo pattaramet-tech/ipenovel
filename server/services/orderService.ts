@@ -1,4 +1,5 @@
 import * as db from "../db";
+import { findDuplicatePayments, validateDuplicateException } from "../payments/duplicateException";
 import { payments, orders } from "../../drizzle/schema";
 import { eq } from "drizzle-orm";
 import { claimProviderTransaction, parseProviderSnapshot } from "../payments/providerClaim";
@@ -318,16 +319,16 @@ export async function createOrderFromCart(
  * points, no recorded coupon usage). No current caller passes a `tx`, so
  * this is a pure internal atomicity fix, not a signature change.
  */
-export async function approvePayment(paymentId: number, approvedBy: string, adminLabel?: string, tx?: any): Promise<{ message: string }> {
+export async function approvePayment(paymentId: number, approvedBy: string, adminLabel?: string, tx?: any, duplicateException?: { confirmed: boolean; reason: string; confirmationKey: string }): Promise<{ message: string }> {
   if (tx) {
-    return approvePaymentInTx(paymentId, approvedBy, adminLabel, tx);
+    return approvePaymentInTx(paymentId, approvedBy, adminLabel, tx, duplicateException);
   }
   const database = await db.getDb();
   if (!database) throw new Error("Database not available");
-  return database.transaction((newTx: any) => approvePaymentInTx(paymentId, approvedBy, adminLabel, newTx));
+  return database.transaction((newTx: any) => approvePaymentInTx(paymentId, approvedBy, adminLabel, newTx, duplicateException));
 }
 
-async function approvePaymentInTx(paymentId: number, approvedBy: string, adminLabel: string | undefined, tx: any): Promise<{ message: string }> {
+async function approvePaymentInTx(paymentId: number, approvedBy: string, adminLabel: string | undefined, tx: any, duplicateException?: { confirmed: boolean; reason: string; confirmationKey: string }): Promise<{ message: string }> {
   return db.withAccountMergePaymentMutationGuard(paymentId, tx, async guardedTx => {
   tx = guardedTx;
   const [payment] = await tx.select().from(payments).where(eq(payments.id, paymentId)).limit(1).for("update");
@@ -335,7 +336,23 @@ async function approvePaymentInTx(paymentId: number, approvedBy: string, adminLa
   if (payment.status === "approved") return { message: "Payment already approved" };
   if (!["pending", "pending_review"].includes(payment.status)) throw new Error("Payment is not pending");
   const snapshot = parseProviderSnapshot(payment.extractedData);
-  if (snapshot.bankTransactionReference) await claimProviderTransaction(tx, "order", paymentId, snapshot);
+  let exceptionAudit: any = null;
+  if (duplicateException && !/^[1-9][0-9]*$/.test(approvedBy)) throw Error("ADMIN_REQUIRED");
+  if (snapshot.bankTransactionReference) {
+    try { await claimProviderTransaction(tx, "order", paymentId, snapshot); }
+    catch (error) {
+      if (!(error instanceof Error) || error.message !== "PROVIDER_TRANSACTION_ALREADY_USED" || !duplicateException) throw error;
+      const duplicates = await findDuplicatePayments(tx, snapshot.bankTransactionReference, paymentId);
+      validateDuplicateException(duplicateException, snapshot.bankTransactionReference, duplicates, paymentId);
+      exceptionAudit = { reason: duplicateException.reason.trim(), actorUserId: Number(approvedBy),
+        approvedAt: new Date().toISOString(), bankTransactionReference: snapshot.bankTransactionReference, duplicates };
+    }
+  }
+  if (duplicateException && !exceptionAudit) throw Error("DUPLICATE_EXCEPTION_CHANGED_RECONFIRM");
+  if (exceptionAudit) {
+    const extracted = JSON.parse(payment.extractedData || "{}");
+    await db.updatePayment(paymentId, { extractedData: JSON.stringify({ ...extracted, duplicateApprovalException: exceptionAudit }) }, tx);
+  }
 
   const [order] = await tx.select().from(orders).where(eq(orders.id, payment.orderId)).limit(1).for("update");
   if (!order) {
@@ -378,7 +395,7 @@ async function approvePaymentInTx(paymentId: number, approvedBy: string, adminLa
     fromStatus: order.status,
     toStatus: "approved",
     actorUserId: approvedByNum || undefined,
-    note: approvedBy === "provider_auto" ? "Payment approved by Provider API" : "Payment approved by admin",
+    note: exceptionAudit ? "Duplicate slip exception: " + JSON.stringify(exceptionAudit) : approvedBy === "provider_auto" ? "Payment approved by Provider API" : "Payment approved by admin",
   }, tx);
 
   // Finalize order completion (points, purchases, coupon usage)

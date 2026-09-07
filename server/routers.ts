@@ -1344,11 +1344,28 @@ export const appRouter = router({
           }
         }),
 
+      duplicateInfo: adminProcedure
+        .input(z.object({ paymentId: z.number().int().positive() }))
+        .query(async ({ input }) => {
+          const payment = await db.getPaymentById(input.paymentId);
+          if (!payment) throw new TRPCError({ code: "NOT_FOUND" });
+          const { parseProviderSnapshot } = await import("./payments/providerClaim");
+          const { findDuplicatePayments, duplicateConfirmationKey } = await import("./payments/duplicateException");
+          const ref = parseProviderSnapshot(payment.extractedData).bankTransactionReference;
+          const database = await db.getDb();
+          if (!database) throw new TRPCError({ code: "SERVICE_UNAVAILABLE" });
+          const duplicates = typeof ref === "string" ? await findDuplicatePayments(database, ref, payment.id) : [];
+          const order = await db.getOrderById(payment.orderId);
+          return { orderNumber: order?.orderNumber, amount: order?.totalAmount, status: payment.status, duplicates, confirmationKey: duplicates.length ? duplicateConfirmationKey(ref, duplicates, payment.id) : null };
+        }),
+
       approve: adminProcedure
-        .input(z.object({ paymentId: z.number() }))
+        .input(z.object({ paymentId: z.number().int().positive(), duplicateException: z.object({
+          confirmed: z.literal(true), reason: z.string().trim().min(5).max(1000), confirmationKey: z.string().length(64)
+        }).optional() }))
         .mutation(async ({ input, ctx }) => {
           try {
-            await orderService.approvePayment(input.paymentId, String(ctx.user.id));
+            await orderService.approvePayment(input.paymentId, String(ctx.user.id), undefined, undefined, input.duplicateException);
             return { success: true };
           } catch (error: any) {
             throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Failed to approve payment. Please try again." });

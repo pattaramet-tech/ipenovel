@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
+import { PaymentApprovalAction } from "@/components/PaymentApprovalAction";
 import { Loader2, CheckCircle, XCircle, Image as ImageIcon, AlertCircle, CheckCheckIcon, FileText, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
@@ -269,14 +270,7 @@ export default function AdminPaymentsPage() {
 
                     {/* Actions */}
                     <div className="flex gap-2 pt-4 border-t">
-                      <Button
-                        className="flex-1"
-                        onClick={() => approveMutation.mutate({ paymentId: payment.id })}
-                        disabled={approveMutation.isPending}
-                      >
-                        <CheckCircle className="w-4 h-4 mr-2" />
-                        Approve
-                      </Button>
+                      <PaymentApprovalAction paymentId={payment.id} onApproved={() => { void refetch(); }} />
                       <Button
                         variant="destructive"
                         className="flex-1"
