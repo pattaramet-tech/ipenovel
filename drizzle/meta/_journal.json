@@ -274,6 +274,20 @@
       "when": 1788784800000,
       "tag": "0038_provider_auto_approval",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "5",
+      "when": 1788784900000,
+      "tag": "0039_workspace_document_fingerprints",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "5",
+      "when": 1788785000000,
+      "tag": "0040_workspace_checker_kanban_foundation",
+      "breakpoints": true
     }
   ]
 }

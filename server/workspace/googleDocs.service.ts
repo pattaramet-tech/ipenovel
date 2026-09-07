@@ -3,6 +3,7 @@ import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
 import {
   workspaceAuditEvents,
   workspaceDocumentBindings,
+  workspaceDocumentFingerprints,
   workspaceDocuments,
   workspaceDocumentSnapshots,
   workspaceGoogleConnections,
@@ -11,6 +12,7 @@ import {
   workspaceNovels,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { runWorkspaceTransactionWithDeadlockRetry } from "./transactionRetry";
 import {
   buildDocsAuthorizationUrl,
   createDocsConsentAttempt,
@@ -611,7 +613,7 @@ export async function observeBoundGoogleDocument(input: {
     input.adapter
   );
 
-  return db.transaction(async (tx: any) => {
+  return runWorkspaceTransactionWithDeadlockRetry(db, async (tx: any) => {
     const existing = await tx
       .select()
       .from(workspaceDocumentSnapshots)
@@ -658,6 +660,25 @@ export async function observeBoundGoogleDocument(input: {
       created = affectedRows(insertResult) === 1;
     }
     await tx
+      .insert(workspaceDocumentFingerprints)
+      .values({
+        bindingId: row.binding.id,
+        snapshotId,
+        providerRevisionId: fingerprint.revision,
+        normalizedSha256: fingerprint.contentHash,
+        normalizationVersion: fingerprint.normalizationVersion,
+      })
+      .onDuplicateKeyUpdate({
+        set: {
+          snapshotId,
+          providerRevisionId: fingerprint.revision,
+          normalizedSha256: fingerprint.contentHash,
+          normalizationVersion: fingerprint.normalizationVersion,
+          version: sql`${workspaceDocumentFingerprints.version} + 1`,
+          updatedAt: new Date(),
+        },
+      });
+    await tx
       .update(workspaceDocuments)
       .set({
         mimeType: fingerprint.mimeType,
@@ -691,4 +712,48 @@ export async function observeBoundGoogleDocument(input: {
     });
     return { snapshotId, created, fingerprint };
   });
+}
+
+/**
+ * M03 read model: current fingerprint per active Google document binding.
+ * This is metadata/hash only; document body text and provider credentials are
+ * never selected or returned.
+ */
+export async function listDocumentFingerprints(input: {
+  actorUserId: number;
+  workspaceId: number;
+}) {
+  const db = await database();
+  await requireMembership(db, input.workspaceId, input.actorUserId);
+  return db
+    .select({
+      fingerprint: workspaceDocumentFingerprints,
+      binding: workspaceDocumentBindings,
+      document: {
+        id: workspaceDocuments.id,
+        titleCache: workspaceDocuments.titleCache,
+        mimeType: workspaceDocuments.mimeType,
+        status: workspaceDocuments.status,
+      },
+      workspaceNovel: workspaceNovels,
+    })
+    .from(workspaceDocumentFingerprints)
+    .innerJoin(
+      workspaceDocumentBindings,
+      eq(workspaceDocumentFingerprints.bindingId, workspaceDocumentBindings.id)
+    )
+    .innerJoin(
+      workspaceDocuments,
+      eq(workspaceDocumentBindings.documentId, workspaceDocuments.id)
+    )
+    .innerJoin(
+      workspaceNovels,
+      eq(workspaceDocumentBindings.workspaceNovelId, workspaceNovels.id)
+    )
+    .where(
+      and(
+        eq(workspaceNovels.workspaceId, input.workspaceId),
+        eq(workspaceDocumentBindings.status, "active")
+      )
+    );
 }

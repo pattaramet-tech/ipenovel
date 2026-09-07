@@ -3,6 +3,24 @@ import { z } from "zod";
 import { authenticatedProcedure, router } from "../_core/trpc";
 import { WORKSPACE_ROLES } from "./domain";
 import {
+  compareCheckerRunWithCopiedLegacy,
+  createKanbanBoard,
+  createKanbanCardFromFingerprint,
+  getCheckerRunDetail,
+  listCheckerRuns,
+  listDualRunState,
+  listOperationalReconciliationState,
+  publishCheckerRuleSet,
+  reconcileCopiedLegacyOperationalState,
+  queueCheckerRun,
+  transitionKanbanCard,
+  WorkspaceCheckerKanbanError,
+} from "./checkerKanban.service";
+import {
+  listDocumentFingerprints,
+  WorkspaceDocsServiceError,
+} from "./googleDocs.service";
+import {
   addOrUpdateMember,
   bindPublicationNovel,
   createWorkspace,
@@ -19,6 +37,28 @@ import {
  * a Google Docs connection or change the existing login scope.
  */
 function mapWorkspaceError(error: unknown): never {
+  if (error instanceof WorkspaceCheckerKanbanError) {
+    const code =
+      error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
+        ? "FORBIDDEN"
+        : error.code === "DATABASE_UNAVAILABLE"
+          ? "SERVICE_UNAVAILABLE"
+          : error.code.endsWith("_NOT_FOUND") || error.code === "SNAPSHOT_NOT_BOUND"
+            ? "NOT_FOUND"
+            : error.code.endsWith("_CONFLICT") || error.code === "KANBAN_CONFLICT"
+              ? "CONFLICT"
+              : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
+  if (error instanceof WorkspaceDocsServiceError) {
+    const code =
+      error.code === "MEMBERSHIP_REQUIRED"
+        ? "FORBIDDEN"
+        : error.code === "DATABASE_UNAVAILABLE"
+          ? "SERVICE_UNAVAILABLE"
+          : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
   if (error instanceof WorkspaceServiceError) {
     const code =
       error.code === "WORKSPACE_NOT_FOUND" || error.code === "NOVEL_NOT_FOUND"
@@ -105,6 +145,191 @@ export const workspaceRouter = router({
     .query(async ({ ctx, input }) => {
       try {
         return await listMigrationOwnership(ctx.user.id, input.workspaceId);
+      } catch (error) {
+        return mapWorkspaceError(error);
+      }
+    }),
+
+  fingerprints: router({
+    list: authenticatedProcedure
+      .input(workspaceIdInput)
+      .query(async ({ ctx, input }) => {
+        try {
+          return await listDocumentFingerprints({
+            actorUserId: ctx.user.id,
+            workspaceId: input.workspaceId,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+  }),
+
+  checker: router({
+    publishRuleSet: authenticatedProcedure
+      .input(workspaceIdInput.extend({
+        name: z.string().trim().min(1).max(160),
+        versionNo: z.number().int().positive(),
+        engineVersion: z.string().trim().min(1).max(120),
+        rulesJson: z.string().min(2),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          JSON.parse(input.rulesJson);
+          return await publishCheckerRuleSet({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          if (error instanceof SyntaxError) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "rulesJson must be valid JSON." });
+          }
+          return mapWorkspaceError(error);
+        }
+      }),
+    queueRun: authenticatedProcedure
+      .input(workspaceIdInput.extend({
+        snapshotId: z.number().int().positive(),
+        ruleSetId: z.number().int().positive(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await queueCheckerRun({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    listRuns: authenticatedProcedure
+      .input(workspaceIdInput)
+      .query(async ({ ctx, input }) => {
+        try {
+          return await listCheckerRuns({ actorUserId: ctx.user.id, workspaceId: input.workspaceId });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    runDetail: authenticatedProcedure
+      .input(workspaceIdInput.extend({ runId: z.number().int().positive() }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getCheckerRunDetail({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    compareCopiedLegacy: authenticatedProcedure
+      .input(workspaceIdInput.extend({
+        runId: z.number().int().positive(),
+        legacyFindings: z.array(z.object({
+          ruleKey: z.string().trim().min(1).max(160),
+          severity: z.enum(["info", "warning", "error"]),
+          locationKey: z.string().trim().min(1).max(255),
+          excerptSha256: z.string().regex(/^[a-f0-9]{64}$/i),
+        })),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await compareCheckerRunWithCopiedLegacy({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+  }),
+
+  kanban: router({
+    createBoard: authenticatedProcedure
+      .input(workspaceIdInput.extend({
+        name: z.string().trim().min(1).max(160),
+        slug: z.string().trim().min(1).max(120),
+        columns: z.array(z.object({
+          key: z.string().trim().min(1).max(80),
+          name: z.string().trim().min(1).max(160),
+          position: z.number().int().nonnegative(),
+          wipLimit: z.number().int().positive().optional(),
+        })).min(1),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await createKanbanBoard({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    createCardFromFingerprint: authenticatedProcedure
+      .input(workspaceIdInput.extend({
+        boardId: z.number().int().positive(),
+        columnKey: z.string().trim().min(1).max(80),
+        bindingId: z.number().int().positive(),
+        logicalItemKey: z.string().trim().min(1).max(255),
+        rank: z.number().int().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await createKanbanCardFromFingerprint({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    transitionCard: authenticatedProcedure
+      .input(workspaceIdInput.extend({
+        cardId: z.number().int().positive(),
+        toColumnKey: z.string().trim().min(1).max(80),
+        reason: z.string().trim().min(1).max(500),
+        idempotencyKey: z.string().trim().min(1).max(255),
+        expectedVersion: z.number().int().positive(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await transitionKanbanCard({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+  }),
+
+  operationalState: authenticatedProcedure
+    .input(workspaceIdInput)
+    .query(async ({ ctx, input }) => {
+      try {
+        return await listOperationalReconciliationState({
+          actorUserId: ctx.user.id,
+          workspaceId: input.workspaceId,
+        });
+      } catch (error) {
+        return mapWorkspaceError(error);
+      }
+    }),
+
+  reconcileCopiedLegacy: authenticatedProcedure
+    .input(workspaceIdInput.extend({
+      baselines: z.array(z.object({
+        bindingId: z.number().int().positive(),
+        runId: z.number().int().positive(),
+        providerRevisionId: z.string().trim().min(1).max(255),
+        normalizedSha256: z.string().regex(/^[a-f0-9]{64}$/i),
+        ruleSetContentSha256: z.string().regex(/^[a-f0-9]{64}$/i),
+        legacyFindings: z.array(z.object({
+          ruleKey: z.string().trim().min(1).max(160),
+          severity: z.enum(["info", "warning", "error"]),
+          locationKey: z.string().trim().min(1).max(255),
+          excerptSha256: z.string().regex(/^[a-f0-9]{64}$/i),
+        })),
+      })),
+    }))
+    .query(async ({ ctx, input }) => {
+      try {
+        return await reconcileCopiedLegacyOperationalState({
+          actorUserId: ctx.user.id,
+          workspaceId: input.workspaceId,
+          baselines: input.baselines,
+        });
+      } catch (error) {
+        return mapWorkspaceError(error);
+      }
+    }),
+
+  dualRunState: authenticatedProcedure
+    .input(workspaceIdInput)
+    .query(async ({ ctx, input }) => {
+      try {
+        return await listDualRunState({ actorUserId: ctx.user.id, workspaceId: input.workspaceId });
       } catch (error) {
         return mapWorkspaceError(error);
       }
