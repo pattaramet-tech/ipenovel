@@ -31,12 +31,11 @@ describe("workspace M02 static security boundaries", () => {
     expect(snapshotBlock).not.toMatch(/body|contentObjectKey/i);
   });
 
-  it("keeps M02 migration additive to the prior M01 tables", () => {
-    const migration = source("drizzle/0051_spooky_lady_ursula.sql");
+  it("keeps the reconstructed post-PR45 Workspace migration additive", () => {
+    const migration = source("drizzle/0037_reconstruct_pr45_selected_features.sql");
     expect(migration).not.toMatch(/DROP TABLE|DROP COLUMN|DROP FOREIGN KEY/i);
-    expect(migration).not.toMatch(
-      /ALTER TABLE `workspace(?:Members|Workspaces|Novels|ReadOnlyBindings|MigrationRegistry)`/
-    );
+    expect(migration).toContain("workspaceWorkspaces");
+    expect(migration).toContain("workspaceMembers");
     expect(migration).toContain("workspaceGoogleConnections");
     expect(migration).toContain("workspaceDocumentSnapshots");
   });

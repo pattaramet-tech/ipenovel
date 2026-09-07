@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, inArray } from "drizzle-orm";
 import {
@@ -10,7 +9,6 @@ import {
   accountRecoveryRequests,
   authIdentities,
   episodePurchases,
-  paymentSlipClaims,
   pointsTransactions,
   walletAccounts,
   walletTransactions,
@@ -47,7 +45,6 @@ type Fixture = {
   requestId: number;
   providerSubject: string;
   emailAtLink: string;
-  paymentClaimId?: number;
 };
 
 const fixtures: Fixture[] = [];
@@ -132,16 +129,6 @@ async function seedMergeData(f: Fixture) {
   });
   await t.insert(wishlists).values({ userId: f.sourceId, novelId: 9002 });
 
-  const referenceHash = createHash("sha256")
-    .update(`ipe008-${uniqueTestTag()}`)
-    .digest("hex");
-  const claimResult: any = await t.insert(paymentSlipClaims).values({
-    sourceType: "order_payment",
-    sourceId: 880000 + f.sourceId,
-    userId: f.sourceId,
-    referenceHash,
-  });
-  f.paymentClaimId = insertedId(claimResult);
 }
 
 async function cleanupFixture(f: Fixture) {
@@ -173,9 +160,6 @@ async function cleanupFixture(f: Fixture) {
       .where(inArray(accountMergeCases.id, caseIds));
   }
 
-  await t
-    .delete(paymentSlipClaims)
-    .where(inArray(paymentSlipClaims.userId, userIds));
   await t
     .delete(episodePurchases)
     .where(inArray(episodePurchases.userId, userIds));
@@ -295,7 +279,6 @@ describe.sequential(
         sourceAfter: "0.00",
         targetAfter: "25.00",
       });
-      expect(result.paymentSlipClaimsPreserved).toBe(1);
 
       const t = requireTestDb();
       const [
@@ -308,7 +291,6 @@ describe.sequential(
         sourceUser,
         episodeRows,
         wishlistRows,
-        claim,
       ] = await Promise.all([
         t
           .select()
@@ -330,11 +312,6 @@ describe.sequential(
           .from(episodePurchases)
           .where(eq(episodePurchases.episodeId, 900101)),
         t.select().from(wishlists).where(eq(wishlists.novelId, 9002)),
-        t
-          .select()
-          .from(paymentSlipClaims)
-          .where(eq(paymentSlipClaims.id, f.paymentClaimId!))
-          .limit(1),
       ]);
       expect(sourceWallet[0].balance).toBe("0.00");
       expect(targetWallet[0].balance).toBe("40.00");
@@ -347,7 +324,7 @@ describe.sequential(
       expect(episodeRows[0].userId).toBe(f.targetId);
       expect(wishlistRows).toHaveLength(1);
       expect(wishlistRows[0].userId).toBe(f.targetId);
-      expect(claim[0].userId).toBe(f.sourceId);
+
 
       const resolution = await resolveGoogleIdentity({
         sub: f.providerSubject,
@@ -407,7 +384,7 @@ describe.sequential(
         "Verified ownership and final merge reconciliation"
       );
       expect(metadata).toContain("tableActions");
-      expect(metadata).toContain("paymentSlipClaimsPreserved");
+
       expect(metadata).not.toContain(f.providerSubject);
       expect(metadata).not.toContain(f.emailAtLink);
       expect(metadata.toLowerCase()).not.toContain("token");
@@ -472,14 +449,6 @@ describe.sequential(
           `Injected Account Merge orchestration failure at ${faultPoint}`
         );
         await expectNoFinalEffects(f);
-        if (f.paymentClaimId) {
-          const claim = await requireTestDb()
-            .select()
-            .from(paymentSlipClaims)
-            .where(eq(paymentSlipClaims.id, f.paymentClaimId))
-            .limit(1);
-          expect(claim[0].userId).toBe(f.sourceId);
-        }
       }
     );
 

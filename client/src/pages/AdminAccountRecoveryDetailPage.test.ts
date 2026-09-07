@@ -19,12 +19,12 @@ describe("IPE-008 Admin Advanced Account Merge UI safety", () => {
     expect(source).toMatch(/trpc\.accountMerge\.admin\.execute\.useMutation/);
   });
 
-  it("shows final merge preview with Wallet, Points, per-table counts and anti-replay preservation", () => {
+  it("shows final merge preview with Wallet, Points and per-table counts", () => {
     expect(source).toContain("Final Preview");
     expect(source).toContain('label="Wallet"');
     expect(source).toContain('label="Points"');
     expect(source).toContain("Per-table reconciliation preview");
-    expect(source).toContain("paymentSlipClaims preserved");
+
   });
 
   it("requires an irreversible warning, mandatory reason, and exact SOURCE->TARGET typed confirmation", () => {

@@ -150,40 +150,6 @@ describe("transitive-relation completeness - every order/cart-scoped child table
   });
 });
 
-describe("transitive-relation completeness - every order-payment/top-up-scoped evidence table is resolved", () => {
-  // Discovered by reflection: ocrVerificationAttempts, paymentSlipClaims,
-  // paymentSlipLegacyCollisions, paymentSlipLegacyUnknown,
-  // paymentSlipReviewResolutions.
-  const paymentScoped = schemaTablesWithEnumValue("order_payment");
-
-  it("reflection found the expected payment/top-up-scoped tables (sanity)", () => {
-    expect(paymentScoped).toEqual(
-      expect.arrayContaining([
-        "paymentSlipClaims",
-        "paymentSlipLegacyCollisions",
-        "paymentSlipLegacyUnknown",
-        "ocrVerificationAttempts",
-        "paymentSlipReviewResolutions",
-      ])
-    );
-  });
-
-  it("every payment/top-up-scoped table is either inventoried or explicitly excluded with a reason", () => {
-    const excludedNames = new Set(ACCOUNT_MERGE_EXCLUDED_INDIRECT_TABLES.map((e) => e.table));
-    const unresolved = paymentScoped.filter(
-      (t) => !db.ACCOUNT_MERGE_TABLE_NAMES.includes(t) && !excludedNames.has(t)
-    );
-    expect(unresolved).toEqual([]);
-  });
-
-  it("all of them resolve to EXCLUDED - global anti-replay / OCR-diagnostic / admin-adjudication artifacts are never re-parented by a merge", () => {
-    for (const t of paymentScoped) {
-      expect(ACCOUNT_MERGE_EXCLUDED_INDIRECT_TABLES.map((e) => e.table)).toContain(t);
-      expect(db.ACCOUNT_MERGE_TABLE_NAMES).not.toContain(t);
-    }
-  });
-});
-
 describe("ACCOUNT_MERGE_EXCLUDED_INDIRECT_TABLES is an explicit, reasoned list - never a silent catch-all", () => {
   it("every entry names a real, currently-existing schema table export", () => {
     const realTables = new Set(

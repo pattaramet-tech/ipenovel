@@ -194,9 +194,11 @@ describe("Workspace Docs M02 domain contract", () => {
     expect(result.status).toBe("revoked");
     expect(result.encryptedRefreshToken).toBeNull();
 
+    const tamperedBytes = Buffer.from(rotated.encryptedRefreshToken, "base64url");
+    tamperedBytes[0] ^= 0x01;
     const tampered = {
       ...rotated,
-      encryptedRefreshToken: rotated.encryptedRefreshToken.slice(0, -1) + "A",
+      encryptedRefreshToken: tamperedBytes.toString("base64url"),
     };
     expect(() => newCipher.decrypt(tampered)).toThrow(
       "DOCS_TOKEN_CIPHERTEXT_INVALID"

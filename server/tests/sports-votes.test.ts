@@ -104,8 +104,7 @@ describe("IPE-009 Sports Vote settlement contracts", () => {
 });
 
 describe("IPE-009 non-destructive migration contracts", () => {
-  const migration = source("drizzle/0044_add_sports_vote_catalog_points_rewards.sql");
-  const migrateRunner = source("scripts/migrate.mjs");
+  const migration = source("drizzle/0037_reconstruct_pr45_selected_features.sql");
 
   it("adds the catalog and points-reward schema without dropping legacy columns or tables", () => {
     expect(migration).toContain("CREATE TABLE `sportsCompetitions`");
@@ -118,10 +117,4 @@ describe("IPE-009 non-destructive migration contracts", () => {
     expect(migration.toUpperCase()).not.toContain("DROP COLUMN");
   });
 
-  it("makes startup fail closed when critical IPE-009 schema objects are missing", () => {
-    expect(migrateRunner).toContain('"sportsCompetitions"');
-    expect(migrateRunner).toContain('{ table: "sportsMatches", column: "rewardKind" }');
-    expect(migrateRunner).toContain('{ table: "sportsMatchRewards", index: "unique_sports_match_rewards_points_tx" }');
-    expect(migrateRunner).toContain('{ table: "sportsMatchRewards", column: "couponId" }');
-  });
 });

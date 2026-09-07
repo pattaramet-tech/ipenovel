@@ -12,8 +12,10 @@ const orderServiceSource = fs.readFileSync(path.join(root, "services", "orderSer
 const episodePurchaseSource = fs.readFileSync(path.join(root, "services", "episodePurchaseService.ts"), "utf8");
 const approvalSource = fs.readFileSync(path.join(root, "services", "approvalService.ts"), "utf8");
 const routersSource = fs.readFileSync(path.join(root, "routers.ts"), "utf8");
-const ocrV1Source = fs.readFileSync(path.join(root, "ocr-slip-integration.ts"), "utf8");
-const ocrV2Source = fs.readFileSync(path.join(root, "ocr-slip-integration-v2.ts"), "utf8");
+const providerVerificationSource = fs.readFileSync(
+  path.join(root, "services", "paymentProviderVerificationService.ts"),
+  "utf8"
+);
 
 /**
  * IPE-005 reflection coverage.
@@ -75,8 +77,7 @@ const allProductionSources = [
   episodePurchaseSource,
   approvalSource,
   routersSource,
-  ocrV1Source,
-  ocrV2Source,
+  providerVerificationSource,
 ].join("\n");
 
 function classifiedTableSet(): Set<string> {
@@ -103,11 +104,10 @@ describe("IPE-005 classified mutation reflection coverage", () => {
     }
   });
 
-  it("legacy/background OCR payment writers participate in the same payment-owner guard", () => {
+  it("active Provider/manual payment writers participate in the same payment-owner guard", () => {
     expect(approvalSource).toContain("withAccountMergePaymentMutationGuard(paymentId, tx");
-    expect(ocrV1Source).toContain("ApprovalService.approvePaymentWithSource(");
-    expect(ocrV1Source).toContain("updatePayment(");
-    expect(ocrV2Source).toContain("withAccountMergePaymentMutationGuard(payment.id, undefined");
+    expect(providerVerificationSource).toContain("db.updatePayment(payment.id, {");
+    expect(dbSource).toContain("withAccountMergePaymentMutationGuard(paymentId, tx");
   });
 
   it("the sports cross-resource hierarchy is match first, then account guard", () => {

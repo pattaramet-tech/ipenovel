@@ -18,7 +18,6 @@ import {
   orderHistory,
   orderItems,
   orders,
-  paymentSlipClaims,
   payments,
   pointsTransactions,
   purchases,
@@ -166,9 +165,6 @@ async function cleanupFixture(f: DataFixture) {
   const t = requireTestDb();
   const users = [f.sourceId, f.targetId];
 
-  await t
-    .delete(paymentSlipClaims)
-    .where(inArray(paymentSlipClaims.userId, users));
   await t
     .delete(accountMergeDataDedupeRecords)
     .where(eq(accountMergeDataDedupeRecords.mergeCaseId, f.caseId));
@@ -1042,7 +1038,7 @@ describe.sequential(
       ).toHaveLength(0);
     }, 30000);
 
-    it("leaves IPE-006 financial history and paymentSlipClaims byte-for-byte untouched", async () => {
+    it("leaves IPE-006 financial history byte-for-byte untouched", async () => {
       const f = await createMergePair({ financial: false });
       const t = requireTestDb();
       const createdAt = new Date("2026-08-29T00:00:00Z");
@@ -1084,19 +1080,6 @@ describe.sequential(
           updatedAt: createdAt,
         })
       );
-      const claimId = insertId(
-        await t.insert(paymentSlipClaims).values({
-          sourceType: "wallet_topup",
-          sourceId: topupId,
-          userId: f.sourceId,
-          fileHash: uniqueTestTag("ipe007")
-            .replace(/[^A-Za-z0-9]/g, "0")
-            .padEnd(64, "0")
-            .slice(0, 64),
-          claimedAt: createdAt,
-        })
-      );
-
       await reconcileAccountMergeFinancials({
         caseId: f.caseId,
         actorAdminId: 1,
@@ -1113,7 +1096,6 @@ describe.sequential(
           pointsHistoryId
         ),
         topup: await readById(walletTopups, walletTopups.id, topupId),
-        claim: await readById(paymentSlipClaims, paymentSlipClaims.id, claimId),
       };
 
       await reconcileAccountMergeData({ caseId: f.caseId, actorAdminId: 1 });
@@ -1134,9 +1116,6 @@ describe.sequential(
       expect(await readById(walletTopups, walletTopups.id, topupId)).toEqual(
         before.topup
       );
-      expect(
-        await readById(paymentSlipClaims, paymentSlipClaims.id, claimId)
-      ).toEqual(before.claim);
     }, 30000);
 
     it("requires the exact IPE-006 financial receipt before any Phase-4 write", async () => {

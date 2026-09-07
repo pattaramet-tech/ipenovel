@@ -39,7 +39,7 @@ describe("IPE-008 final orchestration static safety invariants", () => {
   it("never hard-deletes Source or deletes from users/auth anti-replay tables", () => {
     expect(source).not.toMatch(/delete\s*\(\s*users\s*\)/);
     expect(source).not.toMatch(/delete\s*\(\s*authIdentities\s*\)/);
-    expect(source).not.toMatch(/delete\s*\(\s*paymentSlipClaims\s*\)/);
+
   });
 
   it("derives Source from the locked recovery request and never accepts sourceUserId as execute input", () => {

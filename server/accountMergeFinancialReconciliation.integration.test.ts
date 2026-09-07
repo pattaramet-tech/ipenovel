@@ -6,7 +6,6 @@ import {
   accountMergeFinancialReconciliations,
   accountRecoveryRequests,
   authIdentities,
-  paymentSlipClaims,
   pointsTransactions,
   walletAccounts,
   walletTopups,
@@ -173,14 +172,6 @@ async function seedBalances(
     updatedAt: createdAt,
   });
   const topupId = insertId(topupResult);
-  const claimResult: any = await t.insert(paymentSlipClaims).values({
-    sourceType: "wallet_topup",
-    sourceId: topupId,
-    userId: f.sourceId,
-    fileHash: uniqueTestTag("ipe006_claim").padEnd(64, "0").slice(0, 64),
-    claimedAt: createdAt,
-  });
-
   return {
     historyIds: {
       sourceWallet: insertId(sourceWalletHistory),
@@ -188,7 +179,6 @@ async function seedBalances(
       sourcePoints: insertId(sourcePointsHistory),
       targetPoints: insertId(targetPointsHistory),
       topup: topupId,
-      claim: insertId(claimResult),
     },
     expected: { sourceWallet, targetWallet, sourcePoints, targetPoints },
   };
@@ -196,7 +186,6 @@ async function seedBalances(
 
 async function cleanupFixture(f: FinancialFixture): Promise<void> {
   const t = requireTestDb();
-  await t.delete(paymentSlipClaims).where(inArray(paymentSlipClaims.userId, [f.sourceId, f.targetId]));
   await t.delete(accountMergeAuditLogs).where(eq(accountMergeAuditLogs.mergeCaseId, f.caseId));
   await t.delete(accountMergeFinancialReconciliations).where(eq(accountMergeFinancialReconciliations.mergeCaseId, f.caseId));
   await t.delete(walletTransactions).where(inArray(walletTransactions.userId, [f.sourceId, f.targetId]));
@@ -224,7 +213,7 @@ describe.sequential("IPE-006 Account Merge financial reconciliation - real datab
     while (fixtures.length > 0) await cleanupFixture(fixtures.pop()!);
   });
 
-  it("moves Wallet + Points exactly, appends explicit ledgers/receipt/audit, and leaves historical financial + anti-replay rows byte-for-byte unchanged", async () => {
+  it("moves Wallet + Points exactly, appends explicit ledgers/receipt/audit, and leaves historical financial rows byte-for-byte unchanged", async () => {
     const f = await createMergePair();
     const seeded = await seedBalances(f, {});
     const t = requireTestDb();
@@ -235,7 +224,6 @@ describe.sequential("IPE-006 Account Merge financial reconciliation - real datab
       sourcePoints: await readRowById(pointsTransactions, pointsTransactions.id, seeded.historyIds.sourcePoints),
       targetPoints: await readRowById(pointsTransactions, pointsTransactions.id, seeded.historyIds.targetPoints),
       topup: await readRowById(walletTopups, walletTopups.id, seeded.historyIds.topup),
-      claim: await readRowById(paymentSlipClaims, paymentSlipClaims.id, seeded.historyIds.claim),
     };
 
     const result = await reconcileAccountMergeFinancials({ caseId: f.caseId, actorAdminId: 11 });
@@ -302,7 +290,6 @@ describe.sequential("IPE-006 Account Merge financial reconciliation - real datab
     expect(await readRowById(pointsTransactions, pointsTransactions.id, seeded.historyIds.sourcePoints)).toEqual(historyBefore.sourcePoints);
     expect(await readRowById(pointsTransactions, pointsTransactions.id, seeded.historyIds.targetPoints)).toEqual(historyBefore.targetPoints);
     expect(await readRowById(walletTopups, walletTopups.id, seeded.historyIds.topup)).toEqual(historyBefore.topup);
-    expect(await readRowById(paymentSlipClaims, paymentSlipClaims.id, seeded.historyIds.claim)).toEqual(historyBefore.claim);
   }, 30000);
 
   it("preserves exact Wallet + Points values at both DECIMAL schema boundaries without floating-point rounding", async () => {

@@ -171,7 +171,7 @@ describe("buildAccountMergePreview - A) source is always server-derived", () => 
     const inventorySpy = vi.spyOn(db, "findAccountMergeTableInventory").mockResolvedValue([]);
     vi.spyOn(db, "getAccountMergeWalletBalance").mockResolvedValue("0.00");
     vi.spyOn(db, "getAccountMergePointsBalance").mockResolvedValue("0.00");
-    vi.spyOn(db, "getAccountMergePaymentSlipClaimsCount").mockResolvedValue(0);
+
 
     const preview = await buildAccountMergePreview({ requestId: 1, sourceUserId: SOURCE_ID, targetUserId: TARGET_ID });
 
@@ -189,7 +189,7 @@ describe("buildAccountMergePreview - C) zero mutation, invalid pairing stops bef
     const inventorySpy = vi.spyOn(db, "findAccountMergeTableInventory");
     const walletSpy = vi.spyOn(db, "getAccountMergeWalletBalance");
     const pointsSpy = vi.spyOn(db, "getAccountMergePointsBalance");
-    const claimsSpy = vi.spyOn(db, "getAccountMergePaymentSlipClaimsCount");
+
 
     const preview = await buildAccountMergePreview({ requestId: 1, sourceUserId: SOURCE_ID, targetUserId: SOURCE_ID });
 
@@ -197,12 +197,12 @@ describe("buildAccountMergePreview - C) zero mutation, invalid pairing stops bef
     expect(preview.tableFindings).toEqual([]);
     expect(preview.walletProjection).toEqual({ sourceBalance: "0.00", targetBalance: "0.00", projectedMergedBalance: "0.00" });
     expect(preview.pointsProjection).toEqual({ sourceBalance: "0.00", targetBalance: "0.00", projectedMergedBalance: "0.00" });
-    expect(preview.paymentSlipClaims.sourceCount).toBe(0);
+
     expect(preview.hardBlockers).toEqual(preview.targetValidation.blockers);
     expect(inventorySpy).not.toHaveBeenCalled();
     expect(walletSpy).not.toHaveBeenCalled();
     expect(pointsSpy).not.toHaveBeenCalled();
-    expect(claimsSpy).not.toHaveBeenCalled();
+
   });
 
   it("C. every db function this service can reach is read-only - insert/update/delete/transaction are never called for a valid preview", async () => {
@@ -212,7 +212,7 @@ describe("buildAccountMergePreview - C) zero mutation, invalid pairing stops bef
     ]);
     vi.spyOn(db, "getAccountMergeWalletBalance").mockResolvedValue("100.00");
     vi.spyOn(db, "getAccountMergePointsBalance").mockResolvedValue("5.00");
-    vi.spyOn(db, "getAccountMergePaymentSlipClaimsCount").mockResolvedValue(2);
+
 
     // Every mutation-shaped export in db.ts, spied so a call would be
     // recorded - none should ever fire from a preview.
@@ -238,7 +238,7 @@ describe("buildAccountMergePreview - C) zero mutation, invalid pairing stops bef
     ]);
     vi.spyOn(db, "getAccountMergeWalletBalance").mockResolvedValue("10.00");
     vi.spyOn(db, "getAccountMergePointsBalance").mockResolvedValue("0.00");
-    vi.spyOn(db, "getAccountMergePaymentSlipClaimsCount").mockResolvedValue(1);
+
 
     const first = await buildAccountMergePreview({ requestId: 1, sourceUserId: SOURCE_ID, targetUserId: TARGET_ID });
     const second = await buildAccountMergePreview({ requestId: 1, sourceUserId: SOURCE_ID, targetUserId: TARGET_ID });
@@ -258,7 +258,7 @@ describe("buildAccountMergePreview - E) exact wallet/points projections, data on
     vi.spyOn(db, "getAccountMergePointsBalance").mockImplementation(async (userId: number) =>
       userId === SOURCE_ID ? "10.00" : "5.50"
     );
-    vi.spyOn(db, "getAccountMergePaymentSlipClaimsCount").mockResolvedValue(0);
+
 
     const preview = await buildAccountMergePreview({ requestId: 1, sourceUserId: SOURCE_ID, targetUserId: TARGET_ID });
 
@@ -279,7 +279,7 @@ describe("buildAccountMergePreview - E) exact wallet/points projections, data on
     vi.spyOn(db, "findAccountMergeTableInventory").mockResolvedValue([]);
     vi.spyOn(db, "getAccountMergeWalletBalance").mockResolvedValue("0.00");
     vi.spyOn(db, "getAccountMergePointsBalance").mockResolvedValue("0.00");
-    vi.spyOn(db, "getAccountMergePaymentSlipClaimsCount").mockResolvedValue(0);
+
 
     const preview = await buildAccountMergePreview({ requestId: 1, sourceUserId: SOURCE_ID, targetUserId: TARGET_ID });
     expect(preview.walletProjection.projectedMergedBalance).toBe("0.00");
@@ -295,7 +295,7 @@ describe("buildAccountMergePreview - D) table findings: projected action, confli
     vi.spyOn(db, "findAccountMergeTableInventory").mockResolvedValue(findings);
     vi.spyOn(db, "getAccountMergeWalletBalance").mockResolvedValue("0.00");
     vi.spyOn(db, "getAccountMergePointsBalance").mockResolvedValue("0.00");
-    vi.spyOn(db, "getAccountMergePaymentSlipClaimsCount").mockResolvedValue(0);
+
     return buildAccountMergePreview({ requestId: 1, sourceUserId: SOURCE_ID, targetUserId: TARGET_ID });
   }
 
@@ -474,23 +474,5 @@ describe("buildAccountMergePreview - D) table findings: projected action, confli
     expect(byTable.cartItems).toBe("preserve_via_parent");
     // Indirect rows contribute nothing to hardBlockers.
     expect(preview.hardBlockers.every((w) => w.startsWith("walletAccounts:") || w.startsWith("wishlists:"))).toBe(true);
-  });
-});
-
-describe("buildAccountMergePreview - G) paymentSlipClaims/OCR anti-replay evidence is read-only", () => {
-  afterEach(() => vi.restoreAllMocks());
-
-  it("G. returns the exact source count from db.ts's read-only claims query and an explanatory note - never a write call", async () => {
-    mockValidPairing();
-    vi.spyOn(db, "findAccountMergeTableInventory").mockResolvedValue([]);
-    vi.spyOn(db, "getAccountMergeWalletBalance").mockResolvedValue("0.00");
-    vi.spyOn(db, "getAccountMergePointsBalance").mockResolvedValue("0.00");
-    const claimsSpy = vi.spyOn(db, "getAccountMergePaymentSlipClaimsCount").mockResolvedValue(4);
-
-    const preview = await buildAccountMergePreview({ requestId: 1, sourceUserId: SOURCE_ID, targetUserId: TARGET_ID });
-
-    expect(claimsSpy).toHaveBeenCalledWith(SOURCE_ID, undefined);
-    expect(preview.paymentSlipClaims.sourceCount).toBe(4);
-    expect(preview.paymentSlipClaims.note.length).toBeGreaterThan(10);
   });
 });

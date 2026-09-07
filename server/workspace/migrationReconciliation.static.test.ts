@@ -11,10 +11,13 @@ describe("IPE-028-C02 test DB migration reconciliation", () => {
     expect(source.indexOf("await resetToEmptySchema")).toBeLessThan(source.indexOf("await runTestDbMigration"));
   });
 
-  it("keeps every M01 foreign-key identifier within MySQL's 64-character limit", () => {
-    const migration = fs.readFileSync(path.join(repoRoot, "drizzle/0050_aberrant_nekra.sql"), "utf8");
+  it("keeps every reconstructed Workspace foreign-key identifier within MySQL's 64-character limit", () => {
+    const migration = fs.readFileSync(
+      path.join(repoRoot, "drizzle/0037_reconstruct_pr45_selected_features.sql"),
+      "utf8"
+    );
     const names = [...migration.matchAll(/ADD CONSTRAINT \`([^\`]+)\` FOREIGN KEY/g)].map((match) => match[1]!);
-    expect(names).toHaveLength(8);
+    expect(names).toHaveLength(16);
     expect(names.every((name) => name.length <= 64)).toBe(true);
   });
 });

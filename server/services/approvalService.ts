@@ -1,4 +1,4 @@
-import { getDb } from "../db";
+import { withAccountMergePaymentMutationGuard } from "../db";
 import { payments } from "../../drizzle/schema";
 import { eq } from "drizzle-orm";
 
@@ -37,9 +37,6 @@ export class ApprovalService {
     },
     tx?: any
   ) {
-    const db = tx || (await getDb());
-    if (!db) throw new Error("Database connection failed");
-
     const now = new Date();
 
     // Build approval metadata based on source
@@ -78,11 +75,12 @@ export class ApprovalService {
         break;
     }
 
-    // Update payment with approval metadata
-    await db
-      .update(payments)
-      .set(approvalData)
-      .where(eq(payments.id, paymentId));
+    await withAccountMergePaymentMutationGuard(paymentId, tx, async (guardedDb) => {
+      await guardedDb
+        .update(payments)
+        .set(approvalData)
+        .where(eq(payments.id, paymentId));
+    });
 
     return approvalData;
   }
@@ -98,21 +96,20 @@ export class ApprovalService {
     reviewedByAdminId?: number,
     tx?: any
   ) {
-    const db = tx || (await getDb());
-    if (!db) throw new Error("Database connection failed");
-
     const now = new Date();
 
-    await db
-      .update(payments)
-      .set({
-        status: "rejected",
-        rejectionReason: reason,
-        reviewedAt: now,
-        reviewedByUserId: reviewedByAdminId || null,
-        // DO NOT set approval fields
-      })
-      .where(eq(payments.id, paymentId));
+    await withAccountMergePaymentMutationGuard(paymentId, tx, async (guardedDb) => {
+      await guardedDb
+        .update(payments)
+        .set({
+          status: "rejected",
+          rejectionReason: reason,
+          reviewedAt: now,
+          reviewedByUserId: reviewedByAdminId || null,
+          // DO NOT set approval fields
+        })
+        .where(eq(payments.id, paymentId));
+    });
   }
 
   /**
@@ -127,19 +124,18 @@ export class ApprovalService {
     fingerprint?: string,
     tx?: any
   ) {
-    const db = tx || (await getDb());
-    if (!db) throw new Error("Database connection failed");
-
-    await db
-      .update(payments)
-      .set({
-        status: "pending_review",
-        reviewReason,
-        extractedData: extractedData ? JSON.stringify(extractedData) : null,
-        fingerprint: fingerprint || null,
-        // DO NOT set approval fields
-      })
-      .where(eq(payments.id, paymentId));
+    await withAccountMergePaymentMutationGuard(paymentId, tx, async (guardedDb) => {
+      await guardedDb
+        .update(payments)
+        .set({
+          status: "pending_review",
+          reviewReason,
+          extractedData: extractedData ? JSON.stringify(extractedData) : null,
+          fingerprint: fingerprint || null,
+          // DO NOT set approval fields
+        })
+        .where(eq(payments.id, paymentId));
+    });
   }
 
   /**

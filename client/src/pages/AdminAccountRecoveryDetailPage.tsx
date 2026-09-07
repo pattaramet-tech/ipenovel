@@ -659,9 +659,9 @@ export default function AdminAccountRecoveryDetailPage() {
                 )}
 
                 <p className="text-xs text-muted-foreground">
-                  paymentSlipClaims preserved:{" "}
+                  Final preview reflects the selected PR45 account-merge scope.
                   
-                  — anti-replay evidence จะไม่ถูกย้าย/ลบ/เขียนใหม่
+
                 </p>
               </>
             )}

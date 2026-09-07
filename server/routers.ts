@@ -29,14 +29,6 @@ import { fileRouter } from "./routers/fileRouter";
 import { ocrMetricsRouter } from "./routers/ocrMetricsRouter";
 import { r2Put, R2StorageError } from "./services/r2Storage";
 import { optimizeImageToWebp, ImageOptimizeError, SPORTS_MATCH_IMAGE_PRESET } from "./services/imageOptimizer";
-import { parseSlipImage } from "./ocr-slip-verification-v2";
-import { processSlipVerificationStaging } from "./ocr-slip-integration-staging";
-import { getOCRConfig } from "./_core/ocr-config";
-import {
-  generateApprovalNote,
-  generateManualReviewNote,
-  generateShadowModeNote,
-} from "./_core/ocr-order-notes";
 import * as readerService from "./services/readerService";
 import * as packageZipImportService from "./services/packageZipImportService";
 import {
