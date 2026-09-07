@@ -14,7 +14,7 @@ const initial = () => ({...payment});
 beforeEach(() => {
  vi.resetAllMocks(); credits=0;queue=Promise.resolve();
  payment={id:1,orderId:2,status:"pending",slipImageUrl:"fixture",slipSubmittedAt:"timestamp",requestedAmount:"100.00"};
- order={id:2,status:"pending",totalAmount:"100.00"};
+ order={id:2,status:"pending",totalAmount:"100.00",createdAt:new Date("2026-09-07T01:01:00Z")};
  mocks.policy.mockResolvedValue({enabled:true,revision:2});
  const tx: any = {
   select: () => ({from: (table:any) => ({where:()=>({limit:()=>({for:async()=>[table===orders?order:payment]})})})}),
@@ -36,6 +36,22 @@ describe("provider approval orchestration with transactional doubles",()=>{
   expect(r.approvalOutcome).toBe("APPROVED");expect(credits).toBe(1);
   expect(payment.status).toBe("approved");
   expect(JSON.parse(payment.extractedData).providerVerification).toMatchObject({outcome:"VERIFIED",approvalOutcome:"APPROVED",approvalPolicyRevision:2});
+ });
+ it.each([180000,181000,-1000])("uses locked order creation time at %i ms",async ms=>{
+  order.createdAt=new Date(Date.parse(good().occurredAt!)+ms);
+  payment.createdAt=new Date("2026-09-07T01:01:00Z");
+  const r=await persistAndAutoApprove("order",initial(),good());
+  expect(r.approvalOutcome).toBe(ms===180000?"APPROVED":"SKIPPED");
+  expect(credits).toBe(ms===180000?1:0);
+  if(ms!==180000) {
+   expect(r.outcome).toBe("VERIFIED");
+   expect(payment.status).toBe("pending_review");
+   expect(r.approvalReason).toBe(ms<0?"ORDER_CREATED_BEFORE_TRANSFER":"ORDER_CREATED_AFTER_TRANSFER_WINDOW");
+  }
+ });
+ it("does not apply order time policy to wallet",async()=>{
+  order.createdAt=undefined;
+  expect((await persistAndAutoApprove("wallet",initial(),good())).approvalOutcome).toBe("APPROVED");
  });
  it("disabled policy keeps verified result pending",async()=>{
   mocks.policy.mockResolvedValue({enabled:false,revision:3});

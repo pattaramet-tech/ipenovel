@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import { orderTransferWindowReason } from "./orderTransferWindow";
 import { payments, walletTopups, orders } from "../../drizzle/schema";
 import * as db from "../db";
 import { approvePayment } from "../services/orderService";
@@ -45,6 +46,14 @@ export async function persistAndAutoApprove(type: Subject, initial: any, result:
    await tx.update(table).set({ status: "pending_review" }).where(eq(table.id, initial.id));
    await write(tx, next);
    if (!policy.enabled || !autoApprovalEligibility(result)) return next;
+   if (type === "order") {
+    const timeReason = orderTransferWindowReason(order.createdAt, result.occurredAt);
+    if (timeReason) {
+     const review = { ...next, approvalReason: timeReason };
+     await write(tx, review);
+     return review;
+    }
+   }
    // Existing services own approval, purchases, points, bonus and credit.
    if (type === "order") await approvePayment(initial.id, "provider_auto", undefined, tx);
    else await db.approveWalletTopup(initial.id, null, tx);

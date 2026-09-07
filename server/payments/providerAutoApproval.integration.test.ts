@@ -13,7 +13,7 @@ const db = getTestDb();
 const result = (ref = randomUUID()): PaymentProviderVerificationResult => ({
  provider: "slip2go", outcome: "VERIFIED", reason: "CHECKS_PASSED", httpStatus: 201,
  code: "200200", amount: "100.00", amountMatches: true, recipientCheckApplied: true,
- occurredAt: new Date().toISOString(), checkedAt: new Date().toISOString(),
+ occurredAt: new Date(Date.now()-60000).toISOString(), checkedAt: new Date().toISOString(),
  bankTransactionReference: ref, providerReference: randomUUID(),
 });
 async function fixture(type: "order" | "wallet", snapshot?: PaymentProviderVerificationResult) {
@@ -83,6 +83,16 @@ describe("provider auto approval on real MariaDB", () => {
   await db.update(payments).set({status:"approved"}).where(eq(payments.id,old.id));
   expect((await persistAndAutoApprove("wallet",row,r)).approvalReason).toBe("PROVIDER_TRANSACTION_ALREADY_USED");
   expect(await db.select().from(walletAccounts).where(eq(walletAccounts.userId,row.userId))).toHaveLength(0);
+ });
+ it.each([180,181])("enforces real DB order time at %i seconds",async seconds=>{
+  const row:any=await fixture("order"),r=result();
+  r.occurredAt="2026-09-07T15:00:00.000Z";
+  await db.update(orders).set({createdAt:new Date(Date.parse(r.occurredAt)+seconds*1000)}).where(eq(orders.id,row.orderId));
+  const verified=await persistAndAutoApprove("order",row,r);
+  expect(verified.approvalOutcome).toBe(seconds===180?"APPROVED":"SKIPPED");
+  const [saved]=await db.select().from(payments).where(eq(payments.id,row.id));
+  expect(saved.status).toBe(seconds===180?"approved":"pending_review");
+  if(seconds===181) expect(JSON.parse(saved.extractedData!).providerVerification.approvalReason).toBe("ORDER_CREATED_AFTER_TRANSFER_WINDOW");
  });
  it("reads disabled runtime policy and performs no credit", async () => {
   await saveAutoPolicy({enabled:false,expectedRevision:1,reason:"integration disable"},1);
