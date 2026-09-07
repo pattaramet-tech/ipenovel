@@ -129,7 +129,10 @@ function normalizeSlip2GoResponse(
     recipientCheckApplied,
   };
 
-  if (httpStatus !== 200 || !code) return { ...common, outcome: "ERROR", reason: httpStatus !== 200 ? "UNEXPECTED_PROVIDER_HTTP_STATUS" : "INVALID_PROVIDER_RESPONSE" };
+  // The image endpoint also returns HTTP 201 with a completed verification.
+  // Transport success alone never establishes that a payment is valid.
+  const supportedStatus = httpStatus === 200 || httpStatus === 201;
+  if (!supportedStatus || !code) return { ...common, outcome: "ERROR", reason: !supportedStatus ? "UNEXPECTED_PROVIDER_HTTP_STATUS" : "INVALID_PROVIDER_RESPONSE" };
   // Slip2Go 200200 means the requested check conditions passed. We still
   // require an explicit amount match in the returned bank data. When no
   // receiver condition is configured, keep the result review-required rather

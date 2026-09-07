@@ -57,12 +57,29 @@ describe("KSHOP provider request and diagnostics", () => {
  it("does not trust 200200 when returned amount differs", () => {
   expect(__test.normalizeSlip2GoResponse(raw(), 200, "101.00", true)).toMatchObject({ outcome: "REVIEW_REQUIRED", reason: "AMOUNT_MISMATCH" });
  });
- it("reproduces 200200 + ERROR for unexpected HTTP and retains redacted diagnostics", async () => {
+ it.each(["order", "wallet"])("accepts HTTP 201 completed verification for %s without approving", async kind => {
   network.mockReset().mockResolvedValueOnce(new Response(new Uint8Array([137,80,78,71,13,10,26,10])))
     .mockResolvedValueOnce(new Response(JSON.stringify(raw()), { status: 201 }));
-  const r = await verifyOrderPaymentWithProvider(1);
-  expect(r).toMatchObject({ code: "200200", outcome: "ERROR", httpStatus: 201, reason: "UNEXPECTED_PROVIDER_HTTP_STATUS", providerReference: "synthetic-provider-1" });
+  const r = kind === "order" ? await verifyOrderPaymentWithProvider(1) : await verifyWalletTopupWithProvider(3);
+  expect(r).toMatchObject({ code: "200200", outcome: "VERIFIED", httpStatus: 201, reason: "CHECKS_PASSED", providerReference: "synthetic-provider-1" });
+  const writes = kind === "order" ? mocks.updatePayment : mocks.updateWalletTopupProviderVerification;
+  expect(JSON.parse(writes.mock.calls[0][1].extractedData).providerVerification.httpStatus).toBe(201);
+  expect(writes.mock.calls[0][1]).not.toHaveProperty("approvedAt");
+  if (kind === "order") expect(writes.mock.calls[0][1].status).toBe("pending_review");
   expect(JSON.stringify(r)).not.toContain("Synthetic shop");
+ });
+ it.each(["200401", "200402", "200403", "200404", "200500", "200501", "200502", "200000", "200202"])("keeps HTTP 201 code %s review-required", code => {
+  expect(__test.normalizeSlip2GoResponse({ ...raw(), code }, 201, "100.00", true).outcome).toBe("REVIEW_REQUIRED");
+ });
+ it.each([202, 204, 400, 401, 429, 500])("rejects unsupported HTTP %s even with valid code", status => {
+  expect(__test.normalizeSlip2GoResponse(raw(), status, "100.00", true)).toMatchObject({ outcome: "ERROR", reason: "UNEXPECTED_PROVIDER_HTTP_STATUS" });
+ });
+ it("preserves all verification gates on HTTP 201", () => {
+  expect(__test.normalizeSlip2GoResponse(raw(), 201, "100.00", false).outcome).toBe("REVIEW_REQUIRED");
+  expect(__test.normalizeSlip2GoResponse(raw(), 201, "101.00", true).outcome).toBe("REVIEW_REQUIRED");
+  expect(__test.normalizeSlip2GoResponse({ ...raw(), data: { ...raw().data, dateTime: "invalid" } }, 201, "100.00", true).outcome).toBe("REVIEW_REQUIRED");
+  expect(__test.normalizeSlip2GoResponse({}, 201, "100.00", true).outcome).toBe("ERROR");
+  expect(__test.normalizeSlip2GoResponse({ ...raw(), code: "999999" }, 201, "100.00", true).outcome).toBe("ERROR");
  });
  it("redacts unknown exceptions", async () => {
   mocks.resolveStoredFileValue.mockRejectedValue(Error("secret URL and customer PII"));

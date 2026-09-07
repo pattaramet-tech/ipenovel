@@ -1,5 +1,16 @@
 # IPE-039: KSHOP receiver settings and provider diagnostics
 
+## HTTP 201 follow-up
+User-provided matching app/provider diagnostics establish that the image endpoint returns HTTP 201 with code 200200.
+Accept exactly HTTP 200 or 201, then apply the existing provider-code, explicit recipient, amount and date gates.
+Duplicate and mismatch codes remain review-required; unsupported statuses and malformed/unknown responses remain errors.
+No approval, credit, migration or QR changes.
+Validation: 54 tests across KSHOP provider, receiver settings and provider verification passed; pnpm check and git diff --check passed.
+Tests cover HTTP 201 order/wallet snapshots, pending-review preservation, duplicate/mismatch codes, missing recipient,
+amount mismatch, invalid date, malformed/unknown results and rejection of HTTP 202/204/400/401/429/500.
+Same-session review; no independent reviewer or live API test. Prior sections below describe the original hotfix.
+
+
 Base: 7afb7a1a5a3da27e50ba45eae5e0450f83877b68.
 Scope: isolated hotfix; no merge, push, deployment, production data change or live provider calls.
 
