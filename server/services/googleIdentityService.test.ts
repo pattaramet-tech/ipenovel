@@ -75,6 +75,18 @@ function duplicateKeyError(): Error {
   return Object.assign(new Error("Duplicate entry"), { cause: { errno: 1062, code: "ER_DUP_ENTRY" } });
 }
 
+function lockWaitError(): Error {
+  return Object.assign(new Error("Query failed"), {
+    cause: { errno: 1205, code: "ER_LOCK_WAIT_TIMEOUT", sqlState: "HY000" },
+  });
+}
+
+function deadlockError(): Error {
+  return Object.assign(new Error("Query failed"), {
+    cause: { errno: 1213, code: "ER_LOCK_DEADLOCK", sqlState: "40001" },
+  });
+}
+
 const GOOGLE_INPUT = {
   sub: "google-sub-123",
   email: "User@Example.com",
@@ -122,8 +134,8 @@ describe("resolveGoogleIdentity - existing authIdentity (scenario 15/22: second 
     vi.restoreAllMocks();
   });
 
-  it("an authIdentities row already exists -> uses that user's id as-is, never creates or links again, exactly one transaction attempt", async () => {
-    const { fakeDb, txObjects } = fakeDbWithFreshTransactions();
+  it("an authIdentities row already exists -> uses that user's id as-is and performs no users-table write", async () => {
+    const { fakeDb, txObjects, updateCallsFor } = fakeDbWithFreshTransactions();
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
     vi.spyOn(db, "getDb").mockResolvedValue(fakeDb as any);
 
@@ -142,6 +154,7 @@ describe("resolveGoogleIdentity - existing authIdentity (scenario 15/22: second 
     expect(linkSpy).not.toHaveBeenCalled();
     expect(findByEmailSpy).not.toHaveBeenCalled();
     expect(txObjects.length).toBe(1);
+    expect(updateCallsFor(txObjects[0])).toEqual([]);
   });
 
   it("authIdentities row references a userId that no longer exists -> throws rather than silently proceeding", async () => {
@@ -346,6 +359,35 @@ describe("resolveGoogleIdentity - concurrent login retry (blocker fix: no same-t
     vi.restoreAllMocks();
   });
 
+  it("IPE-019-C02: a lock-wait timeout is not immediately retried, avoiding a second full lock wait", async () => {
+    const { fakeDb, txObjects } = fakeDbWithFreshTransactions();
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDb as any);
+    vi.spyOn(db, "getAuthIdentity").mockRejectedValue(lockWaitError());
+
+    await expect(resolveGoogleIdentity(GOOGLE_INPUT)).rejects.toMatchObject({
+      cause: expect.objectContaining({ errno: 1205, code: "ER_LOCK_WAIT_TIMEOUT" }),
+    });
+    expect(txObjects).toHaveLength(1);
+  });
+
+  it("IPE-019-C02: a deadlock victim retries exactly once on a fresh transaction and can succeed", async () => {
+    const { fakeDb, txObjects } = fakeDbWithFreshTransactions();
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDb as any);
+    const existingUser = { id: 55, openId: "manus-openid-abc", email: "user@example.com" } as any;
+    vi.spyOn(db, "getAuthIdentity")
+      .mockRejectedValueOnce(deadlockError())
+      .mockResolvedValueOnce({ id: 9, userId: 55, provider: "google", providerSubject: GOOGLE_INPUT.sub } as any);
+    vi.spyOn(db, "getUserById").mockResolvedValue(existingUser);
+
+    await expect(resolveGoogleIdentity(GOOGLE_INPUT)).resolves.toMatchObject({
+      outcome: "linked_existing_identity",
+    });
+    expect(txObjects).toHaveLength(2);
+    expect(txObjects[0]).not.toBe(txObjects[1]);
+  });
+
   it("[required test 1+2] a duplicate key on attempt 1 rejects attempt 1's transaction, and attempt 2 runs inside a DIFFERENT, brand-new transaction object", async () => {
     const { fakeDb, txObjects } = fakeDbWithFreshTransactions();
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
@@ -498,33 +540,37 @@ describe("resolveGoogleIdentity - concurrent login retry (blocker fix: no same-t
   });
 });
 
-describe("resolveGoogleIdentity - name preservation", () => {
+describe("resolveGoogleIdentity - metadata writes", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("existing name is preserved when Google sends no usable name", async () => {
+  it("an already-linked login does not refresh name or lastSignedIn on the critical path", async () => {
     const { fakeDb, updateCallsFor, txObjects } = fakeDbWithFreshTransactions();
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
     vi.spyOn(db, "getDb").mockResolvedValue(fakeDb as any);
     vi.spyOn(db, "getAuthIdentity").mockResolvedValue({ id: 1, userId: 7, provider: "google", providerSubject: GOOGLE_INPUT.sub } as any);
     vi.spyOn(db, "getUserById").mockResolvedValue({ id: 7, name: "Existing Name" } as any);
 
-    await resolveGoogleIdentity({ ...GOOGLE_INPUT, name: null });
+    await resolveGoogleIdentity({ ...GOOGLE_INPUT, name: "New Name From Google" });
 
-    expect(updateCallsFor(txObjects[0])[0].set).not.toHaveProperty("name");
+    expect(updateCallsFor(txObjects[0])).toEqual([]);
   });
 
-  it("a usable Google name overwrites the stored name", async () => {
+  it("first-time email linking records lastSignedIn and a usable Google name", async () => {
     const { fakeDb, updateCallsFor, txObjects } = fakeDbWithFreshTransactions();
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
     vi.spyOn(db, "getDb").mockResolvedValue(fakeDb as any);
-    vi.spyOn(db, "getAuthIdentity").mockResolvedValue({ id: 1, userId: 7, provider: "google", providerSubject: GOOGLE_INPUT.sub } as any);
-    vi.spyOn(db, "getUserById").mockResolvedValue({ id: 7, name: "Old Name" } as any);
+    vi.spyOn(db, "getAuthIdentity").mockResolvedValue(undefined);
+    const existingUser = { id: 7, name: "Old Name", email: GOOGLE_INPUT.email } as any;
+    vi.spyOn(db, "findUsersByNormalizedEmail").mockResolvedValue([existingUser]);
+    vi.spyOn(db, "linkGoogleIdentity").mockResolvedValue(undefined);
+    vi.spyOn(db, "getUserById").mockResolvedValue(existingUser);
 
     await resolveGoogleIdentity({ ...GOOGLE_INPUT, name: "New Name From Google" });
 
     expect(updateCallsFor(txObjects[0])[0].set).toHaveProperty("name", "New Name From Google");
+    expect(updateCallsFor(txObjects[0])[0].set.lastSignedIn).toBeInstanceOf(Date);
   });
 });
 
@@ -740,6 +786,36 @@ describe("connectGoogleIdentityToUser - case F: concurrent connect retry (fresh-
     await expect(connectGoogleIdentityToUser(fakeDb, CONNECT_INPUT)).rejects.toThrow(/duplicate/i);
     expect(txObjects.length).toBe(2);
     expect(linkSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("a lock-wait timeout is not retried, so connect does not pay a second lock-wait interval", async () => {
+    const { fakeDb, txObjects } = fakeDbWithFreshTransactions();
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getAuthIdentity").mockRejectedValue(lockWaitError());
+
+    await expect(connectGoogleIdentityToUser(fakeDb, CONNECT_INPUT)).rejects.toMatchObject({
+      cause: expect.objectContaining({ errno: 1205, code: "ER_LOCK_WAIT_TIMEOUT" }),
+    });
+    expect(txObjects).toHaveLength(1);
+  });
+
+  it("a deadlock victim retries on a fresh transaction", async () => {
+    const { fakeDb, txObjects } = fakeDbWithFreshTransactions();
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getAuthIdentity")
+      .mockRejectedValueOnce(deadlockError())
+      .mockResolvedValueOnce({
+        id: 3,
+        userId: CONNECT_INPUT.userId,
+        provider: "google",
+        providerSubject: CONNECT_INPUT.sub,
+      } as any);
+
+    await expect(connectGoogleIdentityToUser(fakeDb, CONNECT_INPUT)).resolves.toEqual({
+      outcome: "already_connected",
+    });
+    expect(txObjects).toHaveLength(2);
+    expect(txObjects[0]).not.toBe(txObjects[1]);
   });
 
   it("a non-duplicate-key error is never retried - propagates immediately after exactly one attempt", async () => {

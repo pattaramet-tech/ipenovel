@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildManusLoginUrl, resolveLoginUrl } from "./const";
+import { buildManusLoginUrl, resolveLoginUrl, tryBuildManusLoginUrl } from "./const";
 
 const manus = {
   oauthPortalUrl: "https://portal.example.com",
@@ -64,6 +64,17 @@ describe("resolveLoginUrl", () => {
     const url = resolveLoginUrl(undefined, manus);
     const parsed = new URL(url);
     expect(parsed.searchParams.get("state")).toBe(btoa(manus.redirectUri));
+  });
+});
+
+describe("tryBuildManusLoginUrl", () => {
+  it("returns undefined instead of throwing when the Preview Manus portal URL is missing or invalid", () => {
+    expect(tryBuildManusLoginUrl({ ...manus, oauthPortalUrl: "" })).toBeUndefined();
+    expect(tryBuildManusLoginUrl({ ...manus, oauthPortalUrl: "not a url" })).toBeUndefined();
+  });
+
+  it("returns the exact normal Manus URL when configuration is valid", () => {
+    expect(tryBuildManusLoginUrl(manus)).toBe(buildManusLoginUrl(manus));
   });
 });
 
