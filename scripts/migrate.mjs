@@ -45,6 +45,7 @@ import { fileURLToPath } from "node:url";
 // drizzle's own error messages must never be logged verbatim (they embed
 // the failing SQL and its bound parameters).
 import { safeErrorSummary } from "./lib/safeErrorSummary.mjs";
+import { bridgeLegacySelectedFeatureMigration } from "./lib/reconstructedMigrationBridge.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const migrationsFolder = path.join(__dirname, "..", "drizzle");
@@ -225,8 +226,15 @@ async function main() {
       );
     }
     lockAcquired = true;
-    console.log("[migrate] Lock acquired. Running pending migrations (existing, committed migration files only)...");
 
+    const bridgeResult = await bridgeLegacySelectedFeatureMigration(conn, migrationsFolder);
+    if (bridgeResult.bridged) {
+      console.log(
+        "[migrate] Verified legacy selected-feature migration lineage and reconciled it to the reconstructed migration marker; application data was not modified."
+      );
+    }
+
+    console.log("[migrate] Lock acquired. Running pending migrations (existing, committed migration files only)...");
     const db = drizzle({ client: connection });
     await migrate(db, { migrationsFolder });
 
