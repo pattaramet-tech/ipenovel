@@ -125,16 +125,30 @@ export function validateOrderTotal(
 }
 
 /**
- * Generate unique order number
- * Format: ORD-YYYYMMDD-XXXXXX
+ * Compatibility helper for legacy callers/tests only.
+ * Persisted checkout order numbers are allocated transactionally by the
+ * server database layer. Keep this helper format-compatible without making
+ * any cross-process uniqueness claim.
  */
-export function generateOrderNumber(): string {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  const random = Math.random().toString(36).substring(2, 8).toUpperCase();
-  return `ORD-${year}${month}${day}-${random}`;
+const SHARED_BANGKOK_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Bangkok",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+let sharedOrderNumberDate = "";
+let sharedOrderNumberSequence = 0;
+export function generateOrderNumber(at: Date = new Date()): string {
+  const businessDate = SHARED_BANGKOK_DATE_FORMATTER.format(at);
+  if (businessDate !== sharedOrderNumberDate) {
+    sharedOrderNumberDate = businessDate;
+    sharedOrderNumberSequence = 0;
+  }
+  sharedOrderNumberSequence += 1;
+  if (sharedOrderNumberSequence > 999) {
+    throw new Error(`Daily order number capacity reached for ${businessDate}`);
+  }
+  return `${businessDate.replace(/-/g, "")}${String(sharedOrderNumberSequence).padStart(3, "0")}`;
 }
 
 /**

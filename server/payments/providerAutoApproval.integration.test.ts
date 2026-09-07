@@ -5,7 +5,7 @@ import { getTestDb } from "../test-helpers/testDb";
 import { users, novels, episodes, orderItems, purchases, pointsTransactions, orders, payments, walletTopups, walletAccounts, walletTransactions, settings, paymentProviderClaims } from "../../drizzle/schema";
 import { persistAndAutoApprove } from "./providerAutoApproval";
 import { AUTO_APPROVE_KEY, saveAutoPolicy } from "./autoApprovalSettings";
-import { approveWalletTopup, updateOrder, updatePayment } from "../db";
+import { createOrder, approveWalletTopup, updateOrder, updatePayment } from "../db";
 import { approvePayment, rejectPayment } from "../services/orderService";
 import type { PaymentProviderVerificationResult } from "../services/paymentProviderVerificationService";
 
@@ -24,7 +24,9 @@ async function fixture(type: "order" | "wallet", snapshot?: PaymentProviderVerif
   const [{id}] = await db.insert(walletTopups).values({...common,userId,requestedAmount:"100.00",creditedAmount:"110.00",bonusAmount:"10.00"}).$returningId();
   return (await db.select().from(walletTopups).where(eq(walletTopups.id,id)))[0];
  }
- const [{id: orderId}] = await db.insert(orders).values({userId,orderNumber:randomUUID(),subtotal:"100.00",totalAmount:"100.00"}).$returningId();
+ const created = await createOrder({userId,subtotal:"100.00",discountAmount:"0.00",pointsDiscountAmount:"0.00",totalAmount:"100.00"});
+ const orderId = created!.id;
+ expect((await db.select().from(orders).where(eq(orders.id,orderId)))[0].orderNumber).toMatch(/^\d{11}$/);
  const [{id}] = await db.insert(payments).values({...common,orderId,ocrConfidence:0,ocrDecision:"needs_review"}).$returningId();
  return (await db.select().from(payments).where(eq(payments.id,id)))[0];
 }

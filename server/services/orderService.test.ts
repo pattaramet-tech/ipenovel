@@ -3,29 +3,24 @@ import * as orderService from "./orderService";
 
 describe("Order Service", () => {
   describe("generateOrderNumber", () => {
-    it("should generate orderNumber with ORD- prefix", async () => {
-      const orderNumber = await orderService.generateOrderNumber();
-      // Should start with ORD-
-      expect(orderNumber).toMatch(/^ORD-/);
-      // Should be unique and non-empty
-      expect(orderNumber.length).toBeGreaterThan(4);
+    it("should generate the YYYYMMDDXXX public format", () => {
+      const orderNumber = orderService.generateOrderNumber(new Date("2026-09-07T05:00:00.000Z"));
+      expect(orderNumber).toMatch(/^\d{11}$/);
+      expect(orderNumber.startsWith("20260907")).toBe(true);
     });
 
-    it("should have correct date prefix for current date", async () => {
-      const orderNumber = await orderService.generateOrderNumber();
-      const now = new Date();
-      const expectedMonth = String(now.getMonth() + 1).padStart(2, '0');
-      const expectedDay = String(now.getDate()).padStart(2, '0');
-      const expectedPrefix = `ORD-${expectedMonth}${expectedDay}`;
-      expect(orderNumber.substring(0, 8)).toBe(expectedPrefix);
+    it("should use the Bangkok business date across the UTC day boundary", () => {
+      const orderNumber = orderService.generateOrderNumber(new Date("2026-09-06T18:30:00.000Z"));
+      expect(orderNumber.startsWith("20260907")).toBe(true);
     });
 
-    it("should generate unique order numbers", async () => {
-      const orderNumber1 = await orderService.generateOrderNumber();
-      const orderNumber2 = await orderService.generateOrderNumber();
-      // Both should have ORD- prefix
-      expect(orderNumber1).toMatch(/^ORD-/);
-      expect(orderNumber2).toMatch(/^ORD-/);
+    it("should generate unique compatibility numbers within one process", () => {
+      const at = new Date("2026-09-07T05:00:00.000Z");
+      const orderNumber1 = orderService.generateOrderNumber(at);
+      const orderNumber2 = orderService.generateOrderNumber(at);
+      expect(orderNumber1).not.toBe(orderNumber2);
+      expect(orderNumber1).toMatch(/^20260907\d{3}$/);
+      expect(orderNumber2).toMatch(/^20260907\d{3}$/);
     });
   });
 

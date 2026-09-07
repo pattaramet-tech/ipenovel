@@ -15,8 +15,8 @@ describe("Phase 1-2: Core Features", () => {
       const num1 = generateOrderNumber();
       const num2 = generateOrderNumber();
 
-      expect(num1).toMatch(/^ORD-\d{8}-[A-Z0-9]{6}$/);
-      expect(num2).toMatch(/^ORD-\d{8}-[A-Z0-9]{6}$/);
+      expect(num1).toMatch(/^\d{11}$/);
+      expect(num2).toMatch(/^\d{11}$/);
       expect(num1).not.toBe(num2); // Should be unique
     });
 
@@ -293,7 +293,7 @@ describe("Phase 1-2: Core Features", () => {
           // Create order from cart
           const order = await orderService.createOrderFromCart(user.id, cartItems);
           expect(order).toBeDefined();
-          expect(order.orderNumber).toMatch(/^ORD-[A-Z0-9]+-[A-Z0-9]+$/);
+          expect(order.orderNumber).toMatch(/^\d{11}$/);
           expect(order.orderId).toBeDefined();
           expect(order.totalAmount).toBeDefined();
         }

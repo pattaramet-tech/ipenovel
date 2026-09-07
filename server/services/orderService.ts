@@ -5,6 +5,11 @@ import { claimProviderTransaction, parseProviderSnapshot } from "../payments/pro
 
 import { ApprovalService } from "./approvalService";
 import { normalizeMoneyAmount, formatMoney } from "../helpers/moneyNormalizer";
+import {
+  formatOrderNumber,
+  getOrderNumberBusinessDate,
+  ORDER_NUMBER_MAX_DAILY_SEQUENCE,
+} from "../helpers/orderNumber";
 
 const COUPON_OWNERSHIP_DENIAL_PATTERNS = [/^coupon not found$/i, /belongs to another user/i];
 
@@ -31,19 +36,23 @@ export function toSafeCouponClientMessage(error: unknown): string {
 }
 
 /**
- * Generate order number in MMDDNNNNNNN format
- * MM = month, DD = day, NNNNNNN = timestamp-based sequence for uniqueness
+ * Compatibility-only generator for tests and legacy fixture code.
+ * Production checkout does NOT call this function; db.createOrder allocates
+ * the persisted sequence transactionally so multiple processes remain safe.
  */
-export function generateOrderNumber(): string {
-  const now = new Date();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  // Use milliseconds + random to ensure uniqueness
-  const timestamp = Date.now() % 10000000; // Last 7 digits of timestamp
-  const random = String(Math.floor(Math.random() * 100)).padStart(2, "0");
-  const sequence = String(timestamp).padStart(7, "0") + random;
-  const datePrefix = `${month}${day}`;
-  return `ORD-${datePrefix}${sequence}`;
+let compatibilityOrderNumberDate = "";
+let compatibilityOrderNumberSequence = 0;
+export function generateOrderNumber(at: Date = new Date()): string {
+  const businessDate = getOrderNumberBusinessDate(at);
+  if (businessDate !== compatibilityOrderNumberDate) {
+    compatibilityOrderNumberDate = businessDate;
+    compatibilityOrderNumberSequence = 0;
+  }
+  compatibilityOrderNumberSequence += 1;
+  if (compatibilityOrderNumberSequence > ORDER_NUMBER_MAX_DAILY_SEQUENCE) {
+    throw new Error(`Daily order number capacity reached for ${businessDate}`);
+  }
+  return formatOrderNumber(businessDate, compatibilityOrderNumberSequence);
 }
 
 /**
@@ -251,10 +260,8 @@ export async function createOrderFromCart(
     await quoteCartPricing(userId, cartItems, couponCode, pointsToRedeem, tx, userIdNum);
 
   // Create order
-  const orderNumber = generateOrderNumber();
   const result = await db.createOrder({
     userId: userIdNumParsed,
-    orderNumber,
     subtotal: subtotal.toString(),
     discountAmount: discountAmount.toString(),
     pointsDiscountAmount: pointsDiscountAmount.toString(),

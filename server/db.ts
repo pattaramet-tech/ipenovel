@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
 import { claimProviderTransaction, parseProviderSnapshot } from "./payments/providerClaim";
+import {
+  formatOrderNumber,
+  getOrderNumberBusinessDate,
+  getOrderNumberSequenceSettingKey,
+  ORDER_NUMBER_MAX_DAILY_SEQUENCE,
+} from "./helpers/orderNumber";
 import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql, gt, lt, ne, like } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { getTableColumns } from "drizzle-orm";
@@ -1113,8 +1119,46 @@ export async function clearCart(cartId: number, tx?: any) {
 
 // ============ ORDERS & PAYMENTS ============
 
+const ORDER_NUMBER_SEQUENCE_DESCRIPTION = "Internal daily order-number sequence managed by checkout";
+
+async function allocateOrderNumber(database: any, at: Date = new Date()): Promise<string> {
+  const businessDate = getOrderNumberBusinessDate(at);
+  const key = getOrderNumberSequenceSettingKey(businessDate);
+
+  // settings.key is the serialization point. MySQL/MariaDB executes this
+  // upsert atomically, so concurrent checkouts for the same Bangkok business
+  // date cannot claim the same counter value. Normal checkout reaches this
+  // through the same transaction that inserts the order, so a failed order
+  // rolls the counter increment back too.
+  await database
+    .insert(settings)
+    .values({ key, value: "1", description: ORDER_NUMBER_SEQUENCE_DESCRIPTION })
+    .onDuplicateKeyUpdate({
+      set: {
+        value: sql`CASE
+          WHEN ${settings.value} REGEXP '^[0-9]+$'
+            AND CAST(${settings.value} AS UNSIGNED) BETWEEN 1 AND ${ORDER_NUMBER_MAX_DAILY_SEQUENCE - 1}
+          THEN CAST(${settings.value} AS UNSIGNED) + 1
+          ELSE ${ORDER_NUMBER_MAX_DAILY_SEQUENCE + 1}
+        END`,
+      },
+    });
+
+  const rows = await database
+    .select({ value: settings.value })
+    .from(settings)
+    .where(eq(settings.key, key))
+    .limit(1);
+  const sequence = Number(rows[0]?.value);
+  if (!Number.isInteger(sequence) || sequence < 1 || sequence > ORDER_NUMBER_MAX_DAILY_SEQUENCE) {
+    throw new Error(`Daily order number capacity reached for ${businessDate}`);
+  }
+
+  return formatOrderNumber(businessDate, sequence);
+}
+
 export async function createOrder(data: {
-  orderNumber: string;
+  orderNumber?: string;
   userId?: number;
   subtotal: string;
   discountAmount: string;
@@ -1129,10 +1173,14 @@ export async function createOrder(data: {
   }
   const db = tx || await getDb();
   if (!db) return undefined;
+  if (!tx && !data.orderNumber) {
+    return db.transaction(async (transaction: any) => createOrder(data, transaction));
+  }
   if (data.userId && tx) await assertAccountMergeClassifiedMutationAllowed(data.userId, tx);
 
+  const orderNumber = data.orderNumber ?? await allocateOrderNumber(db);
   const result = await db.insert(orders).values({
-    orderNumber: data.orderNumber,
+    orderNumber,
     userId: data.userId,
     subtotal: data.subtotal as any,
     discountAmount: data.discountAmount as any,

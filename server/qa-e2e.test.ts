@@ -237,7 +237,7 @@ describe("E2E QA - Critical Business Flows", () => {
       expect(order).toBeDefined();
       expect(order.id).toBeDefined();
       expect(order.orderNumber).toBeDefined();
-      expect(order.orderNumber).toMatch(/^ORD-/);
+      expect(order.orderNumber).toMatch(/^\d{11}$/);
       expect(order.status).toBe("pending");
       expect(order.paymentStatus).toBe("unpaid");
       expect(parseFloat(order.subtotal)).toBe(50);

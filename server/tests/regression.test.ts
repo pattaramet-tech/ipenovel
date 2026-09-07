@@ -149,8 +149,8 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
       const orderNum2 = orderService.generateOrderNumber();
 
       expect(orderNum1).not.toBe(orderNum2);
-      expect(orderNum1).toMatch(/^ORD-/);
-      expect(orderNum2).toMatch(/^ORD-/);
+      expect(orderNum1).toMatch(/^\d{11}$/);
+      expect(orderNum2).toMatch(/^\d{11}$/);
     });
 
     it("should create order with single orderNumber", async () => {
@@ -167,7 +167,7 @@ describe("REGRESSION TEST SUITE - Post Blocker Fixes", () => {
       const order = await orderService.createOrderFromCart(testUser.id, cartItems);
 
       expect(order.orderNumber).toBeDefined();
-      expect(order.orderNumber).toMatch(/^ORD-/);
+      expect(order.orderNumber).toMatch(/^\d{11}$/);
 
       const dbOrder = await db.getOrderById(order.id);
       expect(dbOrder?.orderNumber).toBe(order.orderNumber);
