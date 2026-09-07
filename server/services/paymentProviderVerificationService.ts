@@ -1,4 +1,5 @@
 import * as db from "../db";
+import { persistAndAutoApprove } from "../payments/providerAutoApproval";
 import { getReceiverCondition } from "../payments/receiverSettings";
 import { resolveStoredFileValue } from "./r2PrivateStorage";
 
@@ -20,6 +21,10 @@ export type PaymentProviderVerificationResult = {
   httpStatus?: number;
   reason?: string;
   checkedAt?: string;
+  approvalOutcome?: string;
+  approvalReason?: string;
+  approvalCheckedAt?: string;
+  approvalPolicyRevision?: number;
 };
 
 
@@ -203,16 +208,6 @@ function diagnosticReason(error: unknown): string {
   return "PROVIDER_REQUEST_FAILED";
 }
 
-function providerReviewReason(result: PaymentProviderVerificationResult): string {
-  if (result.outcome === "VERIFIED") return "PROVIDER_VERIFIED";
-  if (result.outcome === "REVIEW_REQUIRED") return "PROVIDER_REVIEW_REQUIRED";
-  return "PROVIDER_ERROR";
-}
-
-function providerSnapshot(result: PaymentProviderVerificationResult): string {
-  return JSON.stringify({ providerVerification: result });
-}
-
 export async function verifyOrderPaymentWithProvider(paymentId: number): Promise<PaymentProviderVerificationResult> {
   const payment = await db.getPaymentById(paymentId);
   if (!payment) throw new Error("PAYMENT_NOT_FOUND");
@@ -220,12 +215,7 @@ export async function verifyOrderPaymentWithProvider(paymentId: number): Promise
   const order = await db.getOrderById(payment.orderId);
   if (!order) throw new Error("ORDER_NOT_FOUND");
   const result = await verifyStoredSlip(payment.slipImageUrl, String(order.totalAmount));
-  await db.updatePayment(payment.id, {
-    status: "pending_review",
-    extractedData: providerSnapshot(result),
-    reviewReason: providerReviewReason(result),
-  });
-  return result;
+  return persistAndAutoApprove("order", payment, result);
 }
 
 export async function verifyWalletTopupWithProvider(topupId: number): Promise<PaymentProviderVerificationResult> {
@@ -233,11 +223,7 @@ export async function verifyWalletTopupWithProvider(topupId: number): Promise<Pa
   if (!topup) throw new Error("TOPUP_NOT_FOUND");
   if (!topup.slipImageUrl) throw new Error("PAYMENT_SLIP_REQUIRED");
   const result = await verifyStoredSlip(topup.slipImageUrl, String(topup.requestedAmount));
-  await db.updateWalletTopupProviderVerification(topup.id, {
-    extractedData: providerSnapshot(result),
-    reviewReason: providerReviewReason(result),
-  });
-  return result;
+  return persistAndAutoApprove("wallet", topup, result);
 }
 
 export const __test = { normalizeMoney, normalizeSlip2GoResponse, detectImage };

@@ -267,6 +267,13 @@
       "when": 1788715650510,
       "tag": "0037_reconstruct_pr45_selected_features",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "5",
+      "when": 1788784800000,
+      "tag": "0038_provider_auto_approval",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,106 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { and, eq } from "drizzle-orm";
+import { getTestDb } from "../test-helpers/testDb";
+import { users, novels, episodes, orderItems, purchases, pointsTransactions, orders, payments, walletTopups, walletAccounts, walletTransactions, settings, paymentProviderClaims } from "../../drizzle/schema";
+import { persistAndAutoApprove } from "./providerAutoApproval";
+import { AUTO_APPROVE_KEY, saveAutoPolicy } from "./autoApprovalSettings";
+import { approveWalletTopup, updateOrder, updatePayment } from "../db";
+import { approvePayment, rejectPayment } from "../services/orderService";
+import type { PaymentProviderVerificationResult } from "../services/paymentProviderVerificationService";
+
+const db = getTestDb();
+const result = (ref = randomUUID()): PaymentProviderVerificationResult => ({
+ provider: "slip2go", outcome: "VERIFIED", reason: "CHECKS_PASSED", httpStatus: 201,
+ code: "200200", amount: "100.00", amountMatches: true, recipientCheckApplied: true,
+ occurredAt: new Date().toISOString(), checkedAt: new Date().toISOString(),
+ bankTransactionReference: ref, providerReference: randomUUID(),
+});
+async function fixture(type: "order" | "wallet", snapshot?: PaymentProviderVerificationResult) {
+ const [{id: userId}] = await db.insert(users).values({openId: randomUUID()}).$returningId();
+ const common = {slipImageUrl: "https://example.com/" + randomUUID(), slipSubmittedAt: new Date(),
+  extractedData: snapshot ? JSON.stringify({providerVerification:snapshot}) : null};
+ if (type === "wallet") {
+  const [{id}] = await db.insert(walletTopups).values({...common,userId,requestedAmount:"100.00",creditedAmount:"110.00",bonusAmount:"10.00"}).$returningId();
+  return (await db.select().from(walletTopups).where(eq(walletTopups.id,id)))[0];
+ }
+ const [{id: orderId}] = await db.insert(orders).values({userId,orderNumber:randomUUID(),subtotal:"100.00",totalAmount:"100.00"}).$returningId();
+ const [{id}] = await db.insert(payments).values({...common,orderId,ocrConfidence:0,ocrDecision:"needs_review"}).$returningId();
+ return (await db.select().from(payments).where(eq(payments.id,id)))[0];
+}
+beforeEach(async () => {
+ await db.insert(settings).values({key:AUTO_APPROVE_KEY,value:JSON.stringify({enabled:true,revision:1})})
+  .onDuplicateKeyUpdate({set:{value:JSON.stringify({enabled:true,revision:1})}});
+});
+describe("provider auto approval on real MariaDB", () => {
+ it("credits bonus and ledger once across repeated and concurrent verification", async () => {
+  const row:any=await fixture("wallet"), r=result();
+  const values=await Promise.all([persistAndAutoApprove("wallet",row,r),persistAndAutoApprove("wallet",row,r)]);
+  expect(values.filter(v=>v.approvalOutcome==="APPROVED")).toHaveLength(1);
+  expect((await db.select().from(walletAccounts).where(eq(walletAccounts.userId,row.userId)))[0].balance).toBe("110.00");
+  expect(await db.select().from(walletTransactions).where(eq(walletTransactions.referenceId,row.id))).toHaveLength(1);
+  expect((await persistAndAutoApprove("wallet",row,r)).approvalOutcome).toBe("SKIPPED");
+ });
+ it("serializes manual and automatic wallet approval", async () => {
+  const r=result(),row:any=await fixture("wallet",r);
+  await Promise.allSettled([persistAndAutoApprove("wallet",row,r),approveWalletTopup(row.id,1)]);
+  expect((await db.select().from(walletAccounts).where(eq(walletAccounts.userId,row.userId)))[0].balance).toBe("110.00");
+  expect(await db.select().from(walletTransactions).where(eq(walletTransactions.referenceId,row.id))).toHaveLength(1);
+ });
+ it("prevents the same bank transaction paying an order and a wallet", async () => {
+  const a:any=await fixture("order"),b:any=await fixture("wallet"),r=result();
+  const results=await Promise.all([persistAndAutoApprove("order",a,r),persistAndAutoApprove("wallet",b,r)]);
+  expect(results.filter(v=>v.approvalOutcome==="APPROVED")).toHaveLength(1);
+  expect(results.find(v=>v.approvalOutcome==="ERROR")?.approvalReason).toBe("PROVIDER_TRANSACTION_ALREADY_USED");
+ });
+ it("grants purchased episodes and loyalty points exactly once", async () => {
+  const row:any=await fixture("order"),r=result();
+  const [{id:novelId}]=await db.insert(novels).values({title:"Synthetic IPE040",slug:randomUUID()}).$returningId();
+  const [{id:episodeId}]=await db.insert(episodes).values({novelId,title:"Synthetic episode",episodeNumber:"1",price:"100.00"}).$returningId();
+  await db.insert(orderItems).values({orderId:row.orderId,novelId,episodeId,unitPrice:"100.00",finalPrice:"100.00"});
+  await Promise.all([persistAndAutoApprove("order",row,r),persistAndAutoApprove("order",row,r)]);
+  expect(await db.select().from(purchases).where(eq(purchases.orderId,row.orderId))).toHaveLength(1);
+  const points=await db.select().from(pointsTransactions).where(eq(pointsTransactions.referenceId,row.orderId));
+  expect(points).toHaveLength(1);expect(Number(points[0].amount)).toBe(1);
+ });
+ it("keeps manual order approval idempotent against automatic approval", async () => {
+  const r=result(),row:any=await fixture("order",r);
+  await Promise.all([persistAndAutoApprove("order",row,r),approvePayment(row.id,"1")]);
+  expect((await db.select().from(orders).where(eq(orders.id,row.orderId)))[0].status).toBe("approved");
+  expect((await db.select().from(payments).where(eq(payments.id,row.id)))[0].status).toBe("approved");
+ });
+ it("does not regress an approved order after late upload or rejection", async () => {
+  const row:any=await fixture("order");
+  expect((await persistAndAutoApprove("order",row,result())).approvalOutcome).toBe("APPROVED");
+  await updateOrder(row.orderId,{paymentStatus:"submitted"});
+  await expect(updatePayment(row.id,{slipImageUrl:"https://example.com/replacement"})).rejects.toThrow("already approved");
+  await expect(rejectPayment(row.id,"1","late rejection")).rejects.toThrow();
+  expect((await db.select().from(orders).where(eq(orders.id,row.orderId)))[0].paymentStatus).toBe("approved");
+  expect((await db.select().from(payments).where(eq(payments.id,row.id)))[0].status).toBe("approved");
+ });
+ it("rejects reuse of an approved snapshot predating the claim registry", async () => {
+  const r=result(),old:any=await fixture("order",r),row:any=await fixture("wallet");
+  await db.update(payments).set({status:"approved"}).where(eq(payments.id,old.id));
+  expect((await persistAndAutoApprove("wallet",row,r)).approvalReason).toBe("PROVIDER_TRANSACTION_ALREADY_USED");
+  expect(await db.select().from(walletAccounts).where(eq(walletAccounts.userId,row.userId))).toHaveLength(0);
+ });
+ it("reads disabled runtime policy and performs no credit", async () => {
+  await saveAutoPolicy({enabled:false,expectedRevision:1,reason:"integration disable"},1);
+  const row:any=await fixture("wallet");
+  expect((await persistAndAutoApprove("wallet",row,result())).approvalReason).toBe("AUTO_APPROVE_DISABLED");
+  expect(await db.select().from(walletAccounts).where(eq(walletAccounts.userId,row.userId))).toHaveLength(0);
+ });
+ it("rolls back approval, claims and wallet credit if final ledger insert fails", async () => {
+  const row:any=await fixture("wallet"),r=result();
+  // Fault is scoped to this synthetic subject in the isolated test database.
+  await db.execute(`CREATE TRIGGER ipe040_ledger_failure BEFORE INSERT ON walletTransactions FOR EACH ROW
+   BEGIN IF NEW.referenceId = ${row.id} THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'IPE040 injected ledger failure'; END IF; END`);
+  try {
+   expect((await persistAndAutoApprove("wallet",row,r)).approvalReason).toBe("AUTO_APPROVAL_FAILED");
+   expect((await db.select().from(walletTopups).where(eq(walletTopups.id,row.id)))[0].status).toBe("pending");
+   expect(await db.select().from(walletAccounts).where(eq(walletAccounts.userId,row.userId))).toHaveLength(0);
+   expect(await db.select().from(paymentProviderClaims).where(and(eq(paymentProviderClaims.subjectId,row.id),eq(paymentProviderClaims.subjectType,"wallet")))).toHaveLength(0);
+  } finally { await db.execute("DROP TRIGGER ipe040_ledger_failure"); }
+  expect((await persistAndAutoApprove("wallet",row,r)).approvalOutcome).toBe("APPROVED");
+ });
+});

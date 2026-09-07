@@ -4,6 +4,8 @@ export function ProviderVerificationPanel({ value }: { value: unknown }) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
   const fields: [string, string][] = [
+    ["approvalOutcome", "ผลอนุมัติอัตโนมัติ"], ["approvalReason", "เหตุผลการอนุมัติ"],
+    ["approvalCheckedAt", "เวลาอนุมัติ/ตรวจการอนุมัติ"], ["approvalPolicyRevision", "รุ่นการตั้งค่าอนุมัติ"],
     ["provider", "ผู้ให้บริการ"], ["outcome", "ผลตรวจ"], ["reason", "เหตุผล"],
     ["httpStatus", "HTTP status"], ["code", "รหัสผลผู้ให้บริการ"],
     ["recipientCheckApplied", "ส่งเงื่อนไขตรวจผู้รับ"], ["amountMatches", "ยอดเงินตรง"],

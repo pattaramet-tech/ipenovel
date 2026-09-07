@@ -697,6 +697,14 @@ export type InsertBanner = typeof banners.$inferInsert;
 /**
  * Site settings/configuration
  */
+// One bank transaction may fund one order payment or wallet top-up.
+export const paymentProviderClaims = mysqlTable("paymentProviderClaims", {
+ claimKey: varchar("claimKey", { length: 64 }).primaryKey(),
+ subjectType: varchar("subjectType", { length: 16 }).notNull(),
+ subjectId: int("subjectId").notNull(),
+ createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
 export const settings = mysqlTable("settings", {
   id: int("id").autoincrement().primaryKey(),
   key: varchar("key", { length: 255 }).notNull().unique(),
@@ -793,7 +801,7 @@ export const walletTopups = mysqlTable("walletTopups", {
   ocrDecision: mysqlEnum("ocrDecision", ["approved", "needs_review", "rejected"]),
   reviewReason: text("reviewReason"), // e.g., AMOUNT_MISMATCH, LOW_CONFIDENCE, DUPLICATE_REFERENCE, OCR_PROCESSING_ERROR, PDF_MANUAL_REVIEW
   // Approval source tracking
-  approvalSource: mysqlEnum("approvalSource", ["manual", "ocr_auto"]).default("manual"),
+  approvalSource: mysqlEnum("approvalSource", ["manual", "ocr_auto", "provider_auto"]).default("manual"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 }, (table) => ({

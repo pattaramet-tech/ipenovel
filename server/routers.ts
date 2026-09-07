@@ -16,6 +16,7 @@ import {
 import { uploadPaymentSlipFile } from "./services/slipFileUploadService";
 import { paymentQrRouter, paymentQrSettingsRouter } from "./payments/qrRouter";
 import { paymentReceiverSettingsRouter } from "./payments/receiverRouter";
+import { autoApprovalSettingsRouter, isAutoPolicyKey } from "./payments/autoApprovalSettings";
 import { isReceiverSettingKey } from "./payments/receiverSettings";
 
 import {
@@ -775,7 +776,7 @@ export const appRouter = router({
               success: true,
               orderId: order.id,
               paymentId: payment.id,
-              status: "pending_review",
+              status: (await db.getPaymentById(payment.id))?.status ?? "pending_review",
               slipImageUrl: input.slipImageUrl,
               providerVerification: providerResult,
               processingDeferred: providerResult.outcome === "ERROR",
@@ -968,7 +969,7 @@ export const appRouter = router({
           success: true,
           orderId: order.id,
           paymentId: payment.id,
-          status: "pending_review",
+          status: (await db.getPaymentById(payment.id))?.status ?? "pending_review",
           slipImageUrl: input.slipImageUrl,
           providerVerification,
         };
@@ -2506,6 +2507,7 @@ export const appRouter = router({
     settings: router({
       paymentQr: paymentQrSettingsRouter,
       paymentReceiver: paymentReceiverSettingsRouter,
+      providerAutoApprove: autoApprovalSettingsRouter,
       getCheckoutMaintenance: adminProcedure.query(async () => {
         return getCheckoutMaintenanceStatus();
       }),
@@ -2525,6 +2527,7 @@ export const appRouter = router({
         .input(z.object({ key: z.string(), value: z.string(), description: z.string().optional() }))
         .mutation(async ({ input }) => {
           if (isReceiverSettingKey(input.key)) throw new TRPCError({ code: "BAD_REQUEST", message: "Use settings.paymentReceiver.update with revision and reason" });
+          if (isAutoPolicyKey(input.key)) throw new TRPCError({ code: "BAD_REQUEST", message: "Use settings.providerAutoApprove.update with revision and reason" });
           if (input.key.startsWith("paymentQr.")) {
             throw new TRPCError({
               code: "BAD_REQUEST",

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { claimProviderTransaction, parseProviderSnapshot } from "./payments/providerClaim";
 import { eq, and, or, desc, asc, inArray, isNull, isNotNull, gte, lte, count, sql, gt, lt, ne, like } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { getTableColumns } from "drizzle-orm";
@@ -1580,12 +1581,22 @@ export async function updateOrder(orderId: number, data: { status?: string; paym
   if (Object.keys(updateData).length === 0) return;
 
   await withAccountMergeOrderMutationGuard(orderId, tx, async (guardedDb) => {
+    const [current] = await guardedDb.select().from(orders).where(eq(orders.id, orderId)).limit(1).for("update");
+    if (current?.status === "approved" || current?.paymentStatus === "approved") {
+      if (data.paymentStatus === "submitted" && data.status === undefined) return;
+      if ((data.status !== undefined && data.status !== "approved")
+        || (data.paymentStatus !== undefined && data.paymentStatus !== "approved")) throw Error("Order already approved");
+    }
     await guardedDb.update(orders).set(updateData).where(eq(orders.id, orderId));
   });
 }
 
 export async function updatePayment(paymentId: number, data: { slipImageUrl?: string; slipSubmittedAt?: Date; status?: "pending" | "approved" | "rejected" | "pending_review"; rejectionReason?: string; extractedData?: string | null; reviewReason?: string | null; fingerprint?: string | null; linkedOrderId?: number | null; linkedPaymentId?: number | null; ocrConfidence?: number | null; ocrDecision?: string | null }, tx?: any) {
   await withAccountMergePaymentMutationGuard(paymentId, tx, async (guardedDb) => {
+    if (data.slipImageUrl !== undefined || data.status === "pending" || data.status === "pending_review") {
+      const [current] = await guardedDb.select().from(payments).where(eq(payments.id, paymentId)).limit(1).for("update");
+      if (current?.status === "approved") throw Error("Payment already approved");
+    }
     await guardedDb.update(payments).set(data).where(eq(payments.id, paymentId));
   });
 }
@@ -3983,7 +3994,9 @@ export async function listPendingWalletTopups(limit: number = 20, offset: number
 
 export async function updateWalletTopupSlip(topupId: number, slipImageUrl: string) {
   return withAccountMergeWalletTopupMutationGuard(topupId, undefined, async (guardedDb) => {
-    await guardedDb.update(walletTopups).set({ slipImageUrl }).where(eq(walletTopups.id, topupId));
+    const [current] = await guardedDb.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1).for("update");
+    if (!current || !["pending", "pending_review"].includes(current.status)) throw Error("Wallet top-up already processed");
+    await guardedDb.update(walletTopups).set({ slipImageUrl, slipSubmittedAt: new Date() }).where(eq(walletTopups.id, topupId));
     return (await guardedDb.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1))[0];
   });
 }
@@ -4093,20 +4106,21 @@ export async function creditWalletBalance(userId: number, amount: string, refere
   return newBalance;
 }
 
-export async function approveWalletTopup(topupId: number, adminUserId: number) {
+export async function approveWalletTopup(topupId: number, adminUserId: number | null, outerTx?: any) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  // REAL DATABASE TRANSACTION: All operations succeed or all rollback
-  // This prevents double-crediting if approval is retried
-  return await db.transaction(async (tx) => {
-    // Step 1: Fetch topup INSIDE transaction for consistency
-    const topupResult = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
+  // Share the account/subject lock with manual approval and provider verification.
+  return withAccountMergeWalletTopupMutationGuard(topupId, outerTx, async (tx) => {
+    const topupResult = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1).for("update");
     if (!topupResult || topupResult.length === 0) {
       throw new Error("Wallet top-up not found");
     }
     const topup = topupResult[0];
-    
+    if (topup.status === "approved") throw new Error("Wallet top-up already processed by another request");
+    const snapshot = parseProviderSnapshot(topup.extractedData);
+    if (snapshot.bankTransactionReference) await claimProviderTransaction(tx, "wallet", topupId, snapshot);
+
     // Step 2: Conditional status update - ONLY update if still pending or pending_review (idempotency)
     // CRITICAL: Only the winning concurrent request may proceed
     // Losing requests will have 0 rows affected and must abort immediately
@@ -4115,6 +4129,8 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
       .set({
         status: "approved" as any,
         reviewedByUserId: adminUserId,
+        approvedAt: new Date(),
+        approvalSource: adminUserId === null ? "provider_auto" : "manual",
         reviewedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -4143,7 +4159,7 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
     const bonusAmount = topup.bonusAmount || "0.00";
 
     // Step 3: Get or create wallet account (within transaction)
-    let account = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, topup.userId)).limit(1);
+    let account = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, topup.userId)).limit(1).for("update");
     if (!account || account.length === 0) {
       // Create wallet account if it doesn't exist (atomic within transaction)
       await tx.insert(walletAccounts).values({
@@ -4153,7 +4169,7 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
         updatedAt: new Date(),
       });
       // Fetch the newly created account
-      account = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, topup.userId)).limit(1);
+      account = await tx.select().from(walletAccounts).where(eq(walletAccounts.userId, topup.userId)).limit(1).for("update");
       if (!account || account.length === 0) {
         throw new Error("Failed to create wallet account");
       }
@@ -4187,7 +4203,7 @@ export async function approveWalletTopup(topupId: number, adminUserId: number) {
       total: creditAmount,
       method: "slip" as any,
       reference: `topup-${topupId}`,
-      note: `Slip approved by admin`,
+      note: adminUserId === null ? "Slip approved by Provider API" : "Slip approved by admin",
       createdBy: adminUserId,
       createdAt: new Date(),
     });

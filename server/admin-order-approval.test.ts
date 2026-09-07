@@ -11,6 +11,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ApprovalService } from "./services/approvalService";
 
+// This suite tests metadata only. Real account guards and approval races are
+// exercised by payments/providerAutoApproval.integration.test.ts.
+vi.mock("./db", () => ({
+  withAccountMergePaymentMutationGuard: async (_id: number, tx: any, fn: any) => fn({
+    ...tx,
+    select: () => ({ from: () => ({ where: () => ({ limit: () => ({
+      for: async () => [{ status: "pending" }],
+    }) }) }) }),
+  }),
+}));
+
 // ============================================================
 // ApprovalService.getDisplayMetadata — field name consistency
 // ============================================================

@@ -1,4 +1,7 @@
 import * as db from "../db";
+import { payments, orders } from "../../drizzle/schema";
+import { eq } from "drizzle-orm";
+import { claimProviderTransaction, parseProviderSnapshot } from "../payments/providerClaim";
 
 import { ApprovalService } from "./approvalService";
 import { normalizeMoneyAmount, formatMoney } from "../helpers/moneyNormalizer";
@@ -318,19 +321,26 @@ export async function approvePayment(paymentId: number, approvedBy: string, admi
 }
 
 async function approvePaymentInTx(paymentId: number, approvedBy: string, adminLabel: string | undefined, tx: any): Promise<{ message: string }> {
-  const payment = await db.getPaymentById(paymentId, tx);
-  if (!payment) {
-    throw new Error("Payment not found");
-  }
+  return db.withAccountMergePaymentMutationGuard(paymentId, tx, async guardedTx => {
+  tx = guardedTx;
+  const [payment] = await tx.select().from(payments).where(eq(payments.id, paymentId)).limit(1).for("update");
+  if (!payment) throw new Error("Payment not found");
+  if (payment.status === "approved") return { message: "Payment already approved" };
+  if (!["pending", "pending_review"].includes(payment.status)) throw new Error("Payment is not pending");
+  const snapshot = parseProviderSnapshot(payment.extractedData);
+  if (snapshot.bankTransactionReference) await claimProviderTransaction(tx, "order", paymentId, snapshot);
 
-  const order = await db.getOrderById(payment.orderId, tx);
+  const [order] = await tx.select().from(orders).where(eq(orders.id, payment.orderId)).limit(1).for("update");
   if (!order) {
     throw new Error("Order not found");
   }
+  if (["approved", "completed", "cancelled"].includes(order.status)) throw Error("Order already processed");
 
   // Use ApprovalService for manual approval with metadata
   const approvedByNum = parseInt(approvedBy, 10);
-  if (!isNaN(approvedByNum)) {
+  if (approvedBy === "provider_auto") {
+    await ApprovalService.approvePaymentWithSource(paymentId, "auto", { adminLabel: "Provider Auto-Approve" }, tx);
+  } else if (!isNaN(approvedByNum)) {
     await ApprovalService.approvePaymentWithSource(paymentId, "manual", {
       adminId: approvedByNum,
       adminLabel: adminLabel || "Admin",
@@ -361,7 +371,7 @@ async function approvePaymentInTx(paymentId: number, approvedBy: string, adminLa
     fromStatus: order.status,
     toStatus: "approved",
     actorUserId: approvedByNum || undefined,
-    note: "Payment approved by admin",
+    note: approvedBy === "provider_auto" ? "Payment approved by Provider API" : "Payment approved by admin",
   }, tx);
 
   // Finalize order completion (points, purchases, coupon usage)
@@ -370,6 +380,7 @@ async function approvePaymentInTx(paymentId: number, approvedBy: string, adminLa
   }
 
   return { message: `Payment ${paymentId} approved successfully` };
+  });
 }
 
 /**
@@ -489,6 +500,8 @@ async function awardPointsForOrder(orderId: number, userId: number, amount: stri
  * Reject payment
  */
 export async function rejectPayment(paymentId: number, rejectedBy: string, reason: string, tx?: any): Promise<void> {
+  if (!tx) return db.withAccountMergePaymentMutationGuard(paymentId, undefined,
+    guardedTx => rejectPayment(paymentId, rejectedBy, reason, guardedTx));
   const payment = await db.getPaymentById(paymentId, tx);
   if (!payment) {
     throw new Error("Payment not found");

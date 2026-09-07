@@ -58,7 +58,7 @@ export class ApprovalService {
       case "auto":
         // OCR auto-approval
         approvalData.approvedByAdminId = null;
-        approvalData.approvedByLabel = "OCR Auto-Approve";
+        approvalData.approvedByLabel = metadata.adminLabel || "OCR Auto-Approve";
         approvalData.autoApprovedAt = metadata.autoApprovedAt || now;
         break;
 
@@ -99,6 +99,8 @@ export class ApprovalService {
     const now = new Date();
 
     await withAccountMergePaymentMutationGuard(paymentId, tx, async (guardedDb) => {
+      const [current] = await guardedDb.select().from(payments).where(eq(payments.id, paymentId)).limit(1).for("update");
+      if (current?.status === "approved") throw Error("Payment already approved");
       await guardedDb
         .update(payments)
         .set({

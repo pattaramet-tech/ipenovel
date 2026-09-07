@@ -5,6 +5,14 @@ const mocks = vi.hoisted(() => ({
  getReceiverCondition: vi.fn(), resolveStoredFileValue: vi.fn(),
 }));
 vi.mock("./db", () => mocks);
+// Transport contract suite isolates the separately tested approval transaction.
+vi.mock("./payments/providerAutoApproval", () => ({
+ persistAndAutoApprove: async (kind: string, row: any, result: any) => {
+  const write = kind === "order" ? mocks.updatePayment : mocks.updateWalletTopupProviderVerification;
+  await write(row.id, { ...(kind === "order" ? {status: "pending_review"} : {}), extractedData: JSON.stringify({providerVerification: result}) });
+  return result;
+ },
+}));
 vi.mock("./payments/receiverSettings", () => mocks);
 vi.mock("./services/r2PrivateStorage", () => mocks);
 import { verifyOrderPaymentWithProvider, verifyWalletTopupWithProvider, __test } from "./services/paymentProviderVerificationService";
