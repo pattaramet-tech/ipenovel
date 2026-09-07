@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useState, useEffect } from "react";
 import { AdminPaymentQrSettings } from "@/components/AdminPaymentQrSettings";
+import { AdminPaymentReceiverSettings } from "@/components/AdminPaymentReceiverSettings";
 import { toast } from "sonner";
 import { Loader2, AlertCircle, CheckCircle2, Info } from "lucide-react";
 import { trpc } from "@/lib/trpc";
@@ -240,6 +241,7 @@ export default function AdminSettingsPage() {
         </Card>
 
         <AdminPaymentQrSettings />
+        <AdminPaymentReceiverSettings />
 
         <Card className="p-6">
           <h2 className="text-lg font-semibold mb-4">ระบบแจ้งเตือนหน้าชำระเงิน</h2>

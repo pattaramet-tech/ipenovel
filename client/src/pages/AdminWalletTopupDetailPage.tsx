@@ -1,3 +1,4 @@
+import { ProviderVerificationPanel } from "@/components/ProviderVerificationPanel";
 import { useState } from "react";
 import { useRoute, useLocation } from "wouter";
 import AdminLayout from "@/components/AdminLayout";
@@ -258,6 +259,7 @@ export default function AdminWalletTopupDetailPage() {
               </p>
               <p className="text-xs text-slate-500 mt-1">Snapshot at creation</p>
             </div>
+            <ProviderVerificationPanel value={extractedData?.providerVerification} />
             {extractedData?.amount && (
               <div className="p-4 bg-white rounded border border-slate-200">
                 <p className="text-sm text-slate-600 mb-1">OCR Amount</p>

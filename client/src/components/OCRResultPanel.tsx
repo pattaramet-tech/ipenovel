@@ -2,6 +2,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { AlertCircle, CheckCircle2, AlertTriangle, Eye, EyeOff } from "lucide-react";
 import { useState } from "react";
+import { ProviderVerificationPanel } from "./ProviderVerificationPanel";
 import { Button } from "@/components/ui/button";
 
 interface ExtractedData {
@@ -62,6 +63,8 @@ export function OCRResultPanel({ payment }: OCRResultPanelProps) {
   if (!extractedData && !payment.ocrDecision && !payment.fingerprint && !payment.reviewReason && !payment.approvalSource) {
     return null;
   }
+
+  if (extractedData?.providerVerification) return <ProviderVerificationPanel value={extractedData.providerVerification} />;
 
   // Helper to safely get duplicate status object
   const getDuplicateStatusObject = () => {

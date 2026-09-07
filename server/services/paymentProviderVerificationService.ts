@@ -1,4 +1,5 @@
 import * as db from "../db";
+import { getReceiverCondition } from "../payments/receiverSettings";
 import { resolveStoredFileValue } from "./r2PrivateStorage";
 
 const SLIP2GO_ORIGIN = "https://connect.slip2go.com";
@@ -16,9 +17,12 @@ export type PaymentProviderVerificationResult = {
   occurredAt?: string;
   amountMatches?: boolean;
   recipientCheckApplied: boolean;
+  httpStatus?: number;
+  reason?: string;
+  checkedAt?: string;
 };
 
-type ReceiverCondition = { accountType: string; accountNumber: string };
+
 
 function safeToken(value: unknown): string | undefined {
   return typeof value === "string" && /^[A-Za-z0-9_.:-]{1,96}$/.test(value)
@@ -92,20 +96,6 @@ function detectImage(bytes: Uint8Array): { mime: "image/png" | "image/jpeg"; fil
   throw new Error("UNSUPPORTED_SLIP_IMAGE");
 }
 
-async function getReceiverCondition(): Promise<ReceiverCondition | undefined> {
-  const [typeSetting, numberSetting] = await Promise.all([
-    db.getSetting("paymentVerification.receiverAccountType"),
-    db.getSetting("paymentVerification.receiverAccountNumber"),
-  ]);
-  const accountType = typeSetting?.value?.trim();
-  const accountNumber = numberSetting?.value?.trim();
-  if (!accountType && !accountNumber) return undefined;
-  if (!accountType || !accountNumber || !/^[0-9]{5}$/.test(accountType) || !/^[0-9]{6,20}$/.test(accountNumber)) {
-    throw new Error("INVALID_PROVIDER_RECEIVER_SETTINGS");
-  }
-  return { accountType, accountNumber };
-}
-
 function normalizeSlip2GoResponse(
   raw: unknown,
   httpStatus: number,
@@ -128,6 +118,8 @@ function normalizeSlip2GoResponse(
     : undefined;
   const common = {
     provider: "slip2go" as const,
+    httpStatus,
+    checkedAt: new Date().toISOString(),
     code,
     providerReference: safeToken(data.referenceId),
     bankTransactionReference: safeToken(data.transRef),
@@ -137,7 +129,7 @@ function normalizeSlip2GoResponse(
     recipientCheckApplied,
   };
 
-  if (httpStatus !== 200 || !code) return { ...common, outcome: "ERROR" };
+  if (httpStatus !== 200 || !code) return { ...common, outcome: "ERROR", reason: httpStatus !== 200 ? "UNEXPECTED_PROVIDER_HTTP_STATUS" : "INVALID_PROVIDER_RESPONSE" };
   // Slip2Go 200200 means the requested check conditions passed. We still
   // require an explicit amount match in the returned bank data. When no
   // receiver condition is configured, keep the result review-required rather
@@ -145,6 +137,7 @@ function normalizeSlip2GoResponse(
   if (code === "200200") {
     return {
       ...common,
+      reason: !recipientCheckApplied ? "RECEIVER_CHECK_NOT_APPLIED" : amount !== expectedAmount ? "AMOUNT_MISMATCH" : !occurredAt ? "INVALID_TRANSACTION_DATE" : "CHECKS_PASSED",
       outcome:
         amount === expectedAmount && recipientCheckApplied && occurredAt
           ? "VERIFIED"
@@ -152,18 +145,20 @@ function normalizeSlip2GoResponse(
     };
   }
   if (code === "200000" || code === "200202" || code.startsWith("2004") || code.startsWith("2005")) {
-    return { ...common, outcome: "REVIEW_REQUIRED" };
+    return { ...common, outcome: "REVIEW_REQUIRED", reason: "PROVIDER_REVIEW_REQUIRED" };
   }
-  return { ...common, outcome: "ERROR" };
+  return { ...common, outcome: "ERROR", reason: "UNRECOGNIZED_PROVIDER_CODE" };
 }
 
 async function verifyStoredSlip(storedValue: string, expectedAmountValue: string): Promise<PaymentProviderVerificationResult> {
   const secret = process.env.SLIP2GO_SECRET_KEY;
   if (!secret || !/^[\x21-\x7e]{1,4096}$/.test(secret) || secret.startsWith("Bearer ")) {
-    return { provider: "slip2go", outcome: "ERROR", recipientCheckApplied: false };
+    return { provider: "slip2go", outcome: "ERROR", recipientCheckApplied: false, reason: "PROVIDER_SECRET_NOT_CONFIGURED", checkedAt: new Date().toISOString() };
   }
   const expectedAmount = normalizeMoney(expectedAmountValue);
   const signal = AbortSignal.timeout(PROVIDER_TIMEOUT_MS);
+  let recipientCheckApplied = false;
+  let httpStatus: number | undefined;
   try {
     const bytes = await readStoredSlipBytes(storedValue, signal);
     signal.throwIfAborted();
@@ -183,14 +178,26 @@ async function verifyStoredSlip(storedValue: string, expectedAmountValue: string
       signal,
       redirect: "error",
     });
+    recipientCheckApplied = !!receiver;
+    httpStatus = response.status;
     const payload = await readBounded(response, MAX_RESPONSE_BYTES, signal);
     const text = new TextDecoder().decode(payload);
     // Never surface/log a provider response that echoes the credential.
     if (text.includes(secret)) throw new Error("PROVIDER_SECRET_ECHO");
     return normalizeSlip2GoResponse(JSON.parse(text), response.status, expectedAmount, !!receiver);
-  } catch {
-    return { provider: "slip2go", outcome: "ERROR", recipientCheckApplied: false };
+  } catch (error) {
+    return { provider: "slip2go", outcome: "ERROR", recipientCheckApplied, httpStatus, checkedAt: new Date().toISOString(), reason: diagnosticReason(error) };
   }
+}
+
+function diagnosticReason(error: unknown): string {
+  if (error instanceof Error) {
+    if (error.name === "TimeoutError" || error.name === "AbortError") return "PROVIDER_TIMEOUT";
+    if (error instanceof SyntaxError) return "INVALID_PROVIDER_RESPONSE";
+    if (["INVALID_PROVIDER_RECEIVER_SETTINGS", "RECEIVER_SETTINGS_UNAVAILABLE", "SLIP_NOT_AVAILABLE",
+      "UNSUPPORTED_SLIP_IMAGE", "BODY_LIMIT", "EMPTY_BODY", "PROVIDER_SECRET_ECHO"].includes(error.message)) return error.message;
+  }
+  return "PROVIDER_REQUEST_FAILED";
 }
 
 function providerReviewReason(result: PaymentProviderVerificationResult): string {

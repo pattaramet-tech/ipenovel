@@ -15,6 +15,8 @@ import {
 } from "./services/paymentProviderVerificationService";
 import { uploadPaymentSlipFile } from "./services/slipFileUploadService";
 import { paymentQrRouter, paymentQrSettingsRouter } from "./payments/qrRouter";
+import { paymentReceiverSettingsRouter } from "./payments/receiverRouter";
+import { isReceiverSettingKey } from "./payments/receiverSettings";
 
 import {
   assertCheckoutAvailable,
@@ -2503,6 +2505,7 @@ export const appRouter = router({
 
     settings: router({
       paymentQr: paymentQrSettingsRouter,
+      paymentReceiver: paymentReceiverSettingsRouter,
       getCheckoutMaintenance: adminProcedure.query(async () => {
         return getCheckoutMaintenanceStatus();
       }),
@@ -2521,6 +2524,7 @@ export const appRouter = router({
       set: adminProcedure
         .input(z.object({ key: z.string(), value: z.string(), description: z.string().optional() }))
         .mutation(async ({ input }) => {
+          if (isReceiverSettingKey(input.key)) throw new TRPCError({ code: "BAD_REQUEST", message: "Use settings.paymentReceiver.update with revision and reason" });
           if (input.key.startsWith("paymentQr.")) {
             throw new TRPCError({
               code: "BAD_REQUEST",
