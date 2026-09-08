@@ -11,6 +11,10 @@ import {
   WorkspaceAiQueueError,
 } from "./aiQueue.service";
 import {
+  getAiQcOperationalReadModel,
+  WorkspaceAiQcReconciliationError,
+} from "./aiQcReconciliation.service";
+import {
   compareCheckerRunWithCopiedLegacy,
   createKanbanBoard,
   createKanbanCardFromFingerprint,
@@ -45,6 +49,19 @@ import {
  * a Google Docs connection or change the existing login scope.
  */
 function mapWorkspaceError(error: unknown): never {
+  if (error instanceof WorkspaceAiQcReconciliationError) {
+    const code =
+      error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
+        ? "FORBIDDEN"
+        : error.code === "DATABASE_UNAVAILABLE"
+          ? "SERVICE_UNAVAILABLE"
+          : error.code === "AI_JOB_NOT_FOUND"
+            ? "NOT_FOUND"
+            : error.code.startsWith("RECOVERY_")
+              ? "CONFLICT"
+              : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
   if (error instanceof WorkspaceAiQueueError) {
     const code =
       error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
@@ -302,6 +319,15 @@ export const workspaceRouter = router({
       .query(async ({ ctx, input }) => {
         try {
           return await getAiJobDetail({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    operational: authenticatedProcedure
+      .input(workspaceIdInput.extend({ jobId: z.number().int().positive() }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getAiQcOperationalReadModel({ actorUserId: ctx.user.id, ...input });
         } catch (error) {
           return mapWorkspaceError(error);
         }
