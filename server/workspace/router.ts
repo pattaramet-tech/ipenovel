@@ -41,6 +41,10 @@ import {
   WorkspacePublishDryRunError,
 } from "./publishDryRun.service";
 import {
+  requestPublishExecution,
+  WorkspacePublishExecutionError,
+} from "./publishExecution.service";
+import {
   addOrUpdateMember,
   bindPublicationNovel,
   createWorkspace,
@@ -57,6 +61,21 @@ import {
  * a Google Docs connection or change the existing login scope.
  */
 function mapWorkspaceError(error: unknown): never {
+  if (error instanceof WorkspacePublishExecutionError) {
+    const code =
+      error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
+        ? "FORBIDDEN"
+        : error.code === "DATABASE_UNAVAILABLE"
+          ? "SERVICE_UNAVAILABLE"
+          : error.code === "PUBLISH_RUN_NOT_FOUND" || error.code === "OUTBOX_NOT_FOUND"
+            ? "NOT_FOUND"
+            : error.code === "EXECUTION_DISABLED" || error.code === "EXTERNAL_PROVIDER_DISABLED"
+              ? "PRECONDITION_FAILED"
+              : error.code.endsWith("_CONFLICT") || error.code === "STALE_PUBLISH_HASH" || error.code === "PUBLISH_OWNERSHIP_AMBIGUOUS" || error.code === "OUTBOX_LEASE_INVALID"
+                ? "CONFLICT"
+                : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
   if (error instanceof WorkspacePublishDryRunError) {
     const code =
       error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
@@ -420,6 +439,20 @@ export const workspaceRouter = router({
       .query(async ({ ctx, input }) => {
         try {
           return await previewPublishReconciliation({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    requestExecution: authenticatedProcedure
+      .input(workspaceIdInput.extend({ runId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await requestPublishExecution({
+            actorUserId: ctx.user.id,
+            workspaceId: input.workspaceId,
+            runId: input.runId,
+            executionEnabled: process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true",
+          });
         } catch (error) {
           return mapWorkspaceError(error);
         }
