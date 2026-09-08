@@ -295,6 +295,13 @@
       "when": 1788846911767,
       "tag": "0041_workspace_ai_queue_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "5",
+      "when": 1788859033810,
+      "tag": "0042_workspace_publish_dry_run_foundation",
+      "breakpoints": true
     }
   ]
 }

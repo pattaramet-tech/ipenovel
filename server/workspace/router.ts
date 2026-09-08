@@ -33,6 +33,14 @@ import {
   WorkspaceDocsServiceError,
 } from "./googleDocs.service";
 import {
+  createPublishDestination,
+  createPublishDryRun,
+  getPublishRunDetail,
+  listPublishDestinations,
+  previewPublishReconciliation,
+  WorkspacePublishDryRunError,
+} from "./publishDryRun.service";
+import {
   addOrUpdateMember,
   bindPublicationNovel,
   createWorkspace,
@@ -49,6 +57,19 @@ import {
  * a Google Docs connection or change the existing login scope.
  */
 function mapWorkspaceError(error: unknown): never {
+  if (error instanceof WorkspacePublishDryRunError) {
+    const code =
+      error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
+        ? "FORBIDDEN"
+        : error.code === "DATABASE_UNAVAILABLE"
+          ? "SERVICE_UNAVAILABLE"
+          : error.code === "DESTINATION_NOT_FOUND" || error.code === "PUBLISH_RUN_NOT_FOUND" || error.code === "SNAPSHOT_NOT_BOUND"
+            ? "NOT_FOUND"
+            : error.code === "STALE_PUBLISH_HASH" || error.code === "PUBLISH_OWNERSHIP_AMBIGUOUS" || error.code.endsWith("_CONFLICT")
+              ? "CONFLICT"
+              : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
   if (error instanceof WorkspaceAiQcReconciliationError) {
     const code =
       error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
@@ -328,6 +349,77 @@ export const workspaceRouter = router({
       .query(async ({ ctx, input }) => {
         try {
           return await getAiQcOperationalReadModel({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+  }),
+
+  publishDryRun: router({
+    createDestination: authenticatedProcedure
+      .input(workspaceIdInput.extend({
+        workspaceNovelId: z.number().int().positive(),
+        targetType: z.literal("novel"),
+        targetId: z.number().int().positive(),
+        policyVersion: z.string().trim().min(1).max(120),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await createPublishDestination({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    listDestinations: authenticatedProcedure
+      .input(workspaceIdInput)
+      .query(async ({ ctx, input }) => {
+        try {
+          return await listPublishDestinations({ actorUserId: ctx.user.id, workspaceId: input.workspaceId });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    createPlan: authenticatedProcedure
+      .input(workspaceIdInput.extend({
+        destinationId: z.number().int().positive(),
+        snapshotId: z.number().int().positive(),
+        checkerRunId: z.number().int().positive().optional(),
+        expectedLastPublishedSha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
+        items: z.array(z.object({
+          itemKey: z.string().trim().min(1).max(255),
+          episodeId: z.number().int().positive().optional(),
+          sourceSha256: z.string().regex(/^[a-f0-9]{64}$/i),
+        })).min(1).max(500),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await createPublishDryRun({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    detail: authenticatedProcedure
+      .input(workspaceIdInput.extend({ runId: z.number().int().positive() }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getPublishRunDetail({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    previewReconciliation: authenticatedProcedure
+      .input(workspaceIdInput.extend({
+        runId: z.number().int().positive(),
+        observedResults: z.array(z.object({
+          itemKey: z.string().trim().min(1).max(255),
+          status: z.enum(["published", "failed", "pending"]),
+          providerReceipt: z.string().trim().min(1).max(500).optional(),
+          errorClass: z.string().trim().min(1).max(160).optional(),
+        })).max(500),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await previewPublishReconciliation({ actorUserId: ctx.user.id, ...input });
         } catch (error) {
           return mapWorkspaceError(error);
         }
