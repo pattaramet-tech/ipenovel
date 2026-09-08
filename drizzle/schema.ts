@@ -2248,6 +2248,89 @@ export const workspaceCheckerFindings = mysqlTable(
   })
 );
 
+/** M04 durable AI work request. Provider execution is intentionally outside this table/service boundary. */
+export const workspaceAiJobs = mysqlTable(
+  "workspaceAiJobs",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workspaceId: int("workspaceId").notNull(),
+    snapshotId: int("snapshotId").notNull(),
+    operation: varchar("operation", { length: 120 }).notNull(),
+    promptVersion: varchar("promptVersion", { length: 120 }).notNull(),
+    modelPolicyVersion: varchar("modelPolicyVersion", { length: 120 }).notNull(),
+    priority: int("priority").default(0).notNull(),
+    status: mysqlEnum("status", ["queued", "claimed", "running", "succeeded", "failed", "cancelled"]).default("queued").notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 255 }).notNull(),
+    version: int("version").default(1).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    workspaceIdempotencyUnique: uniqueIndex("waj_workspace_idempotency_unique").on(table.workspaceId, table.idempotencyKey),
+    claimIdx: index("waj_claim_idx").on(table.status, table.priority, table.createdAt),
+    workspaceFk: foreignKey({
+      name: "waj_workspace_fk",
+      columns: [table.workspaceId],
+      foreignColumns: [workspaceWorkspaces.id],
+    }).onDelete("cascade"),
+    snapshotFk: foreignKey({
+      name: "waj_snapshot_fk",
+      columns: [table.snapshotId],
+      foreignColumns: [workspaceDocumentSnapshots.id],
+    }).onDelete("cascade"),
+  })
+);
+
+/** M04 immutable attempt history. Retry/reclaim always creates a new row. */
+export const workspaceAiJobAttempts = mysqlTable(
+  "workspaceAiJobAttempts",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    jobId: int("jobId").notNull(),
+    attemptNo: int("attemptNo").notNull(),
+    leaseOwner: varchar("leaseOwner", { length: 255 }).notNull(),
+    leaseExpiresAt: timestamp("leaseExpiresAt").notNull(),
+    providerRequestId: varchar("providerRequestId", { length: 255 }),
+    status: mysqlEnum("status", ["claimed", "running", "succeeded", "failed", "abandoned"]).default("claimed").notNull(),
+    errorClass: varchar("errorClass", { length: 160 }),
+    version: int("version").default(1).notNull(),
+    startedAt: timestamp("startedAt"),
+    finishedAt: timestamp("finishedAt"),
+  },
+  table => ({
+    jobAttemptUnique: uniqueIndex("waja_job_attempt_unique").on(table.jobId, table.attemptNo),
+    statusLeaseIdx: index("waja_status_lease_idx").on(table.status, table.leaseExpiresAt),
+    providerRequestIdx: index("waja_provider_request_idx").on(table.providerRequestId),
+    jobFk: foreignKey({
+      name: "waja_job_fk",
+      columns: [table.jobId],
+      foreignColumns: [workspaceAiJobs.id],
+    }).onDelete("cascade"),
+  })
+);
+
+/** M04 immutable generated-output reference. Raw generated content is not stored here. */
+export const workspaceAiArtifacts = mysqlTable(
+  "workspaceAiArtifacts",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    attemptId: int("attemptId").notNull(),
+    artifactType: varchar("artifactType", { length: 120 }).notNull(),
+    contentObjectKey: varchar("contentObjectKey", { length: 500 }).notNull(),
+    contentSha256: varchar("contentSha256", { length: 64 }).notNull(),
+    moderationStatus: mysqlEnum("moderationStatus", ["pending", "accepted", "rejected"]).default("pending").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    attemptArtifactHashUnique: uniqueIndex("waa_attempt_type_hash_unique").on(table.attemptId, table.artifactType, table.contentSha256),
+    contentHashIdx: index("waa_content_hash_idx").on(table.contentSha256),
+    attemptFk: foreignKey({
+      name: "waa_attempt_fk",
+      columns: [table.attemptId],
+      foreignColumns: [workspaceAiJobAttempts.id],
+    }).onDelete("cascade"),
+  })
+);
+
 export const workspaceAuditEvents = mysqlTable(
   "workspaceAuditEvents",
   {

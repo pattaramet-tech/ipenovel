@@ -3,6 +3,14 @@ import { z } from "zod";
 import { authenticatedProcedure, router } from "../_core/trpc";
 import { WORKSPACE_ROLES } from "./domain";
 import {
+  cancelAiJob,
+  getAiJobDetail,
+  listAiJobs,
+  queueAiJob,
+  retryAiJob,
+  WorkspaceAiQueueError,
+} from "./aiQueue.service";
+import {
   compareCheckerRunWithCopiedLegacy,
   createKanbanBoard,
   createKanbanCardFromFingerprint,
@@ -37,6 +45,19 @@ import {
  * a Google Docs connection or change the existing login scope.
  */
 function mapWorkspaceError(error: unknown): never {
+  if (error instanceof WorkspaceAiQueueError) {
+    const code =
+      error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
+        ? "FORBIDDEN"
+        : error.code === "DATABASE_UNAVAILABLE"
+          ? "SERVICE_UNAVAILABLE"
+          : error.code === "AI_JOB_NOT_FOUND" || error.code === "AI_ATTEMPT_NOT_FOUND" || error.code === "SNAPSHOT_NOT_BOUND"
+            ? "NOT_FOUND"
+            : error.code.endsWith("_CONFLICT") || error.code === "AI_LEASE_INVALID"
+              ? "CONFLICT"
+              : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
   if (error instanceof WorkspaceCheckerKanbanError) {
     const code =
       error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
@@ -227,6 +248,60 @@ export const workspaceRouter = router({
       .query(async ({ ctx, input }) => {
         try {
           return await compareCheckerRunWithCopiedLegacy({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+  }),
+
+  aiQueue: router({
+    queue: authenticatedProcedure
+      .input(workspaceIdInput.extend({
+        snapshotId: z.number().int().positive(),
+        operation: z.string().trim().min(1).max(120),
+        promptVersion: z.string().trim().min(1).max(120),
+        modelPolicyVersion: z.string().trim().min(1).max(120),
+        priority: z.number().int().min(-1000).max(1000).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await queueAiJob({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    retry: authenticatedProcedure
+      .input(workspaceIdInput.extend({ jobId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await retryAiJob({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    cancel: authenticatedProcedure
+      .input(workspaceIdInput.extend({ jobId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await cancelAiJob({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    list: authenticatedProcedure
+      .input(workspaceIdInput)
+      .query(async ({ ctx, input }) => {
+        try {
+          return await listAiJobs({ actorUserId: ctx.user.id, workspaceId: input.workspaceId });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    detail: authenticatedProcedure
+      .input(workspaceIdInput.extend({ jobId: z.number().int().positive() }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getAiJobDetail({ actorUserId: ctx.user.id, ...input });
         } catch (error) {
           return mapWorkspaceError(error);
         }

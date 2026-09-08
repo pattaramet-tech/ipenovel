@@ -288,6 +288,13 @@
       "when": 1788785000000,
       "tag": "0040_workspace_checker_kanban_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "5",
+      "when": 1788846911767,
+      "tag": "0041_workspace_ai_queue_foundation",
+      "breakpoints": true
     }
   ]
 }

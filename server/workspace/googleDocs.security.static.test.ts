@@ -25,7 +25,7 @@ describe("workspace M02 static security boundaries", () => {
     expect(schema).not.toContain('refreshToken: text("refreshToken")');
     const snapshotBlock = schema.slice(
       schema.indexOf("export const workspaceDocumentSnapshots"),
-      schema.indexOf("export const workspaceAuditEvents")
+      schema.indexOf("export const workspaceDocumentFingerprints")
     );
     expect(snapshotBlock).toContain("normalizedSha256");
     expect(snapshotBlock).not.toMatch(/body|contentObjectKey/i);
