@@ -2412,6 +2412,7 @@ export const workspaceOutbox = mysqlTable(
     eventType: varchar("eventType", { length: 120 }).notNull(),
     payloadObjectKey: varchar("payloadObjectKey", { length: 500 }).notNull(),
     idempotencyKey: varchar("idempotencyKey", { length: 255 }).notNull(),
+    ownershipEpoch: int("ownershipEpoch"),
     status: mysqlEnum("status", ["pending", "claimed", "delivered", "failed", "dead_letter"]).default("pending").notNull(),
     attempts: int("attempts").default(0).notNull(),
     leaseOwner: varchar("leaseOwner", { length: 255 }),
@@ -2425,6 +2426,35 @@ export const workspaceOutbox = mysqlTable(
     claimIdx: index("wo_claim_idx").on(table.status, table.availableAt, table.leaseExpiresAt),
     workspaceFk: foreignKey({ name: "wo_workspace_fk", columns: [table.workspaceId], foreignColumns: [workspaceWorkspaces.id] }).onDelete("cascade"),
     publishRunFk: foreignKey({ name: "wo_publish_run_fk", columns: [table.publishRunId], foreignColumns: [workspacePublishRuns.id] }).onDelete("cascade"),
+  })
+);
+
+export const workspacePublishOwnershipTransitions = mysqlTable(
+  "workspacePublishOwnershipTransitions",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workspaceId: int("workspaceId").notNull(),
+    workspaceNovelId: int("workspaceNovelId").notNull(),
+    publishRunId: int("publishRunId").notNull(),
+    direction: mysqlEnum("direction", ["cutover", "rollback"]).notNull(),
+    fromOwner: mysqlEnum("fromOwner", ["sheets", "workspace"]).notNull(),
+    toOwner: mysqlEnum("toOwner", ["sheets", "workspace"]).notNull(),
+    fromEpoch: int("fromEpoch").notNull(),
+    toEpoch: int("toEpoch").notNull(),
+    fromVersion: int("fromVersion").notNull(),
+    toVersion: int("toVersion").notNull(),
+    readinessDigest: varchar("readinessDigest", { length: 64 }).notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 64 }).notNull(),
+    actorUserId: int("actorUserId").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    idempotencyUnique: uniqueIndex("wpot_idempotency_unique").on(table.workspaceNovelId, table.idempotencyKey),
+    workspaceNovelCreatedIdx: index("wpot_workspace_novel_created_idx").on(table.workspaceNovelId, table.createdAt),
+    workspaceFk: foreignKey({ name: "wpot_workspace_fk", columns: [table.workspaceId], foreignColumns: [workspaceWorkspaces.id] }).onDelete("cascade"),
+    workspaceNovelFk: foreignKey({ name: "wpot_workspace_novel_fk", columns: [table.workspaceNovelId], foreignColumns: [workspaceNovels.id] }).onDelete("cascade"),
+    publishRunFk: foreignKey({ name: "wpot_publish_run_fk", columns: [table.publishRunId], foreignColumns: [workspacePublishRuns.id] }).onDelete("cascade"),
+    actorFk: foreignKey({ name: "wpot_actor_fk", columns: [table.actorUserId], foreignColumns: [users.id] }),
   })
 );
 

@@ -72,17 +72,25 @@ function requireEditor(role: WorkspaceRole) {
   }
 }
 
-async function requireSheetsPublishOwnership(db: any, workspaceNovelId: number) {
-  const rows = await db.select().from(workspaceMigrationRegistry).where(and(
+async function requireWorkspacePublishOwnership(db: any, workspaceNovelId: number, expectedEpoch?: number, forUpdate = false) {
+  let query = db.select().from(workspaceMigrationRegistry).where(and(
     eq(workspaceMigrationRegistry.workspaceNovelId, workspaceNovelId),
     eq(workspaceMigrationRegistry.capability, "publish")
   ));
-  if (rows.length !== 1 || rows[0].owner !== "sheets" || rows[0].cutoverEpoch !== 0) {
+  if (forUpdate) query = query.for("update");
+  const rows = await query;
+  if (
+    rows.length !== 1 ||
+    rows[0].owner !== "workspace" ||
+    rows[0].cutoverEpoch < 1 ||
+    (expectedEpoch !== undefined && rows[0].cutoverEpoch !== expectedEpoch)
+  ) {
     throw new WorkspacePublishExecutionError(
       "PUBLISH_OWNERSHIP_AMBIGUOUS",
-      "Publish execution requires exactly one Sheets-owned publish registry entry at cutover epoch 0."
+      "Publish execution requires exactly one Workspace-owned publish registry entry at the expected cutover epoch."
     );
   }
+  return rows[0];
 }
 
 async function loadRunContext(db: any, workspaceId: number, runId: number, forUpdate = false) {
@@ -123,6 +131,7 @@ export async function requestPublishExecution(input: {
   actorUserId: number;
   workspaceId: number;
   runId: number;
+  expectedCutoverEpoch: number;
   executionEnabled: boolean;
 }) {
   if (!input.executionEnabled) {
@@ -134,7 +143,7 @@ export async function requestPublishExecution(input: {
 
   return db.transaction(async (tx: any) => {
     const context = await loadRunContext(tx, input.workspaceId, input.runId, true);
-    await requireSheetsPublishOwnership(tx, context.workspaceNovel.id);
+    await requireWorkspacePublishOwnership(tx, context.workspaceNovel.id, input.expectedCutoverEpoch, true);
     if (context.destination.status !== "active") {
       throw new WorkspacePublishExecutionError("PUBLISH_RUN_CONFLICT", "Publish destination is not active.");
     }
@@ -168,6 +177,7 @@ export async function requestPublishExecution(input: {
         eventType: WORKSPACE_PUBLISH_OUTBOX_EVENT,
         payloadObjectKey: buildPublishOutboxObjectKey(input.workspaceId, context.run.id),
         idempotencyKey: outboxIdempotencyKey,
+        ownershipEpoch: input.expectedCutoverEpoch,
         status: "pending",
         availableAt: new Date(),
       });
@@ -212,22 +222,34 @@ export async function claimPublishOutbox(input: {
     const [candidate] = await tx.select().from(workspaceOutbox).where(and(
       eq(workspaceOutbox.workspaceId, input.workspaceId),
       eq(workspaceOutbox.eventType, WORKSPACE_PUBLISH_OUTBOX_EVENT),
+      sql`${workspaceOutbox.ownershipEpoch} IS NOT NULL`,
       sql`${workspaceOutbox.availableAt} <= NOW()`,
       or(
         eq(workspaceOutbox.status, "pending"),
         eq(workspaceOutbox.status, "failed"),
         and(eq(workspaceOutbox.status, "claimed"), sql`${workspaceOutbox.leaseExpiresAt} <= NOW()`)
       )
-    )).orderBy(asc(workspaceOutbox.availableAt), asc(workspaceOutbox.id)).limit(1).for("update");
-    if (!candidate) return undefined;
+    )).orderBy(asc(workspaceOutbox.availableAt), asc(workspaceOutbox.id)).limit(1);
+    if (!candidate || candidate.ownershipEpoch === null) return undefined;
+
+    const context = await loadRunContext(tx, input.workspaceId, candidate.publishRunId);
+    await requireWorkspacePublishOwnership(tx, context.workspaceNovel.id, candidate.ownershipEpoch, true);
 
     const update = await tx.update(workspaceOutbox).set({
       status: "claimed",
       leaseOwner: input.leaseOwner,
       leaseExpiresAt: input.leaseExpiresAt,
       attempts: sql`${workspaceOutbox.attempts} + 1`,
-    }).where(eq(workspaceOutbox.id, candidate.id));
-    if (affectedRows(update) !== 1) throw new WorkspacePublishExecutionError("OUTBOX_CONFLICT", "Outbox claim was lost.");
+    }).where(and(
+      eq(workspaceOutbox.id, candidate.id),
+      sql`${workspaceOutbox.availableAt} <= NOW()`,
+      or(
+        eq(workspaceOutbox.status, "pending"),
+        eq(workspaceOutbox.status, "failed"),
+        and(eq(workspaceOutbox.status, "claimed"), sql`${workspaceOutbox.leaseExpiresAt} <= NOW()`)
+      )
+    ));
+    if (affectedRows(update) !== 1) return undefined;
     const [claimed] = await tx.select().from(workspaceOutbox).where(eq(workspaceOutbox.id, candidate.id)).limit(1);
     return claimed;
   });
@@ -293,6 +315,7 @@ export async function processClaimedPublishOutbox(input: {
   outboxId: number;
   leaseOwner: string;
   provider: WorkspacePublishProvider;
+  expectedCutoverEpoch: number;
   executionEnabled: boolean;
   allowExternalProvider?: boolean;
 }) {
@@ -307,12 +330,15 @@ export async function processClaimedPublishOutbox(input: {
     eq(workspaceOutbox.workspaceId, input.workspaceId)
   )).limit(1);
   if (!outbox) throw new WorkspacePublishExecutionError("OUTBOX_NOT_FOUND", "Publish outbox row was not found.");
+  if (outbox.ownershipEpoch === null || outbox.ownershipEpoch !== input.expectedCutoverEpoch) {
+    throw new WorkspacePublishExecutionError("PUBLISH_OWNERSHIP_AMBIGUOUS", "Publish outbox is not bound to the worker's expected cutover epoch.");
+  }
   if (outbox.status !== "claimed" || outbox.leaseOwner !== input.leaseOwner || !outbox.leaseExpiresAt || outbox.leaseExpiresAt <= now) {
     throw new WorkspacePublishExecutionError("OUTBOX_LEASE_INVALID", "Publish outbox requires the active worker lease.");
   }
 
   const context = await loadRunContext(db, input.workspaceId, outbox.publishRunId);
-  await requireSheetsPublishOwnership(db, context.workspaceNovel.id);
+  await requireWorkspacePublishOwnership(db, context.workspaceNovel.id, outbox.ownershipEpoch);
   await assertCurrentPublishHash(db, context.workspaceNovel.id, context.run.snapshotId, context.run.expectedLastPublishedSha256 ?? null);
 
   const items = await db.select().from(workspacePublishItems)
@@ -378,7 +404,9 @@ export async function processClaimedPublishOutbox(input: {
         sourceSha256: item.sourceSha256,
       };
 
+      await requireWorkspacePublishOwnership(db, context.workspaceNovel.id, outbox.ownershipEpoch);
       const reconciled = await input.provider.reconcile(request);
+      await requireWorkspacePublishOwnership(db, context.workspaceNovel.id, outbox.ownershipEpoch);
       const result = reconciled ?? await input.provider.execute(request);
       await persistItemResult({ db, itemId: item.id, expectedVersion: executionVersion, result });
     }
@@ -412,7 +440,10 @@ export async function finalizePublishExecution(input: {
     if (!outbox || outbox.status !== "claimed" || outbox.leaseOwner !== input.leaseOwner || !outbox.leaseExpiresAt || outbox.leaseExpiresAt <= new Date()) {
       throw new WorkspacePublishExecutionError("OUTBOX_LEASE_INVALID", "Cannot finalize without the active outbox lease.");
     }
-    await requireSheetsPublishOwnership(tx, context.workspaceNovel.id);
+    if (outbox.ownershipEpoch === null) {
+      throw new WorkspacePublishExecutionError("PUBLISH_OWNERSHIP_AMBIGUOUS", "Publish outbox is not bound to a cutover epoch.");
+    }
+    await requireWorkspacePublishOwnership(tx, context.workspaceNovel.id, outbox.ownershipEpoch, true);
     await assertCurrentPublishHash(tx, context.workspaceNovel.id, context.run.snapshotId, context.run.expectedLastPublishedSha256 ?? null);
     const items = await tx.select().from(workspacePublishItems).where(eq(workspacePublishItems.runId, input.runId));
     const published = items.filter((item: any) => item.status === "published" && item.providerReceipt).length;

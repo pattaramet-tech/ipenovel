@@ -27,10 +27,11 @@ describe("workspace M05-A publish dry-run boundaries", () => {
     expect(router).not.toMatch(/deliverPublish|executePublish|claimOutbox|publishNow/i);
   });
 
-  it("fails closed on ownership and stale-hash contracts", () => {
+  it("fails closed on ownership and stale-hash contracts while allowing post-cutover planning", () => {
     expect(service).toContain("PUBLISH_OWNERSHIP_AMBIGUOUS");
     expect(service).toContain("STALE_PUBLISH_HASH");
-    expect(service).toContain('rows[0].owner !== "sheets"');
-    expect(service).toContain("rows[0].cutoverEpoch !== 0");
+    expect(service).toContain('row.owner === "sheets"');
+    expect(service).toContain('row.owner === "workspace"');
+    expect(service).toContain("row.cutoverEpoch >= 1");
   });
 });

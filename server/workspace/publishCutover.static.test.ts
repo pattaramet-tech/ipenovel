@@ -6,17 +6,16 @@ describe("workspace M05-C publish cutover boundaries", () => {
   const router = readFileSync(new URL("./router.ts", import.meta.url), "utf8");
   const journal = readFileSync(new URL("../../drizzle/meta/_journal.json", import.meta.url), "utf8");
 
-  it("reuses the M05 schema and adds no 0043 migration", () => {
+  it("keeps the M05-C read model intact while M05-D owns the 0043 transition migration", () => {
     expect(journal).toContain("0042_workspace_publish_dry_run_foundation");
-    expect(journal).not.toContain("0043_workspace_publish");
+    expect(journal).toContain("0043_workspace_publish_ownership_transition");
   });
 
-  it("exposes only membership-gated read queries for readiness and rehearsal", () => {
+  it("retains membership-gated read queries for readiness and rehearsal", () => {
     expect(router).toContain("publishCutover: router");
     expect(router).toContain("getPublishCutoverReadiness");
     expect(router).toContain("rehearsePublishCutoverRollback");
-    expect(router).not.toContain("applyPublishCutover");
-    expect(router).not.toContain("rollbackPublishCutover");
+    expect(service).toContain("readOnly: true");
   });
 
   it("never mutates ownership, publication targets, Docs, Kanban, or outbox/run/item state", () => {

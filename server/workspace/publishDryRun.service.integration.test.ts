@@ -146,13 +146,27 @@ describe.sequential("workspace M05-A publish dry-run foundation", () => {
         eq(workspaceMigrationRegistry.workspaceNovelId, workspaceNovel.workspaceNovelId),
         eq(workspaceMigrationRegistry.capability, "publish")
       ));
-      await expect(createPublishDryRun({
+      const postCutoverPlan = await createPublishDryRun({
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
         destinationId: destination.destination.id,
         snapshotId: snapshot.id,
         expectedLastPublishedSha256: "a".repeat(64),
         items: [{ itemKey: "ownership", sourceSha256: snapshot.normalizedSha256 }],
+      });
+      expect(postCutoverPlan.run.status).toBe("ready");
+
+      await db.update(workspaceMigrationRegistry).set({ owner: "paused", cutoverEpoch: 2 }).where(and(
+        eq(workspaceMigrationRegistry.workspaceNovelId, workspaceNovel.workspaceNovelId),
+        eq(workspaceMigrationRegistry.capability, "publish")
+      ));
+      await expect(createPublishDryRun({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        destinationId: destination.destination.id,
+        snapshotId: snapshot.id,
+        expectedLastPublishedSha256: "a".repeat(64),
+        items: [{ itemKey: "paused-ownership", sourceSha256: snapshot.normalizedSha256 }],
       })).rejects.toMatchObject({ code: "PUBLISH_OWNERSHIP_AMBIGUOUS" } satisfies Partial<WorkspacePublishDryRunError>);
     } finally {
       await db.delete(workspaceWorkspaces).where(eq(workspaceWorkspaces.id, workspace.workspaceId));

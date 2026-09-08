@@ -50,6 +50,11 @@ import {
   WorkspacePublishCutoverError,
 } from "./publishCutover.service";
 import {
+  cutoverPublishOwnership,
+  rollbackPublishOwnership,
+  WorkspacePublishOwnershipTransitionError,
+} from "./publishOwnershipTransition.service";
+import {
   addOrUpdateMember,
   bindPublicationNovel,
   createWorkspace,
@@ -66,6 +71,19 @@ import {
  * a Google Docs connection or change the existing login scope.
  */
 function mapWorkspaceError(error: unknown): never {
+  if (error instanceof WorkspacePublishOwnershipTransitionError) {
+    const code =
+      error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
+        ? "FORBIDDEN"
+        : error.code === "DATABASE_UNAVAILABLE"
+          ? "SERVICE_UNAVAILABLE"
+          : error.code === "PUBLISH_RUN_NOT_FOUND"
+            ? "NOT_FOUND"
+            : error.code === "PUBLISH_READINESS_BLOCKED" || error.code === "PUBLISH_OWNERSHIP_AMBIGUOUS" || error.code === "PUBLISH_OWNERSHIP_CONFLICT" || error.code === "STALE_PUBLISH_HASH"
+              ? "CONFLICT"
+              : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
   if (error instanceof WorkspacePublishCutoverError) {
     const code =
       error.code === "MEMBERSHIP_REQUIRED"
@@ -462,13 +480,17 @@ export const workspaceRouter = router({
         }
       }),
     requestExecution: authenticatedProcedure
-      .input(workspaceIdInput.extend({ runId: z.number().int().positive() }))
+      .input(workspaceIdInput.extend({
+        runId: z.number().int().positive(),
+        expectedCutoverEpoch: z.number().int().positive(),
+      }))
       .mutation(async ({ ctx, input }) => {
         try {
           return await requestPublishExecution({
             actorUserId: ctx.user.id,
             workspaceId: input.workspaceId,
             runId: input.runId,
+            expectedCutoverEpoch: input.expectedCutoverEpoch,
             executionEnabled: process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true",
           });
         } catch (error) {
@@ -492,6 +514,34 @@ export const workspaceRouter = router({
       .query(async ({ ctx, input }) => {
         try {
           return await rehearsePublishCutoverRollback({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    cutover: authenticatedProcedure
+      .input(workspaceIdInput.extend({
+        runId: z.number().int().positive(),
+        expectedOwner: z.literal("sheets"),
+        expectedCutoverEpoch: z.literal(0),
+        expectedVersion: z.number().int().positive(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await cutoverPublishOwnership({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    rollback: authenticatedProcedure
+      .input(workspaceIdInput.extend({
+        runId: z.number().int().positive(),
+        expectedOwner: z.literal("workspace"),
+        expectedCutoverEpoch: z.number().int().positive(),
+        expectedVersion: z.number().int().positive(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await rollbackPublishOwnership({ actorUserId: ctx.user.id, ...input });
         } catch (error) {
           return mapWorkspaceError(error);
         }

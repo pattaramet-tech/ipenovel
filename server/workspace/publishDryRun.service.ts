@@ -73,18 +73,23 @@ function requireEditor(role: WorkspaceRole) {
   }
 }
 
-async function requireSheetsPublishOwnership(db: any, workspaceNovelId: number) {
+async function requireValidPublishOwnership(db: any, workspaceNovelId: number) {
   const rows = await db.select().from(workspaceMigrationRegistry).where(and(
     eq(workspaceMigrationRegistry.workspaceNovelId, workspaceNovelId),
     eq(workspaceMigrationRegistry.capability, "publish")
   ));
-  if (rows.length !== 1 || rows[0].owner !== "sheets" || rows[0].cutoverEpoch !== 0) {
+  const row = rows[0];
+  const valid = rows.length === 1 && (
+    (row.owner === "sheets" && row.cutoverEpoch === 0) ||
+    (row.owner === "workspace" && row.cutoverEpoch >= 1)
+  );
+  if (!valid) {
     throw new WorkspacePublishDryRunError(
       "PUBLISH_OWNERSHIP_AMBIGUOUS",
-      "Publish dry-run requires exactly one Sheets-owned publish registry entry at cutover epoch 0."
+      "Publish planning requires exactly one valid Sheets epoch 0 or Workspace-owned publish registry entry."
     );
   }
-  return rows[0];
+  return row;
 }
 
 function validateItems(items: PublishDryRunItemInput[]) {
@@ -155,7 +160,7 @@ export async function createPublishDestination(input: {
     eq(workspaceNovels.workspaceId, input.workspaceId)
   )).limit(1);
   if (!workspaceNovel) throw new WorkspacePublishDryRunError("DESTINATION_NOT_FOUND", "Workspace novel was not found.");
-  await requireSheetsPublishOwnership(db, workspaceNovel.id);
+  await requireValidPublishOwnership(db, workspaceNovel.id);
   if (
     input.targetType !== "novel" ||
     input.targetId !== workspaceNovel.novelId ||
@@ -219,7 +224,7 @@ export async function createPublishDryRun(input: {
   requireEditor(membership.role);
   const context = await destinationContext(db, input.workspaceId, input.destinationId);
   if (context.destination.status !== "active") throw new WorkspacePublishDryRunError("DESTINATION_CONFLICT", "Publish destination is not active.");
-  await requireSheetsPublishOwnership(db, context.workspaceNovel.id);
+  await requireValidPublishOwnership(db, context.workspaceNovel.id);
 
   const [source] = await db.select({ snapshot: workspaceDocumentSnapshots, binding: workspaceDocumentBindings, fingerprint: workspaceDocumentFingerprints })
     .from(workspaceDocumentSnapshots)

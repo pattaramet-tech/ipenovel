@@ -7,11 +7,10 @@ describe("workspace M05-B publish execution boundaries", () => {
   const schema = readFileSync(new URL("../../drizzle/schema.ts", import.meta.url), "utf8");
   const journal = readFileSync(new URL("../../drizzle/meta/_journal.json", import.meta.url), "utf8");
 
-  it("reuses M05-A schema without a new migration", () => {
+  it("retains the M05-A execution schema contract across later ownership migrations", () => {
     expect(schema).toContain("workspaceOutbox");
     expect(schema).toContain("workspacePublishItems");
     expect(journal).toContain("0042_workspace_publish_dry_run_foundation");
-    expect(journal).not.toContain("0043_workspace_publish");
   });
 
   it("keeps worker execution internal and requires explicit server/provider opt-in", () => {

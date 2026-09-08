@@ -109,10 +109,15 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
           { itemKey: "chapter-2", sourceSha256: "b".repeat(64) },
         ],
       });
+      await db.update(workspaceMigrationRegistry).set({ owner: "workspace", cutoverEpoch: 1 }).where(and(
+        eq(workspaceMigrationRegistry.workspaceNovelId, workspaceNovel.workspaceNovelId),
+        eq(workspaceMigrationRegistry.capability, "publish")
+      ));
       await expect(requestPublishExecution({
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
         runId: partialPlan.run.id,
+        expectedCutoverEpoch: 1,
         executionEnabled: false,
       })).rejects.toMatchObject({ code: "EXECUTION_DISABLED" } satisfies Partial<WorkspacePublishExecutionError>);
 
@@ -120,6 +125,7 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
         runId: partialPlan.run.id,
+        expectedCutoverEpoch: 1,
         executionEnabled: true,
       });
       expect(enqueued.created).toBe(true);
@@ -138,6 +144,7 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         outboxId: firstClaim!.id,
         leaseOwner: "m05b-worker-1",
         provider: partialProvider.provider,
+        expectedCutoverEpoch: 1,
         executionEnabled: true,
       });
       expect(partialResult.status).toBe("partially_failed");
@@ -152,6 +159,7 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
         runId: partialPlan.run.id,
+        expectedCutoverEpoch: 1,
         executionEnabled: true,
       });
       await new Promise(resolve => setTimeout(resolve, 1_050));
@@ -166,6 +174,7 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         outboxId: retryClaim!.id,
         leaseOwner: "m05b-worker-2",
         provider: retryProvider.provider,
+        expectedCutoverEpoch: 1,
         executionEnabled: true,
       });
       expect(retryResult.status).toBe("published");
@@ -179,7 +188,7 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         snapshotId: snapshot.id,
         items: [{ itemKey: "crash-item", sourceSha256: "c".repeat(64) }],
       });
-      const crashEnqueue = await requestPublishExecution({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: crashPlan.run.id, executionEnabled: true });
+      const crashEnqueue = await requestPublishExecution({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: crashPlan.run.id, expectedCutoverEpoch: 1, executionEnabled: true });
       const crashClaim = await claimPublishOutbox({ workspaceId: workspace.workspaceId, leaseOwner: "crash-worker", leaseExpiresAt: new Date(Date.now() + 60_000) });
       const crashProvider = makeProvider({ crashOnce: true });
       await expect(processClaimedPublishOutbox({
@@ -187,6 +196,7 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         outboxId: crashClaim!.id,
         leaseOwner: "crash-worker",
         provider: crashProvider.provider,
+        expectedCutoverEpoch: 1,
         executionEnabled: true,
       })).rejects.toThrow("synthetic worker crash");
       await new Promise(resolve => setTimeout(resolve, 1_050));
@@ -197,6 +207,7 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         outboxId: recoveryClaim!.id,
         leaseOwner: "recovery-worker",
         provider: crashProvider.provider,
+        expectedCutoverEpoch: 1,
         executionEnabled: true,
       });
       expect(recovered.status).toBe("published");
@@ -210,7 +221,7 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         snapshotId: snapshot.id,
         items: [{ itemKey: "persisted-receipt-item", sourceSha256: "e".repeat(64) }],
       });
-      const persistedReceiptEnqueue = await requestPublishExecution({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: persistedReceiptPlan.run.id, executionEnabled: true });
+      const persistedReceiptEnqueue = await requestPublishExecution({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: persistedReceiptPlan.run.id, expectedCutoverEpoch: 1, executionEnabled: true });
       const persistedReceiptClaim = await claimPublishOutbox({ workspaceId: workspace.workspaceId, leaseOwner: "persisted-receipt-worker", leaseExpiresAt: new Date(Date.now() + 60_000) });
       const [persistedReceiptItem] = await db.select().from(workspacePublishItems).where(eq(workspacePublishItems.runId, persistedReceiptPlan.run.id));
       await db.update(workspacePublishItems).set({
@@ -224,6 +235,7 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         outboxId: persistedReceiptClaim!.id,
         leaseOwner: "persisted-receipt-worker",
         provider: persistedReceiptProvider.provider,
+        expectedCutoverEpoch: 1,
         executionEnabled: true,
       });
       expect(persistedReceiptClaim?.id).toBe(persistedReceiptEnqueue.outbox.id);
@@ -243,6 +255,7 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
         runId: stalePlan.run.id,
+        expectedCutoverEpoch: 1,
         executionEnabled: true,
       })).rejects.toMatchObject({ code: "STALE_PUBLISH_HASH" } satisfies Partial<WorkspacePublishExecutionError>);
 
@@ -251,7 +264,7 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         eq(workspaceMigrationRegistry.capability, "publish")
       ));
       expect(ownership).toHaveLength(1);
-      expect(ownership[0]).toMatchObject({ owner: "sheets", cutoverEpoch: 0 });
+      expect(ownership[0]).toMatchObject({ owner: "workspace", cutoverEpoch: 1 });
       expect(await db.select().from(workspaceOutbox).where(eq(workspaceOutbox.publishRunId, partialPlan.run.id))).toHaveLength(1);
       expect((await db.select().from(workspacePublishRuns).where(eq(workspacePublishRuns.id, partialPlan.run.id)))[0].status).toBe("published");
     } finally {

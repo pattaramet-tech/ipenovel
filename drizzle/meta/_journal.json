@@ -302,6 +302,13 @@
       "when": 1788859033810,
       "tag": "0042_workspace_publish_dry_run_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "5",
+      "when": 1788885160116,
+      "tag": "0043_workspace_publish_ownership_transition",
+      "breakpoints": true
     }
   ]
 }
