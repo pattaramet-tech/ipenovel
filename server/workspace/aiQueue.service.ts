@@ -264,6 +264,51 @@ export async function startAiAttempt(input: {
   });
 }
 
+export async function recordAiAttemptProviderReceipt(input: {
+  workspaceId: number;
+  jobId: number;
+  attemptId: number;
+  leaseOwner: string;
+  providerRequestId: string;
+}) {
+  const db = await database();
+  const now = new Date();
+  return db.transaction(async (tx: any) => {
+    const [job] = await tx.select().from(workspaceAiJobs).where(and(
+      eq(workspaceAiJobs.id, input.jobId),
+      eq(workspaceAiJobs.workspaceId, input.workspaceId)
+    )).limit(1).for("update");
+    if (!job) throw new WorkspaceAiQueueError("AI_JOB_NOT_FOUND", "AI job was not found.");
+    const [attempt] = await tx.select().from(workspaceAiJobAttempts).where(and(
+      eq(workspaceAiJobAttempts.id, input.attemptId),
+      eq(workspaceAiJobAttempts.jobId, input.jobId)
+    )).limit(1).for("update");
+    if (!attempt) throw new WorkspaceAiQueueError("AI_ATTEMPT_NOT_FOUND", "AI attempt was not found.");
+    if (job.status !== "running" || attempt.status !== "running" || attempt.leaseOwner !== input.leaseOwner || attempt.leaseExpiresAt <= now) {
+      throw new WorkspaceAiQueueError("AI_ATTEMPT_CONFLICT", "AI attempt cannot record a provider receipt without the active running lease.");
+    }
+    if (attempt.providerRequestId) {
+      if (attempt.providerRequestId !== input.providerRequestId) {
+        throw new WorkspaceAiQueueError("AI_ATTEMPT_CONFLICT", "AI attempt already has a different provider receipt.");
+      }
+      return attempt;
+    }
+    const updated = await tx.update(workspaceAiJobAttempts).set({
+      providerRequestId: input.providerRequestId,
+      version: sql`${workspaceAiJobAttempts.version} + 1`,
+    }).where(and(
+      eq(workspaceAiJobAttempts.id, attempt.id),
+      eq(workspaceAiJobAttempts.version, attempt.version),
+      gt(workspaceAiJobAttempts.leaseExpiresAt, now)
+    ));
+    if (affectedRows(updated) !== 1) {
+      throw new WorkspaceAiQueueError("AI_ATTEMPT_CONFLICT", "AI attempt changed while recording its provider receipt.");
+    }
+    const [recorded] = await tx.select().from(workspaceAiJobAttempts).where(eq(workspaceAiJobAttempts.id, attempt.id));
+    return recorded;
+  });
+}
+
 export async function completeAiAttempt(input: {
   workspaceId: number;
   jobId: number;
