@@ -45,6 +45,11 @@ import {
   WorkspacePublishExecutionError,
 } from "./publishExecution.service";
 import {
+  getPublishCutoverReadiness,
+  rehearsePublishCutoverRollback,
+  WorkspacePublishCutoverError,
+} from "./publishCutover.service";
+import {
   addOrUpdateMember,
   bindPublicationNovel,
   createWorkspace,
@@ -61,6 +66,19 @@ import {
  * a Google Docs connection or change the existing login scope.
  */
 function mapWorkspaceError(error: unknown): never {
+  if (error instanceof WorkspacePublishCutoverError) {
+    const code =
+      error.code === "MEMBERSHIP_REQUIRED"
+        ? "FORBIDDEN"
+        : error.code === "DATABASE_UNAVAILABLE"
+          ? "SERVICE_UNAVAILABLE"
+          : error.code === "PUBLISH_RUN_NOT_FOUND"
+            ? "NOT_FOUND"
+            : error.code === "PUBLISH_OWNERSHIP_AMBIGUOUS"
+              ? "CONFLICT"
+              : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
   if (error instanceof WorkspacePublishExecutionError) {
     const code =
       error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
@@ -453,6 +471,27 @@ export const workspaceRouter = router({
             runId: input.runId,
             executionEnabled: process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true",
           });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+  }),
+
+  publishCutover: router({
+    readiness: authenticatedProcedure
+      .input(workspaceIdInput.extend({ runId: z.number().int().positive() }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getPublishCutoverReadiness({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    rehearse: authenticatedProcedure
+      .input(workspaceIdInput.extend({ runId: z.number().int().positive() }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await rehearsePublishCutoverRollback({ actorUserId: ctx.user.id, ...input });
         } catch (error) {
           return mapWorkspaceError(error);
         }
