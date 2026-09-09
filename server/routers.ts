@@ -3593,6 +3593,32 @@ export const appRouter = router({
         )
         .query(async ({ input }) => buildCompensatingRecoveryPlan(input)),
 
+      // Controlled duplicate-lifecycle reconciliation only. This is NOT a
+      // generic blocked-request editor: the service binds the duplicate to a
+      // newer canonical request for the same requester, requires the
+      // duplicate to own no merge case/participants, and performs one CAS
+      // blocked -> cancelled transition plus an audit record atomically.
+      supersedeDuplicate: adminProcedure
+        .input(
+          z.object({
+            duplicateRequestId: z.number().int().positive(),
+            canonicalRequestId: z.number().int().positive(),
+            reason: z.string().trim().min(1).max(1000),
+          })
+        )
+        .mutation(async ({ input, ctx }) => {
+          try {
+            return await accountRecoveryService.supersedeDuplicateAccountRecoveryRequest({
+              duplicateRequestId: input.duplicateRequestId,
+              canonicalRequestId: input.canonicalRequestId,
+              actorAdminId: ctx.user.id,
+              reason: input.reason,
+            });
+          } catch (error) {
+            throw mapAccountRecoveryError(error);
+          }
+        }),
+
       reject: adminProcedure
         .input(z.object({ requestId: z.number().int().positive(), reason: z.string().trim().min(1).max(1000) }))
         .mutation(async ({ input, ctx }) => {

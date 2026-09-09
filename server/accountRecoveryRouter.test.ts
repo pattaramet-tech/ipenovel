@@ -199,6 +199,19 @@ describe("accountRecovery.admin.* - every mutation/query requires a real admin s
     });
   });
 
+  it("supersedeDuplicate: non-admin -> FORBIDDEN and never reaches the reconciliation service", async () => {
+    const supersedeSpy = vi.spyOn(accountRecoveryService, "supersedeDuplicateAccountRecoveryRequest");
+    const caller = appRouter.createCaller(contextFor(fakeUser({ role: "user" })));
+    await expect(
+      caller.accountRecovery.admin.supersedeDuplicate({
+        duplicateRequestId: 90003,
+        canonicalRequestId: 90007,
+        reason: "superseded by newer canonical request",
+      })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(supersedeSpy).not.toHaveBeenCalled();
+  });
+
   it("approve: real admin -> reaches the service layer, passing the admin's own id (never client-suppliable) as adminId", async () => {
     const executeSpy = vi
       .spyOn(accountRecoveryService, "executeAccountRecovery")
@@ -210,6 +223,27 @@ describe("accountRecovery.admin.* - every mutation/query requires a real admin s
     expect(executeSpy).toHaveBeenCalledWith(
       expect.objectContaining({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 5, reason: "verified via order #123" })
     );
+  });
+
+  it("supersedeDuplicate: real admin -> binds actorAdminId from the session and forwards only explicit request ids/reason", async () => {
+    const supersedeSpy = vi
+      .spyOn(accountRecoveryService, "supersedeDuplicateAccountRecoveryRequest")
+      .mockResolvedValue({ id: 90003, status: "cancelled" } as any);
+    const caller = appRouter.createCaller(contextFor(fakeUser({ id: 789600049, role: "admin" })));
+
+    const result = await caller.accountRecovery.admin.supersedeDuplicate({
+      duplicateRequestId: 90003,
+      canonicalRequestId: 90007,
+      reason: "Superseded by request 90007 after Advanced Merge became available",
+    });
+
+    expect(result).toEqual({ id: 90003, status: "cancelled" });
+    expect(supersedeSpy).toHaveBeenCalledWith({
+      duplicateRequestId: 90003,
+      canonicalRequestId: 90007,
+      actorAdminId: 789600049,
+      reason: "Superseded by request 90007 after Advanced Merge became available",
+    });
   });
 
   it("searchLegacyAccount: admin search results never include passwordHash - only the masked/allowlisted fields", async () => {

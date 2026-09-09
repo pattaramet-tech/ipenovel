@@ -6807,6 +6807,17 @@ export async function getAccountRecoveryRequestById(id: number, tx?: any) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+/** Lock one recovery request row for lifecycle reconciliation. Callers that
+ * need multiple rows must acquire them in deterministic id order to avoid
+ * deadlocks. Kept separate from getAccountRecoveryRequestById so ordinary
+ * read-only/admin-detail paths never take a write lock accidentally. */
+export async function getAccountRecoveryRequestByIdForUpdate(id: number, tx: any) {
+  if (!Number.isInteger(id) || id <= 0) throw new Error("Valid recovery request id is required");
+  const raw = await tx.execute(sql`SELECT * FROM accountRecoveryRequests WHERE id = ${id} FOR UPDATE`);
+  const rows = Array.isArray(raw?.[0]) ? raw[0] : raw;
+  return rows?.length > 0 ? rows[0] : undefined;
+}
+
 /** Every request the given user has ever made, most recent first - backs
  *  /account/recovery's own status view. Never accepts anyone else's id from
  *  the client - the caller (accountRecovery.myRequests) always passes
@@ -6918,6 +6929,46 @@ export async function transitionAccountRecoveryRequestStatus(
       and(
         eq(accountRecoveryRequests.id, params.id),
         statusConditions.length === 1 ? statusConditions[0] : or(...statusConditions)
+      )
+    );
+
+  const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
+  const affectedRows = (resultHeader as any)?.affectedRows || 0;
+  return affectedRows > 0;
+}
+
+/**
+ * Narrow CAS writer for duplicate-lifecycle reconciliation only.
+ * Deliberately separate from transitionAccountRecoveryRequestStatus so the
+ * ordinary review flow remains pending-only. This succeeds only while the
+ * exact duplicate row is STILL blocked and STILL belongs to the requester
+ * the service already bound to the canonical request inside the same
+ * transaction. It can only terminate the duplicate as cancelled; it never
+ * reopens a request or changes source/target participants.
+ */
+export async function supersedeBlockedAccountRecoveryRequest(
+  params: {
+    id: number;
+    expectedRequesterUserId: number;
+    reviewedByAdminId: number;
+    reviewReason: string;
+  },
+  tx: any
+): Promise<boolean> {
+  const updateResult = await tx
+    .update(accountRecoveryRequests)
+    .set({
+      status: "cancelled" as any,
+      reviewedByAdminId: params.reviewedByAdminId,
+      reviewedAt: new Date(),
+      reviewReason: params.reviewReason,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(accountRecoveryRequests.id, params.id),
+        eq(accountRecoveryRequests.requesterUserId, params.expectedRequesterUserId),
+        eq(accountRecoveryRequests.status, "blocked" as any)
       )
     );
 
@@ -8116,6 +8167,19 @@ export async function getAccountMergeCasesForSourceForUpdate(sourceUserId: numbe
  * Returns every case in which either explicit account appears on either
  * side, so the planner can fail closed on cross-request conflicts instead
  * of looking only at the current request. */
+export async function listAccountMergeCasesForRecoveryRequest(requestId: number, tx?: any) {
+  const database = tx || (await getDb());
+  if (!database) throw new Error("Database not available");
+  if (!Number.isInteger(requestId) || requestId <= 0) {
+    throw new Error("Valid recovery request id is required for merge-case lookup");
+  }
+  return database
+    .select()
+    .from(accountMergeCases)
+    .where(eq(accountMergeCases.originAccountRecoveryRequestId, requestId))
+    .orderBy(asc(accountMergeCases.id));
+}
+
 export async function listAccountMergeCasesForParticipants(
   userIds: number[],
   tx?: any

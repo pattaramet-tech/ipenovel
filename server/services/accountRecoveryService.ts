@@ -379,6 +379,131 @@ export async function reviewAccountRecoveryRequest(params: {
 }
 
 /**
+ * Terminates one historical BLOCKED duplicate request after an admin has
+ * identified a newer canonical request for the same requester. This is the
+ * only supported blocked -> cancelled transition: it is deliberately NOT a
+ * generic reopen/review helper, and it never touches auth identity, users,
+ * merge/reconciliation data, or the canonical request itself.
+ *
+ * Safety contract:
+ * - duplicate and canonical ids must be distinct positive ids;
+ * - both requests must exist and belong to the exact same requester;
+ * - the duplicate must still be blocked and must have no persisted
+ *   source/target participants or merge case of its own;
+ * - the canonical request must be newer, still blocked, and own exactly one
+ *   completed Advanced Account Merge case;
+ * - the final write is a blocked/requester-bound CAS; a race fails closed;
+ * - state change and append-only audit row commit atomically.
+ */
+export async function supersedeDuplicateAccountRecoveryRequest(params: {
+  duplicateRequestId: number;
+  canonicalRequestId: number;
+  actorAdminId: number;
+  reason: string;
+}): Promise<AccountRecoveryRequest> {
+  if (!params.reason || !params.reason.trim()) {
+    throw new AccountRecoveryError("FORBIDDEN", "A reason is required");
+  }
+  if (
+    !Number.isInteger(params.duplicateRequestId) ||
+    params.duplicateRequestId <= 0 ||
+    !Number.isInteger(params.canonicalRequestId) ||
+    params.canonicalRequestId <= 0 ||
+    params.duplicateRequestId === params.canonicalRequestId
+  ) {
+    throw new AccountRecoveryError("UNSAFE", "Duplicate and canonical recovery request ids must be distinct positive ids");
+  }
+  if (!Number.isInteger(params.actorAdminId) || params.actorAdminId <= 0) {
+    throw new AccountRecoveryError("FORBIDDEN", "A valid admin actor is required");
+  }
+
+  const database = await db.getDb();
+  if (!database) throw new Error("Database not available");
+
+  return database.transaction(async (tx: any) => {
+    const lockedRequests = new Map<number, AccountRecoveryRequest>();
+    for (const requestId of [params.duplicateRequestId, params.canonicalRequestId].sort((a, b) => a - b)) {
+      const row = await db.getAccountRecoveryRequestByIdForUpdate(requestId, tx);
+      if (row) lockedRequests.set(requestId, row as AccountRecoveryRequest);
+    }
+    const duplicate = lockedRequests.get(params.duplicateRequestId);
+    const canonical = lockedRequests.get(params.canonicalRequestId);
+    if (!duplicate || !canonical) {
+      throw new AccountRecoveryError("NOT_FOUND", "Duplicate or canonical recovery request does not exist");
+    }
+    if (duplicate.status !== "blocked") {
+      throw new AccountRecoveryError("ALREADY_PROCESSED", "Duplicate recovery request is no longer blocked");
+    }
+    if (canonical.status !== "blocked") {
+      throw new AccountRecoveryError("UNSAFE", "Canonical recovery request must still be blocked after Advanced Merge completion");
+    }
+    if (Number(duplicate.requesterUserId) !== Number(canonical.requesterUserId)) {
+      throw new AccountRecoveryError("UNSAFE", "Duplicate and canonical recovery requests belong to different requesters");
+    }
+    if (duplicate.sourceUserId !== null || duplicate.targetUserId !== null) {
+      throw new AccountRecoveryError("UNSAFE", "Duplicate recovery request already has persisted recovery participants");
+    }
+
+    const duplicateCreatedAt = new Date(duplicate.createdAt).getTime();
+    const canonicalCreatedAt = new Date(canonical.createdAt).getTime();
+    if (
+      !Number.isFinite(duplicateCreatedAt) ||
+      !Number.isFinite(canonicalCreatedAt) ||
+      canonicalCreatedAt <= duplicateCreatedAt
+    ) {
+      throw new AccountRecoveryError("UNSAFE", "Canonical recovery request must be newer than the duplicate request");
+    }
+
+    const [duplicateMergeCases, canonicalMergeCases] = await Promise.all([
+      db.listAccountMergeCasesForRecoveryRequest(params.duplicateRequestId, tx),
+      db.listAccountMergeCasesForRecoveryRequest(params.canonicalRequestId, tx),
+    ]);
+    if (duplicateMergeCases.length > 0) {
+      throw new AccountRecoveryError("UNSAFE", "Duplicate recovery request already owns an Account Merge case");
+    }
+    if (canonicalMergeCases.length !== 1 || String(canonicalMergeCases[0]?.status) !== "completed") {
+      throw new AccountRecoveryError(
+        "UNSAFE",
+        "Canonical recovery request must own exactly one completed Account Merge case"
+      );
+    }
+
+    const reason = params.reason.trim();
+    const transitioned = await db.supersedeBlockedAccountRecoveryRequest(
+      {
+        id: params.duplicateRequestId,
+        expectedRequesterUserId: Number(duplicate.requesterUserId),
+        reviewedByAdminId: params.actorAdminId,
+        reviewReason: reason,
+      },
+      tx
+    );
+    if (!transitioned) {
+      throw new AccountRecoveryError("ALREADY_PROCESSED", "Duplicate recovery request changed before reconciliation completed");
+    }
+
+    await db.insertAccountRecoveryAuditLog(
+      {
+        recoveryRequestId: params.duplicateRequestId,
+        actorAdminId: params.actorAdminId,
+        action: "cancelled",
+        safeMetadata: {
+          reason,
+          resolution: "superseded_duplicate",
+          supersededByRequestId: params.canonicalRequestId,
+          canonicalRequestStatus: canonical.status,
+        },
+      },
+      tx
+    );
+
+    const updated = await db.getAccountRecoveryRequestById(params.duplicateRequestId, tx);
+    if (!updated) throw new Error("[AccountRecovery] Superseded request disappeared mid-transaction");
+    return updated;
+  });
+}
+
+/**
  * The single-transaction Approve flow - every numbered step from the task
  * spec, in order:
  *  1. lock request, 2. lock source user, 3. lock target user, 4. lock the

@@ -6,6 +6,7 @@ import {
   executeAccountRecovery,
   reviewAccountRecoveryRequest,
   submitAccountRecoveryRequest,
+  supersedeDuplicateAccountRecoveryRequest,
 } from "./accountRecoveryService";
 
 vi.mock("../db", async () => {
@@ -412,6 +413,176 @@ describe("reviewAccountRecoveryRequest (reject/block/cancel)", () => {
       expect.objectContaining({ recoveryRequestId: 1, actorAdminId: 9, action: "rejected" }),
       fakeTx
     );
+  });
+});
+
+describe("supersedeDuplicateAccountRecoveryRequest", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const duplicate = {
+    id: 90003,
+    requesterUserId: 763680006,
+    status: "blocked",
+    sourceUserId: null,
+    targetUserId: null,
+    createdAt: new Date("2026-08-23T02:49:16.000Z"),
+  } as any;
+  const canonical = {
+    id: 90007,
+    requesterUserId: 763680006,
+    status: "blocked",
+    sourceUserId: null,
+    targetUserId: null,
+    createdAt: new Date("2026-09-09T13:06:28.000Z"),
+  } as any;
+
+  function mockTx() {
+    const fakeTx = {};
+    vi.spyOn(db, "getDb").mockResolvedValue({ transaction: async (cb: any) => cb(fakeTx) } as any);
+    return fakeTx;
+  }
+
+  it("happy path -> CAS-cancels only the older blocked duplicate and writes atomic superseded provenance", async () => {
+    const fakeTx = mockTx();
+    vi.spyOn(db, "getAccountRecoveryRequestByIdForUpdate")
+      .mockResolvedValueOnce(duplicate)
+      .mockResolvedValueOnce(canonical);
+    vi.spyOn(db, "getAccountRecoveryRequestById").mockResolvedValue({ ...duplicate, status: "cancelled" });
+    vi.spyOn(db, "listAccountMergeCasesForRecoveryRequest")
+      .mockResolvedValueOnce([] as any)
+      .mockResolvedValueOnce([{ id: 1, status: "completed" }] as any);
+    const casSpy = vi.spyOn(db, "supersedeBlockedAccountRecoveryRequest").mockResolvedValue(true);
+    const auditSpy = vi.spyOn(db, "insertAccountRecoveryAuditLog").mockResolvedValue(undefined as any);
+
+    const result = await supersedeDuplicateAccountRecoveryRequest({
+      duplicateRequestId: 90003,
+      canonicalRequestId: 90007,
+      actorAdminId: 789600049,
+      reason: "Superseded by request 90007 after Advanced Merge became available",
+    });
+
+    expect(result.status).toBe("cancelled");
+    expect(casSpy).toHaveBeenCalledWith(
+      {
+        id: 90003,
+        expectedRequesterUserId: 763680006,
+        reviewedByAdminId: 789600049,
+        reviewReason: "Superseded by request 90007 after Advanced Merge became available",
+      },
+      fakeTx
+    );
+    expect(auditSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recoveryRequestId: 90003,
+        actorAdminId: 789600049,
+        action: "cancelled",
+        safeMetadata: {
+          reason: "Superseded by request 90007 after Advanced Merge became available",
+          resolution: "superseded_duplicate",
+          supersededByRequestId: 90007,
+          canonicalRequestStatus: "blocked",
+        },
+      }),
+      fakeTx
+    );
+  });
+
+  it("different requester -> UNSAFE and never reaches the CAS writer", async () => {
+    mockTx();
+    vi.spyOn(db, "getAccountRecoveryRequestByIdForUpdate")
+      .mockResolvedValueOnce(duplicate)
+      .mockResolvedValueOnce({ ...canonical, requesterUserId: 999 });
+    const casSpy = vi.spyOn(db, "supersedeBlockedAccountRecoveryRequest");
+
+    await expect(
+      supersedeDuplicateAccountRecoveryRequest({
+        duplicateRequestId: 90003,
+        canonicalRequestId: 90007,
+        actorAdminId: 9,
+        reason: "duplicate lifecycle",
+      })
+    ).rejects.toMatchObject({ code: "UNSAFE" });
+    expect(casSpy).not.toHaveBeenCalled();
+  });
+
+  it("duplicate already owns a merge case -> UNSAFE and preserves it", async () => {
+    mockTx();
+    vi.spyOn(db, "getAccountRecoveryRequestByIdForUpdate")
+      .mockResolvedValueOnce(duplicate)
+      .mockResolvedValueOnce(canonical);
+    vi.spyOn(db, "listAccountMergeCasesForRecoveryRequest").mockResolvedValue([{ id: 44 }] as any);
+    const casSpy = vi.spyOn(db, "supersedeBlockedAccountRecoveryRequest");
+
+    await expect(
+      supersedeDuplicateAccountRecoveryRequest({
+        duplicateRequestId: 90003,
+        canonicalRequestId: 90007,
+        actorAdminId: 9,
+        reason: "duplicate lifecycle",
+      })
+    ).rejects.toMatchObject({ code: "UNSAFE" });
+    expect(casSpy).not.toHaveBeenCalled();
+  });
+
+  it("canonical without exactly one completed Advanced Merge case -> UNSAFE and never reaches the CAS writer", async () => {
+    mockTx();
+    vi.spyOn(db, "getAccountRecoveryRequestByIdForUpdate")
+      .mockResolvedValueOnce(duplicate)
+      .mockResolvedValueOnce(canonical);
+    vi.spyOn(db, "listAccountMergeCasesForRecoveryRequest")
+      .mockResolvedValueOnce([] as any)
+      .mockResolvedValueOnce([{ id: 1, status: "in_progress" }] as any);
+    const casSpy = vi.spyOn(db, "supersedeBlockedAccountRecoveryRequest");
+
+    await expect(
+      supersedeDuplicateAccountRecoveryRequest({
+        duplicateRequestId: 90003,
+        canonicalRequestId: 90007,
+        actorAdminId: 9,
+        reason: "duplicate lifecycle",
+      })
+    ).rejects.toMatchObject({ code: "UNSAFE" });
+    expect(casSpy).not.toHaveBeenCalled();
+  });
+
+  it("canonical must still be blocked; even an approved canonical fails closed as an impossible Advanced Merge lifecycle", async () => {
+    mockTx();
+    vi.spyOn(db, "getAccountRecoveryRequestByIdForUpdate")
+      .mockResolvedValueOnce(duplicate)
+      .mockResolvedValueOnce({ ...canonical, status: "approved" });
+    const casSpy = vi.spyOn(db, "supersedeBlockedAccountRecoveryRequest");
+
+    await expect(
+      supersedeDuplicateAccountRecoveryRequest({
+        duplicateRequestId: 90003,
+        canonicalRequestId: 90007,
+        actorAdminId: 9,
+        reason: "duplicate lifecycle",
+      })
+    ).rejects.toMatchObject({ code: "UNSAFE" });
+    expect(casSpy).not.toHaveBeenCalled();
+  });
+
+  it("CAS miss after validation -> ALREADY_PROCESSED and never writes an audit row", async () => {
+    mockTx();
+    vi.spyOn(db, "getAccountRecoveryRequestByIdForUpdate")
+      .mockResolvedValueOnce(duplicate)
+      .mockResolvedValueOnce(canonical);
+    vi.spyOn(db, "listAccountMergeCasesForRecoveryRequest")
+      .mockResolvedValueOnce([] as any)
+      .mockResolvedValueOnce([{ id: 1, status: "completed" }] as any);
+    vi.spyOn(db, "supersedeBlockedAccountRecoveryRequest").mockResolvedValue(false);
+    const auditSpy = vi.spyOn(db, "insertAccountRecoveryAuditLog");
+
+    await expect(
+      supersedeDuplicateAccountRecoveryRequest({
+        duplicateRequestId: 90003,
+        canonicalRequestId: 90007,
+        actorAdminId: 9,
+        reason: "duplicate lifecycle",
+      })
+    ).rejects.toMatchObject({ code: "ALREADY_PROCESSED" });
+    expect(auditSpy).not.toHaveBeenCalled();
   });
 });
 
