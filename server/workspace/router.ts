@@ -60,6 +60,11 @@ import {
   WorkspacePublishFinalGateError,
 } from "./publishFinalGate.service";
 import {
+  getLegacyRetirementCandidatePackage,
+  requireLegacyRetirementCandidate,
+  WorkspaceLegacyRetirementError,
+} from "./legacyRetirement.service";
+import {
   addOrUpdateMember,
   bindPublicationNovel,
   createWorkspace,
@@ -76,6 +81,19 @@ import {
  * a Google Docs connection or change the existing login scope.
  */
 function mapWorkspaceError(error: unknown): never {
+  if (error instanceof WorkspaceLegacyRetirementError) {
+    const code =
+      error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
+        ? "FORBIDDEN"
+        : error.code === "DATABASE_UNAVAILABLE"
+          ? "SERVICE_UNAVAILABLE"
+          : error.code === "WORKSPACE_NOVEL_NOT_FOUND"
+            ? "NOT_FOUND"
+            : error.code === "PUBLISH_OWNERSHIP_AMBIGUOUS" || error.code === "RETIREMENT_CANDIDATE_BLOCKED"
+              ? "CONFLICT"
+              : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
   if (error instanceof WorkspacePublishFinalGateError) {
     const code =
       error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
@@ -204,6 +222,12 @@ function mapWorkspaceError(error: unknown): never {
 }
 
 const workspaceIdInput = z.object({ workspaceId: z.number().int().positive() });
+const legacyRetirementEvidenceInput = z.object({
+  sustainedParity: z.object({ passed: z.boolean(), evidenceRef: z.string().trim().min(1).max(255) }),
+  slo: z.object({ passed: z.boolean(), evidenceRef: z.string().trim().min(1).max(255) }),
+  rollbackDrill: z.object({ passed: z.boolean(), evidenceRef: z.string().trim().min(1).max(255) }),
+  legacyActionFreeze: z.object({ passed: z.boolean(), evidenceRef: z.string().trim().min(1).max(255) }),
+});
 
 export const workspaceRouter = router({
   list: authenticatedProcedure.query(async ({ ctx }) => {
@@ -589,6 +613,33 @@ export const workspaceRouter = router({
       .mutation(async ({ ctx, input }) => {
         try {
           return await rollbackPublishOwnership({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+  }),
+
+  legacyRetirement: router({
+    package: authenticatedProcedure
+      .input(workspaceIdInput.extend({
+        workspaceNovelId: z.number().int().positive(),
+        evidence: legacyRetirementEvidenceInput,
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getLegacyRetirementCandidatePackage({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    requireCandidateReadiness: authenticatedProcedure
+      .input(workspaceIdInput.extend({
+        workspaceNovelId: z.number().int().positive(),
+        evidence: legacyRetirementEvidenceInput,
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await requireLegacyRetirementCandidate({ actorUserId: ctx.user.id, ...input });
         } catch (error) {
           return mapWorkspaceError(error);
         }
