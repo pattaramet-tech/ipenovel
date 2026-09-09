@@ -181,7 +181,8 @@ async function cleanupFixture(f: Fixture) {
 async function execute(f: Fixture, adminId = 1) {
   return executeAccountMerge({
     requestId: f.requestId,
-    targetUserId: f.targetId,
+    donorAccountId: f.sourceId,
+    survivorAccountId: f.targetId,
     adminId,
     reason: "Verified ownership and final merge reconciliation",
     confirmation: buildAccountMergeConfirmationText(f.sourceId, f.targetId),
@@ -388,6 +389,24 @@ describe.sequential(
       expect(metadata).not.toContain(f.providerSubject);
       expect(metadata).not.toContain(f.emailAtLink);
       expect(metadata.toLowerCase()).not.toContain("token");
+    });
+
+    it("refuses reversed explicit Donor/Survivor roles before creating a merge case or moving any value", async () => {
+      const f = await createFixture();
+      await seedMergeData(f);
+
+      await expect(
+        executeAccountMerge({
+          requestId: f.requestId,
+          donorAccountId: f.targetId,
+          survivorAccountId: f.sourceId,
+          adminId: 1,
+          reason: "attempted reversed role binding",
+          confirmation: buildAccountMergeConfirmationText(f.targetId, f.sourceId),
+        })
+      ).rejects.toMatchObject({ code: "ROLE_MISMATCH" });
+
+      await expectNoFinalEffects(f);
     });
 
     it("re-runs the final preview under locks and aborts cleanly when Target connected Google after an earlier valid preview", async () => {

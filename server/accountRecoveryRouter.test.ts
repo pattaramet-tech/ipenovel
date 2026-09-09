@@ -180,7 +180,7 @@ describe("accountRecovery.admin.* - every mutation/query requires a real admin s
     const executeSpy = vi.spyOn(accountRecoveryService, "executeAccountRecovery");
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "user" })));
     await expect(
-      caller.accountRecovery.admin.approve({ requestId: 1, targetUserId: 2, reason: "verified" })
+      caller.accountRecovery.admin.approve({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, reason: "verified" })
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(executeSpy).not.toHaveBeenCalled();
   });
@@ -205,10 +205,10 @@ describe("accountRecovery.admin.* - every mutation/query requires a real admin s
       .mockResolvedValue({ request: { id: 1, status: "approved" }, assessment: {} } as any);
     const caller = appRouter.createCaller(contextFor(fakeUser({ id: 5, role: "admin" })));
 
-    await caller.accountRecovery.admin.approve({ requestId: 1, targetUserId: 2, reason: "verified via order #123" });
+    await caller.accountRecovery.admin.approve({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, reason: "verified via order #123" });
 
     expect(executeSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ requestId: 1, targetUserId: 2, adminId: 5, reason: "verified via order #123" })
+      expect.objectContaining({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 5, reason: "verified via order #123" })
     );
   });
 
@@ -273,7 +273,7 @@ describe("accountRecovery.admin.previewApproval - privacy: never leaks the Googl
     mockAssessmentWithRealIdentity();
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
-    const result = await caller.accountRecovery.admin.previewApproval({ requestId: 1, targetUserId: 20 });
+    const result = await caller.accountRecovery.admin.previewApproval({ requestId: 1, donorAccountId: 10, survivorAccountId: 20 });
 
     expect(JSON.stringify(result)).not.toMatch(new RegExp(SECRET_GOOGLE_SUB));
   });
@@ -282,7 +282,7 @@ describe("accountRecovery.admin.previewApproval - privacy: never leaks the Googl
     mockAssessmentWithRealIdentity();
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
-    const result = await caller.accountRecovery.admin.previewApproval({ requestId: 1, targetUserId: 20 });
+    const result = await caller.accountRecovery.admin.previewApproval({ requestId: 1, donorAccountId: 10, survivorAccountId: 20 });
 
     expect(JSON.stringify(result)).not.toMatch(new RegExp(SECRET_FULL_EMAIL.replace(/[.]/g, "\\.")));
   });
@@ -291,7 +291,7 @@ describe("accountRecovery.admin.previewApproval - privacy: never leaks the Googl
     mockAssessmentWithRealIdentity();
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
-    const result = await caller.accountRecovery.admin.previewApproval({ requestId: 1, targetUserId: 20 });
+    const result = await caller.accountRecovery.admin.previewApproval({ requestId: 1, donorAccountId: 10, survivorAccountId: 20 });
     const raw = JSON.stringify(result).toLowerCase();
 
     expect(raw).not.toMatch(/providersubject/);
@@ -325,7 +325,7 @@ describe("accountRecovery.admin.previewApproval - privacy: never leaks the Googl
     mockAssessmentWithRealIdentity();
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
-    const result = await caller.accountRecovery.admin.previewApproval({ requestId: 1, targetUserId: 20 });
+    const result = await caller.accountRecovery.admin.previewApproval({ requestId: 1, donorAccountId: 10, survivorAccountId: 20 });
 
     expect(result.sourceHasGoogleIdentity).toBe(true);
   });
@@ -335,7 +335,7 @@ describe("accountRecovery.admin.previewApproval - privacy: never leaks the Googl
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "user" })));
 
     await expect(
-      caller.accountRecovery.admin.previewApproval({ requestId: 1, targetUserId: 20 })
+      caller.accountRecovery.admin.previewApproval({ requestId: 1, donorAccountId: 10, survivorAccountId: 20 })
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(assessSpy).not.toHaveBeenCalled();
   });

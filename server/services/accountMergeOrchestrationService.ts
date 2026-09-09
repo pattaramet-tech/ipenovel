@@ -11,6 +11,7 @@ import * as db from "../db";
 import { buildAccountMergePreview } from "./accountMergePreviewService";
 import { reconcileAccountMergeFinancialsInTransaction } from "./accountMergeFinancialReconciliationService";
 import { reconcileAccountMergeDataInTransaction } from "./accountMergeDataReconciliationService";
+import { accountRecoveryRoleAuditMetadata, bindAccountRecoveryRoles } from "./accountRecoveryRoles";
 
 export type AccountMergeOrchestrationFaultPoint =
   | "after_preview"
@@ -186,6 +187,8 @@ async function completedResult(
     requestId: Number(caseRow.originAccountRecoveryRequestId),
     sourceUserId,
     targetUserId,
+    donorAccountId: sourceUserId,
+    survivorAccountId: targetUserId,
     status: "completed" as const,
     completedAt: caseRow.completedAt ?? null,
     auditLogId: Number(completionAudit.id),
@@ -225,6 +228,8 @@ export async function getAccountMergeExecutionStatus(requestId: number) {
     requestId,
     sourceUserId: Number(caseRow.sourceUserId),
     targetUserId: Number(caseRow.targetUserId),
+    donorAccountId: Number(caseRow.sourceUserId),
+    survivorAccountId: Number(caseRow.targetUserId),
     status: String(caseRow.status),
     completedAt: caseRow.completedAt ?? null,
   };
@@ -232,14 +237,22 @@ export async function getAccountMergeExecutionStatus(requestId: number) {
 
 export async function executeAccountMerge(params: {
   requestId: number;
-  targetUserId: number;
+  donorAccountId: number;
+  survivorAccountId: number;
   adminId: number;
   reason: string;
   confirmation: string;
 }) {
   assertPositiveInteger(params.requestId, "requestId");
-  assertPositiveInteger(params.targetUserId, "targetUserId");
+  assertPositiveInteger(params.donorAccountId, "donorAccountId");
+  assertPositiveInteger(params.survivorAccountId, "survivorAccountId");
   assertPositiveInteger(params.adminId, "adminId");
+  if (params.donorAccountId === params.survivorAccountId) {
+    throw new AccountMergeOrchestrationError(
+      "SAME_ACCOUNT",
+      "Donor and Survivor must be different accounts"
+    );
+  }
   const reason = params.reason?.trim();
   if (!reason)
     throw new AccountMergeOrchestrationError(
@@ -276,8 +289,21 @@ export async function executeAccountMerge(params: {
       );
     }
 
-    const sourceUserId = Number(requestRow.requesterUserId);
-    const targetUserId = params.targetUserId;
+    const roleBinding = bindAccountRecoveryRoles({
+      requesterUserId: Number(requestRow.requesterUserId),
+      donorAccountId: params.donorAccountId,
+      survivorAccountId: params.survivorAccountId,
+    });
+    if (!roleBinding.valid) {
+      throw new AccountMergeOrchestrationError(
+        roleBinding.failure === "SAME_ACCOUNT" ? "SAME_ACCOUNT" : "ROLE_MISMATCH",
+        roleBinding.failure === "DONOR_REQUESTER_MISMATCH"
+          ? "Donor must be the exact account that created this recovery request"
+          : "Invalid Donor/Survivor role binding"
+      );
+    }
+    const sourceUserId = roleBinding.donorAccountId;
+    const targetUserId = roleBinding.survivorAccountId;
     if (
       !isAccountMergeConfirmationExact(
         sourceUserId,
@@ -287,7 +313,7 @@ export async function executeAccountMerge(params: {
     ) {
       throw new AccountMergeOrchestrationError(
         "CONFIRMATION_MISMATCH",
-        "Typed Source-to-Target confirmation does not match this merge"
+        "Typed Donor-to-Survivor confirmation does not match this merge"
       );
     }
 
@@ -518,6 +544,10 @@ export async function executeAccountMerge(params: {
     }));
     const safeMetadata = {
       reason,
+      ...accountRecoveryRoleAuditMetadata({
+        donorAccountId: sourceUserId,
+        survivorAccountId: targetUserId,
+      }),
       identityMoved: true,
       financial: financialDto(financial.reconciliation),
       dataSummary: parseSafeSummary(data.reconciliation.safeSummary),

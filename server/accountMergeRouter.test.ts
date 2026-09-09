@@ -80,7 +80,7 @@ describe("accountMerge.admin.preview", () => {
     const buildSpy = vi.spyOn(accountMergePreviewService, "buildAccountMergePreview");
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "user" })));
 
-    await expect(caller.accountMerge.admin.preview({ requestId: 1, targetUserId: 99 })).rejects.toMatchObject({
+    await expect(caller.accountMerge.admin.preview({ requestId: 1, donorAccountId: 42, survivorAccountId: 99 })).rejects.toMatchObject({
       code: "FORBIDDEN",
     });
     expect(buildSpy).not.toHaveBeenCalled();
@@ -88,7 +88,7 @@ describe("accountMerge.admin.preview", () => {
 
   it("unauthenticated caller -> UNAUTHORIZED", async () => {
     const caller = appRouter.createCaller(contextFor(null));
-    await expect(caller.accountMerge.admin.preview({ requestId: 1, targetUserId: 99 })).rejects.toMatchObject({
+    await expect(caller.accountMerge.admin.preview({ requestId: 1, donorAccountId: 42, survivorAccountId: 99 })).rejects.toMatchObject({
       code: "UNAUTHORIZED",
     });
   });
@@ -98,7 +98,7 @@ describe("accountMerge.admin.preview", () => {
     const buildSpy = vi.spyOn(accountMergePreviewService, "buildAccountMergePreview");
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
-    await expect(caller.accountMerge.admin.preview({ requestId: 999, targetUserId: 5 })).rejects.toMatchObject({
+    await expect(caller.accountMerge.admin.preview({ requestId: 999, donorAccountId: 42, survivorAccountId: 5 })).rejects.toMatchObject({
       code: "NOT_FOUND",
     });
     expect(buildSpy).not.toHaveBeenCalled();
@@ -109,7 +109,7 @@ describe("accountMerge.admin.preview", () => {
     const buildSpy = vi.spyOn(accountMergePreviewService, "buildAccountMergePreview");
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
-    const error = await caller.accountMerge.admin.preview({ requestId: 1, targetUserId: 5 }).catch((e) => e);
+    const error = await caller.accountMerge.admin.preview({ requestId: 1, donorAccountId: 42, survivorAccountId: 5 }).catch((e) => e);
     expect(error).toBeInstanceOf(TRPCError);
     expect(error).toMatchObject({ code: "BAD_REQUEST" });
     expect(buildSpy).not.toHaveBeenCalled();
@@ -120,7 +120,7 @@ describe("accountMerge.admin.preview", () => {
     const buildSpy = vi.spyOn(accountMergePreviewService, "buildAccountMergePreview");
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
-    await expect(caller.accountMerge.admin.preview({ requestId: 1, targetUserId: 5 })).rejects.toMatchObject({
+    await expect(caller.accountMerge.admin.preview({ requestId: 1, donorAccountId: 42, survivorAccountId: 5 })).rejects.toMatchObject({
       code: "BAD_REQUEST",
     });
     expect(buildSpy).not.toHaveBeenCalled();
@@ -130,7 +130,7 @@ describe("accountMerge.admin.preview", () => {
     vi.spyOn(db, "getAccountRecoveryRequestById").mockResolvedValue(fakeRequest({ status: "rejected" }) as any);
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
-    await expect(caller.accountMerge.admin.preview({ requestId: 1, targetUserId: 5 })).rejects.toMatchObject({
+    await expect(caller.accountMerge.admin.preview({ requestId: 1, donorAccountId: 42, survivorAccountId: 5 })).rejects.toMatchObject({
       code: "BAD_REQUEST",
     });
   });
@@ -139,7 +139,7 @@ describe("accountMerge.admin.preview", () => {
     vi.spyOn(db, "getAccountRecoveryRequestById").mockResolvedValue(fakeRequest({ status: "cancelled" }) as any);
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
-    await expect(caller.accountMerge.admin.preview({ requestId: 1, targetUserId: 5 })).rejects.toMatchObject({
+    await expect(caller.accountMerge.admin.preview({ requestId: 1, donorAccountId: 42, survivorAccountId: 5 })).rejects.toMatchObject({
       code: "BAD_REQUEST",
     });
   });
@@ -153,7 +153,7 @@ describe("accountMerge.admin.preview", () => {
       .mockResolvedValue({ requestId: 7, sourceUserId: 42, targetUserId: 5 } as any);
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
-    await caller.accountMerge.admin.preview({ requestId: 7, targetUserId: 5 });
+    await caller.accountMerge.admin.preview({ requestId: 7, donorAccountId: 42, survivorAccountId: 5 });
 
     expect(buildSpy).toHaveBeenCalledWith({ requestId: 7, sourceUserId: 42, targetUserId: 5 });
   });
@@ -167,7 +167,7 @@ describe("accountMerge.admin.preview", () => {
     // rejected, by default - so this proves the field is simply never
     // read, not merely that the call succeeds.
     const buildSpy = vi.mocked(accountMergePreviewService.buildAccountMergePreview);
-    await caller.accountMerge.admin.preview({ requestId: 1, targetUserId: 5, sourceUserId: 999 } as any);
+    await caller.accountMerge.admin.preview({ requestId: 1, donorAccountId: 42, survivorAccountId: 5, sourceUserId: 999 } as any);
 
     expect(buildSpy).toHaveBeenCalledWith(expect.objectContaining({ sourceUserId: fakeRequest().requesterUserId }));
     expect(buildSpy).not.toHaveBeenCalledWith(expect.objectContaining({ sourceUserId: 999 }));
@@ -179,7 +179,7 @@ describe("accountMerge.admin.preview", () => {
     vi.spyOn(accountMergePreviewService, "buildAccountMergePreview").mockResolvedValue(fakePreview as any);
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
-    const result = await caller.accountMerge.admin.preview({ requestId: 1, targetUserId: 5 });
+    const result = await caller.accountMerge.admin.preview({ requestId: 1, donorAccountId: 42, survivorAccountId: 5 });
     expect(result).toEqual(fakePreview);
   });
 });

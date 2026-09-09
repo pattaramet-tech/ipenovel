@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import * as db from "../db";
 import type { AccountRecoveryEconomicDataFinding } from "../db";
 import type { AccountRecoveryRequest } from "../../drizzle/schema";
+import { accountRecoveryRoleAuditMetadata, bindAccountRecoveryRoles } from "./accountRecoveryRoles";
 
 /**
  * Central safety/execution logic for the Admin Account Recovery workflow
@@ -401,15 +402,22 @@ export async function reviewAccountRecoveryRequest(params: {
  */
 export async function executeAccountRecovery(params: {
   requestId: number;
-  targetUserId: number;
+  donorAccountId: number;
+  survivorAccountId: number;
   adminId: number;
   reason: string;
 }): Promise<{ request: AccountRecoveryRequest; assessment: AccountRecoverySafetyAssessment }> {
   if (!params.reason || !params.reason.trim()) {
     throw new AccountRecoveryError("FORBIDDEN", "A reason is required to approve an account recovery request");
   }
-  if (!Number.isInteger(params.targetUserId) || params.targetUserId <= 0) {
-    throw new AccountRecoveryError("FORBIDDEN", "A valid target user id is required");
+  if (!Number.isInteger(params.donorAccountId) || params.donorAccountId <= 0) {
+    throw new AccountRecoveryError("FORBIDDEN", "A valid donor account id is required");
+  }
+  if (!Number.isInteger(params.survivorAccountId) || params.survivorAccountId <= 0) {
+    throw new AccountRecoveryError("FORBIDDEN", "A valid survivor account id is required");
+  }
+  if (params.donorAccountId === params.survivorAccountId) {
+    throw new AccountRecoveryError("UNSAFE", "Donor and Survivor must be different accounts");
   }
 
   await db.assertDatabaseAvailable();
@@ -427,8 +435,25 @@ export async function executeAccountRecovery(params: {
       throw new AccountRecoveryError("ALREADY_PROCESSED", "This recovery request has already been processed");
     }
 
-    const sourceUserId = requestRow.requesterUserId as number;
-    const targetUserId = params.targetUserId;
+    const roleBinding = bindAccountRecoveryRoles({
+      requesterUserId: Number(requestRow.requesterUserId),
+      donorAccountId: params.donorAccountId,
+      survivorAccountId: params.survivorAccountId,
+    });
+    if (!roleBinding.valid) {
+      throw new AccountRecoveryError(
+        "UNSAFE",
+        roleBinding.failure === "DONOR_REQUESTER_MISMATCH"
+          ? "Donor must be the exact account that created this recovery request"
+          : "Invalid Donor/Survivor role binding"
+      );
+    }
+
+    // Storage keeps the historical source/target column names for schema
+    // compatibility. At the execution boundary their meaning is explicit:
+    // source == Donor, target == Survivor.
+    const sourceUserId = roleBinding.donorAccountId;
+    const targetUserId = roleBinding.survivorAccountId;
 
     // Steps 2-3: lock BOTH user rows, smaller id first - a fixed,
     // consistent lock order across every concurrent approval reduces (does
@@ -518,7 +543,13 @@ export async function executeAccountRecovery(params: {
         sourceUserId,
         targetUserId,
         authIdentityId: identityRow.id,
-        safeMetadata: { reason: params.reason.trim() },
+        safeMetadata: {
+          reason: params.reason.trim(),
+          ...accountRecoveryRoleAuditMetadata({
+            donorAccountId: sourceUserId,
+            survivorAccountId: targetUserId,
+          }),
+        },
       },
       tx
     );

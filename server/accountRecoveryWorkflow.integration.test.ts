@@ -218,7 +218,8 @@ describe("Admin Account Recovery - real database", () => {
 
     const { request: approved } = await executeAccountRecovery({
       requestId: request.id,
-      targetUserId: target.id,
+      donorAccountId: requester.id,
+      survivorAccountId: target.id,
       adminId: 1,
       reason: "integration test - verified via real db",
     });
@@ -310,7 +311,8 @@ describe("Admin Account Recovery - real database", () => {
     // weakened for this scenario.
     const { request: approved } = await executeAccountRecovery({
       requestId: secondRequest.id,
-      targetUserId: target.id,
+      donorAccountId: requester.id,
+      survivorAccountId: target.id,
       adminId: 2,
       reason: "resubmission verified - order number confirmed",
     });
@@ -371,7 +373,7 @@ describe("Admin Account Recovery - real database", () => {
     createdRequestIds.push(request.id);
 
     await expect(
-      executeAccountRecovery({ requestId: request.id, targetUserId: target.id, adminId: 1, reason: "test" })
+      executeAccountRecovery({ requestId: request.id, donorAccountId: requester.id, survivorAccountId: target.id, adminId: 1, reason: "test" })
     ).rejects.toMatchObject({ code: "UNSAFE" });
 
     const stillOnTarget = await db.getAuthIdentityByUserAndProvider(target.id, "google");
@@ -402,7 +404,7 @@ describe("Admin Account Recovery - real database", () => {
     expect(assessment.economicDataFindings.some((f) => f.table === "orders")).toBe(true);
 
     await expect(
-      executeAccountRecovery({ requestId: request.id, targetUserId: target.id, adminId: 1, reason: "test" })
+      executeAccountRecovery({ requestId: request.id, donorAccountId: requester.id, survivorAccountId: target.id, adminId: 1, reason: "test" })
     ).rejects.toMatchObject({ code: "UNSAFE" });
 
     // Never moved - the source still owns its own identity.
@@ -422,8 +424,8 @@ describe("Admin Account Recovery - real database", () => {
     createdRequestIds.push(request.id);
 
     const [resultA, resultB] = await Promise.allSettled([
-      executeAccountRecovery({ requestId: request.id, targetUserId: target.id, adminId: 1, reason: "admin A" }),
-      executeAccountRecovery({ requestId: request.id, targetUserId: target.id, adminId: 2, reason: "admin B" }),
+      executeAccountRecovery({ requestId: request.id, donorAccountId: requester.id, survivorAccountId: target.id, adminId: 1, reason: "admin A" }),
+      executeAccountRecovery({ requestId: request.id, donorAccountId: requester.id, survivorAccountId: target.id, adminId: 2, reason: "admin B" }),
     ]);
 
     const outcomes = [resultA, resultB];
@@ -500,7 +502,7 @@ describe("Admin Account Recovery - real database", () => {
     expect(assessment.userOwnedDataFindings.some((f) => f.table === "carts")).toBe(true);
 
     await expect(
-      executeAccountRecovery({ requestId: request.id, targetUserId: target.id, adminId: 1, reason: "test" })
+      executeAccountRecovery({ requestId: request.id, donorAccountId: requester.id, survivorAccountId: target.id, adminId: 1, reason: "test" })
     ).rejects.toMatchObject({ code: "UNSAFE" });
 
     // Never moved - the source still owns its own identity - and the cart
@@ -532,7 +534,7 @@ describe("Admin Account Recovery - real database", () => {
     await deleteFixtures({ userIds: [target.id] });
 
     await expect(
-      executeAccountRecovery({ requestId: request.id, targetUserId: target.id, adminId: 1, reason: "test" })
+      executeAccountRecovery({ requestId: request.id, donorAccountId: requester.id, survivorAccountId: target.id, adminId: 1, reason: "test" })
     ).rejects.toMatchObject({ code: "UNSAFE" });
 
     // Nothing partially happened - real ROLLBACK, not a partial commit.

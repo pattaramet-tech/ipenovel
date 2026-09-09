@@ -452,7 +452,7 @@ describe("executeAccountRecovery", () => {
   it("reason required -> throws FORBIDDEN before ever touching the database", async () => {
     const dbSpy = vi.spyOn(db, "getDb");
     await expect(
-      executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "" })
+      executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "" })
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(dbSpy).not.toHaveBeenCalled();
   });
@@ -462,7 +462,7 @@ describe("executeAccountRecovery", () => {
     vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase({ requestRow: undefined, identityRow: null }) as any);
 
     await expect(
-      executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "ok" })
+      executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "ok" })
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
@@ -474,9 +474,30 @@ describe("executeAccountRecovery", () => {
     const moveSpy = vi.spyOn(db, "moveAuthIdentityOwner");
 
     await expect(
-      executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "ok" })
+      executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "ok" })
     ).rejects.toMatchObject({ code: "ALREADY_PROCESSED" });
     expect(moveSpy).not.toHaveBeenCalled();
+  });
+
+  it("[reversed roles] donor must exactly equal the persisted requester -> UNSAFE before any identity move", async () => {
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getDb").mockResolvedValue(
+      fakeDatabase({ requestRow: { id: 1, status: "pending", requesterUserId: 1 }, identityRow: null }) as any
+    );
+    const moveSpy = vi.spyOn(db, "moveAuthIdentityOwner");
+
+    await expect(
+      executeAccountRecovery({ requestId: 1, donorAccountId: 2, survivorAccountId: 1, adminId: 9, reason: "wrong direction" })
+    ).rejects.toMatchObject({ code: "UNSAFE" });
+    expect(moveSpy).not.toHaveBeenCalled();
+  });
+
+  it("[same account] explicit Donor/Survivor cannot be the same account", async () => {
+    const dbSpy = vi.spyOn(db, "getDb");
+    await expect(
+      executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 1, adminId: 9, reason: "invalid" })
+    ).rejects.toMatchObject({ code: "UNSAFE" });
+    expect(dbSpy).not.toHaveBeenCalled();
   });
 
   it("[source with purchase] unsafe assessment (economic data found) -> UNSAFE, never moves the identity, never finalizes the target", async () => {
@@ -490,7 +511,7 @@ describe("executeAccountRecovery", () => {
     const finalizeSpy = vi.spyOn(db, "finalizeAccountRecoveryTargetUser");
 
     await expect(
-      executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "ok" })
+      executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "ok" })
     ).rejects.toMatchObject({ code: "UNSAFE" });
     expect(moveSpy).not.toHaveBeenCalled();
     expect(finalizeSpy).not.toHaveBeenCalled();
@@ -511,7 +532,7 @@ describe("executeAccountRecovery", () => {
       // Note: no override/force field exists on this input type at all -
       // TypeScript itself would reject one; this call uses every field the
       // API actually accepts.
-      executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "admin insists it's fine" })
+      executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "admin insists it's fine" })
     ).rejects.toMatchObject({ code: "UNSAFE" });
     expect(moveSpy).not.toHaveBeenCalled();
     expect(finalizeSpy).not.toHaveBeenCalled();
@@ -534,7 +555,7 @@ describe("executeAccountRecovery", () => {
     const moveSpy = vi.spyOn(db, "moveAuthIdentityOwner");
 
     await expect(
-      executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "ok" })
+      executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "ok" })
     ).rejects.toMatchObject({ code: "UNSAFE" });
     expect(moveSpy).not.toHaveBeenCalled();
   });
@@ -550,7 +571,7 @@ describe("executeAccountRecovery", () => {
     const transitionSpy = vi.spyOn(db, "transitionAccountRecoveryRequestStatus");
 
     await expect(
-      executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "ok" })
+      executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "ok" })
     ).rejects.toMatchObject({ code: "CONFLICT" });
     expect(finalizeSpy).not.toHaveBeenCalled();
     expect(transitionSpy).not.toHaveBeenCalled();
@@ -568,7 +589,7 @@ describe("executeAccountRecovery", () => {
     const auditSpy = vi.spyOn(db, "insertAccountRecoveryAuditLog");
 
     await expect(
-      executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "ok" })
+      executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "ok" })
     ).rejects.toMatchObject({ code: "ALREADY_PROCESSED" });
     expect(auditSpy).not.toHaveBeenCalled();
   });
@@ -585,7 +606,7 @@ describe("executeAccountRecovery", () => {
     vi.spyOn(db, "insertAccountRecoveryAuditLog").mockRejectedValue(new Error("injected failure"));
     const finalReadSpy = vi.spyOn(db, "getAccountRecoveryRequestById");
 
-    await expect(executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "ok" })).rejects.toThrow(
+    await expect(executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "ok" })).rejects.toThrow(
       "injected failure"
     );
     expect(finalReadSpy).not.toHaveBeenCalled();
@@ -603,7 +624,7 @@ describe("executeAccountRecovery", () => {
     const auditSpy = vi.spyOn(db, "insertAccountRecoveryAuditLog").mockResolvedValue(undefined as any);
     vi.spyOn(db, "getAccountRecoveryRequestById").mockResolvedValue({ id: 1, status: "approved" } as any);
 
-    const result = await executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "verified via order #123" });
+    const result = await executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "verified via order #123" });
 
     expect(result.request).toEqual({ id: 1, status: "approved" });
     expect(moveSpy).toHaveBeenCalledTimes(1);
@@ -631,6 +652,11 @@ describe("executeAccountRecovery", () => {
     const auditArgs = auditSpy.mock.calls[0][0];
     expect(auditArgs.action).toBe("approved");
     expect(auditArgs.authIdentityId).toBe(900);
+    expect(auditArgs.safeMetadata).toMatchObject({
+      roleSemanticsVersion: "survivor-donor-v1",
+      donorAccountId: 1,
+      survivorAccountId: 2,
+    });
     expect(JSON.stringify(auditArgs.safeMetadata)).not.toMatch(/super-secret-google-sub/);
   });
 });

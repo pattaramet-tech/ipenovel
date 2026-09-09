@@ -42,15 +42,20 @@ describe("IPE-008 final orchestration static safety invariants", () => {
 
   });
 
-  it("derives Source from the locked recovery request and never accepts sourceUserId as execute input", () => {
+  it("binds explicit Donor/Survivor roles to the locked recovery requester and never accepts legacy source/target execute inputs", () => {
     const signature = source.slice(
       position("export async function executeAccountMerge"),
       position("await db.assertDatabaseAvailable")
     );
+    expect(signature).toContain("donorAccountId: number");
+    expect(signature).toContain("survivorAccountId: number");
     expect(signature).not.toMatch(/sourceUserId\s*:/);
-    expect(source).toContain(
-      "const sourceUserId = Number(requestRow.requesterUserId)"
-    );
+    expect(signature).not.toMatch(/targetUserId\s*:/);
+    expect(source).toContain("requesterUserId: Number(requestRow.requesterUserId)");
+    expect(source).toContain("donorAccountId: params.donorAccountId");
+    expect(source).toContain("survivorAccountId: params.survivorAccountId");
+    expect(source).toContain("const sourceUserId = roleBinding.donorAccountId");
+    expect(source).toContain("const targetUserId = roleBinding.survivorAccountId");
   });
 
   it("requires a persisted blocked recovery request and exact typed confirmation before reconciliation writes", () => {

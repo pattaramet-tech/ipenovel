@@ -62,15 +62,15 @@ function BalanceProjection({
       <p className="font-medium mb-2">{label}</p>
       <div className="grid grid-cols-3 gap-2">
         <div>
-          <p className="text-xs text-muted-foreground">Source ก่อน</p>
+          <p className="text-xs text-muted-foreground">Donor ก่อน</p>
           <p className="font-mono font-semibold">{source}</p>
         </div>
         <div>
-          <p className="text-xs text-muted-foreground">Target ก่อน</p>
+          <p className="text-xs text-muted-foreground">Survivor ก่อน</p>
           <p className="font-mono font-semibold">{target}</p>
         </div>
         <div>
-          <p className="text-xs text-muted-foreground">Target หลังรวม</p>
+          <p className="text-xs text-muted-foreground">Survivor หลังรวม</p>
           <p className="font-mono font-semibold text-green-700">{projected}</p>
         </div>
       </div>
@@ -129,12 +129,20 @@ export default function AdminAccountRecoveryDetailPage() {
 
   const simplePreviewQuery =
     trpc.accountRecovery.admin.previewApproval.useQuery(
-      { requestId: requestId ?? 0, targetUserId: targetUserId ?? 0 },
+      {
+        requestId: requestId ?? 0,
+        donorAccountId: data?.request.requesterUserId ?? 0,
+        survivorAccountId: targetUserId ?? 0,
+      },
       { enabled: Boolean(requestId) && Boolean(targetUserId) && isPending }
     );
 
   const mergePreviewQuery = trpc.accountMerge.admin.preview.useQuery(
-    { requestId: requestId ?? 0, targetUserId: targetUserId ?? 0 },
+    {
+      requestId: requestId ?? 0,
+      donorAccountId: data?.request.requesterUserId ?? 0,
+      survivorAccountId: targetUserId ?? 0,
+    },
     { enabled: Boolean(requestId) && Boolean(targetUserId) && isBlocked }
   );
 
@@ -243,7 +251,7 @@ export default function AdminAccountRecoveryDetailPage() {
   const renderTargetSearch = () => (
     <Card className="p-6">
       <h3 className="font-semibold mb-3">
-        ค้นหาบัญชี Target — ค้นหาแบบตรงทั้งหมดเท่านั้น
+        ค้นหาบัญชี Survivor — ค้นหาแบบตรงทั้งหมดเท่านั้น
       </h3>
       <div className="flex gap-2">
         <Select value={searchMode} onValueChange={v => setSearchMode(v as any)}>
@@ -288,7 +296,7 @@ export default function AdminAccountRecoveryDetailPage() {
                 <p className="text-xs text-muted-foreground mt-1">
                   Google Identity:{" "}
                   {searchQuery.data.hasGoogleIdentity
-                    ? "มีแล้ว (ห้ามใช้เป็น Target)"
+                    ? "มีแล้ว (ห้ามใช้เป็น Survivor)"
                     : "ไม่มี"}
                 </p>
               </div>
@@ -304,7 +312,7 @@ export default function AdminAccountRecoveryDetailPage() {
                   setMergeConfirmation("");
                 }}
               >
-                ใช้เป็น Target
+                ใช้เป็น Survivor
               </Button>
             </div>
           )}
@@ -335,7 +343,7 @@ export default function AdminAccountRecoveryDetailPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
             <div>
               <p className="text-muted-foreground">
-                Requester User ID (Source)
+                Requester User ID (Donor)
               </p>
               <p className="font-medium">{request.requesterUserId}</p>
             </div>
@@ -347,7 +355,7 @@ export default function AdminAccountRecoveryDetailPage() {
                 {requesterHasGoogleIdentity
                   ? "มี ✓"
                   : mergeCompleted
-                    ? "ย้ายไป Target แล้ว ✓"
+                    ? "ย้ายไป Survivor แล้ว ✓"
                     : "ไม่มี ✗ (ผิดปกติ)"}
               </p>
             </div>
@@ -415,7 +423,7 @@ export default function AdminAccountRecoveryDetailPage() {
         {isPending && targetUserId && (
           <Card className="p-6">
             <p className="text-sm font-medium mb-2">
-              Simple Recovery Target: User ID #{targetUserId}
+              Simple Recovery Survivor: User ID #{targetUserId}
             </p>
             {simplePreviewQuery.isFetching && (
               <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
@@ -513,13 +521,13 @@ export default function AdminAccountRecoveryDetailPage() {
                 </p>
               </div>
               <div>
-                <p className="text-muted-foreground">Source</p>
+                <p className="text-muted-foreground">Donor</p>
                 <p className="font-medium">
                   #{mergeStatusQuery.data.sourceUserId}
                 </p>
               </div>
               <div>
-                <p className="text-muted-foreground">Target</p>
+                <p className="text-muted-foreground">Survivor</p>
                 <p className="font-medium">
                   #{mergeStatusQuery.data.targetUserId}
                 </p>
@@ -551,7 +559,7 @@ export default function AdminAccountRecoveryDetailPage() {
           <Card className="p-6 space-y-5">
             <div>
               <h3 className="font-semibold">
-                Final Preview — Source #{request.requesterUserId} → Target #
+                Final Preview — Donor #{request.requesterUserId} → Survivor #
                 {targetUserId}
               </h3>
               <p className="text-xs text-muted-foreground mt-1">
@@ -617,8 +625,8 @@ export default function AdminAccountRecoveryDetailPage() {
                       <thead className="bg-slate-50 text-left">
                         <tr>
                           <th className="p-2">Table</th>
-                          <th className="p-2">Source</th>
-                          <th className="p-2">Target</th>
+                          <th className="p-2">Donor</th>
+                          <th className="p-2">Survivor</th>
                           <th className="p-2">Conflict</th>
                           <th className="p-2">Action</th>
                         </tr>
@@ -672,9 +680,10 @@ export default function AdminAccountRecoveryDetailPage() {
                 การดำเนินการนี้ย้อนกลับไม่ได้จากหน้า Admin
               </div>
               <p className="text-sm text-red-800 mt-1">
-                ระบบจะรวม Wallet/Points/สิทธิ์/ข้อมูลผู้ใช้ แล้วจึงย้าย Google
-                Identity เป็นขั้นสุดท้ายใน transaction เดียว Source user
-                จะถูกเก็บไว้ แต่ session เก่าจะถูกบังคับให้ sign out/re-login
+                Donor จะบริจาค Wallet/Points/สิทธิ์/ข้อมูลผู้ใช้และ Google
+                Identity ให้ Survivor ภายใน transaction เดียว โดย Survivor
+                เป็น canonical account ที่ใช้งานต่อ ส่วน Donor user row
+                ยังคงอยู่เพื่อ audit/anti-replay แต่จะไม่ถือ Google Identity
               </p>
             </div>
 
@@ -718,7 +727,8 @@ export default function AdminAccountRecoveryDetailPage() {
                 if (!targetUserId) return;
                 mergeMutation.mutate({
                   requestId,
-                  targetUserId,
+                  donorAccountId: request.requesterUserId,
+                  survivorAccountId: targetUserId,
                   reason: mergeReason.trim(),
                   confirmation: mergeConfirmation.trim(),
                 });
@@ -792,17 +802,17 @@ export default function AdminAccountRecoveryDetailPage() {
           <div className="space-y-3">
             <div className="border rounded-lg p-3 text-sm space-y-1 bg-slate-50">
               <p>
-                <span className="font-medium">Source User ID:</span>{" "}
+                <span className="font-medium">Donor Account ID:</span>{" "}
                 {request.requesterUserId}
               </p>
               <p>
-                <span className="font-medium">Target User ID:</span>{" "}
+                <span className="font-medium">Survivor Account ID:</span>{" "}
                 {targetUserId}
               </p>
             </div>
             <div>
               <Label htmlFor="approveConfirmTypedId">
-                พิมพ์ Target User ID ({targetUserId}) เพื่อยืนยัน
+                พิมพ์ Survivor Account ID ({targetUserId}) เพื่อยืนยัน
               </Label>
               <Input
                 id="approveConfirmTypedId"
@@ -837,7 +847,8 @@ export default function AdminAccountRecoveryDetailPage() {
                   if (!targetUserId) return;
                   approveMutation.mutate({
                     requestId,
-                    targetUserId,
+                    donorAccountId: request.requesterUserId,
+                    survivorAccountId: targetUserId,
                     reason: approveReason.trim(),
                   });
                 }}

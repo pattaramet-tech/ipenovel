@@ -6821,6 +6821,30 @@ export async function listAccountRecoveryRequestsForUser(requesterUserId: number
     .orderBy(desc(accountRecoveryRequests.createdAt));
 }
 
+/** Read-only incident-planning lookup for every recovery request touching
+ * either explicit participant, including historical persisted source/target
+ * columns. This lets compensating planning fail closed on a second pending,
+ * blocked, or already-approved lifecycle involving either account. */
+export async function listAccountRecoveryRequestsForParticipants(userIds: number[], tx?: any) {
+  const database = tx ?? (await getDb());
+  if (!database) return [];
+  const ids = Array.from(new Set(userIds));
+  if (ids.length === 0 || ids.some(id => !Number.isInteger(id) || id <= 0)) {
+    throw new Error("Valid account ids are required for recovery-request lookup");
+  }
+  return database
+    .select()
+    .from(accountRecoveryRequests)
+    .where(
+      or(
+        inArray(accountRecoveryRequests.requesterUserId, ids),
+        inArray(accountRecoveryRequests.sourceUserId, ids),
+        inArray(accountRecoveryRequests.targetUserId, ids)
+      )
+    )
+    .orderBy(asc(accountRecoveryRequests.id));
+}
+
 /** Paginated admin pending queue - anti-enumeration by construction (no
  *  free-text/user-supplied filter beyond page/pageSize; searching a
  *  SPECIFIC legacy account is a separate, exact-match-only lookup, never
@@ -8086,6 +8110,70 @@ export async function getAccountMergeCasesForSourceForUpdate(sourceUserId: numbe
       sql`SELECT id, sourceUserId, targetUserId, status, originAccountRecoveryRequestId, createdByAdminId, startedAt, completedAt, failedAt, cancelledAt FROM accountMergeCases WHERE sourceUserId = ${sourceUserId} ORDER BY id FOR UPDATE`
     )
   );
+}
+
+/** Read-only participant lookup used by compensating-recovery planning.
+ * Returns every case in which either explicit account appears on either
+ * side, so the planner can fail closed on cross-request conflicts instead
+ * of looking only at the current request. */
+export async function listAccountMergeCasesForParticipants(
+  userIds: number[],
+  tx?: any
+) {
+  const database = tx || (await getDb());
+  if (!database) throw new Error("Database not available");
+  const ids = Array.from(new Set(userIds));
+  if (ids.length === 0 || ids.some(id => !Number.isInteger(id) || id <= 0)) {
+    throw new Error("Valid account ids are required for merge-case lookup");
+  }
+  return database
+    .select()
+    .from(accountMergeCases)
+    .where(
+      or(
+        inArray(accountMergeCases.sourceUserId, ids),
+        inArray(accountMergeCases.targetUserId, ids)
+      )
+    )
+    .orderBy(asc(accountMergeCases.id));
+}
+
+/** Read-only receipt/audit presence for one merge case. Compensating repair
+ * planning uses this to detect impossible partial persisted states without
+ * invoking any reconciliation or opening a write transaction. */
+export async function getAccountMergeCompensationCaseEvidence(caseId: number, tx?: any) {
+  const database = tx || (await getDb());
+  if (!database) throw new Error("Database not available");
+  if (!Number.isInteger(caseId) || caseId <= 0) {
+    throw new Error("Valid merge case id is required for compensation evidence");
+  }
+  const [financialRows, dataRows, completionAuditRows] = await Promise.all([
+    database
+      .select({ id: accountMergeFinancialReconciliations.id })
+      .from(accountMergeFinancialReconciliations)
+      .where(eq(accountMergeFinancialReconciliations.mergeCaseId, caseId))
+      .limit(1),
+    database
+      .select({ id: accountMergeDataReconciliations.id })
+      .from(accountMergeDataReconciliations)
+      .where(eq(accountMergeDataReconciliations.mergeCaseId, caseId))
+      .limit(1),
+    database
+      .select({ id: accountMergeAuditLogs.id })
+      .from(accountMergeAuditLogs)
+      .where(
+        and(
+          eq(accountMergeAuditLogs.mergeCaseId, caseId),
+          eq(accountMergeAuditLogs.action, "merge_completed")
+        )
+      )
+      .limit(1),
+  ]);
+  return {
+    financialReceiptPresent: financialRows.length === 1,
+    dataReceiptPresent: dataRows.length === 1,
+    completionAuditPresent: completionAuditRows.length === 1,
+  };
 }
 
 function unwrapMysqlRows(rawResult: any): any[] {
