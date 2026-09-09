@@ -52,6 +52,7 @@ import {
   buildCompensatingRecoveryPlan,
 } from "./services/accountRecoveryCompensationService";
 import { buildAccountRecoveryLifecycleProjection } from "./services/accountRecoveryLifecycleService";
+import { buildAccountRecoveryClosureReadiness } from "./services/accountRecoveryClosureReadinessService";
 import { buildAccountMergePreview } from "./services/accountMergePreviewService";
 import {
   AccountMergeOrchestrationError,
@@ -3623,6 +3624,22 @@ export const appRouter = router({
           })
         )
         .query(async ({ input }) => buildCompensatingEconomicExecutionGate(input)),
+
+      // Read-only IPE-045 closure verifier. Combines duplicate supersede
+      // provenance, completed Advanced Merge lifecycle integrity, and the
+      // compensation no-write invariant into one fail-closed Preview verdict.
+      closureReadiness: adminProcedure
+        .input(
+          z.object({
+            duplicateRequestId: z.number().int().positive(),
+            canonicalRequestId: z.number().int().positive(),
+            donorAccountId: z.number().int().positive(),
+            survivorAccountId: z.number().int().positive(),
+            expectedGoogleIdentityId: z.number().int().positive(),
+            expectedMergeCaseId: z.number().int().positive(),
+          })
+        )
+        .query(async ({ input }) => buildAccountRecoveryClosureReadiness(input)),
 
       // Controlled duplicate-lifecycle reconciliation only. This is NOT a
       // generic blocked-request editor: the service binds the duplicate to a

@@ -6977,6 +6977,19 @@ export async function supersedeBlockedAccountRecoveryRequest(
   return affectedRows > 0;
 }
 
+export async function listAccountRecoveryAuditLogsForRequest(recoveryRequestId: number, tx?: any) {
+  const database = tx ?? (await getDb());
+  if (!database) return [];
+  if (!Number.isInteger(recoveryRequestId) || recoveryRequestId <= 0) {
+    throw new Error("Valid recovery request id is required for audit lookup");
+  }
+  return database
+    .select()
+    .from(accountRecoveryAuditLogs)
+    .where(eq(accountRecoveryAuditLogs.recoveryRequestId, recoveryRequestId))
+    .orderBy(asc(accountRecoveryAuditLogs.id));
+}
+
 export async function insertAccountRecoveryAuditLog(
   input: {
     recoveryRequestId: number;
