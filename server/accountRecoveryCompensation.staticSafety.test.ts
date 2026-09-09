@@ -36,6 +36,7 @@ describe("IPE-045 compensating recovery static safety", () => {
 
   it("exposes compensating recovery only as an admin query with no sibling mutation endpoint", () => {
     expect(routersSource).toMatch(/compensatingPlan:\s*adminProcedure[\s\S]*?\.query\(/);
+    expect(routersSource).toMatch(/compensatingEconomicGate:\s*adminProcedure[\s\S]*?\.query\(/);
     expect(routersSource).not.toMatch(/compensating(?:Execute|Apply|Repair|Commit)[\w]*:\s*adminProcedure[\s\S]*?\.mutation\(/i);
   });
 });

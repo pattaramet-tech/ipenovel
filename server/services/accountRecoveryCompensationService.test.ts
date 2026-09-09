@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as db from "../db";
-import { buildCompensatingRecoveryPlan } from "./accountRecoveryCompensationService";
+import {
+  buildCompensatingEconomicExecutionGate,
+  buildCompensatingRecoveryPlan,
+} from "./accountRecoveryCompensationService";
 
 vi.mock("../db", async () => {
   const actual = await vi.importActual<typeof db>("../db");
@@ -28,6 +31,8 @@ function mockBase(overrides: {
   };
   economic?: any[];
   userOwned?: any[];
+  walletBalance?: string;
+  pointsBalance?: string;
 } = {}) {
   vi.spyOn(db, "getAccountRecoveryRequestById").mockResolvedValue(
     overrides.request ?? {
@@ -55,6 +60,8 @@ function mockBase(overrides: {
   );
   vi.spyOn(db, "findAccountRecoveryEconomicData").mockResolvedValue(overrides.economic ?? []);
   vi.spyOn(db, "findAccountRecoveryUserOwnedData").mockResolvedValue(overrides.userOwned ?? []);
+  vi.spyOn(db, "getAccountMergeWalletBalance").mockResolvedValue(overrides.walletBalance ?? "0.00");
+  vi.spyOn(db, "getAccountMergePointsBalance").mockResolvedValue(overrides.pointsBalance ?? "0.00");
 }
 
 const baseInput = {
@@ -237,5 +244,173 @@ describe("buildCompensatingRecoveryPlan", () => {
     });
     expect(result.decision).toBe("REFUSE");
     expect(result.refusalReasons.map(r => r.code)).toContain("PARTIAL_RECONCILIATION_STATE");
+  });
+
+  it("treats completed-merge financial history as preserved evidence, not compensating work", async () => {
+    mockBase({
+      request: { id: 7, requesterUserId: 10, status: "blocked", sourceUserId: null, targetUserId: null },
+      donorIdentity: undefined,
+      survivorIdentity: identity(20),
+      cases: [{
+        id: 55,
+        sourceUserId: 10,
+        targetUserId: 20,
+        status: "completed",
+        originAccountRecoveryRequestId: 7,
+      }],
+      caseEvidence: {
+        financialReceiptPresent: true,
+        dataReceiptPresent: true,
+        completionAuditPresent: true,
+      },
+      economic: [
+        { table: "walletAccounts", count: 1 },
+        { table: "walletTransactions", count: 1 },
+        { table: "walletTopups", count: 1 },
+        { table: "topupLogs", count: 1 },
+        { table: "pointsTransactions", count: 1 },
+      ],
+      walletBalance: "0.00",
+      pointsBalance: "0.00",
+    });
+
+    const result = await buildCompensatingRecoveryPlan({
+      ...baseInput,
+      expectedRequestStatus: "blocked",
+      expectedCurrentIdentityOwnerAccountId: 20,
+      expectedMergeCaseId: 55,
+    });
+
+    expect(result.decision).toBe("NO_REPAIR_REQUIRED");
+    expect(result.refusalReasons).toEqual([]);
+    expect(result.plannedMutations).toEqual([]);
+    expect(result.evidence.preservedFinancialHistoryFindings.map(row => row.table)).toEqual([
+      "pointsTransactions",
+      "topupLogs",
+      "walletAccounts",
+      "walletTopups",
+      "walletTransactions",
+    ]);
+    expect(result.evidence.unresolvedEconomicFindings).toEqual([]);
+    expect(result.evidence.donorWalletBalance).toBe("0.00");
+    expect(result.evidence.donorPointsBalance).toBe("0.00");
+  });
+
+  it("economic execution gate binds the exact current digest and turns a fully reconciled merge into a verified no-write", async () => {
+    mockBase({
+      request: { id: 7, requesterUserId: 10, status: "blocked", sourceUserId: null, targetUserId: null },
+      donorIdentity: undefined,
+      survivorIdentity: identity(20),
+      cases: [{
+        id: 55,
+        sourceUserId: 10,
+        targetUserId: 20,
+        status: "completed",
+        originAccountRecoveryRequestId: 7,
+      }],
+      caseEvidence: {
+        financialReceiptPresent: true,
+        dataReceiptPresent: true,
+        completionAuditPresent: true,
+      },
+      economic: [
+        { table: "walletAccounts", count: 1 },
+        { table: "pointsTransactions", count: 1 },
+      ],
+      walletBalance: "0.00",
+      pointsBalance: "0.00",
+    });
+    const input = {
+      ...baseInput,
+      expectedRequestStatus: "blocked" as const,
+      expectedCurrentIdentityOwnerAccountId: 20,
+      expectedMergeCaseId: 55,
+    };
+    const current = await buildCompensatingRecoveryPlan(input);
+
+    const stale = await buildCompensatingEconomicExecutionGate({
+      ...input,
+      expectedPlanDigest: "0".repeat(64),
+    });
+    expect(stale.decision).toBe("REFUSE");
+    expect(stale.refusalCode).toBe("PLAN_DIGEST_DRIFT");
+    expect(stale.executionAuthorized).toBe(false);
+
+    const exact = await buildCompensatingEconomicExecutionGate({
+      ...input,
+      expectedPlanDigest: current.planDigest,
+    });
+    expect(exact.decision).toBe("NO_WRITE_REQUIRED");
+    expect(exact.refusalCode).toBeNull();
+    expect(exact.executionAuthorized).toBe(false);
+    expect(exact.currentPlanDigest).toBe(current.planDigest);
+    expect(exact.plan.plannedMutations).toEqual([]);
+  });
+
+  it("refuses a completed merge whose Donor current wallet or points balance drifted above zero", async () => {
+    mockBase({
+      request: { id: 7, requesterUserId: 10, status: "blocked", sourceUserId: null, targetUserId: null },
+      donorIdentity: undefined,
+      survivorIdentity: identity(20),
+      cases: [{
+        id: 55,
+        sourceUserId: 10,
+        targetUserId: 20,
+        status: "completed",
+        originAccountRecoveryRequestId: 7,
+      }],
+      caseEvidence: {
+        financialReceiptPresent: true,
+        dataReceiptPresent: true,
+        completionAuditPresent: true,
+      },
+      economic: [{ table: "walletAccounts", count: 1 }],
+      walletBalance: "1.00",
+      pointsBalance: "0.00",
+    });
+
+    const result = await buildCompensatingRecoveryPlan({
+      ...baseInput,
+      expectedRequestStatus: "blocked",
+      expectedCurrentIdentityOwnerAccountId: 20,
+      expectedMergeCaseId: 55,
+    });
+
+    expect(result.decision).toBe("REFUSE");
+    expect(result.refusalReasons.map(row => row.code)).toContain("POST_MERGE_FINANCIAL_DRIFT");
+    expect(result.plannedMutations).toEqual([]);
+  });
+
+  it("refuses non-historical Donor rows after a completed merge instead of rewriting them automatically", async () => {
+    mockBase({
+      request: { id: 7, requesterUserId: 10, status: "blocked", sourceUserId: null, targetUserId: null },
+      donorIdentity: undefined,
+      survivorIdentity: identity(20),
+      cases: [{
+        id: 55,
+        sourceUserId: 10,
+        targetUserId: 20,
+        status: "completed",
+        originAccountRecoveryRequestId: 7,
+      }],
+      caseEvidence: {
+        financialReceiptPresent: true,
+        dataReceiptPresent: true,
+        completionAuditPresent: true,
+      },
+      economic: [{ table: "orders", count: 1 }],
+    });
+
+    const result = await buildCompensatingRecoveryPlan({
+      ...baseInput,
+      expectedRequestStatus: "blocked",
+      expectedCurrentIdentityOwnerAccountId: 20,
+      expectedMergeCaseId: 55,
+    });
+
+    expect(result.decision).toBe("REFUSE");
+    expect(result.refusalReasons.map(row => row.code)).toContain("POST_MERGE_DATA_DRIFT");
+    expect(result.plannedMutations).toEqual([]);
+    expect(result.evidence.unresolvedEconomicFindings).toEqual([{ table: "orders", count: 1 }]);
   });
 });

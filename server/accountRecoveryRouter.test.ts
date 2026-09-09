@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { TRPCError } from "@trpc/server";
 import * as db from "./db";
 import * as accountRecoveryService from "./services/accountRecoveryService";
+import * as accountRecoveryCompensationService from "./services/accountRecoveryCompensationService";
 import { AccountRecoveryError } from "./services/accountRecoveryService";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
@@ -21,6 +22,13 @@ vi.mock("./db", async () => {
 
 vi.mock("./services/accountRecoveryService", async () => {
   const actual = await vi.importActual<typeof accountRecoveryService>("./services/accountRecoveryService");
+  return { ...actual };
+});
+
+vi.mock("./services/accountRecoveryCompensationService", async () => {
+  const actual = await vi.importActual<typeof accountRecoveryCompensationService>(
+    "./services/accountRecoveryCompensationService"
+  );
   return { ...actual };
 });
 
@@ -210,6 +218,55 @@ describe("accountRecovery.admin.* - every mutation/query requires a real admin s
       })
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(supersedeSpy).not.toHaveBeenCalled();
+  });
+
+  it("compensatingEconomicGate: non-admin -> FORBIDDEN and never reaches the execution gate", async () => {
+    const gateSpy = vi.spyOn(accountRecoveryCompensationService, "buildCompensatingEconomicExecutionGate");
+    const caller = appRouter.createCaller(contextFor(fakeUser({ role: "user" })));
+    await expect(
+      caller.accountRecovery.admin.compensatingEconomicGate({
+        requestId: 90007,
+        donorAccountId: 763680006,
+        survivorAccountId: 21960193,
+        expectedRequestStatus: "blocked",
+        expectedCurrentIdentityOwnerAccountId: 21960193,
+        expectedGoogleIdentityId: 5370059,
+        expectedMergeCaseId: 1,
+        expectedPlanDigest: "1".repeat(64),
+      })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(gateSpy).not.toHaveBeenCalled();
+  });
+
+  it("compensatingEconomicGate: real admin forwards only the exact reviewed incident snapshot and digest", async () => {
+    const expected = {
+      mode: "economic_reconciliation_gate" as const,
+      executionAuthorized: false as const,
+      expectedPlanDigest: "2".repeat(64),
+      currentPlanDigest: "2".repeat(64),
+      decision: "NO_WRITE_REQUIRED" as const,
+      refusalCode: null,
+      plan: {} as any,
+    };
+    const gateSpy = vi
+      .spyOn(accountRecoveryCompensationService, "buildCompensatingEconomicExecutionGate")
+      .mockResolvedValue(expected);
+    const caller = appRouter.createCaller(contextFor(fakeUser({ id: 789600049, role: "admin" })));
+    const input = {
+      requestId: 90007,
+      donorAccountId: 763680006,
+      survivorAccountId: 21960193,
+      expectedRequestStatus: "blocked" as const,
+      expectedCurrentIdentityOwnerAccountId: 21960193,
+      expectedGoogleIdentityId: 5370059,
+      expectedMergeCaseId: 1,
+      expectedPlanDigest: "2".repeat(64),
+    };
+
+    const result = await caller.accountRecovery.admin.compensatingEconomicGate(input);
+
+    expect(result).toEqual(expected);
+    expect(gateSpy).toHaveBeenCalledWith(input);
   });
 
   it("approve: real admin -> reaches the service layer, passing the admin's own id (never client-suppliable) as adminId", async () => {

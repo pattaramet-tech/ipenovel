@@ -4,6 +4,7 @@ import {
   ACCOUNT_RECOVERY_ROLE_SEMANTICS_VERSION,
   bindAccountRecoveryRoles,
 } from "./accountRecoveryRoles";
+import { IPE007_FINANCIAL_HISTORY_TABLES } from "./accountMergeDataReconciliationService";
 
 export type CompensatingRecoveryExpectedRequestStatus = "approved" | "blocked";
 
@@ -22,7 +23,9 @@ export type CompensatingRecoveryRefusalCode =
   | "MERGE_CASE_DRIFT"
   | "ACTIVE_MERGE_CASE"
   | "CONFLICTING_MERGE_CASE"
-  | "PARTIAL_RECONCILIATION_STATE";
+  | "PARTIAL_RECONCILIATION_STATE"
+  | "POST_MERGE_FINANCIAL_DRIFT"
+  | "POST_MERGE_DATA_DRIFT";
 
 export type CompensatingRecoveryPlannedMutation =
   | {
@@ -42,6 +45,16 @@ export type CompensatingRecoveryPlannedMutation =
       survivorAccountId: number;
     };
 
+export type CompensatingRecoveryPlanInput = {
+  requestId: number;
+  donorAccountId: number;
+  survivorAccountId: number;
+  expectedRequestStatus: CompensatingRecoveryExpectedRequestStatus;
+  expectedCurrentIdentityOwnerAccountId: number;
+  expectedGoogleIdentityId: number;
+  expectedMergeCaseId: number | null;
+};
+
 export type CompensatingRecoveryPlan = {
   mode: "dry_run_only";
   executionAuthorized: false;
@@ -49,7 +62,7 @@ export type CompensatingRecoveryPlan = {
   requestId: number;
   donorAccountId: number;
   survivorAccountId: number;
-  decision: "READY_FOR_SEPARATE_AUTHORIZATION" | "REFUSE";
+  decision: "NO_REPAIR_REQUIRED" | "READY_FOR_SEPARATE_AUTHORIZATION" | "REFUSE";
   refusalReasons: Array<{ code: CompensatingRecoveryRefusalCode; message: string }>;
   evidence: {
     requestStatus: string | null;
@@ -65,7 +78,11 @@ export type CompensatingRecoveryPlan = {
     dataReceiptPresent: boolean;
     completionAuditPresent: boolean;
     economicFindings: Array<{ table: string; count: number }>;
+    preservedFinancialHistoryFindings: Array<{ table: string; count: number }>;
+    unresolvedEconomicFindings: Array<{ table: string; count: number }>;
     userOwnedFindings: Array<{ table: string; count: number }>;
+    donorWalletBalance: string | null;
+    donorPointsBalance: string | null;
   };
   plannedMutations: CompensatingRecoveryPlannedMutation[];
   planDigest: string;
@@ -73,6 +90,10 @@ export type CompensatingRecoveryPlan = {
 
 function digestPlan(payload: unknown): string {
   return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
+
+function isZeroDecimal(value: string): boolean {
+  return /^[-+]?0+(?:\.0+)?$/.test(value.trim());
 }
 
 /**
@@ -84,15 +105,9 @@ function digestPlan(payload: unknown): string {
  * and returns the mutations a separately-authorized future tool would need.
  * Every output keeps executionAuthorized=false by construction.
  */
-export async function buildCompensatingRecoveryPlan(input: {
-  requestId: number;
-  donorAccountId: number;
-  survivorAccountId: number;
-  expectedRequestStatus: CompensatingRecoveryExpectedRequestStatus;
-  expectedCurrentIdentityOwnerAccountId: number;
-  expectedGoogleIdentityId: number;
-  expectedMergeCaseId: number | null;
-}): Promise<CompensatingRecoveryPlan> {
+export async function buildCompensatingRecoveryPlan(
+  input: CompensatingRecoveryPlanInput
+): Promise<CompensatingRecoveryPlan> {
   const refusalReasons: CompensatingRecoveryPlan["refusalReasons"] = [];
   const addRefusal = (code: CompensatingRecoveryRefusalCode, message: string) => {
     if (!refusalReasons.some(item => item.code === code && item.message === message)) {
@@ -350,14 +365,49 @@ export async function buildCompensatingRecoveryPlan(input: {
     userOwnedFindings = [...userOwnedFindings].sort((a, b) => a.table.localeCompare(b.table));
   }
 
+  const completedMergeIsAuthoritative = Boolean(
+    expectedCase?.status === "completed" &&
+      financialReceiptPresent &&
+      dataReceiptPresent &&
+      completionAuditPresent
+  );
+  const preservedHistoryTables = new Set<string>(IPE007_FINANCIAL_HISTORY_TABLES);
+  const preservedFinancialHistoryFindings = completedMergeIsAuthoritative
+    ? economicFindings.filter(row => preservedHistoryTables.has(row.table))
+    : [];
+  const unresolvedEconomicFindings = completedMergeIsAuthoritative
+    ? economicFindings.filter(row => !preservedHistoryTables.has(row.table))
+    : economicFindings;
+
+  let donorWalletBalance: string | null = null;
+  let donorPointsBalance: string | null = null;
+  if (completedMergeIsAuthoritative && validParticipantIds && donor && survivor) {
+    [donorWalletBalance, donorPointsBalance] = await Promise.all([
+      db.getAccountMergeWalletBalance(input.donorAccountId),
+      db.getAccountMergePointsBalance(input.donorAccountId),
+    ]);
+    if (!isZeroDecimal(donorWalletBalance) || !isZeroDecimal(donorPointsBalance)) {
+      addRefusal(
+        "POST_MERGE_FINANCIAL_DRIFT",
+        `Completed Account Merge case ${expectedCase!.id} has authoritative receipts but Donor current wallet/points balance is not zero`
+      );
+    }
+    if (unresolvedEconomicFindings.length > 0 || userOwnedFindings.length > 0) {
+      addRefusal(
+        "POST_MERGE_DATA_DRIFT",
+        `Completed Account Merge case ${expectedCase!.id} still has non-historical Donor-owned rows; compensating planning refuses to rewrite post-merge history automatically`
+      );
+    }
+  }
+
   const plannedMutations: CompensatingRecoveryPlannedMutation[] = [];
   if (refusalReasons.length === 0) {
-    if (economicFindings.length > 0 || userOwnedFindings.length > 0) {
+    if (unresolvedEconomicFindings.length > 0 || userOwnedFindings.length > 0) {
       plannedMutations.push({
         kind: "reconcile_donor_data_to_survivor",
         donorAccountId: input.donorAccountId,
         survivorAccountId: input.survivorAccountId,
-        economicFindingCount: economicFindings.reduce((sum, row) => sum + row.count, 0),
+        economicFindingCount: unresolvedEconomicFindings.reduce((sum, row) => sum + row.count, 0),
         userOwnedFindingCount: userOwnedFindings.reduce((sum, row) => sum + row.count, 0),
       });
     }
@@ -389,12 +439,18 @@ export async function buildCompensatingRecoveryPlan(input: {
     dataReceiptPresent,
     completionAuditPresent,
     economicFindings,
+    preservedFinancialHistoryFindings,
+    unresolvedEconomicFindings,
     userOwnedFindings,
+    donorWalletBalance,
+    donorPointsBalance,
   };
   const decision =
-    refusalReasons.length === 0
-      ? "READY_FOR_SEPARATE_AUTHORIZATION"
-      : "REFUSE";
+    refusalReasons.length > 0
+      ? "REFUSE"
+      : plannedMutations.length === 0
+        ? "NO_REPAIR_REQUIRED"
+        : "READY_FOR_SEPARATE_AUTHORIZATION";
   const digestPayload = {
     roleSemanticsVersion: ACCOUNT_RECOVERY_ROLE_SEMANTICS_VERSION,
     requestId: input.requestId,
@@ -420,5 +476,79 @@ export async function buildCompensatingRecoveryPlan(input: {
     evidence,
     plannedMutations,
     planDigest: digestPlan(digestPayload),
+  };
+}
+
+export type CompensatingEconomicExecutionGate = {
+  mode: "economic_reconciliation_gate";
+  executionAuthorized: false;
+  expectedPlanDigest: string;
+  currentPlanDigest: string;
+  decision: "NO_WRITE_REQUIRED" | "REFUSE";
+  refusalCode: "PLAN_DIGEST_DRIFT" | "PLAN_REFUSED" | "MUTATION_STILL_REQUIRED" | null;
+  plan: CompensatingRecoveryPlan;
+};
+
+/**
+ * Final read-only gate immediately before any separately-authorized economic
+ * compensating operation. It deliberately cannot write. Its job is to bind an
+ * operator-approved digest to a fresh plan and prove whether a live financial
+ * mutation still exists at all.
+ *
+ * A completed Account Merge with authoritative IPE-006/IPE-007 receipts,
+ * zero Donor current balances, and only preserved financial history resolves
+ * to NO_WRITE_REQUIRED. This is critical: replaying the historical rows would
+ * double-credit wallet/points and violate IPE-006's immutable-history contract.
+ */
+export async function buildCompensatingEconomicExecutionGate(
+  input: CompensatingRecoveryPlanInput & { expectedPlanDigest: string }
+): Promise<CompensatingEconomicExecutionGate> {
+  const plan = await buildCompensatingRecoveryPlan(input);
+  const expectedPlanDigest = input.expectedPlanDigest.trim().toLowerCase();
+
+  if (!/^[a-f0-9]{64}$/.test(expectedPlanDigest) || expectedPlanDigest !== plan.planDigest) {
+    return {
+      mode: "economic_reconciliation_gate",
+      executionAuthorized: false,
+      expectedPlanDigest,
+      currentPlanDigest: plan.planDigest,
+      decision: "REFUSE",
+      refusalCode: "PLAN_DIGEST_DRIFT",
+      plan,
+    };
+  }
+
+  if (plan.decision === "REFUSE") {
+    return {
+      mode: "economic_reconciliation_gate",
+      executionAuthorized: false,
+      expectedPlanDigest,
+      currentPlanDigest: plan.planDigest,
+      decision: "REFUSE",
+      refusalCode: "PLAN_REFUSED",
+      plan,
+    };
+  }
+
+  if (plan.plannedMutations.length > 0) {
+    return {
+      mode: "economic_reconciliation_gate",
+      executionAuthorized: false,
+      expectedPlanDigest,
+      currentPlanDigest: plan.planDigest,
+      decision: "REFUSE",
+      refusalCode: "MUTATION_STILL_REQUIRED",
+      plan,
+    };
+  }
+
+  return {
+    mode: "economic_reconciliation_gate",
+    executionAuthorized: false,
+    expectedPlanDigest,
+    currentPlanDigest: plan.planDigest,
+    decision: "NO_WRITE_REQUIRED",
+    refusalCode: null,
+    plan,
   };
 }

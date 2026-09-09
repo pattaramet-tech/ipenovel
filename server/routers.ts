@@ -47,7 +47,10 @@ import {
 import { isValidStoredFileRef } from "@shared/privateFileRef";
 import * as accountRecoveryService from "./services/accountRecoveryService";
 import { AccountRecoveryError } from "./services/accountRecoveryService";
-import { buildCompensatingRecoveryPlan } from "./services/accountRecoveryCompensationService";
+import {
+  buildCompensatingEconomicExecutionGate,
+  buildCompensatingRecoveryPlan,
+} from "./services/accountRecoveryCompensationService";
 import { buildAccountMergePreview } from "./services/accountMergePreviewService";
 import {
   AccountMergeOrchestrationError,
@@ -3592,6 +3595,25 @@ export const appRouter = router({
           })
         )
         .query(async ({ input }) => buildCompensatingRecoveryPlan(input)),
+
+      // Final read-only economic execution gate. The caller must supply the
+      // exact reviewed plan digest. Digest drift, any refusal, or any still-
+      // required mutation fails closed. A completed merge whose remaining
+      // rows are immutable financial history returns NO_WRITE_REQUIRED.
+      compensatingEconomicGate: adminProcedure
+        .input(
+          z.object({
+            requestId: z.number().int().positive(),
+            donorAccountId: z.number().int().positive(),
+            survivorAccountId: z.number().int().positive(),
+            expectedRequestStatus: z.enum(["approved", "blocked"]),
+            expectedCurrentIdentityOwnerAccountId: z.number().int().positive(),
+            expectedGoogleIdentityId: z.number().int().positive(),
+            expectedMergeCaseId: z.number().int().positive().nullable(),
+            expectedPlanDigest: z.string().regex(/^[a-fA-F0-9]{64}$/),
+          })
+        )
+        .query(async ({ input }) => buildCompensatingEconomicExecutionGate(input)),
 
       // Controlled duplicate-lifecycle reconciliation only. This is NOT a
       // generic blocked-request editor: the service binds the duplicate to a
