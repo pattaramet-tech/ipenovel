@@ -117,6 +117,8 @@ export default function AdminAccountRecoveryDetailPage() {
   );
 
   const requestStatus = data?.request.status;
+  const lifecycleStatus = data?.lifecycle.effectiveStatus;
+  const isResolvedViaAdvancedMerge = lifecycleStatus === "resolved_via_advanced_merge";
   const isPending = requestStatus === "pending";
   const isBlocked = requestStatus === "blocked";
 
@@ -143,7 +145,7 @@ export default function AdminAccountRecoveryDetailPage() {
       donorAccountId: data?.request.requesterUserId ?? 0,
       survivorAccountId: targetUserId ?? 0,
     },
-    { enabled: Boolean(requestId) && Boolean(targetUserId) && isBlocked }
+    { enabled: Boolean(requestId) && Boolean(targetUserId) && isBlocked && !isResolvedViaAdvancedMerge }
   );
 
   const mergeStatusQuery = trpc.accountMerge.admin.status.useQuery(
@@ -229,6 +231,7 @@ export default function AdminAccountRecoveryDetailPage() {
 
   const {
     request,
+    lifecycle,
     requester,
     requesterHasGoogleIdentity,
     economicDataFindings,
@@ -333,11 +336,18 @@ export default function AdminAccountRecoveryDetailPage() {
         </Button>
 
         <Card className="p-6">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between mb-4 gap-3">
             <h2 className="text-lg font-semibold">
               คำขอกู้คืนบัญชี #{request.id}
             </h2>
-            <Badge>{request.status}</Badge>
+            <div className="flex items-center gap-2">
+              <Badge className={isResolvedViaAdvancedMerge ? "bg-green-100 text-green-800" : undefined}>
+                {isResolvedViaAdvancedMerge ? "Resolved via Advanced Merge" : request.status}
+              </Badge>
+              {isResolvedViaAdvancedMerge && (
+                <Badge variant="outline">Persisted: {request.status}</Badge>
+              )}
+            </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
@@ -392,7 +402,7 @@ export default function AdminAccountRecoveryDetailPage() {
             </div>
           )}
 
-          {economicDataFindings.length > 0 && (
+          {economicDataFindings.length > 0 && !isResolvedViaAdvancedMerge && (
             <div className="mt-4 border border-red-200 bg-red-50 rounded-lg p-3">
               <div className="flex items-center gap-2 text-red-800 font-medium">
                 <AlertTriangle className="w-4 h-4" /> พบข้อมูลทางการเงิน/สิทธิ์
@@ -401,6 +411,16 @@ export default function AdminAccountRecoveryDetailPage() {
                 ตาราง:{" "}
                 {economicDataFindings.map((f: any) => f.table).join(", ")} —
                 Simple Recovery ห้ามย้ายอัตโนมัติ
+              </p>
+            </div>
+          )}
+          {economicDataFindings.length > 0 && isResolvedViaAdvancedMerge && (
+            <div className="mt-4 border border-slate-200 bg-slate-50 rounded-lg p-3">
+              <div className="flex items-center gap-2 text-slate-800 font-medium">
+                <CheckCircle2 className="w-4 h-4 text-green-600" /> ประวัติการเงินเดิมถูกเก็บไว้ตาม audit contract
+              </div>
+              <p className="text-xs text-slate-600 mt-1">
+                ตาราง: {economicDataFindings.map((f: any) => f.table).join(", ")} — เป็น historical evidence หลัง Advanced Merge ที่สำเร็จแล้ว ไม่ใช่งาน reconcile ที่ค้างอยู่
               </p>
             </div>
           )}
@@ -479,18 +499,37 @@ export default function AdminAccountRecoveryDetailPage() {
           </div>
         )}
 
-        {isBlocked && (
-          <Card className="p-6 border-blue-200">
+        {lifecycle.integrity === "inconsistent" && (
+          <Card className="p-6 border-red-300 bg-red-50/50">
             <div className="flex items-start gap-3">
-              <ShieldAlert className="w-6 h-6 text-blue-700 mt-0.5" />
+              <AlertTriangle className="w-6 h-6 text-red-700 mt-0.5" />
               <div>
-                <h3 className="font-semibold text-blue-950">
-                  Advanced Account Merge
+                <h3 className="font-semibold text-red-950">Recovery lifecycle evidence ไม่สอดคล้อง</h3>
+                <p className="text-sm text-red-900 mt-1">
+                  ระบบจะไม่แสดงสถานะ Resolved จนกว่าจะพิสูจน์ Advanced Merge receipts/audit/identity ได้ครบ กรุณาตรวจสอบแบบ fail-closed ก่อนดำเนินงานต่อ
+                </p>
+              </div>
+            </div>
+          </Card>
+        )}
+
+        {isBlocked && (
+          <Card className={isResolvedViaAdvancedMerge ? "p-6 border-green-300 bg-green-50/40" : "p-6 border-blue-200"}>
+            <div className="flex items-start gap-3">
+              {isResolvedViaAdvancedMerge ? (
+                <CheckCircle2 className="w-6 h-6 text-green-700 mt-0.5" />
+              ) : (
+                <ShieldAlert className="w-6 h-6 text-blue-700 mt-0.5" />
+              )}
+              <div>
+                <h3 className={isResolvedViaAdvancedMerge ? "font-semibold text-green-950" : "font-semibold text-blue-950"}>
+                  {isResolvedViaAdvancedMerge ? "Resolved via Advanced Account Merge" : "Advanced Account Merge"}
                 </h3>
-                <p className="text-sm text-blue-900 mt-1">
-                  Recovery request นี้ยังคงสถานะ <strong>blocked</strong>{" "}
-                  เป็นหลักฐานย้อนหลัง การรวมบัญชีเป็น workflow
-                  แยกและมีสถานะ/audit ของตัวเอง
+                <p className={isResolvedViaAdvancedMerge ? "text-sm text-green-900 mt-1" : "text-sm text-blue-900 mt-1"}>
+                  Recovery request นี้ยังคงสถานะ <strong>blocked</strong> ใน accountRecoveryRequests เพื่อรักษาหลักฐานย้อนหลัง
+                  {isResolvedViaAdvancedMerge
+                    ? ` แต่ lifecycle projection พิสูจน์แล้วว่า Advanced Merge #${lifecycle.mergeCaseId} เสร็จสมบูรณ์และถือว่า Recovery resolved แล้ว`
+                    : " การรวมบัญชีเป็น workflow แยกและมีสถานะ/audit ของตัวเอง"}
                 </p>
               </div>
             </div>
@@ -553,9 +592,9 @@ export default function AdminAccountRecoveryDetailPage() {
           </Card>
         )}
 
-        {isBlocked && !mergeCompleted && renderTargetSearch()}
+        {isBlocked && !isResolvedViaAdvancedMerge && !mergeCompleted && renderTargetSearch()}
 
-        {isBlocked && !mergeCompleted && targetUserId && (
+        {isBlocked && !isResolvedViaAdvancedMerge && !mergeCompleted && targetUserId && (
           <Card className="p-6 space-y-5">
             <div>
               <h3 className="font-semibold">

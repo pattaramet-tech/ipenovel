@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import * as db from "./db";
 import * as accountRecoveryService from "./services/accountRecoveryService";
 import * as accountRecoveryCompensationService from "./services/accountRecoveryCompensationService";
+import * as accountRecoveryLifecycleService from "./services/accountRecoveryLifecycleService";
 import { AccountRecoveryError } from "./services/accountRecoveryService";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
@@ -28,6 +29,13 @@ vi.mock("./services/accountRecoveryService", async () => {
 vi.mock("./services/accountRecoveryCompensationService", async () => {
   const actual = await vi.importActual<typeof accountRecoveryCompensationService>(
     "./services/accountRecoveryCompensationService"
+  );
+  return { ...actual };
+});
+
+vi.mock("./services/accountRecoveryLifecycleService", async () => {
+  const actual = await vi.importActual<typeof accountRecoveryLifecycleService>(
+    "./services/accountRecoveryLifecycleService"
   );
   return { ...actual };
 });
@@ -112,6 +120,35 @@ describe("accountRecovery.myRequests", () => {
     const caller = appRouter.createCaller(contextFor(fakeUser({ id: 77 })));
     await caller.accountRecovery.myRequests();
     expect(listSpy).toHaveBeenCalledWith(77);
+  });
+
+  it("adds a read-only lifecycle projection without rewriting the persisted recovery status", async () => {
+    const raw = { id: 90007, requesterUserId: 77, status: "blocked", createdAt: new Date() } as any;
+    vi.spyOn(db, "listAccountRecoveryRequestsForUser").mockResolvedValue([raw]);
+    const lifecycle = {
+      persistedStatus: "blocked",
+      effectiveStatus: "resolved_via_advanced_merge",
+      resolutionKind: "advanced_account_merge",
+      integrity: "verified",
+      integrityIssue: null,
+      mergeCaseId: 1,
+      mergeCaseStatus: "completed",
+      completedAt: new Date(),
+      auditLogId: 5,
+    } as any;
+    const projectSpy = vi
+      .spyOn(accountRecoveryLifecycleService, "buildAccountRecoveryLifecycleProjection")
+      .mockResolvedValue(lifecycle);
+
+    const caller = appRouter.createCaller(contextFor(fakeUser({ id: 77 })));
+    const result = await caller.accountRecovery.myRequests();
+
+    expect(projectSpy).toHaveBeenCalledWith(raw);
+    expect(result[0]).toMatchObject({
+      id: 90007,
+      status: "blocked",
+      lifecycle: { effectiveStatus: "resolved_via_advanced_merge", persistedStatus: "blocked" },
+    });
   });
 });
 

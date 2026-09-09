@@ -8,6 +8,15 @@ export type AccountRecoveryRequestSummary = {
   status: "pending" | "approved" | "rejected" | "cancelled" | "blocked";
   createdAt: Date | string;
   reviewReason?: string | null;
+  lifecycle?: {
+    persistedStatus: "pending" | "approved" | "rejected" | "cancelled" | "blocked";
+    effectiveStatus: "pending" | "approved" | "rejected" | "cancelled" | "blocked" | "resolved_via_advanced_merge";
+    resolutionKind: "advanced_account_merge" | null;
+    integrity: "not_applicable" | "unresolved" | "verified" | "inconsistent";
+    mergeCaseId: number | null;
+    mergeCaseStatus: string | null;
+    completedAt: Date | string | null;
+  };
 };
 
 /**
@@ -33,38 +42,37 @@ export type GoogleConnectionQueryStatus = {
  * way forward). A single discriminated view makes every case explicit and
  * exhaustive - see deriveAccountRecoveryViewState's priority order.
  */
-export type AccountRecoveryView = "approved" | "pending" | "connection_loading" | "connection_error" | "form" | "guidance";
+export type AccountRecoveryView = "resolved_via_advanced_merge" | "approved" | "pending" | "connection_loading" | "connection_error" | "form" | "guidance";
 
 export type AccountRecoveryViewState<T extends AccountRecoveryRequestSummary> = {
   pendingRequest: T | undefined;
   mostRecentRequest: T | undefined;
+  /** Verified derived completion of the most-recent BLOCKED request through Advanced Merge. */
+  resolvedViaAdvancedMerge: boolean;
   /**
    * True when the most recently created request was approved - i.e. THIS
    * session's account was just moved as a recovery source. Post-approval
    * session UX rule: the current session must never automatically become
    * the target account, so this drives showing a prominent "log out and
    * log back in with Google" instruction instead of silently doing
-   * anything on the caller's behalf. Deliberately never gated on the
-   * connection status (loading/error/connected) - the whole point of this
-   * state is that the session's Google identity was JUST moved away, so
-   * `connected` is expected to already read false here, and a connection-
-   * status query failure must never hide it either; the approved banner
-   * (and its logout/re-login button) always wins, see `view` below.
+   * anything on the caller's behalf. The same logout/re-login rule applies
+   * to resolved_via_advanced_merge because the Google identity is likewise
+   * already owned by the Survivor while the current Donor session remains
+   * stale until a fresh login.
    */
   justApproved: boolean;
   /**
-   * The one field AccountRecoveryPage should actually switch on. Priority
-   * order (each step only reached if every earlier one doesn't apply):
-   *   1. "approved"           - justApproved, regardless of connection status
-   *   2. "pending"            - a pending request exists, regardless of connection status
-   *   3. "connection_loading" - no blocking request, but the connection-status query hasn't resolved yet
-   *   4. "connection_error"   - no blocking request, and the connection-status query failed
-   *   5. "form"                - no blocking request, query succeeded, googleConnected === true
-   *   6. "guidance"            - no blocking request, query succeeded, googleConnected !== true
-   * A connection-status query failure can therefore never hide an approved
-   * or pending request (steps 1-2 are checked first and never consult the
-   * connection status at all), and the form is never shown without a
-   * confirmed successful `true` read.
+   * The one field AccountRecoveryPage should actually switch on. Priority:
+   *   1. "resolved_via_advanced_merge" - verified completed Advanced Merge
+   *   2. "approved"                    - Simple Recovery approved
+   *   3. "pending"                     - an active request exists
+   *   4. "connection_loading"
+   *   5. "connection_error"
+   *   6. "form"
+   *   7. "guidance"
+   * Completed recovery outcomes always beat connection-status state because
+   * losing Google ownership on the stale Donor session is expected after a
+   * successful recovery/merge, not a reason to replace success with guidance.
    */
   view: AccountRecoveryView;
 };
@@ -84,10 +92,16 @@ export function deriveAccountRecoveryViewState<T extends AccountRecoveryRequestS
 ): AccountRecoveryViewState<T> {
   const pendingRequest = requests.find((r) => r.status === "pending");
   const mostRecentRequest = requests[0];
-  const justApproved = mostRecentRequest?.status === "approved";
+  const mostRecentEffectiveStatus =
+    mostRecentRequest?.lifecycle?.effectiveStatus ?? mostRecentRequest?.status;
+  const resolvedViaAdvancedMerge =
+    mostRecentEffectiveStatus === "resolved_via_advanced_merge";
+  const justApproved = mostRecentEffectiveStatus === "approved";
 
   let view: AccountRecoveryView;
-  if (justApproved) {
+  if (resolvedViaAdvancedMerge) {
+    view = "resolved_via_advanced_merge";
+  } else if (justApproved) {
     view = "approved";
   } else if (pendingRequest) {
     view = "pending";
@@ -101,5 +115,11 @@ export function deriveAccountRecoveryViewState<T extends AccountRecoveryRequestS
     view = "guidance";
   }
 
-  return { pendingRequest, mostRecentRequest, justApproved, view };
+  return {
+    pendingRequest,
+    mostRecentRequest,
+    resolvedViaAdvancedMerge,
+    justApproved,
+    view,
+  };
 }

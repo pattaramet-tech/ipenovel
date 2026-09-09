@@ -36,13 +36,17 @@ describe("IPE-008 Admin Advanced Account Merge UI safety", () => {
     expect(source).toMatch(/mergeConfirmation\.trim\(\) !== confirmationText/);
   });
 
-  it("never exposes a bypass/waiver control and keeps blocked recovery history distinct from merge completion", () => {
+  it("never exposes a bypass/waiver control and projects verified completion without rewriting blocked history", () => {
     expect(source).not.toMatch(
       />\s*(Bypass|Waive|Override)\s+(Account\s+)?Merge\s*</i
     );
     expect(source).not.toMatch(/setMerge(Bypass|Waiver|Override)/i);
-    expect(source).toContain("Recovery request นี้ยังคงสถานะ");
-    expect(source).toMatch(/workflow\s+แยกและมีสถานะ\/audit\s+ของตัวเอง/);
+    expect(source).toContain('lifecycleStatus === "resolved_via_advanced_merge"');
+    expect(source).toContain("Resolved via Advanced Merge");
+    expect(source).toContain("Persisted: {request.status}");
+    expect(source).toContain("ยังคงสถานะ <strong>blocked</strong> ใน accountRecoveryRequests");
+    expect(source).toContain("lifecycle projection พิสูจน์แล้ว");
+    expect(source).toMatch(/isBlocked && !isResolvedViaAdvancedMerge && !mergeCompleted/);
   });
 
   it("renders a durable merge-case/audit reference after completion", () => {

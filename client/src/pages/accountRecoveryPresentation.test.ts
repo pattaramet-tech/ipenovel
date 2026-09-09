@@ -67,6 +67,28 @@ describe("deriveAccountRecoveryViewState", () => {
     expect(result.view).toBe("pending");
   });
 
+  it('[post-merge session UX] verified Advanced Merge projection wins over raw blocked status and connection guidance', () => {
+    const resolved = req({
+      id: 90007,
+      status: "blocked",
+      lifecycle: {
+        persistedStatus: "blocked",
+        effectiveStatus: "resolved_via_advanced_merge",
+        resolutionKind: "advanced_account_merge",
+        integrity: "verified",
+        mergeCaseId: 1,
+        mergeCaseStatus: "completed",
+        completedAt: new Date("2026-09-09T13:48:07Z"),
+      },
+    });
+    const result = deriveAccountRecoveryViewState([resolved], connection({ connected: false }));
+
+    expect(result.resolvedViaAdvancedMerge).toBe(true);
+    expect(result.justApproved).toBe(false);
+    expect(result.view).toBe("resolved_via_advanced_merge");
+    expect(result.mostRecentRequest).toBe(resolved);
+  });
+
   it('[post-approval session UX] most recent request is approved -> justApproved true, view "approved" (never silently resubmit, auto-switch, or show guidance/error instead of the approval banner)', () => {
     const approved = req({ id: 2, status: "approved" });
     const result = deriveAccountRecoveryViewState([approved], connection({ connected: true }));
@@ -148,6 +170,6 @@ describe("deriveAccountRecoveryViewState", () => {
   it('the "connection_error" view carries no error detail of any kind on the returned state - callers can only ever render the fixed, safe copy the component owns, never anything from the failed query itself', () => {
     const result = deriveAccountRecoveryViewState([], connection({ error: true }));
     expect(result.view).toBe("connection_error");
-    expect(Object.keys(result).sort()).toEqual(["justApproved", "mostRecentRequest", "pendingRequest", "view"]);
+    expect(Object.keys(result).sort()).toEqual(["justApproved", "mostRecentRequest", "pendingRequest", "resolvedViaAdvancedMerge", "view"]);
   });
 });

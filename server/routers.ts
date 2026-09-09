@@ -51,6 +51,7 @@ import {
   buildCompensatingEconomicExecutionGate,
   buildCompensatingRecoveryPlan,
 } from "./services/accountRecoveryCompensationService";
+import { buildAccountRecoveryLifecycleProjection } from "./services/accountRecoveryLifecycleService";
 import { buildAccountMergePreview } from "./services/accountMergePreviewService";
 import {
   AccountMergeOrchestrationError,
@@ -3418,7 +3419,13 @@ export const appRouter = router({
   // request"), and mapping AccountRecoveryError -> TRPCError.
   accountRecovery: router({
     myRequests: authenticatedProcedure.query(async ({ ctx }) => {
-      return db.listAccountRecoveryRequestsForUser(ctx.user.id);
+      const requests = await db.listAccountRecoveryRequestsForUser(ctx.user.id);
+      return Promise.all(
+        requests.map(async (request: any) => ({
+          ...request,
+          lifecycle: await buildAccountRecoveryLifecycleProjection(request),
+        }))
+      );
     }),
 
     create: mergeAwareAuthenticatedProcedure
@@ -3483,7 +3490,8 @@ export const appRouter = router({
         const request = await db.getAccountRecoveryRequestById(input.requestId);
         if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "Recovery request not found" });
 
-        const [requesterIdentity, economicDataFindings, userOwnedDataFindings, requesterUser] = await Promise.all([
+        const [lifecycle, requesterIdentity, economicDataFindings, userOwnedDataFindings, requesterUser] = await Promise.all([
+          buildAccountRecoveryLifecycleProjection(request),
           db.getAuthIdentityByUserAndProvider(request.requesterUserId, "google"),
           db.findAccountRecoveryEconomicData(request.requesterUserId),
           db.findAccountRecoveryUserOwnedData(request.requesterUserId, request.id),
@@ -3492,6 +3500,7 @@ export const appRouter = router({
 
         return {
           request,
+          lifecycle,
           requester: requesterUser ? maskUserForAdmin(requesterUser) : null,
           requesterHasGoogleIdentity: Boolean(requesterIdentity),
           economicDataFindings,
