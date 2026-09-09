@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { getTestDb } from "../test-helpers/testDb";
@@ -6,6 +6,7 @@ import { users, novels, episodes, orderItems, purchases, pointsTransactions, ord
 import { persistAndAutoApprove } from "./providerAutoApproval";
 import { AUTO_APPROVE_KEY, saveAutoPolicy } from "./autoApprovalSettings";
 import { createOrder, approveWalletTopup, updateOrder, updatePayment } from "../db";
+import * as dbModule from "../db";
 import { approvePayment, rejectPayment } from "../services/orderService";
 import type { PaymentProviderVerificationResult } from "../services/paymentProviderVerificationService";
 
@@ -17,6 +18,11 @@ const result = (ref = randomUUID()): PaymentProviderVerificationResult => ({
  occurredAt: new Date(Date.now()-60000).toISOString(), checkedAt: new Date().toISOString(),
  bankTransactionReference: ref, providerReference: randomUUID(),
 });
+async function resultForOrder(payment: any, ref = randomUUID()): Promise<PaymentProviderVerificationResult> {
+ const [order] = await db.select({createdAt:orders.createdAt}).from(orders).where(eq(orders.id,payment.orderId)).limit(1);
+ if (!order) throw new Error("Provider auto-approval fixture order missing");
+ return {...result(ref), occurredAt:new Date(order.createdAt.getTime()-60000).toISOString()};
+}
 async function fixture(type: "order" | "wallet", snapshot?: PaymentProviderVerificationResult) {
  const [{id: userId}] = await db.insert(users).values({openId: randomUUID()}).$returningId();
  const common = {slipImageUrl: "https://example.com/" + randomUUID(), slipSubmittedAt: new Date(),
@@ -69,13 +75,13 @@ describe("provider auto approval on real MariaDB", () => {
   expect(await db.select().from(walletTransactions).where(eq(walletTransactions.referenceId,row.id))).toHaveLength(1);
  });
  it("prevents the same bank transaction paying an order and a wallet", async () => {
-  const a:any=await fixture("order"),b:any=await fixture("wallet"),r=result();
+  const a:any=await fixture("order"),b:any=await fixture("wallet"),r=await resultForOrder(a);
   const results=await Promise.all([persistAndAutoApprove("order",a,r),persistAndAutoApprove("wallet",b,r)]);
   expect(results.filter(v=>v.approvalOutcome==="APPROVED")).toHaveLength(1);
   expect(results.find(v=>v.approvalOutcome==="ERROR")?.approvalReason).toBe("PROVIDER_TRANSACTION_ALREADY_USED");
  });
  it("grants purchased episodes and loyalty points exactly once", async () => {
-  const row:any=await fixture("order"),r=result();
+  const row:any=await fixture("order"),r=await resultForOrder(row);
   const [{id:novelId}]=await db.insert(novels).values({title:"Synthetic IPE040",slug:randomUUID()}).$returningId();
   const [{id:episodeId}]=await db.insert(episodes).values({novelId,title:"Synthetic episode",episodeNumber:"1",price:"100.00"}).$returningId();
   await db.insert(orderItems).values({orderId:row.orderId,novelId,episodeId,unitPrice:"100.00",finalPrice:"100.00"});
@@ -91,8 +97,8 @@ describe("provider auto approval on real MariaDB", () => {
   expect((await db.select().from(payments).where(eq(payments.id,row.id)))[0].status).toBe("approved");
  });
  it("does not regress an approved order after late upload or rejection", async () => {
-  const row:any=await fixture("order");
-  expect((await persistAndAutoApprove("order",row,result())).approvalOutcome).toBe("APPROVED");
+  const row:any=await fixture("order"),r=await resultForOrder(row);
+  expect((await persistAndAutoApprove("order",row,r)).approvalOutcome).toBe("APPROVED");
   await updateOrder(row.orderId,{paymentStatus:"submitted"});
   await expect(updatePayment(row.id,{slipImageUrl:"https://example.com/replacement"})).rejects.toThrow("already approved");
   await expect(rejectPayment(row.id,"1","late rejection")).rejects.toThrow();
@@ -121,17 +127,19 @@ describe("provider auto approval on real MariaDB", () => {
   expect((await persistAndAutoApprove("wallet",row,result())).approvalReason).toBe("AUTO_APPROVE_DISABLED");
   expect(await db.select().from(walletAccounts).where(eq(walletAccounts.userId,row.userId))).toHaveLength(0);
  });
- it("rolls back approval, claims and wallet credit if final ledger insert fails", async () => {
+ it("rolls back approval, claims and wallet credit if a post-ledger step fails", async () => {
   const row:any=await fixture("wallet"),r=result();
-  // Fault is scoped to this synthetic subject in the isolated test database.
-  await db.execute(`CREATE TRIGGER ipe040_ledger_failure BEFORE INSERT ON walletTransactions FOR EACH ROW
-   BEGIN IF NEW.referenceId = ${row.id} THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'IPE040 injected ledger failure'; END IF; END`);
+  const originalApproveWalletTopup = dbModule.approveWalletTopup;
+  const injectedFailure = vi.spyOn(dbModule, "approveWalletTopup").mockImplementationOnce(async (topupId, adminUserId, outerTx) => {
+   await originalApproveWalletTopup(topupId, adminUserId, outerTx);
+   throw new Error("IPE040 injected post-ledger failure");
+  });
   try {
    expect((await persistAndAutoApprove("wallet",row,r)).approvalReason).toBe("AUTO_APPROVAL_FAILED");
    expect((await db.select().from(walletTopups).where(eq(walletTopups.id,row.id)))[0].status).toBe("pending");
    expect(await db.select().from(walletAccounts).where(eq(walletAccounts.userId,row.userId))).toHaveLength(0);
    expect(await db.select().from(paymentProviderClaims).where(and(eq(paymentProviderClaims.subjectId,row.id),eq(paymentProviderClaims.subjectType,"wallet")))).toHaveLength(0);
-  } finally { await db.execute("DROP TRIGGER ipe040_ledger_failure"); }
+  } finally { injectedFailure.mockRestore(); }
   expect((await persistAndAutoApprove("wallet",row,r)).approvalOutcome).toBe("APPROVED");
  });
 });

@@ -55,6 +55,11 @@ import {
   WorkspacePublishOwnershipTransitionError,
 } from "./publishOwnershipTransition.service";
 import {
+  getPublishFinalGatePackage,
+  requirePublishFinalGate,
+  WorkspacePublishFinalGateError,
+} from "./publishFinalGate.service";
+import {
   addOrUpdateMember,
   bindPublicationNovel,
   createWorkspace,
@@ -71,6 +76,17 @@ import {
  * a Google Docs connection or change the existing login scope.
  */
 function mapWorkspaceError(error: unknown): never {
+  if (error instanceof WorkspacePublishFinalGateError) {
+    const code =
+      error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
+        ? "FORBIDDEN"
+        : error.code === "DATABASE_UNAVAILABLE"
+          ? "SERVICE_UNAVAILABLE"
+          : error.code === "PUBLISH_OWNERSHIP_AMBIGUOUS" || error.code === "PREVIEW_GATE_BLOCKED"
+            ? "CONFLICT"
+            : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
   if (error instanceof WorkspacePublishOwnershipTransitionError) {
     const code =
       error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
@@ -491,6 +507,37 @@ export const workspaceRouter = router({
             workspaceId: input.workspaceId,
             runId: input.runId,
             expectedCutoverEpoch: input.expectedCutoverEpoch,
+            executionEnabled: process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true",
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+  }),
+
+  publishFinalGate: router({
+    package: authenticatedProcedure
+      .input(workspaceIdInput.extend({ runId: z.number().int().positive() }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getPublishFinalGatePackage({
+            actorUserId: ctx.user.id,
+            workspaceId: input.workspaceId,
+            runId: input.runId,
+            executionEnabled: process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true",
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    requirePreviewReadiness: authenticatedProcedure
+      .input(workspaceIdInput.extend({ runId: z.number().int().positive() }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await requirePublishFinalGate({
+            actorUserId: ctx.user.id,
+            workspaceId: input.workspaceId,
+            runId: input.runId,
             executionEnabled: process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true",
           });
         } catch (error) {
