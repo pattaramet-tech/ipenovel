@@ -17,7 +17,10 @@ import {
   buildPublishItemRequestKey,
   buildPublishOutboxIdempotencyKey,
   buildPublishOutboxObjectKey,
+  WORKSPACE_PUBLISH_MAX_ATTEMPTS,
   WORKSPACE_PUBLISH_OUTBOX_EVENT,
+  type WorkspacePublishExecutionScope,
+  type WorkspacePublishObserver,
   type WorkspacePublishProvider,
   type WorkspacePublishProviderRequest,
   type WorkspacePublishProviderResult,
@@ -30,6 +33,7 @@ export class WorkspacePublishExecutionError extends Error {
       | "MEMBERSHIP_REQUIRED"
       | "EDITOR_ROLE_REQUIRED"
       | "EXECUTION_DISABLED"
+      | "EXECUTION_SCOPE_MISMATCH"
       | "EXTERNAL_PROVIDER_DISABLED"
       | "PUBLISH_OWNERSHIP_AMBIGUOUS"
       | "PUBLISH_RUN_NOT_FOUND"
@@ -72,7 +76,13 @@ function requireEditor(role: WorkspaceRole) {
   }
 }
 
-async function requireWorkspacePublishOwnership(db: any, workspaceNovelId: number, expectedEpoch?: number, forUpdate = false) {
+async function requireWorkspacePublishOwnership(
+  db: any,
+  workspaceNovelId: number,
+  expectedEpoch?: number,
+  expectedVersion?: number,
+  forUpdate = false
+) {
   let query = db.select().from(workspaceMigrationRegistry).where(and(
     eq(workspaceMigrationRegistry.workspaceNovelId, workspaceNovelId),
     eq(workspaceMigrationRegistry.capability, "publish")
@@ -83,7 +93,8 @@ async function requireWorkspacePublishOwnership(db: any, workspaceNovelId: numbe
     rows.length !== 1 ||
     rows[0].owner !== "workspace" ||
     rows[0].cutoverEpoch < 1 ||
-    (expectedEpoch !== undefined && rows[0].cutoverEpoch !== expectedEpoch)
+    (expectedEpoch !== undefined && rows[0].cutoverEpoch !== expectedEpoch) ||
+    (expectedVersion !== undefined && rows[0].version !== expectedVersion)
   ) {
     throw new WorkspacePublishExecutionError(
       "PUBLISH_OWNERSHIP_AMBIGUOUS",
@@ -110,8 +121,14 @@ async function loadRunContext(db: any, workspaceId: number, runId: number, forUp
   return row;
 }
 
-async function assertCurrentPublishHash(db: any, workspaceNovelId: number, snapshotId: number, expectedLastPublishedSha256: string | null) {
-  const [source] = await db.select({ fingerprint: workspaceDocumentFingerprints })
+async function assertCurrentPublishHash(
+  db: any,
+  workspaceNovelId: number,
+  snapshotId: number,
+  expectedLastPublishedSha256: string | null,
+  forUpdate = false
+) {
+  let query = db.select({ fingerprint: workspaceDocumentFingerprints, snapshot: workspaceDocumentSnapshots })
     .from(workspaceDocumentSnapshots)
     .innerJoin(workspaceDocumentBindings, eq(workspaceDocumentBindings.documentId, workspaceDocumentSnapshots.documentId))
     .innerJoin(workspaceDocumentFingerprints, eq(workspaceDocumentFingerprints.bindingId, workspaceDocumentBindings.id))
@@ -120,11 +137,14 @@ async function assertCurrentPublishHash(db: any, workspaceNovelId: number, snaps
       eq(workspaceDocumentBindings.workspaceNovelId, workspaceNovelId),
       eq(workspaceDocumentBindings.status, "active")
     )).limit(1);
+  if (forUpdate) query = query.for("update");
+  const [source] = await query;
   const current = source?.fingerprint.lastPublishedSha256?.toLowerCase() ?? null;
   const expected = expectedLastPublishedSha256?.toLowerCase() ?? null;
   if (!source || current !== expected) {
     throw new WorkspacePublishExecutionError("STALE_PUBLISH_HASH", "Expected last-published hash is stale at execution time.");
   }
+  return source;
 }
 
 export async function requestPublishExecution(input: {
@@ -132,6 +152,8 @@ export async function requestPublishExecution(input: {
   workspaceId: number;
   runId: number;
   expectedCutoverEpoch: number;
+  expectedOwnershipVersion?: number;
+  executionScope?: WorkspacePublishExecutionScope;
   executionEnabled: boolean;
 }) {
   if (!input.executionEnabled) {
@@ -143,7 +165,25 @@ export async function requestPublishExecution(input: {
 
   return db.transaction(async (tx: any) => {
     const context = await loadRunContext(tx, input.workspaceId, input.runId, true);
-    await requireWorkspacePublishOwnership(tx, context.workspaceNovel.id, input.expectedCutoverEpoch, true);
+    const scope = input.executionScope;
+    if (
+      scope && (
+        scope.workspaceId !== input.workspaceId ||
+        scope.workspaceNovelId !== context.workspaceNovel.id ||
+        scope.runId !== input.runId ||
+        scope.expectedCutoverEpoch !== input.expectedCutoverEpoch ||
+        scope.expectedOwnershipVersion !== input.expectedOwnershipVersion
+      )
+    ) {
+      throw new WorkspacePublishExecutionError("EXECUTION_SCOPE_MISMATCH", "Publish execution is outside the exact configured Workspace/run ownership scope.");
+    }
+    await requireWorkspacePublishOwnership(
+      tx,
+      context.workspaceNovel.id,
+      input.expectedCutoverEpoch,
+      input.expectedOwnershipVersion,
+      true
+    );
     if (context.destination.status !== "active") {
       throw new WorkspacePublishExecutionError("PUBLISH_RUN_CONFLICT", "Publish destination is not active.");
     }
@@ -209,20 +249,42 @@ export async function requestPublishExecution(input: {
 
 export async function claimPublishOutbox(input: {
   workspaceId: number;
+  publishRunId?: number;
   leaseOwner: string;
   leaseExpiresAt: Date;
+  expectedCutoverEpoch?: number;
+  expectedOwnershipVersion?: number;
+  maxAttempts?: number;
 }) {
   const db = await database();
   const now = new Date();
   const leaseMs = input.leaseExpiresAt.getTime() - now.getTime();
-  if (!input.leaseOwner.trim() || leaseMs <= 0 || leaseMs > 5 * 60_000) {
-    throw new WorkspacePublishExecutionError("OUTBOX_LEASE_INVALID", "Outbox lease must be future-dated and no longer than five minutes.");
+  const maxAttempts = input.maxAttempts ?? WORKSPACE_PUBLISH_MAX_ATTEMPTS;
+  if (!input.leaseOwner.trim() || leaseMs <= 0 || leaseMs > 5 * 60_000 || maxAttempts < 1 || maxAttempts > 10) {
+    throw new WorkspacePublishExecutionError("OUTBOX_LEASE_INVALID", "Outbox lease must be future-dated, no longer than five minutes, with a bounded attempt limit.");
   }
   return db.transaction(async (tx: any) => {
+    await tx.update(workspaceOutbox).set({
+      status: "dead_letter",
+      leaseOwner: null,
+      leaseExpiresAt: null,
+    }).where(and(
+      eq(workspaceOutbox.workspaceId, input.workspaceId),
+      input.publishRunId !== undefined ? eq(workspaceOutbox.publishRunId, input.publishRunId) : undefined,
+      eq(workspaceOutbox.eventType, WORKSPACE_PUBLISH_OUTBOX_EVENT),
+      sql`${workspaceOutbox.attempts} >= ${maxAttempts}`,
+      or(
+        eq(workspaceOutbox.status, "failed"),
+        and(eq(workspaceOutbox.status, "claimed"), sql`${workspaceOutbox.leaseExpiresAt} <= NOW()`)
+      )
+    ));
+
     const [candidate] = await tx.select().from(workspaceOutbox).where(and(
       eq(workspaceOutbox.workspaceId, input.workspaceId),
+      input.publishRunId !== undefined ? eq(workspaceOutbox.publishRunId, input.publishRunId) : undefined,
       eq(workspaceOutbox.eventType, WORKSPACE_PUBLISH_OUTBOX_EVENT),
-      sql`${workspaceOutbox.ownershipEpoch} IS NOT NULL`,
+      input.expectedCutoverEpoch !== undefined ? eq(workspaceOutbox.ownershipEpoch, input.expectedCutoverEpoch) : undefined,
+      sql`${workspaceOutbox.attempts} < ${maxAttempts}`,
       sql`${workspaceOutbox.availableAt} <= NOW()`,
       or(
         eq(workspaceOutbox.status, "pending"),
@@ -233,7 +295,13 @@ export async function claimPublishOutbox(input: {
     if (!candidate || candidate.ownershipEpoch === null) return undefined;
 
     const context = await loadRunContext(tx, input.workspaceId, candidate.publishRunId);
-    await requireWorkspacePublishOwnership(tx, context.workspaceNovel.id, candidate.ownershipEpoch, true);
+    await requireWorkspacePublishOwnership(
+      tx,
+      context.workspaceNovel.id,
+      input.expectedCutoverEpoch ?? candidate.ownershipEpoch,
+      input.expectedOwnershipVersion,
+      true
+    );
 
     const update = await tx.update(workspaceOutbox).set({
       status: "claimed",
@@ -242,6 +310,7 @@ export async function claimPublishOutbox(input: {
       attempts: sql`${workspaceOutbox.attempts} + 1`,
     }).where(and(
       eq(workspaceOutbox.id, candidate.id),
+      sql`${workspaceOutbox.attempts} < ${maxAttempts}`,
       sql`${workspaceOutbox.availableAt} <= NOW()`,
       or(
         eq(workspaceOutbox.status, "pending"),
@@ -316,8 +385,11 @@ export async function processClaimedPublishOutbox(input: {
   leaseOwner: string;
   provider: WorkspacePublishProvider;
   expectedCutoverEpoch: number;
+  expectedOwnershipVersion?: number;
   executionEnabled: boolean;
   allowExternalProvider?: boolean;
+  maxAttempts?: number;
+  observer?: WorkspacePublishObserver;
 }) {
   if (!input.executionEnabled) throw new WorkspacePublishExecutionError("EXECUTION_DISABLED", "Workspace publish execution is disabled.");
   if (input.provider.mode === "external" && input.allowExternalProvider !== true) {
@@ -338,7 +410,12 @@ export async function processClaimedPublishOutbox(input: {
   }
 
   const context = await loadRunContext(db, input.workspaceId, outbox.publishRunId);
-  await requireWorkspacePublishOwnership(db, context.workspaceNovel.id, outbox.ownershipEpoch);
+  await requireWorkspacePublishOwnership(
+    db,
+    context.workspaceNovel.id,
+    outbox.ownershipEpoch,
+    input.expectedOwnershipVersion
+  );
   await assertCurrentPublishHash(db, context.workspaceNovel.id, context.run.snapshotId, context.run.expectedLastPublishedSha256 ?? null);
 
   const items = await db.select().from(workspacePublishItems)
@@ -365,6 +442,7 @@ export async function processClaimedPublishOutbox(input: {
         if (affectedRows(recovered) !== 1) {
           throw new WorkspacePublishExecutionError("PUBLISH_RUN_CONFLICT", "Publish item changed while recovering its persisted provider receipt.");
         }
+        input.observer?.({ type: "item_recovered", at: new Date().toISOString(), workspaceId: input.workspaceId, publishRunId: context.run.id, outboxId: outbox.id, itemId: item.id, itemKey: item.itemKey, attempt: outbox.attempts, status: "published" });
         continue;
       }
 
@@ -404,25 +482,58 @@ export async function processClaimedPublishOutbox(input: {
         sourceSha256: item.sourceSha256,
       };
 
-      await requireWorkspacePublishOwnership(db, context.workspaceNovel.id, outbox.ownershipEpoch);
+      await requireWorkspacePublishOwnership(db, context.workspaceNovel.id, outbox.ownershipEpoch, input.expectedOwnershipVersion);
+      input.observer?.({ type: "reconcile_start", at: new Date().toISOString(), workspaceId: input.workspaceId, publishRunId: context.run.id, outboxId: outbox.id, itemId: item.id, itemKey: item.itemKey, requestKey: request.requestKey, attempt: outbox.attempts });
       const reconciled = await input.provider.reconcile(request);
-      await requireWorkspacePublishOwnership(db, context.workspaceNovel.id, outbox.ownershipEpoch);
-      const result = reconciled ?? await input.provider.execute(request);
+      input.observer?.({ type: reconciled ? "reconcile_hit" : "reconcile_miss", at: new Date().toISOString(), workspaceId: input.workspaceId, publishRunId: context.run.id, outboxId: outbox.id, itemId: item.id, itemKey: item.itemKey, requestKey: request.requestKey, attempt: outbox.attempts });
+      await requireWorkspacePublishOwnership(db, context.workspaceNovel.id, outbox.ownershipEpoch, input.expectedOwnershipVersion);
+      let result: WorkspacePublishProviderResult;
+      if (reconciled) {
+        result = reconciled;
+      } else {
+        const executeStartedAt = Date.now();
+        input.observer?.({ type: "execute_start", at: new Date().toISOString(), workspaceId: input.workspaceId, publishRunId: context.run.id, outboxId: outbox.id, itemId: item.id, itemKey: item.itemKey, requestKey: request.requestKey, attempt: outbox.attempts });
+        result = await input.provider.execute(request);
+        input.observer?.({ type: "execute_result", at: new Date().toISOString(), workspaceId: input.workspaceId, publishRunId: context.run.id, outboxId: outbox.id, itemId: item.id, itemKey: item.itemKey, requestKey: request.requestKey, attempt: outbox.attempts, status: result.status, errorClass: result.errorClass, durationMs: Date.now() - executeStartedAt });
+      }
       await persistItemResult({ db, itemId: item.id, expectedVersion: executionVersion, result });
+      if (result.status === "published") {
+        input.observer?.({ type: "receipt_persisted", at: new Date().toISOString(), workspaceId: input.workspaceId, publishRunId: context.run.id, outboxId: outbox.id, itemId: item.id, itemKey: item.itemKey, requestKey: request.requestKey, attempt: outbox.attempts, status: "published" });
+      }
     }
 
-    return await finalizePublishExecution({ workspaceId: input.workspaceId, runId: context.run.id, outboxId: outbox.id, leaseOwner: input.leaseOwner });
+    return await finalizePublishExecution({
+      workspaceId: input.workspaceId,
+      runId: context.run.id,
+      outboxId: outbox.id,
+      leaseOwner: input.leaseOwner,
+      expectedOwnershipVersion: input.expectedOwnershipVersion,
+      maxAttempts: input.maxAttempts,
+      observer: input.observer,
+    });
   } catch (error) {
+    const maxAttempts = input.maxAttempts ?? WORKSPACE_PUBLISH_MAX_ATTEMPTS;
+    const deadLetter = outbox.attempts >= maxAttempts;
     await db.update(workspaceOutbox).set({
-      status: "failed",
+      status: deadLetter ? "dead_letter" : "failed",
       leaseOwner: null,
       leaseExpiresAt: null,
-      availableAt: new Date(Date.now() + 1_000),
+      availableAt: deadLetter ? outbox.availableAt : new Date(Date.now() + 1_000),
     }).where(and(
       eq(workspaceOutbox.id, outbox.id),
       eq(workspaceOutbox.status, "claimed"),
       eq(workspaceOutbox.leaseOwner, input.leaseOwner)
     ));
+    input.observer?.({
+      type: deadLetter ? "outbox_dead_letter" : "outbox_failed",
+      at: new Date().toISOString(),
+      workspaceId: input.workspaceId,
+      publishRunId: context.run.id,
+      outboxId: outbox.id,
+      attempt: outbox.attempts,
+      status: deadLetter ? "dead_letter" : "failed",
+      errorClass: error instanceof Error ? error.name : "UNKNOWN",
+    });
     throw error;
   }
 }
@@ -432,6 +543,9 @@ export async function finalizePublishExecution(input: {
   runId: number;
   outboxId: number;
   leaseOwner: string;
+  expectedOwnershipVersion?: number;
+  maxAttempts?: number;
+  observer?: WorkspacePublishObserver;
 }) {
   const db = await database();
   return db.transaction(async (tx: any) => {
@@ -443,8 +557,20 @@ export async function finalizePublishExecution(input: {
     if (outbox.ownershipEpoch === null) {
       throw new WorkspacePublishExecutionError("PUBLISH_OWNERSHIP_AMBIGUOUS", "Publish outbox is not bound to a cutover epoch.");
     }
-    await requireWorkspacePublishOwnership(tx, context.workspaceNovel.id, outbox.ownershipEpoch, true);
-    await assertCurrentPublishHash(tx, context.workspaceNovel.id, context.run.snapshotId, context.run.expectedLastPublishedSha256 ?? null);
+    await requireWorkspacePublishOwnership(
+      tx,
+      context.workspaceNovel.id,
+      outbox.ownershipEpoch,
+      input.expectedOwnershipVersion,
+      true
+    );
+    const source = await assertCurrentPublishHash(
+      tx,
+      context.workspaceNovel.id,
+      context.run.snapshotId,
+      context.run.expectedLastPublishedSha256 ?? null,
+      true
+    );
     const items = await tx.select().from(workspacePublishItems).where(eq(workspacePublishItems.runId, input.runId));
     const published = items.filter((item: any) => item.status === "published" && item.providerReceipt).length;
     const failed = items.filter((item: any) => item.status === "failed").length;
@@ -464,14 +590,39 @@ export async function finalizePublishExecution(input: {
     }).where(and(eq(workspacePublishRuns.id, context.run.id), eq(workspacePublishRuns.version, context.run.version)));
     if (affectedRows(runUpdate) !== 1) throw new WorkspacePublishExecutionError("PUBLISH_RUN_CONFLICT", "Publish run changed during finalization.");
 
+    if (status === "published") {
+      const fingerprintUpdate = await tx.update(workspaceDocumentFingerprints).set({
+        lastPublishedSha256: source.snapshot.normalizedSha256.toLowerCase(),
+        version: sql`${workspaceDocumentFingerprints.version} + 1`,
+      }).where(and(
+        eq(workspaceDocumentFingerprints.id, source.fingerprint.id),
+        eq(workspaceDocumentFingerprints.version, source.fingerprint.version)
+      ));
+      if (affectedRows(fingerprintUpdate) !== 1) {
+        throw new WorkspacePublishExecutionError("STALE_PUBLISH_HASH", "Publish fingerprint changed while advancing the successful last-published hash.");
+      }
+    }
+
+    const maxAttempts = input.maxAttempts ?? WORKSPACE_PUBLISH_MAX_ATTEMPTS;
+    const deadLetter = status !== "published" && outbox.attempts >= maxAttempts;
+    const outboxStatus = status === "published" ? "delivered" : deadLetter ? "dead_letter" : "failed";
     await tx.update(workspaceOutbox).set({
-      status: status === "published" ? "delivered" : "failed",
+      status: outboxStatus,
       deliveredAt: status === "published" ? new Date() : null,
       leaseOwner: null,
       leaseExpiresAt: null,
-      availableAt: status === "published" ? outbox.availableAt : new Date(Date.now() + 1_000),
+      availableAt: status === "published" || deadLetter ? outbox.availableAt : new Date(Date.now() + 1_000),
     }).where(and(eq(workspaceOutbox.id, outbox.id), eq(workspaceOutbox.status, "claimed"), eq(workspaceOutbox.leaseOwner, input.leaseOwner)));
 
-    return { status, published, failed, pending };
+    input.observer?.({
+      type: deadLetter ? "outbox_dead_letter" : "finalized",
+      at: new Date().toISOString(),
+      workspaceId: input.workspaceId,
+      publishRunId: input.runId,
+      outboxId: outbox.id,
+      attempt: outbox.attempts,
+      status: outboxStatus,
+    });
+    return { status, published, failed, pending, outboxStatus };
   });
 }

@@ -113,6 +113,13 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         eq(workspaceMigrationRegistry.workspaceNovelId, workspaceNovel.workspaceNovelId),
         eq(workspaceMigrationRegistry.capability, "publish")
       ));
+      const scopeFor = (runId: number) => ({
+        workspaceId: workspace.workspaceId,
+        workspaceNovelId: workspaceNovel.workspaceNovelId,
+        runId,
+        expectedCutoverEpoch: 1,
+        expectedOwnershipVersion: 1,
+      });
       await expect(requestPublishExecution({
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
@@ -121,11 +128,23 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         executionEnabled: false,
       })).rejects.toMatchObject({ code: "EXECUTION_DISABLED" } satisfies Partial<WorkspacePublishExecutionError>);
 
+      await expect(requestPublishExecution({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        runId: partialPlan.run.id,
+        expectedCutoverEpoch: 1,
+        expectedOwnershipVersion: 1,
+        executionScope: scopeFor(partialPlan.run.id + 1),
+        executionEnabled: true,
+      })).rejects.toMatchObject({ code: "EXECUTION_SCOPE_MISMATCH" } satisfies Partial<WorkspacePublishExecutionError>);
+
       const enqueued = await requestPublishExecution({
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
         runId: partialPlan.run.id,
         expectedCutoverEpoch: 1,
+        expectedOwnershipVersion: 1,
+        executionScope: scopeFor(partialPlan.run.id),
         executionEnabled: true,
       });
       expect(enqueued.created).toBe(true);
@@ -180,12 +199,37 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
       expect(retryResult.status).toBe("published");
       expect(retryProvider.execute).toHaveBeenCalledTimes(1);
       expect(retryProvider.execute.mock.calls[0][0].itemKey).toBe("chapter-2");
+      const [publishedFingerprint] = await db.select().from(workspaceDocumentFingerprints).where(eq(workspaceDocumentFingerprints.bindingId, binding.bindingId));
+      expect(publishedFingerprint.lastPublishedSha256).toBe(snapshot.normalizedSha256);
+
+      const deadLetterPlan = await createPublishDryRun({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        destinationId: destination.destination.id,
+        snapshotId: snapshot.id,
+        expectedLastPublishedSha256: snapshot.normalizedSha256,
+        items: [{ itemKey: "dead-letter-item", sourceSha256: "f".repeat(64) }],
+      });
+      await requestPublishExecution({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: deadLetterPlan.run.id, expectedCutoverEpoch: 1, executionEnabled: true });
+      const deadLetterProvider = makeProvider({ failItemKey: "dead-letter-item" });
+      const deadLetterClaim1 = await claimPublishOutbox({ workspaceId: workspace.workspaceId, publishRunId: deadLetterPlan.run.id, leaseOwner: "dead-letter-1", leaseExpiresAt: new Date(Date.now() + 60_000), maxAttempts: 2 });
+      const deadLetterResult1 = await processClaimedPublishOutbox({ workspaceId: workspace.workspaceId, outboxId: deadLetterClaim1!.id, leaseOwner: "dead-letter-1", provider: deadLetterProvider.provider, expectedCutoverEpoch: 1, executionEnabled: true, maxAttempts: 2 });
+      expect(deadLetterResult1.outboxStatus).toBe("failed");
+      await new Promise(resolve => setTimeout(resolve, 1_050));
+      await requestPublishExecution({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: deadLetterPlan.run.id, expectedCutoverEpoch: 1, executionEnabled: true });
+      const deadLetterClaim2 = await claimPublishOutbox({ workspaceId: workspace.workspaceId, publishRunId: deadLetterPlan.run.id, leaseOwner: "dead-letter-2", leaseExpiresAt: new Date(Date.now() + 60_000), maxAttempts: 2 });
+      const deadLetterResult2 = await processClaimedPublishOutbox({ workspaceId: workspace.workspaceId, outboxId: deadLetterClaim2!.id, leaseOwner: "dead-letter-2", provider: deadLetterProvider.provider, expectedCutoverEpoch: 1, executionEnabled: true, maxAttempts: 2 });
+      expect(deadLetterResult2.outboxStatus).toBe("dead_letter");
+      const [deadLetterOutbox] = await db.select().from(workspaceOutbox).where(eq(workspaceOutbox.publishRunId, deadLetterPlan.run.id));
+      expect(deadLetterOutbox).toMatchObject({ status: "dead_letter", attempts: 2 });
+      expect(await claimPublishOutbox({ workspaceId: workspace.workspaceId, publishRunId: deadLetterPlan.run.id, leaseOwner: "dead-letter-3", leaseExpiresAt: new Date(Date.now() + 60_000), maxAttempts: 2 })).toBeUndefined();
 
       const crashPlan = await createPublishDryRun({
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
         destinationId: destination.destination.id,
         snapshotId: snapshot.id,
+        expectedLastPublishedSha256: snapshot.normalizedSha256,
         items: [{ itemKey: "crash-item", sourceSha256: "c".repeat(64) }],
       });
       const crashEnqueue = await requestPublishExecution({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: crashPlan.run.id, expectedCutoverEpoch: 1, executionEnabled: true });
@@ -219,6 +263,7 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         workspaceId: workspace.workspaceId,
         destinationId: destination.destination.id,
         snapshotId: snapshot.id,
+        expectedLastPublishedSha256: snapshot.normalizedSha256,
         items: [{ itemKey: "persisted-receipt-item", sourceSha256: "e".repeat(64) }],
       });
       const persistedReceiptEnqueue = await requestPublishExecution({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: persistedReceiptPlan.run.id, expectedCutoverEpoch: 1, executionEnabled: true });
@@ -248,6 +293,7 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         workspaceId: workspace.workspaceId,
         destinationId: destination.destination.id,
         snapshotId: snapshot.id,
+        expectedLastPublishedSha256: snapshot.normalizedSha256,
         items: [{ itemKey: "stale-execution", sourceSha256: "d".repeat(64) }],
       });
       await db.update(workspaceDocumentFingerprints).set({ lastPublishedSha256: "a".repeat(64) }).where(eq(workspaceDocumentFingerprints.bindingId, binding.bindingId));

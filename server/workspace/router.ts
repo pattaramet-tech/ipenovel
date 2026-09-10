@@ -44,6 +44,7 @@ import {
   requestPublishExecution,
   WorkspacePublishExecutionError,
 } from "./publishExecution.service";
+import { parseWorkspacePublishExecutionScope, WorkspacePublishRuntimeError } from "./publishExecution.runtime";
 import {
   getPublishCutoverReadiness,
   rehearsePublishCutoverRollback,
@@ -81,6 +82,9 @@ import {
  * a Google Docs connection or change the existing login scope.
  */
 function mapWorkspaceError(error: unknown): never {
+  if (error instanceof WorkspacePublishRuntimeError) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
+  }
   if (error instanceof WorkspaceLegacyRetirementError) {
     const code =
       error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
@@ -523,15 +527,22 @@ export const workspaceRouter = router({
       .input(workspaceIdInput.extend({
         runId: z.number().int().positive(),
         expectedCutoverEpoch: z.number().int().positive(),
+        expectedOwnershipVersion: z.number().int().positive(),
       }))
       .mutation(async ({ ctx, input }) => {
         try {
+          const executionEnabled = process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true";
+          const executionScope = executionEnabled
+            ? parseWorkspacePublishExecutionScope(process.env.WORKSPACE_PUBLISH_EXECUTION_SCOPE)
+            : undefined;
           return await requestPublishExecution({
             actorUserId: ctx.user.id,
             workspaceId: input.workspaceId,
             runId: input.runId,
             expectedCutoverEpoch: input.expectedCutoverEpoch,
-            executionEnabled: process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true",
+            expectedOwnershipVersion: input.expectedOwnershipVersion,
+            executionScope,
+            executionEnabled,
           });
         } catch (error) {
           return mapWorkspaceError(error);

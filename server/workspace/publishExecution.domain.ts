@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 
 export const WORKSPACE_PUBLISH_EXECUTION_CONTRACT = "workspace-publish-execution-v1" as const;
 export const WORKSPACE_PUBLISH_OUTBOX_EVENT = "workspace.publish.execute.v1" as const;
+export const WORKSPACE_PUBLISH_PROVIDER_RECEIPT_EVENT = "workspace.publish.provider_receipt.v1" as const;
+export const WORKSPACE_PUBLISH_MAX_ATTEMPTS = 3 as const;
 
 export interface WorkspacePublishProviderResult {
   status: "published" | "failed";
@@ -26,6 +28,36 @@ export interface WorkspacePublishProvider {
   reconcile(request: WorkspacePublishProviderRequest): Promise<WorkspacePublishProviderResult | undefined>;
   execute(request: WorkspacePublishProviderRequest): Promise<WorkspacePublishProviderResult>;
 }
+
+export interface WorkspacePublishExecutionScope {
+  workspaceId: number;
+  workspaceNovelId: number;
+  runId: number;
+  expectedCutoverEpoch: number;
+  expectedOwnershipVersion: number;
+}
+
+export const WORKSPACE_PUBLISH_OBSERVATION_TYPES = [
+  "claim_miss", "claim_acquired", "reconcile_start", "reconcile_hit", "reconcile_miss",
+  "execute_start", "execute_result", "receipt_persisted", "item_recovered",
+  "outbox_failed", "outbox_dead_letter", "finalized",
+] as const;
+export type WorkspacePublishObservationType = typeof WORKSPACE_PUBLISH_OBSERVATION_TYPES[number];
+export interface WorkspacePublishObservation {
+  type: WorkspacePublishObservationType;
+  at: string;
+  workspaceId: number;
+  publishRunId: number;
+  outboxId?: number;
+  itemId?: number;
+  itemKey?: string;
+  requestKey?: string;
+  attempt?: number;
+  status?: string;
+  durationMs?: number;
+  errorClass?: string;
+}
+export type WorkspacePublishObserver = (event: WorkspacePublishObservation) => void;
 
 export function buildPublishItemRequestKey(input: {
   publishRunId: number;

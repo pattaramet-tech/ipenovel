@@ -19,7 +19,7 @@ describe("workspace M05-B publish execution boundaries", () => {
     expect(router).not.toContain("processClaimedPublishOutbox");
     expect(service).toContain("allowExternalProvider !== true");
     expect(service).toContain("provider.reconcile(request)");
-    expect(service).toContain("reconciled ?? await input.provider.execute(request)");
+    expect(service).toContain("result = await input.provider.execute(request)");
   });
 
   it("persists receipt before item terminal success and never mutates migration ownership, Docs, or Kanban", () => {
