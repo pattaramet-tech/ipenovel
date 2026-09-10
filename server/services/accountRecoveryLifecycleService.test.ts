@@ -17,7 +17,7 @@ vi.mock("./accountMergeOrchestrationService", async () => {
 
 const request = (overrides: Record<string, unknown> = {}) => ({
   id: 7,
-  requesterUserId: 10,
+  requesterUserId: 20,
   status: "blocked",
   ...overrides,
 });
@@ -46,7 +46,8 @@ const completedStatus = (overrides: Record<string, unknown> = {}) => ({
   financial: {},
   dataSummary: {},
   tableActions: [],
-  identityMoved: true as const,
+  identityMoved: false as const,
+  identityPreservedOnSurvivor: true as const,
   ...overrides,
 });
 
@@ -111,9 +112,9 @@ describe("buildAccountRecoveryLifecycleProjection", () => {
     });
   });
 
-  it("fails closed when the merge participants do not match the persisted requester role", async () => {
+  it("fails closed when the merge Survivor does not match the persisted requester role", async () => {
     vi.spyOn(db, "listAccountMergeCasesForRecoveryRequest").mockResolvedValue([
-      completedCase({ sourceUserId: 99 }),
+      completedCase({ targetUserId: 99 }),
     ] as any);
 
     const result = await buildAccountRecoveryLifecycleProjection(request());

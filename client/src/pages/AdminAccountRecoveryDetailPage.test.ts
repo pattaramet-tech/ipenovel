@@ -27,13 +27,17 @@ describe("IPE-008 Admin Advanced Account Merge UI safety", () => {
 
   });
 
-  it("requires an irreversible warning, mandatory reason, and exact SOURCE->TARGET typed confirmation", () => {
+  it("requires an irreversible warning, mandatory reason, and exact Donor->Survivor typed confirmation", () => {
     expect(source).toContain("การดำเนินการนี้ย้อนกลับไม่ได้จากหน้า Admin");
     expect(source).toContain("เหตุผลการรวมบัญชี (จำเป็น)");
     expect(source).toMatch(
-      /buildAccountMergeConfirmationText\(request\.requesterUserId, targetUserId\)/
+      /buildAccountMergeConfirmationText\(donorUserId, request\.requesterUserId\)/
     );
     expect(source).toMatch(/mergeConfirmation\.trim\(\) !== confirmationText/);
+    expect(source).toContain("ค้นหาบัญชี Donor — บัญชีเดิมที่เข้าไม่ได้");
+    expect(source).toContain("Requester User ID (Survivor)");
+    expect(source).toContain("donorAccountId: donorUserId");
+    expect(source).toContain("survivorAccountId: request.requesterUserId");
   });
 
   it("never exposes a bypass/waiver control and projects verified completion without rewriting blocked history", () => {

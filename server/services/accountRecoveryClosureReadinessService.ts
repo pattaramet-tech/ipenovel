@@ -94,8 +94,8 @@ export async function buildAccountRecoveryClosureReadiness(
   }
   if (!sameRequester) refusalReasons.push("REQUESTER_MISMATCH");
   if (!duplicateOlderThanCanonical) refusalReasons.push("DUPLICATE_NOT_OLDER");
-  if (canonical && Number(canonical.requesterUserId) !== input.donorAccountId) {
-    refusalReasons.push("DONOR_ROLE_MISMATCH");
+  if (canonical && Number(canonical.requesterUserId) !== input.survivorAccountId) {
+    refusalReasons.push("SURVIVOR_ROLE_MISMATCH");
   }
 
   const [duplicateAudits, duplicateMergeCases] = await Promise.all([

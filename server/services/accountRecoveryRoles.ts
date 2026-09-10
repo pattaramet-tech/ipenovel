@@ -1,10 +1,10 @@
-export const ACCOUNT_RECOVERY_ROLE_SEMANTICS_VERSION = "survivor-donor-v1" as const;
+export const ACCOUNT_RECOVERY_ROLE_SEMANTICS_VERSION = "requester-survivor-v2" as const;
 
 export type AccountRecoveryRoleBindingFailure =
   | "INVALID_DONOR"
   | "INVALID_SURVIVOR"
   | "SAME_ACCOUNT"
-  | "DONOR_REQUESTER_MISMATCH";
+  | "SURVIVOR_REQUESTER_MISMATCH";
 
 export type AccountRecoveryRoleBinding = {
   donorAccountId: number;
@@ -17,11 +17,11 @@ export type AccountRecoveryRoleBinding = {
 /**
  * Explicit semantic binding for every Account Recovery / Account Merge write.
  *
- * Donor is the currently-authenticated duplicate account that owns the real
- * Google identity and created the recovery request. Survivor is the canonical
- * legacy account that keeps the merged data and receives that identity.
- * Neither role is inferred from argument order: both ids must be supplied and
- * Donor must exactly match the persisted requesterUserId.
+ * Survivor is the currently-authenticated account that created the recovery
+ * request and already owns the real Google identity. Donor is the inaccessible
+ * legacy account selected by an admin; its reconciliable data flows into the
+ * Survivor. Neither role is inferred from argument order: both ids must be
+ * supplied and Survivor must exactly match the persisted requesterUserId.
  */
 export function bindAccountRecoveryRoles(input: {
   requesterUserId: number;
@@ -37,8 +37,8 @@ export function bindAccountRecoveryRoles(input: {
     failure = "INVALID_SURVIVOR";
   } else if (donorAccountId === survivorAccountId) {
     failure = "SAME_ACCOUNT";
-  } else if (donorAccountId !== requesterUserId) {
-    failure = "DONOR_REQUESTER_MISMATCH";
+  } else if (survivorAccountId !== requesterUserId) {
+    failure = "SURVIVOR_REQUESTER_MISMATCH";
   }
 
   return {

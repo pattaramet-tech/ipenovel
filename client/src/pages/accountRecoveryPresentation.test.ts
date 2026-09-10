@@ -97,7 +97,7 @@ describe("deriveAccountRecoveryViewState", () => {
     expect(result.mostRecentRequest).toBe(approved);
   });
 
-  it("[approved + Google identity already moved away] view stays \"approved\" even though connected now reads false - the approved banner (and its logout/re-login button) must never be replaced by the not-connected guidance state", () => {
+  it("[approved + transient connection-status false] view stays \"approved\" - verified recovery success must not be replaced by not-connected guidance", () => {
     const approved = req({ id: 2, status: "approved" });
     const result = deriveAccountRecoveryViewState([approved], connection({ connected: false }));
     expect(result.justApproved).toBe(true);

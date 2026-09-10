@@ -84,14 +84,14 @@ async function createMergePair(
   const source = await createTestUser();
   const target = await createTestUser();
   const identityResult: any = await t.insert(authIdentities).values({
-    userId: source.id,
+    userId: target.id,
     provider: "google",
     providerSubject: `ipe007-google-${uniqueTestTag()}`,
     emailAtLink: `ipe007-${uniqueTestTag()}@example.test`,
   });
   const identityId = insertId(identityResult);
   const request = await db.createAccountRecoveryRequest({
-    requesterUserId: source.id,
+    requesterUserId: target.id,
   });
   await reviewAccountRecoveryRequest({
     requestId: request.id,
@@ -101,7 +101,7 @@ async function createMergePair(
   });
   const prepared = await prepareAccountMergeGuard({
     requestId: request.id,
-    targetUserId: target.id,
+    donorUserId: source.id,
     actorAdminId: 1,
   });
   await startAccountMergeGuard(prepared.id, 1);
@@ -339,7 +339,7 @@ describe.sequential(
       );
       expect(
         (await readById(authIdentities, authIdentities.id, f.identityId)).userId
-      ).toBe(f.sourceId);
+      ).toBe(f.targetId);
 
       const receipt = await t
         .select()

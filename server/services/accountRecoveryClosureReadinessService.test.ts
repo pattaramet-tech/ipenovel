@@ -11,8 +11,8 @@ vi.mock("./accountRecoveryCompensationService", async () => ({ ...(await vi.impo
 const input = {
   duplicateRequestId: 90003,
   canonicalRequestId: 90007,
-  donorAccountId: 763680006,
-  survivorAccountId: 21960193,
+  donorAccountId: 21960193,
+  survivorAccountId: 763680006,
   expectedGoogleIdentityId: 5370059,
   expectedMergeCaseId: 1,
 };
@@ -39,10 +39,10 @@ function mockReady() {
   vi.spyOn(compensationService, "buildCompensatingRecoveryPlan").mockResolvedValue({
     mode: "dry_run_only",
     executionAuthorized: false,
-    roleSemanticsVersion: "survivor-donor-v1",
+    roleSemanticsVersion: "requester-survivor-v2",
     requestId: 90007,
-    donorAccountId: 763680006,
-    survivorAccountId: 21960193,
+    donorAccountId: 21960193,
+    survivorAccountId: 763680006,
     decision: "NO_REPAIR_REQUIRED",
     refusalReasons: [],
     evidence: { unresolvedEconomicFindings: [] },

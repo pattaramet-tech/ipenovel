@@ -114,9 +114,9 @@ export async function buildAccountRecoveryLifecycleProjection(
 
   if (
     originRequestId !== Number(request.id) ||
-    sourceUserId !== Number(request.requesterUserId) ||
-    !Number.isInteger(targetUserId) ||
-    targetUserId <= 0 ||
+    targetUserId !== Number(request.requesterUserId) ||
+    !Number.isInteger(sourceUserId) ||
+    sourceUserId <= 0 ||
     sourceUserId === targetUserId
   ) {
     return projection(persistedStatus, {
@@ -143,8 +143,8 @@ export async function buildAccountRecoveryLifecycleProjection(
       completed.status !== "completed" ||
       Number(completed.mergeCaseId) !== mergeCaseId ||
       Number(completed.requestId) !== Number(request.id) ||
-      Number(completed.sourceUserId) !== Number(request.requesterUserId) ||
-      Number(completed.targetUserId) !== targetUserId ||
+      Number(completed.sourceUserId) !== sourceUserId ||
+      Number(completed.targetUserId) !== Number(request.requesterUserId) ||
       !("auditLogId" in completed) ||
       !Number.isInteger(Number(completed.auditLogId)) ||
       Number(completed.auditLogId) <= 0

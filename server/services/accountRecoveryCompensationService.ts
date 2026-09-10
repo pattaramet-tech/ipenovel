@@ -158,8 +158,8 @@ export async function buildCompensatingRecoveryPlan(
     if (!roleBinding.valid) {
       addRefusal(
         "INVALID_ROLE_BINDING",
-        roleBinding.failure === "DONOR_REQUESTER_MISMATCH"
-          ? "Donor does not match the persisted recovery requester"
+        roleBinding.failure === "SURVIVOR_REQUESTER_MISMATCH"
+          ? "Survivor does not match the persisted recovery requester"
           : "Donor/Survivor role binding is invalid"
       );
     }

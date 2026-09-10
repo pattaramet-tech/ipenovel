@@ -40,9 +40,9 @@ function fakeGoogleIdentity(overrides: Partial<{ userId: number }> = {}) {
 const SOURCE_ID = 10;
 const TARGET_ID = 20;
 
-/** Mocks a fully-valid pairing: distinct, both non-admin, source has a
- *  Google identity, target has none. Individual tests override one field
- *  to exercise a specific blocker. */
+/** Mocks a fully-valid requester-as-Survivor pairing: distinct, both
+ * non-admin, Source/Donor has no Google identity, Target/Survivor owns the
+ * requester's Google identity and keeps it. */
 function mockValidPairing() {
   vi.spyOn(db, "getUserById").mockImplementation(async (userId: number) => {
     if (userId === SOURCE_ID) return fakeUser({ id: SOURCE_ID, role: "user" }) as any;
@@ -50,7 +50,7 @@ function mockValidPairing() {
     return undefined;
   });
   vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockImplementation(async (userId: number) => {
-    if (userId === SOURCE_ID) return fakeGoogleIdentity({ userId: SOURCE_ID }) as any;
+    if (userId === TARGET_ID) return fakeGoogleIdentity({ userId: TARGET_ID }) as any;
     return undefined;
   });
 }
@@ -128,19 +128,7 @@ describe("validateAccountMergeTarget", () => {
     expect(result.blockers).toContain("Target account is an admin account - never a merge target");
   });
 
-  it("B. source has NO Google identity -> blocked, cannot verify ownership", async () => {
-    vi.spyOn(db, "getUserById").mockImplementation(async (userId: number) =>
-      userId === SOURCE_ID ? (fakeUser({ id: SOURCE_ID }) as any) : (fakeUser({ id: TARGET_ID }) as any)
-    );
-    vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue(undefined);
-
-    const result = await validateAccountMergeTarget(SOURCE_ID, TARGET_ID);
-    expect(result.sourceHasGoogleIdentity).toBe(false);
-    expect(result.isValid).toBe(false);
-    expect(result.blockers).toContain("Source account has no linked Google identity - cannot verify ownership");
-  });
-
-  it("B. target ALREADY has a Google identity -> blocked", async () => {
+  it("B. Donor already has a Google identity -> blocked as ambiguous ownership", async () => {
     vi.spyOn(db, "getUserById").mockImplementation(async (userId: number) =>
       userId === SOURCE_ID ? (fakeUser({ id: SOURCE_ID }) as any) : (fakeUser({ id: TARGET_ID }) as any)
     );
@@ -149,9 +137,21 @@ describe("validateAccountMergeTarget", () => {
     );
 
     const result = await validateAccountMergeTarget(SOURCE_ID, TARGET_ID);
-    expect(result.targetHasGoogleIdentity).toBe(true);
+    expect(result.sourceHasGoogleIdentity).toBe(true);
     expect(result.isValid).toBe(false);
-    expect(result.blockers).toContain("Target account already has a linked Google identity");
+    expect(result.blockers).toContain("Donor account already has a linked Google identity - identity ownership is ambiguous");
+  });
+
+  it("B. Survivor requester has NO Google identity -> blocked because active login ownership cannot be preserved", async () => {
+    vi.spyOn(db, "getUserById").mockImplementation(async (userId: number) =>
+      userId === SOURCE_ID ? (fakeUser({ id: SOURCE_ID }) as any) : (fakeUser({ id: TARGET_ID }) as any)
+    );
+    vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue(undefined);
+
+    const result = await validateAccountMergeTarget(SOURCE_ID, TARGET_ID);
+    expect(result.targetHasGoogleIdentity).toBe(false);
+    expect(result.isValid).toBe(false);
+    expect(result.blockers).toContain("Survivor requester has no linked Google identity - cannot preserve the active login account");
   });
 
   it("B. NEVER exposes the raw Google identity (providerSubject/emailAtLink) - booleans only", async () => {
@@ -163,10 +163,10 @@ describe("validateAccountMergeTarget", () => {
   });
 });
 
-describe("buildAccountMergePreview - A) source is always server-derived", () => {
+describe("buildAccountMergePreview - A) Source/Donor and Target/Survivor are consumed exactly as server-bound roles", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("A. sourceUserId passed in is used verbatim for every downstream lookup - proving the CALLER (the router) is what pins it to requesterUserId, never this function accepting a substitute", async () => {
+  it("A. sourceUserId/targetUserId passed in are used verbatim for Donor->Survivor inventory; requester pinning belongs to the router/role binder", async () => {
     mockValidPairing();
     const inventorySpy = vi.spyOn(db, "findAccountMergeTableInventory").mockResolvedValue([]);
     vi.spyOn(db, "getAccountMergeWalletBalance").mockResolvedValue("0.00");

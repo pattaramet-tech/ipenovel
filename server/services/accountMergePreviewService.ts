@@ -28,10 +28,10 @@ import type {
  * Two hard requirements this file exists specifically to satisfy (mirroring
  * accountRecoveryService.ts's own two, for the sibling workflow this one
  * always originates from):
- * - `sourceUserId` is NEVER a parameter here - only ever derived from the
- *   BLOCKED accountRecoveryRequests row's own `requesterUserId`, by the
- *   caller (see server/routers.ts's accountMerge.admin.preview). Nothing a
- *   client sends can substitute a different source account.
+ * - `targetUserId` is always the BLOCKED accountRecoveryRequests row's own
+ *   `requesterUserId` (the Survivor). The admin-selected inaccessible legacy
+ *   account is the Source/Donor. The router binds both roles explicitly and
+ *   refuses a client-supplied Survivor that differs from the requester.
  * - Never expose raw Google identity material (providerSubject/
  *   emailAtLink) - AccountMergeTargetValidation carries booleans only,
  *   the same redaction rule accountRecoveryService.ts's
@@ -41,9 +41,10 @@ import type {
 /**
  * Validates a candidate (sourceUserId, targetUserId) pairing exactly the
  * way accountRecoveryService.assessAccountRecoverySafety validates a
- * recovery approval - distinct accounts, neither an admin, source must
- * genuinely own a real (never claimed/typed) Google identity, target must
- * have none yet. Read-only; never throws for an invalid pairing - the
+ * recovery approval - distinct accounts, neither an admin, Source/Donor must
+ * NOT own a Google identity, while Target/Survivor (the current requester)
+ * must genuinely own the real Google identity that stays in place. Read-only;
+ * never throws for an invalid pairing - the
  * caller decides what to do with a result whose `isValid` is false (see
  * buildAccountMergePreview, which stops there and never computes a table
  * inventory against data that would not mean anything).
@@ -73,23 +74,24 @@ export async function validateAccountMergeTarget(
   if (sourceIsAdmin) blockers.push("Source account is an admin account - never a merge source");
   if (targetIsAdmin) blockers.push("Target account is an admin account - never a merge target");
 
-  // The ONLY evidence ever trusted for "source owns a Google identity" - a
-  // real row, looked up fresh, matching accountRecoveryService.ts's
-  // identical rule for the sibling Account Recovery workflow.
+  // The Survivor is the current requester and must keep the real Google
+  // identity it used to create this recovery request. The inaccessible legacy
+  // Donor must not own another Google identity; otherwise identity ownership
+  // is ambiguous and this merge fails closed.
   const readGoogleIdentity = (userId: number) =>
     tx === undefined
       ? db.getAuthIdentityByUserAndProvider(userId, "google")
       : db.getAuthIdentityByUserAndProvider(userId, "google", tx);
   const sourceIdentity = sourceExists ? await readGoogleIdentity(sourceUserId) : undefined;
   const sourceHasGoogleIdentity = Boolean(sourceIdentity);
-  if (!sourceHasGoogleIdentity) {
-    blockers.push("Source account has no linked Google identity - cannot verify ownership");
+  if (sourceHasGoogleIdentity) {
+    blockers.push("Donor account already has a linked Google identity - identity ownership is ambiguous");
   }
 
   const targetIdentity = targetExists ? await readGoogleIdentity(targetUserId) : undefined;
   const targetHasGoogleIdentity = Boolean(targetIdentity);
-  if (targetHasGoogleIdentity) {
-    blockers.push("Target account already has a linked Google identity");
+  if (!targetHasGoogleIdentity) {
+    blockers.push("Survivor requester has no linked Google identity - cannot preserve the active login account");
   }
 
   return {

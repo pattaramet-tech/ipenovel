@@ -193,16 +193,12 @@ describe("Admin Account Recovery - real database", () => {
     expect(pendingRows[0].id).toBe(first.id);
   });
 
-  it("[safe empty source approved end-to-end] moves the Google identity, sets target.loginMethod='google', backfills target.email only because it was empty, marks the request approved, and writes an audit log - all against the real database", async () => {
+  it("[safe empty Donor approved end-to-end] keeps the requester's Google identity on Survivor, records Donor->Survivor provenance, and writes an audit log against the real database", async () => {
     const requester = await createTestUser();
-    const target = await createTestUser();
-    createdUserIds.push(requester.id, target.id);
-    // createTestUser always assigns a fixture email - force target.email to
-    // genuinely empty (NULL) so the "backfill only when currently empty"
-    // rule (rule 11) has something real to prove.
-    await getTestDb().update(users).set({ email: null }).where(eq(users.id, target.id));
+    const donor = await createTestUser();
+    createdUserIds.push(requester.id, donor.id);
 
-    const identity = await linkTestGoogleIdentity(requester.id, "legacy-real@example.test");
+    const identity = await linkTestGoogleIdentity(requester.id, "current-survivor@example.test");
     createdIdentityIds.push(identity.id);
 
     const request = await submitAccountRecoveryRequest({ requesterUserId: requester.id });
@@ -210,41 +206,30 @@ describe("Admin Account Recovery - real database", () => {
 
     const assessment = await assessAccountRecoverySafety({
       requestId: request.id,
-      sourceUserId: requester.id,
-      targetUserId: target.id,
+      sourceUserId: donor.id,
+      targetUserId: requester.id,
     });
     expect(assessment.canApprove).toBe(true);
     expect(assessment.isFullyAutomatable).toBe(true);
+    expect(assessment.sourceGoogleIdentity).toBeNull();
+    expect(assessment.targetGoogleIdentity?.id).toBe(identity.id);
 
     const { request: approved } = await executeAccountRecovery({
       requestId: request.id,
-      donorAccountId: requester.id,
-      survivorAccountId: target.id,
+      donorAccountId: donor.id,
+      survivorAccountId: requester.id,
       adminId: 1,
-      reason: "integration test - verified via real db",
+      reason: "integration test - verified Donor to requester Survivor",
     });
     expect(approved.status).toBe("approved");
-    expect(approved.sourceUserId).toBe(requester.id);
-    expect(approved.targetUserId).toBe(target.id);
+    expect(approved.sourceUserId).toBe(donor.id);
+    expect(approved.targetUserId).toBe(requester.id);
 
-    const movedIdentity = await db.getAuthIdentityByUserAndProvider(target.id, "google");
-    expect(movedIdentity).toBeDefined();
-    expect(movedIdentity!.id).toBe(identity.id);
-    expect(movedIdentity!.providerSubject).toBe(identity.providerSubject);
-
-    const sourceStillLinked = await db.getAuthIdentityByUserAndProvider(requester.id, "google");
-    expect(sourceStillLinked).toBeUndefined();
-
-    const targetUser = await db.getUserById(target.id);
-    expect(targetUser!.loginMethod).toBe("google");
-    expect(targetUser!.email).toBe("legacy-real@example.test");
-    // users.id and users.openId are NEVER touched by recovery.
-    expect(targetUser!.id).toBe(target.id);
-    expect(targetUser!.openId).toBe(target.openId);
-
-    const sourceUser = await db.getUserById(requester.id);
-    expect(sourceUser!.id).toBe(requester.id);
-    expect(sourceUser!.openId).toBe(requester.openId);
+    const survivorIdentity = await db.getAuthIdentityByUserAndProvider(requester.id, "google");
+    expect(survivorIdentity).toBeDefined();
+    expect(survivorIdentity!.id).toBe(identity.id);
+    expect(survivorIdentity!.providerSubject).toBe(identity.providerSubject);
+    expect(await db.getAuthIdentityByUserAndProvider(donor.id, "google")).toBeUndefined();
 
     const auditRows = await getTestDb()
       .select()
@@ -252,27 +237,31 @@ describe("Admin Account Recovery - real database", () => {
       .where(eq(accountRecoveryAuditLogs.recoveryRequestId, request.id));
     expect(auditRows.length).toBe(1);
     expect(auditRows[0].action).toBe("approved");
-    expect(JSON.stringify(auditRows[0].safeMetadata)).not.toMatch(new RegExp(identity.providerSubject));
+    expect(auditRows[0].sourceUserId).toBe(donor.id);
+    expect(auditRows[0].targetUserId).toBe(requester.id);
+    const safeMetadata =
+      typeof auditRows[0].safeMetadata === "string"
+        ? JSON.parse(auditRows[0].safeMetadata)
+        : auditRows[0].safeMetadata;
+    expect(safeMetadata).toMatchObject({
+      identityMoved: false,
+      identityPreservedOnSurvivor: true,
+      donorAccountId: donor.id,
+      survivorAccountId: requester.id,
+    });
+    expect(JSON.stringify(safeMetadata)).not.toMatch(new RegExp(identity.providerSubject));
   });
 
-  it("[M1 regression: reject then resubmit] a source account's FIRST request being rejected must never permanently block a SECOND, later request from the same source - the second one still approves end-to-end", async () => {
+  it("[M1 regression: reject then resubmit] a requester's first rejected request never blocks a later Donor->same-Survivor recovery", async () => {
     const requester = await createTestUser();
-    const target = await createTestUser();
-    createdUserIds.push(requester.id, target.id);
+    const donor = await createTestUser();
+    createdUserIds.push(requester.id, donor.id);
 
-    // Step 1: source user with a real Google identity and genuinely no
-    // other data/entitlements (no order, no cart, nothing) - the same
-    // "empty source account" precondition as the already-covered
-    // [safe empty source approved end-to-end] test.
-    const identity = await linkTestGoogleIdentity(requester.id, "legacy-resubmit@example.test");
+    const identity = await linkTestGoogleIdentity(requester.id, "current-resubmit@example.test");
     createdIdentityIds.push(identity.id);
 
-    // Step 2: submit the FIRST recovery request.
     const firstRequest = await submitAccountRecoveryRequest({ requesterUserId: requester.id });
     createdRequestIds.push(firstRequest.id);
-
-    // Step 3: admin rejects the first request (a real reason is required -
-    // matches the reviewAccountRecoveryRequest/router contract).
     const rejected = await reviewAccountRecoveryRequest({
       requestId: firstRequest.id,
       action: "reject",
@@ -281,68 +270,41 @@ describe("Admin Account Recovery - real database", () => {
     });
     expect(rejected.status).toBe("rejected");
 
-    // Before the M1 fix, findAccountRecoveryUserOwnedData counted ANY
-    // other accountRecoveryRequests row for this requester - including the
-    // just-rejected one above - as "user-owned data left behind",
-    // permanently blocking every future request from this same source.
-    // getAuthIdentityByUserAndProvider still finds the source's real
-    // Google identity here (rejecting a REQUEST never touches
-    // authIdentities at all), so the requester genuinely can submit again.
-
-    // Step 4: user submits a SECOND recovery request.
     const secondRequest = await submitAccountRecoveryRequest({ requesterUserId: requester.id });
     createdRequestIds.push(secondRequest.id);
     expect(secondRequest.id).not.toBe(firstRequest.id);
 
-    // Step 5: admin previews the second request - this is exactly where
-    // the bug manifested: canApprove must be true (the rejected sibling
-    // must not appear in userOwnedDataFindings at all).
     const assessment = await assessAccountRecoverySafety({
       requestId: secondRequest.id,
-      sourceUserId: requester.id,
-      targetUserId: target.id,
+      sourceUserId: donor.id,
+      targetUserId: requester.id,
     });
     expect(assessment.userOwnedDataFindings).toEqual([]);
     expect(assessment.canApprove, `expected no block reasons, got: ${assessment.blockReasons.join("; ")}`).toBe(true);
     expect(assessment.isFullyAutomatable).toBe(true);
 
-    // Step 6: approval must succeed - the full transactional flow, same
-    // locking/re-verification as every other approval in this file, never
-    // weakened for this scenario.
     const { request: approved } = await executeAccountRecovery({
       requestId: secondRequest.id,
-      donorAccountId: requester.id,
-      survivorAccountId: target.id,
+      donorAccountId: donor.id,
+      survivorAccountId: requester.id,
       adminId: 2,
-      reason: "resubmission verified - order number confirmed",
+      reason: "resubmission verified - legacy Donor confirmed",
     });
     expect(approved.status).toBe("approved");
-    expect(approved.sourceUserId).toBe(requester.id);
-    expect(approved.targetUserId).toBe(target.id);
+    expect(approved.sourceUserId).toBe(donor.id);
+    expect(approved.targetUserId).toBe(requester.id);
 
-    // Step 7: the Google identity genuinely moved to the target, and no
-    // longer belongs to the source.
-    const movedIdentity = await db.getAuthIdentityByUserAndProvider(target.id, "google");
-    expect(movedIdentity).toBeDefined();
-    expect(movedIdentity!.id).toBe(identity.id);
-    expect(movedIdentity!.providerSubject).toBe(identity.providerSubject);
-    const sourceStillLinked = await db.getAuthIdentityByUserAndProvider(requester.id, "google");
-    expect(sourceStillLinked).toBeUndefined();
+    const survivorIdentity = await db.getAuthIdentityByUserAndProvider(requester.id, "google");
+    expect(survivorIdentity?.id).toBe(identity.id);
+    expect(await db.getAuthIdentityByUserAndProvider(donor.id, "google")).toBeUndefined();
 
-    // Step 8: the FIRST request's own row is untouched by the second
-    // request's approval - still exactly "rejected".
     const firstRequestAfter = await db.getAccountRecoveryRequestById(firstRequest.id);
     expect(firstRequestAfter!.status).toBe("rejected");
-
-    // Step 9: the SECOND request is the one that ended up approved.
     const secondRequestAfter = await db.getAccountRecoveryRequestById(secondRequest.id);
     expect(secondRequestAfter!.status).toBe("approved");
-    expect(secondRequestAfter!.sourceUserId).toBe(requester.id);
-    expect(secondRequestAfter!.targetUserId).toBe(target.id);
+    expect(secondRequestAfter!.sourceUserId).toBe(donor.id);
+    expect(secondRequestAfter!.targetUserId).toBe(requester.id);
 
-    // Step 10: audit logs exist per the existing contract - one "rejected"
-    // entry for the first request, one "approved" entry for the second -
-    // never merged, never missing, never duplicated.
     const firstAuditRows = await getTestDb()
       .select()
       .from(accountRecoveryAuditLogs)
@@ -360,36 +322,34 @@ describe("Admin Account Recovery - real database", () => {
     expect(JSON.stringify(secondAuditRows[0].safeMetadata)).not.toMatch(new RegExp(identity.providerSubject));
   });
 
-  it("[target already has a Google identity] rejected, and the pre-existing target identity is left completely untouched", async () => {
+  it("[Donor already has a Google identity] rejected as ambiguous, and both pre-existing identities are untouched", async () => {
     const requester = await createTestUser();
-    const target = await createTestUser();
-    createdUserIds.push(requester.id, target.id);
+    const donor = await createTestUser();
+    createdUserIds.push(requester.id, donor.id);
 
-    const sourceIdentity = await linkTestGoogleIdentity(requester.id, "legacy@example.test");
-    const targetIdentity = await linkTestGoogleIdentity(target.id, "target-own@example.test");
-    createdIdentityIds.push(sourceIdentity.id, targetIdentity.id);
+    const survivorIdentity = await linkTestGoogleIdentity(requester.id, "current@example.test");
+    const donorIdentity = await linkTestGoogleIdentity(donor.id, "donor-own@example.test");
+    createdIdentityIds.push(survivorIdentity.id, donorIdentity.id);
 
     const request = await submitAccountRecoveryRequest({ requesterUserId: requester.id });
     createdRequestIds.push(request.id);
 
     await expect(
-      executeAccountRecovery({ requestId: request.id, donorAccountId: requester.id, survivorAccountId: target.id, adminId: 1, reason: "test" })
+      executeAccountRecovery({ requestId: request.id, donorAccountId: donor.id, survivorAccountId: requester.id, adminId: 1, reason: "test" })
     ).rejects.toMatchObject({ code: "UNSAFE" });
 
-    const stillOnTarget = await db.getAuthIdentityByUserAndProvider(target.id, "google");
-    expect(stillOnTarget!.id).toBe(targetIdentity.id);
-    const stillOnSource = await db.getAuthIdentityByUserAndProvider(requester.id, "google");
-    expect(stillOnSource!.id).toBe(sourceIdentity.id);
+    expect((await db.getAuthIdentityByUserAndProvider(requester.id, "google"))!.id).toBe(survivorIdentity.id);
+    expect((await db.getAuthIdentityByUserAndProvider(donor.id, "google"))!.id).toBe(donorIdentity.id);
   });
 
-  it("[source with a real order] economic data blocks approval - never auto-moved", async () => {
+  it("[Donor with a real order] economic data blocks Simple Recovery and requester Google identity stays on Survivor", async () => {
     const requester = await createTestUser();
-    const target = await createTestUser();
-    createdUserIds.push(requester.id, target.id);
+    const donor = await createTestUser();
+    createdUserIds.push(requester.id, donor.id);
 
-    const identity = await linkTestGoogleIdentity(requester.id, "legacy@example.test");
+    const identity = await linkTestGoogleIdentity(requester.id, "current@example.test");
     createdIdentityIds.push(identity.id);
-    const order = await createTestOrder(requester.id);
+    const order = await createTestOrder(donor.id);
     createdOrderIds.push(order.id);
 
     const request = await submitAccountRecoveryRequest({ requesterUserId: requester.id });
@@ -397,35 +357,34 @@ describe("Admin Account Recovery - real database", () => {
 
     const assessment = await assessAccountRecoverySafety({
       requestId: request.id,
-      sourceUserId: requester.id,
-      targetUserId: target.id,
+      sourceUserId: donor.id,
+      targetUserId: requester.id,
     });
     expect(assessment.canApprove).toBe(false);
     expect(assessment.economicDataFindings.some((f) => f.table === "orders")).toBe(true);
 
     await expect(
-      executeAccountRecovery({ requestId: request.id, donorAccountId: requester.id, survivorAccountId: target.id, adminId: 1, reason: "test" })
+      executeAccountRecovery({ requestId: request.id, donorAccountId: donor.id, survivorAccountId: requester.id, adminId: 1, reason: "test" })
     ).rejects.toMatchObject({ code: "UNSAFE" });
 
-    // Never moved - the source still owns its own identity.
-    const stillOnSource = await db.getAuthIdentityByUserAndProvider(requester.id, "google");
-    expect(stillOnSource!.id).toBe(identity.id);
+    expect((await db.getAuthIdentityByUserAndProvider(requester.id, "google"))!.id).toBe(identity.id);
+    expect(await db.getAuthIdentityByUserAndProvider(donor.id, "google")).toBeUndefined();
   });
 
-  it("[concurrent approvals] exactly ONE of two simultaneous executeAccountRecovery calls for the SAME request succeeds - the other gets a safe, distinct failure, and the identity is moved exactly once", async () => {
+  it("[concurrent approvals] exactly ONE simultaneous Donor->Survivor approval succeeds and the requester identity remains owned by Survivor", async () => {
     const requester = await createTestUser();
-    const target = await createTestUser();
-    createdUserIds.push(requester.id, target.id);
+    const donor = await createTestUser();
+    createdUserIds.push(requester.id, donor.id);
 
-    const identity = await linkTestGoogleIdentity(requester.id, "legacy@example.test");
+    const identity = await linkTestGoogleIdentity(requester.id, "current@example.test");
     createdIdentityIds.push(identity.id);
 
     const request = await submitAccountRecoveryRequest({ requesterUserId: requester.id });
     createdRequestIds.push(request.id);
 
     const [resultA, resultB] = await Promise.allSettled([
-      executeAccountRecovery({ requestId: request.id, donorAccountId: requester.id, survivorAccountId: target.id, adminId: 1, reason: "admin A" }),
-      executeAccountRecovery({ requestId: request.id, donorAccountId: requester.id, survivorAccountId: target.id, adminId: 2, reason: "admin B" }),
+      executeAccountRecovery({ requestId: request.id, donorAccountId: donor.id, survivorAccountId: requester.id, adminId: 1, reason: "admin A" }),
+      executeAccountRecovery({ requestId: request.id, donorAccountId: donor.id, survivorAccountId: requester.id, adminId: 2, reason: "admin B" }),
     ]);
 
     const outcomes = [resultA, resultB];
@@ -438,12 +397,14 @@ describe("Admin Account Recovery - real database", () => {
     expect(rejectedReason).toBeInstanceOf(AccountRecoveryError);
     expect(["ALREADY_PROCESSED", "CONFLICT", "UNSAFE"]).toContain(rejectedReason.code);
 
-    const movedIdentity = await db.getAuthIdentityByUserAndProvider(target.id, "google");
-    expect(movedIdentity).toBeDefined();
-    expect(movedIdentity!.id).toBe(identity.id);
+    const survivorIdentity = await db.getAuthIdentityByUserAndProvider(requester.id, "google");
+    expect(survivorIdentity?.id).toBe(identity.id);
+    expect(await db.getAuthIdentityByUserAndProvider(donor.id, "google")).toBeUndefined();
 
     const finalRequest = await db.getAccountRecoveryRequestById(request.id);
     expect(finalRequest!.status).toBe("approved");
+    expect(finalRequest!.sourceUserId).toBe(donor.id);
+    expect(finalRequest!.targetUserId).toBe(requester.id);
   });
 
   it("[foreign key / cascade] deleting an accountRecoveryRequests row cascades to its accountRecoveryAuditLogs rows via the real FK - not just application-level cleanup logic", async () => {
@@ -478,15 +439,15 @@ describe("Admin Account Recovery - real database", () => {
     expect(afterDelete.length).toBe(0);
   });
 
-  it("[source with real user-owned data] a real cart row on the source account blocks approval - never auto-moved, and the cart itself is left completely untouched", async () => {
+  it("[Donor with real user-owned data] a real cart row on Donor blocks Simple Recovery and remains untouched", async () => {
     const requester = await createTestUser();
-    const target = await createTestUser();
-    createdUserIds.push(requester.id, target.id);
+    const donor = await createTestUser();
+    createdUserIds.push(requester.id, donor.id);
 
-    const identity = await linkTestGoogleIdentity(requester.id, "legacy@example.test");
+    const identity = await linkTestGoogleIdentity(requester.id, "current@example.test");
     createdIdentityIds.push(identity.id);
 
-    const cartResult: any = await getTestDb().insert(carts).values({ userId: requester.id });
+    const cartResult: any = await getTestDb().insert(carts).values({ userId: donor.id });
     const cartId = cartResult?.[0]?.insertId ?? cartResult?.insertId;
     createdCartIds.push(cartId);
 
@@ -495,51 +456,41 @@ describe("Admin Account Recovery - real database", () => {
 
     const assessment = await assessAccountRecoverySafety({
       requestId: request.id,
-      sourceUserId: requester.id,
-      targetUserId: target.id,
+      sourceUserId: donor.id,
+      targetUserId: requester.id,
     });
     expect(assessment.canApprove).toBe(false);
     expect(assessment.userOwnedDataFindings.some((f) => f.table === "carts")).toBe(true);
 
     await expect(
-      executeAccountRecovery({ requestId: request.id, donorAccountId: requester.id, survivorAccountId: target.id, adminId: 1, reason: "test" })
+      executeAccountRecovery({ requestId: request.id, donorAccountId: donor.id, survivorAccountId: requester.id, adminId: 1, reason: "test" })
     ).rejects.toMatchObject({ code: "UNSAFE" });
 
-    // Never moved - the source still owns its own identity - and the cart
-    // itself was never touched (this tool never moves/merges/deletes
-    // user-owned data or the source account).
-    const stillOnSource = await db.getAuthIdentityByUserAndProvider(requester.id, "google");
-    expect(stillOnSource!.id).toBe(identity.id);
+    expect((await db.getAuthIdentityByUserAndProvider(requester.id, "google"))!.id).toBe(identity.id);
     const cartStillExists = await getTestDb().select().from(carts).where(eq(carts.id, cartId));
     expect(cartStillExists.length).toBe(1);
-    expect(cartStillExists[0].userId).toBe(requester.id);
+    expect(cartStillExists[0].userId).toBe(donor.id);
   });
 
-  it("[transaction rollback] approving a request whose target became invalid (deleted) between preview and approval leaves ZERO partial writes - identity stays on source, request stays pending, no audit log is written", async () => {
+  it("[transaction rollback] deleting the selected Donor between preview and approval leaves zero partial writes while requester Survivor identity stays intact", async () => {
     const requester = await createTestUser();
-    const target = await createTestUser();
+    const donor = await createTestUser();
     createdUserIds.push(requester.id);
 
-    const identity = await linkTestGoogleIdentity(requester.id, "legacy@example.test");
+    const identity = await linkTestGoogleIdentity(requester.id, "current@example.test");
     createdIdentityIds.push(identity.id);
 
     const request = await submitAccountRecoveryRequest({ requesterUserId: requester.id });
     createdRequestIds.push(request.id);
 
-    // Simulates a real "changed out from under the transaction" scenario:
-    // the target account is gone by the time approval actually runs
-    // (assessAccountRecoverySafety's targetExists check fails inside the
-    // locked transaction) - never cleaned up via createdUserIds since it's
-    // deleted here, deliberately, as part of the test itself.
-    await deleteFixtures({ userIds: [target.id] });
+    await deleteFixtures({ userIds: [donor.id] });
 
     await expect(
-      executeAccountRecovery({ requestId: request.id, donorAccountId: requester.id, survivorAccountId: target.id, adminId: 1, reason: "test" })
+      executeAccountRecovery({ requestId: request.id, donorAccountId: donor.id, survivorAccountId: requester.id, adminId: 1, reason: "test" })
     ).rejects.toMatchObject({ code: "UNSAFE" });
 
-    // Nothing partially happened - real ROLLBACK, not a partial commit.
-    const stillOnSource = await db.getAuthIdentityByUserAndProvider(requester.id, "google");
-    expect(stillOnSource!.id).toBe(identity.id);
+    const stillOnSurvivor = await db.getAuthIdentityByUserAndProvider(requester.id, "google");
+    expect(stillOnSurvivor!.id).toBe(identity.id);
 
     const requestAfter = await db.getAccountRecoveryRequestById(request.id);
     expect(requestAfter!.status).toBe("pending");

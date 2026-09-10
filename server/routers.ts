@@ -3545,7 +3545,7 @@ export const appRouter = router({
         .query(async ({ input }) => {
           const request = await db.getAccountRecoveryRequestById(input.requestId);
           if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "Recovery request not found" });
-          if (input.donorAccountId !== request.requesterUserId || input.donorAccountId === input.survivorAccountId) {
+          if (input.survivorAccountId !== request.requesterUserId || input.donorAccountId === input.survivorAccountId) {
             throw new TRPCError({
               code: "BAD_REQUEST",
               message: "Donor/Survivor roles do not match this recovery request",
@@ -3707,14 +3707,12 @@ export const appRouter = router({
   // only the read-only preview.
   accountMerge: router({
     admin: router({
-      // Read-only, safe to call repeatedly as the admin picks different
-      // candidate targets - same shape/purpose as
-      // accountRecovery.admin.previewApproval above. `requestId` must name
-      // an existing, BLOCKED recovery request - Source is ALWAYS that
-      // request's own requesterUserId, never accepted as input here, so
-      // nothing a client sends can redirect this to a different source
-      // account. `targetUserId` is the one thing an admin actually
-      // supplies, exactly like previewApproval's targetUserId.
+      // Read-only, safe to call repeatedly as the admin evaluates different
+      // inaccessible Donor accounts. `requestId` must name an existing,
+      // BLOCKED recovery request. Target/Survivor is ALWAYS that request's
+      // own requesterUserId; Source/Donor is the account selected by admin.
+      // The explicit role check below prevents a client from replacing the
+      // requester with another canonical Survivor.
       preview: adminProcedure
         .input(
           z.object({
@@ -3732,7 +3730,7 @@ export const appRouter = router({
               message: "Advanced Account Merge preview requires a BLOCKED recovery request",
             });
           }
-          if (input.donorAccountId !== request.requesterUserId || input.donorAccountId === input.survivorAccountId) {
+          if (input.survivorAccountId !== request.requesterUserId || input.donorAccountId === input.survivorAccountId) {
             throw new TRPCError({
               code: "BAD_REQUEST",
               message: "Donor/Survivor roles do not match this recovery request",
@@ -3798,7 +3796,7 @@ export const appRouter = router({
             if (!request) {
               throw new TRPCError({ code: "NOT_FOUND", message: "Recovery request not found" });
             }
-            if (input.donorAccountId !== request.requesterUserId || input.donorAccountId === input.survivorAccountId) {
+            if (input.survivorAccountId !== request.requesterUserId || input.donorAccountId === input.survivorAccountId) {
               throw new TRPCError({
                 code: "BAD_REQUEST",
                 message: "Donor/Survivor roles do not match this recovery request",
@@ -3806,7 +3804,7 @@ export const appRouter = router({
             }
             return await prepareAccountMergeGuard({
               requestId: input.requestId,
-              targetUserId: input.survivorAccountId,
+              donorUserId: input.donorAccountId,
               actorAdminId: ctx.user.id,
             });
           } catch (error) {

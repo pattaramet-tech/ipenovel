@@ -37,7 +37,7 @@ function mockBase(overrides: {
   vi.spyOn(db, "getAccountRecoveryRequestById").mockResolvedValue(
     overrides.request ?? {
       id: 7,
-      requesterUserId: 10,
+      requesterUserId: 20,
       status: "approved",
       sourceUserId: 10,
       targetUserId: 20,
@@ -45,8 +45,8 @@ function mockBase(overrides: {
   );
   vi.spyOn(db, "getUserById").mockImplementation(async id => user(id));
   vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockImplementation(async userId => {
-    if (userId === 10) return "donorIdentity" in overrides ? overrides.donorIdentity : identity(10);
-    if (userId === 20) return "survivorIdentity" in overrides ? overrides.survivorIdentity : undefined;
+    if (userId === 10) return "donorIdentity" in overrides ? overrides.donorIdentity : undefined;
+    if (userId === 20) return "survivorIdentity" in overrides ? overrides.survivorIdentity : identity(20);
     return undefined;
   });
   vi.spyOn(db, "listAccountMergeCasesForParticipants").mockResolvedValue((overrides.cases ?? []) as any);
@@ -69,7 +69,7 @@ const baseInput = {
   donorAccountId: 10,
   survivorAccountId: 20,
   expectedRequestStatus: "approved" as const,
-  expectedCurrentIdentityOwnerAccountId: 10,
+  expectedCurrentIdentityOwnerAccountId: 20,
   expectedGoogleIdentityId: 900,
   expectedMergeCaseId: null,
 };
@@ -93,8 +93,6 @@ describe("buildCompensatingRecoveryPlan", () => {
     expect(first.planDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(first.plannedMutations).toEqual([
       expect.objectContaining({ kind: "reconcile_donor_data_to_survivor", donorAccountId: 10, survivorAccountId: 20 }),
-      { kind: "move_google_identity_to_survivor", donorAccountId: 10, survivorAccountId: 20 },
-      { kind: "finalize_survivor_login_projection", survivorAccountId: 20 },
     ]);
     expect(JSON.stringify(first)).not.toContain("secret-sub");
     expect(JSON.stringify(first)).not.toContain("hidden@example.test");
@@ -139,7 +137,7 @@ describe("buildCompensatingRecoveryPlan", () => {
     mockBase();
     const result = await buildCompensatingRecoveryPlan({
       ...baseInput,
-      expectedCurrentIdentityOwnerAccountId: 20,
+      expectedCurrentIdentityOwnerAccountId: 10,
     });
     expect(result.decision).toBe("REFUSE");
     expect(result.refusalReasons.map(r => r.code)).toContain("IDENTITY_OWNER_DRIFT");
@@ -147,7 +145,7 @@ describe("buildCompensatingRecoveryPlan", () => {
   });
 
   it("refuses ambiguous identity ownership", async () => {
-    mockBase({ survivorIdentity: identity(20, 901) });
+    mockBase({ donorIdentity: identity(10, 901) });
     const result = await buildCompensatingRecoveryPlan(baseInput);
     expect(result.decision).toBe("REFUSE");
     expect(result.refusalReasons.map(r => r.code)).toContain("IDENTITY_AMBIGUOUS");
@@ -155,7 +153,7 @@ describe("buildCompensatingRecoveryPlan", () => {
 
   it("refuses an unresolved active merge case", async () => {
     mockBase({
-      request: { id: 7, requesterUserId: 10, status: "blocked", sourceUserId: null, targetUserId: null },
+      request: { id: 7, requesterUserId: 20, status: "blocked", sourceUserId: null, targetUserId: null },
       cases: [{
         id: 33,
         sourceUserId: 10,
@@ -223,7 +221,7 @@ describe("buildCompensatingRecoveryPlan", () => {
 
   it("refuses a completed merge case missing any durable completion receipt/audit", async () => {
     mockBase({
-      request: { id: 7, requesterUserId: 10, status: "blocked", sourceUserId: null, targetUserId: null },
+      request: { id: 7, requesterUserId: 20, status: "blocked", sourceUserId: null, targetUserId: null },
       cases: [{
         id: 55,
         sourceUserId: 10,
@@ -248,7 +246,7 @@ describe("buildCompensatingRecoveryPlan", () => {
 
   it("treats completed-merge financial history as preserved evidence, not compensating work", async () => {
     mockBase({
-      request: { id: 7, requesterUserId: 10, status: "blocked", sourceUserId: null, targetUserId: null },
+      request: { id: 7, requesterUserId: 20, status: "blocked", sourceUserId: null, targetUserId: null },
       donorIdentity: undefined,
       survivorIdentity: identity(20),
       cases: [{
@@ -298,7 +296,7 @@ describe("buildCompensatingRecoveryPlan", () => {
 
   it("economic execution gate binds the exact current digest and turns a fully reconciled merge into a verified no-write", async () => {
     mockBase({
-      request: { id: 7, requesterUserId: 10, status: "blocked", sourceUserId: null, targetUserId: null },
+      request: { id: 7, requesterUserId: 20, status: "blocked", sourceUserId: null, targetUserId: null },
       donorIdentity: undefined,
       survivorIdentity: identity(20),
       cases: [{
@@ -349,7 +347,7 @@ describe("buildCompensatingRecoveryPlan", () => {
 
   it("refuses a completed merge whose Donor current wallet or points balance drifted above zero", async () => {
     mockBase({
-      request: { id: 7, requesterUserId: 10, status: "blocked", sourceUserId: null, targetUserId: null },
+      request: { id: 7, requesterUserId: 20, status: "blocked", sourceUserId: null, targetUserId: null },
       donorIdentity: undefined,
       survivorIdentity: identity(20),
       cases: [{
@@ -383,7 +381,7 @@ describe("buildCompensatingRecoveryPlan", () => {
 
   it("refuses non-historical Donor rows after a completed merge instead of rewriting them automatically", async () => {
     mockBase({
-      request: { id: 7, requesterUserId: 10, status: "blocked", sourceUserId: null, targetUserId: null },
+      request: { id: 7, requesterUserId: 20, status: "blocked", sourceUserId: null, targetUserId: null },
       donorIdentity: undefined,
       survivorIdentity: identity(20),
       cases: [{

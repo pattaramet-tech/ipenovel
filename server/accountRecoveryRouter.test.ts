@@ -372,7 +372,7 @@ describe("accountRecovery.admin.previewApproval - privacy: never leaks the Googl
   function mockAssessmentWithRealIdentity() {
     vi.spyOn(db, "getAccountRecoveryRequestById").mockResolvedValue({
       id: 1,
-      requesterUserId: 10,
+      requesterUserId: 20,
       status: "pending",
     } as any);
     // Mocks the SERVICE layer's internal assessment (never mocks
@@ -386,8 +386,9 @@ describe("accountRecovery.admin.previewApproval - privacy: never leaks the Googl
       targetExists: true,
       sourceIsAdmin: false,
       targetIsAdmin: false,
-      sourceGoogleIdentity: { id: 900, providerSubject: SECRET_GOOGLE_SUB, emailAtLink: SECRET_FULL_EMAIL },
-      targetHasGoogleIdentity: false,
+      sourceGoogleIdentity: null,
+      targetGoogleIdentity: { id: 900, providerSubject: SECRET_GOOGLE_SUB, emailAtLink: SECRET_FULL_EMAIL },
+      targetHasGoogleIdentity: true,
       economicDataFindings: [],
       userOwnedDataFindings: [],
       blockReasons: [],
@@ -415,7 +416,7 @@ describe("accountRecovery.admin.previewApproval - privacy: never leaks the Googl
     expect(JSON.stringify(result)).not.toMatch(new RegExp(SECRET_FULL_EMAIL.replace(/[.]/g, "\\.")));
   });
 
-  it("the response has no 'providerSubject', 'emailAtLink', 'sourceGoogleIdentity', 'token', 'cookie', or 'authorization' key anywhere - only the allowlisted DTO shape", async () => {
+  it("the response strips both raw Google identity objects plus providerSubject/emailAtLink/token/cookie/authorization - only boolean ownership survives", async () => {
     mockAssessmentWithRealIdentity();
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
@@ -425,6 +426,7 @@ describe("accountRecovery.admin.previewApproval - privacy: never leaks the Googl
     expect(raw).not.toMatch(/providersubject/);
     expect(raw).not.toMatch(/emailatlink/);
     expect(raw).not.toMatch(/sourcegoogleidentity/);
+    expect(raw).not.toMatch(/targetgoogleidentity/);
     expect(raw).not.toMatch(/token/);
     expect(raw).not.toMatch(/cookie/);
     expect(raw).not.toMatch(/authorization/);
@@ -449,13 +451,14 @@ describe("accountRecovery.admin.previewApproval - privacy: never leaks the Googl
     );
   });
 
-  it("sourceHasGoogleIdentity is still correctly derived as a boolean (true) even though the identity object itself is stripped", async () => {
+  it("ownership booleans preserve the corrected semantics: Donor has no Google identity, Survivor requester does", async () => {
     mockAssessmentWithRealIdentity();
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
     const result = await caller.accountRecovery.admin.previewApproval({ requestId: 1, donorAccountId: 10, survivorAccountId: 20 });
 
-    expect(result.sourceHasGoogleIdentity).toBe(true);
+    expect(result.sourceHasGoogleIdentity).toBe(false);
+    expect(result.targetHasGoogleIdentity).toBe(true);
   });
 
   it("non-admin -> FORBIDDEN before the service is ever invoked", async () => {

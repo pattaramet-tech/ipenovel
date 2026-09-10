@@ -51,13 +51,13 @@ async function createMergePair(options: { start?: boolean } = {}): Promise<Finan
   const source = await createTestUser();
   const target = await createTestUser();
   const identityResult: any = await t.insert(authIdentities).values({
-    userId: source.id,
+    userId: target.id,
     provider: "google",
     providerSubject: `ipe006-google-${uniqueTestTag()}`,
     emailAtLink: `ipe006-${uniqueTestTag()}@example.test`,
   });
   const identityId = insertId(identityResult);
-  const request = await db.createAccountRecoveryRequest({ requesterUserId: source.id });
+  const request = await db.createAccountRecoveryRequest({ requesterUserId: target.id });
   await reviewAccountRecoveryRequest({
     requestId: request.id,
     action: "block",
@@ -66,7 +66,7 @@ async function createMergePair(options: { start?: boolean } = {}): Promise<Finan
   });
   const prepared = await prepareAccountMergeGuard({
     requestId: request.id,
-    targetUserId: target.id,
+    donorUserId: source.id,
     actorAdminId: 1,
   });
   if (options.start !== false) await startAccountMergeGuard(prepared.id, 1);
@@ -409,37 +409,38 @@ describe.sequential("IPE-006 Account Merge financial reconciliation - real datab
     )).toHaveLength(0);
   }, 30000);
 
-  it("fails closed when the Target is itself a guarded Source of another merge", async () => {
+  it("fails closed when the Target is itself recorded as a guarded Source of another merge", async () => {
     const f = await createMergePair();
     await seedBalances(f, { sourceWallet: "1.00", targetWallet: "2.00", sourcePoints: "3.00", targetPoints: "4.00" });
     const t = requireTestDb();
     const downstreamTarget = await createTestUser();
     let downstreamRequestId = 0;
     let downstreamCaseId = 0;
-    let targetIdentityId = 0;
 
     try {
-      const identityResult: any = await t.insert(authIdentities).values({
-        userId: f.targetId,
-        provider: "google",
-        providerSubject: `ipe006-target-guard-${uniqueTestTag()}`,
-        emailAtLink: `ipe006-target-guard-${uniqueTestTag()}@example.test`,
+      // Under requester-as-Survivor semantics a valid Survivor owns Google,
+      // so the normal guard entrypoint would refuse to reuse it as another
+      // Donor/Source. Persist a blocked downstream request for a different
+      // Survivor, then insert the impossible guard row directly to retain
+      // defense-in-depth coverage for historical/corrupt state.
+      const downstreamRequest = await db.createAccountRecoveryRequest({
+        requesterUserId: downstreamTarget.id,
       });
-      targetIdentityId = insertId(identityResult);
-      const downstreamRequest = await db.createAccountRecoveryRequest({ requesterUserId: f.targetId });
       downstreamRequestId = downstreamRequest.id;
       await reviewAccountRecoveryRequest({
         requestId: downstreamRequestId,
         action: "block",
         actorAdminId: 1,
-        reason: "IPE-006 target-guard fixture",
+        reason: "IPE-006 target-guard persisted-state fixture",
       });
-      const downstreamCase = await prepareAccountMergeGuard({
-        requestId: downstreamRequestId,
+      const downstreamCaseInsert: any = await t.insert(accountMergeCases).values({
+        originAccountRecoveryRequestId: downstreamRequestId,
+        sourceUserId: f.targetId,
         targetUserId: downstreamTarget.id,
-        actorAdminId: 1,
+        status: "pending",
+        createdByAdminId: 1,
       });
-      downstreamCaseId = downstreamCase.id;
+      downstreamCaseId = insertId(downstreamCaseInsert);
 
       await expect(reconcileAccountMergeFinancials({ caseId: f.caseId, actorAdminId: 42 })).rejects.toMatchObject({
         code: "TARGET_ACCOUNT_GUARDED",
@@ -454,9 +455,6 @@ describe.sequential("IPE-006 Account Merge financial reconciliation - real datab
       }
       if (downstreamRequestId) {
         await t.delete(accountRecoveryRequests).where(eq(accountRecoveryRequests.id, downstreamRequestId));
-      }
-      if (targetIdentityId) {
-        await t.delete(authIdentities).where(eq(authIdentities.id, targetIdentityId));
       }
       await deleteFixtures({ userIds: [downstreamTarget.id] });
     }

@@ -352,8 +352,8 @@ export default function ProfilePage() {
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-slate-900">เข้าสู่ระบบแล้วพบว่าเป็นบัญชีใหม่?</p>
                   <p className="text-sm text-muted-foreground mt-1">
-                    หากชั้นหนังสือ ยอดเงิน หรือประวัติการซื้อเดิมไม่แสดง คุณสามารถส่งคำขอให้ทีมงานตรวจสอบและย้ายการเชื่อมต่อ Google
-                    กลับไปยังบัญชีเดิมได้
+                    หากชั้นหนังสือ ยอดเงิน หรือประวัติการซื้อเดิมไม่แสดง คุณสามารถส่งคำขอให้ทีมงานตรวจสอบและย้ายข้อมูลจากบัญชีเดิม
+                    เข้ามายังบัญชีปัจจุบัน โดยการเชื่อมต่อ Google จะคงอยู่กับบัญชีปัจจุบัน
                   </p>
                   <Button variant="outline" size="sm" className="mt-3" onClick={() => navigate("/account/recovery")}>
                     กู้คืนบัญชีเดิม

@@ -19,21 +19,23 @@ function position(fragment: string, startAt = 0): number {
 }
 
 describe("IPE-008 final orchestration static safety invariants", () => {
-  it("orders final locked preview -> financial -> data -> Google identity move -> completed transition -> completion audit", () => {
+  it("orders final locked preview -> financial -> data -> Survivor identity-preservation guard -> completed transition -> completion audit", () => {
     const preview = position("await buildAccountMergePreview(");
     const financial = position(
       "await reconcileAccountMergeFinancialsInTransaction("
     );
     const data = position("await reconcileAccountMergeDataInTransaction(");
-    const authMove = position("await db.moveAuthIdentityOwner(");
-    const complete = position('status: "completed"', authMove);
+    const identityGuard = position("if (sourceIdentity || !targetIdentity)", data);
+    const complete = position('status: "completed"', identityGuard);
     const audit = position('action: "merge_completed"', complete);
 
     expect(preview).toBeLessThan(financial);
     expect(financial).toBeLessThan(data);
-    expect(data).toBeLessThan(authMove);
-    expect(authMove).toBeLessThan(complete);
+    expect(data).toBeLessThan(identityGuard);
+    expect(identityGuard).toBeLessThan(complete);
     expect(complete).toBeLessThan(audit);
+    expect(source).not.toContain("moveAuthIdentityOwner(");
+    expect(source).not.toContain("finalizeAccountRecoveryTargetUser(");
   });
 
   it("never hard-deletes Source or deletes from users/auth anti-replay tables", () => {

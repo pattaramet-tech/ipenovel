@@ -50,15 +50,10 @@ export type AccountRecoveryViewState<T extends AccountRecoveryRequestSummary> = 
   /** Verified derived completion of the most-recent BLOCKED request through Advanced Merge. */
   resolvedViaAdvancedMerge: boolean;
   /**
-   * True when the most recently created request was approved - i.e. THIS
-   * session's account was just moved as a recovery source. Post-approval
-   * session UX rule: the current session must never automatically become
-   * the target account, so this drives showing a prominent "log out and
-   * log back in with Google" instruction instead of silently doing
-   * anything on the caller's behalf. The same logout/re-login rule applies
-   * to resolved_via_advanced_merge because the Google identity is likewise
-   * already owned by the Survivor while the current Donor session remains
-   * stale until a fresh login.
+   * True when the most recently created request was approved. The requester
+   * is already the Survivor/canonical account and retains its Google identity,
+   * so this flag selects the success presentation without any account switch
+   * or fresh-login requirement.
    */
   justApproved: boolean;
   /**
@@ -70,9 +65,9 @@ export type AccountRecoveryViewState<T extends AccountRecoveryRequestSummary> = 
    *   5. "connection_error"
    *   6. "form"
    *   7. "guidance"
-   * Completed recovery outcomes always beat connection-status state because
-   * losing Google ownership on the stale Donor session is expected after a
-   * successful recovery/merge, not a reason to replace success with guidance.
+   * Completed recovery outcomes always beat connection-status state. The
+   * requester remains the Survivor and keeps Google ownership; a transient
+   * connection-status read must not replace the verified success state.
    */
   view: AccountRecoveryView;
 };

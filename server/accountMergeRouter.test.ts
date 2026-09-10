@@ -144,42 +144,39 @@ describe("accountMerge.admin.preview", () => {
     });
   });
 
-  it("A. a BLOCKED request -> reaches the service, sourceUserId is ALWAYS the request's own requesterUserId, never anything from the client input", async () => {
+  it("A. a BLOCKED request -> reaches the service with Source/Donor from admin selection and Target/Survivor pinned to the persisted requester", async () => {
     vi.spyOn(db, "getAccountRecoveryRequestById").mockResolvedValue(
       fakeRequest({ id: 7, requesterUserId: 42, status: "blocked" }) as any
     );
     const buildSpy = vi
       .spyOn(accountMergePreviewService, "buildAccountMergePreview")
-      .mockResolvedValue({ requestId: 7, sourceUserId: 42, targetUserId: 5 } as any);
+      .mockResolvedValue({ requestId: 7, sourceUserId: 5, targetUserId: 42 } as any);
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
-    await caller.accountMerge.admin.preview({ requestId: 7, donorAccountId: 42, survivorAccountId: 5 });
+    await caller.accountMerge.admin.preview({ requestId: 7, donorAccountId: 5, survivorAccountId: 42 });
 
-    expect(buildSpy).toHaveBeenCalledWith({ requestId: 7, sourceUserId: 42, targetUserId: 5 });
+    expect(buildSpy).toHaveBeenCalledWith({ requestId: 7, sourceUserId: 5, targetUserId: 42 });
   });
 
-  it("A. the input schema has NO sourceUserId field at all - a client cannot even attempt to supply one", async () => {
+  it("A. legacy sourceUserId input is ignored; explicit donorAccountId is Source while Survivor must equal requester", async () => {
     vi.spyOn(db, "getAccountRecoveryRequestById").mockResolvedValue(fakeRequest({ status: "blocked" }) as any);
     vi.spyOn(accountMergePreviewService, "buildAccountMergePreview").mockResolvedValue({} as any);
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
-    // Extra/unknown fields on a zod object schema are stripped, not
-    // rejected, by default - so this proves the field is simply never
-    // read, not merely that the call succeeds.
     const buildSpy = vi.mocked(accountMergePreviewService.buildAccountMergePreview);
-    await caller.accountMerge.admin.preview({ requestId: 1, donorAccountId: 42, survivorAccountId: 5, sourceUserId: 999 } as any);
+    await caller.accountMerge.admin.preview({ requestId: 1, donorAccountId: 5, survivorAccountId: 42, sourceUserId: 999 } as any);
 
-    expect(buildSpy).toHaveBeenCalledWith(expect.objectContaining({ sourceUserId: fakeRequest().requesterUserId }));
+    expect(buildSpy).toHaveBeenCalledWith(expect.objectContaining({ sourceUserId: 5, targetUserId: 42 }));
     expect(buildSpy).not.toHaveBeenCalledWith(expect.objectContaining({ sourceUserId: 999 }));
   });
 
   it("returns exactly what the service produced, unmodified", async () => {
     vi.spyOn(db, "getAccountRecoveryRequestById").mockResolvedValue(fakeRequest({ status: "blocked" }) as any);
-    const fakePreview = { requestId: 1, sourceUserId: 42, targetUserId: 5, isPreviewValid: true, hardBlockers: [] };
+    const fakePreview = { requestId: 1, sourceUserId: 5, targetUserId: 42, isPreviewValid: true, hardBlockers: [] };
     vi.spyOn(accountMergePreviewService, "buildAccountMergePreview").mockResolvedValue(fakePreview as any);
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
-    const result = await caller.accountMerge.admin.preview({ requestId: 1, donorAccountId: 42, survivorAccountId: 5 });
+    const result = await caller.accountMerge.admin.preview({ requestId: 1, donorAccountId: 5, survivorAccountId: 42 });
     expect(result).toEqual(fakePreview);
   });
 });

@@ -5,27 +5,24 @@ import type { AccountRecoveryRequest } from "../../drizzle/schema";
 import { accountRecoveryRoleAuditMetadata, bindAccountRecoveryRoles } from "./accountRecoveryRoles";
 
 /**
- * Central safety/execution logic for the Admin Account Recovery workflow
- * (post-VPS-migration Google-email mismatch: a user's real account and the
- * Google-linked account they're currently signed into are two different
- * `users` rows, and an admin needs to move the Google identity from the
- * new/duplicate account onto the real one). Every rule this feature's task
+ * Central safety/execution logic for the Admin Account Recovery workflow.
+ * The currently signed-in requester is the Survivor/canonical account and
+ * keeps its Google identity. The inaccessible legacy account selected by an
+ * admin is the Donor; Simple Recovery is allowed only when that Donor has no
+ * recoverable data, while Advanced Merge reconciles Donor data into Survivor.
+ * Every rule this feature's task
  * spec enumerates is enforced HERE, once, and reused by both the read-only
  * admin-detail-page preview (assessAccountRecoverySafety) and the actual
  * transactional approval (executeAccountRecovery) - never duplicated
  * per-caller.
  *
  * Two hard requirements this file exists specifically to satisfy:
- * - Never use a claimed/typed email, openId, or user id as approval
- *   evidence - the only thing that ever proves "the source account owns a
- *   Google identity" is a real row in `authIdentities`, looked up fresh
- *   from the database, never taken from the recovery request's own
- *   user-submitted fields.
- * - Never let an admin (or a compromised admin session) move an arbitrary
- *   user's identity - `sourceUserId` is always derived from the recovery
- *   request's `requesterUserId` (itself only ever set from the actual
- *   caller's session at creation time, see submitAccountRecoveryRequest),
- *   never accepted as a parameter here.
+ * - Never use a claimed/typed email, openId, or user id as identity evidence.
+ *   The Survivor's Google ownership is proven only by a fresh authIdentities
+ *   row, never by the recovery request's user-submitted legacy fields.
+ * - Never let an admin replace the current requester as canonical Survivor.
+ *   `survivorAccountId` must exactly equal the locked requester's user id;
+ *   only the inaccessible Donor is selected by the admin.
  */
 
 export class AccountRecoveryError extends Error {
@@ -53,10 +50,12 @@ export type AccountRecoverySafetyAssessment = {
   targetExists: boolean;
   sourceIsAdmin: boolean;
   targetIsAdmin: boolean;
-  /** The source's real, database-verified Google identity - null means the
-   *  claim cannot be substantiated at all (rule: source must genuinely own
-   *  the claimed Google identity). Never sourced from request input. */
+  /** Database-verified identity state for both merge participants. Under the
+   * requester-as-Survivor invariant, Source/Donor must be null and
+   * Target/Survivor must be non-null. Neither value is sourced from request
+   * claims, and neither raw identity object may cross the tRPC boundary. */
   sourceGoogleIdentity: { id: number; providerSubject: string; emailAtLink: string } | null;
+  targetGoogleIdentity: { id: number; providerSubject: string; emailAtLink: string } | null;
   targetHasGoogleIdentity: boolean;
   /** Category A ("Economic/Entitlement data") - wallet/points/purchases/
    *  orders/payments/transactions/coupons. ANY finding here is an
@@ -102,11 +101,10 @@ export type AccountRecoverySafetyAssessment = {
 /**
  * The ONLY shape of an assessment that may ever cross the tRPC boundary to
  * an admin's browser - see toSafeAdminAssessmentDto below. Deliberately
- * excludes AccountRecoverySafetyAssessment's `sourceGoogleIdentity` object
- * entirely (which carries the Google `sub`/providerSubject and a full
- * email address - neither is ever needed by the admin UI, which only ever
- * needs to know THAT a real identity exists, not what it is) in favor of
- * a single boolean. No token, cookie, or Authorization-header data is ever
+ * excludes AccountRecoverySafetyAssessment's raw Google identity objects
+ * entirely (they carry the Google `sub`/providerSubject and full linked
+ * email addresses). The admin UI only needs boolean ownership state. No token,
+ * cookie, or Authorization-header data is ever
  * part of an assessment in the first place (assessAccountRecoverySafety
  * never reads any of those), so there is nothing further to strip there.
  */
@@ -141,10 +139,11 @@ export type AccountRecoverySafetyAssessmentDto = {
 export function toSafeAdminAssessmentDto(
   assessment: AccountRecoverySafetyAssessment
 ): AccountRecoverySafetyAssessmentDto {
-  const { sourceGoogleIdentity, ...rest } = assessment;
+  const { sourceGoogleIdentity, targetGoogleIdentity, ...rest } = assessment;
   return {
     ...rest,
     sourceHasGoogleIdentity: Boolean(sourceGoogleIdentity),
+    targetHasGoogleIdentity: Boolean(targetGoogleIdentity),
   };
 }
 
@@ -181,24 +180,23 @@ export async function assessAccountRecoverySafety(
   if (sourceIsAdmin) blockReasons.push("Source account is an admin account - never a recovery source");
   if (targetIsAdmin) blockReasons.push("Target account is an admin account - never a recovery target");
 
-  // The ONLY evidence this function ever trusts for "source owns a Google
-  // identity" - a real row, looked up fresh, never the request's own
-  // claimedLegacyEmail/claimedLegacyOpenId/requestedLegacyUserId fields
-  // (those are unverified user assertions, shown to the admin for context
-  // only - see drizzle/schema.ts's accountRecoveryRequests doc comment).
+  // Requester/Survivor ownership is verified from the real authIdentities row,
+  // never from claimed legacy fields. The inaccessible Source/Donor must not
+  // own another Google identity; Target/Survivor must keep the identity used
+  // by the current requester session.
   const sourceIdentity = sourceExists
     ? await db.getAuthIdentityByUserAndProvider(sourceUserId, "google", dbOrTx)
     : undefined;
-  if (!sourceIdentity) {
-    blockReasons.push("Source account has no linked Google identity - cannot verify ownership");
+  if (sourceIdentity) {
+    blockReasons.push("Donor account already has a linked Google identity - identity ownership is ambiguous");
   }
 
   const targetIdentity = targetExists
     ? await db.getAuthIdentityByUserAndProvider(targetUserId, "google", dbOrTx)
     : undefined;
   const targetHasGoogleIdentity = Boolean(targetIdentity);
-  if (targetHasGoogleIdentity) {
-    blockReasons.push("Target account already has a linked Google identity");
+  if (!targetHasGoogleIdentity) {
+    blockReasons.push("Survivor requester has no linked Google identity - cannot preserve the active login account");
   }
 
   const economicDataFindings = sourceExists
@@ -241,6 +239,9 @@ export async function assessAccountRecoverySafety(
     targetIsAdmin,
     sourceGoogleIdentity: sourceIdentity
       ? { id: sourceIdentity.id, providerSubject: sourceIdentity.providerSubject, emailAtLink: sourceIdentity.emailAtLink }
+      : null,
+    targetGoogleIdentity: targetIdentity
+      ? { id: targetIdentity.id, providerSubject: targetIdentity.providerSubject, emailAtLink: targetIdentity.emailAtLink }
       : null,
     targetHasGoogleIdentity,
     economicDataFindings,
@@ -517,13 +518,11 @@ export async function supersedeDuplicateAccountRecoveryRequest(params: {
  *  is one `database.transaction()` callback; any thrown error rolls back
  *  every write above).
  *
- * `targetUserId` is the one thing an admin actually supplies (via exact-
- * match search, confirmed by typing it in the approve confirmation modal -
- * see client/src/pages/admin/AccountRecoveryAdminPage.tsx) - `sourceUserId`
- * is NEVER a parameter here at all, only ever derived from the locked
- * request row's own `requesterUserId`, so nothing the admin (or a
- * compromised admin session) sends can redirect this to move a different
- * user's identity.
+ * The admin selects only the inaccessible Donor. The requester's own user id
+ * is the Survivor and is rebound from the locked request row before any write.
+ * A compromised client therefore cannot redirect recovery into a different
+ * canonical account, and Google identity ownership is never moved away from
+ * the requester.
  */
 export async function executeAccountRecovery(params: {
   requestId: number;
@@ -568,8 +567,8 @@ export async function executeAccountRecovery(params: {
     if (!roleBinding.valid) {
       throw new AccountRecoveryError(
         "UNSAFE",
-        roleBinding.failure === "DONOR_REQUESTER_MISMATCH"
-          ? "Donor must be the exact account that created this recovery request"
+        roleBinding.failure === "SURVIVOR_REQUESTER_MISMATCH"
+          ? "Survivor must be the exact account that created this recovery request"
           : "Invalid Donor/Survivor role binding"
       );
     }
@@ -591,11 +590,12 @@ export async function executeAccountRecovery(params: {
       await tx.execute(sql`SELECT id FROM users WHERE id = ${id} FOR UPDATE`);
     }
 
-    // Step 4: lock the source's google authIdentity row (may not exist -
-    // handled by the safety re-check immediately below).
+    // Step 4: lock the requester's/Survivor's Google identity row. It must
+    // already belong to Target and will remain there; Simple Recovery never
+    // moves identity ownership under requester-as-Survivor semantics.
     const identityRows = unwrapRows(
       await tx.execute(
-        sql`SELECT * FROM authIdentities WHERE userId = ${sourceUserId} AND provider = 'google' FOR UPDATE`
+        sql`SELECT * FROM authIdentities WHERE userId = ${targetUserId} AND provider = 'google' FOR UPDATE`
       )
     );
     const identityRow = identityRows[0];
@@ -610,31 +610,19 @@ export async function executeAccountRecovery(params: {
     if (!assessment.canApprove) {
       throw new AccountRecoveryError("UNSAFE", assessment.blockReasons.join("; "));
     }
-    if (!identityRow || identityRow.id !== assessment.sourceGoogleIdentity?.id) {
-      // Reconciles the locked read above with the assessment's own fresh
-      // read - if these ever disagree, something changed between locking
-      // and assessing (should be structurally impossible sequentially
-      // within one transaction, but this is the cheapest possible guard
-      // against ever moving an unexpected row).
-      throw new AccountRecoveryError("UNSAFE", "Source Google identity changed - please re-review this request");
+    if (
+      !identityRow ||
+      assessment.sourceGoogleIdentity !== null ||
+      identityRow.id !== assessment.targetGoogleIdentity?.id
+    ) {
+      // Reconcile the locked identity row with the fresh safety assessment.
+      // Any drift fails closed; ownership is never moved away from Survivor.
+      throw new AccountRecoveryError("UNSAFE", "Survivor Google identity changed - please re-review this request");
     }
 
-    // Step 7: move the identity - conditional on it STILL belonging to the
-    // source (re-checked at the SQL level, not just via the read above).
-    const moved = await db.moveAuthIdentityOwner(
-      { authIdentityId: identityRow.id, expectedCurrentUserId: sourceUserId, targetUserId },
-      tx
-    );
-    if (!moved) {
-      throw new AccountRecoveryError("CONFLICT", "Google identity could not be moved - it may have already changed owner");
-    }
-
-    // Steps 8-11: finalize the target - never id/openId, loginMethod
-    // becomes "google", email backfilled only if currently empty.
-    await db.finalizeAccountRecoveryTargetUser(
-      { targetUserId, fallbackEmail: identityRow.emailAtLink ?? null },
-      tx
-    );
+    // Identity ownership intentionally stays on Target/Survivor. Simple
+    // Recovery is therefore a provenance/status transition only and is safe
+    // only when the Donor is already empty of recoverable data.
 
     // Step 12: mark the request approved - conditional UPDATE, same
     // concurrency guard as reviewAccountRecoveryRequest/approveWalletTopup.
@@ -674,6 +662,8 @@ export async function executeAccountRecovery(params: {
             donorAccountId: sourceUserId,
             survivorAccountId: targetUserId,
           }),
+          identityMoved: false,
+          identityPreservedOnSurvivor: true,
         },
       },
       tx
