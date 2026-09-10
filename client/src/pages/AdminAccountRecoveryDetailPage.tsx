@@ -119,6 +119,8 @@ export default function AdminAccountRecoveryDetailPage() {
   const requestStatus = data?.request.status;
   const lifecycleStatus = data?.lifecycle.effectiveStatus;
   const isResolvedViaAdvancedMerge = lifecycleStatus === "resolved_via_advanced_merge";
+  const isResolvedViaHistoricalCompensation = lifecycleStatus === "resolved_via_historical_compensation";
+  const isResolvedRecovery = isResolvedViaAdvancedMerge || isResolvedViaHistoricalCompensation;
   const isPending = requestStatus === "pending";
   const isBlocked = requestStatus === "blocked";
 
@@ -145,12 +147,12 @@ export default function AdminAccountRecoveryDetailPage() {
       donorAccountId: donorUserId ?? 0,
       survivorAccountId: data?.request.requesterUserId ?? 0,
     },
-    { enabled: Boolean(requestId) && Boolean(donorUserId) && isBlocked && !isResolvedViaAdvancedMerge }
+    { enabled: Boolean(requestId) && Boolean(donorUserId) && isBlocked && !isResolvedRecovery }
   );
 
   const mergeStatusQuery = trpc.accountMerge.admin.status.useQuery(
     { requestId: requestId ?? 0 },
-    { enabled: Boolean(requestId) && isBlocked }
+    { enabled: Boolean(requestId) && isBlocked && !isResolvedViaHistoricalCompensation }
   );
 
   const invalidateAll = () => {
@@ -339,10 +341,14 @@ export default function AdminAccountRecoveryDetailPage() {
               คำขอกู้คืนบัญชี #{request.id}
             </h2>
             <div className="flex items-center gap-2">
-              <Badge className={isResolvedViaAdvancedMerge ? "bg-green-100 text-green-800" : undefined}>
-                {isResolvedViaAdvancedMerge ? "Resolved via Advanced Merge" : request.status}
+              <Badge className={isResolvedRecovery ? "bg-green-100 text-green-800" : undefined}>
+                {isResolvedViaHistoricalCompensation
+                  ? "Resolved via Historical Compensation"
+                  : isResolvedViaAdvancedMerge
+                    ? "Resolved via Advanced Merge"
+                    : request.status}
               </Badge>
-              {isResolvedViaAdvancedMerge && (
+              {isResolvedRecovery && (
                 <Badge variant="outline">Persisted: {request.status}</Badge>
               )}
             </div>
@@ -474,21 +480,25 @@ export default function AdminAccountRecoveryDetailPage() {
         )}
 
         {isBlocked && (
-          <Card className={isResolvedViaAdvancedMerge ? "p-6 border-green-300 bg-green-50/40" : "p-6 border-blue-200"}>
+          <Card className={isResolvedRecovery ? "p-6 border-green-300 bg-green-50/40" : "p-6 border-blue-200"}>
             <div className="flex items-start gap-3">
-              {isResolvedViaAdvancedMerge ? (
+              {isResolvedRecovery ? (
                 <CheckCircle2 className="w-6 h-6 text-green-700 mt-0.5" />
               ) : (
                 <ShieldAlert className="w-6 h-6 text-blue-700 mt-0.5" />
               )}
               <div>
-                <h3 className={isResolvedViaAdvancedMerge ? "font-semibold text-green-950" : "font-semibold text-blue-950"}>
-                  {isResolvedViaAdvancedMerge ? "Resolved via Advanced Account Merge" : "Advanced Account Merge"}
+                <h3 className={isResolvedRecovery ? "font-semibold text-green-950" : "font-semibold text-blue-950"}>
+                  {isResolvedViaHistoricalCompensation
+                    ? "Resolved via Historical Merge Compensation"
+                    : isResolvedViaAdvancedMerge
+                      ? "Resolved via Advanced Account Merge"
+                      : "Advanced Account Merge"}
                 </h3>
-                <p className={isResolvedViaAdvancedMerge ? "text-sm text-green-900 mt-1" : "text-sm text-blue-900 mt-1"}>
+                <p className={isResolvedRecovery ? "text-sm text-green-900 mt-1" : "text-sm text-blue-900 mt-1"}>
                   Recovery request นี้ยังคงสถานะ <strong>blocked</strong> ใน accountRecoveryRequests เพื่อรักษาหลักฐานย้อนหลัง
-                  {isResolvedViaAdvancedMerge
-                    ? ` แต่ lifecycle projection พิสูจน์แล้วว่า Advanced Merge #${lifecycle.mergeCaseId} เสร็จสมบูรณ์และถือว่า Recovery resolved แล้ว`
+                  {isResolvedRecovery
+                    ? ` แต่ lifecycle projection พิสูจน์แล้วว่า Recovery ของ Historical/Advanced Merge #${lifecycle.mergeCaseId} มี completion evidence ที่ตรวจสอบได้และถือว่า resolved แล้ว`
                     : " การรวมบัญชีเป็น workflow แยกและมีสถานะ/audit ของตัวเอง"}
                 </p>
               </div>
@@ -552,9 +562,9 @@ export default function AdminAccountRecoveryDetailPage() {
           </Card>
         )}
 
-        {isBlocked && !isResolvedViaAdvancedMerge && !mergeCompleted && renderTargetSearch()}
+        {isBlocked && !isResolvedRecovery && !mergeCompleted && renderTargetSearch()}
 
-        {isBlocked && !isResolvedViaAdvancedMerge && !mergeCompleted && donorUserId && (
+        {isBlocked && !isResolvedRecovery && !mergeCompleted && donorUserId && (
           <Card className="p-6 space-y-5">
             <div>
               <h3 className="font-semibold">

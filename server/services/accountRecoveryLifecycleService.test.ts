@@ -127,6 +127,54 @@ describe("buildAccountRecoveryLifecycleProjection", () => {
     });
   });
 
+  it("projects a historical reversed-role case as resolved only when a valid compensation receipt exists", async () => {
+    vi.spyOn(db, "listAccountMergeCasesForRecoveryRequest").mockResolvedValue([
+      completedCase({ sourceUserId: 20, targetUserId: 10 }),
+    ] as any);
+    vi.spyOn(db, "getCompletedHistoricalMergeCompensationForCase").mockResolvedValue({
+      compensationId: 71,
+      receiptId: 81,
+      historicalMergeCaseId: 55,
+      recoveryRequestId: 7,
+      donorUserId: 10,
+      survivorUserId: 20,
+      googleIdentityId: 900,
+      expectedSnapshotDigest: "a".repeat(64),
+      completedAt: new Date("2026-09-10T00:00:00Z"),
+    } as any);
+    const statusSpy = vi.spyOn(orchestration, "getAccountMergeExecutionStatus");
+
+    const result = await buildAccountRecoveryLifecycleProjection(request());
+
+    expect(result).toMatchObject({
+      persistedStatus: "blocked",
+      effectiveStatus: "resolved_via_historical_compensation",
+      resolutionKind: "historical_merge_compensation",
+      integrity: "verified",
+      mergeCaseId: 55,
+      compensationId: 71,
+      compensationReceiptId: 81,
+    });
+    expect(statusSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps a historical reversed-role case fail-closed when compensation evidence is missing", async () => {
+    vi.spyOn(db, "listAccountMergeCasesForRecoveryRequest").mockResolvedValue([
+      completedCase({ sourceUserId: 20, targetUserId: 10 }),
+    ] as any);
+    vi.spyOn(db, "getCompletedHistoricalMergeCompensationForCase").mockResolvedValue(undefined);
+
+    const result = await buildAccountRecoveryLifecycleProjection(request());
+
+    expect(result).toMatchObject({
+      effectiveStatus: "blocked",
+      integrity: "inconsistent",
+      integrityIssue: "MERGE_ROLE_MISMATCH",
+      compensationId: null,
+      compensationReceiptId: null,
+    });
+  });
+
   it("projects resolved_via_advanced_merge only after completed receipts/audit/identity are re-proven", async () => {
     vi.spyOn(db, "listAccountMergeCasesForRecoveryRequest").mockResolvedValue([
       { ...completedCase(), status: "cancelled", id: 54 },
@@ -146,6 +194,8 @@ describe("buildAccountRecoveryLifecycleProjection", () => {
       mergeCaseStatus: "completed",
       completedAt: new Date("2026-09-09T13:48:07Z"),
       auditLogId: 123,
+      compensationId: null,
+      compensationReceiptId: null,
     });
   });
 

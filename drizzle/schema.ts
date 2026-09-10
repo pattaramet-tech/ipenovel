@@ -1638,6 +1638,114 @@ export type AccountMergeDataDedupeRecord = typeof accountMergeDataDedupeRecords.
 export type InsertAccountMergeDataDedupeRecord = typeof accountMergeDataDedupeRecords.$inferInsert;
 
 /**
+ * Additive compensation lifecycle for a historical Account Merge whose
+ * persisted Source/Target roles no longer match canonical Donor/Survivor
+ * semantics. Historical Account Merge rows and receipts stay immutable.
+ */
+export const accountMergeCompensations = mysqlTable(
+  "accountMergeCompensations",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    historicalMergeCaseId: int("historicalMergeCaseId").notNull(),
+    recoveryRequestId: int("recoveryRequestId").notNull(),
+    donorUserId: int("donorUserId").notNull(),
+    survivorUserId: int("survivorUserId").notNull(),
+    googleIdentityId: int("googleIdentityId").notNull(),
+    status: mysqlEnum("status", ["pending", "in_progress", "completed", "failed"])
+      .default("pending")
+      .notNull(),
+    expectedSnapshotDigest: varchar("expectedSnapshotDigest", { length: 64 }).notNull(),
+    createdByAdminId: int("createdByAdminId").notNull(),
+    startedAt: timestamp("startedAt"),
+    completedAt: timestamp("completedAt"),
+    failedAt: timestamp("failedAt"),
+    failureReason: text("failureReason"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    historicalCaseUnique: uniqueIndex("accountMergeCompensations_historical_case_unique").on(table.historicalMergeCaseId),
+    recoveryRequestIdx: index("accountMergeCompensations_recovery_request_idx").on(table.recoveryRequestId),
+    donorUserIdx: index("accountMergeCompensations_donor_user_idx").on(table.donorUserId),
+    survivorUserIdx: index("accountMergeCompensations_survivor_user_idx").on(table.survivorUserId),
+    statusIdx: index("accountMergeCompensations_status_idx").on(table.status),
+  })
+);
+
+export type AccountMergeCompensation = typeof accountMergeCompensations.$inferSelect;
+export type InsertAccountMergeCompensation = typeof accountMergeCompensations.$inferInsert;
+
+/** Immutable once-only receipt for a completed historical compensation. */
+export const accountMergeCompensationReceipts = mysqlTable(
+  "accountMergeCompensationReceipts",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    compensationId: int("compensationId").notNull(),
+    historicalMergeCaseId: int("historicalMergeCaseId").notNull(),
+    recoveryRequestId: int("recoveryRequestId").notNull(),
+    donorUserId: int("donorUserId").notNull(),
+    survivorUserId: int("survivorUserId").notNull(),
+    googleIdentityId: int("googleIdentityId").notNull(),
+    expectedSnapshotDigest: varchar("expectedSnapshotDigest", { length: 64 }).notNull(),
+    beforeSnapshot: text("beforeSnapshot").notNull(),
+    afterSnapshot: text("afterSnapshot").notNull(),
+    actionCounts: text("actionCounts").notNull(),
+    financialProof: text("financialProof").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    compensationUnique: uniqueIndex("accountMergeCompensationReceipts_compensation_unique").on(table.compensationId),
+    historicalCaseUnique: uniqueIndex("accountMergeCompensationReceipts_historical_case_unique").on(table.historicalMergeCaseId),
+    recoveryRequestIdx: index("accountMergeCompensationReceipts_recovery_request_idx").on(table.recoveryRequestId),
+  })
+);
+
+export type AccountMergeCompensationReceipt = typeof accountMergeCompensationReceipts.$inferSelect;
+export type InsertAccountMergeCompensationReceipt = typeof accountMergeCompensationReceipts.$inferInsert;
+
+/** Append-only lifecycle/audit events for compensation attempts. */
+export const accountMergeCompensationAuditLogs = mysqlTable(
+  "accountMergeCompensationAuditLogs",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    compensationId: int("compensationId").notNull(),
+    actorAdminId: int("actorAdminId").notNull(),
+    action: varchar("action", { length: 48 }).notNull(),
+    safeMetadata: text("safeMetadata"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    compensationIdx: index("accountMergeCompensationAuditLogs_compensation_idx").on(table.compensationId),
+    createdAtIdx: index("accountMergeCompensationAuditLogs_created_at_idx").on(table.createdAt),
+  })
+);
+
+export type AccountMergeCompensationAuditLog = typeof accountMergeCompensationAuditLogs.$inferSelect;
+export type InsertAccountMergeCompensationAuditLog = typeof accountMergeCompensationAuditLogs.$inferInsert;
+
+/** Append-only duplicate evidence scoped to the compensation, never Case #1. */
+export const accountMergeCompensationDedupeRecords = mysqlTable(
+  "accountMergeCompensationDedupeRecords",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    compensationId: int("compensationId").notNull(),
+    domain: varchar("domain", { length: 40 }).notNull(),
+    donorRowId: int("donorRowId").notNull(),
+    survivorRowId: int("survivorRowId").notNull(),
+    keySummary: varchar("keySummary", { length: 255 }).notNull(),
+    safeMetadata: text("safeMetadata"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    compensationIdx: index("accountMergeCompensationDedupeRecords_compensation_idx").on(table.compensationId),
+    donorUnique: uniqueIndex("accountMergeCompensationDedupeRecords_comp_domain_donor_unique").on(table.compensationId, table.domain, table.donorRowId),
+  })
+);
+
+export type AccountMergeCompensationDedupeRecord = typeof accountMergeCompensationDedupeRecords.$inferSelect;
+export type InsertAccountMergeCompensationDedupeRecord = typeof accountMergeCompensationDedupeRecords.$inferInsert;
+
+/**
  * Append-only audit trail for the Admin Users Management page - one row per
  * name/role edit or hard delete performed through admin.users.update /
  * admin.users.delete (server/routers.ts). Deliberately NO foreign key from

@@ -28,6 +28,7 @@ import {
   walletTopups,
   walletTransactions,
   wishlists,
+  workspaceWorkspaces,
 } from "../drizzle/schema";
 import * as db from "./db";
 import { getTestDb } from "./test-helpers/testDb";
@@ -229,6 +230,9 @@ async function cleanupFixture(f: DataFixture) {
   await t
     .delete(pointsTransactions)
     .where(inArray(pointsTransactions.userId, users));
+  await t
+    .delete(workspaceWorkspaces)
+    .where(inArray(workspaceWorkspaces.ownerUserId, users));
 
   if (f.couponIds.length > 0)
     await t.delete(coupons).where(inArray(coupons.id, f.couponIds));
@@ -957,6 +961,28 @@ describe.sequential(
       await expect(
         reconcileAccountMergeData({ caseId: f.caseId, actorAdminId: 1 })
       ).rejects.toMatchObject({ code: "DAILY_REWARD_CONFLICT" });
+      expect(
+        await t
+          .select()
+          .from(accountMergeDataReconciliations)
+          .where(eq(accountMergeDataReconciliations.mergeCaseId, f.caseId))
+      ).toHaveLength(0);
+    }, 30000);
+
+    it("fails closed before IPE-007 writes when the source owns unsupported Workspace state", async () => {
+      const f = await createMergePair();
+      const t = requireTestDb();
+      const orderId = await createOrder(f.sourceId);
+      await t.insert(workspaceWorkspaces).values({
+        name: `IPE007 unsupported ${uniqueTestTag()}`,
+        ownerUserId: f.sourceId,
+        status: "active",
+      });
+
+      await expect(
+        reconcileAccountMergeData({ caseId: f.caseId, actorAdminId: 1 })
+      ).rejects.toMatchObject({ code: "UNSUPPORTED_OWNERSHIP_DOMAIN" });
+      expect((await readById(orders, orders.id, orderId)).userId).toBe(f.sourceId);
       expect(
         await t
           .select()

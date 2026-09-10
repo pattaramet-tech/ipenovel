@@ -51,6 +51,11 @@ import {
   buildCompensatingEconomicExecutionGate,
   buildCompensatingRecoveryPlan,
 } from "./services/accountRecoveryCompensationService";
+import {
+  buildHistoricalAccountMergeCompensationPreflight,
+  executeHistoricalAccountMergeCompensation,
+  HistoricalAccountMergeCompensationError,
+} from "./services/historicalAccountMergeCompensationService";
 import { buildAccountRecoveryLifecycleProjection } from "./services/accountRecoveryLifecycleService";
 import { buildAccountRecoveryClosureReadiness } from "./services/accountRecoveryClosureReadinessService";
 import { buildAccountMergePreview } from "./services/accountMergePreviewService";
@@ -3624,6 +3629,40 @@ export const appRouter = router({
           })
         )
         .query(async ({ input }) => buildCompensatingEconomicExecutionGate(input)),
+
+      historicalMergeCompensationPreflight: adminProcedure
+        .input(
+          z.object({
+            recoveryRequestId: z.number().int().positive(),
+            historicalMergeCaseId: z.number().int().positive(),
+            donorUserId: z.number().int().positive(),
+            survivorUserId: z.number().int().positive(),
+            googleIdentityId: z.number().int().positive(),
+          })
+        )
+        .query(async ({ input }) => buildHistoricalAccountMergeCompensationPreflight(input)),
+
+      historicalMergeCompensationExecute: adminProcedure
+        .input(
+          z.object({
+            recoveryRequestId: z.number().int().positive(),
+            historicalMergeCaseId: z.number().int().positive(),
+            donorUserId: z.number().int().positive(),
+            survivorUserId: z.number().int().positive(),
+            googleIdentityId: z.number().int().positive(),
+            expectedSnapshotDigest: z.string().regex(/^[a-fA-F0-9]{64}$/),
+          })
+        )
+        .mutation(async ({ input, ctx }) => {
+          try {
+            return await executeHistoricalAccountMergeCompensation({ ...input, actorAdminId: Number(ctx.user.id) });
+          } catch (error) {
+            if (error instanceof HistoricalAccountMergeCompensationError) {
+              throw new TRPCError({ code: "CONFLICT", message: `${error.code}: ${error.message}` });
+            }
+            throw error;
+          }
+        }),
 
       // Read-only IPE-045 closure verifier. Combines duplicate supersede
       // provenance, completed Advanced Merge lifecycle integrity, and the

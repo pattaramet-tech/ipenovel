@@ -13,7 +13,8 @@ export type AccountRecoveryPersistedStatus =
 
 export type AccountRecoveryEffectiveStatus =
   | AccountRecoveryPersistedStatus
-  | "resolved_via_advanced_merge";
+  | "resolved_via_advanced_merge"
+  | "resolved_via_historical_compensation";
 
 export type AccountRecoveryLifecycleIntegrity =
   | "not_applicable"
@@ -24,7 +25,7 @@ export type AccountRecoveryLifecycleIntegrity =
 export type AccountRecoveryLifecycleProjection = {
   persistedStatus: AccountRecoveryPersistedStatus;
   effectiveStatus: AccountRecoveryEffectiveStatus;
-  resolutionKind: "advanced_account_merge" | null;
+  resolutionKind: "advanced_account_merge" | "historical_merge_compensation" | null;
   integrity: AccountRecoveryLifecycleIntegrity;
   integrityIssue:
     | "MULTIPLE_NON_CANCELLED_MERGE_CASES"
@@ -35,6 +36,8 @@ export type AccountRecoveryLifecycleProjection = {
   mergeCaseStatus: string | null;
   completedAt: Date | string | null;
   auditLogId: number | null;
+  compensationId: number | null;
+  compensationReceiptId: number | null;
 };
 
 type RecoveryRequestLike = {
@@ -66,6 +69,8 @@ function projection(
     mergeCaseStatus: null,
     completedAt: null,
     auditLogId: null,
+    compensationId: null,
+    compensationReceiptId: null,
     ...overrides,
   };
 }
@@ -111,6 +116,35 @@ export async function buildAccountRecoveryLifecycleProjection(
   const sourceUserId = Number(mergeCase.sourceUserId);
   const targetUserId = Number(mergeCase.targetUserId);
   const originRequestId = Number(mergeCase.originAccountRecoveryRequestId);
+
+  // Historical reversed-role cases stay immutable. Once a separately-audited
+  // compensation has a valid completed receipt, project the blocked request as
+  // resolved without rewriting the original Case source/target columns.
+  if (
+    originRequestId === Number(request.id) &&
+    sourceUserId === Number(request.requesterUserId) &&
+    targetUserId !== sourceUserId &&
+    mergeCaseStatus === "completed"
+  ) {
+    const compensation = await db.getCompletedHistoricalMergeCompensationForCase(mergeCaseId);
+    if (
+      compensation &&
+      compensation.recoveryRequestId === Number(request.id) &&
+      compensation.survivorUserId === Number(request.requesterUserId) &&
+      compensation.donorUserId === targetUserId
+    ) {
+      return projection(persistedStatus, {
+        effectiveStatus: "resolved_via_historical_compensation",
+        resolutionKind: "historical_merge_compensation",
+        integrity: "verified",
+        mergeCaseId,
+        mergeCaseStatus: "completed",
+        completedAt: compensation.completedAt ?? mergeCase.completedAt ?? null,
+        compensationId: compensation.compensationId,
+        compensationReceiptId: compensation.receiptId,
+      });
+    }
+  }
 
   if (
     originRequestId !== Number(request.id) ||

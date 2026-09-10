@@ -164,7 +164,74 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     category: "merge_internal",
     reason: "IPE-007's durable data-reconciliation receipt records the merge workflow's own Target participant, not unrelated user-owned data.",
   },
+  {
+    table: "accountMergeCompensations",
+    column: "donorUserId",
+    category: "merge_internal",
+    reason: "Historical Account Merge compensation records the canonical Donor participant; it is lifecycle evidence, not Donor-owned domain data.",
+  },
+  {
+    table: "accountMergeCompensations",
+    column: "survivorUserId",
+    category: "merge_internal",
+    reason: "Historical Account Merge compensation records the canonical Survivor participant; it is lifecycle evidence, not Survivor-owned domain data.",
+  },
+  {
+    table: "accountMergeCompensationReceipts",
+    column: "donorUserId",
+    category: "merge_internal",
+    reason: "The immutable compensation receipt records the canonical Donor participant for auditability.",
+  },
+  {
+    table: "accountMergeCompensationReceipts",
+    column: "survivorUserId",
+    category: "merge_internal",
+    reason: "The immutable compensation receipt records the canonical Survivor participant for auditability.",
+  },
+  {
+    table: "workspaceWorkspaces",
+    column: "ownerUserId",
+    category: "user_owned_hard_block",
+    reason: "Workspace ownership is durable user-owned collaboration state and is not re-parented by the current recovery workflow.",
+  },
+  {
+    table: "workspaceMembers",
+    column: "userId",
+    category: "user_owned_hard_block",
+    reason: "Workspace membership and role state belongs to the user and requires an explicit Workspace-aware lifecycle.",
+  },
+  {
+    table: "workspaceGoogleConsentAttempts",
+    column: "userId",
+    category: "user_owned_hard_block",
+    reason: "Workspace consent-attempt state is user-scoped and must not be silently reassigned during recovery.",
+  },
+  {
+    table: "workspaceGoogleConnections",
+    column: "userId",
+    category: "user_owned_hard_block",
+    reason: "Workspace connection state is user-scoped and must not be silently reassigned during recovery.",
+  },
+
   // ---- deliberately_ignored: admin/system actor identities, never the source's own data ----
+  {
+    table: "workspaceAuditEvents",
+    column: "actorUserId",
+    category: "deliberately_ignored",
+    reason: "Workspace audit actor provenance is append-only historical evidence, not mutable account-owned state.",
+  },
+  {
+    table: "accountMergeCompensations",
+    column: "createdByAdminId",
+    category: "deliberately_ignored",
+    reason: "The ADMIN who created the compensation lifecycle, not account-owned domain data.",
+  },
+  {
+    table: "accountMergeCompensationAuditLogs",
+    column: "actorAdminId",
+    category: "deliberately_ignored",
+    reason: "The ADMIN who performed the compensation action, not account-owned domain data.",
+  },
   {
     table: "accountMergeCases",
     column: "createdByAdminId",

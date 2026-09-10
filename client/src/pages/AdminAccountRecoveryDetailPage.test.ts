@@ -46,11 +46,13 @@ describe("IPE-008 Admin Advanced Account Merge UI safety", () => {
     );
     expect(source).not.toMatch(/setMerge(Bypass|Waiver|Override)/i);
     expect(source).toContain('lifecycleStatus === "resolved_via_advanced_merge"');
+    expect(source).toContain('lifecycleStatus === "resolved_via_historical_compensation"');
     expect(source).toContain("Resolved via Advanced Merge");
+    expect(source).toContain("Resolved via Historical Compensation");
     expect(source).toContain("Persisted: {request.status}");
     expect(source).toContain("ยังคงสถานะ <strong>blocked</strong> ใน accountRecoveryRequests");
     expect(source).toContain("lifecycle projection พิสูจน์แล้ว");
-    expect(source).toMatch(/isBlocked && !isResolvedViaAdvancedMerge && !mergeCompleted/);
+    expect(source).toMatch(/isBlocked && !isResolvedRecovery && !mergeCompleted/);
   });
 
   it("renders a durable merge-case/audit reference after completion", () => {

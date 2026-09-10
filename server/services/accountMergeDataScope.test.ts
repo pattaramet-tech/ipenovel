@@ -7,6 +7,7 @@ import {
   IPE007_FINANCIAL_HISTORY_TABLES,
   IPE007_HANDLED_DIRECT_TABLES,
   IPE007_HANDLED_INDIRECT_TABLES,
+  IPE007_UNSUPPORTED_DIRECT_TABLES,
   IPE007_PRESERVED_VIA_ORDER_TABLES,
 } from "./accountMergeDataReconciliationService";
 
@@ -19,6 +20,7 @@ describe("IPE-007 executable scope stays aligned with the reflected Account Merg
     const handled = [
       ...IPE007_HANDLED_DIRECT_TABLES,
       ...IPE007_FINANCIAL_HISTORY_TABLES,
+      ...IPE007_UNSUPPORTED_DIRECT_TABLES,
     ];
     expect(new Set(handled).size).toBe(handled.length);
     expect(sorted(handled)).toEqual(sorted(ACCOUNT_MERGE_DIRECT_TABLES));

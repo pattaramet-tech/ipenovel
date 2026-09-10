@@ -44,6 +44,13 @@ export const IPE007_HANDLED_DIRECT_TABLES = [
   "dailyCheckins",
 ] as const;
 
+export const IPE007_UNSUPPORTED_DIRECT_TABLES = [
+  "workspaceWorkspaces",
+  "workspaceMembers",
+  "workspaceGoogleConsentAttempts",
+  "workspaceGoogleConnections",
+] as const;
+
 export const IPE007_HANDLED_INDIRECT_TABLES = ["cartItems"] as const;
 export const IPE007_PRESERVED_VIA_ORDER_TABLES = [
   "orderItems",
@@ -777,6 +784,82 @@ async function reconcileReadingProgress(
   }
 }
 
+export type AccountMergeOwnedDataDedupeRecord = DedupeRecord;
+export type AccountMergeOwnedDataSummary = Summary;
+
+/**
+ * Shared deterministic ownership-reconciliation core. It deliberately does
+ * not read/write any reconciliation receipt or Account Merge audit row.
+ * Callers choose the receipt namespace; this lets historical compensation
+ * reuse exactly the IPE-007 move/dedupe semantics without appending anything
+ * to the historical merge case's original receipt/audit stream.
+ */
+export async function reconcileAccountMergeOwnedDataCore(
+  params: {
+    scopeId: number;
+    sourceUserId: number;
+    targetUserId: number;
+    injectLegacyFaults?: boolean;
+  },
+  tx: any
+): Promise<{
+  dedupes: AccountMergeOwnedDataDedupeRecord[];
+  summary: AccountMergeOwnedDataSummary;
+  safeSummary: string;
+}> {
+  const ownershipInventory = await db.findAccountMergeTableInventory(params.sourceUserId, params.targetUserId, tx);
+  const unsupportedSourceRows = ownershipInventory.filter(
+    row => IPE007_UNSUPPORTED_DIRECT_TABLES.includes(row.table as (typeof IPE007_UNSUPPORTED_DIRECT_TABLES)[number]) && row.sourceCount > 0
+  );
+  if (unsupportedSourceRows.length > 0) {
+    throw new AccountMergeDataError(
+      "UNSUPPORTED_OWNERSHIP_DOMAIN",
+      `IPE-007 has no reconciliation semantics for: ${unsupportedSourceRows.map(row => `${row.table}:${row.sourceCount}`).join(",")}`
+    );
+  }
+  await assertNoAmbiguousRewardConflicts(params.sourceUserId, params.targetUserId, tx);
+
+  const dedupes: DedupeRecord[] = [];
+  const summary = createEmptySummary();
+  await reconcileEntitlementRows(
+    params.scopeId,
+    params.sourceUserId,
+    params.targetUserId,
+    tx,
+    dedupes,
+    summary
+  );
+  if (params.injectLegacyFaults) maybeInjectDataFault("after_entitlements");
+
+  await reconcileCart(
+    params.scopeId,
+    params.sourceUserId,
+    params.targetUserId,
+    tx,
+    dedupes,
+    summary
+  );
+  await reconcileWishlist(
+    params.scopeId,
+    params.sourceUserId,
+    params.targetUserId,
+    tx,
+    dedupes,
+    summary
+  );
+  await reconcileReadingProgress(
+    params.scopeId,
+    params.sourceUserId,
+    params.targetUserId,
+    tx,
+    dedupes,
+    summary
+  );
+  if (params.injectLegacyFaults) maybeInjectDataFault("after_user_data");
+
+  return { dedupes, summary, safeSummary: JSON.stringify(summary) };
+}
+
 /**
  * IPE-007 deterministic Account Merge entitlement + user-data reconciliation.
  *
@@ -879,57 +962,21 @@ export async function reconcileAccountMergeDataInTransaction(
       );
     }
 
-    // All ambiguous reward collisions are rejected BEFORE the first write so
-    // no implementation detail can accidentally decide who keeps spent points,
-    // a wager outcome, or an already-issued check-in reward.
-    await assertNoAmbiguousRewardConflicts(sourceUserId, targetUserId, tx);
-
-    const dedupes: DedupeRecord[] = [];
-    const summary = createEmptySummary();
-
-    await reconcileEntitlementRows(
-      params.caseId,
-      sourceUserId,
-      targetUserId,
-      tx,
-      dedupes,
-      summary
+    const { dedupes, safeSummary } = await reconcileAccountMergeOwnedDataCore(
+      {
+        scopeId: params.caseId,
+        sourceUserId,
+        targetUserId,
+        injectLegacyFaults: true,
+      },
+      tx
     );
-    maybeInjectDataFault("after_entitlements");
-
-    await reconcileCart(
-      params.caseId,
-      sourceUserId,
-      targetUserId,
-      tx,
-      dedupes,
-      summary
-    );
-    await reconcileWishlist(
-      params.caseId,
-      sourceUserId,
-      targetUserId,
-      tx,
-      dedupes,
-      summary
-    );
-    await reconcileReadingProgress(
-      params.caseId,
-      sourceUserId,
-      targetUserId,
-      tx,
-      dedupes,
-      summary
-    );
-    maybeInjectDataFault("after_user_data");
 
     if (dedupes.length > 0) {
       await tx.insert(accountMergeDataDedupeRecords).values(dedupes);
     }
 
     maybeInjectDataFault("before_receipt");
-
-    const safeSummary = JSON.stringify(summary);
     await tx.insert(accountMergeDataReconciliations).values({
       mergeCaseId: params.caseId,
       sourceUserId,

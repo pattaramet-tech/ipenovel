@@ -52,6 +52,14 @@ import {
   accountMergeAuditLogs,
   accountMergeFinancialReconciliations,
   accountMergeDataReconciliations,
+  accountMergeCompensations,
+  accountMergeCompensationReceipts,
+  accountMergeCompensationAuditLogs,
+  workspaceWorkspaces,
+  workspaceMembers,
+  workspaceGoogleConsentAttempts,
+  workspaceGoogleConnections,
+  workspaceAuditEvents,
   adminUserAuditLogs,
   Novel,
   couponUsages as couponUsagesTable,
@@ -7199,6 +7207,10 @@ const ACCOUNT_RECOVERY_USER_OWNED_DATA_CHECKS: Array<{
   { table: "wishlists", check: async (userId, db) => (await db.select({ id: wishlists.id }).from(wishlists).where(eq(wishlists.userId, userId)).limit(1)).length },
   { table: "readingProgress", check: async (userId, db) => (await db.select({ id: readingProgress.id }).from(readingProgress).where(eq(readingProgress.userId, userId)).limit(1)).length },
   { table: "dailyCheckins", check: async (userId, db) => (await db.select({ id: dailyCheckins.id }).from(dailyCheckins).where(eq(dailyCheckins.userId, userId)).limit(1)).length },
+  { table: "workspaceWorkspaces", check: async (userId, db) => (await db.select({ id: workspaceWorkspaces.id }).from(workspaceWorkspaces).where(eq(workspaceWorkspaces.ownerUserId, userId)).limit(1)).length },
+  { table: "workspaceMembers", check: async (userId, db) => (await db.select({ id: workspaceMembers.id }).from(workspaceMembers).where(eq(workspaceMembers.userId, userId)).limit(1)).length },
+  { table: "workspaceGoogleConsentAttempts", check: async (userId, db) => (await db.select({ id: workspaceGoogleConsentAttempts.id }).from(workspaceGoogleConsentAttempts).where(eq(workspaceGoogleConsentAttempts.userId, userId)).limit(1)).length },
+  { table: "workspaceGoogleConnections", check: async (userId, db) => (await db.select({ id: workspaceGoogleConnections.id }).from(workspaceGoogleConnections).where(eq(workspaceGoogleConnections.userId, userId)).limit(1)).length },
 ];
 
 /** Category B ("User-owned data") from the recovery-safety spec - cart,
@@ -7509,6 +7521,30 @@ const ACCOUNT_MERGE_TABLE_CHECKS: AccountMergeTableCheck[] = [
     countFor: plainUserIdCount(dailyCheckins, dailyCheckins.userId),
     conflictKeyColumns: ["checkinDate", "campaignKey"],
   },
+  {
+    table: "workspaceWorkspaces",
+    category: "user_owned",
+    userIdColumnName: "ownerUserId",
+    countFor: plainUserIdCount(workspaceWorkspaces, workspaceWorkspaces.ownerUserId),
+  },
+  {
+    table: "workspaceMembers",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(workspaceMembers, workspaceMembers.userId),
+  },
+  {
+    table: "workspaceGoogleConsentAttempts",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(workspaceGoogleConsentAttempts, workspaceGoogleConsentAttempts.userId),
+  },
+  {
+    table: "workspaceGoogleConnections",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(workspaceGoogleConnections, workspaceGoogleConnections.userId),
+  },
 
   // ---- indirect (no direct userId column - counted via a join to the
   // already-classified parent column; per-row dedupe within them is
@@ -7658,7 +7694,12 @@ export async function getCompletedAccountMergeForSource(userId: number, tx?: any
     .where(and(eq(accountMergeCases.sourceUserId, userId), eq(accountMergeCases.status, "completed")))
     .orderBy(desc(accountMergeCases.id))
     .limit(1);
-  return rows[0];
+  const completed = rows[0];
+  if (!completed) return undefined;
+  if (await hasValidCompletedHistoricalCompensationRelease(userId, Number(completed.id), database)) {
+    return undefined;
+  }
+  return completed;
 }
 
 // ============ ADMIN USERS MANAGEMENT ============
@@ -7866,6 +7907,10 @@ const ADMIN_USER_DELETE_CHECKS: Array<{
   { table: "wishlists", reference: "Wishlist", category: "user_owned", from: wishlists, condition: (id) => eq(wishlists.userId, id) },
   { table: "readingProgress", reference: "Reading Progress", category: "user_owned", from: readingProgress, condition: (id) => eq(readingProgress.userId, id) },
   { table: "dailyCheckins", reference: "Daily Check-ins", category: "user_owned", from: dailyCheckins, condition: (id) => eq(dailyCheckins.userId, id) },
+  { table: "workspaceWorkspaces", reference: "Workspace Ownership", category: "user_owned", from: workspaceWorkspaces, condition: (id) => eq(workspaceWorkspaces.ownerUserId, id) },
+  { table: "workspaceMembers", reference: "Workspace Memberships", category: "user_owned", from: workspaceMembers, condition: (id) => eq(workspaceMembers.userId, id) },
+  { table: "workspaceGoogleConsentAttempts", reference: "Workspace Google Consent Attempts", category: "user_owned", from: workspaceGoogleConsentAttempts, condition: (id) => eq(workspaceGoogleConsentAttempts.userId, id) },
+  { table: "workspaceGoogleConnections", reference: "Workspace Google Connections", category: "user_owned", from: workspaceGoogleConnections, condition: (id) => eq(workspaceGoogleConnections.userId, id) },
 
   { table: "orderHistory", reference: "Order History Actor References", category: "audit_or_actor", from: orderHistory, condition: (id) => eq(orderHistory.actorUserId, id) },
   { table: "payments", reference: "Payment/Admin Review References", category: "audit_or_actor", from: payments, condition: (id) => or(eq(payments.reviewedByUserId, id), eq(payments.approvedByAdminId, id)) },
@@ -7949,6 +7994,34 @@ const ADMIN_USER_DELETE_CHECKS: Array<{
         eq(accountMergeDataReconciliations.sourceUserId, id),
         eq(accountMergeDataReconciliations.targetUserId, id)
       ),
+  },
+  {
+    table: "accountMergeCompensations",
+    reference: "Historical Merge Compensations",
+    category: "audit_or_actor",
+    from: accountMergeCompensations,
+    condition: (id) => or(eq(accountMergeCompensations.donorUserId, id), eq(accountMergeCompensations.survivorUserId, id), eq(accountMergeCompensations.createdByAdminId, id)),
+  },
+  {
+    table: "accountMergeCompensationReceipts",
+    reference: "Historical Merge Compensation Receipts",
+    category: "audit_or_actor",
+    from: accountMergeCompensationReceipts,
+    condition: (id) => or(eq(accountMergeCompensationReceipts.donorUserId, id), eq(accountMergeCompensationReceipts.survivorUserId, id)),
+  },
+  {
+    table: "accountMergeCompensationAuditLogs",
+    reference: "Historical Merge Compensation Audit References",
+    category: "audit_or_actor",
+    from: accountMergeCompensationAuditLogs,
+    condition: (id) => eq(accountMergeCompensationAuditLogs.actorAdminId, id),
+  },
+  {
+    table: "workspaceAuditEvents",
+    reference: "Workspace Audit Actor References",
+    category: "audit_or_actor",
+    from: workspaceAuditEvents,
+    condition: (id) => eq(workspaceAuditEvents.actorUserId, id),
   },
   // Review finding on PR #45: a FORMER admin who performed a prior
   // name/role edit or delete (recorded with actorAdminId = their own id,
@@ -8150,6 +8223,18 @@ export class AccountMergeWriteGuardError extends Error {
   }
 }
 
+export class AccountMergeCompensationDonorGuardError extends Error {
+  readonly code = "ACCOUNT_MERGE_COMPENSATION_DONOR_GUARDED";
+  constructor(
+    readonly donorUserId: number,
+    readonly compensationId: number,
+    readonly compensationStatus: string
+  ) {
+    super(`Classified account mutation refused while historical compensation ${compensationId} is ${compensationStatus}`);
+    this.name = "AccountMergeCompensationDonorGuardError";
+  }
+}
+
 function unwrapAccountMergeMysqlRows(rawResult: any): any[] {
   const rows = Array.isArray(rawResult?.[0]) ? rawResult[0] : rawResult;
   return Array.isArray(rows) ? rows : [];
@@ -8258,6 +8343,120 @@ function unwrapMysqlRows(rawResult: any): any[] {
   return Array.isArray(rawResult) ? rawResult : [];
 }
 
+export async function getCompletedHistoricalMergeCompensationForCase(mergeCaseId: number, tx?: any) {
+  const database = tx ?? (await getDb());
+  if (!database) throw new Error("Database not available");
+  const rows = await database
+    .select({
+      compensationId: accountMergeCompensations.id,
+      historicalMergeCaseId: accountMergeCompensations.historicalMergeCaseId,
+      donorUserId: accountMergeCompensations.donorUserId,
+      survivorUserId: accountMergeCompensations.survivorUserId,
+      googleIdentityId: accountMergeCompensations.googleIdentityId,
+      recoveryRequestId: accountMergeCompensations.recoveryRequestId,
+      expectedSnapshotDigest: accountMergeCompensations.expectedSnapshotDigest,
+      status: accountMergeCompensations.status,
+      completedAt: accountMergeCompensations.completedAt,
+      receiptId: accountMergeCompensationReceipts.id,
+      receiptHistoricalMergeCaseId: accountMergeCompensationReceipts.historicalMergeCaseId,
+      receiptRecoveryRequestId: accountMergeCompensationReceipts.recoveryRequestId,
+      receiptDonorUserId: accountMergeCompensationReceipts.donorUserId,
+      receiptSurvivorUserId: accountMergeCompensationReceipts.survivorUserId,
+      receiptGoogleIdentityId: accountMergeCompensationReceipts.googleIdentityId,
+      receiptExpectedSnapshotDigest: accountMergeCompensationReceipts.expectedSnapshotDigest,
+    })
+    .from(accountMergeCompensations)
+    .innerJoin(
+      accountMergeCompensationReceipts,
+      eq(accountMergeCompensationReceipts.compensationId, accountMergeCompensations.id)
+    )
+    .where(
+      and(
+        eq(accountMergeCompensations.historicalMergeCaseId, mergeCaseId),
+        eq(accountMergeCompensations.status, "completed")
+      )
+    )
+    .limit(2);
+  if (rows.length !== 1) return undefined;
+  const row = rows[0];
+  if (
+    Number(row.historicalMergeCaseId) !== mergeCaseId ||
+    Number(row.receiptHistoricalMergeCaseId) !== mergeCaseId ||
+    Number(row.recoveryRequestId) !== Number(row.receiptRecoveryRequestId) ||
+    Number(row.survivorUserId) !== Number(row.receiptSurvivorUserId) ||
+    Number(row.donorUserId) !== Number(row.receiptDonorUserId) ||
+    Number(row.googleIdentityId) !== Number(row.receiptGoogleIdentityId) ||
+    String(row.expectedSnapshotDigest) !== String(row.receiptExpectedSnapshotDigest)
+  ) {
+    return undefined;
+  }
+  return {
+    compensationId: Number(row.compensationId),
+    receiptId: Number(row.receiptId),
+    historicalMergeCaseId: Number(row.historicalMergeCaseId),
+    recoveryRequestId: Number(row.recoveryRequestId),
+    donorUserId: Number(row.donorUserId),
+    survivorUserId: Number(row.survivorUserId),
+    googleIdentityId: Number(row.googleIdentityId),
+    expectedSnapshotDigest: String(row.expectedSnapshotDigest),
+    completedAt: row.completedAt ?? null,
+  };
+}
+
+async function hasValidCompletedHistoricalCompensationRelease(sourceUserId: number, mergeCaseId: number, tx: any): Promise<boolean> {
+  const rows = await tx
+    .select({
+      compensationId: accountMergeCompensations.id,
+      historicalMergeCaseId: accountMergeCompensations.historicalMergeCaseId,
+      donorUserId: accountMergeCompensations.donorUserId,
+      survivorUserId: accountMergeCompensations.survivorUserId,
+      googleIdentityId: accountMergeCompensations.googleIdentityId,
+      recoveryRequestId: accountMergeCompensations.recoveryRequestId,
+      expectedSnapshotDigest: accountMergeCompensations.expectedSnapshotDigest,
+      status: accountMergeCompensations.status,
+      receiptId: accountMergeCompensationReceipts.id,
+      receiptHistoricalMergeCaseId: accountMergeCompensationReceipts.historicalMergeCaseId,
+      receiptRecoveryRequestId: accountMergeCompensationReceipts.recoveryRequestId,
+      receiptDonorUserId: accountMergeCompensationReceipts.donorUserId,
+      receiptSurvivorUserId: accountMergeCompensationReceipts.survivorUserId,
+      receiptGoogleIdentityId: accountMergeCompensationReceipts.googleIdentityId,
+      receiptExpectedSnapshotDigest: accountMergeCompensationReceipts.expectedSnapshotDigest,
+    })
+    .from(accountMergeCompensations)
+    .innerJoin(
+      accountMergeCompensationReceipts,
+      eq(accountMergeCompensationReceipts.compensationId, accountMergeCompensations.id)
+    )
+    .where(
+      and(
+        eq(accountMergeCompensations.historicalMergeCaseId, mergeCaseId),
+        eq(accountMergeCompensations.survivorUserId, sourceUserId),
+        eq(accountMergeCompensations.status, "completed")
+      )
+    )
+    .limit(2);
+  if (rows.length !== 1) return false;
+  const row = rows[0];
+  return (
+    Number(row.historicalMergeCaseId) === mergeCaseId &&
+    Number(row.receiptHistoricalMergeCaseId) === mergeCaseId &&
+    Number(row.recoveryRequestId) === Number(row.receiptRecoveryRequestId) &&
+    Number(row.survivorUserId) === sourceUserId &&
+    Number(row.receiptSurvivorUserId) === sourceUserId &&
+    Number(row.donorUserId) === Number(row.receiptDonorUserId) &&
+    Number(row.googleIdentityId) === Number(row.receiptGoogleIdentityId) &&
+    String(row.expectedSnapshotDigest) === String(row.receiptExpectedSnapshotDigest)
+  );
+}
+
+async function getHistoricalCompensationDonorGuardsForUpdate(donorUserId: number, tx: any) {
+  return unwrapMysqlRows(
+    await tx.execute(
+      sql`SELECT id, historicalMergeCaseId, status FROM accountMergeCompensations WHERE donorUserId = ${donorUserId} AND status = 'completed' ORDER BY id FOR UPDATE`
+    )
+  );
+}
+
 export async function assertAccountMergeClassifiedMutationsAllowed(userIds: number[], tx: any): Promise<void> {
   const ordered = await lockAccountMergeUserRows(userIds, tx);
   const guardedStatuses = new Set<string>(ACCOUNT_MERGE_GUARDED_STATUSES);
@@ -8266,11 +8465,30 @@ export async function assertAccountMergeClassifiedMutationsAllowed(userIds: numb
     const nonCancelled = cases.filter((row: any) => row.status !== "cancelled");
     if (nonCancelled.length > 1) throw new Error(`Inconsistent account-merge guard state for source ${sourceUserId}`);
     const active = nonCancelled[0];
-    if (!active) continue;
-    if (!guardedStatuses.has(active.status)) {
-      throw new Error(`Unknown account-merge guard state '${String(active.status)}' for source ${sourceUserId}`);
+    if (active) {
+      if (!guardedStatuses.has(active.status)) {
+        throw new Error(`Unknown account-merge guard state '${String(active.status)}' for source ${sourceUserId}`);
+      }
+      const compensatedSurvivorRelease =
+        active.status === "completed" &&
+        (await hasValidCompletedHistoricalCompensationRelease(sourceUserId, Number(active.id), tx));
+      if (!compensatedSurvivorRelease) {
+        throw new AccountMergeWriteGuardError(sourceUserId, Number(active.id), active.status as AccountMergeGuardedStatus);
+      }
     }
-    throw new AccountMergeWriteGuardError(sourceUserId, Number(active.id), active.status as AccountMergeGuardedStatus);
+
+    const donorCompensations = await getHistoricalCompensationDonorGuardsForUpdate(sourceUserId, tx);
+    if (donorCompensations.length > 1) {
+      throw new Error(`Inconsistent historical-compensation donor guard state for user ${sourceUserId}`);
+    }
+    const donorCompensation = donorCompensations[0];
+    if (donorCompensation) {
+      throw new AccountMergeCompensationDonorGuardError(
+        sourceUserId,
+        Number(donorCompensation.id),
+        String(donorCompensation.status)
+      );
+    }
   }
 }
 
