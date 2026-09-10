@@ -1,17 +1,17 @@
 export function buildAccountMergeConfirmationText(
-  sourceUserId: number,
-  targetUserId: number
+  donorAccountId: number,
+  survivorAccountId: number
 ): string {
-  return `SOURCE:${sourceUserId}->TARGET:${targetUserId}`;
+  return `DONOR:${donorAccountId}->SURVIVOR:${survivorAccountId}`;
 }
 
 export function isAccountMergeConfirmationExact(
-  sourceUserId: number,
-  targetUserId: number,
+  donorAccountId: number,
+  survivorAccountId: number,
   confirmation: string
 ): boolean {
   return (
     confirmation.trim() ===
-    buildAccountMergeConfirmationText(sourceUserId, targetUserId)
+    buildAccountMergeConfirmationText(donorAccountId, survivorAccountId)
   );
 }

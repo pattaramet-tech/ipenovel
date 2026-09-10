@@ -6807,6 +6807,17 @@ export async function getAccountRecoveryRequestById(id: number, tx?: any) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+/** Lock one recovery request row for lifecycle reconciliation. Callers that
+ * need multiple rows must acquire them in deterministic id order to avoid
+ * deadlocks. Kept separate from getAccountRecoveryRequestById so ordinary
+ * read-only/admin-detail paths never take a write lock accidentally. */
+export async function getAccountRecoveryRequestByIdForUpdate(id: number, tx: any) {
+  if (!Number.isInteger(id) || id <= 0) throw new Error("Valid recovery request id is required");
+  const raw = await tx.execute(sql`SELECT * FROM accountRecoveryRequests WHERE id = ${id} FOR UPDATE`);
+  const rows = Array.isArray(raw?.[0]) ? raw[0] : raw;
+  return rows?.length > 0 ? rows[0] : undefined;
+}
+
 /** Every request the given user has ever made, most recent first - backs
  *  /account/recovery's own status view. Never accepts anyone else's id from
  *  the client - the caller (accountRecovery.myRequests) always passes
@@ -6819,6 +6830,30 @@ export async function listAccountRecoveryRequestsForUser(requesterUserId: number
     .from(accountRecoveryRequests)
     .where(eq(accountRecoveryRequests.requesterUserId, requesterUserId))
     .orderBy(desc(accountRecoveryRequests.createdAt));
+}
+
+/** Read-only incident-planning lookup for every recovery request touching
+ * either explicit participant, including historical persisted source/target
+ * columns. This lets compensating planning fail closed on a second pending,
+ * blocked, or already-approved lifecycle involving either account. */
+export async function listAccountRecoveryRequestsForParticipants(userIds: number[], tx?: any) {
+  const database = tx ?? (await getDb());
+  if (!database) return [];
+  const ids = Array.from(new Set(userIds));
+  if (ids.length === 0 || ids.some(id => !Number.isInteger(id) || id <= 0)) {
+    throw new Error("Valid account ids are required for recovery-request lookup");
+  }
+  return database
+    .select()
+    .from(accountRecoveryRequests)
+    .where(
+      or(
+        inArray(accountRecoveryRequests.requesterUserId, ids),
+        inArray(accountRecoveryRequests.sourceUserId, ids),
+        inArray(accountRecoveryRequests.targetUserId, ids)
+      )
+    )
+    .orderBy(asc(accountRecoveryRequests.id));
 }
 
 /** Paginated admin pending queue - anti-enumeration by construction (no
@@ -6900,6 +6935,59 @@ export async function transitionAccountRecoveryRequestStatus(
   const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
   const affectedRows = (resultHeader as any)?.affectedRows || 0;
   return affectedRows > 0;
+}
+
+/**
+ * Narrow CAS writer for duplicate-lifecycle reconciliation only.
+ * Deliberately separate from transitionAccountRecoveryRequestStatus so the
+ * ordinary review flow remains pending-only. This succeeds only while the
+ * exact duplicate row is STILL blocked and STILL belongs to the requester
+ * the service already bound to the canonical request inside the same
+ * transaction. It can only terminate the duplicate as cancelled; it never
+ * reopens a request or changes source/target participants.
+ */
+export async function supersedeBlockedAccountRecoveryRequest(
+  params: {
+    id: number;
+    expectedRequesterUserId: number;
+    reviewedByAdminId: number;
+    reviewReason: string;
+  },
+  tx: any
+): Promise<boolean> {
+  const updateResult = await tx
+    .update(accountRecoveryRequests)
+    .set({
+      status: "cancelled" as any,
+      reviewedByAdminId: params.reviewedByAdminId,
+      reviewedAt: new Date(),
+      reviewReason: params.reviewReason,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(accountRecoveryRequests.id, params.id),
+        eq(accountRecoveryRequests.requesterUserId, params.expectedRequesterUserId),
+        eq(accountRecoveryRequests.status, "blocked" as any)
+      )
+    );
+
+  const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
+  const affectedRows = (resultHeader as any)?.affectedRows || 0;
+  return affectedRows > 0;
+}
+
+export async function listAccountRecoveryAuditLogsForRequest(recoveryRequestId: number, tx?: any) {
+  const database = tx ?? (await getDb());
+  if (!database) return [];
+  if (!Number.isInteger(recoveryRequestId) || recoveryRequestId <= 0) {
+    throw new Error("Valid recovery request id is required for audit lookup");
+  }
+  return database
+    .select()
+    .from(accountRecoveryAuditLogs)
+    .where(eq(accountRecoveryAuditLogs.recoveryRequestId, recoveryRequestId))
+    .orderBy(asc(accountRecoveryAuditLogs.id));
 }
 
 export async function insertAccountRecoveryAuditLog(
@@ -8086,6 +8174,83 @@ export async function getAccountMergeCasesForSourceForUpdate(sourceUserId: numbe
       sql`SELECT id, sourceUserId, targetUserId, status, originAccountRecoveryRequestId, createdByAdminId, startedAt, completedAt, failedAt, cancelledAt FROM accountMergeCases WHERE sourceUserId = ${sourceUserId} ORDER BY id FOR UPDATE`
     )
   );
+}
+
+/** Read-only participant lookup used by compensating-recovery planning.
+ * Returns every case in which either explicit account appears on either
+ * side, so the planner can fail closed on cross-request conflicts instead
+ * of looking only at the current request. */
+export async function listAccountMergeCasesForRecoveryRequest(requestId: number, tx?: any) {
+  const database = tx || (await getDb());
+  if (!database) throw new Error("Database not available");
+  if (!Number.isInteger(requestId) || requestId <= 0) {
+    throw new Error("Valid recovery request id is required for merge-case lookup");
+  }
+  return database
+    .select()
+    .from(accountMergeCases)
+    .where(eq(accountMergeCases.originAccountRecoveryRequestId, requestId))
+    .orderBy(asc(accountMergeCases.id));
+}
+
+export async function listAccountMergeCasesForParticipants(
+  userIds: number[],
+  tx?: any
+) {
+  const database = tx || (await getDb());
+  if (!database) throw new Error("Database not available");
+  const ids = Array.from(new Set(userIds));
+  if (ids.length === 0 || ids.some(id => !Number.isInteger(id) || id <= 0)) {
+    throw new Error("Valid account ids are required for merge-case lookup");
+  }
+  return database
+    .select()
+    .from(accountMergeCases)
+    .where(
+      or(
+        inArray(accountMergeCases.sourceUserId, ids),
+        inArray(accountMergeCases.targetUserId, ids)
+      )
+    )
+    .orderBy(asc(accountMergeCases.id));
+}
+
+/** Read-only receipt/audit presence for one merge case. Compensating repair
+ * planning uses this to detect impossible partial persisted states without
+ * invoking any reconciliation or opening a write transaction. */
+export async function getAccountMergeCompensationCaseEvidence(caseId: number, tx?: any) {
+  const database = tx || (await getDb());
+  if (!database) throw new Error("Database not available");
+  if (!Number.isInteger(caseId) || caseId <= 0) {
+    throw new Error("Valid merge case id is required for compensation evidence");
+  }
+  const [financialRows, dataRows, completionAuditRows] = await Promise.all([
+    database
+      .select({ id: accountMergeFinancialReconciliations.id })
+      .from(accountMergeFinancialReconciliations)
+      .where(eq(accountMergeFinancialReconciliations.mergeCaseId, caseId))
+      .limit(1),
+    database
+      .select({ id: accountMergeDataReconciliations.id })
+      .from(accountMergeDataReconciliations)
+      .where(eq(accountMergeDataReconciliations.mergeCaseId, caseId))
+      .limit(1),
+    database
+      .select({ id: accountMergeAuditLogs.id })
+      .from(accountMergeAuditLogs)
+      .where(
+        and(
+          eq(accountMergeAuditLogs.mergeCaseId, caseId),
+          eq(accountMergeAuditLogs.action, "merge_completed")
+        )
+      )
+      .limit(1),
+  ]);
+  return {
+    financialReceiptPresent: financialRows.length === 1,
+    dataReceiptPresent: dataRows.length === 1,
+    completionAuditPresent: completionAuditRows.length === 1,
+  };
 }
 
 function unwrapMysqlRows(rawResult: any): any[] {

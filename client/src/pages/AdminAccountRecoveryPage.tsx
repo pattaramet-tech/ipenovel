@@ -34,7 +34,7 @@ export default function AdminAccountRecoveryPage() {
         <Card className="p-6">
           <h2 className="text-lg font-semibold mb-1">คำขอกู้คืนบัญชี (รอตรวจสอบ)</h2>
           <p className="text-xs text-muted-foreground mb-4">
-            ผู้ใช้ที่เข้าสู่ระบบด้วย Google แล้วอีเมลไม่ตรงกับบัญชีเดิม สามารถส่งคำขอให้ย้ายการเชื่อมต่อ Google กลับไปยังบัญชีเดิมได้ที่นี่
+            ผู้ใช้ที่เข้าใช้งานบัญชีปัจจุบันด้วย Google แต่เข้าถึงบัญชีเดิมไม่ได้ สามารถส่งคำขอให้ทีมงานตรวจสอบและย้ายข้อมูลจากบัญชีเดิมเข้ามายังบัญชีปัจจุบัน โดย Google ยังคงอยู่กับบัญชีปัจจุบัน
           </p>
 
           {isLoading && (

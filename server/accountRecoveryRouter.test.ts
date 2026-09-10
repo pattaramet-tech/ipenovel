@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { TRPCError } from "@trpc/server";
 import * as db from "./db";
 import * as accountRecoveryService from "./services/accountRecoveryService";
+import * as accountRecoveryCompensationService from "./services/accountRecoveryCompensationService";
+import * as accountRecoveryLifecycleService from "./services/accountRecoveryLifecycleService";
 import { AccountRecoveryError } from "./services/accountRecoveryService";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
@@ -21,6 +23,20 @@ vi.mock("./db", async () => {
 
 vi.mock("./services/accountRecoveryService", async () => {
   const actual = await vi.importActual<typeof accountRecoveryService>("./services/accountRecoveryService");
+  return { ...actual };
+});
+
+vi.mock("./services/accountRecoveryCompensationService", async () => {
+  const actual = await vi.importActual<typeof accountRecoveryCompensationService>(
+    "./services/accountRecoveryCompensationService"
+  );
+  return { ...actual };
+});
+
+vi.mock("./services/accountRecoveryLifecycleService", async () => {
+  const actual = await vi.importActual<typeof accountRecoveryLifecycleService>(
+    "./services/accountRecoveryLifecycleService"
+  );
   return { ...actual };
 });
 
@@ -105,6 +121,35 @@ describe("accountRecovery.myRequests", () => {
     await caller.accountRecovery.myRequests();
     expect(listSpy).toHaveBeenCalledWith(77);
   });
+
+  it("adds a read-only lifecycle projection without rewriting the persisted recovery status", async () => {
+    const raw = { id: 90007, requesterUserId: 77, status: "blocked", createdAt: new Date() } as any;
+    vi.spyOn(db, "listAccountRecoveryRequestsForUser").mockResolvedValue([raw]);
+    const lifecycle = {
+      persistedStatus: "blocked",
+      effectiveStatus: "resolved_via_advanced_merge",
+      resolutionKind: "advanced_account_merge",
+      integrity: "verified",
+      integrityIssue: null,
+      mergeCaseId: 1,
+      mergeCaseStatus: "completed",
+      completedAt: new Date(),
+      auditLogId: 5,
+    } as any;
+    const projectSpy = vi
+      .spyOn(accountRecoveryLifecycleService, "buildAccountRecoveryLifecycleProjection")
+      .mockResolvedValue(lifecycle);
+
+    const caller = appRouter.createCaller(contextFor(fakeUser({ id: 77 })));
+    const result = await caller.accountRecovery.myRequests();
+
+    expect(projectSpy).toHaveBeenCalledWith(raw);
+    expect(result[0]).toMatchObject({
+      id: 90007,
+      status: "blocked",
+      lifecycle: { effectiveStatus: "resolved_via_advanced_merge", persistedStatus: "blocked" },
+    });
+  });
 });
 
 describe("accountRecovery.cancel", () => {
@@ -180,7 +225,7 @@ describe("accountRecovery.admin.* - every mutation/query requires a real admin s
     const executeSpy = vi.spyOn(accountRecoveryService, "executeAccountRecovery");
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "user" })));
     await expect(
-      caller.accountRecovery.admin.approve({ requestId: 1, targetUserId: 2, reason: "verified" })
+      caller.accountRecovery.admin.approve({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, reason: "verified" })
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(executeSpy).not.toHaveBeenCalled();
   });
@@ -199,17 +244,100 @@ describe("accountRecovery.admin.* - every mutation/query requires a real admin s
     });
   });
 
+  it("supersedeDuplicate: non-admin -> FORBIDDEN and never reaches the reconciliation service", async () => {
+    const supersedeSpy = vi.spyOn(accountRecoveryService, "supersedeDuplicateAccountRecoveryRequest");
+    const caller = appRouter.createCaller(contextFor(fakeUser({ role: "user" })));
+    await expect(
+      caller.accountRecovery.admin.supersedeDuplicate({
+        duplicateRequestId: 90003,
+        canonicalRequestId: 90007,
+        reason: "superseded by newer canonical request",
+      })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(supersedeSpy).not.toHaveBeenCalled();
+  });
+
+  it("compensatingEconomicGate: non-admin -> FORBIDDEN and never reaches the execution gate", async () => {
+    const gateSpy = vi.spyOn(accountRecoveryCompensationService, "buildCompensatingEconomicExecutionGate");
+    const caller = appRouter.createCaller(contextFor(fakeUser({ role: "user" })));
+    await expect(
+      caller.accountRecovery.admin.compensatingEconomicGate({
+        requestId: 90007,
+        donorAccountId: 763680006,
+        survivorAccountId: 21960193,
+        expectedRequestStatus: "blocked",
+        expectedCurrentIdentityOwnerAccountId: 21960193,
+        expectedGoogleIdentityId: 5370059,
+        expectedMergeCaseId: 1,
+        expectedPlanDigest: "1".repeat(64),
+      })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(gateSpy).not.toHaveBeenCalled();
+  });
+
+  it("compensatingEconomicGate: real admin forwards only the exact reviewed incident snapshot and digest", async () => {
+    const expected = {
+      mode: "economic_reconciliation_gate" as const,
+      executionAuthorized: false as const,
+      expectedPlanDigest: "2".repeat(64),
+      currentPlanDigest: "2".repeat(64),
+      decision: "NO_WRITE_REQUIRED" as const,
+      refusalCode: null,
+      plan: {} as any,
+    };
+    const gateSpy = vi
+      .spyOn(accountRecoveryCompensationService, "buildCompensatingEconomicExecutionGate")
+      .mockResolvedValue(expected);
+    const caller = appRouter.createCaller(contextFor(fakeUser({ id: 789600049, role: "admin" })));
+    const input = {
+      requestId: 90007,
+      donorAccountId: 763680006,
+      survivorAccountId: 21960193,
+      expectedRequestStatus: "blocked" as const,
+      expectedCurrentIdentityOwnerAccountId: 21960193,
+      expectedGoogleIdentityId: 5370059,
+      expectedMergeCaseId: 1,
+      expectedPlanDigest: "2".repeat(64),
+    };
+
+    const result = await caller.accountRecovery.admin.compensatingEconomicGate(input);
+
+    expect(result).toEqual(expected);
+    expect(gateSpy).toHaveBeenCalledWith(input);
+  });
+
   it("approve: real admin -> reaches the service layer, passing the admin's own id (never client-suppliable) as adminId", async () => {
     const executeSpy = vi
       .spyOn(accountRecoveryService, "executeAccountRecovery")
       .mockResolvedValue({ request: { id: 1, status: "approved" }, assessment: {} } as any);
     const caller = appRouter.createCaller(contextFor(fakeUser({ id: 5, role: "admin" })));
 
-    await caller.accountRecovery.admin.approve({ requestId: 1, targetUserId: 2, reason: "verified via order #123" });
+    await caller.accountRecovery.admin.approve({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, reason: "verified via order #123" });
 
     expect(executeSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ requestId: 1, targetUserId: 2, adminId: 5, reason: "verified via order #123" })
+      expect.objectContaining({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 5, reason: "verified via order #123" })
     );
+  });
+
+  it("supersedeDuplicate: real admin -> binds actorAdminId from the session and forwards only explicit request ids/reason", async () => {
+    const supersedeSpy = vi
+      .spyOn(accountRecoveryService, "supersedeDuplicateAccountRecoveryRequest")
+      .mockResolvedValue({ id: 90003, status: "cancelled" } as any);
+    const caller = appRouter.createCaller(contextFor(fakeUser({ id: 789600049, role: "admin" })));
+
+    const result = await caller.accountRecovery.admin.supersedeDuplicate({
+      duplicateRequestId: 90003,
+      canonicalRequestId: 90007,
+      reason: "Superseded by request 90007 after Advanced Merge became available",
+    });
+
+    expect(result).toEqual({ id: 90003, status: "cancelled" });
+    expect(supersedeSpy).toHaveBeenCalledWith({
+      duplicateRequestId: 90003,
+      canonicalRequestId: 90007,
+      actorAdminId: 789600049,
+      reason: "Superseded by request 90007 after Advanced Merge became available",
+    });
   });
 
   it("searchLegacyAccount: admin search results never include passwordHash - only the masked/allowlisted fields", async () => {
@@ -244,7 +372,7 @@ describe("accountRecovery.admin.previewApproval - privacy: never leaks the Googl
   function mockAssessmentWithRealIdentity() {
     vi.spyOn(db, "getAccountRecoveryRequestById").mockResolvedValue({
       id: 1,
-      requesterUserId: 10,
+      requesterUserId: 20,
       status: "pending",
     } as any);
     // Mocks the SERVICE layer's internal assessment (never mocks
@@ -258,8 +386,9 @@ describe("accountRecovery.admin.previewApproval - privacy: never leaks the Googl
       targetExists: true,
       sourceIsAdmin: false,
       targetIsAdmin: false,
-      sourceGoogleIdentity: { id: 900, providerSubject: SECRET_GOOGLE_SUB, emailAtLink: SECRET_FULL_EMAIL },
-      targetHasGoogleIdentity: false,
+      sourceGoogleIdentity: null,
+      targetGoogleIdentity: { id: 900, providerSubject: SECRET_GOOGLE_SUB, emailAtLink: SECRET_FULL_EMAIL },
+      targetHasGoogleIdentity: true,
       economicDataFindings: [],
       userOwnedDataFindings: [],
       blockReasons: [],
@@ -273,7 +402,7 @@ describe("accountRecovery.admin.previewApproval - privacy: never leaks the Googl
     mockAssessmentWithRealIdentity();
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
-    const result = await caller.accountRecovery.admin.previewApproval({ requestId: 1, targetUserId: 20 });
+    const result = await caller.accountRecovery.admin.previewApproval({ requestId: 1, donorAccountId: 10, survivorAccountId: 20 });
 
     expect(JSON.stringify(result)).not.toMatch(new RegExp(SECRET_GOOGLE_SUB));
   });
@@ -282,21 +411,22 @@ describe("accountRecovery.admin.previewApproval - privacy: never leaks the Googl
     mockAssessmentWithRealIdentity();
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
-    const result = await caller.accountRecovery.admin.previewApproval({ requestId: 1, targetUserId: 20 });
+    const result = await caller.accountRecovery.admin.previewApproval({ requestId: 1, donorAccountId: 10, survivorAccountId: 20 });
 
     expect(JSON.stringify(result)).not.toMatch(new RegExp(SECRET_FULL_EMAIL.replace(/[.]/g, "\\.")));
   });
 
-  it("the response has no 'providerSubject', 'emailAtLink', 'sourceGoogleIdentity', 'token', 'cookie', or 'authorization' key anywhere - only the allowlisted DTO shape", async () => {
+  it("the response strips both raw Google identity objects plus providerSubject/emailAtLink/token/cookie/authorization - only boolean ownership survives", async () => {
     mockAssessmentWithRealIdentity();
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
-    const result = await caller.accountRecovery.admin.previewApproval({ requestId: 1, targetUserId: 20 });
+    const result = await caller.accountRecovery.admin.previewApproval({ requestId: 1, donorAccountId: 10, survivorAccountId: 20 });
     const raw = JSON.stringify(result).toLowerCase();
 
     expect(raw).not.toMatch(/providersubject/);
     expect(raw).not.toMatch(/emailatlink/);
     expect(raw).not.toMatch(/sourcegoogleidentity/);
+    expect(raw).not.toMatch(/targetgoogleidentity/);
     expect(raw).not.toMatch(/token/);
     expect(raw).not.toMatch(/cookie/);
     expect(raw).not.toMatch(/authorization/);
@@ -321,13 +451,14 @@ describe("accountRecovery.admin.previewApproval - privacy: never leaks the Googl
     );
   });
 
-  it("sourceHasGoogleIdentity is still correctly derived as a boolean (true) even though the identity object itself is stripped", async () => {
+  it("ownership booleans preserve the corrected semantics: Donor has no Google identity, Survivor requester does", async () => {
     mockAssessmentWithRealIdentity();
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
 
-    const result = await caller.accountRecovery.admin.previewApproval({ requestId: 1, targetUserId: 20 });
+    const result = await caller.accountRecovery.admin.previewApproval({ requestId: 1, donorAccountId: 10, survivorAccountId: 20 });
 
-    expect(result.sourceHasGoogleIdentity).toBe(true);
+    expect(result.sourceHasGoogleIdentity).toBe(false);
+    expect(result.targetHasGoogleIdentity).toBe(true);
   });
 
   it("non-admin -> FORBIDDEN before the service is ever invoked", async () => {
@@ -335,7 +466,7 @@ describe("accountRecovery.admin.previewApproval - privacy: never leaks the Googl
     const caller = appRouter.createCaller(contextFor(fakeUser({ role: "user" })));
 
     await expect(
-      caller.accountRecovery.admin.previewApproval({ requestId: 1, targetUserId: 20 })
+      caller.accountRecovery.admin.previewApproval({ requestId: 1, donorAccountId: 10, survivorAccountId: 20 })
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(assessSpy).not.toHaveBeenCalled();
   });

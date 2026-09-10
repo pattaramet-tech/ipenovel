@@ -55,8 +55,8 @@ async function linkGoogleIdentity(userId: number): Promise<number> {
 async function createBlockedMergePair(): Promise<MergeFixture> {
   const source = await createTestUser();
   const target = await createTestUser();
-  const identityId = await linkGoogleIdentity(source.id);
-  const request = await db.createAccountRecoveryRequest({ requesterUserId: source.id });
+  const identityId = await linkGoogleIdentity(target.id);
+  const request = await db.createAccountRecoveryRequest({ requesterUserId: target.id });
   await reviewAccountRecoveryRequest({
     requestId: request.id,
     action: "block",
@@ -106,7 +106,7 @@ describe.sequential("IPE-005 Account Merge guard concurrency - real database", (
     const f = await createBlockedMergePair();
     fixtures.push(f);
 
-    const prepared = await prepareAccountMergeGuard({ requestId: f.requestId, targetUserId: f.targetId, actorAdminId: 1 });
+    const prepared = await prepareAccountMergeGuard({ requestId: f.requestId, donorUserId: f.sourceId, actorAdminId: 1 });
     const raw = (await requireTestDb().select().from(accountMergeCases).where(eq(accountMergeCases.id, prepared.id)))[0];
     expect(raw.status).toBe("pending");
     expect(raw.guardedSourceMarker).toBe(f.sourceId);
@@ -133,8 +133,8 @@ describe.sequential("IPE-005 Account Merge guard concurrency - real database", (
     fixtures.push(f);
 
     const [a, b] = await Promise.all([
-      prepareAccountMergeGuard({ requestId: f.requestId, targetUserId: f.targetId, actorAdminId: 11 }),
-      prepareAccountMergeGuard({ requestId: f.requestId, targetUserId: f.targetId, actorAdminId: 22 }),
+      prepareAccountMergeGuard({ requestId: f.requestId, donorUserId: f.sourceId, actorAdminId: 11 }),
+      prepareAccountMergeGuard({ requestId: f.requestId, donorUserId: f.sourceId, actorAdminId: 22 }),
     ]);
 
     expect(a.id).toBe(b.id);
@@ -150,7 +150,7 @@ describe.sequential("IPE-005 Account Merge guard concurrency - real database", (
   it("two concurrent start retries are idempotent: both observe in_progress but only one transition audit is appended", async () => {
     const f = await createBlockedMergePair();
     fixtures.push(f);
-    const prepared = await prepareAccountMergeGuard({ requestId: f.requestId, targetUserId: f.targetId, actorAdminId: 1 });
+    const prepared = await prepareAccountMergeGuard({ requestId: f.requestId, donorUserId: f.sourceId, actorAdminId: 1 });
 
     const [a, b] = await Promise.all([
       startAccountMergeGuard(prepared.id, 11),
@@ -194,7 +194,7 @@ describe.sequential("IPE-005 Account Merge guard concurrency - real database", (
 
     await mutationHasLock.promise;
     let prepareSettled = false;
-    const prepare = prepareAccountMergeGuard({ requestId: f.requestId, targetUserId: f.targetId, actorAdminId: 1 })
+    const prepare = prepareAccountMergeGuard({ requestId: f.requestId, donorUserId: f.sourceId, actorAdminId: 1 })
       .then((value) => {
         prepareSettled = true;
         return value;
@@ -218,7 +218,7 @@ describe.sequential("IPE-005 Account Merge guard concurrency - real database", (
   it("a classified mutation after guard activation is refused before commit and creates no ledger row", async () => {
     const f = await createBlockedMergePair();
     fixtures.push(f);
-    await prepareAccountMergeGuard({ requestId: f.requestId, targetUserId: f.targetId, actorAdminId: 1 });
+    await prepareAccountMergeGuard({ requestId: f.requestId, donorUserId: f.sourceId, actorAdminId: 1 });
 
     await expect(
       db.recordPointsTransaction({
@@ -241,7 +241,7 @@ describe.sequential("IPE-005 Account Merge guard concurrency - real database", (
   it("completed Source remains fail-closed to a stale-session classified mutation", async () => {
     const f = await createBlockedMergePair();
     fixtures.push(f);
-    const prepared = await prepareAccountMergeGuard({ requestId: f.requestId, targetUserId: f.targetId, actorAdminId: 1 });
+    const prepared = await prepareAccountMergeGuard({ requestId: f.requestId, donorUserId: f.sourceId, actorAdminId: 1 });
     await startAccountMergeGuard(prepared.id, 1);
     const completed = await completeAccountMergeGuard(prepared.id, 1);
     expect(completed.status).toBe("completed");
@@ -264,7 +264,7 @@ describe.sequential("IPE-005 Account Merge guard concurrency - real database", (
     __setAccountMergeLifecycleFaultForTests("after_case_insert");
 
     await expect(
-      prepareAccountMergeGuard({ requestId: f.requestId, targetUserId: f.targetId, actorAdminId: 1 })
+      prepareAccountMergeGuard({ requestId: f.requestId, donorUserId: f.sourceId, actorAdminId: 1 })
     ).rejects.toThrow("Injected Account Merge lifecycle failure at after_case_insert");
 
     const cases = await requireTestDb().select().from(accountMergeCases).where(eq(accountMergeCases.sourceUserId, f.sourceId));
@@ -276,7 +276,7 @@ describe.sequential("IPE-005 Account Merge guard concurrency - real database", (
   it("injected failure AFTER transition update rolls status/timestamp back and appends no transition audit", async () => {
     const f = await createBlockedMergePair();
     fixtures.push(f);
-    const prepared = await prepareAccountMergeGuard({ requestId: f.requestId, targetUserId: f.targetId, actorAdminId: 1 });
+    const prepared = await prepareAccountMergeGuard({ requestId: f.requestId, donorUserId: f.sourceId, actorAdminId: 1 });
     __setAccountMergeLifecycleFaultForTests("after_transition_update");
 
     await expect(startAccountMergeGuard(prepared.id, 2)).rejects.toThrow(

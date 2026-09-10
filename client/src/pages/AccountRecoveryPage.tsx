@@ -16,6 +16,7 @@ import { shouldShowGoogleConnectSection } from "./profileGoogleConnectStatus";
 const STATUS_LABELS: Record<string, string> = {
   pending: "รอตรวจสอบ",
   approved: "อนุมัติแล้ว",
+  resolved_via_advanced_merge: "กู้คืนสำเร็จผ่าน Advanced Merge",
   rejected: "ถูกปฏิเสธ",
   blocked: "ระงับ (ต้องติดต่อฝ่ายช่วยเหลือ)",
   cancelled: "ยกเลิกแล้ว",
@@ -24,10 +25,15 @@ const STATUS_LABELS: Record<string, string> = {
 const STATUS_COLORS: Record<string, string> = {
   pending: "bg-yellow-100 text-yellow-800",
   approved: "bg-green-100 text-green-800",
+  resolved_via_advanced_merge: "bg-green-100 text-green-800",
   rejected: "bg-red-100 text-red-800",
   blocked: "bg-red-100 text-red-800",
   cancelled: "bg-slate-100 text-slate-600",
 };
+
+function effectiveRequestStatus(request: any): string {
+  return request?.lifecycle?.effectiveStatus ?? request?.status ?? "unknown";
+}
 
 function formatDate(date: Date | string | undefined | null): string {
   if (!date) return "-";
@@ -61,29 +67,8 @@ function formatDate(date: Date | string | undefined | null): string {
  * docstring is never a substitute for the server's own checks.
  */
 export default function AccountRecoveryPage() {
-  const { isAuthenticated, loading: authLoading, logout } = useAuth();
+  const { isAuthenticated, loading: authLoading } = useAuth();
   const [, navigate] = useLocation();
-  const [loggingOut, setLoggingOut] = useState(false);
-
-  // After an admin approves a recovery request, the Google identity has
-  // moved to the TARGET account - but this browser's CURRENT session
-  // cookie still authenticates as the SOURCE user (sessions are tied to
-  // users.openId, which recovery never touches - see
-  // server/services/accountRecoveryService.ts's finalizeAccountRecoveryTargetUser
-  // docstring). The old session must never be silently upgraded/switched
-  // to the target account - the only sanctioned way to reach the target
-  // account is a fresh Google login, which now resolves to the target
-  // because the identity moved. This handler does exactly that and
-  // nothing more: end the current (source) session, then send the user to
-  // /login to start a brand-new one.
-  const handleLogoutAfterApproval = async () => {
-    setLoggingOut(true);
-    try {
-      await logout();
-    } finally {
-      navigate("/login", { replace: true });
-    }
-  };
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -170,13 +155,33 @@ export default function AccountRecoveryPage() {
         <Card className="p-8">
           <h1 className="text-2xl font-bold text-slate-900 mb-3">กู้คืนบัญชีเดิม</h1>
           <p className="text-sm text-slate-600 leading-relaxed mb-6">
-            หากอีเมล Google ที่คุณใช้เข้าสู่ระบบไม่ตรงกับบัญชี IpeNovel เดิมของคุณ ระบบอาจสร้างบัญชีใหม่ให้แทนที่จะเข้าสู่บัญชีเดิม
-            กรุณากรอกข้อมูลด้านล่างเพื่อให้ทีมงานตรวจสอบและย้ายการเชื่อมต่อ Google กลับไปยังบัญชีเดิมของคุณ
+            หากบัญชี IpeNovel เดิมของคุณเข้าใช้งานไม่ได้ แต่คุณยังเข้าสู่ระบบบัญชีปัจจุบันด้วย Google ได้
+            กรุณากรอกข้อมูลบัญชีเดิมเพื่อให้ทีมงานตรวจสอบและย้ายข้อมูลที่กู้คืนได้จากบัญชีเดิมเข้ามายังบัญชีปัจจุบัน โดยการเชื่อมต่อ Google จะคงอยู่กับบัญชีที่คุณกำลังใช้งานนี้
           </p>
 
           {requestsQuery.isLoading && (
             <div className="flex justify-center py-8">
               <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+            </div>
+          )}
+
+          {!requestsQuery.isLoading && view === "resolved_via_advanced_merge" && mostRecentRequest && (
+            <div className="border border-green-300 bg-green-50 rounded-lg p-5 space-y-3">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-5 h-5 text-green-600" aria-hidden="true" />
+                <p className="font-medium text-green-900">กู้คืนบัญชีสำเร็จผ่าน Advanced Account Merge</p>
+              </div>
+              <p className="text-sm text-green-800 leading-relaxed">
+                ทีมงานรวมข้อมูลที่กู้คืนได้จากบัญชีเดิมเข้ามายังบัญชีปัจจุบันของคุณเรียบร้อยแล้ว
+                การเชื่อมต่อ Google ยังคงอยู่กับบัญชีปัจจุบันซึ่งเป็น Survivor และใช้งานต่อได้ตามเดิม
+                คำขอต้นทางยังถูกเก็บเป็น <strong>blocked</strong> ในประวัติระบบเพื่อรักษาหลักฐานการดำเนินงาน แต่การกู้คืนถือว่าเสร็จสมบูรณ์แล้ว
+              </p>
+              {mostRecentRequest.lifecycle?.mergeCaseId && (
+                <p className="text-xs text-green-700">
+                  Advanced Merge #{mostRecentRequest.lifecycle.mergeCaseId}
+                  {mostRecentRequest.lifecycle.completedAt ? ` · เสร็จเมื่อ ${formatDate(mostRecentRequest.lifecycle.completedAt)}` : ""}
+                </p>
+              )}
             </div>
           )}
 
@@ -187,16 +192,12 @@ export default function AccountRecoveryPage() {
                 <p className="font-medium text-green-900">คำขอกู้คืนบัญชีของคุณได้รับการอนุมัติแล้ว</p>
               </div>
               <p className="text-sm text-green-800 leading-relaxed">
-                ทีมงานได้ย้ายการเชื่อมต่อ Google ไปยังบัญชีเดิมของคุณเรียบร้อยแล้ว บัญชีที่คุณกำลังใช้งานอยู่ตอนนี้
-                <strong> จะไม่เปลี่ยนเป็นบัญชีเดิมโดยอัตโนมัติ</strong> กรุณา
-                <strong>ออกจากระบบ แล้วเข้าสู่ระบบใหม่ด้วย Google</strong> อีกครั้งเพื่อเข้าถึงบัญชีเดิมของคุณ
+                ทีมงานตรวจสอบคำขอเรียบร้อยแล้ว บัญชีที่คุณกำลังใช้งานอยู่ยังเป็น Survivor และการเชื่อมต่อ Google ยังคงอยู่ที่บัญชีนี้
+                หากบัญชีเดิมไม่มีข้อมูลที่ต้องรวมเพิ่มเติม คุณสามารถใช้งานบัญชีปัจจุบันต่อได้ตามปกติ
               </p>
               {mostRecentRequest?.reviewReason && (
                 <p className="text-xs text-green-700">หมายเหตุจากทีมงาน: {mostRecentRequest.reviewReason}</p>
               )}
-              <Button size="lg" className="w-full" disabled={loggingOut} onClick={handleLogoutAfterApproval}>
-                {loggingOut ? "กำลังออกจากระบบ..." : "ออกจากระบบ แล้วเข้าสู่ระบบใหม่ด้วย Google"}
-              </Button>
             </div>
           )}
 
@@ -333,8 +334,8 @@ export default function AccountRecoveryPage() {
                     <p className="text-slate-700">{formatDate(r.createdAt)}</p>
                     {r.reviewReason && <p className="text-xs text-slate-500 mt-0.5">{r.reviewReason}</p>}
                   </div>
-                  <Badge className={STATUS_COLORS[r.status] ?? "bg-slate-100 text-slate-600"}>
-                    {STATUS_LABELS[r.status] ?? r.status}
+                  <Badge className={STATUS_COLORS[effectiveRequestStatus(r)] ?? "bg-slate-100 text-slate-600"}>
+                    {STATUS_LABELS[effectiveRequestStatus(r)] ?? effectiveRequestStatus(r)}
                   </Badge>
                 </div>
               ))}

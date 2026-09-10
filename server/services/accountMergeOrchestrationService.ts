@@ -11,6 +11,7 @@ import * as db from "../db";
 import { buildAccountMergePreview } from "./accountMergePreviewService";
 import { reconcileAccountMergeFinancialsInTransaction } from "./accountMergeFinancialReconciliationService";
 import { reconcileAccountMergeDataInTransaction } from "./accountMergeDataReconciliationService";
+import { accountRecoveryRoleAuditMetadata, bindAccountRecoveryRoles } from "./accountRecoveryRoles";
 
 export type AccountMergeOrchestrationFaultPoint =
   | "after_preview"
@@ -186,6 +187,8 @@ async function completedResult(
     requestId: Number(caseRow.originAccountRecoveryRequestId),
     sourceUserId,
     targetUserId,
+    donorAccountId: sourceUserId,
+    survivorAccountId: targetUserId,
     status: "completed" as const,
     completedAt: caseRow.completedAt ?? null,
     auditLogId: Number(completionAudit.id),
@@ -194,7 +197,8 @@ async function completedResult(
     tableActions: Array.isArray(completionMetadata.tableActions)
       ? completionMetadata.tableActions
       : [],
-    identityMoved: true as const,
+    identityMoved: false as const,
+    identityPreservedOnSurvivor: true as const,
   };
 }
 
@@ -225,6 +229,8 @@ export async function getAccountMergeExecutionStatus(requestId: number) {
     requestId,
     sourceUserId: Number(caseRow.sourceUserId),
     targetUserId: Number(caseRow.targetUserId),
+    donorAccountId: Number(caseRow.sourceUserId),
+    survivorAccountId: Number(caseRow.targetUserId),
     status: String(caseRow.status),
     completedAt: caseRow.completedAt ?? null,
   };
@@ -232,14 +238,22 @@ export async function getAccountMergeExecutionStatus(requestId: number) {
 
 export async function executeAccountMerge(params: {
   requestId: number;
-  targetUserId: number;
+  donorAccountId: number;
+  survivorAccountId: number;
   adminId: number;
   reason: string;
   confirmation: string;
 }) {
   assertPositiveInteger(params.requestId, "requestId");
-  assertPositiveInteger(params.targetUserId, "targetUserId");
+  assertPositiveInteger(params.donorAccountId, "donorAccountId");
+  assertPositiveInteger(params.survivorAccountId, "survivorAccountId");
   assertPositiveInteger(params.adminId, "adminId");
+  if (params.donorAccountId === params.survivorAccountId) {
+    throw new AccountMergeOrchestrationError(
+      "SAME_ACCOUNT",
+      "Donor and Survivor must be different accounts"
+    );
+  }
   const reason = params.reason?.trim();
   if (!reason)
     throw new AccountMergeOrchestrationError(
@@ -256,8 +270,9 @@ export async function executeAccountMerge(params: {
     );
 
   return database.transaction(async (tx: any) => {
-    // Lock the historical recovery request first. Source identity is always
-    // derived from this persisted BLOCKED request; clients can never supply it.
+    // Lock the historical recovery request first. Target/Survivor is always
+    // the persisted requester; the admin-selected Source/Donor is explicit and
+    // can never replace the requester as the canonical surviving account.
     const requestRows = unwrapRows(
       await tx.execute(
         sql`SELECT id, requesterUserId, status FROM accountRecoveryRequests WHERE id = ${params.requestId} FOR UPDATE`
@@ -276,8 +291,21 @@ export async function executeAccountMerge(params: {
       );
     }
 
-    const sourceUserId = Number(requestRow.requesterUserId);
-    const targetUserId = params.targetUserId;
+    const roleBinding = bindAccountRecoveryRoles({
+      requesterUserId: Number(requestRow.requesterUserId),
+      donorAccountId: params.donorAccountId,
+      survivorAccountId: params.survivorAccountId,
+    });
+    if (!roleBinding.valid) {
+      throw new AccountMergeOrchestrationError(
+        roleBinding.failure === "SAME_ACCOUNT" ? "SAME_ACCOUNT" : "ROLE_MISMATCH",
+        roleBinding.failure === "SURVIVOR_REQUESTER_MISMATCH"
+          ? "Survivor must be the exact account that created this recovery request"
+          : "Invalid Donor/Survivor role binding"
+      );
+    }
+    const sourceUserId = roleBinding.donorAccountId;
+    const targetUserId = roleBinding.survivorAccountId;
     if (
       !isAccountMergeConfirmationExact(
         sourceUserId,
@@ -287,7 +315,7 @@ export async function executeAccountMerge(params: {
     ) {
       throw new AccountMergeOrchestrationError(
         "CONFIRMATION_MISMATCH",
-        "Typed Source-to-Target confirmation does not match this merge"
+        "Typed Donor-to-Survivor confirmation does not match this merge"
       );
     }
 
@@ -344,8 +372,8 @@ export async function executeAccountMerge(params: {
     if (
       !preview.isPreviewValid ||
       !preview.targetValidation.isValid ||
-      !sourceIdentity ||
-      targetIdentity
+      sourceIdentity ||
+      !targetIdentity
     ) {
       throw new AccountMergeOrchestrationError(
         "FINAL_PREVIEW_BLOCKED",
@@ -460,27 +488,18 @@ export async function executeAccountMerge(params: {
     );
     maybeInjectFault("after_data");
 
-    // Auth move is deliberately LAST after every economic/user-data phase.
-    // The row was locked before the final preview and this CAS additionally
-    // requires it still belongs to Source at the write itself.
-    const moved = await db.moveAuthIdentityOwner(
-      {
-        authIdentityId: Number(sourceIdentity.id),
-        expectedCurrentUserId: sourceUserId,
-        targetUserId,
-      },
-      tx
-    );
-    if (!moved) {
+    // The requester is the Survivor and already owns the active Google
+    // identity. That identity row was locked before the final preview and is
+    // deliberately NOT moved. The Donor must remain identity-free while all
+    // economic/user data flows Source/Donor -> Target/Survivor.
+    if (sourceIdentity || !targetIdentity) {
       throw new AccountMergeOrchestrationError(
-        "AUTH_MOVE_CONFLICT",
-        "Google identity ownership changed during merge"
+        "AUTH_OWNERSHIP_CONFLICT",
+        "Google identity ownership no longer matches Donor -> requester Survivor semantics"
       );
     }
-    await db.finalizeAccountRecoveryTargetUser(
-      { targetUserId, fallbackEmail: sourceIdentity.emailAtLink ?? null },
-      tx
-    );
+    // Legacy fault-point name retained so existing rollback fixtures still
+    // exercise the boundary immediately after identity preservation checks.
     maybeInjectFault("after_auth_move");
     maybeInjectFault("before_complete");
 
@@ -518,7 +537,12 @@ export async function executeAccountMerge(params: {
     }));
     const safeMetadata = {
       reason,
-      identityMoved: true,
+      ...accountRecoveryRoleAuditMetadata({
+        donorAccountId: sourceUserId,
+        survivorAccountId: targetUserId,
+      }),
+      identityMoved: false,
+      identityPreservedOnSurvivor: true,
       financial: financialDto(financial.reconciliation),
       dataSummary: parseSafeSummary(data.reconciliation.safeSummary),
       tableActions,
@@ -545,7 +569,8 @@ export async function executeAccountMerge(params: {
       financial: financialDto(financial.reconciliation),
       dataSummary: parseSafeSummary(data.reconciliation.safeSummary),
       tableActions,
-      identityMoved: true as const,
+      identityMoved: false as const,
+      identityPreservedOnSurvivor: true as const,
     };
   });
 }

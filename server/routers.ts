@@ -47,6 +47,12 @@ import {
 import { isValidStoredFileRef } from "@shared/privateFileRef";
 import * as accountRecoveryService from "./services/accountRecoveryService";
 import { AccountRecoveryError } from "./services/accountRecoveryService";
+import {
+  buildCompensatingEconomicExecutionGate,
+  buildCompensatingRecoveryPlan,
+} from "./services/accountRecoveryCompensationService";
+import { buildAccountRecoveryLifecycleProjection } from "./services/accountRecoveryLifecycleService";
+import { buildAccountRecoveryClosureReadiness } from "./services/accountRecoveryClosureReadinessService";
 import { buildAccountMergePreview } from "./services/accountMergePreviewService";
 import {
   AccountMergeOrchestrationError,
@@ -3414,7 +3420,13 @@ export const appRouter = router({
   // request"), and mapping AccountRecoveryError -> TRPCError.
   accountRecovery: router({
     myRequests: authenticatedProcedure.query(async ({ ctx }) => {
-      return db.listAccountRecoveryRequestsForUser(ctx.user.id);
+      const requests = await db.listAccountRecoveryRequestsForUser(ctx.user.id);
+      return Promise.all(
+        requests.map(async (request: any) => ({
+          ...request,
+          lifecycle: await buildAccountRecoveryLifecycleProjection(request),
+        }))
+      );
     }),
 
     create: mergeAwareAuthenticatedProcedure
@@ -3479,7 +3491,8 @@ export const appRouter = router({
         const request = await db.getAccountRecoveryRequestById(input.requestId);
         if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "Recovery request not found" });
 
-        const [requesterIdentity, economicDataFindings, userOwnedDataFindings, requesterUser] = await Promise.all([
+        const [lifecycle, requesterIdentity, economicDataFindings, userOwnedDataFindings, requesterUser] = await Promise.all([
+          buildAccountRecoveryLifecycleProjection(request),
           db.getAuthIdentityByUserAndProvider(request.requesterUserId, "google"),
           db.findAccountRecoveryEconomicData(request.requesterUserId),
           db.findAccountRecoveryUserOwnedData(request.requesterUserId, request.id),
@@ -3488,6 +3501,7 @@ export const appRouter = router({
 
         return {
           request,
+          lifecycle,
           requester: requesterUser ? maskUserForAdmin(requesterUser) : null,
           requesterHasGoogleIdentity: Boolean(requesterIdentity),
           economicDataFindings,
@@ -3521,14 +3535,26 @@ export const appRouter = router({
       // read-only, safe to call repeatedly as the admin picks different
       // candidate targets before committing to one.
       previewApproval: adminProcedure
-        .input(z.object({ requestId: z.number().int().positive(), targetUserId: z.number().int().positive() }))
+        .input(
+          z.object({
+            requestId: z.number().int().positive(),
+            donorAccountId: z.number().int().positive(),
+            survivorAccountId: z.number().int().positive(),
+          })
+        )
         .query(async ({ input }) => {
           const request = await db.getAccountRecoveryRequestById(input.requestId);
           if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "Recovery request not found" });
+          if (input.survivorAccountId !== request.requesterUserId || input.donorAccountId === input.survivorAccountId) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Donor/Survivor roles do not match this recovery request",
+            });
+          }
           const assessment = await accountRecoveryService.assessAccountRecoverySafety({
             requestId: input.requestId,
-            sourceUserId: request.requesterUserId,
-            targetUserId: input.targetUserId,
+            sourceUserId: input.donorAccountId,
+            targetUserId: input.survivorAccountId,
           });
           // NEVER return the internal assessment as-is - it carries
           // sourceGoogleIdentity.providerSubject (the Google `sub`) and
@@ -3542,7 +3568,8 @@ export const appRouter = router({
         .input(
           z.object({
             requestId: z.number().int().positive(),
-            targetUserId: z.number().int().positive(),
+            donorAccountId: z.number().int().positive(),
+            survivorAccountId: z.number().int().positive(),
             reason: z.string().trim().min(1).max(1000),
           })
         )
@@ -3550,11 +3577,91 @@ export const appRouter = router({
           try {
             const result = await accountRecoveryService.executeAccountRecovery({
               requestId: input.requestId,
-              targetUserId: input.targetUserId,
+              donorAccountId: input.donorAccountId,
+              survivorAccountId: input.survivorAccountId,
               adminId: ctx.user.id,
               reason: input.reason,
             });
             return { success: true, request: result.request };
+          } catch (error) {
+            throw mapAccountRecoveryError(error);
+          }
+        }),
+
+      // Read-only incident-repair planning only. This procedure has no
+      // mutation counterpart: even a READY plan reports
+      // executionAuthorized=false and still requires a separate future
+      // authorization before any compensating write can exist.
+      compensatingPlan: adminProcedure
+        .input(
+          z.object({
+            requestId: z.number().int().positive(),
+            donorAccountId: z.number().int().positive(),
+            survivorAccountId: z.number().int().positive(),
+            expectedRequestStatus: z.enum(["approved", "blocked"]),
+            expectedCurrentIdentityOwnerAccountId: z.number().int().positive(),
+            expectedGoogleIdentityId: z.number().int().positive(),
+            expectedMergeCaseId: z.number().int().positive().nullable(),
+          })
+        )
+        .query(async ({ input }) => buildCompensatingRecoveryPlan(input)),
+
+      // Final read-only economic execution gate. The caller must supply the
+      // exact reviewed plan digest. Digest drift, any refusal, or any still-
+      // required mutation fails closed. A completed merge whose remaining
+      // rows are immutable financial history returns NO_WRITE_REQUIRED.
+      compensatingEconomicGate: adminProcedure
+        .input(
+          z.object({
+            requestId: z.number().int().positive(),
+            donorAccountId: z.number().int().positive(),
+            survivorAccountId: z.number().int().positive(),
+            expectedRequestStatus: z.enum(["approved", "blocked"]),
+            expectedCurrentIdentityOwnerAccountId: z.number().int().positive(),
+            expectedGoogleIdentityId: z.number().int().positive(),
+            expectedMergeCaseId: z.number().int().positive().nullable(),
+            expectedPlanDigest: z.string().regex(/^[a-fA-F0-9]{64}$/),
+          })
+        )
+        .query(async ({ input }) => buildCompensatingEconomicExecutionGate(input)),
+
+      // Read-only IPE-045 closure verifier. Combines duplicate supersede
+      // provenance, completed Advanced Merge lifecycle integrity, and the
+      // compensation no-write invariant into one fail-closed Preview verdict.
+      closureReadiness: adminProcedure
+        .input(
+          z.object({
+            duplicateRequestId: z.number().int().positive(),
+            canonicalRequestId: z.number().int().positive(),
+            donorAccountId: z.number().int().positive(),
+            survivorAccountId: z.number().int().positive(),
+            expectedGoogleIdentityId: z.number().int().positive(),
+            expectedMergeCaseId: z.number().int().positive(),
+          })
+        )
+        .query(async ({ input }) => buildAccountRecoveryClosureReadiness(input)),
+
+      // Controlled duplicate-lifecycle reconciliation only. This is NOT a
+      // generic blocked-request editor: the service binds the duplicate to a
+      // newer canonical request for the same requester, requires the
+      // duplicate to own no merge case/participants, and performs one CAS
+      // blocked -> cancelled transition plus an audit record atomically.
+      supersedeDuplicate: adminProcedure
+        .input(
+          z.object({
+            duplicateRequestId: z.number().int().positive(),
+            canonicalRequestId: z.number().int().positive(),
+            reason: z.string().trim().min(1).max(1000),
+          })
+        )
+        .mutation(async ({ input, ctx }) => {
+          try {
+            return await accountRecoveryService.supersedeDuplicateAccountRecoveryRequest({
+              duplicateRequestId: input.duplicateRequestId,
+              canonicalRequestId: input.canonicalRequestId,
+              actorAdminId: ctx.user.id,
+              reason: input.reason,
+            });
           } catch (error) {
             throw mapAccountRecoveryError(error);
           }
@@ -3600,16 +3707,20 @@ export const appRouter = router({
   // only the read-only preview.
   accountMerge: router({
     admin: router({
-      // Read-only, safe to call repeatedly as the admin picks different
-      // candidate targets - same shape/purpose as
-      // accountRecovery.admin.previewApproval above. `requestId` must name
-      // an existing, BLOCKED recovery request - Source is ALWAYS that
-      // request's own requesterUserId, never accepted as input here, so
-      // nothing a client sends can redirect this to a different source
-      // account. `targetUserId` is the one thing an admin actually
-      // supplies, exactly like previewApproval's targetUserId.
+      // Read-only, safe to call repeatedly as the admin evaluates different
+      // inaccessible Donor accounts. `requestId` must name an existing,
+      // BLOCKED recovery request. Target/Survivor is ALWAYS that request's
+      // own requesterUserId; Source/Donor is the account selected by admin.
+      // The explicit role check below prevents a client from replacing the
+      // requester with another canonical Survivor.
       preview: adminProcedure
-        .input(z.object({ requestId: z.number().int().positive(), targetUserId: z.number().int().positive() }))
+        .input(
+          z.object({
+            requestId: z.number().int().positive(),
+            donorAccountId: z.number().int().positive(),
+            survivorAccountId: z.number().int().positive(),
+          })
+        )
         .query(async ({ input }) => {
           const request = await db.getAccountRecoveryRequestById(input.requestId);
           if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "Recovery request not found" });
@@ -3619,11 +3730,17 @@ export const appRouter = router({
               message: "Advanced Account Merge preview requires a BLOCKED recovery request",
             });
           }
+          if (input.survivorAccountId !== request.requesterUserId || input.donorAccountId === input.survivorAccountId) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Donor/Survivor roles do not match this recovery request",
+            });
+          }
 
           return buildAccountMergePreview({
             requestId: input.requestId,
-            sourceUserId: request.requesterUserId,
-            targetUserId: input.targetUserId,
+            sourceUserId: input.donorAccountId,
+            targetUserId: input.survivorAccountId,
           });
         }),
 
@@ -3641,7 +3758,8 @@ export const appRouter = router({
         .input(
           z.object({
             requestId: z.number().int().positive(),
-            targetUserId: z.number().int().positive(),
+            donorAccountId: z.number().int().positive(),
+            survivorAccountId: z.number().int().positive(),
             reason: z.string().trim().min(1).max(1000),
             confirmation: z.string().trim().min(1).max(128),
           })
@@ -3650,7 +3768,8 @@ export const appRouter = router({
           try {
             return await executeAccountMerge({
               requestId: input.requestId,
-              targetUserId: input.targetUserId,
+              donorAccountId: input.donorAccountId,
+              survivorAccountId: input.survivorAccountId,
               adminId: ctx.user.id,
               reason: input.reason,
               confirmation: input.confirmation,
@@ -3664,12 +3783,28 @@ export const appRouter = router({
       // entitlements, user-owned rows or auth identities; they only establish
       // / advance / release the durable Source write guard.
       prepareGuard: adminProcedure
-        .input(z.object({ requestId: z.number().int().positive(), targetUserId: z.number().int().positive() }))
+        .input(
+          z.object({
+            requestId: z.number().int().positive(),
+            donorAccountId: z.number().int().positive(),
+            survivorAccountId: z.number().int().positive(),
+          })
+        )
         .mutation(async ({ input, ctx }) => {
           try {
+            const request = await db.getAccountRecoveryRequestById(input.requestId);
+            if (!request) {
+              throw new TRPCError({ code: "NOT_FOUND", message: "Recovery request not found" });
+            }
+            if (input.survivorAccountId !== request.requesterUserId || input.donorAccountId === input.survivorAccountId) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: "Donor/Survivor roles do not match this recovery request",
+              });
+            }
             return await prepareAccountMergeGuard({
               requestId: input.requestId,
-              targetUserId: input.targetUserId,
+              donorUserId: input.donorAccountId,
               actorAdminId: ctx.user.id,
             });
           } catch (error) {

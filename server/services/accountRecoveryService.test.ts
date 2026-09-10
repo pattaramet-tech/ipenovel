@@ -6,6 +6,7 @@ import {
   executeAccountRecovery,
   reviewAccountRecoveryRequest,
   submitAccountRecoveryRequest,
+  supersedeDuplicateAccountRecoveryRequest,
 } from "./accountRecoveryService";
 
 vi.mock("../db", async () => {
@@ -57,21 +58,16 @@ describe("submitAccountRecoveryRequest", () => {
     expect(createSpy).not.toHaveBeenCalled();
   });
 
-  it("[post-approval resubmission] a source account whose Google identity was already moved away by an approved recovery request -> throws NOT_GOOGLE_LINKED on any further attempt, never creates a second row - the SAME check that requires a real Google identity to begin with also structurally prevents an already-recovered source from submitting again, with no separate 'already approved' bookkeeping needed", async () => {
+  it("[post-recovery requester] Google identity remains on the Survivor requester, so submission still uses the normal pending-request gate", async () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
-    // executeAccountRecovery's moveAuthIdentityOwner already ran for this
-    // user in an earlier approval - getAuthIdentityByUserAndProvider now
-    // correctly returns undefined for the (former) source, exactly as it
-    // would for any other never-connected user.
-    vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue(undefined);
-    const pendingSpy = vi.spyOn(db, "getPendingAccountRecoveryRequestForUser");
-    const createSpy = vi.spyOn(db, "createAccountRecoveryRequest");
+    vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue(fakeGoogleIdentity({ userId: 1 }) as any);
+    vi.spyOn(db, "getPendingAccountRecoveryRequestForUser").mockResolvedValue(undefined);
+    const createSpy = vi.spyOn(db, "createAccountRecoveryRequest").mockResolvedValue({ id: 11 } as any);
 
-    await expect(submitAccountRecoveryRequest({ requesterUserId: 1 })).rejects.toMatchObject({
-      code: "NOT_GOOGLE_LINKED",
-    });
-    expect(pendingSpy).not.toHaveBeenCalled();
-    expect(createSpy).not.toHaveBeenCalled();
+    const result = await submitAccountRecoveryRequest({ requesterUserId: 1 });
+
+    expect(result).toEqual({ id: 11 });
+    expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({ requesterUserId: 1 }));
   });
 
   it("requester already has a pending request -> throws ALREADY_PENDING, never creates a second row", async () => {
@@ -136,15 +132,15 @@ describe("assessAccountRecoverySafety", () => {
       return undefined;
     });
     vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockImplementation(async (userId: number, provider: string) => {
-      if (userId === 1) return "sourceIdentity" in overrides ? overrides.sourceIdentity : fakeGoogleIdentity({ userId: 1 });
-      if (userId === 2) return "targetIdentity" in overrides ? overrides.targetIdentity : undefined;
+      if (userId === 1) return "sourceIdentity" in overrides ? overrides.sourceIdentity : undefined;
+      if (userId === 2) return "targetIdentity" in overrides ? overrides.targetIdentity : fakeGoogleIdentity({ userId: 2 });
       return undefined;
     });
     vi.spyOn(db, "findAccountRecoveryEconomicData").mockResolvedValue(overrides.economicFindings ?? []);
     vi.spyOn(db, "findAccountRecoveryUserOwnedData").mockResolvedValue(overrides.userOwnedFindings ?? []);
   }
 
-  it("[safe empty source] source exists, owns a real Google identity, target exists with no Google identity, no economic/user-owned data -> canApprove true, isFullyAutomatable true", async () => {
+  it("[safe empty donor] Donor exists without Google identity, Survivor requester exists with Google identity, no donor economic/user-owned data -> canApprove true, isFullyAutomatable true", async () => {
     mockCleanScenario();
     const result = await assessAccountRecoverySafety({ requestId: 1, sourceUserId: 1, targetUserId: 2 });
     expect(result.canApprove).toBe(true);
@@ -190,18 +186,20 @@ describe("assessAccountRecoverySafety", () => {
     expect(result.targetIsAdmin).toBe(true);
   });
 
-  it("[source identity missing] source has no real Google identity row -> rejected, never trusts a claim as evidence", async () => {
-    mockCleanScenario({ sourceIdentity: undefined });
+  it("[donor identity present] inaccessible Donor already has a Google identity -> rejected as ambiguous ownership", async () => {
+    mockCleanScenario({ sourceIdentity: fakeGoogleIdentity({ userId: 1, id: 901 }) });
     const result = await assessAccountRecoverySafety({ requestId: 1, sourceUserId: 1, targetUserId: 2 });
     expect(result.canApprove).toBe(false);
-    expect(result.sourceGoogleIdentity).toBeNull();
+    expect(result.sourceGoogleIdentity?.id).toBe(901);
+    expect(result.blockReasons.join(" ")).toMatch(/donor account already has a linked google identity/i);
   });
 
-  it("[target already has Google identity] rejected", async () => {
-    mockCleanScenario({ targetIdentity: fakeGoogleIdentity({ userId: 2, id: 901 }) });
+  it("[survivor requester identity missing] rejected because the active requester identity cannot be preserved", async () => {
+    mockCleanScenario({ targetIdentity: undefined });
     const result = await assessAccountRecoverySafety({ requestId: 1, sourceUserId: 1, targetUserId: 2 });
     expect(result.canApprove).toBe(false);
-    expect(result.targetHasGoogleIdentity).toBe(true);
+    expect(result.targetHasGoogleIdentity).toBe(false);
+    expect(result.blockReasons.join(" ")).toMatch(/survivor requester has no linked google identity/i);
   });
 
   it("[source with purchase] economic data present -> hard blocked, never just a warning", async () => {
@@ -415,6 +413,176 @@ describe("reviewAccountRecoveryRequest (reject/block/cancel)", () => {
   });
 });
 
+describe("supersedeDuplicateAccountRecoveryRequest", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const duplicate = {
+    id: 90003,
+    requesterUserId: 763680006,
+    status: "blocked",
+    sourceUserId: null,
+    targetUserId: null,
+    createdAt: new Date("2026-08-23T02:49:16.000Z"),
+  } as any;
+  const canonical = {
+    id: 90007,
+    requesterUserId: 763680006,
+    status: "blocked",
+    sourceUserId: null,
+    targetUserId: null,
+    createdAt: new Date("2026-09-09T13:06:28.000Z"),
+  } as any;
+
+  function mockTx() {
+    const fakeTx = {};
+    vi.spyOn(db, "getDb").mockResolvedValue({ transaction: async (cb: any) => cb(fakeTx) } as any);
+    return fakeTx;
+  }
+
+  it("happy path -> CAS-cancels only the older blocked duplicate and writes atomic superseded provenance", async () => {
+    const fakeTx = mockTx();
+    vi.spyOn(db, "getAccountRecoveryRequestByIdForUpdate")
+      .mockResolvedValueOnce(duplicate)
+      .mockResolvedValueOnce(canonical);
+    vi.spyOn(db, "getAccountRecoveryRequestById").mockResolvedValue({ ...duplicate, status: "cancelled" });
+    vi.spyOn(db, "listAccountMergeCasesForRecoveryRequest")
+      .mockResolvedValueOnce([] as any)
+      .mockResolvedValueOnce([{ id: 1, status: "completed" }] as any);
+    const casSpy = vi.spyOn(db, "supersedeBlockedAccountRecoveryRequest").mockResolvedValue(true);
+    const auditSpy = vi.spyOn(db, "insertAccountRecoveryAuditLog").mockResolvedValue(undefined as any);
+
+    const result = await supersedeDuplicateAccountRecoveryRequest({
+      duplicateRequestId: 90003,
+      canonicalRequestId: 90007,
+      actorAdminId: 789600049,
+      reason: "Superseded by request 90007 after Advanced Merge became available",
+    });
+
+    expect(result.status).toBe("cancelled");
+    expect(casSpy).toHaveBeenCalledWith(
+      {
+        id: 90003,
+        expectedRequesterUserId: 763680006,
+        reviewedByAdminId: 789600049,
+        reviewReason: "Superseded by request 90007 after Advanced Merge became available",
+      },
+      fakeTx
+    );
+    expect(auditSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recoveryRequestId: 90003,
+        actorAdminId: 789600049,
+        action: "cancelled",
+        safeMetadata: {
+          reason: "Superseded by request 90007 after Advanced Merge became available",
+          resolution: "superseded_duplicate",
+          supersededByRequestId: 90007,
+          canonicalRequestStatus: "blocked",
+        },
+      }),
+      fakeTx
+    );
+  });
+
+  it("different requester -> UNSAFE and never reaches the CAS writer", async () => {
+    mockTx();
+    vi.spyOn(db, "getAccountRecoveryRequestByIdForUpdate")
+      .mockResolvedValueOnce(duplicate)
+      .mockResolvedValueOnce({ ...canonical, requesterUserId: 999 });
+    const casSpy = vi.spyOn(db, "supersedeBlockedAccountRecoveryRequest");
+
+    await expect(
+      supersedeDuplicateAccountRecoveryRequest({
+        duplicateRequestId: 90003,
+        canonicalRequestId: 90007,
+        actorAdminId: 9,
+        reason: "duplicate lifecycle",
+      })
+    ).rejects.toMatchObject({ code: "UNSAFE" });
+    expect(casSpy).not.toHaveBeenCalled();
+  });
+
+  it("duplicate already owns a merge case -> UNSAFE and preserves it", async () => {
+    mockTx();
+    vi.spyOn(db, "getAccountRecoveryRequestByIdForUpdate")
+      .mockResolvedValueOnce(duplicate)
+      .mockResolvedValueOnce(canonical);
+    vi.spyOn(db, "listAccountMergeCasesForRecoveryRequest").mockResolvedValue([{ id: 44 }] as any);
+    const casSpy = vi.spyOn(db, "supersedeBlockedAccountRecoveryRequest");
+
+    await expect(
+      supersedeDuplicateAccountRecoveryRequest({
+        duplicateRequestId: 90003,
+        canonicalRequestId: 90007,
+        actorAdminId: 9,
+        reason: "duplicate lifecycle",
+      })
+    ).rejects.toMatchObject({ code: "UNSAFE" });
+    expect(casSpy).not.toHaveBeenCalled();
+  });
+
+  it("canonical without exactly one completed Advanced Merge case -> UNSAFE and never reaches the CAS writer", async () => {
+    mockTx();
+    vi.spyOn(db, "getAccountRecoveryRequestByIdForUpdate")
+      .mockResolvedValueOnce(duplicate)
+      .mockResolvedValueOnce(canonical);
+    vi.spyOn(db, "listAccountMergeCasesForRecoveryRequest")
+      .mockResolvedValueOnce([] as any)
+      .mockResolvedValueOnce([{ id: 1, status: "in_progress" }] as any);
+    const casSpy = vi.spyOn(db, "supersedeBlockedAccountRecoveryRequest");
+
+    await expect(
+      supersedeDuplicateAccountRecoveryRequest({
+        duplicateRequestId: 90003,
+        canonicalRequestId: 90007,
+        actorAdminId: 9,
+        reason: "duplicate lifecycle",
+      })
+    ).rejects.toMatchObject({ code: "UNSAFE" });
+    expect(casSpy).not.toHaveBeenCalled();
+  });
+
+  it("canonical must still be blocked; even an approved canonical fails closed as an impossible Advanced Merge lifecycle", async () => {
+    mockTx();
+    vi.spyOn(db, "getAccountRecoveryRequestByIdForUpdate")
+      .mockResolvedValueOnce(duplicate)
+      .mockResolvedValueOnce({ ...canonical, status: "approved" });
+    const casSpy = vi.spyOn(db, "supersedeBlockedAccountRecoveryRequest");
+
+    await expect(
+      supersedeDuplicateAccountRecoveryRequest({
+        duplicateRequestId: 90003,
+        canonicalRequestId: 90007,
+        actorAdminId: 9,
+        reason: "duplicate lifecycle",
+      })
+    ).rejects.toMatchObject({ code: "UNSAFE" });
+    expect(casSpy).not.toHaveBeenCalled();
+  });
+
+  it("CAS miss after validation -> ALREADY_PROCESSED and never writes an audit row", async () => {
+    mockTx();
+    vi.spyOn(db, "getAccountRecoveryRequestByIdForUpdate")
+      .mockResolvedValueOnce(duplicate)
+      .mockResolvedValueOnce(canonical);
+    vi.spyOn(db, "listAccountMergeCasesForRecoveryRequest")
+      .mockResolvedValueOnce([] as any)
+      .mockResolvedValueOnce([{ id: 1, status: "completed" }] as any);
+    vi.spyOn(db, "supersedeBlockedAccountRecoveryRequest").mockResolvedValue(false);
+    const auditSpy = vi.spyOn(db, "insertAccountRecoveryAuditLog");
+
+    await expect(
+      supersedeDuplicateAccountRecoveryRequest({
+        duplicateRequestId: 90003,
+        canonicalRequestId: 90007,
+        actorAdminId: 9,
+        reason: "duplicate lifecycle",
+      })
+    ).rejects.toMatchObject({ code: "ALREADY_PROCESSED" });
+    expect(auditSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe("executeAccountRecovery", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -439,10 +607,10 @@ describe("executeAccountRecovery", () => {
   }
 
   function mockSafeAssessment(overrides: { identity?: any } = {}) {
-    const identity = overrides.identity !== undefined ? overrides.identity : fakeGoogleIdentity({ userId: 1, id: 900 });
+    const identity = overrides.identity !== undefined ? overrides.identity : fakeGoogleIdentity({ userId: 2, id: 900 });
     vi.spyOn(db, "getUserById").mockImplementation(async (id: number) => (id === 1 ? fakeUser({ id: 1 }) : fakeUser({ id: 2 })));
     vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockImplementation(async (userId: number) =>
-      userId === 1 ? identity : undefined
+      userId === 2 ? identity : undefined
     );
     vi.spyOn(db, "findAccountRecoveryEconomicData").mockResolvedValue([]);
     vi.spyOn(db, "findAccountRecoveryUserOwnedData").mockResolvedValue([]);
@@ -452,7 +620,7 @@ describe("executeAccountRecovery", () => {
   it("reason required -> throws FORBIDDEN before ever touching the database", async () => {
     const dbSpy = vi.spyOn(db, "getDb");
     await expect(
-      executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "" })
+      executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "" })
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(dbSpy).not.toHaveBeenCalled();
   });
@@ -462,21 +630,42 @@ describe("executeAccountRecovery", () => {
     vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase({ requestRow: undefined, identityRow: null }) as any);
 
     await expect(
-      executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "ok" })
+      executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "ok" })
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
   it("[duplicate approval] request status is already 'approved' by the time it's locked -> ALREADY_PROCESSED, never moves anything", async () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
     vi.spyOn(db, "getDb").mockResolvedValue(
-      fakeDatabase({ requestRow: { id: 1, status: "approved", requesterUserId: 1 }, identityRow: null }) as any
+      fakeDatabase({ requestRow: { id: 1, status: "approved", requesterUserId: 2 }, identityRow: null }) as any
     );
     const moveSpy = vi.spyOn(db, "moveAuthIdentityOwner");
 
     await expect(
-      executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "ok" })
+      executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "ok" })
     ).rejects.toMatchObject({ code: "ALREADY_PROCESSED" });
     expect(moveSpy).not.toHaveBeenCalled();
+  });
+
+  it("[reversed roles] donor must exactly equal the persisted requester -> UNSAFE before any identity move", async () => {
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getDb").mockResolvedValue(
+      fakeDatabase({ requestRow: { id: 1, status: "pending", requesterUserId: 2 }, identityRow: null }) as any
+    );
+    const moveSpy = vi.spyOn(db, "moveAuthIdentityOwner");
+
+    await expect(
+      executeAccountRecovery({ requestId: 1, donorAccountId: 2, survivorAccountId: 1, adminId: 9, reason: "wrong direction" })
+    ).rejects.toMatchObject({ code: "UNSAFE" });
+    expect(moveSpy).not.toHaveBeenCalled();
+  });
+
+  it("[same account] explicit Donor/Survivor cannot be the same account", async () => {
+    const dbSpy = vi.spyOn(db, "getDb");
+    await expect(
+      executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 1, adminId: 9, reason: "invalid" })
+    ).rejects.toMatchObject({ code: "UNSAFE" });
+    expect(dbSpy).not.toHaveBeenCalled();
   });
 
   it("[source with purchase] unsafe assessment (economic data found) -> UNSAFE, never moves the identity, never finalizes the target", async () => {
@@ -484,13 +673,13 @@ describe("executeAccountRecovery", () => {
     const identity = mockSafeAssessment();
     vi.spyOn(db, "findAccountRecoveryEconomicData").mockResolvedValue([{ table: "purchases", count: 1 }]);
     vi.spyOn(db, "getDb").mockResolvedValue(
-      fakeDatabase({ requestRow: { id: 1, status: "pending", requesterUserId: 1 }, identityRow: identity }) as any
+      fakeDatabase({ requestRow: { id: 1, status: "pending", requesterUserId: 2 }, identityRow: identity }) as any
     );
     const moveSpy = vi.spyOn(db, "moveAuthIdentityOwner");
     const finalizeSpy = vi.spyOn(db, "finalizeAccountRecoveryTargetUser");
 
     await expect(
-      executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "ok" })
+      executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "ok" })
     ).rejects.toMatchObject({ code: "UNSAFE" });
     expect(moveSpy).not.toHaveBeenCalled();
     expect(finalizeSpy).not.toHaveBeenCalled();
@@ -501,7 +690,7 @@ describe("executeAccountRecovery", () => {
     const identity = mockSafeAssessment();
     vi.spyOn(db, "findAccountRecoveryUserOwnedData").mockResolvedValue([{ table: "carts", count: 1 }]);
     vi.spyOn(db, "getDb").mockResolvedValue(
-      fakeDatabase({ requestRow: { id: 1, status: "pending", requesterUserId: 1 }, identityRow: identity }) as any
+      fakeDatabase({ requestRow: { id: 1, status: "pending", requesterUserId: 2 }, identityRow: identity }) as any
     );
     const moveSpy = vi.spyOn(db, "moveAuthIdentityOwner");
     const finalizeSpy = vi.spyOn(db, "finalizeAccountRecoveryTargetUser");
@@ -511,7 +700,7 @@ describe("executeAccountRecovery", () => {
       // Note: no override/force field exists on this input type at all -
       // TypeScript itself would reject one; this call uses every field the
       // API actually accepts.
-      executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "admin insists it's fine" })
+      executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "admin insists it's fine" })
     ).rejects.toMatchObject({ code: "UNSAFE" });
     expect(moveSpy).not.toHaveBeenCalled();
     expect(finalizeSpy).not.toHaveBeenCalled();
@@ -524,43 +713,44 @@ describe("executeAccountRecovery", () => {
     // DIFFERENT row (id 999) - simulates the identity having changed
     // between the assessment's read and the lock (or a bug trying to move
     // the wrong row) - must fail closed either way.
-    mockSafeAssessment({ identity: fakeGoogleIdentity({ userId: 1, id: 900 }) });
+    mockSafeAssessment({ identity: fakeGoogleIdentity({ userId: 2, id: 900 }) });
     vi.spyOn(db, "getDb").mockResolvedValue(
       fakeDatabase({
-        requestRow: { id: 1, status: "pending", requesterUserId: 1 },
-        identityRow: fakeGoogleIdentity({ userId: 1, id: 999 }),
+        requestRow: { id: 1, status: "pending", requesterUserId: 2 },
+        identityRow: fakeGoogleIdentity({ userId: 2, id: 999 }),
       }) as any
     );
     const moveSpy = vi.spyOn(db, "moveAuthIdentityOwner");
 
     await expect(
-      executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "ok" })
+      executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "ok" })
     ).rejects.toMatchObject({ code: "UNSAFE" });
     expect(moveSpy).not.toHaveBeenCalled();
   });
 
-  it("moveAuthIdentityOwner loses the race (returns false) -> CONFLICT, never finalizes the target or marks approved", async () => {
+  it("preserves Survivor Google identity in place and never calls identity-move/finalize writers", async () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
     const identity = mockSafeAssessment();
     vi.spyOn(db, "getDb").mockResolvedValue(
-      fakeDatabase({ requestRow: { id: 1, status: "pending", requesterUserId: 1 }, identityRow: identity }) as any
+      fakeDatabase({ requestRow: { id: 1, status: "pending", requesterUserId: 2 }, identityRow: identity }) as any
     );
-    vi.spyOn(db, "moveAuthIdentityOwner").mockResolvedValue(false);
+    const moveSpy = vi.spyOn(db, "moveAuthIdentityOwner");
     const finalizeSpy = vi.spyOn(db, "finalizeAccountRecoveryTargetUser");
-    const transitionSpy = vi.spyOn(db, "transitionAccountRecoveryRequestStatus");
+    vi.spyOn(db, "transitionAccountRecoveryRequestStatus").mockResolvedValue(true);
+    vi.spyOn(db, "insertAccountRecoveryAuditLog").mockResolvedValue(undefined as any);
+    vi.spyOn(db, "getAccountRecoveryRequestById").mockResolvedValue({ id: 1, status: "approved" } as any);
 
-    await expect(
-      executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "ok" })
-    ).rejects.toMatchObject({ code: "CONFLICT" });
+    await executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "ok" });
+
+    expect(moveSpy).not.toHaveBeenCalled();
     expect(finalizeSpy).not.toHaveBeenCalled();
-    expect(transitionSpy).not.toHaveBeenCalled();
   });
 
-  it("[concurrent approvals] the final conditional status transition loses the race (returns false) -> ALREADY_PROCESSED, even though the identity move itself already happened in THIS attempt", async () => {
+  it("[concurrent approvals] the final conditional status transition loses the race (returns false) -> ALREADY_PROCESSED while Survivor identity remains untouched", async () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
     const identity = mockSafeAssessment();
     vi.spyOn(db, "getDb").mockResolvedValue(
-      fakeDatabase({ requestRow: { id: 1, status: "pending", requesterUserId: 1 }, identityRow: identity }) as any
+      fakeDatabase({ requestRow: { id: 1, status: "pending", requesterUserId: 2 }, identityRow: identity }) as any
     );
     vi.spyOn(db, "moveAuthIdentityOwner").mockResolvedValue(true);
     vi.spyOn(db, "finalizeAccountRecoveryTargetUser").mockResolvedValue(undefined as any);
@@ -568,7 +758,7 @@ describe("executeAccountRecovery", () => {
     const auditSpy = vi.spyOn(db, "insertAccountRecoveryAuditLog");
 
     await expect(
-      executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "ok" })
+      executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "ok" })
     ).rejects.toMatchObject({ code: "ALREADY_PROCESSED" });
     expect(auditSpy).not.toHaveBeenCalled();
   });
@@ -577,7 +767,7 @@ describe("executeAccountRecovery", () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
     const identity = mockSafeAssessment();
     vi.spyOn(db, "getDb").mockResolvedValue(
-      fakeDatabase({ requestRow: { id: 1, status: "pending", requesterUserId: 1 }, identityRow: identity }) as any
+      fakeDatabase({ requestRow: { id: 1, status: "pending", requesterUserId: 2 }, identityRow: identity }) as any
     );
     vi.spyOn(db, "moveAuthIdentityOwner").mockResolvedValue(true);
     vi.spyOn(db, "finalizeAccountRecoveryTargetUser").mockResolvedValue(undefined as any);
@@ -585,17 +775,17 @@ describe("executeAccountRecovery", () => {
     vi.spyOn(db, "insertAccountRecoveryAuditLog").mockRejectedValue(new Error("injected failure"));
     const finalReadSpy = vi.spyOn(db, "getAccountRecoveryRequestById");
 
-    await expect(executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "ok" })).rejects.toThrow(
+    await expect(executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "ok" })).rejects.toThrow(
       "injected failure"
     );
     expect(finalReadSpy).not.toHaveBeenCalled();
   });
 
-  it("[happy path] moves the identity exactly once, finalizes the target without touching id/openId, marks approved, and writes an audit log that never contains the Google sub", async () => {
+  it("[happy path] preserves the requester's Google identity on Survivor, marks Donor->Survivor provenance approved, and never leaks the Google sub", async () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
-    const identity = mockSafeAssessment({ identity: fakeGoogleIdentity({ userId: 1, id: 900, providerSubject: "super-secret-google-sub" }) });
+    const identity = mockSafeAssessment({ identity: fakeGoogleIdentity({ userId: 2, id: 900, providerSubject: "super-secret-google-sub" }) });
     vi.spyOn(db, "getDb").mockResolvedValue(
-      fakeDatabase({ requestRow: { id: 1, status: "pending", requesterUserId: 1 }, identityRow: identity }) as any
+      fakeDatabase({ requestRow: { id: 1, status: "pending", requesterUserId: 2 }, identityRow: identity }) as any
     );
     const moveSpy = vi.spyOn(db, "moveAuthIdentityOwner").mockResolvedValue(true);
     const finalizeSpy = vi.spyOn(db, "finalizeAccountRecoveryTargetUser").mockResolvedValue(undefined as any);
@@ -603,24 +793,11 @@ describe("executeAccountRecovery", () => {
     const auditSpy = vi.spyOn(db, "insertAccountRecoveryAuditLog").mockResolvedValue(undefined as any);
     vi.spyOn(db, "getAccountRecoveryRequestById").mockResolvedValue({ id: 1, status: "approved" } as any);
 
-    const result = await executeAccountRecovery({ requestId: 1, targetUserId: 2, adminId: 9, reason: "verified via order #123" });
+    const result = await executeAccountRecovery({ requestId: 1, donorAccountId: 1, survivorAccountId: 2, adminId: 9, reason: "verified via order #123" });
 
     expect(result.request).toEqual({ id: 1, status: "approved" });
-    expect(moveSpy).toHaveBeenCalledTimes(1);
-    expect(moveSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ authIdentityId: 900, expectedCurrentUserId: 1, targetUserId: 2 }),
-      expect.anything()
-    );
-    expect(finalizeSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ targetUserId: 2 }),
-      expect.anything()
-    );
-    // finalizeAccountRecoveryTargetUser is never even PASSED a users.id or
-    // openId override field - the only fields it accepts are targetUserId
-    // and fallbackEmail (see accountRecoveryService.ts/db.ts), which is
-    // what structurally guarantees id/openId are preserved.
-    const finalizeArgs = finalizeSpy.mock.calls[0][0];
-    expect(Object.keys(finalizeArgs).sort()).toEqual(["fallbackEmail", "targetUserId"]);
+    expect(moveSpy).not.toHaveBeenCalled();
+    expect(finalizeSpy).not.toHaveBeenCalled();
 
     expect(transitionSpy).toHaveBeenCalledWith(
       expect.objectContaining({ id: 1, toStatus: "approved", sourceUserId: 1, targetUserId: 2 }),
@@ -631,6 +808,13 @@ describe("executeAccountRecovery", () => {
     const auditArgs = auditSpy.mock.calls[0][0];
     expect(auditArgs.action).toBe("approved");
     expect(auditArgs.authIdentityId).toBe(900);
+    expect(auditArgs.safeMetadata).toMatchObject({
+      roleSemanticsVersion: "requester-survivor-v2",
+      donorAccountId: 1,
+      survivorAccountId: 2,
+      identityMoved: false,
+      identityPreservedOnSurvivor: true,
+    });
     expect(JSON.stringify(auditArgs.safeMetadata)).not.toMatch(/super-secret-google-sub/);
   });
 });

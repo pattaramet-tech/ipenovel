@@ -76,11 +76,11 @@ async function validatePairingUnderLock(sourceUserId: number, targetUserId: numb
     db.getAuthIdentityByUserAndProvider(sourceUserId, "google", tx),
     db.getAuthIdentityByUserAndProvider(targetUserId, "google", tx),
   ]);
-  if (!sourceIdentity) {
-    throw new AccountMergeLifecycleError("SOURCE_IDENTITY_MISSING", "Source Google identity is no longer linked");
+  if (sourceIdentity) {
+    throw new AccountMergeLifecycleError("DONOR_IDENTITY_PRESENT", "Donor already has a Google identity");
   }
-  if (targetIdentity) {
-    throw new AccountMergeLifecycleError("TARGET_IDENTITY_PRESENT", "Target already has a Google identity");
+  if (!targetIdentity) {
+    throw new AccountMergeLifecycleError("SURVIVOR_IDENTITY_MISSING", "Survivor requester Google identity is no longer linked");
   }
 }
 
@@ -106,15 +106,16 @@ async function appendLifecycleAudit(
 }
 
 /**
- * Prepare a durable merge case. Source is derived only from the locked
- * BLOCKED Account Recovery request. The Source + Target users rows are then
- * locked in ascending id order before the merge-case guard is inspected or
- * created. `pending` is already a guarded state, so a classified Source write
- * can never slip between prepare and a later start/snapshot.
+ * Prepare a durable merge case. Target/Survivor is derived only from the
+ * locked BLOCKED Account Recovery request; Source/Donor is the inaccessible
+ * legacy account selected by the admin. Both user rows are locked in ascending
+ * id order before the merge-case guard is inspected or created. `pending` is
+ * already a guarded state, so a classified Donor write can never slip between
+ * prepare and a later start/snapshot.
  */
 export async function prepareAccountMergeGuard(params: {
   requestId: number;
-  targetUserId: number;
+  donorUserId: number;
   actorAdminId: number;
 }) {
   const database = await db.getDb();
@@ -129,9 +130,10 @@ export async function prepareAccountMergeGuard(params: {
       throw new AccountMergeLifecycleError("REQUEST_NOT_BLOCKED", "Only a BLOCKED Account Recovery request can be merged");
     }
 
-    const sourceUserId = Number(request.requesterUserId);
-    await db.lockAccountMergeUserRows([sourceUserId, params.targetUserId], tx);
-    await validatePairingUnderLock(sourceUserId, params.targetUserId, tx);
+    const sourceUserId = params.donorUserId;
+    const targetUserId = Number(request.requesterUserId);
+    await db.lockAccountMergeUserRows([sourceUserId, targetUserId], tx);
+    await validatePairingUnderLock(sourceUserId, targetUserId, tx);
 
     const existingCases = await db.getAccountMergeCasesForSourceForUpdate(sourceUserId, tx);
     const nonCancelled = existingCases.filter((row: any) => row.status !== "cancelled");
@@ -142,7 +144,7 @@ export async function prepareAccountMergeGuard(params: {
       const existing = nonCancelled[0];
       if (
         Number(existing.originAccountRecoveryRequestId) === params.requestId &&
-        Number(existing.targetUserId) === params.targetUserId
+        Number(existing.targetUserId) === targetUserId
       ) {
         // Retried prepare after a lost response: the durable case is already
         // authoritative. Never append a second audit event for a no-op retry.
@@ -154,7 +156,7 @@ export async function prepareAccountMergeGuard(params: {
     const insertResult: any = await tx.insert(accountMergeCases).values({
       originAccountRecoveryRequestId: params.requestId,
       sourceUserId,
-      targetUserId: params.targetUserId,
+      targetUserId,
       status: "pending",
       createdByAdminId: params.actorAdminId,
     });
@@ -171,7 +173,7 @@ export async function prepareAccountMergeGuard(params: {
       actorAdminId: params.actorAdminId,
       action: "guard_prepared",
       sourceUserId,
-      targetUserId: params.targetUserId,
+      targetUserId,
       safeMetadata: { fromStatus: null, toStatus: "pending" },
     });
 

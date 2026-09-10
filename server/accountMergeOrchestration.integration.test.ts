@@ -67,19 +67,19 @@ function insertedId(result: any): number {
 
 async function createFixture(): Promise<Fixture> {
   const t = requireTestDb();
-  const source = await createTestUser();
-  const target = await createTestUser();
+  const source = await createTestUser(); // Donor: inaccessible legacy account
+  const target = await createTestUser(); // Survivor: current requester account
   const providerSubject = `ipe008-sub-${uniqueTestTag()}`;
   const emailAtLink = `ipe008-${uniqueTestTag()}@example.test`;
   await t.insert(authIdentities).values({
-    userId: source.id,
+    userId: target.id,
     provider: "google",
     providerSubject,
     emailAtLink,
   });
 
   const request = await db.createAccountRecoveryRequest({
-    requesterUserId: source.id,
+    requesterUserId: target.id,
   });
   await reviewAccountRecoveryRequest({
     requestId: request.id,
@@ -181,7 +181,8 @@ async function cleanupFixture(f: Fixture) {
 async function execute(f: Fixture, adminId = 1) {
   return executeAccountMerge({
     requestId: f.requestId,
-    targetUserId: f.targetId,
+    donorAccountId: f.sourceId,
+    survivorAccountId: f.targetId,
     adminId,
     reason: "Verified ownership and final merge reconciliation",
     confirmation: buildAccountMergeConfirmationText(f.sourceId, f.targetId),
@@ -221,8 +222,8 @@ async function expectNoFinalEffects(f: Fixture) {
       .from(accountMergeCases)
       .where(eq(accountMergeCases.originAccountRecoveryRequestId, f.requestId)),
   ]);
-  expect(sourceIdentity?.providerSubject).toBe(f.providerSubject);
-  expect(targetIdentity).toBeUndefined();
+  expect(sourceIdentity).toBeUndefined();
+  expect(targetIdentity?.providerSubject).toBe(f.providerSubject);
   expect(sourceWallet[0]?.balance).toBe("30.00");
   expect(targetWallet[0]?.balance).toBe("10.00");
   expect(sourceEpisode).toHaveLength(1);
@@ -243,7 +244,7 @@ describe.sequential(
       while (fixtures.length > 0) await cleanupFixture(fixtures.pop()!);
     });
 
-    it("full success is atomic/idempotent, preserves Source + anti-replay evidence, moves auth last, and fresh Google login resolves Target", async () => {
+    it("full success is atomic/idempotent, reconciles Donor into requester Survivor, preserves Survivor Google ownership, and fresh Google login still resolves Survivor", async () => {
       const f = await createFixture();
       await seedMergeData(f);
 
@@ -267,6 +268,8 @@ describe.sequential(
       const result = await execute(f);
       expect(result.alreadyCompleted).toBe(false);
       expect(result.status).toBe("completed");
+      expect(result.identityMoved).toBe(false);
+      expect(result.identityPreservedOnSurvivor).toBe(true);
       expect(result.financial.wallet).toMatchObject({
         sourceBefore: "30.00",
         targetBefore: "10.00",
@@ -390,7 +393,25 @@ describe.sequential(
       expect(metadata.toLowerCase()).not.toContain("token");
     });
 
-    it("re-runs the final preview under locks and aborts cleanly when Target connected Google after an earlier valid preview", async () => {
+    it("refuses reversed explicit Donor/Survivor roles before creating a merge case or moving any value", async () => {
+      const f = await createFixture();
+      await seedMergeData(f);
+
+      await expect(
+        executeAccountMerge({
+          requestId: f.requestId,
+          donorAccountId: f.targetId,
+          survivorAccountId: f.sourceId,
+          adminId: 1,
+          reason: "attempted reversed role binding",
+          confirmation: buildAccountMergeConfirmationText(f.targetId, f.sourceId),
+        })
+      ).rejects.toMatchObject({ code: "ROLE_MISMATCH" });
+
+      await expectNoFinalEffects(f);
+    });
+
+    it("re-runs the final preview under locks and aborts cleanly when Donor connects Google after an earlier valid preview", async () => {
       const f = await createFixture();
       await seedMergeData(f);
       const earlier = await buildAccountMergePreview({
@@ -403,10 +424,10 @@ describe.sequential(
       await requireTestDb()
         .insert(authIdentities)
         .values({
-          userId: f.targetId,
+          userId: f.sourceId,
           provider: "google",
-          providerSubject: `target-drift-${uniqueTestTag()}`,
-          emailAtLink: `target-drift-${uniqueTestTag()}@example.test`,
+          providerSubject: `donor-drift-${uniqueTestTag()}`,
+          emailAtLink: `donor-drift-${uniqueTestTag()}@example.test`,
         });
 
       await expect(execute(f)).rejects.toMatchObject({
@@ -504,7 +525,7 @@ describe.sequential(
       await seedMergeData(f);
       const prepared = await prepareAccountMergeGuard({
         requestId: f.requestId,
-        targetUserId: f.targetId,
+        donorUserId: f.sourceId,
         actorAdminId: 1,
       });
       await startAccountMergeGuard(prepared.id, 1);
@@ -518,10 +539,10 @@ describe.sequential(
       });
       expect(
         await db.getAuthIdentityByUserAndProvider(f.sourceId, "google")
-      ).toBeTruthy();
+      ).toBeUndefined();
       expect(
         await db.getAuthIdentityByUserAndProvider(f.targetId, "google")
-      ).toBeUndefined();
+      ).toBeTruthy();
       const receipt = await requireTestDb()
         .select()
         .from(accountMergeFinancialReconciliations)
