@@ -11,6 +11,10 @@ import {
   WorkspaceAiQueueError,
 } from "./aiQueue.service";
 import {
+  getWorkspacePublishOperationalOverview,
+  WorkspaceControlCenterError,
+} from "./controlCenter.service";
+import {
   getAiQcOperationalReadModel,
   WorkspaceAiQcReconciliationError,
 } from "./aiQcReconciliation.service";
@@ -82,6 +86,12 @@ import {
  * a Google Docs connection or change the existing login scope.
  */
 function mapWorkspaceError(error: unknown): never {
+  if (error instanceof WorkspaceControlCenterError) {
+    throw new TRPCError({
+      code: error.code === "MEMBERSHIP_REQUIRED" ? "FORBIDDEN" : "SERVICE_UNAVAILABLE",
+      message: error.message,
+    });
+  }
   if (error instanceof WorkspacePublishRuntimeError) {
     throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
   }
@@ -307,6 +317,21 @@ export const workspaceRouter = router({
         return mapWorkspaceError(error);
       }
     }),
+
+  controlCenter: router({
+    publishOverview: authenticatedProcedure
+      .input(workspaceIdInput)
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getWorkspacePublishOperationalOverview({
+            actorUserId: ctx.user.id,
+            workspaceId: input.workspaceId,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+  }),
 
   fingerprints: router({
     list: authenticatedProcedure
