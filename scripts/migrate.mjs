@@ -46,6 +46,7 @@ import { fileURLToPath } from "node:url";
 // the failing SQL and its bound parameters).
 import { safeErrorSummary } from "./lib/safeErrorSummary.mjs";
 import { bridgeLegacySelectedFeatureMigration } from "./lib/reconstructedMigrationBridge.mjs";
+import { bridgeRenumberedWorkspaceMigrations } from "./lib/workspaceRenumberMigrationBridge.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const migrationsFolder = path.join(__dirname, "..", "drizzle");
@@ -238,6 +239,13 @@ async function main() {
           "[migrate] Verified legacy selected-feature migration lineage and reconciled it to the reconstructed migration marker; application data was not modified."
         );
       }
+    }
+
+    const workspaceRenumberBridge = await bridgeRenumberedWorkspaceMigrations(conn, migrationsFolder);
+    if (workspaceRenumberBridge.bridged) {
+      console.log(
+        "[migrate] Verified the pre-renumber Workspace 0039-0043 lineage against the current 0040-0044 schema contract and recorded the renumbered migration markers without replaying DDL or changing application rows."
+      );
     }
 
     console.log("[migrate] Lock acquired. Running pending migrations (existing, committed migration files only)...");
