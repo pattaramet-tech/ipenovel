@@ -7743,7 +7743,13 @@ export type AdminUsersListRow = {
  * live database.
  */
 export function buildAdminUsersGoogleConnectedExistsCondition() {
-  return sql<number>`EXISTS (SELECT 1 FROM ${authIdentities} WHERE ${authIdentities.userId} = ${users.id} AND ${authIdentities.provider} = 'google')`;
+  // Keep the outer users.id reference explicitly qualified. Inside this
+  // correlated subquery Drizzle renders ${users.id} as bare `id`, which
+  // MariaDB resolves to authIdentities.id (the inner table) instead of the
+  // outer users.id. That makes the predicate accidentally compare
+  // authIdentities.userId = authIdentities.id and only passes when the two
+  // auto-increment sequences happen to collide.
+  return sql<number>`EXISTS (SELECT 1 FROM ${authIdentities} WHERE ${authIdentities.userId} = \`users\`.\`id\` AND ${authIdentities.provider} = 'google')`;
 }
 
 const ADMIN_USERS_GOOGLE_CONNECTED_EXPR = buildAdminUsersGoogleConnectedExistsCondition();

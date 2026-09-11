@@ -4,6 +4,7 @@ import {
   novels,
   users,
   workspaceAuditEvents,
+  workspaceDocumentFingerprints,
   workspaceDocumentSnapshots,
   workspaceGoogleConnections,
   workspaceWorkspaces,
@@ -20,6 +21,7 @@ import {
   bindGoogleDocument,
   consumeGoogleConsentAttempt,
   createGoogleConsentAttempt,
+  listDocumentFingerprints,
   observeBoundGoogleDocument,
   revokeGoogleConnection,
   rotateGoogleConnectionCredential,
@@ -103,6 +105,62 @@ describe.sequential("workspace M02 Docs persistence integration", () => {
         .where(eq(workspaceDocumentSnapshots.documentId, binding.documentId));
       expect(snapshots).toHaveLength(1);
       expect(JSON.stringify(second)).not.toContain("chapter body");
+
+      let fingerprints = await db
+        .select()
+        .from(workspaceDocumentFingerprints)
+        .where(eq(workspaceDocumentFingerprints.bindingId, binding.bindingId));
+      expect(fingerprints).toHaveLength(1);
+      expect(fingerprints[0]).toMatchObject({
+        snapshotId: first.snapshotId,
+        providerRevisionId: "rev-7",
+        normalizedSha256: first.fingerprint.contentHash,
+        normalizationVersion: first.fingerprint.normalizationVersion,
+      });
+
+      adapter.getMetadata.mockResolvedValueOnce({
+        providerFileId: "doc_immutable_1",
+        revision: "rev-8",
+        mimeType: GOOGLE_DOC_MIME_TYPE,
+        title: "Draft updated",
+      });
+      adapter.getNormalizedText.mockResolvedValueOnce("chapter body changed");
+      const changed = await observeBoundGoogleDocument({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        bindingId: binding.bindingId,
+        accessToken: "server-only",
+        correlationId: "observe-3",
+        adapter,
+      });
+      expect(changed.snapshotId).not.toBe(first.snapshotId);
+      fingerprints = await db
+        .select()
+        .from(workspaceDocumentFingerprints)
+        .where(eq(workspaceDocumentFingerprints.bindingId, binding.bindingId));
+      expect(fingerprints).toHaveLength(1);
+      expect(fingerprints[0]).toMatchObject({
+        snapshotId: changed.snapshotId,
+        providerRevisionId: "rev-8",
+        normalizedSha256: changed.fingerprint.contentHash,
+      });
+      expect(fingerprints[0].version).toBeGreaterThan(1);
+
+      await expect(
+        listDocumentFingerprints({
+          actorUserId: outsider.id,
+          workspaceId: workspace.workspaceId,
+        })
+      ).rejects.toMatchObject<Partial<WorkspaceDocsServiceError>>({
+        code: "MEMBERSHIP_REQUIRED",
+      });
+      const fingerprintReadModel = await listDocumentFingerprints({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+      });
+      expect(fingerprintReadModel).toHaveLength(1);
+      expect(fingerprintReadModel[0].fingerprint.snapshotId).toBe(changed.snapshotId);
+      expect(JSON.stringify(fingerprintReadModel)).not.toContain("chapter body changed");
 
       const cipher = createAesGcmTokenCipher(
         new Map([[1, Buffer.alloc(32, 9)]]),

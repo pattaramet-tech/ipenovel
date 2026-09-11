@@ -48,9 +48,20 @@ async function replaceCurrentMarkerWithMarkers(conn: mysql.Connection, markers: 
 }
 
 async function removeWorkspaceSchema(conn: mysql.Connection): Promise<void> {
+  const [rows]: any = await conn.query(
+    `SELECT table_name AS name
+     FROM information_schema.tables
+     WHERE table_schema = DATABASE()
+       AND table_name LIKE 'workspace%'`
+  );
+
   await conn.query("SET FOREIGN_KEY_CHECKS = 0");
   try {
-    for (const table of LEGACY_WORKSPACE_REQUIRED_TABLES) {
+    for (const row of rows) {
+      const table = String(row.name);
+      if (!/^workspace[A-Za-z0-9_]+$/.test(table)) {
+        throw new Error(`Unsafe workspace table name: ${table}`);
+      }
       await conn.query(`DROP TABLE \`${table}\``);
     }
   } finally {

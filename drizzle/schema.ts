@@ -2115,6 +2115,457 @@ export const workspaceDocumentSnapshots = mysqlTable(
   })
 );
 
+/**
+ * M03 current fingerprint projection for an active document binding.
+ * Immutable observations remain in workspaceDocumentSnapshots; this row only
+ * points at the latest observed snapshot and can be rebuilt from snapshot/audit
+ * history. Checker rule-set linkage is added with the Checker foundation so
+ * this projection does not pre-create a dangling cross-milestone foreign key.
+ */
+export const workspaceDocumentFingerprints = mysqlTable(
+  "workspaceDocumentFingerprints",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    bindingId: int("bindingId").notNull(),
+    snapshotId: int("snapshotId").notNull(),
+    providerRevisionId: varchar("providerRevisionId", { length: 255 }).notNull(),
+    normalizedSha256: varchar("normalizedSha256", { length: 64 }).notNull(),
+    normalizationVersion: int("normalizationVersion").notNull(),
+    lastPublishedSha256: varchar("lastPublishedSha256", { length: 64 }),
+    version: int("version").default(1).notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    bindingUnique: uniqueIndex("wdf_binding_unique").on(table.bindingId),
+    normalizedHashIdx: index("wdf_normalized_hash_idx").on(table.normalizedSha256),
+    lastPublishedHashIdx: index("wdf_last_published_hash_idx").on(table.lastPublishedSha256),
+    bindingFk: foreignKey({
+      name: "wdf_binding_fk",
+      columns: [table.bindingId],
+      foreignColumns: [workspaceDocumentBindings.id],
+    }).onDelete("cascade"),
+    snapshotFk: foreignKey({
+      name: "wdf_snapshot_fk",
+      columns: [table.snapshotId],
+      foreignColumns: [workspaceDocumentSnapshots.id],
+    }).onDelete("cascade"),
+  })
+);
+
+/** M03 workflow board. Kanban remains a projection; movement truth is transitions. */
+export const workspaceKanbanBoards = mysqlTable(
+  "workspaceKanbanBoards",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workspaceId: int("workspaceId").notNull(),
+    name: varchar("name", { length: 160 }).notNull(),
+    slug: varchar("slug", { length: 120 }).notNull(),
+    status: mysqlEnum("status", ["active", "archived"]).default("active").notNull(),
+    version: int("version").default(1).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    workspaceSlugUnique: uniqueIndex("wkb_workspace_slug_unique").on(table.workspaceId, table.slug),
+    workspaceStatusIdx: index("wkb_workspace_status_idx").on(table.workspaceId, table.status),
+    workspaceFk: foreignKey({
+      name: "wkb_workspace_fk",
+      columns: [table.workspaceId],
+      foreignColumns: [workspaceWorkspaces.id],
+    }).onDelete("cascade"),
+  })
+);
+
+export const workspaceKanbanColumns = mysqlTable(
+  "workspaceKanbanColumns",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    boardId: int("boardId").notNull(),
+    key: varchar("key", { length: 80 }).notNull(),
+    name: varchar("name", { length: 160 }).notNull(),
+    position: int("position").notNull(),
+    wipLimit: int("wipLimit"),
+    status: mysqlEnum("status", ["active", "archived"]).default("active").notNull(),
+    version: int("version").default(1).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    boardKeyUnique: uniqueIndex("wkc_board_key_unique").on(table.boardId, table.key),
+    boardPositionUnique: uniqueIndex("wkc_board_position_unique").on(table.boardId, table.position),
+    boardFk: foreignKey({
+      name: "wkc_board_fk",
+      columns: [table.boardId],
+      foreignColumns: [workspaceKanbanBoards.id],
+    }).onDelete("cascade"),
+  })
+);
+
+export const workspaceKanbanCards = mysqlTable(
+  "workspaceKanbanCards",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    boardId: int("boardId").notNull(),
+    columnId: int("columnId").notNull(),
+    bindingId: int("bindingId"),
+    logicalItemKey: varchar("logicalItemKey", { length: 255 }).notNull(),
+    rank: int("rank").default(0).notNull(),
+    status: mysqlEnum("status", ["active", "blocked", "done", "archived"]).default("active").notNull(),
+    version: int("version").default(1).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    boardLogicalKeyUnique: uniqueIndex("wkcard_board_logical_key_unique").on(table.boardId, table.logicalItemKey),
+    columnRankIdx: index("wkcard_column_rank_idx").on(table.columnId, table.rank),
+    boardFk: foreignKey({
+      name: "wkcard_board_fk",
+      columns: [table.boardId],
+      foreignColumns: [workspaceKanbanBoards.id],
+    }).onDelete("cascade"),
+    columnFk: foreignKey({
+      name: "wkcard_column_fk",
+      columns: [table.columnId],
+      foreignColumns: [workspaceKanbanColumns.id],
+    }),
+    bindingFk: foreignKey({
+      name: "wkcard_binding_fk",
+      columns: [table.bindingId],
+      foreignColumns: [workspaceDocumentBindings.id],
+    }).onDelete("set null"),
+  })
+);
+
+export const workspaceKanbanTransitions = mysqlTable(
+  "workspaceKanbanTransitions",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    cardId: int("cardId").notNull(),
+    fromColumnId: int("fromColumnId"),
+    toColumnId: int("toColumnId").notNull(),
+    actorUserId: int("actorUserId").notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 255 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    cardIdempotencyUnique: uniqueIndex("wkt_card_idempotency_unique").on(table.cardId, table.idempotencyKey),
+    cardCreatedIdx: index("wkt_card_created_idx").on(table.cardId, table.createdAt),
+    cardFk: foreignKey({
+      name: "wkt_card_fk",
+      columns: [table.cardId],
+      foreignColumns: [workspaceKanbanCards.id],
+    }).onDelete("cascade"),
+    fromColumnFk: foreignKey({
+      name: "wkt_from_column_fk",
+      columns: [table.fromColumnId],
+      foreignColumns: [workspaceKanbanColumns.id],
+    }),
+    toColumnFk: foreignKey({
+      name: "wkt_to_column_fk",
+      columns: [table.toColumnId],
+      foreignColumns: [workspaceKanbanColumns.id],
+    }),
+    actorFk: foreignKey({
+      name: "wkt_actor_fk",
+      columns: [table.actorUserId],
+      foreignColumns: [users.id],
+    }),
+  })
+);
+
+/** Immutable M03 Checker configuration versions. */
+export const workspaceCheckerRuleSets = mysqlTable(
+  "workspaceCheckerRuleSets",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workspaceId: int("workspaceId").notNull(),
+    name: varchar("name", { length: 160 }).notNull(),
+    versionNo: int("versionNo").notNull(),
+    contentSha256: varchar("contentSha256", { length: 64 }).notNull(),
+    engineVersion: varchar("engineVersion", { length: 120 }).notNull(),
+    rulesJson: text("rulesJson").notNull(),
+    status: mysqlEnum("status", ["published", "retired"]).default("published").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    workspaceNameVersionUnique: uniqueIndex("wcrs_workspace_name_version_unique").on(table.workspaceId, table.name, table.versionNo),
+    workspaceHashUnique: uniqueIndex("wcrs_workspace_hash_unique").on(table.workspaceId, table.contentSha256),
+    workspaceFk: foreignKey({
+      name: "wcrs_workspace_fk",
+      columns: [table.workspaceId],
+      foreignColumns: [workspaceWorkspaces.id],
+    }).onDelete("cascade"),
+  })
+);
+
+export const workspaceCheckerRuns = mysqlTable(
+  "workspaceCheckerRuns",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    snapshotId: int("snapshotId").notNull(),
+    ruleSetId: int("ruleSetId").notNull(),
+    engineVersion: varchar("engineVersion", { length: 120 }).notNull(),
+    status: mysqlEnum("status", ["queued", "running", "passed", "failed", "cancelled"]).default("queued").notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 255 }).notNull(),
+    leaseOwner: varchar("leaseOwner", { length: 255 }),
+    leaseExpiresAt: timestamp("leaseExpiresAt"),
+    version: int("version").default(1).notNull(),
+    startedAt: timestamp("startedAt"),
+    finishedAt: timestamp("finishedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    snapshotRuleEngineUnique: uniqueIndex("wcr_snapshot_rule_engine_unique").on(table.snapshotId, table.ruleSetId, table.engineVersion),
+    idempotencyUnique: uniqueIndex("wcr_idempotency_unique").on(table.idempotencyKey),
+    claimIdx: index("wcr_claim_idx").on(table.status, table.leaseExpiresAt),
+    snapshotFk: foreignKey({
+      name: "wcr_snapshot_fk",
+      columns: [table.snapshotId],
+      foreignColumns: [workspaceDocumentSnapshots.id],
+    }).onDelete("cascade"),
+    ruleSetFk: foreignKey({
+      name: "wcr_rule_set_fk",
+      columns: [table.ruleSetId],
+      foreignColumns: [workspaceCheckerRuleSets.id],
+    }),
+  })
+);
+
+export const workspaceCheckerFindings = mysqlTable(
+  "workspaceCheckerFindings",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    runId: int("runId").notNull(),
+    ruleKey: varchar("ruleKey", { length: 160 }).notNull(),
+    severity: mysqlEnum("severity", ["info", "warning", "error"]).notNull(),
+    locationKey: varchar("locationKey", { length: 255 }).notNull(),
+    excerptSha256: varchar("excerptSha256", { length: 64 }).notNull(),
+    message: text("message").notNull(),
+    disposition: mysqlEnum("disposition", ["open", "accepted", "fixed", "ignored"]).default("open").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    findingUnique: uniqueIndex("wcf_run_rule_location_excerpt_unique").on(table.runId, table.ruleKey, table.locationKey, table.excerptSha256),
+    runSeverityIdx: index("wcf_run_severity_idx").on(table.runId, table.severity),
+    runFk: foreignKey({
+      name: "wcf_run_fk",
+      columns: [table.runId],
+      foreignColumns: [workspaceCheckerRuns.id],
+    }).onDelete("cascade"),
+  })
+);
+
+/** M04 durable AI work request. Provider execution is intentionally outside this table/service boundary. */
+export const workspaceAiJobs = mysqlTable(
+  "workspaceAiJobs",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workspaceId: int("workspaceId").notNull(),
+    snapshotId: int("snapshotId").notNull(),
+    operation: varchar("operation", { length: 120 }).notNull(),
+    promptVersion: varchar("promptVersion", { length: 120 }).notNull(),
+    modelPolicyVersion: varchar("modelPolicyVersion", { length: 120 }).notNull(),
+    priority: int("priority").default(0).notNull(),
+    status: mysqlEnum("status", ["queued", "claimed", "running", "succeeded", "failed", "cancelled"]).default("queued").notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 255 }).notNull(),
+    version: int("version").default(1).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    workspaceIdempotencyUnique: uniqueIndex("waj_workspace_idempotency_unique").on(table.workspaceId, table.idempotencyKey),
+    claimIdx: index("waj_claim_idx").on(table.status, table.priority, table.createdAt),
+    workspaceFk: foreignKey({
+      name: "waj_workspace_fk",
+      columns: [table.workspaceId],
+      foreignColumns: [workspaceWorkspaces.id],
+    }).onDelete("cascade"),
+    snapshotFk: foreignKey({
+      name: "waj_snapshot_fk",
+      columns: [table.snapshotId],
+      foreignColumns: [workspaceDocumentSnapshots.id],
+    }).onDelete("cascade"),
+  })
+);
+
+/** M04 immutable attempt history. Retry/reclaim always creates a new row. */
+export const workspaceAiJobAttempts = mysqlTable(
+  "workspaceAiJobAttempts",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    jobId: int("jobId").notNull(),
+    attemptNo: int("attemptNo").notNull(),
+    leaseOwner: varchar("leaseOwner", { length: 255 }).notNull(),
+    leaseExpiresAt: timestamp("leaseExpiresAt").notNull(),
+    providerRequestId: varchar("providerRequestId", { length: 255 }),
+    status: mysqlEnum("status", ["claimed", "running", "succeeded", "failed", "abandoned"]).default("claimed").notNull(),
+    errorClass: varchar("errorClass", { length: 160 }),
+    version: int("version").default(1).notNull(),
+    startedAt: timestamp("startedAt"),
+    finishedAt: timestamp("finishedAt"),
+  },
+  table => ({
+    jobAttemptUnique: uniqueIndex("waja_job_attempt_unique").on(table.jobId, table.attemptNo),
+    statusLeaseIdx: index("waja_status_lease_idx").on(table.status, table.leaseExpiresAt),
+    providerRequestIdx: index("waja_provider_request_idx").on(table.providerRequestId),
+    jobFk: foreignKey({
+      name: "waja_job_fk",
+      columns: [table.jobId],
+      foreignColumns: [workspaceAiJobs.id],
+    }).onDelete("cascade"),
+  })
+);
+
+/** M04 immutable generated-output reference. Raw generated content is not stored here. */
+export const workspaceAiArtifacts = mysqlTable(
+  "workspaceAiArtifacts",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    attemptId: int("attemptId").notNull(),
+    artifactType: varchar("artifactType", { length: 120 }).notNull(),
+    contentObjectKey: varchar("contentObjectKey", { length: 500 }).notNull(),
+    contentSha256: varchar("contentSha256", { length: 64 }).notNull(),
+    moderationStatus: mysqlEnum("moderationStatus", ["pending", "accepted", "rejected"]).default("pending").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    attemptArtifactHashUnique: uniqueIndex("waa_attempt_type_hash_unique").on(table.attemptId, table.artifactType, table.contentSha256),
+    contentHashIdx: index("waa_content_hash_idx").on(table.contentSha256),
+    attemptFk: foreignKey({
+      name: "waa_attempt_fk",
+      columns: [table.attemptId],
+      foreignColumns: [workspaceAiJobAttempts.id],
+    }).onDelete("cascade"),
+  })
+);
+
+/** M05 publication destination metadata. M05-A never writes the target. */
+export const workspacePublishingDestinations = mysqlTable(
+  "workspacePublishingDestinations",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workspaceNovelId: int("workspaceNovelId").notNull(),
+    targetType: varchar("targetType", { length: 80 }).notNull(),
+    targetId: int("targetId").notNull(),
+    status: mysqlEnum("status", ["active", "paused", "revoked"]).default("active").notNull(),
+    policyVersion: varchar("policyVersion", { length: 120 }).notNull(),
+    version: int("version").default(1).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    novelTargetUnique: uniqueIndex("wpd_novel_target_unique").on(table.workspaceNovelId, table.targetType, table.targetId),
+    statusIdx: index("wpd_status_idx").on(table.status),
+    workspaceNovelFk: foreignKey({ name: "wpd_workspace_novel_fk", columns: [table.workspaceNovelId], foreignColumns: [workspaceNovels.id] }).onDelete("cascade"),
+  })
+);
+
+/** M05 durable publish planning/reconciliation run. M05-A stops before publishing. */
+export const workspacePublishRuns = mysqlTable(
+  "workspacePublishRuns",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    destinationId: int("destinationId").notNull(),
+    snapshotId: int("snapshotId").notNull(),
+    checkerRunId: int("checkerRunId"),
+    status: mysqlEnum("status", ["draft", "validating", "ready", "publishing", "published", "partially_failed", "failed", "cancelled"]).default("draft").notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 255 }).notNull(),
+    expectedLastPublishedSha256: varchar("expectedLastPublishedSha256", { length: 64 }),
+    version: int("version").default(1).notNull(),
+    startedAt: timestamp("startedAt"),
+    finishedAt: timestamp("finishedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    destinationIdempotencyUnique: uniqueIndex("wpr_destination_idempotency_unique").on(table.destinationId, table.idempotencyKey),
+    statusStartedIdx: index("wpr_status_started_idx").on(table.status, table.startedAt),
+    destinationFk: foreignKey({ name: "wpr_destination_fk", columns: [table.destinationId], foreignColumns: [workspacePublishingDestinations.id] }).onDelete("cascade"),
+    snapshotFk: foreignKey({ name: "wpr_snapshot_fk", columns: [table.snapshotId], foreignColumns: [workspaceDocumentSnapshots.id] }),
+    checkerRunFk: foreignKey({ name: "wpr_checker_run_fk", columns: [table.checkerRunId], foreignColumns: [workspaceCheckerRuns.id] }),
+  })
+);
+
+/** M05 per-item reconciliation metadata. Successful items are immutable retry exclusions. */
+export const workspacePublishItems = mysqlTable(
+  "workspacePublishItems",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    runId: int("runId").notNull(),
+    itemKey: varchar("itemKey", { length: 255 }).notNull(),
+    episodeId: int("episodeId"),
+    sourceSha256: varchar("sourceSha256", { length: 64 }).notNull(),
+    status: mysqlEnum("status", ["pending", "publishing", "published", "failed", "skipped"]).default("pending").notNull(),
+    providerReceipt: varchar("providerReceipt", { length: 500 }),
+    errorClass: varchar("errorClass", { length: 160 }),
+    version: int("version").default(1).notNull(),
+    finishedAt: timestamp("finishedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    runItemUnique: uniqueIndex("wpi_run_item_unique").on(table.runId, table.itemKey),
+    runEpisodeSourceUnique: uniqueIndex("wpi_run_episode_source_unique").on(table.runId, table.episodeId, table.sourceSha256),
+    statusIdx: index("wpi_status_idx").on(table.status),
+    runFk: foreignKey({ name: "wpi_run_fk", columns: [table.runId], foreignColumns: [workspacePublishRuns.id] }).onDelete("cascade"),
+    episodeFk: foreignKey({ name: "wpi_episode_fk", columns: [table.episodeId], foreignColumns: [episodes.id] }).onDelete("set null"),
+  })
+);
+
+/** M05 outbox contract only. M05-A creates no outbox delivery rows. */
+export const workspaceOutbox = mysqlTable(
+  "workspaceOutbox",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workspaceId: int("workspaceId").notNull(),
+    publishRunId: int("publishRunId").notNull(),
+    eventType: varchar("eventType", { length: 120 }).notNull(),
+    payloadObjectKey: varchar("payloadObjectKey", { length: 500 }).notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 255 }).notNull(),
+    ownershipEpoch: int("ownershipEpoch"),
+    status: mysqlEnum("status", ["pending", "claimed", "delivered", "failed", "dead_letter"]).default("pending").notNull(),
+    attempts: int("attempts").default(0).notNull(),
+    leaseOwner: varchar("leaseOwner", { length: 255 }),
+    leaseExpiresAt: timestamp("leaseExpiresAt"),
+    availableAt: timestamp("availableAt").defaultNow().notNull(),
+    deliveredAt: timestamp("deliveredAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    eventIdempotencyUnique: uniqueIndex("wo_event_idempotency_unique").on(table.eventType, table.idempotencyKey),
+    claimIdx: index("wo_claim_idx").on(table.status, table.availableAt, table.leaseExpiresAt),
+    workspaceFk: foreignKey({ name: "wo_workspace_fk", columns: [table.workspaceId], foreignColumns: [workspaceWorkspaces.id] }).onDelete("cascade"),
+    publishRunFk: foreignKey({ name: "wo_publish_run_fk", columns: [table.publishRunId], foreignColumns: [workspacePublishRuns.id] }).onDelete("cascade"),
+  })
+);
+
+export const workspacePublishOwnershipTransitions = mysqlTable(
+  "workspacePublishOwnershipTransitions",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workspaceId: int("workspaceId").notNull(),
+    workspaceNovelId: int("workspaceNovelId").notNull(),
+    publishRunId: int("publishRunId").notNull(),
+    direction: mysqlEnum("direction", ["cutover", "rollback"]).notNull(),
+    fromOwner: mysqlEnum("fromOwner", ["sheets", "workspace"]).notNull(),
+    toOwner: mysqlEnum("toOwner", ["sheets", "workspace"]).notNull(),
+    fromEpoch: int("fromEpoch").notNull(),
+    toEpoch: int("toEpoch").notNull(),
+    fromVersion: int("fromVersion").notNull(),
+    toVersion: int("toVersion").notNull(),
+    readinessDigest: varchar("readinessDigest", { length: 64 }).notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 64 }).notNull(),
+    actorUserId: int("actorUserId").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    idempotencyUnique: uniqueIndex("wpot_idempotency_unique").on(table.workspaceNovelId, table.idempotencyKey),
+    workspaceNovelCreatedIdx: index("wpot_workspace_novel_created_idx").on(table.workspaceNovelId, table.createdAt),
+    workspaceFk: foreignKey({ name: "wpot_workspace_fk", columns: [table.workspaceId], foreignColumns: [workspaceWorkspaces.id] }).onDelete("cascade"),
+    workspaceNovelFk: foreignKey({ name: "wpot_workspace_novel_fk", columns: [table.workspaceNovelId], foreignColumns: [workspaceNovels.id] }).onDelete("cascade"),
+    publishRunFk: foreignKey({ name: "wpot_publish_run_fk", columns: [table.publishRunId], foreignColumns: [workspacePublishRuns.id] }).onDelete("cascade"),
+    actorFk: foreignKey({ name: "wpot_actor_fk", columns: [table.actorUserId], foreignColumns: [users.id] }),
+  })
+);
+
 export const workspaceAuditEvents = mysqlTable(
   "workspaceAuditEvents",
   {
@@ -2157,3 +2608,4 @@ export type WorkspaceMember = typeof workspaceMembers.$inferSelect;
 export type WorkspaceNovel = typeof workspaceNovels.$inferSelect;
 export type WorkspaceReadOnlyBinding = typeof workspaceReadOnlyBindings.$inferSelect;
 export type WorkspaceMigrationRegistryEntry = typeof workspaceMigrationRegistry.$inferSelect;
+export type WorkspaceDocumentFingerprint = typeof workspaceDocumentFingerprints.$inferSelect;
