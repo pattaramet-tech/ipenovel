@@ -87,12 +87,24 @@ export function checkWorkspaceAiQcProviderEnv(env) {
   const present = WORKSPACE_AI_QC_PROVIDER_REQUIRED_ENV_VARS.filter((name) => hasValue(name));
   const invalid = [];
 
-  if (hasValue("WORKSPACE_AI_QC_PROVIDER_API_URL")) {
+  const validHttpUrl = (name, value) => {
     try {
-      const url = new URL(env.WORKSPACE_AI_QC_PROVIDER_API_URL.trim());
-      if (url.protocol !== "https:" && url.protocol !== "http:") invalid.push("WORKSPACE_AI_QC_PROVIDER_API_URL");
+      const url = new URL(value.trim());
+      if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password) invalid.push(name);
     } catch {
-      invalid.push("WORKSPACE_AI_QC_PROVIDER_API_URL");
+      invalid.push(name);
+    }
+  };
+  if (hasValue("WORKSPACE_AI_QC_PROVIDER_API_URL")) {
+    validHttpUrl("WORKSPACE_AI_QC_PROVIDER_API_URL", env.WORKSPACE_AI_QC_PROVIDER_API_URL);
+  }
+  if (hasValue("WORKSPACE_AI_QC_PROVIDER_RECONCILE_URL_TEMPLATE")) {
+    const template = env.WORKSPACE_AI_QC_PROVIDER_RECONCILE_URL_TEMPLATE.trim();
+    const marker = "{providerRequestId}";
+    if (template.split(marker).length !== 2) {
+      invalid.push("WORKSPACE_AI_QC_PROVIDER_RECONCILE_URL_TEMPLATE");
+    } else {
+      validHttpUrl("WORKSPACE_AI_QC_PROVIDER_RECONCILE_URL_TEMPLATE", template.replace(marker, "receipt-probe"));
     }
   }
   if (hasValue("WORKSPACE_AI_QC_PROVIDER_MODEL") && env.WORKSPACE_AI_QC_PROVIDER_MODEL.trim().length > 160) {
@@ -119,6 +131,39 @@ export function checkWorkspaceAiQcProviderEnv(env) {
   };
 }
 
+/** Validates the separate, exact-scope one-shot AI QC execution gate. */
+export function checkWorkspaceAiQcExecutionEnv(env) {
+  const enabled = env.WORKSPACE_AI_QC_EXECUTION_ENABLED === "true";
+  const missing = [];
+  const invalid = [];
+  const hasValue = (name) => typeof env[name] === "string" && env[name].trim().length > 0;
+  if (enabled) {
+    if (env.WORKSPACE_AI_QC_PROVIDER_ENABLED !== "true") missing.push("WORKSPACE_AI_QC_PROVIDER_ENABLED");
+    if (!hasValue("WORKSPACE_AI_QC_PROVIDER_RECONCILE_URL_TEMPLATE")) missing.push("WORKSPACE_AI_QC_PROVIDER_RECONCILE_URL_TEMPLATE");
+    if (!hasValue("WORKSPACE_AI_QC_EXECUTION_SCOPE")) missing.push("WORKSPACE_AI_QC_EXECUTION_SCOPE");
+  }
+  if (hasValue("WORKSPACE_AI_QC_EXECUTION_SCOPE")) {
+    const parts = env.WORKSPACE_AI_QC_EXECUTION_SCOPE.split(",").map(part => part.trim().split("="));
+    const expected = ["workspaceId", "jobId", "snapshotId", "requestKey"];
+    const keys = parts.map(part => part[0]);
+    const fields = Object.fromEntries(parts.filter(part => part.length === 2));
+    const valid = parts.length === 4
+      && parts.every(part => part.length === 2 && part[0] && part[1])
+      && new Set(keys).size === 4
+      && expected.every(key => keys.includes(key))
+      && ["workspaceId", "jobId", "snapshotId"].every(key => Number.isSafeInteger(Number(fields[key])) && Number(fields[key]) > 0)
+      && /^[a-f0-9]{64}$/i.test(fields.requestKey ?? "");
+    if (!valid) invalid.push("WORKSPACE_AI_QC_EXECUTION_SCOPE");
+  }
+  const boundedPositiveInteger = (name, max) => {
+    if (!hasValue(name)) return;
+    const value = Number(env[name].trim());
+    if (!Number.isSafeInteger(value) || value <= 0 || value > max) invalid.push(name);
+  };
+  boundedPositiveInteger("WORKSPACE_AI_QC_LEASE_SECONDS", 300);
+  boundedPositiveInteger("WORKSPACE_AI_QC_MAX_ATTEMPTS", 10);
+  return { enabled, configured: !enabled || (missing.length === 0 && invalid.length === 0), missing, invalid };
+}
 /** For each optional feature group, reports "configured" only if EVERY var in it is set. */
 export function checkOptionalGroups(env) {
   return Object.entries(OPTIONAL_ENV_GROUPS).map(([groupName, varNames]) => {
@@ -239,10 +284,20 @@ function buildReport({ env, nodeVersion, packageJson, distExists, drizzleDir, dr
   sections.push({
     title: "Workspace AI QC provider (secret values never shown)",
     lines: [
-      `execution opt-in: ${aiQc.enabled ? "enabled" : "disabled"}`,
+      `provider opt-in: ${aiQc.enabled ? "enabled" : "disabled"}`,
       `required provider config: ${aiQc.configured ? "configured" : aiQc.partiallyConfigured ? "PARTIALLY configured" : "not configured"}`,
       `missing names: ${aiQc.missing.join(", ") || "(none)"}`,
       `invalid names: ${aiQc.invalid.join(", ") || "(none)"}`,
+    ],
+  });
+  const aiQcExecution = checkWorkspaceAiQcExecutionEnv(env);
+  sections.push({
+    title: "Workspace AI QC scoped execution gate",
+    lines: [
+      `execution opt-in: ${aiQcExecution.enabled ? "enabled" : "disabled"}`,
+      `execution config: ${aiQcExecution.configured ? "configured" : "NOT configured"}`,
+      `missing names: ${aiQcExecution.missing.join(", ") || "(none)"}`,
+      `invalid names: ${aiQcExecution.invalid.join(", ") || "(none)"}`,
     ],
   });
 
@@ -279,7 +334,7 @@ function buildReport({ env, nodeVersion, packageJson, distExists, drizzleDir, dr
     consistencyLine = "consistent: yes";
   } else if (unexpectedOrphans.length === 0 && journalCheck.journalTagsWithNoFile.length === 0) {
     consistencyLine =
-      "consistent: NO, but exactly matches the known/classified orphan files - see docs/VPS_MIGRATION_RUNBOOK.md §9 (0023_gifted_juggernaut.sql: legacy orphan, repaired by 0028, not a blocker). This is expected, not a new issue.";
+      "consistent: NO, but exactly matches the known/classified orphan files - see docs/VPS_MIGRATION_RUNBOOK.md section 9 (0023_gifted_juggernaut.sql: legacy orphan, repaired by 0028, not a blocker). This is expected, not a new issue.";
   } else {
     consistencyLine =
       `consistent: NO - includes UNEXPECTED discrepancies beyond the known/classified orphans: ` +
@@ -299,7 +354,8 @@ function buildReport({ env, nodeVersion, packageJson, distExists, drizzleDir, dr
 
   const anyMissing = required.missing.length > 0;
   const aiQcMisconfigured = aiQc.enabled && !aiQc.configured;
-  return { report: formatReport(sections), hasBlockingIssue: anyMissing || aiQcMisconfigured };
+  const aiQcExecutionMisconfigured = aiQcExecution.enabled && (!aiQcExecution.configured || !aiQc.enabled || !aiQc.configured || !env.WORKSPACE_AI_QC_PROVIDER_RECONCILE_URL_TEMPLATE?.trim());
+  return { report: formatReport(sections), hasBlockingIssue: anyMissing || aiQcMisconfigured || aiQcExecutionMisconfigured };
 }
 
 function main() {

@@ -14,6 +14,7 @@ const raw = (overrides: Partial<WorkspaceAiQcProviderRawConfig> = {}): Workspace
   providerName: "synthetic-provider",
   timeoutMs: "5000",
   maxInputChars: "10000",
+  reconcileUrlTemplate: "",
   ...overrides,
 });
 
@@ -24,7 +25,7 @@ const input = {
   modelPolicyVersion: "policy-v1",
   snapshotId: 41,
   normalizedSha256: "a".repeat(64),
-  content: "�����ҷ��ͺ",
+  content: "ข้อความทดสอบ",
 };
 
 describe("Workspace AI QC external provider configuration", () => {
@@ -54,6 +55,20 @@ describe("Workspace AI QC external provider configuration", () => {
     expect(() => resolveWorkspaceAiQcProviderConfig(raw({ providerName: "p".repeat(121) })))
       .toThrow(/WORKSPACE_AI_QC_PROVIDER_NAME/);
   });
+
+  it("validates an optional receipt reconciliation URL template", () => {
+    const configured = resolveWorkspaceAiQcProviderConfig(raw({
+      reconcileUrlTemplate: "https://ai.example.test/v1/chat/completions/{providerRequestId}",
+    }));
+    expect(configured.enabled && configured.reconcileUrlTemplate).toContain("{providerRequestId}");
+    expect(() => resolveWorkspaceAiQcProviderConfig(raw({
+      reconcileUrlTemplate: "https://ai.example.test/v1/chat/completions/static-id",
+    }))).toThrow(/RECONCILE_URL_TEMPLATE/);
+    expect(() => resolveWorkspaceAiQcProviderConfig(raw({
+      reconcileUrlTemplate: "https://user:pass@ai.example.test/v1/chat/completions/{providerRequestId}",
+    }))).toThrow(/must not embed credentials/);
+  });
+
   it("rejects invalid URL and bounded numeric configuration", () => {
     expect(() => resolveWorkspaceAiQcProviderConfig(raw({ apiUrl: "not-a-url" })))
       .toThrow(/WORKSPACE_AI_QC_PROVIDER_API_URL/);
@@ -84,7 +99,7 @@ describe("Workspace AI QC OpenAI-compatible adapter", () => {
                 category: "typo",
                 severity: "warning",
                 locationKey: "paragraph:3",
-                message: "���ӷ���õ�Ǩ�ͺ",
+                message: "คำที่ควรตรวจสอบ",
                 confidence: 0.91,
                 evidenceSha256: "b".repeat(64),
               }],
@@ -106,7 +121,7 @@ describe("Workspace AI QC OpenAI-compatible adapter", () => {
         category: "typo",
         severity: "warning",
         locationKey: "paragraph:3",
-        message: "���ӷ���õ�Ǩ�ͺ",
+        message: "คำที่ควรตรวจสอบ",
         confidence: 0.91,
         evidenceSha256: input.normalizedSha256,
       }],
@@ -137,5 +152,55 @@ describe("Workspace AI QC OpenAI-compatible adapter", () => {
     expect(error).toMatchObject({ code: "PROVIDER_REQUEST_FAILED" });
     expect(String(error)).toContain("HTTP 429");
     expect(String(error)).not.toContain("upstream-secret-body");
+  });
+
+  it("reconciles a durable provider receipt with GET and never sends source content", async () => {
+    const config = resolveWorkspaceAiQcProviderConfig(raw({
+      reconcileUrlTemplate: "https://ai.example.test/v1/chat/completions/{providerRequestId}",
+    }));
+    if (!config.enabled) throw new Error("test config unexpectedly disabled");
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe("https://ai.example.test/v1/chat/completions/provider-request-123");
+      expect(init?.method).toBe("GET");
+      expect(init?.body).toBeUndefined();
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer env-only-test-key");
+      return new Response(JSON.stringify({
+        id: "provider-request-123",
+        model: "qc-model-v1",
+        choices: [{ message: { content: JSON.stringify({ findings: [] }) } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    const provider = createWorkspaceAiQcExternalProvider(config, fetchMock as typeof fetch);
+    expect(provider.reconcile).toBeTypeOf("function");
+    const result = await provider.reconcile!({
+      providerRequestId: "provider-request-123",
+      requestKey: "a".repeat(64),
+      operation: "novel_qc",
+      promptVersion: "prompt-v1",
+      modelPolicyVersion: "policy-v1",
+      snapshotId: 41,
+      normalizedSha256: "a".repeat(64),
+    });
+    expect(result).toMatchObject({ providerRequestId: "provider-request-123", findings: [] });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a missing durable provider receipt as unresolved without retrying execution", async () => {
+    const config = resolveWorkspaceAiQcProviderConfig(raw({
+      reconcileUrlTemplate: "https://ai.example.test/v1/chat/completions/{providerRequestId}",
+    }));
+    if (!config.enabled) throw new Error("test config unexpectedly disabled");
+    const fetchMock = vi.fn(async () => new Response("not found", { status: 404 }));
+    const provider = createWorkspaceAiQcExternalProvider(config, fetchMock as typeof fetch);
+    await expect(provider.reconcile!({
+      providerRequestId: "provider-request-missing",
+      requestKey: "a".repeat(64),
+      operation: "novel_qc",
+      promptVersion: "prompt-v1",
+      modelPolicyVersion: "policy-v1",
+      snapshotId: 41,
+      normalizedSha256: "a".repeat(64),
+    })).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

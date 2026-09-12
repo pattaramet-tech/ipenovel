@@ -182,6 +182,11 @@ export const ENV = {
   workspaceAiQcProviderName: process.env.WORKSPACE_AI_QC_PROVIDER_NAME ?? "",
   workspaceAiQcProviderTimeoutMs: process.env.WORKSPACE_AI_QC_PROVIDER_TIMEOUT_MS ?? "",
   workspaceAiQcProviderMaxInputChars: process.env.WORKSPACE_AI_QC_PROVIDER_MAX_INPUT_CHARS ?? "",
+  workspaceAiQcProviderReconcileUrlTemplate: process.env.WORKSPACE_AI_QC_PROVIDER_RECONCILE_URL_TEMPLATE ?? "",
+  workspaceAiQcExecutionEnabled: process.env.WORKSPACE_AI_QC_EXECUTION_ENABLED ?? "",
+  workspaceAiQcExecutionScope: process.env.WORKSPACE_AI_QC_EXECUTION_SCOPE ?? "",
+  workspaceAiQcLeaseSeconds: process.env.WORKSPACE_AI_QC_LEASE_SECONDS ?? "",
+  workspaceAiQcMaxAttempts: process.env.WORKSPACE_AI_QC_MAX_ATTEMPTS ?? "",
   ocrEnabled: process.env.OCR_ENABLED !== "false",
   // Cloudflare R2 - used only by server/services/r2Storage.ts for newly
   // uploaded novel covers/banners (see uploadCover/uploadImage in

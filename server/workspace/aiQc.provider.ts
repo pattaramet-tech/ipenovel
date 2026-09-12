@@ -29,6 +29,7 @@ export interface WorkspaceAiQcProviderRawConfig {
   providerName: string;
   timeoutMs: string;
   maxInputChars: string;
+  reconcileUrlTemplate: string;
 }
 
 export type WorkspaceAiQcProviderRuntimeConfig =
@@ -41,6 +42,7 @@ export type WorkspaceAiQcProviderRuntimeConfig =
       providerName: string;
       timeoutMs: number;
       maxInputChars: number;
+      reconcileUrlTemplate: string | null;
     };
 
 function rawConfigFromEnv(): WorkspaceAiQcProviderRawConfig {
@@ -52,6 +54,7 @@ function rawConfigFromEnv(): WorkspaceAiQcProviderRawConfig {
     providerName: ENV.workspaceAiQcProviderName,
     timeoutMs: ENV.workspaceAiQcProviderTimeoutMs,
     maxInputChars: ENV.workspaceAiQcProviderMaxInputChars,
+    reconcileUrlTemplate: ENV.workspaceAiQcProviderReconcileUrlTemplate,
   };
 }
 
@@ -94,7 +97,35 @@ function validateApiUrl(raw: string) {
       "WORKSPACE_AI_QC_PROVIDER_API_URL must use HTTP or HTTPS."
     );
   }
+  if (parsed.username || parsed.password) {
+    throw new WorkspaceAiQcExternalProviderError(
+      "PROVIDER_CONFIG_INVALID",
+      "Workspace AI QC provider URLs must not embed credentials."
+    );
+  }
   return parsed.toString();
+}
+
+function validateReconcileUrlTemplate(raw: string): string | null {
+  const template = raw.trim();
+  if (!template) return null;
+  const marker = "{providerRequestId}";
+  if (template.split(marker).length !== 2) {
+    throw new WorkspaceAiQcExternalProviderError(
+      "PROVIDER_CONFIG_INVALID",
+      "WORKSPACE_AI_QC_PROVIDER_RECONCILE_URL_TEMPLATE must contain {providerRequestId} exactly once."
+    );
+  }
+  const probe = template.replace(marker, "receipt-probe");
+  const validated = validateApiUrl(probe);
+  const parsed = new URL(validated);
+  if (parsed.username || parsed.password) {
+    throw new WorkspaceAiQcExternalProviderError(
+      "PROVIDER_CONFIG_INVALID",
+      "Workspace AI QC provider URLs must not embed credentials."
+    );
+  }
+  return template;
 }
 
 export function resolveWorkspaceAiQcProviderConfig(
@@ -133,6 +164,7 @@ export function resolveWorkspaceAiQcProviderConfig(
       "WORKSPACE_AI_QC_PROVIDER_MAX_INPUT_CHARS",
       1_000_000
     ),
+    reconcileUrlTemplate: validateReconcileUrlTemplate(raw.reconcileUrlTemplate),
   };
 }
 
@@ -201,7 +233,7 @@ function buildPrompt(input: Parameters<WorkspaceAiQcProvider["execute"]>[0]) {
 function mapProviderResult(
   response: ChatCompletionResponse,
   parsed: { findings?: unknown },
-  input: Parameters<WorkspaceAiQcProvider["execute"]>[0],
+  input: { normalizedSha256: string },
   config: Extract<WorkspaceAiQcProviderRuntimeConfig, { enabled: true }>
 ) {
   if (typeof response.id !== "string" || !response.id.trim()) {
@@ -235,11 +267,56 @@ function mapProviderResult(
   };
 }
 
+function resolveReconcileUrl(template: string, providerRequestId: string) {
+  const encoded = encodeURIComponent(providerRequestId);
+  return template.replace("{providerRequestId}", encoded);
+}
+
+async function fetchCompletion(input: {
+  url: string;
+  init: RequestInit;
+  context: { normalizedSha256: string };
+  config: Extract<WorkspaceAiQcProviderRuntimeConfig, { enabled: true }>;
+  fetchImpl: FetchLike;
+  unresolvedOnNotFound?: boolean;
+}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), input.config.timeoutMs);
+  try {
+    const response = await input.fetchImpl(input.url, { ...input.init, signal: controller.signal });
+    if (input.unresolvedOnNotFound && (response.status === 404 || response.status === 410)) return null;
+    if (!response.ok) {
+      throw new WorkspaceAiQcExternalProviderError(
+        "PROVIDER_REQUEST_FAILED",
+        `AI QC provider request failed with HTTP ${response.status}.`
+      );
+    }
+    let payload: ChatCompletionResponse;
+    try {
+      payload = await response.json() as ChatCompletionResponse;
+    } catch {
+      throw new WorkspaceAiQcExternalProviderError(
+        "PROVIDER_RESPONSE_INVALID",
+        "AI QC provider response body was not valid JSON."
+      );
+    }
+    return mapProviderResult(payload, readAssistantJson(payload), input.context, input.config);
+  } catch (error) {
+    if (error instanceof WorkspaceAiQcExternalProviderError) throw error;
+    const message = error instanceof Error && error.name === "AbortError"
+      ? "AI QC provider request timed out."
+      : "AI QC provider request failed before a valid response was received.";
+    throw new WorkspaceAiQcExternalProviderError("PROVIDER_REQUEST_FAILED", message);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export function createWorkspaceAiQcExternalProvider(
   config: Extract<WorkspaceAiQcProviderRuntimeConfig, { enabled: true }>,
   fetchImpl: FetchLike = fetch
 ): WorkspaceAiQcProvider {
-  return {
+  const provider: WorkspaceAiQcProvider = {
     mode: "external",
     async execute(input) {
       if (input.content.length > config.maxInputChars) {
@@ -248,11 +325,12 @@ export function createWorkspaceAiQcExternalProvider(
           `AI QC source exceeds configured maximum input size of ${config.maxInputChars} characters.`
         );
       }
-
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
-      try {
-        const response = await fetchImpl(config.apiUrl, {
+      return fetchCompletion({
+        url: config.apiUrl,
+        fetchImpl,
+        config,
+        context: input,
+        init: {
           method: "POST",
           headers: {
             Authorization: `Bearer ${config.apiKey}`,
@@ -270,37 +348,39 @@ export function createWorkspaceAiQcExternalProvider(
               { role: "user", content: buildPrompt(input) },
             ],
           }),
-          signal: controller.signal,
-        });
-        if (!response.ok) {
-          throw new WorkspaceAiQcExternalProviderError(
-            "PROVIDER_REQUEST_FAILED",
-            `AI QC provider request failed with HTTP ${response.status}.`
-          );
-        }
-        let payload: ChatCompletionResponse;
-        try {
-          payload = await response.json() as ChatCompletionResponse;
-        } catch {
-          throw new WorkspaceAiQcExternalProviderError(
-            "PROVIDER_RESPONSE_INVALID",
-            "AI QC provider response body was not valid JSON."
-          );
-        }
-        return mapProviderResult(payload, readAssistantJson(payload), input, config);
-      } catch (error) {
-        if (error instanceof WorkspaceAiQcExternalProviderError) throw error;
-        const message = error instanceof Error && error.name === "AbortError"
-          ? "AI QC provider request timed out."
-          : "AI QC provider request failed before a valid response was received.";
-        throw new WorkspaceAiQcExternalProviderError("PROVIDER_REQUEST_FAILED", message);
-      } finally {
-        clearTimeout(timeout);
-      }
+        },
+      });
     },
   };
-}
 
+  if (config.reconcileUrlTemplate) {
+    provider.reconcile = async (input) => {
+      const result = await fetchCompletion({
+        url: resolveReconcileUrl(config.reconcileUrlTemplate!, input.providerRequestId),
+        fetchImpl,
+        config,
+        context: input,
+        unresolvedOnNotFound: true,
+        init: {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${config.apiKey}`,
+            Accept: "application/json",
+          },
+        },
+      });
+      if (result && result.providerRequestId !== input.providerRequestId) {
+        throw new WorkspaceAiQcExternalProviderError(
+          "PROVIDER_RESPONSE_INVALID",
+          "AI QC provider reconciliation returned a different request id."
+        );
+      }
+      return result;
+    };
+  }
+
+  return provider;
+}
 export function createConfiguredWorkspaceAiQcProvider(fetchImpl: FetchLike = fetch) {
   const config = resolveWorkspaceAiQcProviderConfig();
   if (!config.enabled) {

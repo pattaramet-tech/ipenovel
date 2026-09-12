@@ -19,7 +19,7 @@ describe("IPE-054-A AI QC provider security boundaries", () => {
     const service = source("server/workspace/aiQc.service.ts");
     const provider = source("server/workspace/aiQc.provider.ts");
     expect(service).not.toMatch(/fetch\(|axios|OpenAI|Anthropic|Gemini/i);
-    expect(provider).toContain("fetchImpl(config.apiUrl");
+    expect(provider).toContain("input.fetchImpl(input.url");
   });
 
   it("wires ENV-backed execution explicitly without adding a scheduler or startup side effect", () => {

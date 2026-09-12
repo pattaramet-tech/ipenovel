@@ -7,6 +7,7 @@ import {
   checkRequiredEnvVars,
   checkOptionalGroups,
   checkWorkspaceAiQcProviderEnv,
+  checkWorkspaceAiQcExecutionEnv,
   checkMigrationJournalConsistency,
 } from "../scripts/vps-migration/preflight.mjs";
 
@@ -133,6 +134,38 @@ describe("checkWorkspaceAiQcProviderEnv", () => {
       "WORKSPACE_AI_QC_PROVIDER_TIMEOUT_MS",
     ]);
     expect(JSON.stringify(invalid)).not.toContain("secret-value");
+  });
+});
+describe("checkWorkspaceAiQcExecutionEnv", () => {
+  it("stays disabled unless exact true and requires provider, reconcile URL, and exact scope when enabled", () => {
+    expect(checkWorkspaceAiQcExecutionEnv({ WORKSPACE_AI_QC_EXECUTION_ENABLED: "TRUE" })).toEqual({ enabled: false, configured: true, missing: [], invalid: [] });
+    const result = checkWorkspaceAiQcExecutionEnv({ WORKSPACE_AI_QC_EXECUTION_ENABLED: "true" });
+    expect(result.enabled).toBe(true);
+    expect(result.configured).toBe(false);
+    expect(result.missing).toEqual(["WORKSPACE_AI_QC_PROVIDER_ENABLED", "WORKSPACE_AI_QC_PROVIDER_RECONCILE_URL_TEMPLATE", "WORKSPACE_AI_QC_EXECUTION_SCOPE"]);
+  });
+
+  it("accepts one exact scope and rejects malformed scope or out-of-bound worker controls", () => {
+    const requestKey = "a".repeat(64);
+    const ready = checkWorkspaceAiQcExecutionEnv({
+      WORKSPACE_AI_QC_EXECUTION_ENABLED: "true",
+      WORKSPACE_AI_QC_PROVIDER_ENABLED: "true",
+      WORKSPACE_AI_QC_PROVIDER_RECONCILE_URL_TEMPLATE: "https://ai.example/requests/{providerRequestId}",
+      WORKSPACE_AI_QC_EXECUTION_SCOPE: `workspaceId=7,jobId=11,snapshotId=13,requestKey=${requestKey}`,
+      WORKSPACE_AI_QC_LEASE_SECONDS: "60",
+      WORKSPACE_AI_QC_MAX_ATTEMPTS: "3",
+    });
+    expect(ready).toEqual({ enabled: true, configured: true, missing: [], invalid: [] });
+    const invalid = checkWorkspaceAiQcExecutionEnv({
+      WORKSPACE_AI_QC_EXECUTION_ENABLED: "true",
+      WORKSPACE_AI_QC_PROVIDER_ENABLED: "true",
+      WORKSPACE_AI_QC_PROVIDER_RECONCILE_URL_TEMPLATE: "https://ai.example/requests/{providerRequestId}",
+      WORKSPACE_AI_QC_EXECUTION_SCOPE: "workspaceId=7,jobId=11,snapshotId=13,requestKey=not-a-sha",
+      WORKSPACE_AI_QC_LEASE_SECONDS: "301",
+      WORKSPACE_AI_QC_MAX_ATTEMPTS: "11",
+    });
+    expect(invalid.configured).toBe(false);
+    expect(invalid.invalid).toEqual(["WORKSPACE_AI_QC_EXECUTION_SCOPE", "WORKSPACE_AI_QC_LEASE_SECONDS", "WORKSPACE_AI_QC_MAX_ATTEMPTS"]);
   });
 });
 describe("checkOptionalGroups", () => {
