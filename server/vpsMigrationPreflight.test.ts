@@ -6,6 +6,7 @@ import {
   describeDatabaseUrl,
   checkRequiredEnvVars,
   checkOptionalGroups,
+  checkWorkspaceAiQcProviderEnv,
   checkMigrationJournalConsistency,
 } from "../scripts/vps-migration/preflight.mjs";
 
@@ -72,6 +73,68 @@ describe("checkRequiredEnvVars", () => {
   });
 });
 
+describe("checkWorkspaceAiQcProviderEnv", () => {
+  it("enables only on the exact literal true and requires URL/key/model together", () => {
+    const disabled = checkWorkspaceAiQcProviderEnv({
+      WORKSPACE_AI_QC_PROVIDER_ENABLED: "TRUE",
+      WORKSPACE_AI_QC_PROVIDER_API_KEY: "secret-value",
+    });
+    expect(disabled.enabled).toBe(false);
+    expect(disabled.partiallyConfigured).toBe(true);
+    expect(JSON.stringify(disabled)).not.toContain("secret-value");
+
+    const enabled = checkWorkspaceAiQcProviderEnv({
+      WORKSPACE_AI_QC_PROVIDER_ENABLED: "true",
+      WORKSPACE_AI_QC_PROVIDER_API_URL: "https://ai.example/v1/chat/completions",
+      WORKSPACE_AI_QC_PROVIDER_API_KEY: "secret-value",
+      WORKSPACE_AI_QC_PROVIDER_MODEL: "qc-model",
+    });
+    expect(enabled.enabled).toBe(true);
+    expect(enabled.configured).toBe(true);
+    expect(enabled.missing).toEqual([]);
+    expect(JSON.stringify(enabled)).not.toContain("secret-value");
+  });
+
+  it("reports only missing ENV names for an enabled partial configuration", () => {
+    const result = checkWorkspaceAiQcProviderEnv({
+      WORKSPACE_AI_QC_PROVIDER_ENABLED: "true",
+      WORKSPACE_AI_QC_PROVIDER_API_URL: "https://ai.example/v1/chat/completions",
+    });
+    expect(result.configured).toBe(false);
+    expect(result.missing).toEqual([
+      "WORKSPACE_AI_QC_PROVIDER_API_KEY",
+      "WORKSPACE_AI_QC_PROVIDER_MODEL",
+    ]);
+  });
+
+  it("treats whitespace-only required values as missing and reports malformed non-secret fields by name", () => {
+    const whitespace = checkWorkspaceAiQcProviderEnv({
+      WORKSPACE_AI_QC_PROVIDER_ENABLED: "true",
+      WORKSPACE_AI_QC_PROVIDER_API_URL: "   ",
+      WORKSPACE_AI_QC_PROVIDER_API_KEY: "   ",
+      WORKSPACE_AI_QC_PROVIDER_MODEL: "   ",
+    });
+    expect(whitespace.missing).toEqual([
+      "WORKSPACE_AI_QC_PROVIDER_API_URL",
+      "WORKSPACE_AI_QC_PROVIDER_API_KEY",
+      "WORKSPACE_AI_QC_PROVIDER_MODEL",
+    ]);
+
+    const invalid = checkWorkspaceAiQcProviderEnv({
+      WORKSPACE_AI_QC_PROVIDER_ENABLED: "true",
+      WORKSPACE_AI_QC_PROVIDER_API_URL: "not-a-url",
+      WORKSPACE_AI_QC_PROVIDER_API_KEY: "secret-value",
+      WORKSPACE_AI_QC_PROVIDER_MODEL: "qc-model",
+      WORKSPACE_AI_QC_PROVIDER_TIMEOUT_MS: "0",
+    });
+    expect(invalid.configured).toBe(false);
+    expect(invalid.invalid).toEqual([
+      "WORKSPACE_AI_QC_PROVIDER_API_URL",
+      "WORKSPACE_AI_QC_PROVIDER_TIMEOUT_MS",
+    ]);
+    expect(JSON.stringify(invalid)).not.toContain("secret-value");
+  });
+});
 describe("checkOptionalGroups", () => {
   it("reports a group as configured only when every variable in it is set", () => {
     const groups = checkOptionalGroups({
@@ -159,6 +222,26 @@ describe("preflight.mjs CLI", () => {
     expect(result.stdout).toMatch(/MISSING/);
   });
 
+  it("fails closed when AI QC is explicitly enabled with incomplete provider ENV and never prints the supplied secret", () => {
+    const secret = "preflight-secret-must-not-print";
+    const result = spawnSync(process.execPath, [preflightPath, "--ack-read-only"], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DATABASE_URL: "mysql://user:pw@localhost/ipenovel_test",
+        JWT_SECRET: "x",
+        VITE_APP_ID: "x",
+        OAUTH_SERVER_URL: "https://oauth.example.test",
+        WORKSPACE_AI_QC_PROVIDER_ENABLED: "true",
+        WORKSPACE_AI_QC_PROVIDER_API_URL: "https://ai.example.test/v1/chat/completions",
+        WORKSPACE_AI_QC_PROVIDER_API_KEY: secret,
+        WORKSPACE_AI_QC_PROVIDER_MODEL: "",
+      },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("WORKSPACE_AI_QC_PROVIDER_MODEL");
+    expect(result.stdout).not.toContain(secret);
+  });
   it("never prints a password even when DATABASE_URL (with a fake, obviously-not-real credential) is passed via env", () => {
     const result = spawnSync(process.execPath, [preflightPath, "--ack-read-only"], {
       encoding: "utf8",

@@ -172,6 +172,16 @@ export const ENV = {
   llmApiUrl: process.env.LLM_API_URL ?? "",
   llmApiKey: process.env.LLM_API_KEY ?? "",
   llmModel: process.env.LLM_MODEL ?? "",
+  // Workspace AI QC uses a separate explicit provider contract. Secrets are
+  // supplied only through runtime environment variables; this object never
+  // supplies credential defaults or aliases the OCR/LLM credentials above.
+  workspaceAiQcProviderEnabled: process.env.WORKSPACE_AI_QC_PROVIDER_ENABLED ?? "",
+  workspaceAiQcProviderApiUrl: process.env.WORKSPACE_AI_QC_PROVIDER_API_URL ?? "",
+  workspaceAiQcProviderApiKey: process.env.WORKSPACE_AI_QC_PROVIDER_API_KEY ?? "",
+  workspaceAiQcProviderModel: process.env.WORKSPACE_AI_QC_PROVIDER_MODEL ?? "",
+  workspaceAiQcProviderName: process.env.WORKSPACE_AI_QC_PROVIDER_NAME ?? "",
+  workspaceAiQcProviderTimeoutMs: process.env.WORKSPACE_AI_QC_PROVIDER_TIMEOUT_MS ?? "",
+  workspaceAiQcProviderMaxInputChars: process.env.WORKSPACE_AI_QC_PROVIDER_MAX_INPUT_CHARS ?? "",
   ocrEnabled: process.env.OCR_ENABLED !== "false",
   // Cloudflare R2 - used only by server/services/r2Storage.ts for newly
   // uploaded novel covers/banners (see uploadCover/uploadImage in

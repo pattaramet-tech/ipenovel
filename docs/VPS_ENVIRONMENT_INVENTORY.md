@@ -139,6 +139,21 @@ Because `VITE_AUTH_PROVIDER` is baked into the client bundle at build time, swit
 | `OCR_SHOW_BREAKDOWN` | Runtime | Public | Optional (default `true`) | `ocr-config.ts:102-105` | Shows OCR score breakdown to admins | Same as current production | reports value |
 | `OCR_SHOW_METADATA` | Runtime | Public | Optional (default `true`) | `ocr-config.ts:106` | Shows raw OCR metadata to admins | Same as current production | reports value |
 
+## Workspace AI QC external provider
+
+Workspace AI QC has a **separate** provider configuration from OCR. It never aliases or falls back to `LLM_API_KEY` or `BUILT_IN_FORGE_API_KEY`. The external provider is disabled unless `WORKSPACE_AI_QC_PROVIDER_ENABLED` is exactly `true`; when enabled, URL/key/model are an atomic required set. `WORKSPACE_AI_QC_PROVIDER_API_KEY` is read from the runtime environment only and must never be committed, pasted into source, encoded in URLs, or logged.
+
+The adapter targets an OpenAI-compatible Chat Completions endpoint. It sends the durable AI job idempotency key as the `Idempotency-Key` header, keeps document text transient in the request body only, derives `evidenceSha256` from the immutable Workspace snapshot hash rather than trusting a model-supplied digest, and sanitizes upstream error bodies. This wiring does **not** expose the worker through the public Workspace router and does not enable a scheduler or background execution by itself.
+
+| Variable | Build/Runtime | Secret/Public | Required/Optional | Used by | Description | VPS value source | Verification method |
+|---|---|---|---|---|---|---|---|
+| `WORKSPACE_AI_QC_PROVIDER_ENABLED` | Runtime | Public | Optional; exact `true` enables, otherwise disabled | `env.ts`, `aiQc.provider.ts` | Explicit external AI QC opt-in | `false`/unset until an approved Preview provider window | preflight reports enabled/disabled |
+| `WORKSPACE_AI_QC_PROVIDER_API_URL` | Runtime | Public (URL) | Required when enabled | same | Complete OpenAI-compatible Chat Completions endpoint | Approved AI QC provider endpoint | preflight reports configured/missing name only |
+| `WORKSPACE_AI_QC_PROVIDER_API_KEY` | Runtime | **Secret** | Required when enabled | same | Bearer credential for AI QC only; no OCR/Forge fallback | Provider secret store / Coolify secret ENV | presence only; value never printed |
+| `WORKSPACE_AI_QC_PROVIDER_MODEL` | Runtime | Public | Required when enabled | same | Model identifier for AI QC | Approved model | presence only in preflight |
+| `WORKSPACE_AI_QC_PROVIDER_NAME` | Runtime | Public | Optional (default `openai-compatible`) | `aiQc.provider.ts` | Stable provider label stored in advisory artifact metadata | Operator label | not secret |
+| `WORKSPACE_AI_QC_PROVIDER_TIMEOUT_MS` | Runtime | Public | Optional (default `30000`, max `120000`) | same | Per-request timeout | Operator policy | validated when enabled |
+| `WORKSPACE_AI_QC_PROVIDER_MAX_INPUT_CHARS` | Runtime | Public | Optional (default `200000`, max `1000000`) | same | Hard cap before any provider request is sent | Operator policy | validated when enabled |
 ## Client-side "Forge"-adjacent (public by construction)
 
 | Variable | Build/Runtime | Secret/Public | Required/Optional | Used by | Description | VPS value source | Verification method |

@@ -29,6 +29,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REQUIRED_ENV_VARS = ["DATABASE_URL", "JWT_SECRET", "VITE_APP_ID", "OAUTH_SERVER_URL"];
+const WORKSPACE_AI_QC_PROVIDER_REQUIRED_ENV_VARS = [
+  "WORKSPACE_AI_QC_PROVIDER_API_URL",
+  "WORKSPACE_AI_QC_PROVIDER_API_KEY",
+  "WORKSPACE_AI_QC_PROVIDER_MODEL",
+];
 
 // Grouped so presence can be reported per-feature ("R2 public: configured")
 // instead of var-by-var, without ever printing a value.
@@ -74,7 +79,47 @@ export function checkRequiredEnvVars(env) {
   return { missing, present };
 }
 
-/** For each optional feature group, reports "configured" only if EVERY var in that group is set - a partially-configured group is flagged, never silently treated as ready. */
+/** Validates the fail-closed Workspace AI QC env shape without returning secret values. */
+export function checkWorkspaceAiQcProviderEnv(env) {
+  const enabled = env.WORKSPACE_AI_QC_PROVIDER_ENABLED === "true";
+  const hasValue = (name) => typeof env[name] === "string" && env[name].trim().length > 0;
+  const missing = WORKSPACE_AI_QC_PROVIDER_REQUIRED_ENV_VARS.filter((name) => !hasValue(name));
+  const present = WORKSPACE_AI_QC_PROVIDER_REQUIRED_ENV_VARS.filter((name) => hasValue(name));
+  const invalid = [];
+
+  if (hasValue("WORKSPACE_AI_QC_PROVIDER_API_URL")) {
+    try {
+      const url = new URL(env.WORKSPACE_AI_QC_PROVIDER_API_URL.trim());
+      if (url.protocol !== "https:" && url.protocol !== "http:") invalid.push("WORKSPACE_AI_QC_PROVIDER_API_URL");
+    } catch {
+      invalid.push("WORKSPACE_AI_QC_PROVIDER_API_URL");
+    }
+  }
+  if (hasValue("WORKSPACE_AI_QC_PROVIDER_MODEL") && env.WORKSPACE_AI_QC_PROVIDER_MODEL.trim().length > 160) {
+    invalid.push("WORKSPACE_AI_QC_PROVIDER_MODEL");
+  }
+  if (hasValue("WORKSPACE_AI_QC_PROVIDER_NAME") && env.WORKSPACE_AI_QC_PROVIDER_NAME.trim().length > 120) {
+    invalid.push("WORKSPACE_AI_QC_PROVIDER_NAME");
+  }
+  const boundedPositiveInteger = (name, max) => {
+    if (!hasValue(name)) return;
+    const value = Number(env[name].trim());
+    if (!Number.isSafeInteger(value) || value <= 0 || value > max) invalid.push(name);
+  };
+  boundedPositiveInteger("WORKSPACE_AI_QC_PROVIDER_TIMEOUT_MS", 120_000);
+  boundedPositiveInteger("WORKSPACE_AI_QC_PROVIDER_MAX_INPUT_CHARS", 1_000_000);
+
+  return {
+    enabled,
+    configured: missing.length === 0 && invalid.length === 0,
+    partiallyConfigured: present.length > 0 && missing.length > 0,
+    missing,
+    present,
+    invalid,
+  };
+}
+
+/** For each optional feature group, reports "configured" only if EVERY var in it is set. */
 export function checkOptionalGroups(env) {
   return Object.entries(OPTIONAL_ENV_GROUPS).map(([groupName, varNames]) => {
     const setVars = varNames.filter((name) => Boolean(env[name]));
@@ -190,6 +235,16 @@ function buildReport({ env, nodeVersion, packageJson, distExists, drizzleDir, dr
       return `${g.group}: not configured`;
     }),
   });
+  const aiQc = checkWorkspaceAiQcProviderEnv(env);
+  sections.push({
+    title: "Workspace AI QC provider (secret values never shown)",
+    lines: [
+      `execution opt-in: ${aiQc.enabled ? "enabled" : "disabled"}`,
+      `required provider config: ${aiQc.configured ? "configured" : aiQc.partiallyConfigured ? "PARTIALLY configured" : "not configured"}`,
+      `missing names: ${aiQc.missing.join(", ") || "(none)"}`,
+      `invalid names: ${aiQc.invalid.join(", ") || "(none)"}`,
+    ],
+  });
 
   const versions = checkVersions(nodeVersion, packageJson);
   sections.push({
@@ -243,7 +298,8 @@ function buildReport({ env, nodeVersion, packageJson, distExists, drizzleDir, dr
   });
 
   const anyMissing = required.missing.length > 0;
-  return { report: formatReport(sections), hasBlockingIssue: anyMissing };
+  const aiQcMisconfigured = aiQc.enabled && !aiQc.configured;
+  return { report: formatReport(sections), hasBlockingIssue: anyMissing || aiQcMisconfigured };
 }
 
 function main() {
@@ -292,7 +348,7 @@ function main() {
 
   console.log(report);
   console.log(
-    `\n[preflight] ${hasBlockingIssue ? "FAILED - required environment variables are missing." : "OK - no blocking issue found by this read-only check. This is not a substitute for the manual checklist in docs/VPS_MIGRATION_CHECKLIST.md."}`
+    `\n[preflight] ${hasBlockingIssue ? "FAILED - required environment variables are missing or an explicitly enabled feature is incompletely configured." : "OK - no blocking issue found by this read-only check. This is not a substitute for the manual checklist in docs/VPS_MIGRATION_CHECKLIST.md."}`
   );
   process.exitCode = hasBlockingIssue ? 1 : 0;
 }
