@@ -74,6 +74,7 @@ Google port: connection status, selection/binding, metadata fetch, snapshot crea
 - M04: durable AI Queue.
 - M05: publish dry-run/reconciliation, then opt-in API.
 - M06: legacy retirement candidate; ZIP fallback remains until separate approval.
+- M06-B: Admin Operational Actions expose only Checker queue and AI QC queue/retry in the Control Center. Checker execution stays lease-controlled; AI remains advisory and provider/config gated. Publish execution, Kanban transitions, ownership/cutover, and direct provider worker primitives remain unavailable from this UI.
 
 ## Acceptance matrix
 

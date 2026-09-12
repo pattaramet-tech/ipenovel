@@ -8,7 +8,7 @@ function read(relativePath: string) {
   return readFileSync(path.join(root, relativePath), "utf8");
 }
 
-describe("Workspace Control Center read-only contract", () => {
+describe("Workspace Control Center controlled-operations contract", () => {
   it("keeps the publish operational projection query-only and platform-admin-gated", () => {
     const service = read("server/workspace/controlCenter.service.ts");
     const router = read("server/workspace/router.ts");
@@ -26,19 +26,19 @@ describe("Workspace Control Center read-only contract", () => {
     expect(controlCenterRouter).not.toContain(".mutation(async");
   });
 
-  it("does not expose operational mutation controls from the Workspace page", () => {
+  it("keeps publish/Kanban mutations unavailable while allowing M06-B Checker and AI queue actions", () => {
     const page = read("client/src/pages/WorkspacePage.tsx");
 
-    expect(page).toContain("Read-only Control Center");
+    expect(page).toContain("Admin Operational Control Center");
     expect(page).toContain("trpc.workspace.controlCenter.publishOverview.useQuery");
     expect(page).toContain("trpc.workspace.publishCutover.readiness.useQuery");
     expect(page).toContain("trpc.workspace.publishFinalGate.package.useQuery");
     expect(page).not.toContain("requestExecution.useMutation");
     expect(page).not.toContain("publishCutover.cutover.useMutation");
     expect(page).not.toContain("publishCutover.rollback.useMutation");
-    expect(page).not.toContain("aiQueue.queue.useMutation");
-    expect(page).not.toContain("aiQueue.retry.useMutation");
-    expect(page).not.toContain("checker.queueRun.useMutation");
+    expect(page).toContain("aiQueue.queue.useMutation");
+    expect(page).toContain("aiQueue.retry.useMutation");
+    expect(page).toContain("checker.queueRun.useMutation");
     expect(page).not.toContain("kanban.transitionCard.useMutation");
   });
 });

@@ -48,6 +48,9 @@ export default function WorkspacePage() {
   const [selectedCheckerRunId, setSelectedCheckerRunId] = useState<number>();
   const [selectedAiJobId, setSelectedAiJobId] = useState<number>();
   const [selectedPublishRunId, setSelectedPublishRunId] = useState<number>();
+  const [checkerSnapshotId, setCheckerSnapshotId] = useState("");
+  const [checkerRuleSetId, setCheckerRuleSetId] = useState("");
+  const [aiSnapshotId, setAiSnapshotId] = useState("");
   const { isAdmin, loading: adminLoading } = useAdminGuard();
 
   const workspaces = trpc.workspace.list.useQuery(undefined, { enabled: isAdmin });
@@ -155,6 +158,37 @@ export default function WorkspacePage() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const refreshChecker = async (runId?: number) => {
+    if (runId) setSelectedCheckerRunId(runId);
+    await Promise.all([checkerRuns.refetch(), operationalState.refetch()]);
+    if (runId) await checkerDetail.refetch();
+  };
+  const refreshAi = async (jobId?: number) => {
+    if (jobId) setSelectedAiJobId(jobId);
+    await aiJobs.refetch();
+    if (jobId) await aiOperational.refetch();
+  };
+  const queueChecker = trpc.workspace.checker.queueRun.useMutation({
+    onSuccess: async (run: any) => {
+      await refreshChecker(run.id);
+      toast.success("Checker run queued");
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const queueAi = trpc.workspace.aiQueue.queue.useMutation({
+    onSuccess: async (result: any) => {
+      await refreshAi(result.job?.id);
+      toast.success(result.created ? "AI QC job queued" : "Existing AI QC job selected");
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const retryAi = trpc.workspace.aiQueue.retry.useMutation({
+    onSuccess: async (job: any) => {
+      await refreshAi(job?.id);
+      toast.success("AI QC job queued for retry");
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const bindNovel = trpc.workspace.bindings.bindPublicationNovel.useMutation({
     onSuccess: async () => {
       setNovelId("");
@@ -169,6 +203,11 @@ export default function WorkspacePage() {
   const aiRows = (aiJobs.data as any[] | undefined) ?? [];
   const publishRows = ((publishOverview.data as any)?.runs as any[] | undefined) ?? [];
   const publishTransitions = ((publishOverview.data as any)?.transitions as any[] | undefined) ?? [];
+  const checkerRuleSets = (((dualRunState.data as any)?.ruleSets as any[] | undefined) ?? []).filter((ruleSet: any) => ruleSet.status === "published");
+  const snapshotOptions = Array.from(new Map(operationalRows.map((row: any) => [row.fingerprint.snapshotId, row.fingerprint])).values()) as any[];
+  const effectiveCheckerSnapshotId = Number(checkerSnapshotId) || snapshotOptions[0]?.snapshotId;
+  const effectiveCheckerRuleSetId = Number(checkerRuleSetId) || checkerRuleSets[0]?.id;
+  const effectiveAiSnapshotId = Number(aiSnapshotId) || snapshotOptions[0]?.snapshotId;
 
   if (adminLoading) {
     return (
@@ -184,18 +223,18 @@ export default function WorkspacePage() {
     <main className="mx-auto max-w-7xl space-y-6 px-4 py-8">
       <header className="flex flex-col gap-3 border-b pb-6 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-sm font-medium text-primary">IpeNovel Workspace · Admin-only Read-only Control Center</p>
+          <p className="text-sm font-medium text-primary">IpeNovel Workspace - Admin Operational Control Center</p>
           <h1 className="text-3xl font-bold tracking-tight">Novel Control Center</h1>
           <p className="mt-2 max-w-3xl text-muted-foreground">
             Operational visibility for the M03–M06 read models. Google Docs remains the editor;
-            this view does not run Checker/AI, deliver publishes, transition Kanban, or change ownership.
+            this view can queue Checker and AI QC work; it does not deliver publishes, transition Kanban, or change ownership.
           </p>
         </div>
         <Link href="/novels" className="text-sm text-primary underline">Back to IpeNovel</Link>
       </header>
 
       <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
-        <strong>Observation mode.</strong> Operational panels below are query-only. Publish execution remains controlled by server configuration and no action controls are exposed here.
+        <strong>Controlled operations.</strong> Checker and AI QC queue/retry actions are enabled for platform admins. Publish execution, Kanban transitions, ownership changes, and provider worker primitives remain unavailable from this page.
       </div>
 
       <section className="grid gap-6 lg:grid-cols-[minmax(260px,0.75fr)_minmax(0,2.25fr)]">
@@ -364,8 +403,20 @@ export default function WorkspacePage() {
                 <FileCheck2 className="h-5 w-5 text-primary" />
                 <div>
                   <h3 className="font-semibold">Checker runs & findings</h3>
-                  <p className="text-sm text-muted-foreground">Persisted Checker evidence only. No run can be queued from this panel.</p>
+                  <p className="text-sm text-muted-foreground">Queue deterministic Checker work against an immutable snapshot and published rule set; execution remains lease-controlled by the Checker worker.</p>
                 </div>
+              </div>
+              <div className="grid gap-2 rounded-md border bg-muted/20 p-3 md:grid-cols-[1fr_1fr_auto]">
+                <select aria-label="Checker snapshot" className="h-10 rounded-md border bg-background px-3 text-sm" value={checkerSnapshotId} onChange={(event) => setCheckerSnapshotId(event.target.value)} disabled={!snapshotOptions.length || queueChecker.isPending}>
+                  {snapshotOptions.map((snapshot: any) => <option key={snapshot.snapshotId} value={snapshot.snapshotId}>Snapshot #{snapshot.snapshotId} - {shortHash(snapshot.normalizedSha256)}</option>)}
+                </select>
+                <select aria-label="Checker rule set" className="h-10 rounded-md border bg-background px-3 text-sm" value={checkerRuleSetId} onChange={(event) => setCheckerRuleSetId(event.target.value)} disabled={!checkerRuleSets.length || queueChecker.isPending}>
+                  {checkerRuleSets.map((ruleSet: any) => <option key={ruleSet.id} value={ruleSet.id}>{ruleSet.name} v{ruleSet.versionNo}</option>)}
+                </select>
+                <Button disabled={!selectedWorkspaceId || !effectiveCheckerSnapshotId || !effectiveCheckerRuleSetId || queueChecker.isPending} onClick={() => queueChecker.mutate({ workspaceId: selectedWorkspaceId!, snapshotId: effectiveCheckerSnapshotId, ruleSetId: effectiveCheckerRuleSetId })}>
+                  {queueChecker.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Run Checker
+                </Button>
+                {(!snapshotOptions.length || !checkerRuleSets.length) && <p className="text-xs text-muted-foreground md:col-span-3">Requires a fingerprint snapshot and a published Checker rule set. Duplicate requests are idempotent.</p>}
               </div>
               {checkerRows.length ? (
                 <div className="grid gap-4 lg:grid-cols-[minmax(220px,0.8fr)_minmax(0,1.8fr)]">
@@ -399,8 +450,17 @@ export default function WorkspacePage() {
                 <Bot className="h-5 w-5 text-primary" />
                 <div>
                   <h3 className="font-semibold">AI QC operational state</h3>
-                  <p className="text-sm text-muted-foreground">Jobs, attempts, provider receipts and artifacts are advisory evidence only.</p>
+                  <p className="text-sm text-muted-foreground">Queue advisory AI QC work against an immutable snapshot, or retry a failed job. Provider execution remains worker/config gated.</p>
                 </div>
+              </div>
+              <div className="grid gap-2 rounded-md border bg-muted/20 p-3 md:grid-cols-[1fr_auto]">
+                <select aria-label="AI QC snapshot" className="h-10 rounded-md border bg-background px-3 text-sm" value={aiSnapshotId} onChange={(event) => setAiSnapshotId(event.target.value)} disabled={!snapshotOptions.length || queueAi.isPending}>
+                  {snapshotOptions.map((snapshot: any) => <option key={snapshot.snapshotId} value={snapshot.snapshotId}>Snapshot #{snapshot.snapshotId} - {shortHash(snapshot.normalizedSha256)}</option>)}
+                </select>
+                <Button disabled={!selectedWorkspaceId || !effectiveAiSnapshotId || queueAi.isPending} onClick={() => queueAi.mutate({ workspaceId: selectedWorkspaceId!, snapshotId: effectiveAiSnapshotId, operation: "semantic_qc", promptVersion: "qc-prompt-v1", modelPolicyVersion: "qc-policy-v1" })}>
+                  {queueAi.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Queue AI QC
+                </Button>
+                {!snapshotOptions.length && <p className="text-xs text-muted-foreground md:col-span-2">Requires a fingerprint snapshot. AI output remains advisory; this action does not write Docs, transition Kanban, or publish.</p>}
               </div>
               {aiRows.length ? (
                 <div className="grid gap-4 lg:grid-cols-[minmax(220px,0.8fr)_minmax(0,1.8fr)]">
@@ -415,7 +475,7 @@ export default function WorkspacePage() {
                   <div className="rounded-md border p-4">
                     {aiOperational.isLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : aiOperational.data ? (
                       <div className="space-y-3">
-                        <div className="flex flex-wrap items-center justify-between gap-2"><strong>Job #{(aiOperational.data as any).job.id}</strong><StatusPill value={(aiOperational.data as any).operational.state} /></div>
+                        <div className="flex flex-wrap items-center justify-between gap-2"><strong>Job #{(aiOperational.data as any).job.id}</strong><div className="flex items-center gap-2"><StatusPill value={(aiOperational.data as any).operational.state} />{(aiOperational.data as any).job.status === "failed" && <Button size="sm" variant="outline" disabled={retryAi.isPending} onClick={() => retryAi.mutate({ workspaceId: selectedWorkspaceId!, jobId: (aiOperational.data as any).job.id })}>{retryAi.isPending && <Loader2 className="mr-2 h-3 w-3 animate-spin" />}Retry</Button>}</div></div>
                         <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
                           <div>Attempts: {(aiOperational.data as any).attempts.length}</div>
                           <div>Artifacts: {(aiOperational.data as any).artifacts.length}</div>
