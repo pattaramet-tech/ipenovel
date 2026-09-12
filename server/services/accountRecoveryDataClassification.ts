@@ -221,6 +221,18 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     reason: "Workspace audit actor provenance is append-only historical evidence, not mutable account-owned state.",
   },
   {
+    table: "workspaceKanbanTransitions",
+    column: "actorUserId",
+    category: "deliberately_ignored",
+    reason: "Immutable Kanban transition provenance records who performed the transition; it is historical audit evidence, not mutable account-owned Workspace state.",
+  },
+  {
+    table: "workspacePublishOwnershipTransitions",
+    column: "actorUserId",
+    category: "deliberately_ignored",
+    reason: "Immutable publish ownership cutover/rollback provenance records the authorized actor; it is historical audit evidence, not mutable account-owned Workspace state.",
+  },
+  {
     table: "accountMergeCompensations",
     column: "createdByAdminId",
     category: "deliberately_ignored",
