@@ -11,12 +11,11 @@ import {
   workspaceKanbanCards,
   workspaceKanbanColumns,
   workspaceKanbanTransitions,
-  workspaceMembers,
   workspaceMigrationRegistry,
   workspaceNovels,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
-import type { WorkspaceRole } from "./domain";
+import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import {
   CheckerRuleContractError,
   WORKSPACE_CHECKER_ENGINE_VERSION,
@@ -30,8 +29,6 @@ export class WorkspaceCheckerKanbanError extends Error {
   constructor(
     readonly code:
       | "DATABASE_UNAVAILABLE"
-      | "MEMBERSHIP_REQUIRED"
-      | "EDITOR_ROLE_REQUIRED"
       | "RULE_SET_NOT_FOUND"
       | "RULE_SET_INVALID"
       | "SNAPSHOT_NOT_BOUND"
@@ -59,35 +56,7 @@ async function database() {
   return db;
 }
 
-async function requireMembership(db: any, workspaceId: number, userId: number) {
-  const rows = await db
-    .select()
-    .from(workspaceMembers)
-    .where(
-      and(
-        eq(workspaceMembers.workspaceId, workspaceId),
-        eq(workspaceMembers.userId, userId),
-        eq(workspaceMembers.status, "active")
-      )
-    )
-    .limit(1);
-  if (!rows[0]) {
-    throw new WorkspaceCheckerKanbanError(
-      "MEMBERSHIP_REQUIRED",
-      "Active workspace membership is required."
-    );
-  }
-  return rows[0] as { role: WorkspaceRole };
-}
 
-function requireEditorRole(role: WorkspaceRole) {
-  if (role !== "owner" && role !== "editor") {
-    throw new WorkspaceCheckerKanbanError(
-      "EDITOR_ROLE_REQUIRED",
-      "Workspace owner or editor role is required."
-    );
-  }
-}
 
 function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
@@ -102,8 +71,7 @@ export async function publishCheckerRuleSet(input: {
   rulesJson: string;
 }) {
   const db = await database();
-  const membership = await requireMembership(db, input.workspaceId, input.actorUserId);
-  requireEditorRole(membership.role);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   if (input.engineVersion !== WORKSPACE_CHECKER_ENGINE_VERSION) {
     throw new WorkspaceCheckerKanbanError(
       "RULE_SET_INVALID",
@@ -182,7 +150,7 @@ export async function queueCheckerRun(input: {
   ruleSetId: number;
 }) {
   const db = await database();
-  await requireMembership(db, input.workspaceId, input.actorUserId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   await assertSnapshotInWorkspace(db, input.workspaceId, input.snapshotId);
   const [ruleSet] = await db
     .select()
@@ -392,7 +360,7 @@ export async function executeCheckerRun(input: {
 
 export async function listCheckerRuns(input: { actorUserId: number; workspaceId: number }) {
   const db = await database();
-  await requireMembership(db, input.workspaceId, input.actorUserId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   const rows = await db
     .select({ run: workspaceCheckerRuns, ruleSet: workspaceCheckerRuleSets })
     .from(workspaceCheckerRuns)
@@ -416,7 +384,7 @@ export async function getCheckerRunDetail(input: {
   runId: number;
 }) {
   const db = await database();
-  await requireMembership(db, input.workspaceId, input.actorUserId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   const context = await loadCheckerRunContext(db, input.workspaceId, input.runId);
   const findings = await db
     .select()
@@ -453,8 +421,7 @@ export async function createKanbanBoard(input: {
   columns: Array<{ key: string; name: string; position: number; wipLimit?: number }>;
 }) {
   const db = await database();
-  const membership = await requireMembership(db, input.workspaceId, input.actorUserId);
-  requireEditorRole(membership.role);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   return db.transaction(async (tx: any) => {
     const result = await tx.insert(workspaceKanbanBoards).values({
       workspaceId: input.workspaceId,
@@ -482,8 +449,7 @@ export async function createKanbanCardFromFingerprint(input: {
   rank?: number;
 }) {
   const db = await database();
-  const membership = await requireMembership(db, input.workspaceId, input.actorUserId);
-  requireEditorRole(membership.role);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   const rows = await db
     .select({ board: workspaceKanbanBoards, column: workspaceKanbanColumns, fingerprint: workspaceDocumentFingerprints, novel: workspaceNovels })
     .from(workspaceKanbanBoards)
@@ -548,8 +514,7 @@ export async function transitionKanbanCard(input: {
   expectedVersion: number;
 }) {
   const db = await database();
-  const membership = await requireMembership(db, input.workspaceId, input.actorUserId);
-  requireEditorRole(membership.role);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   return db.transaction(async (tx: any) => {
     const rows = await tx
       .select({ card: workspaceKanbanCards, board: workspaceKanbanBoards })
@@ -614,7 +579,7 @@ export async function listOperationalReconciliationState(input: {
   workspaceId: number;
 }) {
   const db = await database();
-  await requireMembership(db, input.workspaceId, input.actorUserId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
 
   const [fingerprints, runs, findings, cards, transitions, ownership] = await Promise.all([
     db
@@ -778,7 +743,7 @@ export async function reconcileCopiedLegacyOperationalState(input: {
 
 export async function listDualRunState(input: { actorUserId: number; workspaceId: number }) {
   const db = await database();
-  await requireMembership(db, input.workspaceId, input.actorUserId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   const [boards, ruleSets] = await Promise.all([
     db.select().from(workspaceKanbanBoards).where(eq(workspaceKanbanBoards.workspaceId, input.workspaceId)),
     db.select().from(workspaceCheckerRuleSets).where(eq(workspaceCheckerRuleSets.workspaceId, input.workspaceId)),

@@ -11,7 +11,7 @@ describe("workspace M05-C publish cutover boundaries", () => {
     expect(journal).toContain("0044_workspace_publish_ownership_transition");
   });
 
-  it("retains membership-gated read queries for readiness and rehearsal", () => {
+  it("retains platform-admin-gated read queries for readiness and rehearsal", () => {
     expect(router).toContain("publishCutover: router");
     expect(router).toContain("getPublishCutoverReadiness");
     expect(router).toContain("rehearsePublishCutoverRollback");

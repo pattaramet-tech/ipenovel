@@ -2,9 +2,9 @@ import { and, eq } from "drizzle-orm";
 import {
   workspaceAiJobs,
   workspaceDocumentSnapshots,
-  workspaceMembers,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import {
   buildWorkspaceAiQcArtifact,
   serializeWorkspaceAiQcArtifact,
@@ -29,8 +29,6 @@ export class WorkspaceAiQcReconciliationError extends Error {
   constructor(
     readonly code:
       | "DATABASE_UNAVAILABLE"
-      | "MEMBERSHIP_REQUIRED"
-      | "EDITOR_ROLE_REQUIRED"
       | "AI_JOB_NOT_FOUND"
       | "RECOVERY_NOT_REQUIRED"
       | "RECOVERY_STATE_INCONSISTENT"
@@ -52,21 +50,6 @@ async function database() {
   return db;
 }
 
-async function requireMembership(input: { actorUserId: number; workspaceId: number; editor?: boolean }) {
-  const db = await database();
-  const [membership] = await db.select().from(workspaceMembers).where(and(
-    eq(workspaceMembers.workspaceId, input.workspaceId),
-    eq(workspaceMembers.userId, input.actorUserId),
-    eq(workspaceMembers.status, "active")
-  )).limit(1);
-  if (!membership) {
-    throw new WorkspaceAiQcReconciliationError("MEMBERSHIP_REQUIRED", "Active workspace membership is required.");
-  }
-  if (input.editor && membership.role !== "owner" && membership.role !== "editor") {
-    throw new WorkspaceAiQcReconciliationError("EDITOR_ROLE_REQUIRED", "Workspace owner or editor role is required for AI QC recovery.");
-  }
-  return membership;
-}
 
 export async function getAiQcOperationalReadModel(input: {
   actorUserId: number;
@@ -74,7 +57,7 @@ export async function getAiQcOperationalReadModel(input: {
   jobId: number;
   now?: Date;
 }) {
-  await requireMembership(input);
+  await requireWorkspacePlatformAdmin(await database(), input.actorUserId);
   const detail = await getAiJobDetail(input);
   const derived = deriveAiQcOperationalState({
     jobStatus: detail.job.status,
@@ -145,7 +128,7 @@ export async function recoverAiQcFromProviderReceipt(input: {
   artifactStore: WorkspaceAiQcArtifactStore;
   allowExternalProvider?: boolean;
 }) {
-  await requireMembership({ ...input, editor: true });
+  await requireWorkspacePlatformAdmin(await database(), input.actorUserId);
   if (input.provider.mode === "external" && input.allowExternalProvider !== true) {
     throw new WorkspaceAiQcReconciliationError(
       "PROVIDER_NOT_EXPLICITLY_ENABLED",

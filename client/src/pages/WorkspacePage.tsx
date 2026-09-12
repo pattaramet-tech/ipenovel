@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
-import { useAuth } from "@/_core/hooks/useAuth";
+import { useAdminGuard } from "@/hooks/useAdminGuard";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -48,44 +48,44 @@ export default function WorkspacePage() {
   const [selectedCheckerRunId, setSelectedCheckerRunId] = useState<number>();
   const [selectedAiJobId, setSelectedAiJobId] = useState<number>();
   const [selectedPublishRunId, setSelectedPublishRunId] = useState<number>();
-  const auth = useAuth({ redirectOnUnauthenticated: true });
+  const { isAdmin, loading: adminLoading } = useAdminGuard();
 
-  const workspaces = trpc.workspace.list.useQuery(undefined, { enabled: auth.isAuthenticated });
+  const workspaces = trpc.workspace.list.useQuery(undefined, { enabled: isAdmin });
   const detail = trpc.workspace.detail.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
-    { enabled: auth.isAuthenticated && Boolean(selectedWorkspaceId) }
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
   );
   const bindings = trpc.workspace.bindings.list.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
-    { enabled: auth.isAuthenticated && Boolean(selectedWorkspaceId) }
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
   );
   const ownership = trpc.workspace.migrationOwnership.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
-    { enabled: auth.isAuthenticated && Boolean(selectedWorkspaceId) }
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
   );
   const fingerprints = trpc.workspace.fingerprints.list.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
-    { enabled: auth.isAuthenticated && Boolean(selectedWorkspaceId) }
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
   );
   const checkerRuns = trpc.workspace.checker.listRuns.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
-    { enabled: auth.isAuthenticated && Boolean(selectedWorkspaceId) }
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
   );
   const operationalState = trpc.workspace.operationalState.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
-    { enabled: auth.isAuthenticated && Boolean(selectedWorkspaceId) }
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
   );
   const dualRunState = trpc.workspace.dualRunState.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
-    { enabled: auth.isAuthenticated && Boolean(selectedWorkspaceId) }
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
   );
   const aiJobs = trpc.workspace.aiQueue.list.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
-    { enabled: auth.isAuthenticated && Boolean(selectedWorkspaceId) }
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
   );
   const publishOverview = trpc.workspace.controlCenter.publishOverview.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
-    { enabled: auth.isAuthenticated && Boolean(selectedWorkspaceId) }
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
   );
 
   const effectiveCheckerRunId = selectedCheckerRunId ?? (checkerRuns.data as any[] | undefined)?.[0]?.run?.id;
@@ -94,15 +94,15 @@ export default function WorkspacePage() {
 
   const checkerDetail = trpc.workspace.checker.runDetail.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0, runId: effectiveCheckerRunId ?? 0 },
-    { enabled: auth.isAuthenticated && Boolean(selectedWorkspaceId && effectiveCheckerRunId) }
+    { enabled: isAdmin && Boolean(selectedWorkspaceId && effectiveCheckerRunId) }
   );
   const aiOperational = trpc.workspace.aiQueue.operational.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0, jobId: effectiveAiJobId ?? 0 },
-    { enabled: auth.isAuthenticated && Boolean(selectedWorkspaceId && effectiveAiJobId) }
+    { enabled: isAdmin && Boolean(selectedWorkspaceId && effectiveAiJobId) }
   );
   const publishDetail = trpc.workspace.publishDryRun.detail.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0, runId: effectivePublishRunId ?? 0 },
-    { enabled: auth.isAuthenticated && Boolean(selectedWorkspaceId && effectivePublishRunId) }
+    { enabled: isAdmin && Boolean(selectedWorkspaceId && effectivePublishRunId) }
   );
 
   const selectedPublishSummary = useMemo(
@@ -110,8 +110,7 @@ export default function WorkspacePage() {
     [publishOverview.data, effectivePublishRunId]
   );
   const selected = detail.data;
-  const canInspectFinalGate =
-    selected?.membership.role === "owner" || selected?.membership.role === "editor";
+  const canInspectFinalGate = isAdmin;
   const readinessEligible =
     selectedPublishSummary?.ownership?.owner === "sheets" &&
     selectedPublishSummary?.ownership?.cutoverEpoch === 0;
@@ -120,7 +119,7 @@ export default function WorkspacePage() {
     { workspaceId: selectedWorkspaceId ?? 0, runId: effectivePublishRunId ?? 0 },
     {
       enabled:
-        auth.isAuthenticated &&
+        isAdmin &&
         Boolean(selectedWorkspaceId && effectivePublishRunId && readinessEligible),
       retry: false,
     }
@@ -129,7 +128,7 @@ export default function WorkspacePage() {
     { workspaceId: selectedWorkspaceId ?? 0, runId: effectivePublishRunId ?? 0 },
     {
       enabled:
-        auth.isAuthenticated &&
+        isAdmin &&
         Boolean(selectedWorkspaceId && effectivePublishRunId && readinessEligible && canInspectFinalGate),
       retry: false,
     }
@@ -171,11 +170,21 @@ export default function WorkspacePage() {
   const publishRows = ((publishOverview.data as any)?.runs as any[] | undefined) ?? [];
   const publishTransitions = ((publishOverview.data as any)?.transitions as any[] | undefined) ?? [];
 
+  if (adminLoading) {
+    return (
+      <main className="mx-auto flex min-h-[40vh] max-w-7xl items-center justify-center px-4 py-8">
+        <Loader2 className="h-7 w-7 animate-spin" />
+      </main>
+    );
+  }
+
+  if (!isAdmin) return null;
+
   return (
     <main className="mx-auto max-w-7xl space-y-6 px-4 py-8">
       <header className="flex flex-col gap-3 border-b pb-6 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-sm font-medium text-primary">IpeNovel Workspace · Read-only Control Center</p>
+          <p className="text-sm font-medium text-primary">IpeNovel Workspace · Admin-only Read-only Control Center</p>
           <h1 className="text-3xl font-bold tracking-tight">Novel Control Center</h1>
           <p className="mt-2 max-w-3xl text-muted-foreground">
             Operational visibility for the M03–M06 read models. Google Docs remains the editor;
@@ -192,8 +201,8 @@ export default function WorkspacePage() {
       <section className="grid gap-6 lg:grid-cols-[minmax(260px,0.75fr)_minmax(0,2.25fr)]">
         <Card className="h-fit space-y-4 p-5">
           <div>
-            <h2 className="font-semibold">Your workspaces</h2>
-            <p className="text-sm text-muted-foreground">Only active members can open a workspace.</p>
+            <h2 className="font-semibold">Workspaces</h2>
+            <p className="text-sm text-muted-foreground">All platform admins can open every active workspace.</p>
           </div>
           <form
             className="flex gap-2"
@@ -211,7 +220,7 @@ export default function WorkspacePage() {
             <Loader2 className="mx-auto h-6 w-6 animate-spin" />
           ) : (
             <div className="space-y-2">
-              {(workspaces.data as any[] | undefined)?.map(({ workspace, membership }: any) => (
+              {(workspaces.data as any[] | undefined)?.map(({ workspace }: any) => (
                 <button
                   key={workspace.id}
                   type="button"
@@ -219,7 +228,7 @@ export default function WorkspacePage() {
                   className={`w-full rounded-md border p-3 text-left transition hover:border-primary ${selectedWorkspaceId === workspace.id ? "border-primary bg-primary/5" : ""}`}
                 >
                   <div className="font-medium">{workspace.name}</div>
-                  <div className="text-xs text-muted-foreground">{membership.role} · {workspace.status}</div>
+                  <div className="text-xs text-muted-foreground">admin access · {workspace.status}</div>
                 </button>
               ))}
               {!workspaces.data?.length && <p className="text-sm text-muted-foreground">Create your first workspace to begin.</p>}
@@ -243,7 +252,7 @@ export default function WorkspacePage() {
                     <h2 className="text-xl font-semibold">{selected.workspace.name}</h2>
                   </div>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    Membership role: <span className="font-medium">{selected.membership.role}</span>. Platform admin rights do not replace this membership.
+                    Platform admin access: <span className="font-medium">full</span>. Workspace membership and per-workspace roles do not restrict admin operations.
                   </p>
                 </div>
                 <StatusPill value={selected.workspace.status} />
@@ -273,10 +282,10 @@ export default function WorkspacePage() {
 
               <div className="grid gap-5 md:grid-cols-3">
                 <div>
-                  <h3 className="font-medium">Members</h3>
-                  <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
-                    {selected.members.map((member: any) => <li key={member.id}>User #{member.userId} · {member.role} · {member.status}</li>)}
-                  </ul>
+                  <h3 className="font-medium">Admin access</h3>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Every platform admin has the same Workspace authority. Historical membership rows are not used for authorization.
+                  </p>
                 </div>
                 <div>
                   <h3 className="font-medium">Capability ownership</h3>
@@ -466,7 +475,7 @@ export default function WorkspacePage() {
                           ) : <span className="text-muted-foreground">Cutover readiness applies only to exactly one Sheets-owned publish registry row at epoch 0. Current state: {selectedPublishSummary?.ownership?.owner ?? "unknown"} epoch {selectedPublishSummary?.ownership?.cutoverEpoch ?? "?"}.</span>}
                         </div>
                         <div className="rounded-md bg-muted/30 p-3 text-sm">
-                          {!canInspectFinalGate ? <span className="text-muted-foreground">Final gate package is membership-gated to workspace owners/editors.</span> : !readinessEligible ? <span className="text-muted-foreground">Final gate package is not applicable in the current ownership epoch.</span> : finalGate.isLoading ? <span>Loading final gate…</span> : finalGate.data ? <div className="space-y-1"><div>Preview ready: <strong>{(finalGate.data as any).gate.previewReady ? "yes" : "no"}</strong></div><div>Operator cutover eligible: <strong>{(finalGate.data as any).gate.operatorCutoverEligible ? "yes" : "no"}</strong></div><div className="text-xs text-muted-foreground">Execution enabled in gate input: {(finalGate.data as any).gate.executionEnabled ? "yes" : "no"}</div><div className="text-xs text-muted-foreground">Blockers: {(finalGate.data as any).gate.blockers.join(", ") || "none"}</div></div> : finalGate.error ? <span className="text-destructive">Final gate unavailable: {finalGate.error.message}</span> : null}
+                          {!canInspectFinalGate ? <span className="text-muted-foreground">Final gate package requires platform admin access.</span> : !readinessEligible ? <span className="text-muted-foreground">Final gate package is not applicable in the current ownership epoch.</span> : finalGate.isLoading ? <span>Loading final gate…</span> : finalGate.data ? <div className="space-y-1"><div>Preview ready: <strong>{(finalGate.data as any).gate.previewReady ? "yes" : "no"}</strong></div><div>Operator cutover eligible: <strong>{(finalGate.data as any).gate.operatorCutoverEligible ? "yes" : "no"}</strong></div><div className="text-xs text-muted-foreground">Execution enabled in gate input: {(finalGate.data as any).gate.executionEnabled ? "yes" : "no"}</div><div className="text-xs text-muted-foreground">Blockers: {(finalGate.data as any).gate.blockers.join(", ") || "none"}</div></div> : finalGate.error ? <span className="text-destructive">Final gate unavailable: {finalGate.error.message}</span> : null}
                         </div>
                       </>
                     ) : null}

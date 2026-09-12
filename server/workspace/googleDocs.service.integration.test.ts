@@ -15,7 +15,6 @@ import { createTestNovel, createTestUser } from "../test-helpers/fixtures";
 import {
   bindPublicationNovel,
   createWorkspace,
-  addOrUpdateMember,
 } from "./service";
 import {
   bindGoogleDocument,
@@ -34,12 +33,13 @@ import {
 } from "./googleDocs.domain";
 
 describe.sequential("workspace M02 Docs persistence integration", () => {
-  it("enforces membership/connection ownership and persists repeat observations idempotently", async () => {
+  it("enforces platform-admin/connection ownership and persists repeat observations idempotently", async () => {
     if (!process.env.TEST_DATABASE_URL) return;
     assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
     const db = getTestDb();
-    const owner = await createTestUser();
+    const owner = await createTestUser({ role: "admin" });
     const outsider = await createTestUser();
+    const adminPeer = await createTestUser({ role: "admin" });
     const novel = await createTestNovel();
     const workspace = await createWorkspace(owner.id, "Docs tenant");
     try {
@@ -152,7 +152,7 @@ describe.sequential("workspace M02 Docs persistence integration", () => {
           workspaceId: workspace.workspaceId,
         })
       ).rejects.toMatchObject<Partial<WorkspaceDocsServiceError>>({
-        code: "MEMBERSHIP_REQUIRED",
+        code: "ADMIN_REQUIRED",
       });
       const fingerprintReadModel = await listDocumentFingerprints({
         actorUserId: owner.id,
@@ -232,19 +232,13 @@ describe.sequential("workspace M02 Docs persistence integration", () => {
         .where(eq(workspaceAuditEvents.correlationId, "revoke-1"));
       expect(auditRows).toHaveLength(1);
 
-      await addOrUpdateMember({
-        actorUserId: owner.id,
-        workspaceId: workspace.workspaceId,
-        userId: outsider.id,
-        role: "editor",
-      });
       await expect(
         observeBoundGoogleDocument({
-          actorUserId: outsider.id,
+          actorUserId: adminPeer.id,
           workspaceId: workspace.workspaceId,
           bindingId: binding.bindingId,
           accessToken: "server-only",
-          correlationId: "observe-outsider",
+          correlationId: "observe-admin-peer",
           adapter,
         })
       ).rejects.toMatchObject<Partial<WorkspaceDocsServiceError>>({
@@ -260,6 +254,7 @@ describe.sequential("workspace M02 Docs persistence integration", () => {
       await db.delete(novels).where(eq(novels.id, novel.id));
       await db.delete(users).where(eq(users.id, owner.id));
       await db.delete(users).where(eq(users.id, outsider.id));
+      await db.delete(users).where(eq(users.id, adminPeer.id));
     }
   });
 });

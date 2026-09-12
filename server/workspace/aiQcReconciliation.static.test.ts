@@ -12,10 +12,10 @@ describe("workspace M04-C reconciliation boundaries", () => {
     expect(journal).not.toContain("workspace_ai_qc_reconciliation");
   });
 
-  it("exposes membership-gated operational reads but keeps recovery internal", () => {
+  it("exposes platform-admin-gated operational reads but keeps recovery internal", () => {
     const router = source("server/workspace/router.ts");
     expect(router).toContain("getAiQcOperationalReadModel");
-    expect(router).toContain("operational: authenticatedProcedure");
+    expect(router).toContain("operational: adminProcedure");
     expect(router).not.toContain("recoverAiQcFromProviderReceipt");
   });
 

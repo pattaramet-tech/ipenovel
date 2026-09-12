@@ -8,10 +8,9 @@ import {
   workspaceWorkspaces,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import {
   buildInitialMigrationOwnership,
-  canBindPublicationNovel,
-  canManageMembers,
   type WorkspaceRole,
   validateMembershipChange,
 } from "./domain";
@@ -21,8 +20,6 @@ export class WorkspaceServiceError extends Error {
     readonly code:
       | "DATABASE_UNAVAILABLE"
       | "WORKSPACE_NOT_FOUND"
-      | "MEMBERSHIP_REQUIRED"
-      | "OWNER_ROLE_REQUIRED"
       | "NOVEL_NOT_FOUND"
       | "MEMBERSHIP_CONFLICT"
       | "INVALID_MEMBERSHIP_CHANGE",
@@ -47,27 +44,6 @@ function insertId(result: any): number {
   return value;
 }
 
-async function activeMembership(db: any, workspaceId: number, userId: number) {
-  const rows = await db
-    .select()
-    .from(workspaceMembers)
-    .where(and(
-      eq(workspaceMembers.workspaceId, workspaceId),
-      eq(workspaceMembers.userId, userId),
-      eq(workspaceMembers.status, "active")
-    ))
-    .limit(1);
-  return rows[0] as { role: WorkspaceRole; id: number } | undefined;
-}
-
-async function requireMembership(db: any, workspaceId: number, userId: number) {
-  const membership = await activeMembership(db, workspaceId, userId);
-  if (!membership) {
-    throw new WorkspaceServiceError("MEMBERSHIP_REQUIRED", "You are not an active member of this workspace.");
-  }
-  return membership;
-}
-
 async function requireWorkspace(db: any, workspaceId: number) {
   const rows = await db.select().from(workspaceWorkspaces).where(and(
     eq(workspaceWorkspaces.id, workspaceId),
@@ -80,21 +56,21 @@ async function requireWorkspace(db: any, workspaceId: number) {
 
 export async function listWorkspacesForUser(userId: number) {
   const db = await database();
-  return db
-    .select({ workspace: workspaceWorkspaces, membership: workspaceMembers })
-    .from(workspaceMembers)
-    .innerJoin(workspaceWorkspaces, eq(workspaceMembers.workspaceId, workspaceWorkspaces.id))
+  await requireWorkspacePlatformAdmin(db, userId);
+  const rows = await db
+    .select()
+    .from(workspaceWorkspaces)
     .where(and(
-      eq(workspaceMembers.userId, userId),
-      eq(workspaceMembers.status, "active"),
       eq(workspaceWorkspaces.status, "active"),
       isNull(workspaceWorkspaces.deletedAt)
     ))
     .orderBy(desc(workspaceWorkspaces.updatedAt));
+  return rows.map((workspace: any) => ({ workspace, membership: null }));
 }
 
 export async function createWorkspace(userId: number, name: string) {
   const db = await database();
+  await requireWorkspacePlatformAdmin(db, userId);
   return db.transaction(async (tx: any) => {
     const workspaceId = insertId(await tx.insert(workspaceWorkspaces).values({ name, ownerUserId: userId }));
     await tx.insert(workspaceMembers).values({
@@ -110,7 +86,7 @@ export async function createWorkspace(userId: number, name: string) {
 export async function getWorkspaceDetail(userId: number, workspaceId: number) {
   const db = await database();
   await requireWorkspace(db, workspaceId);
-  const membership = await requireMembership(db, workspaceId, userId);
+  await requireWorkspacePlatformAdmin(db, userId);
   const [members, novelRows] = await Promise.all([
     db.select().from(workspaceMembers).where(eq(workspaceMembers.workspaceId, workspaceId)),
     db
@@ -120,7 +96,7 @@ export async function getWorkspaceDetail(userId: number, workspaceId: number) {
       .where(eq(workspaceNovels.workspaceId, workspaceId)),
   ]);
   const workspace = await requireWorkspace(db, workspaceId);
-  return { workspace, membership, members, novels: novelRows };
+  return { workspace, membership: null, members, novels: novelRows };
 }
 
 export async function addOrUpdateMember(input: {
@@ -131,10 +107,7 @@ export async function addOrUpdateMember(input: {
 }) {
   const db = await database();
   await requireWorkspace(db, input.workspaceId);
-  const actor = await requireMembership(db, input.workspaceId, input.actorUserId);
-  if (!canManageMembers(actor.role)) {
-    throw new WorkspaceServiceError("OWNER_ROLE_REQUIRED", "Only a workspace owner can manage members.");
-  }
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
 
   const existingRows = await db.select().from(workspaceMembers).where(and(
     eq(workspaceMembers.workspaceId, input.workspaceId),
@@ -148,7 +121,7 @@ export async function addOrUpdateMember(input: {
   const failure = validateMembershipChange({
     actorUserId: input.actorUserId,
     targetUserId: input.userId,
-    actorRole: actor.role,
+    actorRole: "owner",
     currentRole: existingRows[0]?.role,
     nextRole: input.role,
     activeOwnerCount: ownerRows.length,
@@ -177,10 +150,7 @@ export async function bindPublicationNovel(input: {
 }) {
   const db = await database();
   await requireWorkspace(db, input.workspaceId);
-  const actor = await requireMembership(db, input.workspaceId, input.actorUserId);
-  if (!canBindPublicationNovel(actor.role)) {
-    throw new WorkspaceServiceError("OWNER_ROLE_REQUIRED", "Only workspace owners and editors can bind a novel.");
-  }
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   const novelRows = await db.select().from(novels).where(eq(novels.id, input.novelId)).limit(1);
   const novel = novelRows[0];
   if (!novel) throw new WorkspaceServiceError("NOVEL_NOT_FOUND", "Publication novel not found.");
@@ -225,7 +195,7 @@ export async function bindPublicationNovel(input: {
 
 export async function listReadOnlyBindings(userId: number, workspaceId: number) {
   const db = await database();
-  await requireMembership(db, workspaceId, userId);
+  await requireWorkspacePlatformAdmin(db, userId);
   return db
     .select({ binding: workspaceReadOnlyBindings, workspaceNovel: workspaceNovels, novel: novels })
     .from(workspaceReadOnlyBindings)
@@ -236,7 +206,7 @@ export async function listReadOnlyBindings(userId: number, workspaceId: number) 
 
 export async function listMigrationOwnership(userId: number, workspaceId: number) {
   const db = await database();
-  await requireMembership(db, workspaceId, userId);
+  await requireWorkspacePlatformAdmin(db, userId);
   return db
     .select({ entry: workspaceMigrationRegistry, workspaceNovel: workspaceNovels, novel: novels })
     .from(workspaceMigrationRegistry)

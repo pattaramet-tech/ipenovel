@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { authenticatedProcedure, router } from "../_core/trpc";
+import { adminProcedure, router } from "../_core/trpc";
+import { WorkspaceAdminAccessError } from "./adminAccess";
 import { WORKSPACE_ROLES } from "./domain";
 import {
   cancelAiJob,
@@ -81,25 +82,25 @@ import {
 } from "./service";
 
 /**
- * M01 intentionally uses session authentication rather than the standard gated procedure:
- * Workspace membership is its own authorization boundary and it must not imply
- * a Google Docs connection or change the existing login scope.
+ * Workspace is an admin-only back-office surface. Every procedure requires a
+ * platform-admin session through adminProcedure. Workspace membership rows are
+ * retained only for compatibility/history and never grant, restrict, or divide
+ * authority between admins. The service layer re-checks the current DB role as
+ * defense in depth. Customer-facing Google-connection gating remains bypassed.
  */
 function mapWorkspaceError(error: unknown): never {
+  if (error instanceof WorkspaceAdminAccessError) {
+    throw new TRPCError({ code: "FORBIDDEN", message: error.message });
+  }
   if (error instanceof WorkspaceControlCenterError) {
-    throw new TRPCError({
-      code: error.code === "MEMBERSHIP_REQUIRED" ? "FORBIDDEN" : "SERVICE_UNAVAILABLE",
-      message: error.message,
-    });
+    throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: error.message });
   }
   if (error instanceof WorkspacePublishRuntimeError) {
     throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
   }
   if (error instanceof WorkspaceLegacyRetirementError) {
     const code =
-      error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
-        ? "FORBIDDEN"
-        : error.code === "DATABASE_UNAVAILABLE"
+      error.code === "DATABASE_UNAVAILABLE"
           ? "SERVICE_UNAVAILABLE"
           : error.code === "WORKSPACE_NOVEL_NOT_FOUND"
             ? "NOT_FOUND"
@@ -110,9 +111,7 @@ function mapWorkspaceError(error: unknown): never {
   }
   if (error instanceof WorkspacePublishFinalGateError) {
     const code =
-      error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
-        ? "FORBIDDEN"
-        : error.code === "DATABASE_UNAVAILABLE"
+      error.code === "DATABASE_UNAVAILABLE"
           ? "SERVICE_UNAVAILABLE"
           : error.code === "PUBLISH_OWNERSHIP_AMBIGUOUS" || error.code === "PREVIEW_GATE_BLOCKED"
             ? "CONFLICT"
@@ -121,9 +120,7 @@ function mapWorkspaceError(error: unknown): never {
   }
   if (error instanceof WorkspacePublishOwnershipTransitionError) {
     const code =
-      error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
-        ? "FORBIDDEN"
-        : error.code === "DATABASE_UNAVAILABLE"
+      error.code === "DATABASE_UNAVAILABLE"
           ? "SERVICE_UNAVAILABLE"
           : error.code === "PUBLISH_RUN_NOT_FOUND"
             ? "NOT_FOUND"
@@ -134,9 +131,7 @@ function mapWorkspaceError(error: unknown): never {
   }
   if (error instanceof WorkspacePublishCutoverError) {
     const code =
-      error.code === "MEMBERSHIP_REQUIRED"
-        ? "FORBIDDEN"
-        : error.code === "DATABASE_UNAVAILABLE"
+      error.code === "DATABASE_UNAVAILABLE"
           ? "SERVICE_UNAVAILABLE"
           : error.code === "PUBLISH_RUN_NOT_FOUND"
             ? "NOT_FOUND"
@@ -147,9 +142,7 @@ function mapWorkspaceError(error: unknown): never {
   }
   if (error instanceof WorkspacePublishExecutionError) {
     const code =
-      error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
-        ? "FORBIDDEN"
-        : error.code === "DATABASE_UNAVAILABLE"
+      error.code === "DATABASE_UNAVAILABLE"
           ? "SERVICE_UNAVAILABLE"
           : error.code === "PUBLISH_RUN_NOT_FOUND" || error.code === "OUTBOX_NOT_FOUND"
             ? "NOT_FOUND"
@@ -162,9 +155,7 @@ function mapWorkspaceError(error: unknown): never {
   }
   if (error instanceof WorkspacePublishDryRunError) {
     const code =
-      error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
-        ? "FORBIDDEN"
-        : error.code === "DATABASE_UNAVAILABLE"
+      error.code === "DATABASE_UNAVAILABLE"
           ? "SERVICE_UNAVAILABLE"
           : error.code === "DESTINATION_NOT_FOUND" || error.code === "PUBLISH_RUN_NOT_FOUND" || error.code === "SNAPSHOT_NOT_BOUND"
             ? "NOT_FOUND"
@@ -175,9 +166,7 @@ function mapWorkspaceError(error: unknown): never {
   }
   if (error instanceof WorkspaceAiQcReconciliationError) {
     const code =
-      error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
-        ? "FORBIDDEN"
-        : error.code === "DATABASE_UNAVAILABLE"
+      error.code === "DATABASE_UNAVAILABLE"
           ? "SERVICE_UNAVAILABLE"
           : error.code === "AI_JOB_NOT_FOUND"
             ? "NOT_FOUND"
@@ -188,9 +177,7 @@ function mapWorkspaceError(error: unknown): never {
   }
   if (error instanceof WorkspaceAiQueueError) {
     const code =
-      error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
-        ? "FORBIDDEN"
-        : error.code === "DATABASE_UNAVAILABLE"
+      error.code === "DATABASE_UNAVAILABLE"
           ? "SERVICE_UNAVAILABLE"
           : error.code === "AI_JOB_NOT_FOUND" || error.code === "AI_ATTEMPT_NOT_FOUND" || error.code === "SNAPSHOT_NOT_BOUND"
             ? "NOT_FOUND"
@@ -201,9 +188,7 @@ function mapWorkspaceError(error: unknown): never {
   }
   if (error instanceof WorkspaceCheckerKanbanError) {
     const code =
-      error.code === "MEMBERSHIP_REQUIRED" || error.code === "EDITOR_ROLE_REQUIRED"
-        ? "FORBIDDEN"
-        : error.code === "DATABASE_UNAVAILABLE"
+      error.code === "DATABASE_UNAVAILABLE"
           ? "SERVICE_UNAVAILABLE"
           : error.code.endsWith("_NOT_FOUND") || error.code === "SNAPSHOT_NOT_BOUND"
             ? "NOT_FOUND"
@@ -214,9 +199,7 @@ function mapWorkspaceError(error: unknown): never {
   }
   if (error instanceof WorkspaceDocsServiceError) {
     const code =
-      error.code === "MEMBERSHIP_REQUIRED"
-        ? "FORBIDDEN"
-        : error.code === "DATABASE_UNAVAILABLE"
+      error.code === "DATABASE_UNAVAILABLE"
           ? "SERVICE_UNAVAILABLE"
           : "BAD_REQUEST";
     throw new TRPCError({ code, message: error.message });
@@ -225,11 +208,9 @@ function mapWorkspaceError(error: unknown): never {
     const code =
       error.code === "WORKSPACE_NOT_FOUND" || error.code === "NOVEL_NOT_FOUND"
         ? "NOT_FOUND"
-        : error.code === "MEMBERSHIP_REQUIRED" || error.code === "OWNER_ROLE_REQUIRED"
-          ? "FORBIDDEN"
-          : error.code === "INVALID_MEMBERSHIP_CHANGE" || error.code === "MEMBERSHIP_CONFLICT"
-            ? "CONFLICT"
-            : "SERVICE_UNAVAILABLE";
+        : error.code === "INVALID_MEMBERSHIP_CHANGE" || error.code === "MEMBERSHIP_CONFLICT"
+          ? "CONFLICT"
+          : "SERVICE_UNAVAILABLE";
     throw new TRPCError({ code, message: error.message });
   }
   throw error;
@@ -244,7 +225,7 @@ const legacyRetirementEvidenceInput = z.object({
 });
 
 export const workspaceRouter = router({
-  list: authenticatedProcedure.query(async ({ ctx }) => {
+  list: adminProcedure.query(async ({ ctx }) => {
     try {
       return await listWorkspacesForUser(ctx.user.id);
     } catch (error) {
@@ -252,7 +233,7 @@ export const workspaceRouter = router({
     }
   }),
 
-  create: authenticatedProcedure
+  create: adminProcedure
     .input(z.object({ name: z.string().trim().min(1).max(160) }))
     .mutation(async ({ ctx, input }) => {
       try {
@@ -262,7 +243,7 @@ export const workspaceRouter = router({
       }
     }),
 
-  detail: authenticatedProcedure
+  detail: adminProcedure
     .input(workspaceIdInput)
     .query(async ({ ctx, input }) => {
       try {
@@ -273,7 +254,7 @@ export const workspaceRouter = router({
     }),
 
   members: router({
-    addOrUpdate: authenticatedProcedure
+    addOrUpdate: adminProcedure
       .input(workspaceIdInput.extend({
         userId: z.number().int().positive(),
         role: z.enum(WORKSPACE_ROLES).exclude(["owner"]),
@@ -288,7 +269,7 @@ export const workspaceRouter = router({
   }),
 
   bindings: router({
-    list: authenticatedProcedure
+    list: adminProcedure
       .input(workspaceIdInput)
       .query(async ({ ctx, input }) => {
         try {
@@ -297,7 +278,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    bindPublicationNovel: authenticatedProcedure
+    bindPublicationNovel: adminProcedure
       .input(workspaceIdInput.extend({ novelId: z.number().int().positive() }))
       .mutation(async ({ ctx, input }) => {
         try {
@@ -308,7 +289,7 @@ export const workspaceRouter = router({
       }),
   }),
 
-  migrationOwnership: authenticatedProcedure
+  migrationOwnership: adminProcedure
     .input(workspaceIdInput)
     .query(async ({ ctx, input }) => {
       try {
@@ -319,7 +300,7 @@ export const workspaceRouter = router({
     }),
 
   controlCenter: router({
-    publishOverview: authenticatedProcedure
+    publishOverview: adminProcedure
       .input(workspaceIdInput)
       .query(async ({ ctx, input }) => {
         try {
@@ -334,7 +315,7 @@ export const workspaceRouter = router({
   }),
 
   fingerprints: router({
-    list: authenticatedProcedure
+    list: adminProcedure
       .input(workspaceIdInput)
       .query(async ({ ctx, input }) => {
         try {
@@ -349,7 +330,7 @@ export const workspaceRouter = router({
   }),
 
   checker: router({
-    publishRuleSet: authenticatedProcedure
+    publishRuleSet: adminProcedure
       .input(workspaceIdInput.extend({
         name: z.string().trim().min(1).max(160),
         versionNo: z.number().int().positive(),
@@ -367,7 +348,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    queueRun: authenticatedProcedure
+    queueRun: adminProcedure
       .input(workspaceIdInput.extend({
         snapshotId: z.number().int().positive(),
         ruleSetId: z.number().int().positive(),
@@ -379,7 +360,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    listRuns: authenticatedProcedure
+    listRuns: adminProcedure
       .input(workspaceIdInput)
       .query(async ({ ctx, input }) => {
         try {
@@ -388,7 +369,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    runDetail: authenticatedProcedure
+    runDetail: adminProcedure
       .input(workspaceIdInput.extend({ runId: z.number().int().positive() }))
       .query(async ({ ctx, input }) => {
         try {
@@ -397,7 +378,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    compareCopiedLegacy: authenticatedProcedure
+    compareCopiedLegacy: adminProcedure
       .input(workspaceIdInput.extend({
         runId: z.number().int().positive(),
         legacyFindings: z.array(z.object({
@@ -417,7 +398,7 @@ export const workspaceRouter = router({
   }),
 
   aiQueue: router({
-    queue: authenticatedProcedure
+    queue: adminProcedure
       .input(workspaceIdInput.extend({
         snapshotId: z.number().int().positive(),
         operation: z.string().trim().min(1).max(120),
@@ -432,7 +413,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    retry: authenticatedProcedure
+    retry: adminProcedure
       .input(workspaceIdInput.extend({ jobId: z.number().int().positive() }))
       .mutation(async ({ ctx, input }) => {
         try {
@@ -441,7 +422,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    cancel: authenticatedProcedure
+    cancel: adminProcedure
       .input(workspaceIdInput.extend({ jobId: z.number().int().positive() }))
       .mutation(async ({ ctx, input }) => {
         try {
@@ -450,7 +431,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    list: authenticatedProcedure
+    list: adminProcedure
       .input(workspaceIdInput)
       .query(async ({ ctx, input }) => {
         try {
@@ -459,7 +440,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    detail: authenticatedProcedure
+    detail: adminProcedure
       .input(workspaceIdInput.extend({ jobId: z.number().int().positive() }))
       .query(async ({ ctx, input }) => {
         try {
@@ -468,7 +449,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    operational: authenticatedProcedure
+    operational: adminProcedure
       .input(workspaceIdInput.extend({ jobId: z.number().int().positive() }))
       .query(async ({ ctx, input }) => {
         try {
@@ -480,7 +461,7 @@ export const workspaceRouter = router({
   }),
 
   publishDryRun: router({
-    createDestination: authenticatedProcedure
+    createDestination: adminProcedure
       .input(workspaceIdInput.extend({
         workspaceNovelId: z.number().int().positive(),
         targetType: z.literal("novel"),
@@ -494,7 +475,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    listDestinations: authenticatedProcedure
+    listDestinations: adminProcedure
       .input(workspaceIdInput)
       .query(async ({ ctx, input }) => {
         try {
@@ -503,7 +484,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    createPlan: authenticatedProcedure
+    createPlan: adminProcedure
       .input(workspaceIdInput.extend({
         destinationId: z.number().int().positive(),
         snapshotId: z.number().int().positive(),
@@ -522,7 +503,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    detail: authenticatedProcedure
+    detail: adminProcedure
       .input(workspaceIdInput.extend({ runId: z.number().int().positive() }))
       .query(async ({ ctx, input }) => {
         try {
@@ -531,7 +512,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    previewReconciliation: authenticatedProcedure
+    previewReconciliation: adminProcedure
       .input(workspaceIdInput.extend({
         runId: z.number().int().positive(),
         observedResults: z.array(z.object({
@@ -548,7 +529,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    requestExecution: authenticatedProcedure
+    requestExecution: adminProcedure
       .input(workspaceIdInput.extend({
         runId: z.number().int().positive(),
         expectedCutoverEpoch: z.number().int().positive(),
@@ -576,7 +557,7 @@ export const workspaceRouter = router({
   }),
 
   publishFinalGate: router({
-    package: authenticatedProcedure
+    package: adminProcedure
       .input(workspaceIdInput.extend({ runId: z.number().int().positive() }))
       .query(async ({ ctx, input }) => {
         try {
@@ -590,7 +571,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    requirePreviewReadiness: authenticatedProcedure
+    requirePreviewReadiness: adminProcedure
       .input(workspaceIdInput.extend({ runId: z.number().int().positive() }))
       .query(async ({ ctx, input }) => {
         try {
@@ -607,7 +588,7 @@ export const workspaceRouter = router({
   }),
 
   publishCutover: router({
-    readiness: authenticatedProcedure
+    readiness: adminProcedure
       .input(workspaceIdInput.extend({ runId: z.number().int().positive() }))
       .query(async ({ ctx, input }) => {
         try {
@@ -616,7 +597,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    rehearse: authenticatedProcedure
+    rehearse: adminProcedure
       .input(workspaceIdInput.extend({ runId: z.number().int().positive() }))
       .query(async ({ ctx, input }) => {
         try {
@@ -625,7 +606,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    cutover: authenticatedProcedure
+    cutover: adminProcedure
       .input(workspaceIdInput.extend({
         runId: z.number().int().positive(),
         expectedOwner: z.literal("sheets"),
@@ -639,7 +620,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    rollback: authenticatedProcedure
+    rollback: adminProcedure
       .input(workspaceIdInput.extend({
         runId: z.number().int().positive(),
         expectedOwner: z.literal("workspace"),
@@ -656,7 +637,7 @@ export const workspaceRouter = router({
   }),
 
   legacyRetirement: router({
-    package: authenticatedProcedure
+    package: adminProcedure
       .input(workspaceIdInput.extend({
         workspaceNovelId: z.number().int().positive(),
         evidence: legacyRetirementEvidenceInput,
@@ -668,7 +649,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    requireCandidateReadiness: authenticatedProcedure
+    requireCandidateReadiness: adminProcedure
       .input(workspaceIdInput.extend({
         workspaceNovelId: z.number().int().positive(),
         evidence: legacyRetirementEvidenceInput,
@@ -683,7 +664,7 @@ export const workspaceRouter = router({
   }),
 
   kanban: router({
-    createBoard: authenticatedProcedure
+    createBoard: adminProcedure
       .input(workspaceIdInput.extend({
         name: z.string().trim().min(1).max(160),
         slug: z.string().trim().min(1).max(120),
@@ -701,7 +682,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    createCardFromFingerprint: authenticatedProcedure
+    createCardFromFingerprint: adminProcedure
       .input(workspaceIdInput.extend({
         boardId: z.number().int().positive(),
         columnKey: z.string().trim().min(1).max(80),
@@ -716,7 +697,7 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
-    transitionCard: authenticatedProcedure
+    transitionCard: adminProcedure
       .input(workspaceIdInput.extend({
         cardId: z.number().int().positive(),
         toColumnKey: z.string().trim().min(1).max(80),
@@ -733,7 +714,7 @@ export const workspaceRouter = router({
       }),
   }),
 
-  operationalState: authenticatedProcedure
+  operationalState: adminProcedure
     .input(workspaceIdInput)
     .query(async ({ ctx, input }) => {
       try {
@@ -746,7 +727,7 @@ export const workspaceRouter = router({
       }
     }),
 
-  reconcileCopiedLegacy: authenticatedProcedure
+  reconcileCopiedLegacy: adminProcedure
     .input(workspaceIdInput.extend({
       baselines: z.array(z.object({
         bindingId: z.number().int().positive(),
@@ -774,7 +755,7 @@ export const workspaceRouter = router({
       }
     }),
 
-  dualRunState: authenticatedProcedure
+  dualRunState: adminProcedure
     .input(workspaceIdInput)
     .query(async ({ ctx, input }) => {
       try {

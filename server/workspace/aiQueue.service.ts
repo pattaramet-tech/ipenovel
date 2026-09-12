@@ -6,18 +6,15 @@ import {
   workspaceAiJobs,
   workspaceDocumentBindings,
   workspaceDocumentSnapshots,
-  workspaceMembers,
   workspaceNovels,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
-import type { WorkspaceRole } from "./domain";
+import { requireWorkspacePlatformAdmin } from "./adminAccess";
 
 export class WorkspaceAiQueueError extends Error {
   constructor(
     readonly code:
       | "DATABASE_UNAVAILABLE"
-      | "MEMBERSHIP_REQUIRED"
-      | "EDITOR_ROLE_REQUIRED"
       | "SNAPSHOT_NOT_BOUND"
       | "AI_JOB_NOT_FOUND"
       | "AI_JOB_CONFLICT"
@@ -39,27 +36,7 @@ async function database() {
   return db;
 }
 
-async function requireMembership(db: any, workspaceId: number, userId: number) {
-  const rows = await db
-    .select()
-    .from(workspaceMembers)
-    .where(and(
-      eq(workspaceMembers.workspaceId, workspaceId),
-      eq(workspaceMembers.userId, userId),
-      eq(workspaceMembers.status, "active")
-    ))
-    .limit(1);
-  if (!rows[0]) {
-    throw new WorkspaceAiQueueError("MEMBERSHIP_REQUIRED", "Active workspace membership is required.");
-  }
-  return rows[0] as { role: WorkspaceRole };
-}
 
-function requireEditorRole(role: WorkspaceRole) {
-  if (role !== "owner" && role !== "editor") {
-    throw new WorkspaceAiQueueError("EDITOR_ROLE_REQUIRED", "Workspace owner or editor role is required.");
-  }
-}
 
 async function assertSnapshotInWorkspace(db: any, workspaceId: number, snapshotId: number) {
   const rows = await db
@@ -114,8 +91,7 @@ export async function queueAiJob(input: {
   priority?: number;
 }) {
   const db = await database();
-  const membership = await requireMembership(db, input.workspaceId, input.actorUserId);
-  requireEditorRole(membership.role);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   await assertSnapshotInWorkspace(db, input.workspaceId, input.snapshotId);
 
   const idempotencyKey = aiIdempotencyKey(input);
@@ -381,8 +357,7 @@ export async function retryAiJob(input: {
   jobId: number;
 }) {
   const db = await database();
-  const membership = await requireMembership(db, input.workspaceId, input.actorUserId);
-  requireEditorRole(membership.role);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   return db.transaction(async (tx: any) => {
     const [job] = await tx.select().from(workspaceAiJobs).where(and(
       eq(workspaceAiJobs.id, input.jobId),
@@ -408,8 +383,7 @@ export async function cancelAiJob(input: {
   jobId: number;
 }) {
   const db = await database();
-  const membership = await requireMembership(db, input.workspaceId, input.actorUserId);
-  requireEditorRole(membership.role);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   const now = new Date();
   return db.transaction(async (tx: any) => {
     const [job] = await tx.select().from(workspaceAiJobs).where(and(
@@ -444,7 +418,7 @@ export async function cancelAiJob(input: {
 
 export async function listAiJobs(input: { actorUserId: number; workspaceId: number }) {
   const db = await database();
-  await requireMembership(db, input.workspaceId, input.actorUserId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   return db.select().from(workspaceAiJobs)
     .where(eq(workspaceAiJobs.workspaceId, input.workspaceId))
     .orderBy(desc(workspaceAiJobs.priority), asc(workspaceAiJobs.createdAt), asc(workspaceAiJobs.id));
@@ -452,7 +426,7 @@ export async function listAiJobs(input: { actorUserId: number; workspaceId: numb
 
 export async function getAiJobDetail(input: { actorUserId: number; workspaceId: number; jobId: number }) {
   const db = await database();
-  await requireMembership(db, input.workspaceId, input.actorUserId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   const [job] = await db.select().from(workspaceAiJobs).where(and(
     eq(workspaceAiJobs.id, input.jobId),
     eq(workspaceAiJobs.workspaceId, input.workspaceId)

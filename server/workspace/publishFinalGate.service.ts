@@ -1,10 +1,10 @@
 import { and, asc, eq } from "drizzle-orm";
 import {
-  workspaceMembers,
   workspaceMigrationRegistry,
   workspacePublishOwnershipTransitions,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import { getPublishCutoverReadiness, WorkspacePublishCutoverError } from "./publishCutover.service";
 import { buildPublishFinalGatePackage } from "./publishFinalGate.domain";
 
@@ -12,8 +12,6 @@ export class WorkspacePublishFinalGateError extends Error {
   constructor(
     readonly code:
       | "DATABASE_UNAVAILABLE"
-      | "MEMBERSHIP_REQUIRED"
-      | "EDITOR_ROLE_REQUIRED"
       | "PUBLISH_OWNERSHIP_AMBIGUOUS"
       | "PREVIEW_GATE_BLOCKED",
     message: string
@@ -29,19 +27,6 @@ async function database() {
   return db;
 }
 
-async function requireOperator(db: any, workspaceId: number, userId: number) {
-  const [membership] = await db.select().from(workspaceMembers).where(and(
-    eq(workspaceMembers.workspaceId, workspaceId),
-    eq(workspaceMembers.userId, userId),
-    eq(workspaceMembers.status, "active")
-  )).limit(1);
-  if (!membership) {
-    throw new WorkspacePublishFinalGateError("MEMBERSHIP_REQUIRED", "Active workspace membership is required.");
-  }
-  if (membership.role !== "owner" && membership.role !== "editor") {
-    throw new WorkspacePublishFinalGateError("EDITOR_ROLE_REQUIRED", "Workspace owner or editor role is required for the final publish gate.");
-  }
-}
 
 export async function getPublishFinalGatePackage(input: {
   actorUserId: number;
@@ -50,7 +35,7 @@ export async function getPublishFinalGatePackage(input: {
   executionEnabled: boolean;
 }) {
   const db = await database();
-  await requireOperator(db, input.workspaceId, input.actorUserId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
 
   let readiness;
   try {

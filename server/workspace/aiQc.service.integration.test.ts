@@ -53,7 +53,7 @@ describe.sequential("workspace M04-B read-only AI QC execution", () => {
     if (!process.env.TEST_DATABASE_URL) return;
     assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
     const db = getTestDb();
-    const owner = await createTestUser();
+    const owner = await createTestUser({ role: "admin" });
     const novel = await createTestNovel();
     const workspace = await createWorkspace(owner.id, "M04-B AI QC tenant");
 

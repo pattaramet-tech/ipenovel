@@ -8,9 +8,10 @@ function source(relativePath: string) {
 }
 
 describe("workspace M01 static safety", () => {
-  it("keeps the Workspace router on session auth rather than the Google migration gate", () => {
+  it("keeps the Workspace router on platform-admin auth rather than the Google migration gate", () => {
     const router = source("server/workspace/router.ts");
-    expect(router).toContain("authenticatedProcedure");
+    expect(router).toContain("adminProcedure");
+    expect(router).not.toContain("authenticatedProcedure");
     expect(router).not.toContain("protectedProcedure");
   });
 

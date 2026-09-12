@@ -36,7 +36,7 @@ describe.sequential("workspace M04-A durable AI Queue foundation", () => {
     if (!process.env.TEST_DATABASE_URL) return;
     assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
     const db = getTestDb();
-    const owner = await createTestUser();
+    const owner = await createTestUser({ role: "admin" });
     const outsider = await createTestUser();
     const novel = await createTestNovel();
     const workspace = await createWorkspace(owner.id, "M04-A AI queue tenant");
@@ -100,7 +100,7 @@ describe.sequential("workspace M04-A durable AI Queue foundation", () => {
       expect((await db.select().from(workspaceAiJobs).where(eq(workspaceAiJobs.id, jobId)))).toHaveLength(1);
 
       await expect(listAiJobs({ actorUserId: outsider.id, workspaceId: workspace.workspaceId }))
-        .rejects.toMatchObject({ code: "MEMBERSHIP_REQUIRED" });
+        .rejects.toMatchObject({ code: "ADMIN_REQUIRED" });
 
       const claims = await Promise.allSettled([
         claimAiJob({

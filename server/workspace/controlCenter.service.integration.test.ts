@@ -11,12 +11,12 @@ import {
 } from "./controlCenter.service";
 
 describe.sequential("Workspace Control Center read-only integration", () => {
-  it("is membership-gated and returns an empty side-effect-free publish projection for a new workspace", async () => {
+  it("is platform-admin-gated and returns an empty side-effect-free publish projection for a new workspace", async () => {
     if (!process.env.TEST_DATABASE_URL) return;
     assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
 
     const testDb = getTestDb();
-    const owner = await createTestUser();
+    const owner = await createTestUser({ role: "admin" });
     const outsider = await createTestUser();
     const workspace = await createWorkspace(owner.id, "Control Center tenant");
 
@@ -38,7 +38,7 @@ describe.sequential("Workspace Control Center read-only integration", () => {
         actorUserId: outsider.id,
         workspaceId: workspace.workspaceId,
       })).rejects.toMatchObject<Partial<WorkspaceControlCenterError>>({
-        code: "MEMBERSHIP_REQUIRED",
+        code: "ADMIN_REQUIRED",
       });
     } finally {
       await testDb.delete(workspaceWorkspaces).where(eq(workspaceWorkspaces.id, workspace.workspaceId));

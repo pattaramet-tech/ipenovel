@@ -25,7 +25,7 @@ describe.sequential("workspace M05-C publish cutover readiness", () => {
     if (!process.env.TEST_DATABASE_URL) return;
     assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
     const db = getTestDb();
-    const owner = await createTestUser();
+    const owner = await createTestUser({ role: "admin" });
     const novel = await createTestNovel();
     const workspace = await createWorkspace(owner.id, "M05-C readiness tenant");
 

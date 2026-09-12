@@ -1,6 +1,5 @@
 import { and, asc, desc, eq } from "drizzle-orm";
 import {
-  workspaceMembers,
   workspaceMigrationRegistry,
   workspaceNovels,
   workspaceOutbox,
@@ -10,7 +9,7 @@ import {
   workspacePublishingDestinations,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
-import type { WorkspaceRole } from "./domain";
+import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import {
   buildLegacyRetirementCandidatePackage,
   type LegacyRetirementEvidence,
@@ -20,8 +19,6 @@ export class WorkspaceLegacyRetirementError extends Error {
   constructor(
     readonly code:
       | "DATABASE_UNAVAILABLE"
-      | "MEMBERSHIP_REQUIRED"
-      | "EDITOR_ROLE_REQUIRED"
       | "WORKSPACE_NOVEL_NOT_FOUND"
       | "PUBLISH_OWNERSHIP_AMBIGUOUS"
       | "RETIREMENT_CANDIDATE_BLOCKED",
@@ -38,18 +35,6 @@ async function database() {
   return db;
 }
 
-async function requireOperator(db: any, workspaceId: number, userId: number) {
-  const [membership] = await db.select().from(workspaceMembers).where(and(
-    eq(workspaceMembers.workspaceId, workspaceId),
-    eq(workspaceMembers.userId, userId),
-    eq(workspaceMembers.status, "active")
-  )).limit(1);
-  if (!membership) throw new WorkspaceLegacyRetirementError("MEMBERSHIP_REQUIRED", "Active workspace membership is required.");
-  if (membership.role !== "owner" && membership.role !== "editor") {
-    throw new WorkspaceLegacyRetirementError("EDITOR_ROLE_REQUIRED", "Workspace owner or editor role is required for retirement-candidate evidence review.");
-  }
-  return membership as { role: WorkspaceRole };
-}
 
 export async function getLegacyRetirementCandidatePackage(input: {
   actorUserId: number;
@@ -58,7 +43,7 @@ export async function getLegacyRetirementCandidatePackage(input: {
   evidence: LegacyRetirementEvidence;
 }) {
   const db = await database();
-  await requireOperator(db, input.workspaceId, input.actorUserId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
 
   const [workspaceNovel] = await db.select().from(workspaceNovels).where(and(
     eq(workspaceNovels.id, input.workspaceNovelId),

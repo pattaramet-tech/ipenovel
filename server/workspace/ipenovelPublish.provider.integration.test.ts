@@ -13,7 +13,7 @@ describe.sequential("IpeNovel Workspace external publish adapter", () => {
     if (!process.env.TEST_DATABASE_URL) return;
     assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
     const db = getTestDb();
-    const owner = await createTestUser();
+    const owner = await createTestUser({ role: "admin" });
     const novel = await createTestNovel();
     const episode = await createTestEpisode(novel.id, { isPublished: false, title: "Provider boundary fixture" });
     const workspace = await createWorkspace(owner.id, "Provider boundary tenant");

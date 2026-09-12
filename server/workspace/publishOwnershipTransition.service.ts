@@ -5,7 +5,6 @@ import {
   workspaceDocumentBindings,
   workspaceDocumentFingerprints,
   workspaceDocumentSnapshots,
-  workspaceMembers,
   workspaceMigrationRegistry,
   workspaceNovels,
   workspaceOutbox,
@@ -15,7 +14,7 @@ import {
   workspacePublishingDestinations,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
-import type { WorkspaceRole } from "./domain";
+import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import { buildPublishReadinessDigest } from "./publishCutover.domain";
 import { getPublishCutoverReadiness } from "./publishCutover.service";
 import {
@@ -29,8 +28,6 @@ export class WorkspacePublishOwnershipTransitionError extends Error {
   constructor(
     readonly code:
       | "DATABASE_UNAVAILABLE"
-      | "MEMBERSHIP_REQUIRED"
-      | "EDITOR_ROLE_REQUIRED"
       | "PUBLISH_RUN_NOT_FOUND"
       | "PUBLISH_OWNERSHIP_AMBIGUOUS"
       | "PUBLISH_OWNERSHIP_CONFLICT"
@@ -49,18 +46,6 @@ async function database() {
   return db;
 }
 
-async function requireEditor(db: any, workspaceId: number, userId: number) {
-  const [membership] = await db.select().from(workspaceMembers).where(and(
-    eq(workspaceMembers.workspaceId, workspaceId),
-    eq(workspaceMembers.userId, userId),
-    eq(workspaceMembers.status, "active")
-  )).limit(1);
-  if (!membership) throw new WorkspacePublishOwnershipTransitionError("MEMBERSHIP_REQUIRED", "Active workspace membership is required.");
-  if (membership.role !== "owner" && membership.role !== "editor") {
-    throw new WorkspacePublishOwnershipTransitionError("EDITOR_ROLE_REQUIRED", "Workspace owner or editor role is required for publish ownership changes.");
-  }
-  return membership as { role: WorkspaceRole };
-}
 
 async function loadRunContext(db: any, workspaceId: number, runId: number) {
   const [row] = await db.select({
@@ -131,7 +116,7 @@ async function performTransition(input: {
   expectedVersion: number;
 }) {
   const db = await database();
-  await requireEditor(db, input.workspaceId, input.actorUserId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   const context = await loadRunContext(db, input.workspaceId, input.runId);
   const [replayed] = await db.select().from(workspacePublishOwnershipTransitions).where(and(
     eq(workspacePublishOwnershipTransitions.workspaceNovelId, context.workspaceNovel.id),

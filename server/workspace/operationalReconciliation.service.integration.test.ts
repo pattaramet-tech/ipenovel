@@ -6,6 +6,9 @@ import {
   workspaceCheckerFindings,
   workspaceCheckerRuns,
   workspaceGoogleConnections,
+  workspaceKanbanBoards,
+  workspaceKanbanCards,
+  workspaceKanbanColumns,
   workspaceKanbanTransitions,
   workspaceMigrationRegistry,
   workspaceWorkspaces,
@@ -33,11 +36,11 @@ import {
 import { bindPublicationNovel, createWorkspace } from "./service";
 
 describe.sequential("workspace M03-C operational reconciliation", () => {
-  it("builds a membership-gated operational projection and reconciles copied legacy input without side effects", async () => {
+  it("builds a platform-admin-gated operational projection and reconciles copied legacy input without side effects", async () => {
     if (!process.env.TEST_DATABASE_URL) return;
     assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
     const db = getTestDb();
-    const owner = await createTestUser();
+    const owner = await createTestUser({ role: "admin" });
     const outsider = await createTestUser();
     const novel = await createTestNovel();
     const workspace = await createWorkspace(owner.id, "M03-C operational tenant");
@@ -148,7 +151,7 @@ describe.sequential("workspace M03-C operational reconciliation", () => {
       await expect(listOperationalReconciliationState({
         actorUserId: outsider.id,
         workspaceId: workspace.workspaceId,
-      })).rejects.toMatchObject({ code: "MEMBERSHIP_REQUIRED" });
+      })).rejects.toMatchObject({ code: "ADMIN_REQUIRED" });
 
       const beforeCounts = {
         runs: (await db.select().from(workspaceCheckerRuns)).length,
@@ -261,6 +264,10 @@ describe.sequential("workspace M03-C operational reconciliation", () => {
       expect(ownership[0].owner).toBe("sheets");
       expect(ownership[0].cutoverEpoch).toBe(0);
     } finally {
+      await db.delete(workspaceKanbanTransitions);
+      await db.delete(workspaceKanbanCards);
+      await db.delete(workspaceKanbanColumns);
+      await db.delete(workspaceKanbanBoards);
       await db.delete(workspaceCheckerRuns);
       await db.delete(workspaceWorkspaces).where(eq(workspaceWorkspaces.id, workspace.workspaceId));
       await db.delete(workspaceGoogleConnections).where(eq(workspaceGoogleConnections.userId, owner.id));

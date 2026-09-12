@@ -1,6 +1,5 @@
 import { and, asc, desc, eq } from "drizzle-orm";
 import {
-  workspaceMembers,
   workspaceMigrationRegistry,
   workspaceNovels,
   workspaceOutbox,
@@ -10,10 +9,11 @@ import {
   workspacePublishingDestinations,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { requireWorkspacePlatformAdmin } from "./adminAccess";
 
 export class WorkspaceControlCenterError extends Error {
   constructor(
-    readonly code: "DATABASE_UNAVAILABLE" | "MEMBERSHIP_REQUIRED",
+    readonly code: "DATABASE_UNAVAILABLE",
     message: string
   ) {
     super(message);
@@ -32,24 +32,6 @@ async function database() {
   return db;
 }
 
-async function requireMembership(db: any, workspaceId: number, userId: number) {
-  const [membership] = await db
-    .select()
-    .from(workspaceMembers)
-    .where(and(
-      eq(workspaceMembers.workspaceId, workspaceId),
-      eq(workspaceMembers.userId, userId),
-      eq(workspaceMembers.status, "active")
-    ))
-    .limit(1);
-  if (!membership) {
-    throw new WorkspaceControlCenterError(
-      "MEMBERSHIP_REQUIRED",
-      "Active workspace membership is required for the Control Center."
-    );
-  }
-  return membership;
-}
 
 /**
  * Read-only M03-M06 publish operations projection for the Control Center UI.
@@ -62,7 +44,7 @@ export async function getWorkspacePublishOperationalOverview(input: {
   workspaceId: number;
 }) {
   const db = await database();
-  await requireMembership(db, input.workspaceId, input.actorUserId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
 
   const [runRows, itemRows, outboxRows, ownershipRows, transitions] = await Promise.all([
     db

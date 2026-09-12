@@ -7,7 +7,6 @@ import {
   workspaceDocumentBindings,
   workspaceDocumentFingerprints,
   workspaceDocumentSnapshots,
-  workspaceMembers,
   workspaceMigrationRegistry,
   workspaceOutbox,
   workspacePublishItems,
@@ -16,7 +15,7 @@ import {
   workspaceNovels,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
-import type { WorkspaceRole } from "./domain";
+import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import {
   buildPublishDryRunIdempotencyKey,
   buildPublishOutboxEnvelopeContract,
@@ -29,8 +28,6 @@ export class WorkspacePublishDryRunError extends Error {
   constructor(
     readonly code:
       | "DATABASE_UNAVAILABLE"
-      | "MEMBERSHIP_REQUIRED"
-      | "EDITOR_ROLE_REQUIRED"
       | "PUBLISH_OWNERSHIP_AMBIGUOUS"
       | "DESTINATION_NOT_FOUND"
       | "DESTINATION_CONFLICT"
@@ -57,21 +54,7 @@ function isDuplicateKey(error: unknown) {
   return value?.code === "ER_DUP_ENTRY" || value?.errno === 1062 || value?.cause?.code === "ER_DUP_ENTRY" || value?.cause?.errno === 1062;
 }
 
-async function requireMembership(db: any, workspaceId: number, userId: number) {
-  const [membership] = await db.select().from(workspaceMembers).where(and(
-    eq(workspaceMembers.workspaceId, workspaceId),
-    eq(workspaceMembers.userId, userId),
-    eq(workspaceMembers.status, "active")
-  )).limit(1);
-  if (!membership) throw new WorkspacePublishDryRunError("MEMBERSHIP_REQUIRED", "Active workspace membership is required.");
-  return membership as { role: WorkspaceRole };
-}
 
-function requireEditor(role: WorkspaceRole) {
-  if (role !== "owner" && role !== "editor") {
-    throw new WorkspacePublishDryRunError("EDITOR_ROLE_REQUIRED", "Workspace owner or editor role is required.");
-  }
-}
 
 async function requireValidPublishOwnership(db: any, workspaceNovelId: number) {
   const rows = await db.select().from(workspaceMigrationRegistry).where(and(
@@ -153,8 +136,7 @@ export async function createPublishDestination(input: {
   policyVersion: string;
 }) {
   const db = await database();
-  const membership = await requireMembership(db, input.workspaceId, input.actorUserId);
-  requireEditor(membership.role);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   const [workspaceNovel] = await db.select().from(workspaceNovels).where(and(
     eq(workspaceNovels.id, input.workspaceNovelId),
     eq(workspaceNovels.workspaceId, input.workspaceId)
@@ -201,7 +183,7 @@ export async function createPublishDestination(input: {
 
 export async function listPublishDestinations(input: { actorUserId: number; workspaceId: number }) {
   const db = await database();
-  await requireMembership(db, input.workspaceId, input.actorUserId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   return db.select({ destination: workspacePublishingDestinations, workspaceNovel: workspaceNovels })
     .from(workspacePublishingDestinations)
     .innerJoin(workspaceNovels, eq(workspacePublishingDestinations.workspaceNovelId, workspaceNovels.id))
@@ -220,8 +202,7 @@ export async function createPublishDryRun(input: {
 }) {
   validateItems(input.items);
   const db = await database();
-  const membership = await requireMembership(db, input.workspaceId, input.actorUserId);
-  requireEditor(membership.role);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   const context = await destinationContext(db, input.workspaceId, input.destinationId);
   if (context.destination.status !== "active") throw new WorkspacePublishDryRunError("DESTINATION_CONFLICT", "Publish destination is not active.");
   await requireValidPublishOwnership(db, context.workspaceNovel.id);
@@ -309,7 +290,7 @@ export async function createPublishDryRun(input: {
 
 export async function getPublishRunDetail(input: { actorUserId: number; workspaceId: number; runId: number }) {
   const db = await database();
-  await requireMembership(db, input.workspaceId, input.actorUserId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   const [row] = await db.select({ run: workspacePublishRuns, destination: workspacePublishingDestinations, workspaceNovel: workspaceNovels })
     .from(workspacePublishRuns)
     .innerJoin(workspacePublishingDestinations, eq(workspacePublishRuns.destinationId, workspacePublishingDestinations.id))

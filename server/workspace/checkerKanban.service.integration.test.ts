@@ -5,7 +5,9 @@ import {
   users,
   workspaceCheckerFindings,
   workspaceCheckerRuns,
+  workspaceKanbanBoards,
   workspaceKanbanCards,
+  workspaceKanbanColumns,
   workspaceKanbanTransitions,
   workspaceMigrationRegistry,
   workspaceWorkspaces,
@@ -37,7 +39,7 @@ describe.sequential("workspace M03 Checker/Kanban dual-run foundation", () => {
     if (!process.env.TEST_DATABASE_URL) return;
     assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
     const db = getTestDb();
-    const owner = await createTestUser();
+    const owner = await createTestUser({ role: "admin" });
     const novel = await createTestNovel();
     const workspace = await createWorkspace(owner.id, "M03 dual-run tenant");
 
@@ -310,6 +312,10 @@ describe.sequential("workspace M03 Checker/Kanban dual-run foundation", () => {
       expect(ownership[0].owner).toBe("sheets");
       expect(ownership[0].cutoverEpoch).toBe(0);
     } finally {
+      await db.delete(workspaceKanbanTransitions);
+      await db.delete(workspaceKanbanCards);
+      await db.delete(workspaceKanbanColumns);
+      await db.delete(workspaceKanbanBoards);
       await db.delete(workspaceCheckerRuns);
       await db
         .delete(workspaceWorkspaces)

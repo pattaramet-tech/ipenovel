@@ -15,7 +15,6 @@ import {
   getWorkspaceDetail,
   listMigrationOwnership,
   listReadOnlyBindings,
-  WorkspaceServiceError,
 } from "./service";
 
 /**
@@ -23,13 +22,13 @@ import {
  * TEST_DATABASE_URL connection supplied by vitest.integration.setupfile.ts.
  * No provider adapter, Apps Script, or Google credential is involved.
  */
-describe.sequential("workspace M01 membership and read-only binding integration", () => {
-  it("enforces tenant membership, including for a platform admin", async () => {
+describe.sequential("workspace M01 admin authorization and read-only binding integration", () => {
+  it("lets every platform admin open every workspace while non-admin membership grants no access", async () => {
     if (!process.env.TEST_DATABASE_URL) return;
     assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
 
     const testDb = getTestDb();
-    const owner = await createTestUser();
+    const owner = await createTestUser({ role: "admin" });
     const member = await createTestUser();
     const admin = await createTestUser({ role: "admin" });
     const first = await createWorkspace(owner.id, "Tenant A");
@@ -44,19 +43,22 @@ describe.sequential("workspace M01 membership and read-only binding integration"
       });
 
       await expect(getWorkspaceDetail(member.id, second.workspaceId))
-        .rejects.toMatchObject<Partial<WorkspaceServiceError>>({ code: "MEMBERSHIP_REQUIRED" });
-      await expect(getWorkspaceDetail(admin.id, first.workspaceId))
-        .rejects.toMatchObject<Partial<WorkspaceServiceError>>({ code: "MEMBERSHIP_REQUIRED" });
+        .rejects.toMatchObject({ code: "ADMIN_REQUIRED" });
+      const adminFirstDetail = await getWorkspaceDetail(admin.id, first.workspaceId);
+      const adminSecondDetail = await getWorkspaceDetail(admin.id, second.workspaceId);
+      expect(adminFirstDetail.workspace.id).toBe(first.workspaceId);
+      expect(adminSecondDetail.workspace.id).toBe(second.workspaceId);
+      expect(adminFirstDetail.membership).toBeNull();
       await expect(addOrUpdateMember({
         actorUserId: member.id,
         workspaceId: first.workspaceId,
         userId: admin.id,
         role: "viewer",
-      })).rejects.toMatchObject<Partial<WorkspaceServiceError>>({ code: "OWNER_ROLE_REQUIRED" });
+      })).rejects.toMatchObject({ code: "ADMIN_REQUIRED" });
 
-      const detail = await getWorkspaceDetail(member.id, first.workspaceId);
-      expect(detail.workspace.id).toBe(first.workspaceId);
-      expect(detail.members.map((row: { userId: number }) => row.userId)).toEqual(
+      await expect(getWorkspaceDetail(member.id, first.workspaceId))
+        .rejects.toMatchObject({ code: "ADMIN_REQUIRED" });
+      expect(adminFirstDetail.members.map((row: { userId: number }) => row.userId)).toEqual(
         expect.arrayContaining([owner.id, member.id])
       );
     } finally {
@@ -73,7 +75,7 @@ describe.sequential("workspace M01 membership and read-only binding integration"
     assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
 
     const testDb = getTestDb();
-    const owner = await createTestUser();
+    const owner = await createTestUser({ role: "admin" });
     const outsider = await createTestUser();
     const novel = await createTestNovel();
     const workspace = await createWorkspace(owner.id, "Binding tenant");
@@ -105,9 +107,9 @@ describe.sequential("workspace M01 membership and read-only binding integration"
       expect(ownership.every((row) => row.entry.cutoverEpoch === 0)).toBe(true);
 
       await expect(listReadOnlyBindings(outsider.id, workspace.workspaceId))
-        .rejects.toMatchObject<Partial<WorkspaceServiceError>>({ code: "MEMBERSHIP_REQUIRED" });
+        .rejects.toMatchObject({ code: "ADMIN_REQUIRED" });
       await expect(listMigrationOwnership(outsider.id, workspace.workspaceId))
-        .rejects.toMatchObject<Partial<WorkspaceServiceError>>({ code: "MEMBERSHIP_REQUIRED" });
+        .rejects.toMatchObject({ code: "ADMIN_REQUIRED" });
     } finally {
       await testDb.delete(workspaceWorkspaces).where(eq(workspaceWorkspaces.id, workspace.workspaceId));
       await testDb.delete(novels).where(eq(novels.id, novel.id));

@@ -9,11 +9,11 @@ function read(relativePath: string) {
 }
 
 describe("Workspace Control Center read-only contract", () => {
-  it("keeps the publish operational projection query-only and membership-gated", () => {
+  it("keeps the publish operational projection query-only and platform-admin-gated", () => {
     const service = read("server/workspace/controlCenter.service.ts");
     const router = read("server/workspace/router.ts");
 
-    expect(service).toContain("requireMembership(db, input.workspaceId, input.actorUserId)");
+    expect(service).toContain("requireWorkspacePlatformAdmin(db, input.actorUserId)");
     expect(service).toContain("readOnly: true as const");
     expect(service).toContain("sideEffectsApplied: false as const");
     expect(service).not.toMatch(/\.insert\s*\(/);
@@ -21,7 +21,7 @@ describe("Workspace Control Center read-only contract", () => {
     expect(service).not.toMatch(/\.delete\s*\(/);
 
     const controlCenterRouter = router.slice(router.indexOf("controlCenter: router({"), router.indexOf("fingerprints: router({"));
-    expect(controlCenterRouter).toContain("publishOverview: authenticatedProcedure");
+    expect(controlCenterRouter).toContain("publishOverview: adminProcedure");
     expect(controlCenterRouter).toContain(".query(async");
     expect(controlCenterRouter).not.toContain(".mutation(async");
   });

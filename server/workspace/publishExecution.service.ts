@@ -3,7 +3,6 @@ import {
   workspaceDocumentBindings,
   workspaceDocumentFingerprints,
   workspaceDocumentSnapshots,
-  workspaceMembers,
   workspaceMigrationRegistry,
   workspaceNovels,
   workspaceOutbox,
@@ -12,7 +11,7 @@ import {
   workspacePublishingDestinations,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
-import type { WorkspaceRole } from "./domain";
+import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import {
   buildPublishItemRequestKey,
   buildPublishOutboxIdempotencyKey,
@@ -30,8 +29,6 @@ export class WorkspacePublishExecutionError extends Error {
   constructor(
     readonly code:
       | "DATABASE_UNAVAILABLE"
-      | "MEMBERSHIP_REQUIRED"
-      | "EDITOR_ROLE_REQUIRED"
       | "EXECUTION_DISABLED"
       | "EXECUTION_SCOPE_MISMATCH"
       | "EXTERNAL_PROVIDER_DISABLED"
@@ -60,21 +57,7 @@ function affectedRows(result: any): number {
   return Number(result?.[0]?.affectedRows ?? result?.affectedRows ?? 0);
 }
 
-async function requireMembership(db: any, workspaceId: number, userId: number) {
-  const [membership] = await db.select().from(workspaceMembers).where(and(
-    eq(workspaceMembers.workspaceId, workspaceId),
-    eq(workspaceMembers.userId, userId),
-    eq(workspaceMembers.status, "active")
-  )).limit(1);
-  if (!membership) throw new WorkspacePublishExecutionError("MEMBERSHIP_REQUIRED", "Active workspace membership is required.");
-  return membership as { role: WorkspaceRole };
-}
 
-function requireEditor(role: WorkspaceRole) {
-  if (role !== "owner" && role !== "editor") {
-    throw new WorkspacePublishExecutionError("EDITOR_ROLE_REQUIRED", "Workspace owner or editor role is required.");
-  }
-}
 
 async function requireWorkspacePublishOwnership(
   db: any,
@@ -160,8 +143,7 @@ export async function requestPublishExecution(input: {
     throw new WorkspacePublishExecutionError("EXECUTION_DISABLED", "Workspace publish execution is not enabled by server configuration.");
   }
   const db = await database();
-  const membership = await requireMembership(db, input.workspaceId, input.actorUserId);
-  requireEditor(membership.role);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
 
   return db.transaction(async (tx: any) => {
     const context = await loadRunContext(tx, input.workspaceId, input.runId, true);

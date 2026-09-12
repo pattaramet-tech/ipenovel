@@ -48,7 +48,7 @@ describe.sequential("workspace M04-C operational reconciliation", () => {
     if (!process.env.TEST_DATABASE_URL) return;
     assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
     const db = getTestDb();
-    const owner = await createTestUser();
+    const owner = await createTestUser({ role: "admin" });
     const outsider = await createTestUser();
     const novel = await createTestNovel();
     const workspace = await createWorkspace(owner.id, "M04-C reconciliation tenant");
@@ -109,7 +109,7 @@ describe.sequential("workspace M04-C operational reconciliation", () => {
       await db.update(workspaceAiJobAttempts).set({ leaseExpiresAt: new Date(Date.now() - 1_000) }).where(eq(workspaceAiJobAttempts.id, first.attempt.id));
 
       await expect(getAiQcOperationalReadModel({ actorUserId: outsider.id, workspaceId: workspace.workspaceId, jobId: crashed.job.id }))
-        .rejects.toMatchObject({ code: "MEMBERSHIP_REQUIRED" });
+        .rejects.toMatchObject({ code: "ADMIN_REQUIRED" });
       const before = await getAiQcOperationalReadModel({ actorUserId: owner.id, workspaceId: workspace.workspaceId, jobId: crashed.job.id });
       expect(before.operational.state).toBe("receipt_recovery_needed");
 

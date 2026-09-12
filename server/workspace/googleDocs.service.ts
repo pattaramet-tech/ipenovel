@@ -8,10 +8,10 @@ import {
   workspaceDocumentSnapshots,
   workspaceGoogleConnections,
   workspaceGoogleConsentAttempts,
-  workspaceMembers,
   workspaceNovels,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import { runWorkspaceTransactionWithDeadlockRetry } from "./transactionRetry";
 import {
   buildDocsAuthorizationUrl,
@@ -30,8 +30,6 @@ export class WorkspaceDocsServiceError extends Error {
   constructor(
     readonly code:
       | "DATABASE_UNAVAILABLE"
-      | "MEMBERSHIP_REQUIRED"
-      | "EDITOR_ROLE_REQUIRED"
       | "CONNECTION_NOT_FOUND"
       | "CONNECTION_OWNERSHIP_REQUIRED"
       | "DOCS_SCOPE_REQUIRED"
@@ -87,25 +85,6 @@ function insertId(result: any): number {
   return value;
 }
 
-async function requireMembership(db: any, workspaceId: number, userId: number) {
-  const rows = await db
-    .select()
-    .from(workspaceMembers)
-    .where(
-      and(
-        eq(workspaceMembers.workspaceId, workspaceId),
-        eq(workspaceMembers.userId, userId),
-        eq(workspaceMembers.status, "active")
-      )
-    )
-    .limit(1);
-  if (!rows[0])
-    throw new WorkspaceDocsServiceError(
-      "MEMBERSHIP_REQUIRED",
-      "Active workspace membership is required."
-    );
-  return rows[0];
-}
 
 async function requireOwnedConnection(
   db: any,
@@ -333,7 +312,7 @@ export async function revokeGoogleConnection(input: {
   adapter: WorkspaceDocsAdapter;
 }) {
   const db = await database();
-  await requireMembership(db, input.workspaceId, input.actorUserId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   const connection = await requireOwnedConnection(
     db,
     input.connectionId,
@@ -406,17 +385,7 @@ export async function bindGoogleDocument(input: {
   correlationId: string;
 }) {
   const db = await database();
-  const membership = await requireMembership(
-    db,
-    input.workspaceId,
-    input.actorUserId
-  );
-  if (membership.role !== "owner" && membership.role !== "editor") {
-    throw new WorkspaceDocsServiceError(
-      "EDITOR_ROLE_REQUIRED",
-      "Only workspace owners and editors can bind documents."
-    );
-  }
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   await requireOwnedConnection(db, input.connectionId, input.actorUserId);
   const novelRows = await db
     .select()
@@ -560,7 +529,7 @@ export async function observeBoundGoogleDocument(input: {
   adapter: WorkspaceDocsAdapter;
 }) {
   const db = await database();
-  await requireMembership(db, input.workspaceId, input.actorUserId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   const rows = await db
     .select({
       binding: workspaceDocumentBindings,
@@ -724,7 +693,7 @@ export async function listDocumentFingerprints(input: {
   workspaceId: number;
 }) {
   const db = await database();
-  await requireMembership(db, input.workspaceId, input.actorUserId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   return db
     .select({
       fingerprint: workspaceDocumentFingerprints,

@@ -32,13 +32,13 @@ describe("workspace M03-A fingerprint projection static contract", () => {
     expect(block).not.toMatch(/normalizedText|documentBody|refreshToken|accessToken/i);
   });
 
-  it("updates the projection during observation and exposes a membership-gated read model", () => {
+  it("updates the projection during observation and exposes a platform-admin-gated read model", () => {
     const service = source("server/workspace/googleDocs.service.ts");
     expect(service).toContain(".insert(workspaceDocumentFingerprints)");
     expect(service).toContain(".onDuplicateKeyUpdate({");
     expect(service).toContain("version: sql`${workspaceDocumentFingerprints.version} + 1`");
     expect(service).toContain("export async function listDocumentFingerprints");
-    expect(service).toContain("await requireMembership(db, input.workspaceId, input.actorUserId)");
+    expect(service).toContain("await requireWorkspacePlatformAdmin(db, input.actorUserId)");
     const readModel = service.slice(service.indexOf("export async function listDocumentFingerprints"));
     expect(readModel).not.toMatch(/encryptedRefreshToken|accessToken|normalizedText/);
   });

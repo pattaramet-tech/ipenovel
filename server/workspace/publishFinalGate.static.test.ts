@@ -14,8 +14,8 @@ describe("workspace M05-E final gate boundaries", () => {
 
   it("exposes Preview package/gate as queries only and derives execution state from server config", () => {
     expect(router).toContain("publishFinalGate: router({");
-    expect(router).toContain("package: authenticatedProcedure");
-    expect(router).toContain("requirePreviewReadiness: authenticatedProcedure");
+    expect(router).toContain("package: adminProcedure");
+    expect(router).toContain("requirePreviewReadiness: adminProcedure");
     expect(router).toContain('process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true"');
     const finalGateSlice = router.slice(router.indexOf("publishFinalGate: router({"), router.indexOf("publishCutover: router({"));
     expect(finalGateSlice).toContain(".query(");

@@ -17,7 +17,7 @@ The inspected repo is a React 19/Vite SPA using Wouter, Express+tRPC, Drizzle/My
 | Boundary | Location | Ownership |
 | --- | --- | --- |
 | UI | `client/src/pages/workspace` | Control center/Kanban/checker/queue/publishing status |
-| Router | `server/workspace/router.ts` | authenticated tRPC and membership authorization |
+| Router | `server/workspace/router.ts` | platform-admin-only tRPC authorization |
 | Domain/application | `server/workspace/domain`, `application` | invariants, commands, state machines |
 | Google adapter | `server/workspace/integrations/google` | consent, Docs/Drive reads, revision metadata |
 | Checker/AI/publish | `server/workspace/checker`, `jobs`, `publishing` | deterministic checks, leases/artifacts, outbox delivery |
@@ -27,7 +27,7 @@ Dependencies point UI/router → application → domain. External systems implem
 
 ## Authentication and Google authorization
 
-Reuse existing session/RBAC; add workspace roles `owner|editor|reviewer|viewer`. Platform admin status does not silently grant membership.
+Workspace is an admin-only back-office surface: every caller must have platform role `admin`, and every platform admin has the same authority across every active Workspace. Historical `workspaceMembers` rows and roles may remain for compatibility/audit, but they do not grant, restrict, or divide Workspace authorization. Service entry points re-check the current database role as defense in depth.
 
 Docs access is a separate, explicit incremental-consent flow and never changes login scope. It uses authenticated start, state/PKCE, fixed callback, least privilege, server-derived ownership, encrypted refresh tokens with key version, atomic refresh rotation, revocation/reconnect, scope checks, and audit. Provider tokens/codes/document bodies never enter browser storage or routine logs.
 

@@ -7,7 +7,6 @@ import {
   workspaceDocumentBindings,
   workspaceDocumentFingerprints,
   workspaceDocumentSnapshots,
-  workspaceMembers,
   workspaceMigrationRegistry,
   workspaceNovels,
   workspaceOutbox,
@@ -16,6 +15,7 @@ import {
   workspacePublishingDestinations,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import {
   buildPublishCutoverRehearsal,
   buildPublishReadinessDigest,
@@ -27,7 +27,6 @@ export class WorkspacePublishCutoverError extends Error {
   constructor(
     readonly code:
       | "DATABASE_UNAVAILABLE"
-      | "MEMBERSHIP_REQUIRED"
       | "PUBLISH_RUN_NOT_FOUND"
       | "PUBLISH_OWNERSHIP_AMBIGUOUS",
     message: string
@@ -43,14 +42,6 @@ async function database() {
   return db;
 }
 
-async function requireMembership(db: any, workspaceId: number, userId: number) {
-  const [membership] = await db.select().from(workspaceMembers).where(and(
-    eq(workspaceMembers.workspaceId, workspaceId),
-    eq(workspaceMembers.userId, userId),
-    eq(workspaceMembers.status, "active")
-  )).limit(1);
-  if (!membership) throw new WorkspacePublishCutoverError("MEMBERSHIP_REQUIRED", "Active workspace membership is required.");
-}
 
 async function loadRunContext(db: any, workspaceId: number, runId: number) {
   const [row] = await db.select({
@@ -107,7 +98,7 @@ export async function getPublishCutoverReadiness(input: {
   runId: number;
 }) {
   const db = await database();
-  await requireMembership(db, input.workspaceId, input.actorUserId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
   const context = await loadRunContext(db, input.workspaceId, input.runId);
   const ownership = await requireSheetsOwnership(db, context.workspaceNovel.id);
 
