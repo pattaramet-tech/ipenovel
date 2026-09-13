@@ -6,6 +6,9 @@
 import * as db from "../db";
 import { TRPCError } from "@trpc/server";
 import { verifyWalletTopupWithProvider } from "./paymentProviderVerificationService";
+import { eq } from "drizzle-orm";
+import { walletAccounts, walletTransactions } from "../../drizzle/schema";
+import { decimalToMinorUnits, minorUnitsToDecimal } from "./accountMergeFinancialMath";
 
 export async function createWalletTopupRequest(userId: number, requestedAmount: string, slipImageUrl?: string) {
   // STRICT validation: must be a valid positive number only
@@ -179,4 +182,39 @@ export async function adminRejectWalletTopup(
       message: error instanceof Error ? error.message : "Failed to reject wallet top-up",
     });
   }
+}
+
+const ADMIN_WALLET_SPEC = { precision: 12, scale: 2 } as const;
+
+/** Canonical fixed-decimal, locked admin wallet mutation primitive for IPE-048. */
+export async function adminWalletLedgerAdjustment(input: {
+  tx: any;
+  userId: number;
+  delta: string;
+  expectedBalance: string;
+  referenceType: "admin_wallet_credit" | "admin_wallet_clawback";
+  referenceId: number;
+  note: string;
+}) {
+  const wallet = (await input.tx.select().from(walletAccounts)
+    .where(eq(walletAccounts.userId, input.userId)).limit(1).for("update"))[0];
+  if (!wallet) throw new Error("Wallet account unavailable");
+  const beforeMinor = decimalToMinorUnits(String(wallet.balance), "walletBalance", ADMIN_WALLET_SPEC);
+  const expectedMinor = decimalToMinorUnits(input.expectedBalance, "expectedBalance", ADMIN_WALLET_SPEC);
+  if (beforeMinor !== expectedMinor) throw new Error("STALE_PREVIEW");
+  const deltaMinor = decimalToMinorUnits(input.delta, "delta", ADMIN_WALLET_SPEC, { allowNegative: true });
+  const afterMinor = beforeMinor + deltaMinor;
+  if (afterMinor < 0) throw new Error("INSUFFICIENT_WALLET");
+  const before = minorUnitsToDecimal(beforeMinor, 2);
+  const after = minorUnitsToDecimal(afterMinor, 2);
+  await input.tx.update(walletAccounts).set({ balance: after, updatedAt: new Date() })
+    .where(eq(walletAccounts.userId, input.userId));
+  const result: any = await input.tx.insert(walletTransactions).values({
+    userId: input.userId, type: "adjust" as any, amount: input.delta,
+    balanceBefore: before, balanceAfter: after, referenceType: input.referenceType,
+    referenceId: input.referenceId, note: input.note,
+  });
+  const walletTransactionId = Number((Array.isArray(result) ? result[0] : result)?.insertId);
+  if (!Number.isInteger(walletTransactionId) || walletTransactionId <= 0) throw new Error("Failed to create wallet ledger entry");
+  return { before, after, walletTransactionId };
 }

@@ -2206,6 +2206,55 @@ export const appRouter = router({
         }),
     }),
 
+    giftWalletAdjustment: router({
+      preview: adminProcedure
+        .input(z.object({
+          action: z.enum(["NOVEL_GIFT", "WALLET_CREDIT", "WALLET_CLAWBACK"]),
+          targetUserId: z.number().int().positive(),
+          amount: z.string().optional(),
+          novelId: z.number().int().positive().optional(),
+          linkedOriginalAdjustmentId: z.number().int().positive().optional(),
+        }))
+        .query(async ({ input }) => {
+          const service = await import("./services/adminGiftWalletAdjustmentService");
+          try { return await service.previewAdminGiftWalletAdjustment(input); }
+          catch (error: any) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Unable to preview adjustment" });
+          }
+        }),
+
+      execute: adminProcedure
+        .input(z.object({
+          action: z.enum(["NOVEL_GIFT", "WALLET_CREDIT", "WALLET_CLAWBACK"]),
+          targetUserId: z.number().int().positive(),
+          amount: z.string().optional(),
+          novelId: z.number().int().positive().optional(),
+          linkedOriginalAdjustmentId: z.number().int().positive().optional(),
+          reason: z.string().min(3).max(2000),
+          idempotencyKey: z.string().min(8).max(128),
+          confirmation: z.string().min(1).max(100),
+          expectedBalance: z.string().optional(),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const service = await import("./services/adminGiftWalletAdjustmentService");
+          try { return await service.executeAdminGiftWalletAdjustment({ ...input, actorAdminId: ctx.user.id }); }
+          catch (error: any) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Unable to execute adjustment" });
+          }
+        }),
+
+      history: adminProcedure
+        .input(z.object({
+          targetUserId: z.number().int().positive().optional(),
+          action: z.enum(["NOVEL_GIFT", "WALLET_CREDIT", "WALLET_CLAWBACK"]).optional(),
+          limit: z.number().int().positive().max(100).optional(),
+        }).optional())
+        .query(async ({ input }) => {
+          const { listAdminGiftWalletAdjustmentHistory } = await import("./services/adminGiftWalletAdjustmentService");
+          return listAdminGiftWalletAdjustmentHistory(input ?? {});
+        }),
+    }),
+
     // ============ HYBRID CONTENT HEALTH DASHBOARD (Phase 2, read-only) ============
     // Surfaces exactly which novels/episodes are missing plaintext web-reader
     // content vs. only having a legacy file. Every query is DB-aggregated

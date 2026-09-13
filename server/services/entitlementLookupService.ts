@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "../db";
 import * as db from "../db";
-import { users, episodePurchases } from "../../drizzle/schema";
+import { users, episodePurchases, adminGiftEntitlements } from "../../drizzle/schema";
 import { computeContentFlags, resolveSaleMode, type EpisodeSaleMode } from "./readerService";
 
 /**
@@ -28,7 +28,7 @@ export interface EntitlementEpisodeResult {
   canRead: boolean;
   fileUrlVisible: boolean;
   visibleAction: EntitlementVisibleAction;
-  purchaseSource: "order" | "wallet";
+  purchaseSource: "order" | "wallet" | "admin_gift";
   purchasedAt: Date | null;
   progress: {
     progressPercent: number;
@@ -107,6 +107,13 @@ async function resolveUserId(input: { email?: string; userId?: number; orderId?:
   return { matched: false, reason: "not_found", candidates: [] };
 }
 
+/** All admin-gift entitlements for a user. */
+async function getGiftEntitlementsByUserId(userId: number) {
+  const database = await getDb();
+  if (!database) return [];
+  return database.select().from(adminGiftEntitlements).where(eq(adminGiftEntitlements.userId, userId));
+}
+
 /** All wallet-direct purchases for a user (episodePurchases table). */
 async function getWalletPurchasesByUserId(userId: number) {
   const database = await getDb();
@@ -124,16 +131,17 @@ export async function lookupUserEntitlements(
   const user = await db.getUserById(userId);
   if (!user) return { matched: false, reason: "not_found", candidates: [] };
 
-  const [orders, orderPurchases, walletPurchases] = await Promise.all([
+  const [orders, orderPurchases, walletPurchases, giftEntitlements] = await Promise.all([
     db.getOrdersByUserId(userId),
     db.getPurchasesByUserId(userId),
     getWalletPurchasesByUserId(userId),
+    getGiftEntitlementsByUserId(userId),
   ]);
 
   // Merge both purchase sources into one { episodeId -> { source, purchasedAt } }
   // map. An episode purchased through both paths (shouldn't normally happen)
   // keeps whichever was recorded first as the source of truth for display.
-  const purchaseByEpisodeId = new Map<number, { source: "order" | "wallet"; purchasedAt: Date | null }>();
+  const purchaseByEpisodeId = new Map<number, { source: "order" | "wallet" | "admin_gift"; purchasedAt: Date | null }>();
   for (const p of orderPurchases as any[]) {
     if (!purchaseByEpisodeId.has(p.episodeId)) {
       purchaseByEpisodeId.set(p.episodeId, { source: "order", purchasedAt: p.grantedAt ?? null });
@@ -142,6 +150,11 @@ export async function lookupUserEntitlements(
   for (const p of walletPurchases as any[]) {
     if (!purchaseByEpisodeId.has(p.episodeId)) {
       purchaseByEpisodeId.set(p.episodeId, { source: "wallet", purchasedAt: p.purchasedAt ?? null });
+    }
+  }
+  for (const g of giftEntitlements as any[]) {
+    if (!purchaseByEpisodeId.has(g.episodeId)) {
+      purchaseByEpisodeId.set(g.episodeId, { source: "admin_gift", purchasedAt: g.createdAt ?? null });
     }
   }
 

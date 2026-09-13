@@ -1,6 +1,7 @@
 import { eq, and, sql, gte } from "drizzle-orm";
 import { assertAccountMergeClassifiedMutationAllowed, getDb } from "../db";
 import {
+  adminGiftEntitlements,
   episodes,
   episodePurchases,
   walletAccounts,
@@ -133,7 +134,15 @@ async function checkExistingPurchase(userId: number, episodeId: number): Promise
     .where(and(eq(episodePurchases.userId, userId), eq(episodePurchases.episodeId, episodeId)))
     .limit(1);
 
-  return existing.length > 0;
+  if (existing.length > 0) return true;
+
+  const gifted = await db
+    .select({ id: adminGiftEntitlements.id })
+    .from(adminGiftEntitlements)
+    .where(and(eq(adminGiftEntitlements.userId, userId), eq(adminGiftEntitlements.episodeId, episodeId)))
+    .limit(1);
+
+  return gifted.length > 0;
 }
 
 /**
@@ -274,7 +283,13 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
         .where(and(eq(episodePurchases.userId, userId), eq(episodePurchases.episodeId, episodeId)))
         .limit(1);
 
-      if (existingPurchase.length > 0) {
+      const existingGift = await tx
+        .select({ id: adminGiftEntitlements.id })
+        .from(adminGiftEntitlements)
+        .where(and(eq(adminGiftEntitlements.userId, userId), eq(adminGiftEntitlements.episodeId, episodeId)))
+        .limit(1);
+
+      if (existingPurchase.length > 0 || existingGift.length > 0) {
         throw new PurchaseError("ALREADY_PURCHASED");
       }
 

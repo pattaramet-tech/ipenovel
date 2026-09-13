@@ -1785,6 +1785,61 @@ export const adminUserAuditLogs = mysqlTable(
 
 export type AdminUserAuditLog = typeof adminUserAuditLogs.$inferSelect;
 export type InsertAdminUserAuditLog = typeof adminUserAuditLogs.$inferInsert;
+/** IPE-048 append-only admin gift provenance. Never represents paid revenue. */
+export const adminGiftEntitlements = mysqlTable(
+  "adminGiftEntitlements",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    novelId: int("novelId").notNull(),
+    episodeId: int("episodeId").notNull(),
+    actorAdminId: int("actorAdminId").notNull(),
+    reason: text("reason").notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 128 }).notNull(),
+    adjustmentId: int("adjustmentId"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    userEpisodeUnique: uniqueIndex("adminGiftEntitlements_user_episode_unique").on(table.userId, table.episodeId),
+    idempotencyEpisodeUnique: uniqueIndex("adminGiftEntitlements_key_episode_unique").on(table.idempotencyKey, table.episodeId),
+    userCreatedIdx: index("adminGiftEntitlements_user_created_idx").on(table.userId, table.createdAt),
+    novelIdx: index("adminGiftEntitlements_novel_idx").on(table.novelId),
+  })
+);
+
+export type AdminGiftEntitlement = typeof adminGiftEntitlements.$inferSelect;
+export type InsertAdminGiftEntitlement = typeof adminGiftEntitlements.$inferInsert;
+
+/** IPE-048 immutable receipt for Gift / Wallet Credit / Wallet Clawback. */
+export const adminGiftWalletAdjustments = mysqlTable(
+  "adminGiftWalletAdjustments",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    action: mysqlEnum("action", ["NOVEL_GIFT", "WALLET_CREDIT", "WALLET_CLAWBACK"]).notNull(),
+    targetUserId: int("targetUserId").notNull(),
+    actorAdminId: int("actorAdminId").notNull(),
+    reason: text("reason").notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 128 }).notNull(),
+    amount: decimal("amount", { precision: 12, scale: 2 }),
+    balanceBefore: decimal("balanceBefore", { precision: 12, scale: 2 }),
+    balanceAfter: decimal("balanceAfter", { precision: 12, scale: 2 }),
+    novelId: int("novelId"),
+    entitlementCount: int("entitlementCount"),
+    linkedOriginalAdjustmentId: int("linkedOriginalAdjustmentId"),
+    walletTransactionId: int("walletTransactionId"),
+    safeMetadata: text("safeMetadata"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    idempotencyUnique: uniqueIndex("adminGiftWalletAdjustments_idempotency_unique").on(table.idempotencyKey),
+    targetCreatedIdx: index("adminGiftWalletAdjustments_target_created_idx").on(table.targetUserId, table.createdAt),
+    actionCreatedIdx: index("adminGiftWalletAdjustments_action_created_idx").on(table.action, table.createdAt),
+    originalIdx: index("adminGiftWalletAdjustments_original_idx").on(table.linkedOriginalAdjustmentId),
+  })
+);
+
+export type AdminGiftWalletAdjustment = typeof adminGiftWalletAdjustments.$inferSelect;
+export type InsertAdminGiftWalletAdjustment = typeof adminGiftWalletAdjustments.$inferInsert;
 
 /** IpeNovel Workspace M01 bounded collaboration root. */
 export const workspaceWorkspaces = mysqlTable(

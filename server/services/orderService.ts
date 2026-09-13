@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { claimProviderTransaction, parseProviderSnapshot } from "../payments/providerClaim";
 
 import { ApprovalService } from "./approvalService";
+import { hasAdminGiftEntitlement } from "./adminGiftWalletAdjustmentService";
 import { normalizeMoneyAmount, formatMoney } from "../helpers/moneyNormalizer";
 import {
   formatOrderNumber,
@@ -126,7 +127,7 @@ export async function validateAndApplyCoupon(couponCode: string, subtotal: strin
   const minPurchase = coupon.minPurchaseAmount ? normalizeMoneyAmount(coupon.minPurchaseAmount, "minPurchaseAmount") : 0;
 
   if (subtotalNum < minPurchase) {
-    throw new Error(`Minimum purchase amount of ฿${minPurchase.toFixed(2)} required`);
+    throw new Error(`Minimum purchase amount of เธฟ${minPurchase.toFixed(2)} required`);
   }
 
   // Validate percentage range
@@ -142,7 +143,7 @@ export async function validateAndApplyCoupon(couponCode: string, subtotal: strin
     let percentDiscount = (subtotalNum * discountValue) / 100;
     // maxDiscountAmount is nullable - only applied when the coupon actually
     // has a cap set (e.g. the daily check-in reward: "5% off, capped at
-    // ฿10"). Every coupon created before this column existed has it as
+    // เธฟ10"). Every coupon created before this column existed has it as
     // NULL, so this branch never changes their computed discount.
     if (coupon.maxDiscountAmount != null) {
       const cap = normalizeMoneyAmount(coupon.maxDiscountAmount, "maxDiscountAmount");
@@ -184,8 +185,9 @@ export async function quoteCartPricing(
   for (const item of cartItems) {
     if (item.episodeId) {
       const existingPurchase = await db.getPurchaseByUserAndEpisode(userIdNumParsed, item.episodeId, tx);
-      if (existingPurchase) {
-        throw new Error("Some items in your cart have already been purchased. Please refresh your cart.");
+      const gifted = await hasAdminGiftEntitlement(userIdNumParsed, item.episodeId, tx);
+      if (existingPurchase || gifted) {
+        throw new Error("Some items in your cart have already been purchased or gifted. Please refresh your cart.");
       }
     }
   }

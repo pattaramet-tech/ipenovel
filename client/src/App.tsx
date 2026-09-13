@@ -29,6 +29,7 @@ import AdminWalletTopupDetailPage from "@/pages/AdminWalletTopupDetailPage";
 import AdminTopupLogsPage from "@/pages/AdminTopupLogsPage";
 import AdminTopupLogDetailPage from "@/pages/AdminTopupLogDetailPage";
 import AdminEntitlementsPage from "@/pages/AdminEntitlementsPage";
+import AdminGiftWalletAdjustmentPage from "@/pages/AdminGiftWalletAdjustmentPage";
 import AdminHybridHealthPage from "@/pages/AdminHybridHealthPage";
 import AdminEntitlementLookupPage from "@/pages/AdminEntitlementLookupPage";
 import AdminMediaMigrationPage from "@/pages/AdminMediaMigrationPage";
@@ -107,6 +108,7 @@ function Router() {
         <Route path={"/admin/topup-logs"} component={AdminTopupLogsPage} />
         <Route path={"/admin/topup-logs/:logId"} component={AdminTopupLogDetailPage} />
         <Route path={"/admin/entitlements"} component={AdminEntitlementsPage} />
+        <Route path={"/admin/gift-wallet-adjustment"} component={AdminGiftWalletAdjustmentPage} />
         <Route path={"/admin/hybrid-health"} component={AdminHybridHealthPage} />
         <Route path={"/admin/entitlement-lookup"} component={AdminEntitlementLookupPage} />
         <Route path={"/admin/media-migration"} component={AdminMediaMigrationPage} />
