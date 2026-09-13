@@ -74,4 +74,15 @@ describe("IPE-048 C02 fix contract", () => {
       expect(existsSync(resolve(root, "drizzle", `${entry.tag}.sql`))).toBe(true);
     }
   });
+  it("keeps 0045 snapshot as the canonical post-IPE-048 generation baseline", () => {
+    const prev = JSON.parse(read("drizzle/meta/0044_snapshot.json"));
+    const current = JSON.parse(read("drizzle/meta/0045_snapshot.json"));
+    expect(current.version).toBe("5");
+    expect(current.dialect).toBe("mysql");
+    expect(current.prevId).toBe(prev.id);
+    expect(current.tables.adminGiftWalletAdjustments).toBeDefined();
+    expect(current.tables.adminGiftEntitlements).toBeDefined();
+    expect(current.tables.workspacePublishOwnershipTransitions).toEqual(prev.tables.workspacePublishOwnershipTransitions);
+  });
+
 });
