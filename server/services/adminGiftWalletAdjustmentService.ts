@@ -68,6 +68,57 @@ async function getGiftEpisodes(database: any, novelId: number) {
   return rows;
 }
 
+async function getGiftGrantability(database: any, targetUserId: number, novelId: number) {
+  const giftEpisodes = await getGiftEpisodes(database, novelId);
+  const episodeIds = giftEpisodes.map((episode: any) => episode.id);
+  const [paidOrders, paidWallet, existingGift] = await Promise.all([
+    database.select({ episodeId: purchases.episodeId }).from(purchases)
+      .where(and(eq(purchases.userId, targetUserId), inArray(purchases.episodeId, episodeIds))),
+    database.select({ episodeId: episodePurchases.episodeId }).from(episodePurchases)
+      .where(and(eq(episodePurchases.userId, targetUserId), inArray(episodePurchases.episodeId, episodeIds))),
+    database.select({ episodeId: adminGiftEntitlements.episodeId }).from(adminGiftEntitlements)
+      .where(and(eq(adminGiftEntitlements.userId, targetUserId), inArray(adminGiftEntitlements.episodeId, episodeIds))),
+  ]);
+  return classifyGiftScope(giftEpisodes, paidOrders, paidWallet, existingGift);
+}
+
+export function classifyGiftScope(
+  giftEpisodes: Array<{ id: number }>,
+  paidOrders: Array<{ episodeId: number }>,
+  paidWallet: Array<{ episodeId: number }>,
+  existingGift: Array<{ episodeId: number }>
+) {
+  const already = new Set<number>([...paidOrders, ...paidWallet, ...existingGift].map(row => Number(row.episodeId)));
+  return {
+    giftEpisodes,
+    grantable: giftEpisodes.filter(episode => !already.has(episode.id)),
+    skipped: giftEpisodes.filter(episode => already.has(episode.id)),
+  };
+}
+
+export function assertIdempotentReplayMatches(prior: any, input: {
+  action: AdminAdjustmentAction;
+  targetUserId: number;
+  amount?: string;
+  novelId?: number;
+  linkedOriginalAdjustmentId?: number;
+}) {
+  const normalizedAmount = input.action === "NOVEL_GIFT" ? null : parsePositiveAmount(input.amount).decimal;
+  const priorAmount = prior.amount == null ? null : minorUnitsToDecimal(
+    decimalToMinorUnits(String(prior.amount), "priorAmount", WALLET_SPEC),
+    WALLET_SPEC.scale
+  );
+  const matches = prior.action === input.action
+    && Number(prior.targetUserId) === input.targetUserId
+    && priorAmount === normalizedAmount
+    && (prior.novelId == null ? null : Number(prior.novelId)) === (input.novelId ?? null)
+    && (prior.linkedOriginalAdjustmentId == null ? null : Number(prior.linkedOriginalAdjustmentId)) === (input.linkedOriginalAdjustmentId ?? null);
+  if (!matches) {
+    throw new AdminGiftWalletAdjustmentError("IDEMPOTENCY_KEY_REUSE_MISMATCH", "Idempotency key was already used for a different adjustment request");
+  }
+  return prior;
+}
+
 export async function previewAdminGiftWalletAdjustment(input: {
   action: AdminAdjustmentAction;
   targetUserId: number;
@@ -83,8 +134,17 @@ export async function previewAdminGiftWalletAdjustment(input: {
 
   if (input.action === "NOVEL_GIFT") {
     if (!input.novelId) throw new AdminGiftWalletAdjustmentError("NOVEL_REQUIRED", "Novel is required");
-    const giftEpisodes = await getGiftEpisodes(database, input.novelId);
-    return { action: input.action, targetUserId: input.targetUserId, novelId: input.novelId, episodeCount: giftEpisodes.length, episodes: giftEpisodes };
+    const scope = await getGiftGrantability(database, input.targetUserId, input.novelId);
+    return {
+      action: input.action,
+      targetUserId: input.targetUserId,
+      novelId: input.novelId,
+      episodeCount: scope.giftEpisodes.length,
+      grantableCount: scope.grantable.length,
+      skippedCount: scope.skipped.length,
+      grantableEpisodes: scope.grantable,
+      skippedEpisodes: scope.skipped,
+    };
   }
 
   const amount = parsePositiveAmount(input.amount);
@@ -143,23 +203,16 @@ export async function executeAdminGiftWalletAdjustment(input: {
     await assertNoRecoveryConflict(input.targetUserId, tx);
     const prior = (await tx.select().from(adminGiftWalletAdjustments)
       .where(eq(adminGiftWalletAdjustments.idempotencyKey, idempotencyKey)).limit(1))[0];
-    if (prior) return { replayed: true, adjustment: prior };
+    if (prior) return { replayed: true, adjustment: assertIdempotentReplayMatches(prior, input) };
 
     if (input.action === "NOVEL_GIFT") {
       if (!input.novelId) throw new AdminGiftWalletAdjustmentError("NOVEL_REQUIRED", "Novel is required");
-      const giftEpisodes = await getGiftEpisodes(tx, input.novelId);
-      const episodeIds = giftEpisodes.map((e: any) => e.id);
-      const [paidOrders, paidWallet, existingGift] = await Promise.all([
-        tx.select({ episodeId: purchases.episodeId }).from(purchases).where(and(eq(purchases.userId, input.targetUserId), inArray(purchases.episodeId, episodeIds))),
-        tx.select({ episodeId: episodePurchases.episodeId }).from(episodePurchases).where(and(eq(episodePurchases.userId, input.targetUserId), inArray(episodePurchases.episodeId, episodeIds))),
-        tx.select({ episodeId: adminGiftEntitlements.episodeId }).from(adminGiftEntitlements).where(and(eq(adminGiftEntitlements.userId, input.targetUserId), inArray(adminGiftEntitlements.episodeId, episodeIds))),
-      ]);
-      const already = new Set<number>([...paidOrders, ...paidWallet, ...existingGift].map((r: any) => Number(r.episodeId)));
-      const grantable = giftEpisodes.filter((e: any) => !already.has(e.id));
+      const scope = await getGiftGrantability(tx, input.targetUserId, input.novelId);
+      const grantable = scope.grantable;
       const inserted: any = await tx.insert(adminGiftWalletAdjustments).values({
         action: "NOVEL_GIFT", targetUserId: input.targetUserId, actorAdminId: input.actorAdminId,
         reason, idempotencyKey, novelId: input.novelId, entitlementCount: grantable.length,
-        safeMetadata: JSON.stringify({ episodeIds: grantable.map((e: any) => e.id), skippedExisting: already.size }),
+        safeMetadata: JSON.stringify({ episodeIds: grantable.map((e: any) => e.id), skippedEpisodeIds: scope.skipped.map((e: any) => e.id) }),
       });
       const adjustmentId = Number((Array.isArray(inserted) ? inserted[0] : inserted)?.insertId);
       if (!Number.isInteger(adjustmentId) || adjustmentId <= 0) throw new Error("Failed to create adjustment receipt");
@@ -232,7 +285,7 @@ export async function executeAdminGiftWalletAdjustment(input: {
     const replay = (await database.select().from(adminGiftWalletAdjustments)
       .where(eq(adminGiftWalletAdjustments.idempotencyKey, idempotencyKey)).limit(1))[0];
     if (!replay) throw error;
-    return { replayed: true, adjustment: replay };
+    return { replayed: true, adjustment: assertIdempotentReplayMatches(replay, input) };
   }
 }
 

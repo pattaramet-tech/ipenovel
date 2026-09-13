@@ -3398,7 +3398,8 @@ export const appRouter = router({
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
 
-        const { episodePurchases, episodes, novels, readingProgress } = await import("../drizzle/schema").then(s => ({
+        const { adminGiftEntitlements, episodePurchases, episodes, novels, readingProgress } = await import("../drizzle/schema").then(s => ({
+          adminGiftEntitlements: s.adminGiftEntitlements,
           episodePurchases: s.episodePurchases,
           episodes: s.episodes,
           novels: s.novels,
@@ -3406,46 +3407,34 @@ export const appRouter = router({
         }));
         const { eq, inArray, and } = await import("drizzle-orm").then(m => ({ eq: m.eq, inArray: m.inArray, and: m.and }));
 
-        // Get all purchases for this user
-        const purchases = await db
-          .select()
-          .from(episodePurchases)
-          .where(eq(episodePurchases.userId, ctx.user.id));
+        const [purchases, gifts] = await Promise.all([
+          db.select().from(episodePurchases).where(eq(episodePurchases.userId, ctx.user.id)),
+          db.select().from(adminGiftEntitlements).where(eq(adminGiftEntitlements.userId, ctx.user.id)),
+        ]);
 
-        if (purchases.length === 0) {
-          return [];
-        }
+        if (purchases.length === 0 && gifts.length === 0) return [];
 
-        // Get episode details for purchases - filter by episodeIds to prevent data leak
-        const episodeIds = purchases.map(p => p.episodeId);
-        const episodeData = await db
-          .select()
-          .from(episodes)
-          .where(and(
-            inArray(episodes.id, episodeIds),
-            input.novelId ? eq(episodes.novelId, input.novelId) : undefined
-          ));
+        const episodeIds = Array.from(new Set([...purchases.map(p => p.episodeId), ...gifts.map(g => g.episodeId)]));
+        const episodeData = await db.select().from(episodes).where(and(
+          inArray(episodes.id, episodeIds),
+          input.novelId ? eq(episodes.novelId, input.novelId) : undefined
+        ));
 
-        // Get novel details
         const novelIds = new Set(episodeData.map((ep: any) => ep.novelId));
-        const novelData = await db
-          .select()
-          .from(novels)
-          .where(inArray(novels.id, Array.from(novelIds)));
+        const novelData = novelIds.size === 0 ? [] : await db.select().from(novels).where(inArray(novels.id, Array.from(novelIds)));
+        const visibleEpisodeIds = episodeData.map((ep: any) => ep.id);
+        const progressData = visibleEpisodeIds.length === 0 ? [] : await db.select().from(readingProgress)
+          .where(and(eq(readingProgress.userId, ctx.user.id), inArray(readingProgress.episodeId, visibleEpisodeIds)));
 
-        // Get reading progress for these episodes, for a "continue reading" hint
-        const progressData = await db
-          .select()
-          .from(readingProgress)
-          .where(and(eq(readingProgress.userId, ctx.user.id), inArray(readingProgress.episodeId, episodeIds)));
-
-        // Build result
         return episodeData.map((ep: any) => {
+          const purchase = purchases.find(p => p.episodeId === ep.id);
+          const gift = gifts.find(g => g.episodeId === ep.id);
           const progress = progressData.find((p: any) => p.episodeId === ep.id);
           return {
-            purchaseId: purchases.find(p => p.episodeId === ep.id)?.id,
-            purchasedAt: purchases.find(p => p.episodeId === ep.id)?.purchasedAt,
-            pricePaid: purchases.find(p => p.episodeId === ep.id)?.pricePaid,
+            entitlementSource: purchase ? "wallet" as const : "admin_gift" as const,
+            purchaseId: purchase?.id ?? null,
+            purchasedAt: purchase?.purchasedAt ?? gift?.createdAt ?? null,
+            pricePaid: purchase?.pricePaid ?? null,
             episode: {
               id: ep.id,
               novelId: ep.novelId,

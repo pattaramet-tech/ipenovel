@@ -127,7 +127,7 @@ export async function validateAndApplyCoupon(couponCode: string, subtotal: strin
   const minPurchase = coupon.minPurchaseAmount ? normalizeMoneyAmount(coupon.minPurchaseAmount, "minPurchaseAmount") : 0;
 
   if (subtotalNum < minPurchase) {
-    throw new Error(`Minimum purchase amount of เธฟ${minPurchase.toFixed(2)} required`);
+    throw new Error(`Minimum purchase amount of ฿${minPurchase.toFixed(2)} required`);
   }
 
   // Validate percentage range
@@ -143,7 +143,7 @@ export async function validateAndApplyCoupon(couponCode: string, subtotal: strin
     let percentDiscount = (subtotalNum * discountValue) / 100;
     // maxDiscountAmount is nullable - only applied when the coupon actually
     // has a cap set (e.g. the daily check-in reward: "5% off, capped at
-    // เธฟ10"). Every coupon created before this column existed has it as
+    // ฿10"). Every coupon created before this column existed has it as
     // NULL, so this branch never changes their computed discount.
     if (coupon.maxDiscountAmount != null) {
       const cap = normalizeMoneyAmount(coupon.maxDiscountAmount, "maxDiscountAmount");
