@@ -1,5 +1,5 @@
-// Cloudflare R2 storage adapter for the PRIVATE bucket - payment slips and
-// paid episode files. Intentionally separate from server/storage.ts (the
+// Cloudflare R2 storage adapter for the PRIVATE bucket - payment slips,
+// paid episode files, and Workspace AI QC artifacts. Intentionally separate from server/storage.ts (the
 // Manus storage proxy, still used for sports-match images and AI-generated
 // images) and from server/services/r2Storage.ts (the PUBLIC R2 bucket for
 // novel covers/banners). Objects here are never publicly reachable: every
@@ -15,14 +15,15 @@ import { validatePrivateR2Config } from "./r2PrivateConfigValidator";
 
 /**
  * Which stored field a key/reference belongs to. Enforced on every
- * put/get/delete so a payment-slip reference can never be resolved (or
- * overwritten) through the episode-file call path or vice versa.
+ * put/get/delete so payment-slip, episode-file, and Workspace AI QC artifact
+ * keys cannot be confused across call paths.
  */
-export type PrivateObjectContext = "paymentSlip" | "episodeFile";
+export type PrivateObjectContext = "paymentSlip" | "episodeFile" | "workspaceAiQcArtifact";
 
 const CONTEXT_KEY_PREFIXES: Record<PrivateObjectContext, string> = {
   paymentSlip: "payment-slips/",
   episodeFile: "episodes/",
+  workspaceAiQcArtifact: "workspace/ai-qc/",
 };
 
 /** Which S3 operation was being attempted - one of the fixed safe fields
@@ -186,7 +187,7 @@ function getPrivateR2Client(): { client: S3Client; bucketName: string } {
  * silent-rewrite behavior is gone). Checks: non-empty, no control/null
  * characters, no backslashes, no leading slash, no `..` path-traversal
  * segment, and must live under the exact prefix owned by `context`
- * (payment-slips/ or episodes/). Throws "invalid_reference" on any
+ * (payment-slips/, episodes/, or workspace/ai-qc/). Throws "invalid_reference" on any
  * violation - this never runs against user-typed free text, only against
  * server-generated keys or values already stored in our own DB columns, so
  * a failure here indicates a bug or tampering, not a normal user error.

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import {
   workspaceAiJobs,
@@ -265,7 +266,8 @@ export async function recoverAiQcFromProviderReceipt(input: {
     providerResult,
   });
   const serialized = serializeWorkspaceAiQcArtifact(artifact);
-  const objectKey = `workspace/ai-qc/${input.workspaceId}/jobs/${input.jobId}/receipts/${providerRequestId}/workspace-ai-qc-v1.json`;
+  const receiptStorageId = createHash("sha256").update(providerRequestId, "utf8").digest("hex");
+  const objectKey = `workspace/ai-qc/${input.workspaceId}/jobs/${input.jobId}/receipts/${receiptStorageId}/workspace-ai-qc-v1.json`;
   try {
     await input.artifactStore.putJson({ objectKey, ...serialized });
   } catch {

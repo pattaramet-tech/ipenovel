@@ -89,6 +89,22 @@ describe("r2PrivateStorage", () => {
       );
     });
 
+    it("isolates Workspace AI QC artifacts under their dedicated private prefix", async () => {
+      sendMock.mockResolvedValueOnce({});
+      const mod = await freshModule();
+      const key = "workspace/ai-qc/7/jobs/11/attempts/13/workspace-ai-qc-v1.json";
+
+      await expect(
+        mod.putPrivateObject("workspaceAiQcArtifact", key, Buffer.from("{}"), "application/json")
+      ).resolves.toEqual({ key });
+      expect(putObjectCommandMock).toHaveBeenCalledWith(
+        expect.objectContaining({ Bucket: "test-private-bucket", Key: key })
+      );
+
+      await expect(
+        mod.putPrivateObject("paymentSlip", key, Buffer.from("{}"), "application/json")
+      ).rejects.toMatchObject({ reason: "invalid_reference" });
+    });
     it("rejects a leading-slash key instead of silently stripping it, and never calls S3", async () => {
       const mod = await freshModule();
       await expect(

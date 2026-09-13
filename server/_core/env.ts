@@ -183,6 +183,7 @@ export const ENV = {
   workspaceAiQcProviderTimeoutMs: process.env.WORKSPACE_AI_QC_PROVIDER_TIMEOUT_MS ?? "",
   workspaceAiQcProviderMaxInputChars: process.env.WORKSPACE_AI_QC_PROVIDER_MAX_INPUT_CHARS ?? "",
   workspaceAiQcProviderReconcileUrlTemplate: process.env.WORKSPACE_AI_QC_PROVIDER_RECONCILE_URL_TEMPLATE ?? "",
+  workspaceAiQcRuntimeTarget: process.env.WORKSPACE_AI_QC_RUNTIME_TARGET ?? "",
   workspaceAiQcExecutionEnabled: process.env.WORKSPACE_AI_QC_EXECUTION_ENABLED ?? "",
   workspaceAiQcExecutionScope: process.env.WORKSPACE_AI_QC_EXECUTION_SCOPE ?? "",
   workspaceAiQcLeaseSeconds: process.env.WORKSPACE_AI_QC_LEASE_SECONDS ?? "",
@@ -200,8 +201,9 @@ export const ENV = {
   r2PublicBaseUrl: process.env.R2_PUBLIC_BASE_URL ?? "",
   r2Endpoint: process.env.R2_ENDPOINT ?? "",
   // Cloudflare R2 - PRIVATE bucket, used only by
-  // server/services/r2PrivateStorage.ts for payment slips and paid episode
-  // files (never a public base URL - objects are only ever reachable via a
+  // server/services/r2PrivateStorage.ts for payment slips, paid episode
+  // files, and Workspace AI QC artifacts (never a public base URL - objects
+  // are only ever reachable via a
   // short-lived presigned GetObject URL generated on demand). Same
   // lazy-read-only-on-use discipline as the public r2* vars above.
   r2PrivateAccountId: process.env.R2_PRIVATE_ACCOUNT_ID ?? "",
