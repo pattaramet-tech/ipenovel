@@ -1,5 +1,6 @@
 import { validatePrivateR2Config } from "../services/r2PrivateConfigValidator";
 import { createWorkspaceAiQcPrivateR2ArtifactStore } from "./aiQc.artifactStore";
+import { resolveManagedWorkspaceAiProviderRuntimeConfig } from "./aiProviderConfig.service";
 import {
   runConfiguredScopedAiQcWorkerOnce,
   type WorkspaceAiQcConfiguredWorkerInput,
@@ -28,7 +29,7 @@ export interface WorkspaceAiQcReadinessCheck {
 }
 export interface WorkspaceAiQcPreviewReadinessReport {
   runtimeTarget: WorkspaceAiQcReadinessCheck;
-  provider: WorkspaceAiQcReadinessCheck & { enabled: boolean };
+  provider: WorkspaceAiQcReadinessCheck & { enabled: boolean; source?: "environment" | "database"; profileId?: number };
   reconciliation: WorkspaceAiQcReadinessCheck;
   artifactStore: WorkspaceAiQcReadinessCheck & {
     category?: "CONFIG_MISSING" | "CONFIG_INVALID" | "ENDPOINT_INVALID";
@@ -218,6 +219,63 @@ export function buildWorkspaceAiQcPreviewReadiness(
     blockers,
   };
 }
+export async function buildConfiguredWorkspaceAiQcPreviewReadiness(
+  env: WorkspaceAiQcPreviewEnv = process.env,
+  managedResolver: typeof resolveManagedWorkspaceAiProviderRuntimeConfig = resolveManagedWorkspaceAiProviderRuntimeConfig
+): Promise<WorkspaceAiQcPreviewReadinessReport> {
+  const envReport = buildWorkspaceAiQcPreviewReadiness(env);
+  let managed: Awaited<ReturnType<typeof resolveManagedWorkspaceAiProviderRuntimeConfig>>;
+  try {
+    managed = await managedResolver();
+  } catch {
+    return {
+      ...envReport,
+      provider: {
+        ...envReport.provider,
+        ready: false,
+        source: "database",
+        invalid: unique([...envReport.provider.invalid, "WORKSPACE_SECRET_ENCRYPTION_KEY"]),
+      },
+      readyForDisarmedPreview: false,
+      readyForControlledExecution: false,
+      blockers: unique([...envReport.blockers, "WORKSPACE_SECRET_ENCRYPTION_KEY"]),
+    };
+  }
+  if (!managed) {
+    return { ...envReport, provider: { ...envReport.provider, source: "environment" } };
+  }
+
+  const managedEnv: WorkspaceAiQcPreviewEnv = {
+    ...env,
+    WORKSPACE_AI_QC_PROVIDER_API_URL: managed.apiUrl,
+    WORKSPACE_AI_QC_PROVIDER_API_KEY: managed.apiKey ? "configured-in-secret-vault" : "",
+    WORKSPACE_AI_QC_PROVIDER_MODEL: managed.model,
+    WORKSPACE_AI_QC_PROVIDER_NAME: managed.providerName,
+    WORKSPACE_AI_QC_PROVIDER_TIMEOUT_MS: String(managed.timeoutMs),
+    WORKSPACE_AI_QC_PROVIDER_MAX_INPUT_CHARS: String(managed.maxInputChars),
+    WORKSPACE_AI_QC_PROVIDER_RECONCILE_URL_TEMPLATE: managed.reconcileUrlTemplate ?? "",
+  };
+  const report = buildWorkspaceAiQcPreviewReadiness(managedEnv);
+  if (managed.providerType !== "openai_compatible") {
+    return {
+      ...report,
+      provider: {
+        ...report.provider,
+        ready: false,
+        source: "database",
+        profileId: managed.profileId,
+        invalid: unique([...report.provider.invalid, "ADMIN_AI_PROVIDER_TYPE_UNSUPPORTED"]),
+      },
+      readyForDisarmedPreview: false,
+      readyForControlledExecution: false,
+      blockers: unique([...report.blockers, "ADMIN_AI_PROVIDER_TYPE_UNSUPPORTED"]),
+    };
+  }
+  return {
+    ...report,
+    provider: { ...report.provider, source: "database", profileId: managed.profileId },
+  };
+}
 export type WorkspaceAiQcPreviewWorkerInput = Omit<
   WorkspaceAiQcConfiguredWorkerInput,
   "artifactStore"
@@ -226,7 +284,7 @@ export type WorkspaceAiQcPreviewWorkerInput = Omit<
 export async function runConfiguredPreviewAiQcWorkerOnce(
   input: WorkspaceAiQcPreviewWorkerInput
 ) {
-  const report = buildWorkspaceAiQcPreviewReadiness(process.env);
+  const report = await buildConfiguredWorkspaceAiQcPreviewReadiness(process.env);
   if (!report.readyForControlledExecution) {
     throw new WorkspaceAiQcPreviewReadinessError(report);
   }

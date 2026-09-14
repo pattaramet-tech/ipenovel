@@ -2439,6 +2439,75 @@ export const workspaceAiArtifacts = mysqlTable(
   })
 );
 
+/** IPE-054-D0 admin-managed AI provider profile. API credentials are encrypted application-side before persistence. */
+export const workspaceAiProviderProfiles = mysqlTable(
+  "workspaceAiProviderProfiles",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    name: varchar("name", { length: 160 }).notNull(),
+    providerType: varchar("providerType", { length: 80 }).notNull(),
+    providerName: varchar("providerName", { length: 120 }).notNull(),
+    apiUrl: varchar("apiUrl", { length: 2048 }).notNull(),
+    model: varchar("model", { length: 160 }).notNull(),
+    reconcileUrlTemplate: varchar("reconcileUrlTemplate", { length: 2048 }),
+    timeoutMs: int("timeoutMs").default(30000).notNull(),
+    maxInputChars: int("maxInputChars").default(200000).notNull(),
+    secretContext: varchar("secretContext", { length: 64 }).notNull(),
+    apiKeyCiphertext: text("apiKeyCiphertext").notNull(),
+    status: mysqlEnum("status", ["enabled", "disabled"]).default("enabled").notNull(),
+    revision: int("revision").default(1).notNull(),
+    createdByAdminId: int("createdByAdminId").notNull(),
+    updatedByAdminId: int("updatedByAdminId").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    nameUnique: uniqueIndex("waipp_name_unique").on(table.name),
+    secretContextUnique: uniqueIndex("waipp_secret_context_unique").on(table.secretContext),
+    statusIdx: index("waipp_status_idx").on(table.status),
+    createdByFk: foreignKey({ name: "waipp_created_by_fk", columns: [table.createdByAdminId], foreignColumns: [users.id] }),
+    updatedByFk: foreignKey({ name: "waipp_updated_by_fk", columns: [table.updatedByAdminId], foreignColumns: [users.id] }),
+  })
+);
+
+/** IPE-054-D0 singleton selector for the provider used by the runtime resolver. */
+export const workspaceAiProviderState = mysqlTable(
+  "workspaceAiProviderState",
+  {
+    id: int("id").primaryKey(),
+    activeProfileId: int("activeProfileId"),
+    revision: int("revision").default(1).notNull(),
+    updatedByAdminId: int("updatedByAdminId"),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    activeProfileFk: foreignKey({ name: "waips_active_profile_fk", columns: [table.activeProfileId], foreignColumns: [workspaceAiProviderProfiles.id] }).onDelete("set null"),
+    updatedByFk: foreignKey({ name: "waips_updated_by_fk", columns: [table.updatedByAdminId], foreignColumns: [users.id] }),
+  })
+);
+
+/** IPE-054-D0 append-only safe audit metadata; API keys/ciphertext must never be written here. */
+export const workspaceAiProviderAuditLogs = mysqlTable(
+  "workspaceAiProviderAuditLogs",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    actorAdminId: int("actorAdminId").notNull(),
+    action: varchar("action", { length: 80 }).notNull(),
+    profileId: int("profileId"),
+    safeMetadataJson: text("safeMetadataJson").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    actorCreatedIdx: index("waipal_actor_created_idx").on(table.actorAdminId, table.createdAt),
+    profileCreatedIdx: index("waipal_profile_created_idx").on(table.profileId, table.createdAt),
+    actorFk: foreignKey({ name: "waipal_actor_fk", columns: [table.actorAdminId], foreignColumns: [users.id] }),
+    profileFk: foreignKey({ name: "waipal_profile_fk", columns: [table.profileId], foreignColumns: [workspaceAiProviderProfiles.id] }).onDelete("set null"),
+  })
+);
+
+export type WorkspaceAiProviderProfile = typeof workspaceAiProviderProfiles.$inferSelect;
+export type WorkspaceAiProviderState = typeof workspaceAiProviderState.$inferSelect;
+export type WorkspaceAiProviderAuditLog = typeof workspaceAiProviderAuditLogs.$inferSelect;
 /** M05 publication destination metadata. M05-A never writes the target. */
 export const workspacePublishingDestinations = mysqlTable(
   "workspacePublishingDestinations",

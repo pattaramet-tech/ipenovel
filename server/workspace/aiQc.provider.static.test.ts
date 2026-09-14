@@ -5,7 +5,7 @@ const root = new URL("../..", import.meta.url);
 const source = (path: string) => readFileSync(new URL(path, root), "utf8");
 
 describe("IPE-054-A AI QC provider security boundaries", () => {
-  it("sources the AI QC credential from its dedicated ENV only", () => {
+  it("keeps the dedicated AI QC ENV fallback isolated from OCR credentials", () => {
     const env = source("server/_core/env.ts");
     const provider = source("server/workspace/aiQc.provider.ts");
     expect(env).toContain("process.env.WORKSPACE_AI_QC_PROVIDER_API_KEY");
@@ -22,9 +22,9 @@ describe("IPE-054-A AI QC provider security boundaries", () => {
     expect(provider).toContain("input.fetchImpl(input.url");
   });
 
-  it("wires ENV-backed execution explicitly without adding a scheduler or startup side effect", () => {
+  it("wires runtime-resolved execution explicitly without adding a scheduler or startup side effect", () => {
     const runtime = source("server/workspace/aiQc.runtime.ts");
-    expect(runtime).toContain("createConfiguredWorkspaceAiQcProvider");
+    expect(runtime).toContain("createRuntimeWorkspaceAiQcProvider");
     expect(runtime).toContain("executeReadOnlyAiQcAttempt");
     expect(runtime).toContain("allowExternalProvider: true");
     expect(runtime).not.toMatch(/\bsetInterval\s*\(|\bsetTimeout\s*\(|\bapp\.listen\s*\(/i);
@@ -33,5 +33,6 @@ describe("IPE-054-A AI QC provider security boundaries", () => {
     const router = source("server/workspace/router.ts");
     expect(router).not.toContain("executeConfiguredWorkspaceAiQcAttempt");
     expect(router).not.toContain("createConfiguredWorkspaceAiQcProvider");
+    expect(router).not.toContain("createRuntimeWorkspaceAiQcProvider");
   });
 });

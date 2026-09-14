@@ -1,7 +1,7 @@
-import { buildWorkspaceAiQcPreviewReadiness } from "../server/workspace/aiQc.previewReadiness";
+import { buildConfiguredWorkspaceAiQcPreviewReadiness } from "../server/workspace/aiQc.previewReadiness";
 
 const args = new Set(process.argv.slice(2));
-const report = buildWorkspaceAiQcPreviewReadiness(process.env);
+const report = await buildConfiguredWorkspaceAiQcPreviewReadiness(process.env);
 
 const printable = {
   runtimeTarget: report.runtimeTarget,
@@ -16,8 +16,11 @@ const printable = {
 
 console.log(JSON.stringify(printable, null, 2));
 
+let exitCode = 0;
 if (args.has("--require-disarmed-ready")) {
-  process.exitCode = report.readyForDisarmedPreview ? 0 : 1;
+  exitCode = report.readyForDisarmedPreview ? 0 : 1;
 } else if (args.has("--require-controlled-ready")) {
-  process.exitCode = report.readyForControlledExecution ? 0 : 1;
+  exitCode = report.readyForControlledExecution ? 0 : 1;
 }
+
+process.exit(exitCode);

@@ -188,6 +188,10 @@ export const ENV = {
   workspaceAiQcExecutionScope: process.env.WORKSPACE_AI_QC_EXECUTION_SCOPE ?? "",
   workspaceAiQcLeaseSeconds: process.env.WORKSPACE_AI_QC_LEASE_SECONDS ?? "",
   workspaceAiQcMaxAttempts: process.env.WORKSPACE_AI_QC_MAX_ATTEMPTS ?? "",
+  // Bootstrap-only key for encrypting admin-managed Workspace provider
+  // credentials at rest. The raw key never belongs in the database or API
+  // responses; provider/runtime execution remains independently kill-switched.
+  workspaceSecretEncryptionKey: process.env.WORKSPACE_SECRET_ENCRYPTION_KEY ?? "",
   ocrEnabled: process.env.OCR_ENABLED !== "false",
   // Cloudflare R2 - used only by server/services/r2Storage.ts for newly
   // uploaded novel covers/banners (see uploadCover/uploadImage in

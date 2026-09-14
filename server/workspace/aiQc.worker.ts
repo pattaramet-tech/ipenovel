@@ -2,7 +2,7 @@ import { ENV } from "../_core/env";
 import { deriveAiQcOperationalState } from "./aiQcReconciliation.domain";
 import { recoverAiQcFromProviderReceipt } from "./aiQcReconciliation.service";
 import { claimAiJob, getAiJobDetail } from "./aiQueue.service";
-import { createConfiguredWorkspaceAiQcProvider } from "./aiQc.provider";
+import { createRuntimeWorkspaceAiQcProvider } from "./aiProviderRuntime";
 import {
   executeReadOnlyAiQcAttempt,
   type WorkspaceAiQcArtifactStore,
@@ -320,7 +320,7 @@ export async function runConfiguredScopedAiQcWorkerOnce(input: WorkspaceAiQcConf
     throw new WorkspaceAiQcWorkerError("EXECUTION_DISABLED", "Workspace AI QC worker execution is disabled.");
   }
   const { fetchImpl, ...workerInput } = input;
-  const provider = createConfiguredWorkspaceAiQcProvider(fetchImpl);
+  const provider = await createRuntimeWorkspaceAiQcProvider(fetchImpl);
   return runScopedAiQcWorkerOnce({
     ...workerInput,
     scope: config.scope,

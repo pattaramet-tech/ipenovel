@@ -72,6 +72,7 @@ import {
 } from "./services/accountMergeGuardService";
 import { updateAdminUserProfile, AdminUserManagementError } from "./services/adminUserManagementService";
 import { workspaceRouter } from "./workspace/router";
+import { aiProviderSettingsRouter } from "./workspace/aiProviderSettings.router";
 
 // ============ HELPER PROCEDURES ============
 
@@ -2536,6 +2537,7 @@ export const appRouter = router({
       paymentQr: paymentQrSettingsRouter,
       paymentReceiver: paymentReceiverSettingsRouter,
       providerAutoApprove: autoApprovalSettingsRouter,
+      aiProvider: aiProviderSettingsRouter,
       getCheckoutMaintenance: adminProcedure.query(async () => {
         return getCheckoutMaintenanceStatus();
       }),
