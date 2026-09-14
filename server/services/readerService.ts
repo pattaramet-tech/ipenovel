@@ -1,6 +1,6 @@
 import { eq, and, asc } from "drizzle-orm";
 import { getDb } from "../db";
-import { episodes, episodePurchases, purchases, walletAccounts, novels } from "../../drizzle/schema";
+import { adminGiftEntitlements, episodes, episodePurchases, purchases, walletAccounts, novels } from "../../drizzle/schema";
 import { resolveStoredFileValue, R2PrivateStorageError } from "./r2PrivateStorage";
 
 export interface ReaderEpisodeData {
@@ -191,7 +191,15 @@ export async function hasPurchasedEpisode(userId: number | undefined, episodeId:
     .where(and(eq(purchases.userId, userId), eq(purchases.episodeId, episodeId)))
     .limit(1);
 
-  return orderPurchase.length > 0;
+  if (orderPurchase.length > 0) return true;
+
+  const gift = await db
+    .select({ id: adminGiftEntitlements.id })
+    .from(adminGiftEntitlements)
+    .where(and(eq(adminGiftEntitlements.userId, userId), eq(adminGiftEntitlements.episodeId, episodeId)))
+    .limit(1);
+
+  return gift.length > 0;
 }
 
 /**

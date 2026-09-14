@@ -153,6 +153,11 @@ export const adminNavSections: NavSection[] = [
         icon: Gift,
       },
       {
+        label: "Gift / Wallet Adjustment",
+        href: "/admin/gift-wallet-adjustment",
+        icon: Wallet,
+      },
+      {
         label: "Entitlement Lookup",
         href: "/admin/entitlement-lookup",
         icon: UserSearch,

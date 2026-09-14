@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { claimProviderTransaction, parseProviderSnapshot } from "../payments/providerClaim";
 
 import { ApprovalService } from "./approvalService";
+import { hasAdminGiftEntitlement } from "./adminGiftWalletAdjustmentService";
 import { normalizeMoneyAmount, formatMoney } from "../helpers/moneyNormalizer";
 import {
   formatOrderNumber,
@@ -184,8 +185,9 @@ export async function quoteCartPricing(
   for (const item of cartItems) {
     if (item.episodeId) {
       const existingPurchase = await db.getPurchaseByUserAndEpisode(userIdNumParsed, item.episodeId, tx);
-      if (existingPurchase) {
-        throw new Error("Some items in your cart have already been purchased. Please refresh your cart.");
+      const gifted = await hasAdminGiftEntitlement(userIdNumParsed, item.episodeId, tx);
+      if (existingPurchase || gifted) {
+        throw new Error("Some items in your cart have already been purchased or gifted. Please refresh your cart.");
       }
     }
   }

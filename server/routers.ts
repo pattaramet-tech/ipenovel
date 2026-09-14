@@ -2206,6 +2206,55 @@ export const appRouter = router({
         }),
     }),
 
+    giftWalletAdjustment: router({
+      preview: adminProcedure
+        .input(z.object({
+          action: z.enum(["NOVEL_GIFT", "WALLET_CREDIT", "WALLET_CLAWBACK"]),
+          targetUserId: z.number().int().positive(),
+          amount: z.string().optional(),
+          novelId: z.number().int().positive().optional(),
+          linkedOriginalAdjustmentId: z.number().int().positive().optional(),
+        }))
+        .query(async ({ input }) => {
+          const service = await import("./services/adminGiftWalletAdjustmentService");
+          try { return await service.previewAdminGiftWalletAdjustment(input); }
+          catch (error: any) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Unable to preview adjustment" });
+          }
+        }),
+
+      execute: adminProcedure
+        .input(z.object({
+          action: z.enum(["NOVEL_GIFT", "WALLET_CREDIT", "WALLET_CLAWBACK"]),
+          targetUserId: z.number().int().positive(),
+          amount: z.string().optional(),
+          novelId: z.number().int().positive().optional(),
+          linkedOriginalAdjustmentId: z.number().int().positive().optional(),
+          reason: z.string().min(3).max(2000),
+          idempotencyKey: z.string().min(8).max(128),
+          confirmation: z.string().min(1).max(100),
+          expectedBalance: z.string().optional(),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const service = await import("./services/adminGiftWalletAdjustmentService");
+          try { return await service.executeAdminGiftWalletAdjustment({ ...input, actorAdminId: ctx.user.id }); }
+          catch (error: any) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "Unable to execute adjustment" });
+          }
+        }),
+
+      history: adminProcedure
+        .input(z.object({
+          targetUserId: z.number().int().positive().optional(),
+          action: z.enum(["NOVEL_GIFT", "WALLET_CREDIT", "WALLET_CLAWBACK"]).optional(),
+          limit: z.number().int().positive().max(100).optional(),
+        }).optional())
+        .query(async ({ input }) => {
+          const { listAdminGiftWalletAdjustmentHistory } = await import("./services/adminGiftWalletAdjustmentService");
+          return listAdminGiftWalletAdjustmentHistory(input ?? {});
+        }),
+    }),
+
     // ============ HYBRID CONTENT HEALTH DASHBOARD (Phase 2, read-only) ============
     // Surfaces exactly which novels/episodes are missing plaintext web-reader
     // content vs. only having a legacy file. Every query is DB-aggregated
@@ -3349,7 +3398,8 @@ export const appRouter = router({
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
 
-        const { episodePurchases, episodes, novels, readingProgress } = await import("../drizzle/schema").then(s => ({
+        const { adminGiftEntitlements, episodePurchases, episodes, novels, readingProgress } = await import("../drizzle/schema").then(s => ({
+          adminGiftEntitlements: s.adminGiftEntitlements,
           episodePurchases: s.episodePurchases,
           episodes: s.episodes,
           novels: s.novels,
@@ -3357,46 +3407,34 @@ export const appRouter = router({
         }));
         const { eq, inArray, and } = await import("drizzle-orm").then(m => ({ eq: m.eq, inArray: m.inArray, and: m.and }));
 
-        // Get all purchases for this user
-        const purchases = await db
-          .select()
-          .from(episodePurchases)
-          .where(eq(episodePurchases.userId, ctx.user.id));
+        const [purchases, gifts] = await Promise.all([
+          db.select().from(episodePurchases).where(eq(episodePurchases.userId, ctx.user.id)),
+          db.select().from(adminGiftEntitlements).where(eq(adminGiftEntitlements.userId, ctx.user.id)),
+        ]);
 
-        if (purchases.length === 0) {
-          return [];
-        }
+        if (purchases.length === 0 && gifts.length === 0) return [];
 
-        // Get episode details for purchases - filter by episodeIds to prevent data leak
-        const episodeIds = purchases.map(p => p.episodeId);
-        const episodeData = await db
-          .select()
-          .from(episodes)
-          .where(and(
-            inArray(episodes.id, episodeIds),
-            input.novelId ? eq(episodes.novelId, input.novelId) : undefined
-          ));
+        const episodeIds = Array.from(new Set([...purchases.map(p => p.episodeId), ...gifts.map(g => g.episodeId)]));
+        const episodeData = await db.select().from(episodes).where(and(
+          inArray(episodes.id, episodeIds),
+          input.novelId ? eq(episodes.novelId, input.novelId) : undefined
+        ));
 
-        // Get novel details
         const novelIds = new Set(episodeData.map((ep: any) => ep.novelId));
-        const novelData = await db
-          .select()
-          .from(novels)
-          .where(inArray(novels.id, Array.from(novelIds)));
+        const novelData = novelIds.size === 0 ? [] : await db.select().from(novels).where(inArray(novels.id, Array.from(novelIds)));
+        const visibleEpisodeIds = episodeData.map((ep: any) => ep.id);
+        const progressData = visibleEpisodeIds.length === 0 ? [] : await db.select().from(readingProgress)
+          .where(and(eq(readingProgress.userId, ctx.user.id), inArray(readingProgress.episodeId, visibleEpisodeIds)));
 
-        // Get reading progress for these episodes, for a "continue reading" hint
-        const progressData = await db
-          .select()
-          .from(readingProgress)
-          .where(and(eq(readingProgress.userId, ctx.user.id), inArray(readingProgress.episodeId, episodeIds)));
-
-        // Build result
         return episodeData.map((ep: any) => {
+          const purchase = purchases.find(p => p.episodeId === ep.id);
+          const gift = gifts.find(g => g.episodeId === ep.id);
           const progress = progressData.find((p: any) => p.episodeId === ep.id);
           return {
-            purchaseId: purchases.find(p => p.episodeId === ep.id)?.id,
-            purchasedAt: purchases.find(p => p.episodeId === ep.id)?.purchasedAt,
-            pricePaid: purchases.find(p => p.episodeId === ep.id)?.pricePaid,
+            entitlementSource: purchase ? "wallet" as const : "admin_gift" as const,
+            purchaseId: purchase?.id ?? null,
+            purchasedAt: purchase?.purchasedAt ?? gift?.createdAt ?? null,
+            pricePaid: purchase?.pricePaid ?? null,
             episode: {
               id: ep.id,
               novelId: ep.novelId,
