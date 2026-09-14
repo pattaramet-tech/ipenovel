@@ -78,9 +78,22 @@ describe("IPE-054-D0 managed provider Preview readiness", () => {
     expect(report.readyForDisarmedPreview).toBe(false);
   });
 
-  it("fails closed for a provider type whose execution adapter does not exist yet", async () => {
+  it("treats Gemini Interactions reconciliation as provider-native and derived from the API URL", async () => {
     const report = await buildConfiguredWorkspaceAiQcPreviewReadiness(
-      previewEnv(), async () => managed({ providerType: "gemini_interactions" })
+      previewEnv(), async () => managed({
+        providerType: "gemini_interactions",
+        apiUrl: "https://generativelanguage.googleapis.com/v1beta/interactions",
+        reconcileUrlTemplate: null,
+      })
+    );
+    expect(report.provider).toMatchObject({ ready: true, source: "database", profileId: 7 });
+    expect(report.reconciliation.ready).toBe(true);
+    expect(report.readyForDisarmedPreview).toBe(true);
+  });
+
+  it("still fails closed for a provider type whose execution adapter does not exist", async () => {
+    const report = await buildConfiguredWorkspaceAiQcPreviewReadiness(
+      previewEnv(), async () => managed({ providerType: "unsupported_vendor" })
     );
     expect(report.provider.ready).toBe(false);
     expect(report.provider.invalid).toContain("ADMIN_AI_PROVIDER_TYPE_UNSUPPORTED");

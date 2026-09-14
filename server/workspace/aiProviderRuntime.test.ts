@@ -76,13 +76,22 @@ describe("IPE-054-D0 runtime provider resolution", () => {
     expect(managedResolver).not.toHaveBeenCalled();
   });
 
-  it("fails closed for an active profile whose adapter is not implemented", async () => {
+  it("supports an active Gemini Interactions profile", async () => {
     managedResolver.mockResolvedValue({
       profileId: 12, profileRevision: 1, providerType: "gemini_interactions", enabled: true,
       apiUrl: "https://generativelanguage.googleapis.com/v1beta/interactions",
-      apiKey: "gemini-key", model: "gemini-model", providerName: "gemini",
-      timeoutMs: 30000, maxInputChars: 200000,
-      reconcileUrlTemplate: "https://generativelanguage.googleapis.com/v1beta/interactions/{providerRequestId}",
+      apiKey: "gemini-key", model: "gemini-3.8-flash", providerName: "gemini",
+      timeoutMs: 30000, maxInputChars: 200000, reconcileUrlTemplate: null,
+    });
+    const resolved = await resolveWorkspaceAiQcRuntimeProviderConfig();
+    expect(resolved).toMatchObject({ source: "database", profileId: 12, providerType: "gemini_interactions" });
+  });
+
+  it("still fails closed for an active profile whose adapter is not implemented", async () => {
+    managedResolver.mockResolvedValue({
+      profileId: 13, profileRevision: 1, providerType: "unsupported_vendor", enabled: true,
+      apiUrl: "https://vendor.example.test/v1/qc", apiKey: "vendor-key", model: "model", providerName: "vendor",
+      timeoutMs: 30000, maxInputChars: 200000, reconcileUrlTemplate: null,
     });
     await expect(resolveWorkspaceAiQcRuntimeProviderConfig())
       .rejects.toMatchObject({ code: "PROVIDER_CONFIG_INVALID" });

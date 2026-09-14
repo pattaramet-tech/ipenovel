@@ -45,6 +45,7 @@ export function AdminAiProviderSettings() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
 
   const profiles = list.data?.profiles ?? [];
+  const isGeminiInteractions = form.providerType.trim() === "gemini_interactions";
   const selected = useMemo(() => profiles.find((profile) => profile.id === selectedId), [profiles, selectedId]);
 
   useEffect(() => {
@@ -84,7 +85,7 @@ export function AdminAiProviderSettings() {
         apiUrl: form.apiUrl,
         ...(form.apiKey.trim() ? { apiKey: form.apiKey } : {}),
         model: form.model,
-        reconcileUrlTemplate: form.reconcileUrlTemplate.trim() || null,
+        reconcileUrlTemplate: isGeminiInteractions ? null : form.reconcileUrlTemplate.trim() || null,
         timeoutMs,
         maxInputChars,
         status: form.status,
@@ -148,7 +149,7 @@ export function AdminAiProviderSettings() {
           <div className="space-y-4 rounded-md border p-4">
             <div className="grid gap-4 sm:grid-cols-2">
               <div><Label>Profile name</Label><Input value={form.name} onChange={(e) => update("name", e.target.value)} placeholder="Gemini Preview" /></div>
-              <div><Label>Provider type</Label><Input value={form.providerType} onChange={(e) => update("providerType", e.target.value)} placeholder="openai_compatible" /></div>
+              <div><Label>Provider type</Label><Input value={form.providerType} onChange={(e) => update("providerType", e.target.value)} placeholder="openai_compatible / gemini_interactions" /><p className="mt-1 text-xs text-slate-500">รองรับ openai_compatible และ gemini_interactions</p></div>
               <div><Label>Provider label</Label><Input value={form.providerName} onChange={(e) => update("providerName", e.target.value)} placeholder="gemini" /></div>
               <div><Label>Model</Label><Input value={form.model} onChange={(e) => update("model", e.target.value)} placeholder="model-id" /></div>
             </div>
@@ -157,7 +158,7 @@ export function AdminAiProviderSettings() {
               <Label>API Key {selected?.apiKeyConfigured ? <span className="font-normal text-slate-500">(ปัจจุบัน {selected.apiKeyMasked}; เว้นว่างเพื่อใช้ค่าเดิม)</span> : null}</Label>
               <Input type="password" autoComplete="new-password" value={form.apiKey} onChange={(e) => update("apiKey", e.target.value)} placeholder={form.id ? "เว้นว่างถ้าไม่เปลี่ยน" : "กรอก API Key"} />
             </div>
-            <div><Label>Receipt reconciliation URL template</Label><Input value={form.reconcileUrlTemplate} onChange={(e) => update("reconcileUrlTemplate", e.target.value)} placeholder="https://.../{providerRequestId}" /></div>
+            <div><Label>Receipt reconciliation URL template</Label><Input value={isGeminiInteractions ? "" : form.reconcileUrlTemplate} disabled={isGeminiInteractions} onChange={(e) => update("reconcileUrlTemplate", e.target.value)} placeholder={isGeminiInteractions ? "Derived automatically from Gemini Interaction ID" : "https://.../{providerRequestId}"} />{isGeminiInteractions && <p className="mt-1 text-xs text-slate-500">Gemini Interactions ใช้ GET /interactions/(Interaction ID) โดยอัตโนมัติ ไม่ต้องกรอก URL เพิ่ม</p>}</div>
             <div className="grid gap-4 sm:grid-cols-2">
               <div><Label>Timeout (ms)</Label><Input inputMode="numeric" value={form.timeoutMs} onChange={(e) => update("timeoutMs", e.target.value)} /></div>
               <div><Label>Max input characters</Label><Input inputMode="numeric" value={form.maxInputChars} onChange={(e) => update("maxInputChars", e.target.value)} /></div>

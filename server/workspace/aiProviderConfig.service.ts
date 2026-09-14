@@ -12,6 +12,7 @@ import {
   encryptWorkspaceAiProviderSecret,
   maskWorkspaceAiProviderSecret,
 } from "./aiProviderSecretVault";
+import { validateGeminiInteractionsApiUrl } from "./aiQc.geminiInteractions";
 
 const STATE_ID = 1;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -72,13 +73,21 @@ function reconcileTemplate(raw?: string | null) {
 function validateInput(input: WorkspaceAiProviderProfileInput) {
   const providerType = text(input.providerType, "providerType", 80).toLowerCase();
   if (!/^[a-z0-9][a-z0-9_-]*$/.test(providerType)) throw new WorkspaceAiProviderConfigError("BAD_REQUEST", "providerType must use lowercase letters, digits, underscore, or hyphen.");
+  let apiUrl = httpsUrl(input.apiUrl, "apiUrl");
+  let reconcileUrlTemplate = reconcileTemplate(input.reconcileUrlTemplate);
+  if (providerType === "gemini_interactions") {
+    if (reconcileUrlTemplate) throw new WorkspaceAiProviderConfigError("BAD_REQUEST", "Gemini Interactions reconciliation URL is derived automatically and must not be overridden.");
+    try { apiUrl = validateGeminiInteractionsApiUrl(apiUrl); }
+    catch { throw new WorkspaceAiProviderConfigError("BAD_REQUEST", "Gemini Interactions must use the official Google /v1 or /v1beta interactions endpoint."); }
+    reconcileUrlTemplate = null;
+  }
   return {
     name: text(input.name, "name", 160),
     providerType,
     providerName: text(input.providerName, "providerName", 120),
-    apiUrl: httpsUrl(input.apiUrl, "apiUrl"),
+    apiUrl,
     model: text(input.model, "model", 160),
-    reconcileUrlTemplate: reconcileTemplate(input.reconcileUrlTemplate),
+    reconcileUrlTemplate,
     timeoutMs: boundedInt(input.timeoutMs, DEFAULT_TIMEOUT_MS, "timeoutMs", 120_000),
     maxInputChars: boundedInt(input.maxInputChars, DEFAULT_MAX_INPUT_CHARS, "maxInputChars", 1_000_000),
     status: input.status ?? "enabled" as const,

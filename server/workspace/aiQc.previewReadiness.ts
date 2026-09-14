@@ -1,6 +1,7 @@
 import { validatePrivateR2Config } from "../services/r2PrivateConfigValidator";
 import { createWorkspaceAiQcPrivateR2ArtifactStore } from "./aiQc.artifactStore";
 import { resolveManagedWorkspaceAiProviderRuntimeConfig } from "./aiProviderConfig.service";
+import { validateGeminiInteractionsApiUrl } from "./aiQc.geminiInteractions";
 import {
   runConfiguredScopedAiQcWorkerOnce,
   type WorkspaceAiQcConfiguredWorkerInput,
@@ -253,10 +254,27 @@ export async function buildConfiguredWorkspaceAiQcPreviewReadiness(
     WORKSPACE_AI_QC_PROVIDER_NAME: managed.providerName,
     WORKSPACE_AI_QC_PROVIDER_TIMEOUT_MS: String(managed.timeoutMs),
     WORKSPACE_AI_QC_PROVIDER_MAX_INPUT_CHARS: String(managed.maxInputChars),
-    WORKSPACE_AI_QC_PROVIDER_RECONCILE_URL_TEMPLATE: managed.reconcileUrlTemplate ?? "",
+    WORKSPACE_AI_QC_PROVIDER_RECONCILE_URL_TEMPLATE: managed.providerType === "gemini_interactions"
+      ? `${managed.apiUrl.replace(/\/$/, "")}/{providerRequestId}`
+      : managed.reconcileUrlTemplate ?? "",
   };
   const report = buildWorkspaceAiQcPreviewReadiness(managedEnv);
-  if (managed.providerType !== "openai_compatible") {
+  if (managed.providerType === "gemini_interactions") {
+    try { validateGeminiInteractionsApiUrl(managed.apiUrl); }
+    catch {
+      return {
+        ...report,
+        provider: { ...report.provider, ready: false, source: "database", profileId: managed.profileId, invalid: unique([...report.provider.invalid, "ADMIN_AI_PROVIDER_GEMINI_URL_INVALID"]) },
+        readyForDisarmedPreview: false,
+        readyForControlledExecution: false,
+        blockers: unique([...report.blockers, "ADMIN_AI_PROVIDER_GEMINI_URL_INVALID"]),
+      };
+    }
+    return {
+      ...report,
+      provider: { ...report.provider, source: "database", profileId: managed.profileId },
+    };
+  }  if (managed.providerType !== "openai_compatible") {
     return {
       ...report,
       provider: {
