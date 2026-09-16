@@ -205,4 +205,53 @@ describe("IPE-054-B one-shot worker", () => {
     expect(ops.claimJob).not.toHaveBeenCalled();
     expect(ops.executeAttempt).not.toHaveBeenCalled();
   });
+
+  it("resolves read-only Docs runtime lazily before claim and passes it only to execution", async () => {
+    const ops = services();
+    const resolveDocsRuntime = vi.fn(async () => ({
+      accessToken: "lazy-access-token-never-log",
+      docsAdapter,
+    }));
+    const { accessToken: _accessToken, docsAdapter: _docsAdapter, ...withoutDocs } = baseInput;
+    const result = await runScopedAiQcWorkerOnce({
+      ...withoutDocs,
+      resolveDocsRuntime,
+      services: ops,
+    });
+    expect(result).toMatchObject({ action: "execute", attemptId: 101 });
+    expect(resolveDocsRuntime).toHaveBeenCalledTimes(1);
+    expect(ops.claimJob).toHaveBeenCalledTimes(1);
+    expect(ops.executeAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      accessToken: "lazy-access-token-never-log",
+      docsAdapter,
+    }));
+  });
+
+  it("fails before claim when Google Docs runtime resolution fails", async () => {
+    const ops = services();
+    const { accessToken: _accessToken, docsAdapter: _docsAdapter, ...withoutDocs } = baseInput;
+    const resolveDocsRuntime = vi.fn(async () => {
+      throw Object.assign(new Error("refresh failed"), { code: "GOOGLE_TOKEN_EXCHANGE_FAILED" });
+    });
+    await expect(runScopedAiQcWorkerOnce({ ...withoutDocs, resolveDocsRuntime, services: ops }))
+      .rejects.toMatchObject({ code: "GOOGLE_TOKEN_EXCHANGE_FAILED" });
+    expect(ops.claimJob).not.toHaveBeenCalled();
+    expect(ops.executeAttempt).not.toHaveBeenCalled();
+  });
+
+
+  it("does receipt recovery without resolving Google Docs or sending provider execute", async () => {
+    const jobDetail = detail({ status: "failed" });
+    jobDetail.attempts = [{ id: 77, attemptNo: 1, status: "failed", leaseExpiresAt: new Date("2026-09-13T00:00:00Z"), providerRequestId: "receipt-1", errorClass: "ARTIFACT_STORE_FAILED" }] as any;
+    const ops = services(jobDetail);
+    const resolveDocsRuntime = vi.fn(async () => { throw new Error("must not run"); });
+    const { accessToken: _accessToken, docsAdapter: _docsAdapter, ...withoutDocs } = baseInput;
+    const result = await runScopedAiQcWorkerOnce({ ...withoutDocs, resolveDocsRuntime, services: ops });
+    expect(result).toMatchObject({ action: "recover", providerRequestId: "receipt-1" });
+    expect(resolveDocsRuntime).not.toHaveBeenCalled();
+    expect(ops.claimJob).not.toHaveBeenCalled();
+    expect(ops.executeAttempt).not.toHaveBeenCalled();
+    expect(externalProvider.execute).not.toHaveBeenCalled();
+  });
+
 });

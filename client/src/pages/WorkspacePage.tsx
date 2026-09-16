@@ -29,6 +29,12 @@ function shortHash(value: unknown) {
   return text.length > 16 ? `${text.slice(0, 8)}…${text.slice(-6)}` : text;
 }
 
+function parseGoogleDocId(value: string) {
+  const trimmed = value.trim();
+  const match = trimmed.match(/\/document\/(?:u\/\d+\/)?d\/([A-Za-z0-9_-]+)/);
+  return match?.[1] ?? trimmed;
+}
+
 function StatusPill({ value }: { value: unknown }) {
   return (
     <span className="inline-flex rounded-full border bg-muted/40 px-2 py-0.5 text-xs font-medium text-foreground">
@@ -51,6 +57,10 @@ export default function WorkspacePage() {
   const [checkerSnapshotId, setCheckerSnapshotId] = useState("");
   const [checkerRuleSetId, setCheckerRuleSetId] = useState("");
   const [aiSnapshotId, setAiSnapshotId] = useState("");
+  const [googleDocRef, setGoogleDocRef] = useState("");
+  const [docsConnectionId, setDocsConnectionId] = useState("");
+  const [docsWorkspaceNovelId, setDocsWorkspaceNovelId] = useState("");
+  const [preparedAiScope, setPreparedAiScope] = useState<string>();
   const { isAdmin, loading: adminLoading } = useAdminGuard();
 
   const workspaces = trpc.workspace.list.useQuery(undefined, { enabled: isAdmin });
@@ -70,6 +80,9 @@ export default function WorkspacePage() {
     { workspaceId: selectedWorkspaceId ?? 0 },
     { enabled: isAdmin && Boolean(selectedWorkspaceId) }
   );
+  const docsConnections = trpc.workspace.googleDocsRuntime.connections.useQuery(undefined, {
+    enabled: isAdmin,
+  });
   const checkerRuns = trpc.workspace.checker.listRuns.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
     { enabled: isAdmin && Boolean(selectedWorkspaceId) }
@@ -189,6 +202,20 @@ export default function WorkspacePage() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const beginDocsConsent = trpc.workspace.googleDocsRuntime.beginConsent.useMutation({
+    onSuccess: ({ authorizationUrl }: any) => window.location.assign(authorizationUrl),
+    onError: (error) => toast.error(error.message),
+  });
+  const prepareRealAiCandidate = trpc.workspace.googleDocsRuntime.prepareAiQcCandidate.useMutation({
+    onSuccess: async (result: any) => {
+      setPreparedAiScope(result.scope);
+      setSelectedAiJobId(result.jobId);
+      setAiSnapshotId(String(result.snapshotId));
+      await Promise.all([fingerprints.refetch(), aiJobs.refetch(), operationalState.refetch()]);
+      toast.success("Real Google Docs AI QC candidate prepared");
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const bindNovel = trpc.workspace.bindings.bindPublicationNovel.useMutation({
     onSuccess: async () => {
       setNovelId("");
@@ -208,6 +235,10 @@ export default function WorkspacePage() {
   const effectiveCheckerSnapshotId = Number(checkerSnapshotId) || snapshotOptions[0]?.snapshotId;
   const effectiveCheckerRuleSetId = Number(checkerRuleSetId) || checkerRuleSets[0]?.id;
   const effectiveAiSnapshotId = Number(aiSnapshotId) || snapshotOptions[0]?.snapshotId;
+  const activeDocsConnections = ((docsConnections.data as any[] | undefined) ?? []).filter((row: any) => row.status === "active" && row.scopeReady);
+  const effectiveDocsConnectionId = Number(docsConnectionId) || activeDocsConnections[0]?.id;
+  const workspaceNovelRows = ((selected as any)?.novels as any[] | undefined) ?? [];
+  const effectiveDocsWorkspaceNovelId = Number(docsWorkspaceNovelId) || workspaceNovelRows.find((row: any) => row.workspaceNovel?.status === "active")?.workspaceNovel?.id;
 
   if (adminLoading) {
     return (
@@ -317,6 +348,77 @@ export default function WorkspacePage() {
                   <Input value={novelId} onChange={(event) => setNovelId(event.target.value)} inputMode="numeric" placeholder="Existing novel ID" />
                   <Button type="submit" disabled={bindNovel.isPending}>Bind</Button>
                 </form>
+              </div>
+
+              <div className="rounded-md border bg-muted/20 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="font-medium">D2A · Real Google Docs candidate</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Incremental read-only consent only. Preparing a candidate observes one Google Doc and queues AI QC; it does not call Gemini or publish.
+                    </p>
+                  </div>
+                  <Button type="button" variant="outline" disabled={beginDocsConsent.isPending} onClick={() => beginDocsConsent.mutate()}>
+                    {beginDocsConsent.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Connect Google Docs
+                  </Button>
+                </div>
+                <div className="mt-3 grid gap-2 md:grid-cols-3">
+                  <select
+                    aria-label="Workspace novel for real Google Docs candidate"
+                    className="h-10 rounded-md border bg-background px-3 text-sm"
+                    value={String(effectiveDocsWorkspaceNovelId ?? "")}
+                    onChange={(event) => setDocsWorkspaceNovelId(event.target.value)}
+                  >
+                    <option value="">Select workspace novel</option>
+                    {workspaceNovelRows.map((row: any) => (
+                      <option key={row.workspaceNovel.id} value={row.workspaceNovel.id}>{row.novel.title} · WN #{row.workspaceNovel.id}</option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Google Docs connection"
+                    className="h-10 rounded-md border bg-background px-3 text-sm"
+                    value={String(effectiveDocsConnectionId ?? "")}
+                    onChange={(event) => setDocsConnectionId(event.target.value)}
+                  >
+                    <option value="">Select Google connection</option>
+                    {activeDocsConnections.map((connection: any) => (
+                      <option key={connection.id} value={connection.id}>Connection #{connection.id} · {connection.status}</option>
+                    ))}
+                  </select>
+                  <Input value={googleDocRef} onChange={(event) => setGoogleDocRef(event.target.value)} placeholder="Google Doc URL or document ID" />
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <Button
+                    type="button"
+                    disabled={!selectedWorkspaceId || !effectiveDocsWorkspaceNovelId || !effectiveDocsConnectionId || !googleDocRef.trim() || prepareRealAiCandidate.isPending}
+                    onClick={() => {
+                      const providerFileId = parseGoogleDocId(googleDocRef);
+                      if (!providerFileId || providerFileId.length < 10) {
+                        toast.error("Enter a valid Google Doc URL or document ID");
+                        return;
+                      }
+                      prepareRealAiCandidate.mutate({
+                        workspaceId: selectedWorkspaceId!,
+                        workspaceNovelId: effectiveDocsWorkspaceNovelId,
+                        connectionId: effectiveDocsConnectionId,
+                        providerFileId,
+                      });
+                    }}
+                  >
+                    {prepareRealAiCandidate.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Prepare real AI QC candidate
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    {docsConnections.isLoading ? "Checking Google connections…" : `${activeDocsConnections.length} ready connection(s)`}
+                  </span>
+                </div>
+                {preparedAiScope && (
+                  <div className="mt-3 rounded-md border bg-background p-3 text-xs">
+                    <div className="font-medium">Exact controlled-execution scope</div>
+                    <code className="mt-1 block break-all">{preparedAiScope}</code>
+                  </div>
+                )}
               </div>
 
               <div className="grid gap-5 md:grid-cols-3">

@@ -15,6 +15,7 @@ import { handleSitemapXml } from "./sitemap";
 import { ensureDatabaseMigrated } from "./startupMigrations";
 import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
 import { registerHealthReadinessRoutes } from "./healthReadiness";
+import { registerWorkspaceGoogleDocsRoutes } from "../workspace/googleDocs.routes";
 
 // Procedures that have caused "No procedure found on path ..." client errors
 // in production when an older server build was still deployed after the
@@ -104,6 +105,8 @@ async function startServer() {
   // isGoogleAuthActive(), server/_core/env.ts), so this is a no-op for any
   // deployment still on the default "manus" flag.
   registerGoogleOAuthRoutes(app);
+  // Preview-only, admin-authenticated incremental Google Docs consent callback.
+  registerWorkspaceGoogleDocsRoutes(app);
 
   // Dynamic sitemap (published novels only) - must be registered before the
   // Vite/static-file fallback below, otherwise /sitemap.xml would 404 and

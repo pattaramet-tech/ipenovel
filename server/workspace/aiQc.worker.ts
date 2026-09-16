@@ -9,6 +9,7 @@ import {
   type WorkspaceAiQcProvider,
 } from "./aiQc.service";
 import type { WorkspaceDocsAdapter } from "./googleDocs.domain";
+import { resolveWorkspaceGoogleDocsAiQcExecutionRuntime } from "./googleDocs.runtime";
 
 const DEFAULT_LEASE_SECONDS = 60;
 const MAX_LEASE_SECONDS = 300;
@@ -34,7 +35,8 @@ export class WorkspaceAiQcWorkerError extends Error {
       | "JOB_ACTIVE"
       | "JOB_INCONSISTENT"
       | "JOB_RETRY_REQUIRED"
-      | "JOB_NOT_RUNNABLE",
+      | "JOB_NOT_RUNNABLE"
+      | "DOCS_RUNTIME_REQUIRED",
     message: string
   ) {
     super(message);
@@ -140,6 +142,14 @@ export type WorkspaceAiQcWorkerEvent = {
 
 export type WorkspaceAiQcWorkerObserver = (event: WorkspaceAiQcWorkerEvent) => void;
 
+export type WorkspaceAiQcDocsExecutionRuntime = {
+  accessToken: string;
+  docsAdapter: WorkspaceDocsAdapter;
+};
+
+export type WorkspaceAiQcDocsRuntimeResolver =
+  () => Promise<WorkspaceAiQcDocsExecutionRuntime>;
+
 export interface WorkspaceAiQcWorkerServices {
   getJobDetail: typeof getAiJobDetail;
   claimJob: typeof claimAiJob;
@@ -173,12 +183,29 @@ function safeErrorCode(error: unknown) {
   return "AI_QC_WORKER_FAILED";
 }
 
+async function resolveDocsRuntimeForExecution(input: {
+  accessToken?: string;
+  docsAdapter?: WorkspaceDocsAdapter;
+  resolveDocsRuntime?: WorkspaceAiQcDocsRuntimeResolver;
+}): Promise<WorkspaceAiQcDocsExecutionRuntime> {
+  if (input.resolveDocsRuntime) {
+    const runtime = await input.resolveDocsRuntime();
+    if (runtime.accessToken.trim() && runtime.docsAdapter) return runtime;
+  } else if (input.accessToken?.trim() && input.docsAdapter) {
+    return { accessToken: input.accessToken, docsAdapter: input.docsAdapter };
+  }
+  throw new WorkspaceAiQcWorkerError(
+    "DOCS_RUNTIME_REQUIRED",
+    "AI QC execution requires a resolved read-only Google Docs runtime."
+  );
+}
 export async function runScopedAiQcWorkerOnce(input: {
   actorUserId: number;
   scope: WorkspaceAiQcExecutionScope;
   leaseOwner: string;
-  accessToken: string;
-  docsAdapter: WorkspaceDocsAdapter;
+  accessToken?: string;
+  docsAdapter?: WorkspaceDocsAdapter;
+  resolveDocsRuntime?: WorkspaceAiQcDocsRuntimeResolver;
   artifactStore: WorkspaceAiQcArtifactStore;
   provider: WorkspaceAiQcProvider;
   executionEnabled: boolean;
@@ -279,6 +306,7 @@ export async function runScopedAiQcWorkerOnce(input: {
       throw new WorkspaceAiQcWorkerError("JOB_NOT_RUNNABLE", `AI QC job cannot run from operational state ${operational.state}.`);
     }
 
+    const docsRuntime = await resolveDocsRuntimeForExecution(input);
     const claimed = await services.claimJob({
       workspaceId: input.scope.workspaceId,
       jobId: input.scope.jobId,
@@ -292,8 +320,8 @@ export async function runScopedAiQcWorkerOnce(input: {
       jobId: input.scope.jobId,
       attemptId: claimed.attempt.id,
       leaseOwner: input.leaseOwner,
-      accessToken: input.accessToken,
-      docsAdapter: input.docsAdapter,
+      accessToken: docsRuntime.accessToken,
+      docsAdapter: docsRuntime.docsAdapter,
       provider: input.provider,
       artifactStore: input.artifactStore,
       allowExternalProvider: true,
@@ -308,10 +336,19 @@ export async function runScopedAiQcWorkerOnce(input: {
 
 export type WorkspaceAiQcConfiguredWorkerInput = Omit<
   Parameters<typeof runScopedAiQcWorkerOnce>[0],
-  "scope" | "provider" | "executionEnabled" | "leaseSeconds" | "maxAttempts" | "services"
+  | "scope"
+  | "provider"
+  | "executionEnabled"
+  | "leaseSeconds"
+  | "maxAttempts"
+  | "services"
+  | "accessToken"
+  | "docsAdapter"
+  | "resolveDocsRuntime"
 > & {
   fetchImpl?: typeof fetch;
   services?: WorkspaceAiQcWorkerServices;
+  googleDocsRuntimeResolver?: typeof resolveWorkspaceGoogleDocsAiQcExecutionRuntime;
 };
 
 export async function runConfiguredScopedAiQcWorkerOnce(input: WorkspaceAiQcConfiguredWorkerInput) {
@@ -319,12 +356,24 @@ export async function runConfiguredScopedAiQcWorkerOnce(input: WorkspaceAiQcConf
   if (!config.enabled) {
     throw new WorkspaceAiQcWorkerError("EXECUTION_DISABLED", "Workspace AI QC worker execution is disabled.");
   }
-  const { fetchImpl, ...workerInput } = input;
+  const {
+    fetchImpl,
+    googleDocsRuntimeResolver = resolveWorkspaceGoogleDocsAiQcExecutionRuntime,
+    ...workerInput
+  } = input;
   const provider = await createRuntimeWorkspaceAiQcProvider(fetchImpl);
   return runScopedAiQcWorkerOnce({
     ...workerInput,
     scope: config.scope,
     provider,
+    resolveDocsRuntime: () =>
+      googleDocsRuntimeResolver({
+        actorUserId: workerInput.actorUserId,
+        workspaceId: config.scope.workspaceId,
+        jobId: config.scope.jobId,
+        snapshotId: config.scope.snapshotId,
+        fetchImpl,
+      }),
     executionEnabled: true,
     leaseSeconds: config.leaseSeconds,
     maxAttempts: config.maxAttempts,

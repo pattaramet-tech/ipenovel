@@ -38,6 +38,15 @@ import {
   WorkspaceDocsServiceError,
 } from "./googleDocs.service";
 import {
+  beginWorkspaceGoogleDocsConsent,
+  listWorkspaceGoogleDocsConnections,
+  WorkspaceGoogleDocsRuntimeError,
+} from "./googleDocs.runtime";
+import {
+  prepareWorkspaceAiQcRealCandidate,
+  WorkspaceAiQcRealCandidateError,
+} from "./aiQc.realCandidate";
+import {
   createPublishDestination,
   createPublishDryRun,
   getPublishRunDetail,
@@ -197,6 +206,17 @@ function mapWorkspaceError(error: unknown): never {
               : "BAD_REQUEST";
     throw new TRPCError({ code, message: error.message });
   }
+  if (error instanceof WorkspaceGoogleDocsRuntimeError) {
+    const code = error.code === "CONNECTION_NOT_FOUND" ? "NOT_FOUND"
+      : error.code === "RUNTIME_CONFIG_INVALID" || error.code === "DOCS_RECONNECT_REQUIRED" || error.code === "DOCS_SCOPE_REQUIRED"
+        ? "PRECONDITION_FAILED"
+        : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
+  if (error instanceof WorkspaceAiQcRealCandidateError) {
+    const code = error.code === "CANDIDATE_CONFLICT" ? "CONFLICT" : "PRECONDITION_FAILED";
+    throw new TRPCError({ code, message: error.message });
+  }
   if (error instanceof WorkspaceDocsServiceError) {
     const code =
       error.code === "DATABASE_UNAVAILABLE"
@@ -299,6 +319,35 @@ export const workspaceRouter = router({
       }
     }),
 
+  googleDocsRuntime: router({
+    beginConsent: adminProcedure.mutation(async ({ ctx }) => {
+      try {
+        return await beginWorkspaceGoogleDocsConsent(ctx.user.id);
+      } catch (error) {
+        return mapWorkspaceError(error);
+      }
+    }),
+    connections: adminProcedure.query(async ({ ctx }) => {
+      try {
+        return await listWorkspaceGoogleDocsConnections(ctx.user.id);
+      } catch (error) {
+        return mapWorkspaceError(error);
+      }
+    }),
+    prepareAiQcCandidate: adminProcedure
+      .input(workspaceIdInput.extend({
+        workspaceNovelId: z.number().int().positive(),
+        connectionId: z.number().int().positive(),
+        providerFileId: z.string().trim().min(10).max(255),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await prepareWorkspaceAiQcRealCandidate({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+  }),
   controlCenter: router({
     publishOverview: adminProcedure
       .input(workspaceIdInput)

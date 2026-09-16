@@ -188,6 +188,9 @@ export const ENV = {
   workspaceAiQcExecutionScope: process.env.WORKSPACE_AI_QC_EXECUTION_SCOPE ?? "",
   workspaceAiQcLeaseSeconds: process.env.WORKSPACE_AI_QC_LEASE_SECONDS ?? "",
   workspaceAiQcMaxAttempts: process.env.WORKSPACE_AI_QC_MAX_ATTEMPTS ?? "",
+  // Workspace Google Docs incremental-consent runtime. Login OAuth scope remains unchanged.
+  workspaceGoogleDocsRedirectUri: process.env.WORKSPACE_GOOGLE_DOCS_REDIRECT_URI ?? "",
+  workspaceGoogleDocsTokenEncryptionKey: process.env.WORKSPACE_GOOGLE_DOCS_TOKEN_ENCRYPTION_KEY ?? "",
   // Bootstrap-only key for encrypting admin-managed Workspace provider
   // credentials at rest. The raw key never belongs in the database or API
   // responses; provider/runtime execution remains independently kill-switched.
