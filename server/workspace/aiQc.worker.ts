@@ -275,10 +275,6 @@ export async function runScopedAiQcWorkerOnce(input: {
     if (operational.state === "inconsistent") {
       throw new WorkspaceAiQcWorkerError("JOB_INCONSISTENT", "AI QC job history is inconsistent and requires operator review.");
     }
-    if (operational.attemptCount >= input.maxAttempts) {
-      throw new WorkspaceAiQcWorkerError("ATTEMPT_LIMIT_REACHED", "AI QC job reached the configured attempt ceiling.");
-    }
-
     const leaseExpiresAt = new Date(now.getTime() + input.leaseSeconds * 1000);
     if (operational.recoveryRequired) {
       emit({ type: "receipt_recovery_started", action: "recover", attemptCount: operational.attemptCount });
@@ -294,6 +290,10 @@ export async function runScopedAiQcWorkerOnce(input: {
       });
       emit({ type: "completed", action: "recover", attemptId: recovered.attemptId, durationMs: Date.now() - startedAt });
       return { action: "recover" as const, ...recovered };
+    }
+
+    if (operational.attemptCount >= input.maxAttempts) {
+      throw new WorkspaceAiQcWorkerError("ATTEMPT_LIMIT_REACHED", "AI QC job reached the configured attempt ceiling.");
     }
 
     if (operational.state === "failed") {

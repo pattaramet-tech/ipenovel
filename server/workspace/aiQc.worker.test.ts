@@ -150,7 +150,7 @@ describe("IPE-054-B one-shot worker", () => {
       errorClass: "ARTIFACT_STORE_FAILED",
     }] as any;
     const ops = services(jobDetail);
-    const result = await runScopedAiQcWorkerOnce({ ...baseInput, services: ops });
+    const result = await runScopedAiQcWorkerOnce({ ...baseInput, services: ops, maxAttempts: 1 });
     expect(result).toMatchObject({ action: "recover", recovered: true, providerRequestId: "receipt-1" });
     expect(ops.recoverReceipt).toHaveBeenCalledTimes(1);
     expect(ops.claimJob).not.toHaveBeenCalled();
