@@ -209,9 +209,31 @@ describe("IPE-054-D1 Gemini Interactions adapter", () => {
     ).rejects.toMatchObject({ code: "PROVIDER_RESPONSE_INVALID" });
   });
 
-  it("sanitizes upstream errors and never exposes the response body", async () => {
+  it("surfaces a bounded sanitized Gemini error summary without leaking secrets or source content", async () => {
     const fetchMock = vi.fn(
-      async () => new Response("secret-upstream-body", { status: 429 })
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 400,
+              status: "INVALID_ARGUMENT",
+              message: `Unknown field temperature. key=${config.apiKey} source=${input.content}`,
+              details: [
+                {
+                  fieldViolations: [
+                    {
+                      field: "generation_config.temperature",
+                      description: `Unsupported value; secret=${config.apiKey}; source=${input.content}`,
+                    },
+                  ],
+                  privateDebugDump: "secret-upstream-body",
+                },
+              ],
+            },
+            privateTopLevel: "never-expose-me",
+          }),
+          { status: 400, headers: { "content-type": "application/json" } }
+        )
     );
     const provider = createWorkspaceAiQcGeminiInteractionsProvider(
       config,
@@ -224,7 +246,28 @@ describe("IPE-054-D1 Gemini Interactions adapter", () => {
       error = caught;
     }
     expect(error).toMatchObject({ code: "PROVIDER_REQUEST_FAILED" });
-    expect(String(error)).toContain("HTTP 429");
+    expect(String(error)).toContain("HTTP 400");
+    expect(String(error)).toContain("status=INVALID_ARGUMENT");
+    expect(String(error)).toContain("generation_config.temperature");
+    expect(String(error)).toContain("[REDACTED]");
+    expect(String(error)).not.toContain(config.apiKey);
+    expect(String(error)).not.toContain(input.content);
     expect(String(error)).not.toContain("secret-upstream-body");
+    expect(String(error)).not.toContain("never-expose-me");
+    expect(String(error).length).toBeLessThan(2200);
+  });
+
+  it("never exposes a non-JSON upstream error body", async () => {
+    const fetchMock = vi.fn(
+      async () => new Response("secret-upstream-body", { status: 429 })
+    );
+    const provider = createWorkspaceAiQcGeminiInteractionsProvider(
+      config,
+      fetchMock as typeof fetch
+    );
+    await expect(provider.execute(input)).rejects.toMatchObject({
+      code: "PROVIDER_REQUEST_FAILED",
+      message: "Gemini Interactions request failed with HTTP 429.",
+    });
   });
 });

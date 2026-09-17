@@ -201,6 +201,98 @@ function mapCompletedInteraction(
 function retrieveUrl(apiUrl: string, providerRequestId: string) {
   return `${apiUrl}/${encodeURIComponent(providerRequestId)}`;
 }
+
+const MAX_SAFE_UPSTREAM_TEXT = 600;
+const MAX_SAFE_UPSTREAM_SUMMARY = 2000;
+
+function requestSecrets(
+  config: WorkspaceAiQcGeminiInteractionsConfig,
+  init: RequestInit
+) {
+  const secrets = [config.apiKey];
+  if (typeof init.body !== "string") return secrets;
+  try {
+    const request = JSON.parse(init.body) as { input?: unknown };
+    if (typeof request.input !== "string") return secrets;
+    const prompt = JSON.parse(request.input) as { content?: unknown };
+    if (typeof prompt.content === "string" && prompt.content)
+      secrets.push(prompt.content);
+  } catch {
+    // The request body is generated locally; ignore extraction failures and keep the API key redaction.
+  }
+  return secrets;
+}
+
+function sanitizeUpstreamText(value: unknown, secrets: string[]) {
+  if (typeof value !== "string") return null;
+  let sanitized = value
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  for (const secret of secrets) {
+    if (secret) sanitized = sanitized.split(secret).join("[REDACTED]");
+  }
+  return sanitized ? sanitized.slice(0, MAX_SAFE_UPSTREAM_TEXT) : null;
+}
+
+async function safeGeminiErrorSummary(
+  response: Response,
+  config: WorkspaceAiQcGeminiInteractionsConfig,
+  init: RequestInit
+) {
+  const secrets = requestSecrets(config, init);
+  try {
+    const payload = (await response.json()) as {
+      error?: {
+        code?: unknown;
+        status?: unknown;
+        message?: unknown;
+        details?: unknown;
+      };
+    };
+    const error = payload?.error;
+    if (!error || typeof error !== "object") return "";
+    const parts: string[] = [];
+    if (typeof error.code === "number" || typeof error.code === "string") {
+      const code = sanitizeUpstreamText(String(error.code), secrets);
+      if (code) parts.push(`code=${code.slice(0, 32)}`);
+    }
+    const status = sanitizeUpstreamText(error.status, secrets);
+    if (status) parts.push(`status=${status}`);
+    const message = sanitizeUpstreamText(error.message, secrets);
+    if (message) parts.push(`message=${message}`);
+    if (Array.isArray(error.details)) {
+      const violations: string[] = [];
+      for (const detail of error.details.slice(0, 5)) {
+        if (!detail || typeof detail !== "object") continue;
+        const fieldViolations = (detail as { fieldViolations?: unknown })
+          .fieldViolations;
+        if (!Array.isArray(fieldViolations)) continue;
+        for (const violation of fieldViolations.slice(0, 5)) {
+          if (!violation || typeof violation !== "object") continue;
+          const field = sanitizeUpstreamText(
+            (violation as { field?: unknown }).field,
+            secrets
+          );
+          const description = sanitizeUpstreamText(
+            (violation as { description?: unknown }).description,
+            secrets
+          );
+          if (field || description)
+            violations.push([field, description].filter(Boolean).join(": "));
+          if (violations.length >= 5) break;
+        }
+        if (violations.length >= 5) break;
+      }
+      if (violations.length) parts.push(`fields=${violations.join(" | ")}`);
+    }
+    if (!parts.length) return "";
+    return ` (${parts.join(", ").slice(0, MAX_SAFE_UPSTREAM_SUMMARY)})`;
+  } catch {
+    return "";
+  }
+}
+
 async function fetchInteraction(input: {
   url: string;
   init: RequestInit;
@@ -221,9 +313,14 @@ async function fetchInteraction(input: {
     )
       return null;
     if (!response.ok) {
+      const safeSummary = await safeGeminiErrorSummary(
+        response,
+        input.config,
+        input.init
+      );
       throw new WorkspaceAiQcExternalProviderError(
         "PROVIDER_REQUEST_FAILED",
-        `Gemini Interactions request failed with HTTP ${response.status}.`
+        `Gemini Interactions request failed with HTTP ${response.status}${safeSummary}.`
       );
     }
     try {

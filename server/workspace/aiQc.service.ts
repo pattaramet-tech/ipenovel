@@ -9,6 +9,7 @@ import {
   workspaceNovels,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { WorkspaceAiQcExternalProviderError } from "./aiQc.provider";
 import {
   buildWorkspaceAiQcArtifact,
   serializeWorkspaceAiQcArtifact,
@@ -88,6 +89,12 @@ function receiptIdFromUnknown(value: unknown): string | null {
   if (!value || typeof value !== "object") return null;
   const requestId = (value as { providerRequestId?: unknown }).providerRequestId;
   return typeof requestId === "string" && requestId.trim() ? requestId.trim() : null;
+}
+
+export function classifyWorkspaceAiQcExecutionError(error: unknown) {
+  if (error instanceof WorkspaceAiQcServiceError) return error.code;
+  if (error instanceof WorkspaceAiQcExternalProviderError) return error.code;
+  return "AI_QC_EXECUTION_FAILED";
 }
 
 async function markAttemptFailedSafely(input: {
@@ -319,7 +326,7 @@ export async function executeReadOnlyAiQcAttempt(input: {
     });
     return { artifact, objectKey, contentSha256: serialized.contentSha256 };
   } catch (error) {
-    const errorClass = error instanceof WorkspaceAiQcServiceError ? error.code : "AI_QC_EXECUTION_FAILED";
+    const errorClass = classifyWorkspaceAiQcExecutionError(error);
     await markAttemptFailedSafely({
       workspaceId: input.workspaceId,
       jobId: input.jobId,
