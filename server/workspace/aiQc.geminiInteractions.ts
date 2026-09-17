@@ -380,7 +380,6 @@ export function createWorkspaceAiQcGeminiInteractionsProvider(
               "You are a read-only Thai novel quality-control reviewer. Return only the requested structured JSON.",
             store: true,
             background: false,
-            generation_config: { temperature: 0 },
             response_format: {
               type: "text",
               mime_type: "application/json",

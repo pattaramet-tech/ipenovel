@@ -81,6 +81,9 @@ describe("IPE-054-D1 Gemini Interactions adapter", () => {
         expect(body.model).toBe("gemini-3.8-flash");
         expect(body.store).toBe(true);
         expect(body.background).toBe(false);
+        expect(body.generation_config?.temperature).toBeUndefined();
+        expect(body.generation_config?.top_p).toBeUndefined();
+        expect(body.generation_config?.top_k).toBeUndefined();
         expect(body.response_format).toMatchObject({
           type: "text",
           mime_type: "application/json",
