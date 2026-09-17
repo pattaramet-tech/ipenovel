@@ -82,6 +82,46 @@ function buildPrompt(input: Parameters<WorkspaceAiQcProvider["execute"]>[0]) {
   });
 }
 
+export type GeminiInteractionsRequestStage =
+  | "minimal"
+  | "system_instruction"
+  | "structured_output"
+  | "stored_sync";
+
+const REQUEST_STAGE_ORDER: Record<GeminiInteractionsRequestStage, number> = {
+  minimal: 0,
+  system_instruction: 1,
+  structured_output: 2,
+  stored_sync: 3,
+};
+
+export function buildGeminiInteractionsRequestBody(
+  input: Parameters<WorkspaceAiQcProvider["execute"]>[0],
+  config: Pick<WorkspaceAiQcGeminiInteractionsConfig, "model">,
+  stage: GeminiInteractionsRequestStage = "stored_sync"
+) {
+  const body: Record<string, unknown> = {
+    model: config.model,
+    input: buildPrompt(input),
+  };
+  if (REQUEST_STAGE_ORDER[stage] >= REQUEST_STAGE_ORDER.system_instruction) {
+    body.system_instruction =
+      "You are a read-only Thai novel quality-control reviewer. Return only the requested structured JSON.";
+  }
+  if (REQUEST_STAGE_ORDER[stage] >= REQUEST_STAGE_ORDER.structured_output) {
+    body.response_format = {
+      type: "text",
+      mime_type: "application/json",
+      schema: FINDINGS_SCHEMA,
+    };
+  }
+  if (REQUEST_STAGE_ORDER[stage] >= REQUEST_STAGE_ORDER.stored_sync) {
+    body.store = true;
+    body.background = false;
+  }
+  return body;
+}
+
 export function validateGeminiInteractionsApiUrl(raw: string) {
   let url: URL;
   try {
@@ -373,19 +413,9 @@ export function createWorkspaceAiQcGeminiInteractionsProvider(
             "Content-Type": "application/json",
             Accept: "application/json",
           },
-          body: JSON.stringify({
-            model: config.model,
-            input: buildPrompt(input),
-            system_instruction:
-              "You are a read-only Thai novel quality-control reviewer. Return only the requested structured JSON.",
-            store: true,
-            background: false,
-            response_format: {
-              type: "text",
-              mime_type: "application/json",
-              schema: FINDINGS_SCHEMA,
-            },
-          }),
+          body: JSON.stringify(
+            buildGeminiInteractionsRequestBody(input, config, "stored_sync")
+          ),
         },
       });
       return mapCompletedInteraction(

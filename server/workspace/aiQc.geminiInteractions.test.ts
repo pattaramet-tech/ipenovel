@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  buildGeminiInteractionsRequestBody,
   createWorkspaceAiQcGeminiInteractionsProvider,
   validateGeminiInteractionsApiUrl,
   type WorkspaceAiQcGeminiInteractionsConfig,
@@ -66,6 +67,61 @@ describe("IPE-054-D1 Gemini Interactions adapter", () => {
         "https://generativelanguage.googleapis.com:444/v1beta/interactions"
       )
     ).toThrow(/official Google/);
+  });
+
+  it("builds deterministic incremental request stages from the official Interactions fields", () => {
+    const minimal = buildGeminiInteractionsRequestBody(input, config, "minimal");
+    expect(Object.keys(minimal)).toEqual(["model", "input"]);
+    expect(minimal).toMatchObject({ model: "gemini-3.8-flash" });
+    expect(JSON.parse(String(minimal.input))).toMatchObject({
+      contract: "workspace-ai-qc-provider-v1",
+      snapshotId: 41,
+      content: input.content,
+    });
+
+    const withSystem = buildGeminiInteractionsRequestBody(
+      input,
+      config,
+      "system_instruction"
+    );
+    expect(Object.keys(withSystem)).toEqual([
+      "model",
+      "input",
+      "system_instruction",
+    ]);
+
+    const withStructuredOutput = buildGeminiInteractionsRequestBody(
+      input,
+      config,
+      "structured_output"
+    );
+    expect(Object.keys(withStructuredOutput)).toEqual([
+      "model",
+      "input",
+      "system_instruction",
+      "response_format",
+    ]);
+    expect(withStructuredOutput.response_format).toMatchObject({
+      type: "text",
+      mime_type: "application/json",
+      schema: { type: "object", required: ["findings"] },
+    });
+
+    const storedSync = buildGeminiInteractionsRequestBody(
+      input,
+      config,
+      "stored_sync"
+    );
+    expect(Object.keys(storedSync)).toEqual([
+      "model",
+      "input",
+      "system_instruction",
+      "response_format",
+      "store",
+      "background",
+    ]);
+    expect(storedSync).toMatchObject({ store: true, background: false });
+    expect((storedSync as any).generation_config).toBeUndefined();
   });
 
   it("creates a stored synchronous interaction with x-goog-api-key and structured output", async () => {
