@@ -1,8 +1,11 @@
 import type { WorkspaceAiQcProvider } from "./aiQc.service";
 import { WorkspaceAiQcExternalProviderError } from "./aiQc.provider";
 import {
+  GEMINI_STRUCTURED_OUTPUT_PROBE_VARIANTS,
   probeGeminiInteractionsRequestStage,
+  probeGeminiInteractionsStructuredOutputVariant,
   type GeminiInteractionsRequestStage,
+  type GeminiStructuredOutputProbeVariant,
   type WorkspaceAiQcGeminiInteractionsConfig,
 } from "./aiQc.geminiInteractions";
 import { resolveWorkspaceAiQcRuntimeProviderConfig } from "./aiProviderRuntime";
@@ -73,11 +76,13 @@ function assertDiagnosticEnvironment(env: NodeJS.ProcessEnv) {
 type ProbeDeps = {
   resolveProvider: typeof resolveWorkspaceAiQcRuntimeProviderConfig;
   probeStage: typeof probeGeminiInteractionsRequestStage;
+  probeStructuredOutputVariant: typeof probeGeminiInteractionsStructuredOutputVariant;
 };
 
 const defaultDeps: ProbeDeps = {
   resolveProvider: resolveWorkspaceAiQcRuntimeProviderConfig,
   probeStage: probeGeminiInteractionsRequestStage,
+  probeStructuredOutputVariant: probeGeminiInteractionsStructuredOutputVariant,
 };
 
 export async function runWorkspaceAiQcGeminiStageProbe(input: {
@@ -110,8 +115,55 @@ export async function runWorkspaceAiQcGeminiStageProbe(input: {
     interactionStatus: string | null;
     interactionIdPresent: boolean;
   }> = [];
+  const structuredOutputResults: Array<{
+    variant: GeminiStructuredOutputProbeVariant;
+    accepted: boolean;
+    interactionStatus: string | null;
+    interactionIdPresent: boolean;
+  }> = [];
 
   for (const stage of GEMINI_STAGE_PROBE_ORDER.slice(0, throughIndex + 1)) {
+    if (stage === "structured_output") {
+      for (const variant of GEMINI_STRUCTURED_OUTPUT_PROBE_VARIANTS) {
+        try {
+          const result = await deps.probeStructuredOutputVariant({
+            config,
+            request: SYNTHETIC_REQUEST,
+            variant,
+            fetchImpl: input.fetchImpl,
+          });
+          structuredOutputResults.push(result);
+        } catch (error) {
+          if (error instanceof WorkspaceAiQcExternalProviderError) {
+            return {
+              ok: false as const,
+              providerSource: resolved.source,
+              profileId: resolved.profileId,
+              model: config.model,
+              through: input.through,
+              results,
+              structuredOutputResults,
+              failedStage: stage,
+              failedStructuredOutputVariant: variant,
+              error: { code: error.code, message: error.message },
+            };
+          }
+          throw new WorkspaceAiQcGeminiStageProbeError(
+            "DIAGNOSTIC_PROVIDER_INVALID",
+            "Gemini structured-output probe failed before a sanitized provider result was available."
+          );
+        }
+      }
+      const full = structuredOutputResults.at(-1)!;
+      results.push({
+        stage,
+        accepted: true,
+        interactionStatus: full.interactionStatus,
+        interactionIdPresent: full.interactionIdPresent,
+      });
+      continue;
+    }
+
     try {
       const result = await deps.probeStage({
         config,
@@ -129,7 +181,9 @@ export async function runWorkspaceAiQcGeminiStageProbe(input: {
           model: config.model,
           through: input.through,
           results,
+          structuredOutputResults,
           failedStage: stage,
+          failedStructuredOutputVariant: null,
           error: { code: error.code, message: error.message },
         };
       }
@@ -147,7 +201,9 @@ export async function runWorkspaceAiQcGeminiStageProbe(input: {
     model: config.model,
     through: input.through,
     results,
+    structuredOutputResults,
     failedStage: null,
+    failedStructuredOutputVariant: null,
     error: null,
   };
 }

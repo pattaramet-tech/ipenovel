@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   buildGeminiInteractionsRequestBody,
+  buildGeminiStructuredOutputProbeRequestBody,
+  buildGeminiStructuredOutputProbeSchema,
   createWorkspaceAiQcGeminiInteractionsProvider,
+  GEMINI_STRUCTURED_OUTPUT_PROBE_VARIANTS,
   probeGeminiInteractionsRequestStage,
+  probeGeminiInteractionsStructuredOutputVariant,
   validateGeminiInteractionsApiUrl,
   type WorkspaceAiQcGeminiInteractionsConfig,
 } from "./aiQc.geminiInteractions";
@@ -71,7 +75,11 @@ describe("IPE-054-D1 Gemini Interactions adapter", () => {
   });
 
   it("builds deterministic incremental request stages from the official Interactions fields", () => {
-    const minimal = buildGeminiInteractionsRequestBody(input, config, "minimal");
+    const minimal = buildGeminiInteractionsRequestBody(
+      input,
+      config,
+      "minimal"
+    );
     expect(Object.keys(minimal)).toEqual(["model", "input"]);
     expect(minimal).toMatchObject({ model: "gemini-3.8-flash" });
     expect(JSON.parse(String(minimal.input))).toMatchObject({
@@ -125,15 +133,124 @@ describe("IPE-054-D1 Gemini Interactions adapter", () => {
     expect((storedSync as any).generation_config).toBeUndefined();
   });
 
-  it("probes one request stage with the same sanitized transport path", async () => {
-    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body));
-      expect(Object.keys(body)).toEqual(["model", "input"]);
-      return new Response(
-        JSON.stringify({ id: "int_probe_1", status: "completed" }),
-        { status: 200 }
-      );
+  it("isolates structured-output schema features without changing the production full schema", () => {
+    expect(GEMINI_STRUCTURED_OUTPUT_PROBE_VARIANTS).toEqual([
+      "simple_object",
+      "findings_base",
+      "findings_enums",
+      "findings_constraints",
+      "full",
+    ]);
+
+    const simple = buildGeminiStructuredOutputProbeSchema(
+      "simple_object"
+    ) as any;
+    expect(simple).toEqual({
+      type: "object",
+      properties: { ok: { type: "boolean" } },
+      required: ["ok"],
     });
+
+    const base = buildGeminiStructuredOutputProbeSchema("findings_base") as any;
+    expect(base.properties.findings.maxItems).toBeUndefined();
+    expect(base.properties.findings.items.additionalProperties).toBeUndefined();
+    expect(
+      base.properties.findings.items.properties.category.enum
+    ).toBeUndefined();
+    expect(
+      base.properties.findings.items.properties.confidence.minimum
+    ).toBeUndefined();
+
+    const enums = buildGeminiStructuredOutputProbeSchema(
+      "findings_enums"
+    ) as any;
+    expect(enums.properties.findings.items.properties.category.enum).toContain(
+      "typo"
+    );
+    expect(enums.properties.findings.items.properties.severity.enum).toEqual([
+      "info",
+      "warning",
+      "error",
+    ]);
+    expect(enums.properties.findings.maxItems).toBeUndefined();
+
+    const constraints = buildGeminiStructuredOutputProbeSchema(
+      "findings_constraints"
+    ) as any;
+    expect(constraints.properties.findings.maxItems).toBe(500);
+    expect(
+      constraints.properties.findings.items.properties.confidence
+    ).toMatchObject({
+      minimum: 0,
+      maximum: 1,
+    });
+    expect(constraints.additionalProperties).toBeUndefined();
+
+    const production = buildGeminiInteractionsRequestBody(
+      input,
+      config,
+      "structured_output"
+    ) as any;
+    const full = buildGeminiStructuredOutputProbeRequestBody(
+      input,
+      config,
+      "full"
+    ) as any;
+    expect(full.response_format).toEqual(production.response_format);
+    expect(Object.keys(full)).toEqual([
+      "model",
+      "input",
+      "system_instruction",
+      "response_format",
+    ]);
+    expect(full.store).toBeUndefined();
+    expect(full.background).toBeUndefined();
+  });
+
+  it("probes a structured-output variant through the sanitized transport only", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body));
+        expect(
+          body.response_format.schema.additionalProperties
+        ).toBeUndefined();
+        expect(
+          body.response_format.schema.properties.findings.maxItems
+        ).toBeUndefined();
+        expect(body.store).toBeUndefined();
+        expect(body.background).toBeUndefined();
+        return new Response(
+          JSON.stringify({ id: "int_structured_probe_1", status: "completed" }),
+          { status: 200 }
+        );
+      }
+    );
+    await expect(
+      probeGeminiInteractionsStructuredOutputVariant({
+        config,
+        request: input,
+        variant: "findings_base",
+        fetchImpl: fetchMock as typeof fetch,
+      })
+    ).resolves.toEqual({
+      variant: "findings_base",
+      accepted: true,
+      interactionStatus: "completed",
+      interactionIdPresent: true,
+    });
+  });
+
+  it("probes one request stage with the same sanitized transport path", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body));
+        expect(Object.keys(body)).toEqual(["model", "input"]);
+        return new Response(
+          JSON.stringify({ id: "int_probe_1", status: "completed" }),
+          { status: 200 }
+        );
+      }
+    );
     await expect(
       probeGeminiInteractionsRequestStage({
         config,
@@ -148,17 +265,18 @@ describe("IPE-054-D1 Gemini Interactions adapter", () => {
       interactionIdPresent: true,
     });
 
-    const rejectingFetch = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          error: {
-            code: 400,
-            status: "INVALID_ARGUMENT",
-            message: `bad request ${config.apiKey} ${input.content}`,
-          },
-        }),
-        { status: 400 }
-      )
+    const rejectingFetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 400,
+              status: "INVALID_ARGUMENT",
+              message: `bad request ${config.apiKey} ${input.content}`,
+            },
+          }),
+          { status: 400 }
+        )
     );
     let error: unknown;
     try {

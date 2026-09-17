@@ -62,6 +62,21 @@ const FINDINGS_SCHEMA = {
   required: ["findings"],
 } as const;
 
+export type GeminiStructuredOutputProbeVariant =
+  | "simple_object"
+  | "findings_base"
+  | "findings_enums"
+  | "findings_constraints"
+  | "full";
+
+export const GEMINI_STRUCTURED_OUTPUT_PROBE_VARIANTS = [
+  "simple_object",
+  "findings_base",
+  "findings_enums",
+  "findings_constraints",
+  "full",
+] as const satisfies readonly GeminiStructuredOutputProbeVariant[];
+
 function buildPrompt(input: Parameters<WorkspaceAiQcProvider["execute"]>[0]) {
   return JSON.stringify({
     contract: "workspace-ai-qc-provider-v1",
@@ -83,10 +98,7 @@ function buildPrompt(input: Parameters<WorkspaceAiQcProvider["execute"]>[0]) {
 }
 
 export type GeminiInteractionsRequestStage =
-  | "minimal"
-  | "system_instruction"
-  | "structured_output"
-  | "stored_sync";
+  "minimal" | "system_instruction" | "structured_output" | "stored_sync";
 
 const REQUEST_STAGE_ORDER: Record<GeminiInteractionsRequestStage, number> = {
   minimal: 0,
@@ -94,6 +106,82 @@ const REQUEST_STAGE_ORDER: Record<GeminiInteractionsRequestStage, number> = {
   structured_output: 2,
   stored_sync: 3,
 };
+
+function findingsProbeSchema(input: { enums: boolean; constraints: boolean }) {
+  const category: Record<string, unknown> = { type: "string" };
+  const severity: Record<string, unknown> = { type: "string" };
+  const confidence: Record<string, unknown> = { type: "number" };
+  if (input.enums) {
+    category.enum = [
+      "foreign_word",
+      "typo",
+      "consistency",
+      "duplicate_like",
+      "formatting",
+      "other",
+    ];
+    severity.enum = ["info", "warning", "error"];
+  }
+  if (input.constraints) {
+    confidence.minimum = 0;
+    confidence.maximum = 1;
+  }
+  const findings: Record<string, unknown> = {
+    type: "array",
+    items: {
+      type: "object",
+      properties: {
+        category,
+        severity,
+        locationKey: { type: "string" },
+        message: { type: "string" },
+        confidence,
+      },
+      required: [
+        "category",
+        "severity",
+        "locationKey",
+        "message",
+        "confidence",
+      ],
+    },
+  };
+  if (input.constraints) findings.maxItems = 500;
+  return {
+    type: "object",
+    properties: { findings },
+    required: ["findings"],
+  };
+}
+
+export function buildGeminiStructuredOutputProbeSchema(
+  variant: GeminiStructuredOutputProbeVariant
+) {
+  switch (variant) {
+    case "simple_object":
+      return {
+        type: "object",
+        properties: { ok: { type: "boolean" } },
+        required: ["ok"],
+      };
+    case "findings_base":
+      return findingsProbeSchema({ enums: false, constraints: false });
+    case "findings_enums":
+      return findingsProbeSchema({ enums: true, constraints: false });
+    case "findings_constraints":
+      return findingsProbeSchema({ enums: true, constraints: true });
+    case "full":
+      return FINDINGS_SCHEMA;
+  }
+}
+
+function responseFormat(schema: unknown) {
+  return {
+    type: "text",
+    mime_type: "application/json",
+    schema,
+  };
+}
 
 export function buildGeminiInteractionsRequestBody(
   input: Parameters<WorkspaceAiQcProvider["execute"]>[0],
@@ -109,17 +197,26 @@ export function buildGeminiInteractionsRequestBody(
       "You are a read-only Thai novel quality-control reviewer. Return only the requested structured JSON.";
   }
   if (REQUEST_STAGE_ORDER[stage] >= REQUEST_STAGE_ORDER.structured_output) {
-    body.response_format = {
-      type: "text",
-      mime_type: "application/json",
-      schema: FINDINGS_SCHEMA,
-    };
+    body.response_format = responseFormat(FINDINGS_SCHEMA);
   }
   if (REQUEST_STAGE_ORDER[stage] >= REQUEST_STAGE_ORDER.stored_sync) {
     body.store = true;
     body.background = false;
   }
   return body;
+}
+
+export function buildGeminiStructuredOutputProbeRequestBody(
+  input: Parameters<WorkspaceAiQcProvider["execute"]>[0],
+  config: Pick<WorkspaceAiQcGeminiInteractionsConfig, "model">,
+  variant: GeminiStructuredOutputProbeVariant
+) {
+  return {
+    ...buildGeminiInteractionsRequestBody(input, config, "system_instruction"),
+    response_format: responseFormat(
+      buildGeminiStructuredOutputProbeSchema(variant)
+    ),
+  };
 }
 
 export function validateGeminiInteractionsApiUrl(raw: string) {
@@ -333,10 +430,9 @@ async function safeGeminiErrorSummary(
   }
 }
 
-function createInteractionPostInit(
-  input: Parameters<WorkspaceAiQcProvider["execute"]>[0],
-  config: WorkspaceAiQcGeminiInteractionsConfig,
-  stage: GeminiInteractionsRequestStage
+function createInteractionPostInitFromBody(
+  body: Record<string, unknown>,
+  config: WorkspaceAiQcGeminiInteractionsConfig
 ): RequestInit {
   return {
     method: "POST",
@@ -345,8 +441,19 @@ function createInteractionPostInit(
       "Content-Type": "application/json",
       Accept: "application/json",
     },
-    body: JSON.stringify(buildGeminiInteractionsRequestBody(input, config, stage)),
+    body: JSON.stringify(body),
   };
+}
+
+function createInteractionPostInit(
+  input: Parameters<WorkspaceAiQcProvider["execute"]>[0],
+  config: WorkspaceAiQcGeminiInteractionsConfig,
+  stage: GeminiInteractionsRequestStage
+): RequestInit {
+  return createInteractionPostInitFromBody(
+    buildGeminiInteractionsRequestBody(input, config, stage),
+    config
+  );
 }
 
 async function fetchInteraction(input: {
@@ -420,6 +527,39 @@ export async function probeGeminiInteractionsRequestStage(input: {
   });
   return {
     stage: input.stage,
+    accepted: true as const,
+    interactionStatus:
+      typeof interaction?.status === "string" ? interaction.status : null,
+    interactionIdPresent:
+      typeof interaction?.id === "string" && interaction.id.trim().length > 0,
+  };
+}
+
+export async function probeGeminiInteractionsStructuredOutputVariant(input: {
+  config: WorkspaceAiQcGeminiInteractionsConfig;
+  request: Parameters<WorkspaceAiQcProvider["execute"]>[0];
+  variant: GeminiStructuredOutputProbeVariant;
+  fetchImpl?: FetchLike;
+}) {
+  const config = {
+    ...input.config,
+    apiUrl: validateGeminiInteractionsApiUrl(input.config.apiUrl),
+  };
+  const interaction = await fetchInteraction({
+    url: config.apiUrl,
+    config,
+    fetchImpl: input.fetchImpl ?? fetch,
+    init: createInteractionPostInitFromBody(
+      buildGeminiStructuredOutputProbeRequestBody(
+        input.request,
+        config,
+        input.variant
+      ),
+      config
+    ),
+  });
+  return {
+    variant: input.variant,
     accepted: true as const,
     interactionStatus:
       typeof interaction?.status === "string" ? interaction.status : null,

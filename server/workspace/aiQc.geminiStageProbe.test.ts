@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { WorkspaceAiQcExternalProviderError } from "./aiQc.provider";
+import { GEMINI_STRUCTURED_OUTPUT_PROBE_VARIANTS } from "./aiQc.geminiInteractions";
 import {
   GEMINI_STAGE_PROBE_ORDER,
   runWorkspaceAiQcGeminiStageProbe,
@@ -35,11 +36,18 @@ function deps(
     accepted: true as const,
     interactionStatus: "completed",
     interactionIdPresent: true,
+  })),
+  probeStructuredOutputVariant = vi.fn(async ({ variant }: any) => ({
+    variant,
+    accepted: true as const,
+    interactionStatus: "completed",
+    interactionIdPresent: true,
   }))
 ) {
   return {
     resolveProvider: vi.fn(async () => managed),
     probeStage,
+    probeStructuredOutputVariant,
   } as any;
 }
 
@@ -61,7 +69,7 @@ describe("Workspace Gemini Interactions stage probe", () => {
     }
   });
 
-  it("runs stages in order through the requested boundary using synthetic content only", async () => {
+  it("runs base stages and structured-output variants in deterministic order using synthetic content only", async () => {
     const probeStage = vi.fn(async ({ stage, request }: any) => {
       expect(request.content).toBe(
         "Workspace AI QC Gemini Interactions diagnostic probe."
@@ -73,16 +81,40 @@ describe("Workspace Gemini Interactions stage probe", () => {
         interactionIdPresent: true,
       };
     });
-    const mocked = deps(probeStage);
+    const probeStructuredOutputVariant = vi.fn(
+      async ({ variant, request }: any) => {
+        expect(request.content).toBe(
+          "Workspace AI QC Gemini Interactions diagnostic probe."
+        );
+        return {
+          variant,
+          accepted: true as const,
+          interactionStatus: "completed",
+          interactionIdPresent: true,
+        };
+      }
+    );
+    const mocked = deps(probeStage, probeStructuredOutputVariant);
     const report = await runWorkspaceAiQcGeminiStageProbe({
       through: "stored_sync",
       env,
       deps: mocked,
     });
     expect(report.ok).toBe(true);
-    expect(probeStage.mock.calls.map(call => call[0].stage)).toEqual(
+    expect(report.results.map(result => result.stage)).toEqual(
       GEMINI_STAGE_PROBE_ORDER
     );
+    expect(probeStage.mock.calls.map(call => call[0].stage)).toEqual([
+      "minimal",
+      "system_instruction",
+      "stored_sync",
+    ]);
+    expect(
+      probeStructuredOutputVariant.mock.calls.map(call => call[0].variant)
+    ).toEqual(GEMINI_STRUCTURED_OUTPUT_PROBE_VARIANTS);
+    expect(
+      report.structuredOutputResults.map(result => result.variant)
+    ).toEqual(GEMINI_STRUCTURED_OUTPUT_PROBE_VARIANTS);
     expect(JSON.stringify(report)).not.toContain(managed.config.apiKey);
     expect(mocked.resolveProvider).toHaveBeenCalledTimes(1);
   });
@@ -112,6 +144,50 @@ describe("Workspace Gemini Interactions stage probe", () => {
       failedStage: "system_instruction",
       error: { code: "PROVIDER_REQUEST_FAILED" },
     });
+    expect(probeStage.mock.calls.map(call => call[0].stage)).toEqual([
+      "minimal",
+      "system_instruction",
+    ]);
+  });
+
+  it("isolates the first failing structured-output schema feature and never reaches stored_sync", async () => {
+    const probeStage = vi.fn(async ({ stage }: any) => ({
+      stage,
+      accepted: true as const,
+      interactionStatus: "completed",
+      interactionIdPresent: true,
+    }));
+    const probeStructuredOutputVariant = vi.fn(async ({ variant }: any) => {
+      if (variant === "findings_enums") {
+        throw new WorkspaceAiQcExternalProviderError(
+          "PROVIDER_REQUEST_FAILED",
+          "Gemini Interactions request failed with HTTP 400 (status=INVALID_ARGUMENT)."
+        );
+      }
+      return {
+        variant,
+        accepted: true as const,
+        interactionStatus: "completed",
+        interactionIdPresent: true,
+      };
+    });
+    const report = await runWorkspaceAiQcGeminiStageProbe({
+      through: "stored_sync",
+      env,
+      deps: deps(probeStage, probeStructuredOutputVariant),
+    });
+    expect(report).toMatchObject({
+      ok: false,
+      failedStage: "structured_output",
+      failedStructuredOutputVariant: "findings_enums",
+      error: { code: "PROVIDER_REQUEST_FAILED" },
+    });
+    expect(
+      report.structuredOutputResults.map(result => result.variant)
+    ).toEqual(["simple_object", "findings_base"]);
+    expect(
+      probeStructuredOutputVariant.mock.calls.map(call => call[0].variant)
+    ).toEqual(["simple_object", "findings_base", "findings_enums"]);
     expect(probeStage.mock.calls.map(call => call[0].stage)).toEqual([
       "minimal",
       "system_instruction",
