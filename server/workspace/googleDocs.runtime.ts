@@ -31,6 +31,7 @@ const PREVIEW_GOOGLE_DOCS_CALLBACK_URL =
   "https://r2-preview.ipenovel.com/api/workspace/google/callback";
 const GOOGLE_DOCS_TOKEN_KEY_VERSION = 1;
 const MAX_GOOGLE_RESPONSE_CHARS = 5_000_000;
+const MAX_GOOGLE_DOCUMENT_RESPONSE_CHARS = 20_000_000;
 const GOOGLE_REQUEST_TIMEOUT_MS = 30_000;
 export class WorkspaceGoogleDocsRuntimeError extends Error {
   constructor(
@@ -76,9 +77,12 @@ export function createWorkspaceGoogleDocsTokenCipher(
     GOOGLE_DOCS_TOKEN_KEY_VERSION
   );
 }
-async function readJsonResponse(response: Response): Promise<any> {
+async function readJsonResponse(
+  response: Response,
+  maxResponseChars = MAX_GOOGLE_RESPONSE_CHARS
+): Promise<any> {
   const text = await response.text();
-  if (text.length > MAX_GOOGLE_RESPONSE_CHARS) {
+  if (text.length > maxResponseChars) {
     throw new WorkspaceGoogleDocsRuntimeError(
       "GOOGLE_RESPONSE_INVALID",
       "Google response exceeded the allowed size."
@@ -98,7 +102,8 @@ async function checkedJsonFetch(
   url: string,
   init: RequestInit,
   fetchImpl: typeof fetch,
-  failureCode: "GOOGLE_TOKEN_EXCHANGE_FAILED" | "GOOGLE_API_FAILED"
+  failureCode: "GOOGLE_TOKEN_EXCHANGE_FAILED" | "GOOGLE_API_FAILED",
+  maxResponseChars = MAX_GOOGLE_RESPONSE_CHARS
 ) {
   let response: Response;
   try {
@@ -112,7 +117,7 @@ async function checkedJsonFetch(
       "Google request failed."
     );
   }
-  const data = await readJsonResponse(response);
+  const data = await readJsonResponse(response, maxResponseChars);
   if (!response.ok) {
     throw new WorkspaceGoogleDocsRuntimeError(
       failureCode,
@@ -564,7 +569,8 @@ async function fetchGoogleDocument(input: {
       headers: { Authorization: `Bearer ${input.accessToken}` },
     },
     input.fetchImpl,
-    "GOOGLE_API_FAILED"
+    "GOOGLE_API_FAILED",
+    MAX_GOOGLE_DOCUMENT_RESPONSE_CHARS
   );
 }
 

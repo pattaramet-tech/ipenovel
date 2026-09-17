@@ -189,4 +189,14 @@ describe("IPE-054-D2A Google Docs runtime", () => {
     ).resolves.toBe("chapter one\nnested tab\n");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
+  it("allows a bounded large Docs response above the generic Google response limit", async () => {
+    const payload = JSON.stringify({
+      padding: "x".repeat(5_050_000),
+      tabs: [{ documentTab: { body: { content: [{ paragraph: { elements: [{ textRun: { content: "large doc\n" } }] } }] } } }],
+    });
+    const fetchImpl = vi.fn(async () => new Response(payload, { status: 200 })) as unknown as typeof fetch;
+    const adapter = createWorkspaceGoogleDocsRuntimeAdapter(fetchImpl);
+    await expect(adapter.getNormalizedText({ accessToken: ACCESS_TOKEN, providerFileId: DOC_ID })).resolves.toBe("large doc\n");
+  });
+
 });
