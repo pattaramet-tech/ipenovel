@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildGeminiInteractionsRequestBody,
   createWorkspaceAiQcGeminiInteractionsProvider,
+  probeGeminiInteractionsRequestStage,
   validateGeminiInteractionsApiUrl,
   type WorkspaceAiQcGeminiInteractionsConfig,
 } from "./aiQc.geminiInteractions";
@@ -122,6 +123,58 @@ describe("IPE-054-D1 Gemini Interactions adapter", () => {
     ]);
     expect(storedSync).toMatchObject({ store: true, background: false });
     expect((storedSync as any).generation_config).toBeUndefined();
+  });
+
+  it("probes one request stage with the same sanitized transport path", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      expect(Object.keys(body)).toEqual(["model", "input"]);
+      return new Response(
+        JSON.stringify({ id: "int_probe_1", status: "completed" }),
+        { status: 200 }
+      );
+    });
+    await expect(
+      probeGeminiInteractionsRequestStage({
+        config,
+        request: input,
+        stage: "minimal",
+        fetchImpl: fetchMock as typeof fetch,
+      })
+    ).resolves.toEqual({
+      stage: "minimal",
+      accepted: true,
+      interactionStatus: "completed",
+      interactionIdPresent: true,
+    });
+
+    const rejectingFetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 400,
+            status: "INVALID_ARGUMENT",
+            message: `bad request ${config.apiKey} ${input.content}`,
+          },
+        }),
+        { status: 400 }
+      )
+    );
+    let error: unknown;
+    try {
+      await probeGeminiInteractionsRequestStage({
+        config,
+        request: input,
+        stage: "minimal",
+        fetchImpl: rejectingFetch as typeof fetch,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(String(error)).toContain("HTTP 400");
+    expect(String(error)).toContain("[REDACTED]");
+    expect(String(error)).not.toContain(config.apiKey);
+    expect(String(error)).not.toContain(input.content);
   });
 
   it("creates a stored synchronous interaction with x-goog-api-key and structured output", async () => {

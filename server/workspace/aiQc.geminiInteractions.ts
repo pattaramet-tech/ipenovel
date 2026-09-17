@@ -333,6 +333,22 @@ async function safeGeminiErrorSummary(
   }
 }
 
+function createInteractionPostInit(
+  input: Parameters<WorkspaceAiQcProvider["execute"]>[0],
+  config: WorkspaceAiQcGeminiInteractionsConfig,
+  stage: GeminiInteractionsRequestStage
+): RequestInit {
+  return {
+    method: "POST",
+    headers: {
+      "x-goog-api-key": config.apiKey,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(buildGeminiInteractionsRequestBody(input, config, stage)),
+  };
+}
+
 async function fetchInteraction(input: {
   url: string;
   init: RequestInit;
@@ -385,6 +401,33 @@ async function fetchInteraction(input: {
     clearTimeout(timeout);
   }
 }
+
+export async function probeGeminiInteractionsRequestStage(input: {
+  config: WorkspaceAiQcGeminiInteractionsConfig;
+  request: Parameters<WorkspaceAiQcProvider["execute"]>[0];
+  stage: GeminiInteractionsRequestStage;
+  fetchImpl?: FetchLike;
+}) {
+  const config = {
+    ...input.config,
+    apiUrl: validateGeminiInteractionsApiUrl(input.config.apiUrl),
+  };
+  const interaction = await fetchInteraction({
+    url: config.apiUrl,
+    config,
+    fetchImpl: input.fetchImpl ?? fetch,
+    init: createInteractionPostInit(input.request, config, input.stage),
+  });
+  return {
+    stage: input.stage,
+    accepted: true as const,
+    interactionStatus:
+      typeof interaction?.status === "string" ? interaction.status : null,
+    interactionIdPresent:
+      typeof interaction?.id === "string" && interaction.id.trim().length > 0,
+  };
+}
+
 export function createWorkspaceAiQcGeminiInteractionsProvider(
   rawConfig: WorkspaceAiQcGeminiInteractionsConfig,
   fetchImpl: FetchLike = fetch
@@ -406,17 +449,7 @@ export function createWorkspaceAiQcGeminiInteractionsProvider(
         url: config.apiUrl,
         config,
         fetchImpl,
-        init: {
-          method: "POST",
-          headers: {
-            "x-goog-api-key": config.apiKey,
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-          body: JSON.stringify(
-            buildGeminiInteractionsRequestBody(input, config, "stored_sync")
-          ),
-        },
+        init: createInteractionPostInit(input, config, "stored_sync"),
       });
       return mapCompletedInteraction(
         interaction!,
