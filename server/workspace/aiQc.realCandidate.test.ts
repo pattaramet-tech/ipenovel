@@ -32,6 +32,12 @@ function deps(overrides: Record<string, unknown> = {}) {
       fingerprint: {},
     })),
     queueJob: vi.fn(async () => ({ job: { id: 7 }, created: true })),
+    retryJob: vi.fn(async () => ({
+      id: 7,
+      status: "queued",
+      idempotencyKey: REQUEST_KEY,
+      operation: "semantic_qc",
+    })),
     getJobDetail: vi.fn(async () => ({
       job: {
         id: 7,
@@ -69,10 +75,13 @@ describe("IPE-054-D2A real AI QC candidate preparation", () => {
       requestKey: REQUEST_KEY,
       operation: "semantic_qc",
       created: true,
+      resumed: false,
+      attemptCount: 0,
     });
     expect(result.scope).toBe(
       `workspaceId=2,jobId=7,snapshotId=6,requestKey=${REQUEST_KEY}`
     );
+    expect(mocked.retryJob).not.toHaveBeenCalled();
     expect(mocked.queueJob).toHaveBeenCalledWith(
       expect.objectContaining({
         operation: "semantic_qc",
@@ -118,12 +127,80 @@ describe("IPE-054-D2A real AI QC candidate preparation", () => {
     expect(mocked.refreshAccessToken).not.toHaveBeenCalled();
   });
 
-  it("fails closed if the durable job already has an attempt", async () => {
+  it("re-queues an existing failed idempotent job instead of rejecting reused snapshot history", async () => {
     const mocked = deps({
+      queueJob: vi.fn(async () => ({ job: { id: 7 }, created: false })),
+      getJobDetail: vi.fn(async () => ({
+        job: {
+          id: 7,
+          status: "failed",
+          idempotencyKey: REQUEST_KEY,
+          operation: "semantic_qc",
+        },
+        attempts: [{ id: 99 }, { id: 100 }],
+      })),
+    });
+    const result = await prepareWorkspaceAiQcRealCandidate(
+      {
+        actorUserId: 10,
+        workspaceId: 2,
+        workspaceNovelId: 3,
+        connectionId: 8,
+        providerFileId: DOC_ID,
+      },
+      { env: disarmedEnv, deps: mocked }
+    );
+    expect(mocked.retryJob).toHaveBeenCalledWith({
+      actorUserId: 10,
+      workspaceId: 2,
+      jobId: 7,
+    });
+    expect(result).toMatchObject({
+      jobId: 7,
+      created: false,
+      resumed: true,
+      attemptCount: 2,
+    });
+  });
+
+  it("accepts an already queued reused job with prior attempts without retrying it again", async () => {
+    const mocked = deps({
+      queueJob: vi.fn(async () => ({ job: { id: 7 }, created: false })),
       getJobDetail: vi.fn(async () => ({
         job: {
           id: 7,
           status: "queued",
+          idempotencyKey: REQUEST_KEY,
+          operation: "semantic_qc",
+        },
+        attempts: [{ id: 99 }],
+      })),
+    });
+    const result = await prepareWorkspaceAiQcRealCandidate(
+      {
+        actorUserId: 10,
+        workspaceId: 2,
+        workspaceNovelId: 3,
+        connectionId: 8,
+        providerFileId: DOC_ID,
+      },
+      { env: disarmedEnv, deps: mocked }
+    );
+    expect(mocked.retryJob).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      created: false,
+      resumed: false,
+      attemptCount: 1,
+    });
+  });
+
+  it("fails closed when an existing idempotent job is not executable", async () => {
+    const mocked = deps({
+      queueJob: vi.fn(async () => ({ job: { id: 7 }, created: false })),
+      getJobDetail: vi.fn(async () => ({
+        job: {
+          id: 7,
+          status: "succeeded",
           idempotencyKey: REQUEST_KEY,
           operation: "semantic_qc",
         },
@@ -141,8 +218,7 @@ describe("IPE-054-D2A real AI QC candidate preparation", () => {
         },
         { env: disarmedEnv, deps: mocked }
       )
-    ).rejects.toMatchObject({
-      code: "CANDIDATE_CONFLICT",
-    });
+    ).rejects.toMatchObject({ code: "CANDIDATE_CONFLICT" });
+    expect(mocked.retryJob).not.toHaveBeenCalled();
   });
 });

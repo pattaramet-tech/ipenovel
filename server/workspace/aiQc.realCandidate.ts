@@ -1,5 +1,5 @@
 import { ENV } from "../_core/env";
-import { getAiJobDetail, queueAiJob } from "./aiQueue.service";
+import { getAiJobDetail, queueAiJob, retryAiJob } from "./aiQueue.service";
 import {
   bindGoogleDocument,
   observeBoundGoogleDocument,
@@ -61,6 +61,7 @@ type CandidateDeps = {
   bindDocument: typeof bindGoogleDocument;
   observeDocument: typeof observeBoundGoogleDocument;
   queueJob: typeof queueAiJob;
+  retryJob: typeof retryAiJob;
   getJobDetail: typeof getAiJobDetail;
 };
 const defaultDeps: CandidateDeps = {
@@ -70,6 +71,7 @@ const defaultDeps: CandidateDeps = {
   bindDocument: bindGoogleDocument,
   observeDocument: observeBoundGoogleDocument,
   queueJob: queueAiJob,
+  retryJob: retryAiJob,
   getJobDetail: getAiJobDetail,
 };
 
@@ -159,10 +161,26 @@ export async function prepareWorkspaceAiQcRealCandidate(
     workspaceId: input.workspaceId,
     jobId: queued.job.id,
   });
-  if (detail.job.status !== "queued" || detail.attempts.length !== 0) {
+  let candidateJob = detail.job;
+  let resumed = false;
+  if (!queued.created && candidateJob.status === "failed") {
+    candidateJob = await deps.retryJob({
+      actorUserId: input.actorUserId,
+      workspaceId: input.workspaceId,
+      jobId: candidateJob.id,
+    });
+    resumed = true;
+  }
+  if (candidateJob.status !== "queued") {
     throw new WorkspaceAiQcRealCandidateError(
       "CANDIDATE_CONFLICT",
-      "The durable AI QC job is not a fresh queued candidate with zero attempts."
+      `The durable AI QC job cannot be prepared from status ${candidateJob.status}.`
+    );
+  }
+  if (queued.created && detail.attempts.length !== 0) {
+    throw new WorkspaceAiQcRealCandidateError(
+      "CANDIDATE_CONFLICT",
+      "A newly created AI QC job unexpectedly already has attempts."
     );
   }
   return {
@@ -172,10 +190,12 @@ export async function prepareWorkspaceAiQcRealCandidate(
     documentId: binding.documentId,
     bindingId: binding.bindingId,
     snapshotId: observation.snapshotId,
-    jobId: detail.job.id,
-    requestKey: detail.job.idempotencyKey,
-    operation: detail.job.operation,
+    jobId: candidateJob.id,
+    requestKey: candidateJob.idempotencyKey,
+    operation: candidateJob.operation,
     created: queued.created,
-    scope: `workspaceId=${input.workspaceId},jobId=${detail.job.id},snapshotId=${observation.snapshotId},requestKey=${detail.job.idempotencyKey}`,
+    resumed,
+    attemptCount: detail.attempts.length,
+    scope: `workspaceId=${input.workspaceId},jobId=${candidateJob.id},snapshotId=${observation.snapshotId},requestKey=${candidateJob.idempotencyKey}`,
   };
 }

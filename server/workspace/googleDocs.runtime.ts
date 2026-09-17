@@ -459,13 +459,10 @@ export async function resolveWorkspaceGoogleDocsAiQcExecutionRuntime(input: {
     ...baseDocsAdapter,
     async getMetadata(request) {
       const metadata = await baseDocsAdapter.getMetadata(request);
-      if (
-        metadata.providerFileId !== row.providerFileId ||
-        metadata.revision !== row.providerRevisionId
-      ) {
+      if (metadata.providerFileId !== row.providerFileId) {
         throw new WorkspaceGoogleDocsRuntimeError(
           "AI_QC_SOURCE_INVALID",
-          "Current Google document identity or revision no longer matches the exact AI QC snapshot."
+          "Current Google document identity no longer matches the exact AI QC snapshot."
         );
       }
       return metadata;

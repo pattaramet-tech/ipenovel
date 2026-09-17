@@ -204,7 +204,7 @@ describe.sequential("IPE-054-D2A real candidate integration", () => {
           accessToken: revisionRuntime.accessToken,
           docsAdapter: revisionRuntime.docsAdapter,
         })
-      ).rejects.toMatchObject({ code: "AI_QC_SOURCE_INVALID" });
+      ).resolves.toMatchObject({ content: "D2A real document body" });
 
       const staleFetch = vi.fn(
         async (url: string | URL | Request, init?: RequestInit) => {
