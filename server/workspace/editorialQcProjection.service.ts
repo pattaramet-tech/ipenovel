@@ -8,7 +8,7 @@ import {
 } from "../../drizzle/schema";
 
 export type EditorialQcColumnKey =
-  "editing" | "needs_fix" | "pending_confirm" | "ready_to_publish";
+  "editing" | "needs_fix" | "pending_confirm" | "ready_to_publish" | "published";
 
 export async function projectEditorialQcColumn(
   tx: any,

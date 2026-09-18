@@ -78,6 +78,11 @@ import {
   WorkspaceEditorialApprovalError,
 } from "./editorialApproval.service";
 import {
+  getEditorialPublishReadModel,
+  requestEditorialPublish,
+  WorkspaceEditorialPublishError,
+} from "./editorialPublish.service";
+import {
   createPublishDestination,
   createPublishDryRun,
   getPublishRunDetail,
@@ -310,6 +315,15 @@ function mapWorkspaceError(error: unknown): never {
               error.code === "KANBAN_CONFLICT"
             ? "CONFLICT"
             : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
+  if (error instanceof WorkspaceEditorialPublishError) {
+    const code =
+      error.code === "DATABASE_UNAVAILABLE"
+        ? "SERVICE_UNAVAILABLE"
+        : error.code === "WORK_ITEM_NOT_FOUND"
+          ? "NOT_FOUND"
+          : "CONFLICT";
     throw new TRPCError({ code, message: error.message });
   }
   if (error instanceof WorkspaceDocsServiceError) {
@@ -983,6 +997,45 @@ export const workspaceRouter = router({
           return await stageEditorialEpisodeDraft({
             actorUserId: ctx.user.id,
             ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    publish: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getEditorialPublishReadModel({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    requestPublish: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        expectedStageId: z.number().int().positive(),
+        expectedStagedDraftSha256: z.string().trim().length(64),
+        expectedEpisodeStateSha256: z.string().trim().length(64),
+        expectedCutoverEpoch: z.number().int().positive(),
+        expectedOwnershipVersion: z.number().int().positive(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          const executionEnabled = process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true";
+          const executionScope = executionEnabled
+            ? parseWorkspacePublishExecutionScope(process.env.WORKSPACE_PUBLISH_EXECUTION_SCOPE)
+            : undefined;
+          return await requestEditorialPublish({
+            actorUserId: ctx.user.id,
+            ...input,
+            executionEnabled,
+            executionScope,
           });
         } catch (error) {
           return mapWorkspaceError(error);

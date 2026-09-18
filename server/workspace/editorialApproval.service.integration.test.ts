@@ -4,6 +4,7 @@ import {
   episodes,
   novels,
   users,
+  workspaceKanbanCards,
   workspaceWorkspaces,
 } from "../../drizzle/schema";
 import { assertSafeTestDatabaseUrl } from "../test-helpers/testDatabaseGuard";
@@ -59,6 +60,7 @@ describe.sequential(
       const novel = await createTestNovel();
       const workspace = await createWorkspace(owner.id, "Editorial F");
       let stagedEpisodeId: number | null = null;
+      let boardId: number | null = null;
 
       try {
         await bindPublicationNovel({
@@ -70,6 +72,7 @@ describe.sequential(
           actorUserId: owner.id,
           workspaceId: workspace.workspaceId,
         });
+        boardId = board?.board.id ?? null;
         const story = board?.columns
           .flatMap(column => column.cards)
           .find(card => card.workItemType === "NEW_STORY");
@@ -276,6 +279,10 @@ describe.sequential(
           })
         ).rejects.toBeTruthy();
       } finally {
+        if (boardId) {
+          await db.delete(workspaceKanbanCards)
+            .where(eq(workspaceKanbanCards.boardId, boardId));
+        }
         await db
           .delete(workspaceWorkspaces)
           .where(eq(workspaceWorkspaces.id, workspace.workspaceId));

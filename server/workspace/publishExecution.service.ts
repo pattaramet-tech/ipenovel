@@ -372,6 +372,7 @@ export async function processClaimedPublishOutbox(input: {
   allowExternalProvider?: boolean;
   maxAttempts?: number;
   observer?: WorkspacePublishObserver;
+  beforeProviderExecute?: (request: WorkspacePublishProviderRequest) => Promise<unknown>;
 }) {
   if (!input.executionEnabled) throw new WorkspacePublishExecutionError("EXECUTION_DISABLED", "Workspace publish execution is disabled.");
   if (input.provider.mode === "external" && input.allowExternalProvider !== true) {
@@ -473,6 +474,7 @@ export async function processClaimedPublishOutbox(input: {
       if (reconciled) {
         result = reconciled;
       } else {
+        await input.beforeProviderExecute?.(request);
         const executeStartedAt = Date.now();
         input.observer?.({ type: "execute_start", at: new Date().toISOString(), workspaceId: input.workspaceId, publishRunId: context.run.id, outboxId: outbox.id, itemId: item.id, itemKey: item.itemKey, requestKey: request.requestKey, attempt: outbox.attempts });
         result = await input.provider.execute(request);

@@ -150,6 +150,16 @@ export default function WorkspacePage() {
       retry: false,
     }
   );
+  const editorialPublish = trpc.workspace.editorial.publish.useQuery(
+    {
+      workspaceId: selectedWorkspaceId ?? 0,
+      workItemId: selectedSourceWorkItemId ?? 0,
+    },
+    {
+      enabled: isAdmin && Boolean(selectedWorkspaceId && selectedSourceWorkItemId),
+      retry: false,
+    }
+  );
   const ownership = trpc.workspace.migrationOwnership.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
     { enabled: isAdmin && Boolean(selectedWorkspaceId) }
@@ -476,6 +486,7 @@ export default function WorkspacePage() {
     onSuccess: async (result) => {
       await Promise.all([
         editorialApproval.refetch(),
+        editorialPublish.refetch(),
         editorialBoard.refetch(),
       ]);
       toast.success(
@@ -485,6 +496,24 @@ export default function WorkspacePage() {
       );
     },
     onError: (error) => toast.error(error.message),
+  });
+  const requestEditorialPublish = trpc.workspace.editorial.requestPublish.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        editorialApproval.refetch(),
+        editorialPublish.refetch(),
+        editorialBoard.refetch(),
+        publishOverview.refetch(),
+      ]);
+      toast.success("Controlled Publish ถูก enqueue แล้ว");
+    },
+    onError: async (error) => {
+      await Promise.all([
+        editorialPublish.refetch(),
+        publishOverview.refetch(),
+      ]);
+      toast.error(error.message);
+    },
   });
   const resolveEditorialFinding = trpc.workspace.editorial.foreignCheckerResolve.useMutation({
     onSuccess: async () => {
@@ -1691,8 +1720,38 @@ export default function WorkspacePage() {
                     </div>
 
                     {editorialApprovalData?.readyToPublish && (
-                      <div className="rounded-md border p-3 text-sm">
-                        พร้อมสำหรับขั้น Controlled Publish: Episode #{editorialApprovalData.stageEpisode?.id} ยังเป็น <strong>unpublished</strong> และผูกกับ Draft SHA {shortHash(editorialApprovalData.stage?.stagedDraftSha256)}
+                      <div className="space-y-2 rounded-md border p-3 text-sm">
+                        <div>
+                          พร้อมสำหรับขั้น Controlled Publish: Episode #{editorialApprovalData.stageEpisode?.id} ยังเป็น <strong>unpublished</strong> และผูกกับ Draft SHA {shortHash(editorialApprovalData.stage?.stagedDraftSha256)}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          publish owner {(editorialPublish.data as any)?.ownership?.owner ?? "—"} · epoch {(editorialPublish.data as any)?.ownership?.cutoverEpoch ?? "—"} · run #{(editorialPublish.data as any)?.publishRun?.id ?? "ยังไม่สร้าง"} · {(editorialPublish.data as any)?.blocker ?? "พร้อม enqueue"}
+                        </div>
+                        <Button
+                          type="button"
+                          disabled={
+                            !(editorialPublish.data as any)?.requestReady ||
+                            requestEditorialPublish.isPending
+                          }
+                          onClick={() => {
+                            const publish = editorialPublish.data as any;
+                            if (!publish?.stage?.id || !publish?.ownership) return;
+                            requestEditorialPublish.mutate({
+                              workspaceId: selectedWorkspaceId,
+                              workItemId: selectedSourceWorkItemId,
+                              expectedStageId: publish.stage.id,
+                              expectedStagedDraftSha256: publish.stage.stagedDraftSha256,
+                              expectedEpisodeStateSha256: publish.stage.episodeStateSha256,
+                              expectedCutoverEpoch: publish.ownership.cutoverEpoch,
+                              expectedOwnershipVersion: publish.ownership.version,
+                            });
+                          }}
+                        >
+                          {requestEditorialPublish.isPending && (
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          )}
+                          Publish (Controlled)
+                        </Button>
                       </div>
                     )}
                   </div>
