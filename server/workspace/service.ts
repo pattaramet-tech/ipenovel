@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import {
   novels,
   workspaceMembers,
@@ -97,6 +97,40 @@ export async function getWorkspaceDetail(userId: number, workspaceId: number) {
   ]);
   const workspace = await requireWorkspace(db, workspaceId);
   return { workspace, membership: null, members, novels: novelRows };
+}
+
+export async function listPublicationNovelOptions(userId: number, workspaceId: number) {
+  const db = await database();
+  await requireWorkspace(db, workspaceId);
+  await requireWorkspacePlatformAdmin(db, userId);
+
+  const [publicationNovels, boundRows] = await Promise.all([
+    db
+      .select({
+        id: novels.id,
+        title: novels.title,
+        publicationStatus: novels.publicationStatus,
+        storyStatus: novels.storyStatus,
+      })
+      .from(novels)
+      .orderBy(asc(novels.title), asc(novels.id))
+      .limit(200),
+    db
+      .select({ novelId: workspaceNovels.novelId })
+      .from(workspaceNovels)
+      .where(
+        and(
+          eq(workspaceNovels.workspaceId, workspaceId),
+          eq(workspaceNovels.status, "active")
+        )
+      ),
+  ]);
+
+  const boundNovelIds = new Set(boundRows.map((row: any) => Number(row.novelId)));
+  return publicationNovels.map((novel: any) => ({
+    ...novel,
+    bound: boundNovelIds.has(Number(novel.id)),
+  }));
 }
 
 export async function addOrUpdateMember(input: {

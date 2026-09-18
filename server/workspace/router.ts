@@ -38,6 +38,11 @@ import {
   WorkspaceDocsServiceError,
 } from "./googleDocs.service";
 import {
+  ensureEditorialBoard,
+  getEditorialBoard,
+  WorkspaceEditorialBoardError,
+} from "./editorialBoard.service";
+import {
   createPublishDestination,
   createPublishDryRun,
   getPublishRunDetail,
@@ -76,6 +81,7 @@ import {
   createWorkspace,
   getWorkspaceDetail,
   listMigrationOwnership,
+  listPublicationNovelOptions,
   listReadOnlyBindings,
   listWorkspacesForUser,
   WorkspaceServiceError,
@@ -197,6 +203,17 @@ function mapWorkspaceError(error: unknown): never {
               : "BAD_REQUEST";
     throw new TRPCError({ code, message: error.message });
   }
+  if (error instanceof WorkspaceEditorialBoardError) {
+    const code =
+      error.code === "DATABASE_UNAVAILABLE"
+        ? "SERVICE_UNAVAILABLE"
+        : error.code.endsWith("_NOT_FOUND")
+          ? "NOT_FOUND"
+          : error.code.endsWith("_CONFLICT")
+            ? "CONFLICT"
+            : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
   if (error instanceof WorkspaceDocsServiceError) {
     const code =
       error.code === "DATABASE_UNAVAILABLE"
@@ -274,6 +291,15 @@ export const workspaceRouter = router({
       .query(async ({ ctx, input }) => {
         try {
           return await listReadOnlyBindings(ctx.user.id, input.workspaceId);
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    availablePublicationNovels: adminProcedure
+      .input(workspaceIdInput)
+      .query(async ({ ctx, input }) => {
+        try {
+          return await listPublicationNovelOptions(ctx.user.id, input.workspaceId);
         } catch (error) {
           return mapWorkspaceError(error);
         }
@@ -657,6 +683,33 @@ export const workspaceRouter = router({
       .query(async ({ ctx, input }) => {
         try {
           return await requireLegacyRetirementCandidate({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+  }),
+
+  editorial: router({
+    board: adminProcedure
+      .input(workspaceIdInput)
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getEditorialBoard({
+            actorUserId: ctx.user.id,
+            workspaceId: input.workspaceId,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    ensureBoard: adminProcedure
+      .input(workspaceIdInput)
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await ensureEditorialBoard({
+            actorUserId: ctx.user.id,
+            workspaceId: input.workspaceId,
+          });
         } catch (error) {
           return mapWorkspaceError(error);
         }

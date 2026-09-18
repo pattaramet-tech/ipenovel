@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
@@ -8,7 +8,11 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
   Activity,
+  BookOpen,
   Bot,
+  ChevronLeft,
+  ChevronRight,
+  Columns3,
   Database,
   FileCheck2,
   GitBranch,
@@ -51,6 +55,7 @@ export default function WorkspacePage() {
   const [checkerSnapshotId, setCheckerSnapshotId] = useState("");
   const [checkerRuleSetId, setCheckerRuleSetId] = useState("");
   const [aiSnapshotId, setAiSnapshotId] = useState("");
+  const ensuredEditorialWorkspaces = useRef(new Set<number>());
   const { isAdmin, loading: adminLoading } = useAdminGuard();
 
   const workspaces = trpc.workspace.list.useQuery(undefined, { enabled: isAdmin });
@@ -59,6 +64,14 @@ export default function WorkspacePage() {
     { enabled: isAdmin && Boolean(selectedWorkspaceId) }
   );
   const bindings = trpc.workspace.bindings.list.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0 },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
+  );
+  const availableNovels = trpc.workspace.bindings.availablePublicationNovels.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0 },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
+  );
+  const editorialBoard = trpc.workspace.editorial.board.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
     { enabled: isAdmin && Boolean(selectedWorkspaceId) }
   );
@@ -144,6 +157,7 @@ export default function WorkspacePage() {
   }, [selectedWorkspaceId, workspaces.data]);
 
   useEffect(() => {
+    setNovelId("");
     setSelectedCheckerRunId(undefined);
     setSelectedAiJobId(undefined);
     setSelectedPublishRunId(undefined);
@@ -158,6 +172,28 @@ export default function WorkspacePage() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const ensureEditorialBoard = trpc.workspace.editorial.ensureBoard.useMutation({
+    onSuccess: async () => {
+      await editorialBoard.refetch();
+    },
+    onError: (error) => toast.error(error.message),
+  });
+
+  useEffect(() => {
+    const workspaceId = selectedWorkspaceId;
+    if (
+      !isAdmin ||
+      !workspaceId ||
+      editorialBoard.isLoading ||
+      editorialBoard.data !== null ||
+      ensuredEditorialWorkspaces.current.has(workspaceId)
+    ) {
+      return;
+    }
+    ensuredEditorialWorkspaces.current.add(workspaceId);
+    ensureEditorialBoard.mutate({ workspaceId });
+  }, [editorialBoard.data, editorialBoard.isLoading, isAdmin, selectedWorkspaceId]);
+
   const refreshChecker = async (runId?: number) => {
     if (runId) setSelectedCheckerRunId(runId);
     await Promise.all([checkerRuns.refetch(), operationalState.refetch()]);
@@ -189,11 +225,26 @@ export default function WorkspacePage() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const moveEditorialCard = trpc.workspace.kanban.transitionCard.useMutation({
+    onSuccess: async () => {
+      await editorialBoard.refetch();
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const bindNovel = trpc.workspace.bindings.bindPublicationNovel.useMutation({
     onSuccess: async () => {
       setNovelId("");
-      await Promise.all([detail.refetch(), bindings.refetch(), ownership.refetch()]);
-      toast.success("Read-only novel binding created");
+      if (selectedWorkspaceId) {
+        await ensureEditorialBoard.mutateAsync({ workspaceId: selectedWorkspaceId });
+      }
+      await Promise.all([
+        detail.refetch(),
+        bindings.refetch(),
+        ownership.refetch(),
+        availableNovels.refetch(),
+        editorialBoard.refetch(),
+      ]);
+      toast.success("Novel added to Editorial Workspace");
     },
     onError: (error) => toast.error(error.message),
   });
@@ -203,6 +254,10 @@ export default function WorkspacePage() {
   const aiRows = (aiJobs.data as any[] | undefined) ?? [];
   const publishRows = ((publishOverview.data as any)?.runs as any[] | undefined) ?? [];
   const publishTransitions = ((publishOverview.data as any)?.transitions as any[] | undefined) ?? [];
+  const editorialColumns = (((editorialBoard.data as any)?.columns as any[] | undefined) ?? []);
+  const editorialTransitions = (((editorialBoard.data as any)?.transitions as any[] | undefined) ?? []);
+  const novelOptions = ((availableNovels.data as any[] | undefined) ?? []);
+  const unboundNovelOptions = novelOptions.filter((novel: any) => !novel.bound);
   const checkerRuleSets = (((dualRunState.data as any)?.ruleSets as any[] | undefined) ?? []).filter((ruleSet: any) => ruleSet.status === "published");
   const snapshotOptions = Array.from(new Map(operationalRows.map((row: any) => [row.fingerprint.snapshotId, row.fingerprint])).values()) as any[];
   const effectiveCheckerSnapshotId = Number(checkerSnapshotId) || snapshotOptions[0]?.snapshotId;
@@ -223,18 +278,20 @@ export default function WorkspacePage() {
     <main className="mx-auto max-w-7xl space-y-6 px-4 py-8">
       <header className="flex flex-col gap-3 border-b pb-6 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-sm font-medium text-primary">IpeNovel Workspace - Admin Operational Control Center</p>
-          <h1 className="text-3xl font-bold tracking-tight">Novel Control Center</h1>
+          <p className="text-sm font-medium text-primary">IpeNovel Workspace - Editorial Workspace · Admin Operational Control Center</p>
+          <h1 className="text-3xl font-bold tracking-tight">Editorial Board</h1>
           <p className="mt-2 max-w-3xl text-muted-foreground">
-            Operational visibility for the M03–M06 read models. Google Docs remains the editor;
-            this view can queue Checker and AI QC work; it does not deliver publishes, transition Kanban, or change ownership.
+            Day-to-day novel intake and workflow are shown first. Existing M03–M06 operational
+            evidence remains available below; publish execution and ownership changes stay disabled.
           </p>
         </div>
         <Link href="/novels" className="text-sm text-primary underline">Back to IpeNovel</Link>
       </header>
 
       <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
-        <strong>Controlled operations.</strong> Checker and AI QC queue/retry actions are enabled for platform admins. Publish execution, Kanban transitions, ownership changes, and provider worker primitives remain unavailable from this page.
+        <strong>Editorial B1 checkpoint.</strong> Story cards can move through the transition-backed
+        Editorial Kanban. Publish execution and ownership changes remain unavailable; Checker/AI
+        operational controls below are unchanged and are not required for this board.
       </div>
 
       <section className="grid gap-6 lg:grid-cols-[minmax(260px,0.75fr)_minmax(0,2.25fr)]">
@@ -287,6 +344,135 @@ export default function WorkspacePage() {
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <div className="flex items-center gap-2">
+                    <Columns3 className="h-5 w-5 text-primary" />
+                    <h2 className="text-xl font-semibold">Editorial Kanban</h2>
+                  </div>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    One board per Workspace. Bound novels appear once as NEW STORY cards; movement is backed by immutable Kanban transitions.
+                  </p>
+                </div>
+                <StatusPill value={(editorialBoard.data as any)?.board?.status ?? "initializing"} />
+              </div>
+
+              <form
+                className="flex flex-col gap-2 rounded-md border bg-muted/20 p-3 sm:flex-row"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const parsed = Number(novelId);
+                  if (!Number.isInteger(parsed) || parsed <= 0) {
+                    toast.error("Select an existing novel");
+                    return;
+                  }
+                  bindNovel.mutate({ workspaceId: selectedWorkspaceId, novelId: parsed });
+                }}
+              >
+                <select
+                  aria-label="Existing publication novel"
+                  className="h-10 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm"
+                  value={novelId}
+                  onChange={(event) => setNovelId(event.target.value)}
+                  disabled={bindNovel.isPending || availableNovels.isLoading}
+                >
+                  <option value="">เลือกเรื่องเดิมเพื่อเพิ่มเข้า Workspace</option>
+                  {unboundNovelOptions.map((novel: any) => (
+                    <option key={novel.id} value={novel.id}>
+                      {novel.title} · #{novel.id}
+                    </option>
+                  ))}
+                </select>
+                <Button type="submit" disabled={!novelId || bindNovel.isPending}>
+                  {bindNovel.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <BookOpen className="mr-2 h-4 w-4" />}
+                  เพิ่มเรื่อง
+                </Button>
+              </form>
+
+              {editorialBoard.isLoading || ensureEditorialBoard.isPending ? (
+                <div className="flex min-h-32 items-center justify-center"><Loader2 className="h-6 w-6 animate-spin" /></div>
+              ) : editorialColumns.length ? (
+                <div className="overflow-x-auto pb-2">
+                  <div className="flex min-w-max gap-3">
+                    {editorialColumns.map((column: any, columnIndex: number) => (
+                      <div key={column.id} className="w-64 shrink-0 rounded-lg border bg-muted/20 p-3">
+                        <div className="mb-3 flex items-center justify-between gap-2">
+                          <strong className="text-sm">{column.name}</strong>
+                          <span className="rounded-full bg-background px-2 py-0.5 text-xs text-muted-foreground">{column.cards.length}</span>
+                        </div>
+                        <div className="space-y-2">
+                          {column.cards.map((card: any) => (
+                            <div key={card.id} className="rounded-md border bg-background p-3 shadow-sm">
+                              <div className="mb-2 flex items-center justify-between gap-2">
+                                <span className="rounded bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">
+                                  {card.workItemType === "NEW_STORY" ? "เรื่องใหม่" : card.workItemType}
+                                </span>
+                                <span className="text-[11px] text-muted-foreground">v{card.version}</span>
+                              </div>
+                              <div className="text-sm font-medium">{card.novel?.title ?? card.logicalItemKey}</div>
+                              <div className="mt-1 text-xs text-muted-foreground">Novel #{card.novel?.id ?? "—"}</div>
+                              <div className="mt-3 flex justify-between">
+                                <Button
+                                  type="button"
+                                  size="icon"
+                                  variant="outline"
+                                  className="h-8 w-8"
+                                  disabled={columnIndex === 0 || moveEditorialCard.isPending}
+                                  onClick={() => {
+                                    const target = editorialColumns[columnIndex - 1];
+                                    if (!target) return;
+                                    moveEditorialCard.mutate({
+                                      workspaceId: selectedWorkspaceId,
+                                      cardId: card.id,
+                                      toColumnKey: target.key,
+                                      reason: "editorial_manual_move",
+                                      idempotencyKey: `editorial:${card.id}:${card.version}:${target.key}`,
+                                      expectedVersion: card.version,
+                                    });
+                                  }}
+                                >
+                                  <ChevronLeft className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="icon"
+                                  variant="outline"
+                                  className="h-8 w-8"
+                                  disabled={columnIndex === editorialColumns.length - 1 || moveEditorialCard.isPending}
+                                  onClick={() => {
+                                    const target = editorialColumns[columnIndex + 1];
+                                    if (!target) return;
+                                    moveEditorialCard.mutate({
+                                      workspaceId: selectedWorkspaceId,
+                                      cardId: card.id,
+                                      toColumnKey: target.key,
+                                      reason: "editorial_manual_move",
+                                      idempotencyKey: `editorial:${card.id}:${card.version}:${target.key}`,
+                                      expectedVersion: card.version,
+                                    });
+                                  }}
+                                >
+                                  <ChevronRight className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          ))}
+                          {!column.cards.length && <p className="rounded border border-dashed p-2 text-xs text-muted-foreground">ไม่มีงาน</p>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <EmptyState>Editorial board is being prepared for this Workspace.</EmptyState>
+              )}
+
+              <div className="text-xs text-muted-foreground">
+                Transition history: {editorialTransitions.length} event(s). B1 covers NEW STORY intake; durable NEW EPISODE items and assignee/filter polish remain in B2.
+              </div>
+            </Card>
+
+            <Card className="space-y-5 p-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
                     <ShieldCheck className="h-5 w-5 text-primary" />
                     <h2 className="text-xl font-semibold">{selected.workspace.name}</h2>
                   </div>
@@ -298,25 +484,11 @@ export default function WorkspacePage() {
               </div>
 
               <div className="rounded-md border bg-muted/30 p-4">
-                <h3 className="font-medium">Read-only publication binding</h3>
+                <h3 className="font-medium">Operational detail</h3>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Binding an existing novel creates only a synthetic source contract. It never reads Google Docs, runs Checker/AI, publishes, exports, or changes Sheets.
+                  Novel intake now lives in the Editorial Kanban above. The sections below retain
+                  legacy ownership, source-binding, Checker/AI and publish evidence for operators.
                 </p>
-                <form
-                  className="mt-3 flex max-w-sm gap-2"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    const parsed = Number(novelId);
-                    if (!Number.isInteger(parsed) || parsed <= 0) {
-                      toast.error("Enter an existing numeric novel ID");
-                      return;
-                    }
-                    bindNovel.mutate({ workspaceId: selectedWorkspaceId, novelId: parsed });
-                  }}
-                >
-                  <Input value={novelId} onChange={(event) => setNovelId(event.target.value)} inputMode="numeric" placeholder="Existing novel ID" />
-                  <Button type="submit" disabled={bindNovel.isPending}>Bind</Button>
-                </form>
               </div>
 
               <div className="grid gap-5 md:grid-cols-3">
