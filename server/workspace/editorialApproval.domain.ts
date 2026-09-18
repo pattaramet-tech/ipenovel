@@ -110,6 +110,14 @@ function episodeNumbersEquivalent(a: string, b: string) {
   return left === right;
 }
 
+export type EditorialEpisodeDraftExcludedTab = {
+  sourceTabId: string;
+  sourceTabTitle: string;
+  tabOrder: number;
+  kind: "front_matter";
+  label: string;
+};
+
 export type EditorialEpisodeDraftBatchAnomaly = {
   code:
     | "COUNT_MISMATCH"
@@ -134,6 +142,7 @@ export type EditorialEpisodeDraftBatchPlan = {
   requestedEpisodeNumber: string;
   expectedEpisodeNumbers: string[];
   items: EditorialEpisodeDraftPlan[];
+  excludedTabs: EditorialEpisodeDraftExcludedTab[];
   anomalies: EditorialEpisodeDraftBatchAnomaly[];
   blockers: EditorialEpisodeDraftBatchAnomaly[];
   ready: boolean;
@@ -167,7 +176,8 @@ function canonicalRangeEpisodeNumber(value: string | null | undefined, width: nu
   if (!/^\d+$/.test(normalized)) return null;
   const number = Number(normalized);
   if (!Number.isSafeInteger(number) || number < 0) return null;
-  return String(number).padStart(width, "0");
+  const canonical = String(number).padStart(width, "0");
+  return canonical.length > width ? null : canonical;
 }
 
 function tabDetectedEpisodeNumber(
@@ -198,6 +208,57 @@ function tabDetectedEpisodeNumber(
   };
 }
 
+const FRONT_MATTER_LABELS = [
+  ["บทนำ", "บทนำ"],
+  ["คำนำ", "คำนำ"],
+  ["prologue", "Prologue"],
+  ["introduction", "Introduction"],
+] as const;
+
+function normalizedFrontMatterLabel(value: string) {
+  return String(value || "")
+    .normalize("NFKC")
+    .trim()
+    .replace(/[\s:：.\-–—]+$/g, "")
+    .trim()
+    .toLocaleLowerCase("en-US");
+}
+
+const NORMALIZED_FRONT_MATTER_LABELS = new Map(
+  FRONT_MATTER_LABELS.map(([key, label]) => [
+    normalizedFrontMatterLabel(key),
+    label,
+  ])
+);
+
+function detectedFrontMatterTab(
+  tab: EditorialEpisodeDraftInput["tabs"][number]
+): EditorialEpisodeDraftExcludedTab | null {
+  const paragraphs = tab.paragraphs
+    .slice()
+    .sort((a, b) => a.paragraphOrder - b.paragraphOrder);
+  const firstLine = paragraphs.find(row => String(row.text || "").trim());
+  const candidates = [
+    tab.chapterTitle ?? "",
+    tab.title,
+    firstLine ? String(firstLine.text || "") : "",
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizedFrontMatterLabel(candidate);
+    const label = NORMALIZED_FRONT_MATTER_LABELS.get(normalized);
+    if (label) {
+      return {
+        sourceTabId: tab.sourceTabId,
+        sourceTabTitle: tab.title,
+        tabOrder: tab.tabOrder,
+        kind: "front_matter",
+        label,
+      };
+    }
+  }
+  return null;
+}
+
 function median(values: number[]) {
   if (!values.length) return 0;
   const sorted = values.slice().sort((a, b) => a - b);
@@ -222,6 +283,7 @@ export function analyzeEditorialEpisodeDraftBatch(
         requestedEpisodeNumber,
         expectedEpisodeNumbers: [plan.episodeNumber],
         items: [plan],
+        excludedTabs: [],
         anomalies: [],
         blockers: [],
         ready: true,
@@ -248,6 +310,7 @@ export function analyzeEditorialEpisodeDraftBatch(
           ? [requestedEpisodeNumber]
           : [],
         items: [],
+        excludedTabs: [],
         anomalies: [anomaly],
         blockers: [anomaly],
         ready: false,
@@ -259,21 +322,23 @@ export function analyzeEditorialEpisodeDraftBatch(
   const expectedSet = new Set(expected);
   const tabs = input.tabs.slice().sort((a, b) => a.tabOrder - b.tabOrder);
   const anomalies: EditorialEpisodeDraftBatchAnomaly[] = [];
+  const excludedTabs: EditorialEpisodeDraftExcludedTab[] = [];
   const detectedRows: Array<{
     tab: EditorialEpisodeDraftInput["tabs"][number];
     episodeNumber: string;
   }> = [];
 
-  if (tabs.length !== expected.length) {
-    anomalies.push({
-      code: "COUNT_MISMATCH",
-      severity: "blocker",
-      message: `ช่วงตอน ${requestedEpisodeNumber} ต้องมี ${expected.length} แท็บ แต่ Draft มี ${tabs.length} แท็บ`,
-    });
-  }
-
   for (const tab of tabs) {
     const detected = tabDetectedEpisodeNumber(tab, range.width);
+    const frontMatter = detectedFrontMatterTab(tab);
+    if (
+      frontMatter &&
+      !detected.conflict &&
+      (!detected.episodeNumber || !expectedSet.has(detected.episodeNumber))
+    ) {
+      excludedTabs.push(frontMatter);
+      continue;
+    }
     if (!detected.firstLine) {
       anomalies.push({
         code: "TAB_EMPTY",
@@ -316,6 +381,18 @@ export function analyzeEditorialEpisodeDraftBatch(
       continue;
     }
     detectedRows.push({ tab, episodeNumber: detected.episodeNumber });
+  }
+
+  const episodeTabCount = tabs.length - excludedTabs.length;
+  if (episodeTabCount !== expected.length) {
+    anomalies.push({
+      code: "COUNT_MISMATCH",
+      severity: "blocker",
+      message:
+        excludedTabs.length > 0
+          ? `ช่วงตอน ${requestedEpisodeNumber} ต้องมี ${expected.length} แท็บ Episode แต่ Draft มี ${tabs.length} แท็บ โดยไม่นับ front matter ${excludedTabs.length} แท็บ เหลือ ${episodeTabCount} แท็บ Episode`
+          : `ช่วงตอน ${requestedEpisodeNumber} ต้องมี ${expected.length} แท็บ แต่ Draft มี ${tabs.length} แท็บ`,
+    });
   }
 
   const seen = new Map<string, number>();
@@ -426,6 +503,7 @@ export function analyzeEditorialEpisodeDraftBatch(
     requestedEpisodeNumber,
     expectedEpisodeNumbers: expected,
     items,
+    excludedTabs,
     anomalies,
     blockers,
     ready,

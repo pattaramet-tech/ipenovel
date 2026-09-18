@@ -1902,11 +1902,29 @@ export default function WorkspacePage() {
                               : "Mapping ยังไม่พร้อม Stage"}
                           </div>
                           <span className="text-xs text-muted-foreground">
-                            {editorialApprovalData.stagePlan.requestedEpisodeNumber} · mapped{" "}
-                            {editorialApprovalData.stagePlan.itemCount}/
-                            {editorialApprovalData.stagePlan.expectedCount}
+                            {editorialApprovalData.stagePlan.requestedEpisodeNumber} · Draft{" "}
+                            {editorialApprovalData.stagePlan.draftTabCount ?? editorialApprovalData.stagePlan.itemCount} แท็บ · Episode{" "}
+                            {editorialApprovalData.stagePlan.itemCount}/{editorialApprovalData.stagePlan.expectedCount}
+                            {(editorialApprovalData.stagePlan.excludedCount ?? 0) > 0
+                              ? ` · ไม่นับ ${editorialApprovalData.stagePlan.excludedCount} แท็บ`
+                              : ""}
                           </span>
                         </div>
+
+                        {(editorialApprovalData.stagePlan.excludedTabs?.length ?? 0) > 0 && (
+                          <details className="rounded border bg-background">
+                            <summary className="cursor-pointer px-3 py-2 text-xs font-medium">
+                              ไม่นับ {editorialApprovalData.stagePlan.excludedTabs.length} แท็บ
+                            </summary>
+                            <div className="space-y-1 border-t p-2 text-xs text-muted-foreground">
+                              {editorialApprovalData.stagePlan.excludedTabs.map((tab: any) => (
+                                <div key={tab.sourceTabId}>
+                                  {tab.sourceTabTitle} — {tab.label}
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        )}
 
                         {editorialApprovalData.stagePlan.anomalies?.length > 0 && (
                           <div className="space-y-1 text-xs">
