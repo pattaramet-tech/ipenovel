@@ -46,6 +46,17 @@ import {
   WorkspaceEditorialBoardError,
 } from "./editorialBoard.service";
 import {
+  getEditorialDraftReadModel,
+  getEditorialSourceSnapshot,
+  importEditorialSource,
+  WorkspaceEditorialDraftError,
+} from "./editorialDraft.service";
+import {
+  fetchEditorialGoogleDocSource,
+  listEditorialGoogleConnections,
+  WorkspaceEditorialGoogleSourceError,
+} from "./editorialSource.googleDocs";
+import {
   createPublishDestination,
   createPublishDryRun,
   getPublishRunDetail,
@@ -218,6 +229,30 @@ function mapWorkspaceError(error: unknown): never {
             : "BAD_REQUEST";
     throw new TRPCError({ code, message: error.message });
   }
+  if (error instanceof WorkspaceEditorialDraftError) {
+    const code =
+      error.code === "DATABASE_UNAVAILABLE"
+        ? "SERVICE_UNAVAILABLE"
+        : error.code.endsWith("_NOT_FOUND")
+          ? "NOT_FOUND"
+          : error.code.endsWith("_CONFLICT") ||
+              error.code === "REFRESH_REQUIRES_REVIEW"
+            ? "CONFLICT"
+            : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
+  if (error instanceof WorkspaceEditorialGoogleSourceError) {
+    const code =
+      error.code === "DATABASE_UNAVAILABLE"
+        ? "SERVICE_UNAVAILABLE"
+        : error.code === "CONNECTION_NOT_FOUND"
+          ? "NOT_FOUND"
+          : error.code === "CONNECTION_RECONNECT_REQUIRED" ||
+              error.code === "RUNTIME_CONFIG_INVALID"
+            ? "PRECONDITION_FAILED"
+            : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
   if (error instanceof WorkspaceDocsServiceError) {
     const code =
       error.code === "DATABASE_UNAVAILABLE"
@@ -240,6 +275,20 @@ function mapWorkspaceError(error: unknown): never {
 }
 
 const workspaceIdInput = z.object({ workspaceId: z.number().int().positive() });
+const editorialSourcePayloadInput = z.object({
+  sourceKind: z.enum(["google_doc", "uploaded_file"]),
+  sourceKey: z.string().trim().min(1).max(255),
+  providerDocumentId: z.string().trim().max(255).nullable().optional(),
+  mimeType: z.string().trim().min(1).max(160),
+  title: z.string().trim().min(1).max(500),
+  revisionKey: z.string().trim().max(255).nullable().optional(),
+  tabs: z.array(z.object({
+    sourceTabId: z.string().trim().min(1).max(255),
+    tabOrder: z.number().int().nonnegative(),
+    title: z.string().max(500),
+    paragraphs: z.array(z.string().max(200000)).max(10000),
+  })).min(1).max(500),
+});
 const legacyRetirementEvidenceInput = z.object({
   sustainedParity: z.object({ passed: z.boolean(), evidenceRef: z.string().trim().min(1).max(255) }),
   slo: z.object({ passed: z.boolean(), evidenceRef: z.string().trim().min(1).max(255) }),
@@ -715,6 +764,82 @@ export const workspaceRouter = router({
           return await listEditorialAssignees({
             actorUserId: ctx.user.id,
             workspaceId: input.workspaceId,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    googleConnections: adminProcedure.query(async ({ ctx }) => {
+      try {
+        return await listEditorialGoogleConnections(ctx.user.id);
+      } catch (error) {
+        return mapWorkspaceError(error);
+      }
+    }),
+    sourceDraft: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getEditorialDraftReadModel({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    sourceSnapshot: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        snapshotId: z.number().int().positive(),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getEditorialSourceSnapshot({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    importSource: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        payload: editorialSourcePayloadInput,
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await importEditorialSource({
+            actorUserId: ctx.user.id,
+            workspaceId: input.workspaceId,
+            workItemId: input.workItemId,
+            payload: input.payload,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    importGoogleDoc: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        connectionId: z.number().int().positive(),
+        documentUrlOrId: z.string().trim().min(1).max(1000),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          const payload = await fetchEditorialGoogleDocSource({
+            actorUserId: ctx.user.id,
+            connectionId: input.connectionId,
+            documentUrlOrId: input.documentUrlOrId,
+          });
+          return await importEditorialSource({
+            actorUserId: ctx.user.id,
+            workspaceId: input.workspaceId,
+            workItemId: input.workItemId,
+            payload,
           });
         } catch (error) {
           return mapWorkspaceError(error);

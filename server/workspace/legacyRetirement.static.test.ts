@@ -28,7 +28,11 @@ describe("workspace M06 legacy retirement candidate static boundaries", () => {
 
   it("exposes only query procedures for the M06 package/readiness gate", () => {
     expect(router).toContain("legacyRetirement: router({");
-    const block = router.slice(router.indexOf("legacyRetirement: router({"), router.indexOf("kanban: router({"));
+    const start = router.indexOf("legacyRetirement: router({");
+    const editorialStart = router.indexOf("editorial: router({", start);
+    const kanbanStart = router.indexOf("kanban: router({", start);
+    const end = editorialStart >= 0 ? editorialStart : kanbanStart;
+    const block = router.slice(start, end);
     expect(block).toContain("package: adminProcedure");
     expect(block).toContain("requireCandidateReadiness: adminProcedure");
     expect(block).toContain(".query(async");

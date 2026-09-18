@@ -57,6 +57,14 @@ export default function WorkspacePage() {
   const [editorialTypeFilter, setEditorialTypeFilter] = useState("all");
   const [editorialAssigneeFilter, setEditorialAssigneeFilter] = useState("all");
   const [editorialColumnFilter, setEditorialColumnFilter] = useState("all");
+  const [selectedSourceWorkItemId, setSelectedSourceWorkItemId] = useState<number>();
+  const [googleConnectionId, setGoogleConnectionId] = useState("");
+  const [googleDocUrl, setGoogleDocUrl] = useState("");
+  const [uploadedSource, setUploadedSource] = useState<{
+    name: string;
+    mimeType: string;
+    paragraphs: string[];
+  }>();
   const [selectedCheckerRunId, setSelectedCheckerRunId] = useState<number>();
   const [selectedAiJobId, setSelectedAiJobId] = useState<number>();
   const [selectedPublishRunId, setSelectedPublishRunId] = useState<number>();
@@ -82,6 +90,20 @@ export default function WorkspacePage() {
   const editorialBoard = trpc.workspace.editorial.board.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
     { enabled: isAdmin && Boolean(selectedWorkspaceId) }
+  );
+  const editorialGoogleConnections = trpc.workspace.editorial.googleConnections.useQuery(
+    undefined,
+    { enabled: isAdmin }
+  );
+  const editorialSourceDraft = trpc.workspace.editorial.sourceDraft.useQuery(
+    {
+      workspaceId: selectedWorkspaceId ?? 0,
+      workItemId: selectedSourceWorkItemId ?? 0,
+    },
+    {
+      enabled: isAdmin && Boolean(selectedWorkspaceId && selectedSourceWorkItemId),
+      retry: false,
+    }
   );
   const ownership = trpc.workspace.migrationOwnership.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
@@ -174,6 +196,10 @@ export default function WorkspacePage() {
     setEditorialTypeFilter("all");
     setEditorialAssigneeFilter("all");
     setEditorialColumnFilter("all");
+    setSelectedSourceWorkItemId(undefined);
+    setGoogleConnectionId("");
+    setGoogleDocUrl("");
+    setUploadedSource(undefined);
     setSelectedCheckerRunId(undefined);
     setSelectedAiJobId(undefined);
     setSelectedPublishRunId(undefined);
@@ -281,6 +307,32 @@ export default function WorkspacePage() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const importEditorialSource = trpc.workspace.editorial.importSource.useMutation({
+    onSuccess: async (result) => {
+      await editorialSourceDraft.refetch();
+      toast.success(
+        result.refreshBlocked
+          ? "เก็บ snapshot ใหม่แล้ว แต่ Draft เดิมมีการแก้ไข จึงไม่เขียนทับ"
+          : result.draftCreated
+            ? "นำเข้าต้นฉบับและสร้าง Draft แล้ว"
+            : "ต้นฉบับเดิม ไม่มี Draft ใหม่"
+      );
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const importEditorialGoogleDoc = trpc.workspace.editorial.importGoogleDoc.useMutation({
+    onSuccess: async (result) => {
+      await editorialSourceDraft.refetch();
+      toast.success(
+        result.refreshBlocked
+          ? "เก็บ Google Docs snapshot ใหม่แล้ว แต่ Draft เดิมมีการแก้ไข จึงไม่เขียนทับ"
+          : result.draftCreated
+            ? "นำเข้า Google Docs และสร้าง Draft แล้ว"
+            : "Google Docs ไม่มีการเปลี่ยนแปลง"
+      );
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const bindNovel = trpc.workspace.bindings.bindPublicationNovel.useMutation({
     onSuccess: async () => {
       setNovelId("");
@@ -307,6 +359,13 @@ export default function WorkspacePage() {
   const editorialColumns = (((editorialBoard.data as any)?.columns as any[] | undefined) ?? []);
   const editorialTransitions = (((editorialBoard.data as any)?.transitions as any[] | undefined) ?? []);
   const editorialAssignees = (((editorialBoard.data as any)?.assignees as any[] | undefined) ?? []);
+  const editorialCards = editorialColumns.flatMap((column: any) => column.cards ?? []);
+  const selectedSourceCard = editorialCards.find(
+    (card: any) => card.workItemId === selectedSourceWorkItemId
+  );
+  const googleConnections = (
+    (editorialGoogleConnections.data as any[] | undefined) ?? []
+  ).filter((connection: any) => connection.status === "active" && connection.scopeReady);
   const novelOptions = ((availableNovels.data as any[] | undefined) ?? []);
   const unboundNovelOptions = novelOptions.filter((novel: any) => !novel.bound);
   const workspaceNovelOptions = (((selected as any)?.novels as any[] | undefined) ?? []);
@@ -633,7 +692,16 @@ export default function WorkspacePage() {
                                   ))}
                                 </ul>
                               </details>
-                              <div className="mt-3 flex justify-between">
+                              <Button
+                                type="button"
+                                variant={selectedSourceWorkItemId === card.workItemId ? "default" : "outline"}
+                                className="mt-3 h-8 w-full text-xs"
+                                disabled={!card.workItemId}
+                                onClick={() => setSelectedSourceWorkItemId(card.workItemId)}
+                              >
+                                ต้นฉบับ / Draft
+                              </Button>
+                              <div className="mt-2 flex justify-between">
                                 <Button
                                   type="button"
                                   size="icon"
@@ -694,6 +762,214 @@ export default function WorkspacePage() {
               <div className="text-xs text-muted-foreground">
                 Kanban transitions: {editorialTransitions.length} event(s). Card history also includes immutable assignment events. Episode intake creates Workspace work items only and does not create publication episodes.
               </div>
+            </Card>
+
+            <Card className="space-y-5 p-5">
+              <div>
+                <div className="flex items-center gap-2">
+                  <FileCheck2 className="h-5 w-5 text-primary" />
+                  <h2 className="text-xl font-semibold">Source Import + Draft</h2>
+                </div>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  เลือกการ์ดจาก Kanban แล้วนำเข้า/รีเฟรช Google Docs หรือไฟล์ข้อความ ต้นฉบับเดิมถูกเก็บเป็น immutable snapshot และ Sarabun 18 / indent 36 / spacing 10 เป็น presentation contract แยกจากเนื้อหา
+                </p>
+              </div>
+
+              {!selectedSourceWorkItemId ? (
+                <EmptyState>กด “ต้นฉบับ / Draft” บนการ์ดเรื่องหรือตอนที่ต้องการก่อน</EmptyState>
+              ) : (
+                <>
+                  <div className="rounded-md border bg-muted/20 p-3 text-sm">
+                    <strong>{selectedSourceCard?.novel?.title ?? "Editorial work item"}</strong>
+                    {selectedSourceCard?.workItemType === "NEW_EPISODE" && (
+                      <span className="ml-2 text-muted-foreground">
+                        ตอน {selectedSourceCard?.episodeNumber || "—"} {selectedSourceCard?.episodeTitle || ""}
+                      </span>
+                    )}
+                    <span className="ml-2 text-xs text-muted-foreground">Work item #{selectedSourceWorkItemId}</span>
+                  </div>
+
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    <form
+                      className="space-y-2 rounded-md border p-3"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        if (!googleConnectionId || !googleDocUrl.trim()) {
+                          toast.error("เลือก Google connection และใส่ลิงก์ Google Docs");
+                          return;
+                        }
+                        importEditorialGoogleDoc.mutate({
+                          workspaceId: selectedWorkspaceId,
+                          workItemId: selectedSourceWorkItemId,
+                          connectionId: Number(googleConnectionId),
+                          documentUrlOrId: googleDocUrl.trim(),
+                        });
+                      }}
+                    >
+                      <div className="font-medium">Google Docs</div>
+                      <select
+                        aria-label="Google Docs connection"
+                        className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                        value={googleConnectionId}
+                        onChange={(event) => setGoogleConnectionId(event.target.value)}
+                      >
+                        <option value="">เลือก Google connection</option>
+                        {googleConnections.map((connection: any) => (
+                          <option key={connection.id} value={connection.id}>
+                            Connection #{connection.id}
+                          </option>
+                        ))}
+                      </select>
+                      <Input
+                        value={googleDocUrl}
+                        onChange={(event) => setGoogleDocUrl(event.target.value)}
+                        placeholder="https://docs.google.com/document/d/..."
+                        maxLength={1000}
+                      />
+                      <Button
+                        type="submit"
+                        className="w-full"
+                        disabled={!googleConnectionId || !googleDocUrl.trim() || importEditorialGoogleDoc.isPending}
+                      >
+                        {importEditorialGoogleDoc.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        Add / Refresh Google Doc
+                      </Button>
+                      {!googleConnections.length && (
+                        <p className="text-xs text-muted-foreground">
+                          ยังไม่มี active Google Docs connection ที่มี read-only scope
+                        </p>
+                      )}
+                    </form>
+
+                    <form
+                      className="space-y-2 rounded-md border p-3"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        if (!uploadedSource) {
+                          toast.error("เลือกไฟล์ข้อความก่อน");
+                          return;
+                        }
+                        importEditorialSource.mutate({
+                          workspaceId: selectedWorkspaceId,
+                          workItemId: selectedSourceWorkItemId,
+                          payload: {
+                            sourceKind: "uploaded_file",
+                            sourceKey: `uploaded-file:work-item-${selectedSourceWorkItemId}`,
+                            mimeType: uploadedSource.mimeType,
+                            title: uploadedSource.name,
+                            tabs: [
+                              {
+                                sourceTabId: "file-main",
+                                tabOrder: 0,
+                                title: uploadedSource.name,
+                                paragraphs: uploadedSource.paragraphs,
+                              },
+                            ],
+                          },
+                        });
+                      }}
+                    >
+                      <div className="font-medium">ไฟล์ข้อความ</div>
+                      <input
+                        type="file"
+                        accept=".txt,.md,text/plain,text/markdown"
+                        className="block w-full text-sm"
+                        onChange={async (event) => {
+                          const file = event.target.files?.[0];
+                          if (!file) {
+                            setUploadedSource(undefined);
+                            return;
+                          }
+                          if (file.size > 10 * 1024 * 1024) {
+                            toast.error("ไฟล์ต้องไม่เกิน 10 MB");
+                            event.target.value = "";
+                            return;
+                          }
+                          const content = await file.text();
+                          setUploadedSource({
+                            name: file.name,
+                            mimeType: file.type || "text/plain",
+                            paragraphs: content.replace(/\r\n?/g, "\n").split("\n"),
+                          });
+                        }}
+                      />
+                      <div className="text-xs text-muted-foreground">
+                        {uploadedSource
+                          ? `${uploadedSource.name} · ${uploadedSource.paragraphs.length} บรรทัด`
+                          : "รองรับ TXT / Markdown; source identity คงที่ตาม work item และเปลี่ยนชื่อไฟล์ได้โดยไม่สร้าง source ใหม่"}
+                      </div>
+                      <Button
+                        type="submit"
+                        className="w-full"
+                        disabled={!uploadedSource || importEditorialSource.isPending}
+                      >
+                        {importEditorialSource.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        Add / Refresh File
+                      </Button>
+                    </form>
+                  </div>
+
+                  {editorialSourceDraft.isLoading ? (
+                    <div className="flex min-h-24 items-center justify-center"><Loader2 className="h-6 w-6 animate-spin" /></div>
+                  ) : (
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <div className="rounded-md border p-3 text-sm">
+                        <div className="font-medium">Source</div>
+                        <div className="mt-1 text-muted-foreground">
+                          {(editorialSourceDraft.data as any)?.source?.title ?? "ยังไม่มีต้นฉบับ"}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          snapshots {(editorialSourceDraft.data as any)?.snapshots?.length ?? 0}
+                        </div>
+                      </div>
+                      <div className="rounded-md border p-3 text-sm">
+                        <div className="font-medium">Latest Draft</div>
+                        <div className="mt-1 text-muted-foreground">
+                          {(editorialSourceDraft.data as any)?.latestDraft
+                            ? `v${(editorialSourceDraft.data as any).latestDraft.version} · ${(editorialSourceDraft.data as any).latestDraft.transformCode}`
+                            : "ยังไม่มี Draft"}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          SHA {shortHash((editorialSourceDraft.data as any)?.latestDraft?.draftSha256)}
+                        </div>
+                      </div>
+                      <div className="rounded-md border p-3 text-sm">
+                        <div className="font-medium">Refresh safety</div>
+                        <div className="mt-1 text-muted-foreground">
+                          {(editorialSourceDraft.data as any)?.refreshPending
+                            ? "มี snapshot ใหม่รอ review — ไม่เขียนทับ Draft"
+                            : "Draft ตรงกับ source snapshot ล่าสุด"}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          transforms {(editorialSourceDraft.data as any)?.transforms?.length ?? 0}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {!!(editorialSourceDraft.data as any)?.tabs?.length && (
+                    <div className="space-y-2">
+                      <div className="text-sm font-medium">Draft structure</div>
+                      {(editorialSourceDraft.data as any).tabs.map((tab: any) => (
+                        <div key={tab.id} className="rounded-md border p-3 text-sm">
+                          <div className="flex flex-wrap justify-between gap-2">
+                            <span>{tab.title}</span>
+                            <span className="text-xs text-muted-foreground">
+                              {tab.paragraphs.length} paragraphs · {shortHash(tab.structuralSha256)}
+                            </span>
+                          </div>
+                          {(tab.chapterNumber || tab.warnings?.length) && (
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              {tab.chapterNumber ? `บทที่ ${tab.chapterNumber}${tab.chapterTitle ? ` · ${tab.chapterTitle}` : ""}` : ""}
+                              {tab.warnings?.length ? ` · ${tab.warnings.join(", ")}` : ""}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
             </Card>
 
             <Card className="space-y-5 p-5">

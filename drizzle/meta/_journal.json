@@ -330,6 +330,13 @@
       "when": 1789713765456,
       "tag": "0046_workspace_editorial_work_items",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "5",
+      "when": 1789722422697,
+      "tag": "0047_workspace_editorial_source_draft",
+      "breakpoints": true
     }
   ]
 }
