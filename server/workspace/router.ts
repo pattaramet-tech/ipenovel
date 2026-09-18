@@ -57,6 +57,15 @@ import {
   WorkspaceEditorialGoogleSourceError,
 } from "./editorialSource.googleDocs";
 import {
+  allowEditorialFindingWord,
+  getEditorialForeignCheckerReadModel,
+  listEditorialFindingResolutionEvents,
+  removeEditorialAllowedWord,
+  runEditorialForeignChecker,
+  setEditorialFindingDisposition,
+  WorkspaceEditorialForeignCheckerError,
+} from "./editorialForeignChecker.service";
+import {
   createPublishDestination,
   createPublishDryRun,
   getPublishRunDetail,
@@ -250,6 +259,17 @@ function mapWorkspaceError(error: unknown): never {
           : error.code === "CONNECTION_RECONNECT_REQUIRED" ||
               error.code === "RUNTIME_CONFIG_INVALID"
             ? "PRECONDITION_FAILED"
+            : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
+  if (error instanceof WorkspaceEditorialForeignCheckerError) {
+    const code =
+      error.code === "DATABASE_UNAVAILABLE"
+        ? "SERVICE_UNAVAILABLE"
+        : error.code.endsWith("_NOT_FOUND")
+          ? "NOT_FOUND"
+          : error.code.endsWith("_CONFLICT")
+            ? "CONFLICT"
             : "BAD_REQUEST";
     throw new TRPCError({ code, message: error.message });
   }
@@ -798,6 +818,100 @@ export const workspaceRouter = router({
       .query(async ({ ctx, input }) => {
         try {
           return await getEditorialSourceSnapshot({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    foreignChecker: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        runId: z.number().int().positive().optional(),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getEditorialForeignCheckerReadModel({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    foreignCheckerRun: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        expectedDraftId: z.number().int().positive().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await runEditorialForeignChecker({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    foreignCheckerResolve: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        findingId: z.number().int().positive(),
+        disposition: z.enum(["open", "fixed", "ignored"]),
+        note: z.string().trim().max(4000).optional(),
+        expectedVersion: z.number().int().nonnegative(),
+        idempotencyKey: z.string().trim().min(1).max(255),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await setEditorialFindingDisposition({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    foreignCheckerAllow: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        findingId: z.number().int().positive(),
+        expectedVersion: z.number().int().nonnegative(),
+        idempotencyKey: z.string().trim().min(1).max(255),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await allowEditorialFindingWord({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    foreignCheckerUnallow: adminProcedure
+      .input(workspaceIdInput.extend({
+        normalizedWord: z.string().trim().min(1).max(500),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await removeEditorialAllowedWord({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    foreignCheckerResolutionEvents: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await listEditorialFindingResolutionEvents({
             actorUserId: ctx.user.id,
             ...input,
           });

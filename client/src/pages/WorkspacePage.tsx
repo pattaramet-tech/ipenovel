@@ -105,6 +105,16 @@ export default function WorkspacePage() {
       retry: false,
     }
   );
+  const editorialForeignChecker = trpc.workspace.editorial.foreignChecker.useQuery(
+    {
+      workspaceId: selectedWorkspaceId ?? 0,
+      workItemId: selectedSourceWorkItemId ?? 0,
+    },
+    {
+      enabled: isAdmin && Boolean(selectedWorkspaceId && selectedSourceWorkItemId),
+      retry: false,
+    }
+  );
   const ownership = trpc.workspace.migrationOwnership.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
     { enabled: isAdmin && Boolean(selectedWorkspaceId) }
@@ -309,7 +319,10 @@ export default function WorkspacePage() {
   });
   const importEditorialSource = trpc.workspace.editorial.importSource.useMutation({
     onSuccess: async (result) => {
-      await editorialSourceDraft.refetch();
+      await Promise.all([
+        editorialSourceDraft.refetch(),
+        editorialForeignChecker.refetch(),
+      ]);
       toast.success(
         result.refreshBlocked
           ? "เก็บ snapshot ใหม่แล้ว แต่ Draft เดิมมีการแก้ไข จึงไม่เขียนทับ"
@@ -322,7 +335,10 @@ export default function WorkspacePage() {
   });
   const importEditorialGoogleDoc = trpc.workspace.editorial.importGoogleDoc.useMutation({
     onSuccess: async (result) => {
-      await editorialSourceDraft.refetch();
+      await Promise.all([
+        editorialSourceDraft.refetch(),
+        editorialForeignChecker.refetch(),
+      ]);
       toast.success(
         result.refreshBlocked
           ? "เก็บ Google Docs snapshot ใหม่แล้ว แต่ Draft เดิมมีการแก้ไข จึงไม่เขียนทับ"
@@ -330,6 +346,49 @@ export default function WorkspacePage() {
             ? "นำเข้า Google Docs และสร้าง Draft แล้ว"
             : "Google Docs ไม่มีการเปลี่ยนแปลง"
       );
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const runEditorialForeignChecker = trpc.workspace.editorial.foreignCheckerRun.useMutation({
+    onSuccess: async (result) => {
+      await editorialForeignChecker.refetch();
+      toast.success(
+        result.unresolvedCount
+          ? `พบ ${result.unresolvedCount} จุดที่ต้องตรวจ`
+          : "ไม่พบคำต่างประเทศที่ค้างตรวจ"
+      );
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const resolveEditorialFinding = trpc.workspace.editorial.foreignCheckerResolve.useMutation({
+    onSuccess: async () => {
+      await editorialForeignChecker.refetch();
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const allowEditorialFinding = trpc.workspace.editorial.foreignCheckerAllow.useMutation({
+    onSuccess: async () => {
+      if (selectedWorkspaceId && selectedSourceWorkItemId) {
+        const latestDraft = (editorialSourceDraft.data as any)?.latestDraft;
+        await runEditorialForeignChecker.mutateAsync({
+          workspaceId: selectedWorkspaceId,
+          workItemId: selectedSourceWorkItemId,
+          expectedDraftId: latestDraft?.id,
+        });
+      }
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const unallowEditorialWord = trpc.workspace.editorial.foreignCheckerUnallow.useMutation({
+    onSuccess: async () => {
+      if (selectedWorkspaceId && selectedSourceWorkItemId) {
+        const latestDraft = (editorialSourceDraft.data as any)?.latestDraft;
+        await runEditorialForeignChecker.mutateAsync({
+          workspaceId: selectedWorkspaceId,
+          workItemId: selectedSourceWorkItemId,
+          expectedDraftId: latestDraft?.id,
+        });
+      }
     },
     onError: (error) => toast.error(error.message),
   });
@@ -362,6 +421,12 @@ export default function WorkspacePage() {
   const editorialCards = editorialColumns.flatMap((column: any) => column.cards ?? []);
   const selectedSourceCard = editorialCards.find(
     (card: any) => card.workItemId === selectedSourceWorkItemId
+  );
+  const editorialCheckerData = editorialForeignChecker.data as any;
+  const editorialCheckerRunStale = Boolean(
+    editorialCheckerData?.run &&
+      editorialCheckerData?.latestDraft &&
+      editorialCheckerData.run.draftId !== editorialCheckerData.latestDraft.id
   );
   const googleConnections = (
     (editorialGoogleConnections.data as any[] | undefined) ?? []
@@ -968,6 +1033,164 @@ export default function WorkspacePage() {
                       ))}
                     </div>
                   )}
+
+                  <div className="space-y-3 rounded-md border p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="font-medium">Deterministic Foreign-word Checker</div>
+                        <div className="text-xs text-muted-foreground">
+                          ตรวจ Draft ปัจจุบันแบบไม่ใช้ AI/API และผูก finding กับ paragraph key + UTF-16 offsets
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        disabled={
+                          !(editorialSourceDraft.data as any)?.latestDraft?.id ||
+                          runEditorialForeignChecker.isPending
+                        }
+                        onClick={() =>
+                          runEditorialForeignChecker.mutate({
+                            workspaceId: selectedWorkspaceId,
+                            workItemId: selectedSourceWorkItemId,
+                            expectedDraftId: (editorialSourceDraft.data as any)?.latestDraft?.id,
+                          })
+                        }
+                      >
+                        {runEditorialForeignChecker.isPending && (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        )}
+                        ตรวจ / ตรวจซ้ำ
+                      </Button>
+                    </div>
+
+                    {editorialCheckerRunStale && (
+                      <div className="rounded-md border border-dashed p-2 text-sm text-muted-foreground">
+                        ผลตรวจนี้เป็นของ Draft เก่า — Draft เปลี่ยนแล้ว ให้กด “ตรวจ / ตรวจซ้ำ” ก่อนแก้สถานะ finding
+                      </div>
+                    )}
+
+                    {(editorialForeignChecker.data as any)?.run ? (
+                      <div className="grid gap-2 sm:grid-cols-3">
+                        <div className="rounded border p-2 text-sm">
+                          Run #{(editorialForeignChecker.data as any).run.id}
+                        </div>
+                        <div className="rounded border p-2 text-sm">
+                          Findings {(editorialForeignChecker.data as any).findings?.length ?? 0}
+                        </div>
+                        <div className="rounded border p-2 text-sm">
+                          ค้างตรวจ {(editorialForeignChecker.data as any).unresolvedCount ?? 0} ·{" "}
+                          <strong>{(editorialForeignChecker.data as any).effectiveStatus}</strong>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">ยังไม่ได้ตรวจ Draft นี้</p>
+                    )}
+
+                    {!!(editorialForeignChecker.data as any)?.allowWords?.length && (
+                      <div className="flex flex-wrap gap-2">
+                        {(editorialForeignChecker.data as any).allowWords.map((word: any) => (
+                          <button
+                            key={word.id}
+                            type="button"
+                            className="rounded-full border px-2 py-1 text-xs"
+                            disabled={unallowEditorialWord.isPending}
+                            onClick={() =>
+                              unallowEditorialWord.mutate({
+                                workspaceId: selectedWorkspaceId,
+                                normalizedWord: word.normalizedWord,
+                              })
+                            }
+                          >
+                            อนุญาต: {word.displayWord} ×
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="space-y-2">
+                      {((editorialForeignChecker.data as any)?.findings ?? []).map((finding: any) => (
+                        <div key={finding.id} className="rounded-md border bg-muted/20 p-3 text-sm">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <span className="font-medium">{finding.token}</span>
+                              <span className="ml-2 text-xs text-muted-foreground">
+                                {finding.ruleKey} · paragraph {finding.paragraphOrder} · {finding.startOffset}-{finding.endOffset}
+                              </span>
+                            </div>
+                            <StatusPill value={finding.disposition} />
+                          </div>
+                          <div className="mt-2 rounded bg-background p-2">
+                            {finding.sentenceText}
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={
+                                editorialCheckerRunStale ||
+                                finding.ruleKey === "long_english" ||
+                                allowEditorialFinding.isPending
+                              }
+                              onClick={() =>
+                                allowEditorialFinding.mutate({
+                                  workspaceId: selectedWorkspaceId,
+                                  workItemId: selectedSourceWorkItemId,
+                                  findingId: finding.id,
+                                  expectedVersion: finding.resolutionVersion ?? 0,
+                                  idempotencyKey: `editorial-allow:${finding.id}:${finding.resolutionVersion ?? 0}`,
+                                })
+                              }
+                            >
+                              ยอมรับคำนี้
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={
+                                editorialCheckerRunStale ||
+                                resolveEditorialFinding.isPending
+                              }
+                              onClick={() =>
+                                resolveEditorialFinding.mutate({
+                                  workspaceId: selectedWorkspaceId,
+                                  workItemId: selectedSourceWorkItemId,
+                                  findingId: finding.id,
+                                  disposition: "ignored",
+                                  expectedVersion: finding.resolutionVersion ?? 0,
+                                  idempotencyKey: `editorial-ignore:${finding.id}:${finding.resolutionVersion ?? 0}`,
+                                })
+                              }
+                            >
+                              Ignore
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={
+                                editorialCheckerRunStale ||
+                                resolveEditorialFinding.isPending
+                              }
+                              onClick={() =>
+                                resolveEditorialFinding.mutate({
+                                  workspaceId: selectedWorkspaceId,
+                                  workItemId: selectedSourceWorkItemId,
+                                  findingId: finding.id,
+                                  disposition: finding.disposition === "open" ? "fixed" : "open",
+                                  expectedVersion: finding.resolutionVersion ?? 0,
+                                  idempotencyKey: `editorial-resolution:${finding.id}:${finding.resolutionVersion ?? 0}:${finding.disposition === "open" ? "fixed" : "open"}`,
+                                })
+                              }
+                            >
+                              {finding.disposition === "open" ? "Mark fixed" : "Reopen"}
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </>
               )}
             </Card>

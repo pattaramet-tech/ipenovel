@@ -2635,6 +2635,210 @@ export const workspaceEditorialDraftTransforms = mysqlTable(
   })
 );
 
+/** IPE-055-D deterministic foreign-word checker over Workspace editorial drafts. */
+export const workspaceEditorialCheckerAllowWords = mysqlTable(
+  "workspaceEditorialCheckerAllowWords",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workspaceId: int("workspaceId").notNull(),
+    normalizedWord: varchar("normalizedWord", { length: 500 }).notNull(),
+    displayWord: varchar("displayWord", { length: 500 }).notNull(),
+    status: mysqlEnum("status", ["active", "removed"]).default("active").notNull(),
+    createdByUserId: int("createdByUserId").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    workspaceWordUnique: uniqueIndex("wecaw_workspace_word_unique").on(
+      table.workspaceId,
+      table.normalizedWord
+    ),
+    workspaceStatusIdx: index("wecaw_workspace_status_idx").on(
+      table.workspaceId,
+      table.status
+    ),
+    workspaceFk: foreignKey({
+      name: "wecaw_workspace_fk",
+      columns: [table.workspaceId],
+      foreignColumns: [workspaceWorkspaces.id],
+    }).onDelete("cascade"),
+    createdByFk: foreignKey({
+      name: "wecaw_created_by_fk",
+      columns: [table.createdByUserId],
+      foreignColumns: [users.id],
+    }),
+  })
+);
+
+export const workspaceEditorialCheckerRuns = mysqlTable(
+  "workspaceEditorialCheckerRuns",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workItemId: int("workItemId").notNull(),
+    draftId: int("draftId").notNull(),
+    engineVersion: varchar("engineVersion", { length: 120 }).notNull(),
+    allowListSha256: varchar("allowListSha256", { length: 64 }).notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 255 }).notNull(),
+    status: mysqlEnum("status", ["passed", "failed"]).notNull(),
+    findingCount: int("findingCount").notNull(),
+    createdByUserId: int("createdByUserId").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    idempotencyUnique: uniqueIndex("wecr_idempotency_unique").on(
+      table.idempotencyKey
+    ),
+    workItemCreatedIdx: index("wecr_work_item_created_idx").on(
+      table.workItemId,
+      table.createdAt
+    ),
+    draftIdx: index("wecr_draft_idx").on(table.draftId),
+    workItemFk: foreignKey({
+      name: "wecr_work_item_fk",
+      columns: [table.workItemId],
+      foreignColumns: [workspaceEditorialWorkItems.id],
+    }).onDelete("cascade"),
+    draftFk: foreignKey({
+      name: "wecr_draft_fk",
+      columns: [table.draftId],
+      foreignColumns: [workspaceEditorialDrafts.id],
+    }).onDelete("cascade"),
+    createdByFk: foreignKey({
+      name: "wecr_created_by_fk",
+      columns: [table.createdByUserId],
+      foreignColumns: [users.id],
+    }),
+  })
+);
+
+export const workspaceEditorialCheckerFindings = mysqlTable(
+  "workspaceEditorialCheckerFindings",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    runId: int("runId").notNull(),
+    findingKey: varchar("findingKey", { length: 64 }).notNull(),
+    ruleKey: varchar("ruleKey", { length: 80 }).notNull(),
+    severity: mysqlEnum("severity", ["info", "warning", "error"]).notNull(),
+    sourceTabId: varchar("sourceTabId", { length: 255 }).notNull(),
+    tabTitle: varchar("tabTitle", { length: 500 }).notNull(),
+    paragraphKey: varchar("paragraphKey", { length: 64 }).notNull(),
+    paragraphOrder: int("paragraphOrder").notNull(),
+    paragraphFingerprint: varchar("paragraphFingerprint", { length: 64 }).notNull(),
+    offsetEncoding: varchar("offsetEncoding", { length: 16 }).notNull(),
+    startOffset: int("startOffset").notNull(),
+    endOffset: int("endOffset").notNull(),
+    token: mediumtext("token").notNull(),
+    normalizedToken: mediumtext("normalizedToken").notNull(),
+    sentenceStartOffset: int("sentenceStartOffset").notNull(),
+    sentenceEndOffset: int("sentenceEndOffset").notNull(),
+    sentenceText: mediumtext("sentenceText").notNull(),
+    contextText: mediumtext("contextText").notNull(),
+    message: text("message").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    runFindingUnique: uniqueIndex("wecf_run_finding_unique").on(
+      table.runId,
+      table.findingKey
+    ),
+    runParagraphIdx: index("wecf_run_paragraph_idx").on(
+      table.runId,
+      table.paragraphKey,
+      table.startOffset
+    ),
+    runFk: foreignKey({
+      name: "wecf_run_fk",
+      columns: [table.runId],
+      foreignColumns: [workspaceEditorialCheckerRuns.id],
+    }).onDelete("cascade"),
+  })
+);
+
+export const workspaceEditorialCheckerFindingStates = mysqlTable(
+  "workspaceEditorialCheckerFindingStates",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workItemId: int("workItemId").notNull(),
+    findingKey: varchar("findingKey", { length: 64 }).notNull(),
+    disposition: mysqlEnum("disposition", [
+      "open",
+      "accepted",
+      "fixed",
+      "ignored",
+    ]).default("open").notNull(),
+    note: text("note").notNull(),
+    actorUserId: int("actorUserId").notNull(),
+    version: int("version").default(1).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    itemFindingUnique: uniqueIndex("wecfs_item_finding_unique").on(
+      table.workItemId,
+      table.findingKey
+    ),
+    itemDispositionIdx: index("wecfs_item_disposition_idx").on(
+      table.workItemId,
+      table.disposition
+    ),
+    workItemFk: foreignKey({
+      name: "wecfs_work_item_fk",
+      columns: [table.workItemId],
+      foreignColumns: [workspaceEditorialWorkItems.id],
+    }).onDelete("cascade"),
+    actorFk: foreignKey({
+      name: "wecfs_actor_fk",
+      columns: [table.actorUserId],
+      foreignColumns: [users.id],
+    }),
+  })
+);
+
+export const workspaceEditorialCheckerResolutionEvents = mysqlTable(
+  "workspaceEditorialCheckerResolutionEvents",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workItemId: int("workItemId").notNull(),
+    findingKey: varchar("findingKey", { length: 64 }).notNull(),
+    fromDisposition: mysqlEnum("fromDisposition", [
+      "open",
+      "accepted",
+      "fixed",
+      "ignored",
+    ]),
+    toDisposition: mysqlEnum("toDisposition", [
+      "open",
+      "accepted",
+      "fixed",
+      "ignored",
+    ]).notNull(),
+    note: text("note").notNull(),
+    actorUserId: int("actorUserId").notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 255 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    itemIdempotencyUnique: uniqueIndex("wecre_item_idempotency_unique").on(
+      table.workItemId,
+      table.idempotencyKey
+    ),
+    itemCreatedIdx: index("wecre_item_created_idx").on(
+      table.workItemId,
+      table.createdAt
+    ),
+    workItemFk: foreignKey({
+      name: "wecre_work_item_fk",
+      columns: [table.workItemId],
+      foreignColumns: [workspaceEditorialWorkItems.id],
+    }).onDelete("cascade"),
+    actorFk: foreignKey({
+      name: "wecre_actor_fk",
+      columns: [table.actorUserId],
+      foreignColumns: [users.id],
+    }),
+  })
+);
+
 /** Immutable M03 Checker configuration versions. */
 export const workspaceCheckerRuleSets = mysqlTable(
   "workspaceCheckerRuleSets",
