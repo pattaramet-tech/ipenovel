@@ -47,6 +47,34 @@ function source(revisionKey: string, bodyText: string): EditorialSourcePayload {
   };
 }
 
+function rangeSource(
+  revisionKey: string,
+  start: number,
+  end: number,
+  bodyVersion: string
+): EditorialSourcePayload {
+  return {
+    sourceKind: "uploaded_file",
+    sourceKey: "uploaded-file:approval-range-fixture",
+    mimeType: "text/plain",
+    title: `episodes-${start}-${end}.txt`,
+    revisionKey,
+    tabs: Array.from({ length: end - start + 1 }, (_, index) => {
+      const episode = start + index;
+      return {
+        sourceTabId: `range-tab-${episode}`,
+        tabOrder: index,
+        title: `แท็บ ${index + 1}`,
+        paragraphs: [
+          `บทที่ ${episode} ชื่อบท ${episode}`,
+          `เนื้อหาตอน ${episode} ${bodyVersion} ${"ก".repeat(500)}`,
+          "จบตอน",
+        ],
+      };
+    }),
+  };
+}
+
 describe.sequential(
   "Workspace Editorial approval + Episode staging integration",
   () => {
@@ -297,6 +325,206 @@ describe.sequential(
         await db.delete(novels).where(eq(novels.id, novel.id));
         await db.delete(users).where(eq(users.id, owner.id));
         await db.delete(users).where(eq(users.id, outsider.id));
+      }
+    });
+
+    it("stages 036-085 as 50 unpublished Episodes atomically, replays idempotently, and safely restages the same Episode identities", async () => {
+      if (!process.env.TEST_DATABASE_URL) return;
+      assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
+
+      const db = getTestDb();
+      const owner = await createTestUser({ role: "admin" });
+      const novel = await createTestNovel();
+      const workspace = await createWorkspace(owner.id, "Editorial F range");
+      let boardId: number | null = null;
+
+      try {
+        const workspaceNovel = await bindPublicationNovel({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          novelId: novel.id,
+        });
+        const board = await ensureEditorialBoard({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+        });
+        boardId = board?.board.id ?? null;
+
+        const created = await createEditorialEpisodeWorkItem({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workspaceNovelId: workspaceNovel.workspaceNovelId,
+          episodeNumber: "036 - 085",
+          episodeTitle: null,
+        });
+        const card = created.board?.columns
+          .flatMap(column => column.cards)
+          .find(
+            item =>
+              item.workItemType === "NEW_EPISODE" &&
+              item.episodeNumber === "036 - 085"
+          );
+        expect(card?.workItemId).toBeTruthy();
+        const workItemId = card!.workItemId!;
+
+        const imported = await importEditorialSource({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          payload: rangeSource("range-r1", 36, 85, "v1"),
+        });
+        await runEditorialForeignChecker({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          expectedDraftId: imported.latestDraftId!,
+        });
+        const ready = await getEditorialApprovalReadModel({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+        });
+        expect(ready.stagePlan).toMatchObject({
+          mode: "range",
+          requestedEpisodeNumber: "036 - 085",
+          itemCount: 50,
+          expectedCount: 50,
+          ready: true,
+        });
+        expect(ready.stagePlan?.items?.[0]?.episodeNumber).toBe("036");
+        expect(ready.stagePlan?.items?.[49]?.episodeNumber).toBe("085");
+
+        const approved = await approveEditorialDraft({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          expectedDraftId: ready.latestDraft!.id,
+          expectedDraftVersion: ready.latestDraft!.version,
+          expectedDraftSha256: ready.latestDraft!.draftSha256,
+          expectedCheckerRunId: ready.qc.checkerRunId!,
+          expectedQcEvidenceSha256: ready.qc.qcEvidenceSha256!,
+          idempotencyKey: "approval-range-approve-v1",
+        });
+        const staged = await stageEditorialEpisodeDraft({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          approvalId: approved.approval.id,
+          expectedDraftId: ready.latestDraft!.id,
+          expectedDraftVersion: ready.latestDraft!.version,
+          expectedDraftSha256: ready.latestDraft!.draftSha256,
+          idempotencyKey: "approval-range-stage-v1",
+        });
+        expect(staged.batchCount).toBe(50);
+        expect(staged.stages).toHaveLength(50);
+        expect(staged.episodes).toHaveLength(50);
+        expect(staged.episodes.every((episode: any) => !episode.isPublished)).toBe(true);
+        expect(staged.readModel.readyToPublish).toBe(true);
+        expect(staged.readModel.stages).toHaveLength(50);
+
+        const originalEpisodeIds = staged.episodes.map((episode: any) => episode.id);
+        const replay = await stageEditorialEpisodeDraft({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          approvalId: approved.approval.id,
+          expectedDraftId: ready.latestDraft!.id,
+          expectedDraftVersion: ready.latestDraft!.version,
+          expectedDraftSha256: ready.latestDraft!.draftSha256,
+          idempotencyKey: "approval-range-stage-v1",
+        });
+        expect(replay.replayed).toBe(true);
+        expect(replay.episodes.map((episode: any) => episode.id)).toEqual(
+          originalEpisodeIds
+        );
+
+        const draft = await getEditorialDraftReadModel({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+        });
+        const tab60 = draft.tabs.find(
+          (tab: any) => tab.sourceTabId === "range-tab-60"
+        )!;
+        const body60 = tab60.paragraphs.find((paragraph: any) =>
+          String(paragraph.text).startsWith("เนื้อหาตอน 60 ")
+        )!;
+        const replacement = `เนื้อหาตอน 60 v2 ${"ข".repeat(500)}`;
+        const edited = await applyEditorialEditorEdit({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          expectedDraftId: draft.latestDraft!.id,
+          expectedDraftVersion: draft.latestDraft!.version,
+          expectedDraftSha256: draft.latestDraft!.draftSha256,
+          command: {
+            kind: "replace_paragraph",
+            paragraphKey: body60.paragraphKey,
+            expectedParagraphFingerprint: body60.paragraphFingerprint,
+            expectedText: body60.text,
+            replacementText: replacement,
+          },
+          idempotencyKey: "approval-range-edit-v2",
+        });
+        await runEditorialForeignChecker({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          expectedDraftId: edited.draft.id,
+        });
+        const readyV2 = await getEditorialApprovalReadModel({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+        });
+        const approvedV2 = await approveEditorialDraft({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          expectedDraftId: readyV2.latestDraft!.id,
+          expectedDraftVersion: readyV2.latestDraft!.version,
+          expectedDraftSha256: readyV2.latestDraft!.draftSha256,
+          expectedCheckerRunId: readyV2.qc.checkerRunId!,
+          expectedQcEvidenceSha256: readyV2.qc.qcEvidenceSha256!,
+          idempotencyKey: "approval-range-approve-v2",
+        });
+        const restaged = await stageEditorialEpisodeDraft({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          approvalId: approvedV2.approval.id,
+          expectedDraftId: readyV2.latestDraft!.id,
+          expectedDraftVersion: readyV2.latestDraft!.version,
+          expectedDraftSha256: readyV2.latestDraft!.draftSha256,
+          idempotencyKey: "approval-range-stage-v2",
+        });
+        expect(restaged.episodes.map((episode: any) => episode.id)).toEqual(
+          originalEpisodeIds
+        );
+        const episode60 = restaged.episodes.find(
+          (episode: any) => episode.episodeNumber === "060"
+        );
+        expect(episode60?.content).toContain(replacement);
+        expect(restaged.readModel.readyToPublish).toBe(true);
+
+        const stored = await db
+          .select()
+          .from(episodes)
+          .where(eq(episodes.novelId, novel.id));
+        expect(stored).toHaveLength(50);
+        expect(new Set(stored.map(row => row.episodeNumber)).size).toBe(50);
+      } finally {
+        if (boardId) {
+          await db
+            .delete(workspaceKanbanCards)
+            .where(eq(workspaceKanbanCards.boardId, boardId));
+        }
+        await db
+          .delete(workspaceWorkspaces)
+          .where(eq(workspaceWorkspaces.id, workspace.workspaceId));
+        await db.delete(episodes).where(eq(episodes.novelId, novel.id));
+        await db.delete(novels).where(eq(novels.id, novel.id));
+        await db.delete(users).where(eq(users.id, owner.id));
       }
     });
   }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  analyzeEditorialEpisodeDraftBatch,
   buildEditorialEpisodeDraftPlan,
   editorialApprovalPayloadSha256,
   editorialEpisodeStagePayloadSha256,
@@ -89,7 +90,7 @@ describe("Editorial approval/staging domain", () => {
     ).toThrow("NEW_EPISODE");
   });
 
-  it("fails closed for a multi-tab NEW_EPISODE draft instead of guessing which tab to publish", () => {
+  it("fails closed for a multi-tab single-episode work item instead of guessing which tab to publish", () => {
     const base = input();
     expect(() =>
       buildEditorialEpisodeDraftPlan({
@@ -106,6 +107,155 @@ describe("Editorial approval/staging domain", () => {
         ],
       })
     ).toThrow("exactly one Draft tab");
+  });
+
+  it("maps 036-085 deterministically to 50 Episode plans and preserves zero padding", () => {
+    const tabs = Array.from({ length: 50 }, (_, index) => {
+      const number = 36 + index;
+      return {
+        sourceTabId: `tab-${number}`,
+        tabOrder: index,
+        title: `แท็บ ${index + 1}`,
+        chapterNumber: String(number),
+        chapterTitle: `ชื่อบท ${number}`,
+        paragraphs: [
+          { paragraphOrder: 0, text: `บทที่ ${number} ชื่อบท ${number}` },
+          { paragraphOrder: 1, text: `เนื้อหาตอน ${number} ${"ก".repeat(500)}` },
+        ],
+      };
+    });
+    const batch = analyzeEditorialEpisodeDraftBatch({
+      workItemType: "new_episode",
+      episodeNumber: "036 - 085",
+      episodeTitle: null,
+      tabs,
+    });
+    expect(batch.ready).toBe(true);
+    expect(batch.mode).toBe("range");
+    expect(batch.items).toHaveLength(50);
+    expect(batch.items[0].episodeNumber).toBe("036");
+    expect(batch.items[49].episodeNumber).toBe("085");
+    expect(batch.blockers).toEqual([]);
+  });
+
+  it("maps out-of-order tabs by detected Episode number and reports a warning", () => {
+    const base = Array.from({ length: 3 }, (_, index) => {
+      const number = 36 + index;
+      return {
+        sourceTabId: `tab-${number}`,
+        tabOrder: index,
+        title: `แท็บ ${index + 1}`,
+        chapterNumber: String(number),
+        chapterTitle: null,
+        paragraphs: [
+          { paragraphOrder: 0, text: `บทที่ ${number} ชื่อบท` },
+          { paragraphOrder: 1, text: `เนื้อหา ${"ข".repeat(500)}` },
+        ],
+      };
+    });
+    const batch = analyzeEditorialEpisodeDraftBatch({
+      workItemType: "new_episode",
+      episodeNumber: "036-038",
+      episodeTitle: null,
+      tabs: [base[1], base[0], base[2]].map((tab, tabOrder) => ({
+        ...tab,
+        tabOrder,
+      })),
+    });
+    expect(batch.ready).toBe(true);
+    expect(batch.items.map(item => item.episodeNumber)).toEqual([
+      "036",
+      "037",
+      "038",
+    ]);
+    expect(batch.anomalies.map(item => item.code)).toContain(
+      "TAB_NUMBER_OUT_OF_ORDER"
+    );
+  });
+
+  it("fails closed for missing, duplicate, empty, or count-mismatched range tabs while surfacing anomalies", () => {
+    const tabs = [
+      {
+        sourceTabId: "tab-36",
+        tabOrder: 0,
+        title: "แท็บ 1",
+        chapterNumber: "36",
+        chapterTitle: null,
+        paragraphs: [
+          { paragraphOrder: 0, text: "บทที่ 36 ชื่อบท" },
+          { paragraphOrder: 1, text: "เนื้อหา " + "ค".repeat(500) },
+        ],
+      },
+      {
+        sourceTabId: "tab-36-dup",
+        tabOrder: 1,
+        title: "แท็บ 2",
+        chapterNumber: "36",
+        chapterTitle: null,
+        paragraphs: [
+          { paragraphOrder: 0, text: "บทที่ 36 ซ้ำ" },
+          { paragraphOrder: 1, text: "เนื้อหา " + "ง".repeat(500) },
+        ],
+      },
+      {
+        sourceTabId: "tab-empty",
+        tabOrder: 2,
+        title: "แท็บ 3",
+        chapterNumber: "38",
+        chapterTitle: null,
+        paragraphs: [],
+      },
+    ];
+    const batch = analyzeEditorialEpisodeDraftBatch({
+      workItemType: "new_episode",
+      episodeNumber: "036-039",
+      episodeTitle: null,
+      tabs,
+    });
+    expect(batch.ready).toBe(false);
+    expect(batch.blockers.map(item => item.code)).toEqual(
+      expect.arrayContaining([
+        "COUNT_MISMATCH",
+        "TAB_NUMBER_DUPLICATE",
+        "TAB_EMPTY",
+        "EXPECTED_EPISODE_MISSING",
+      ])
+    );
+  });
+
+  it("reports unusually short range content as a warning without blocking an otherwise exact mapping", () => {
+    const batch = analyzeEditorialEpisodeDraftBatch({
+      workItemType: "new_episode",
+      episodeNumber: "036-038",
+      episodeTitle: null,
+      tabs: [36, 37, 38].map((number, index) => ({
+        sourceTabId: `tab-${number}`,
+        tabOrder: index,
+        title: `แท็บ ${index + 1}`,
+        chapterNumber: String(number),
+        chapterTitle: null,
+        paragraphs: [
+          { paragraphOrder: 0, text: `บทที่ ${number} ชื่อบท` },
+          {
+            paragraphOrder: 1,
+            text:
+              number === 38
+                ? "สั้น"
+                : `เนื้อหา ${"จ".repeat(1000)}`,
+          },
+        ],
+      })),
+    });
+    expect(batch.ready).toBe(true);
+    expect(batch.anomalies).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "TAB_CONTENT_SHORT",
+          severity: "warning",
+          episodeNumber: "038",
+        }),
+      ])
+    );
   });
 
   it("requires body content after the title line", () => {

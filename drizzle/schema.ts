@@ -2768,7 +2768,10 @@ export const workspaceEditorialEpisodeStages = mysqlTable(
       table.workItemId,
       table.idempotencyKey
     ),
-    approvalUnique: uniqueIndex("wees_approval_unique").on(table.approvalId),
+    approvalEpisodeUnique: uniqueIndex("wees_approval_episode_unique").on(
+      table.approvalId,
+      table.episodeNumber
+    ),
     itemCreatedIdx: index("wees_item_created_idx").on(
       table.workItemId,
       table.createdAt

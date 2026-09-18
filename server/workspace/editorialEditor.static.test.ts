@@ -89,6 +89,8 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(page).toContain("editorTarget && !editorTarget.findingId");
     expect(page).toContain('submitEditorEdit("autosave")');
     expect(page).toContain("บันทึกทันที + ตรวจซ้ำ");
-    expect(page).toContain("Undo last edit");
+    expect(page).toContain("Workspace Editor");
+    expect(page).toContain('<details className="rounded-md border">');
+    expect(page).toContain("Undo");
   });
 });

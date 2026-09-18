@@ -4,6 +4,7 @@ import {
   novels,
   users,
   workspaceEditorialDrafts,
+  workspaceKanbanCards,
   workspaceWorkspaces,
 } from "../../drizzle/schema";
 import { assertSafeTestDatabaseUrl } from "../test-helpers/testDatabaseGuard";
@@ -50,6 +51,7 @@ describe.sequential("Workspace Editorial source/draft integration", () => {
     const outsider = await createTestUser();
     const novel = await createTestNovel();
     const workspace = await createWorkspace(owner.id, "Editorial C");
+    let boardId: number | null = null;
     try {
       await bindPublicationNovel({
         actorUserId: owner.id,
@@ -60,6 +62,7 @@ describe.sequential("Workspace Editorial source/draft integration", () => {
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
       });
+      boardId = board?.board.id ?? null;
       const storyCard = board?.columns
         .flatMap(column => column.cards)
         .find(card => card.workItemType === "NEW_STORY");
@@ -182,7 +185,10 @@ describe.sequential("Workspace Editorial source/draft integration", () => {
         workItemId,
         snapshotId: firstModel.snapshots[0].id,
       });
-      expect(recovered.payload).toEqual(original);
+      expect(recovered.payload).toEqual({
+        ...original,
+        providerDocumentId: null,
+      });
 
       const manualVersion = afterRefresh.latestDraft!.version + 1;
       await db.insert(workspaceEditorialDrafts).values({
@@ -234,6 +240,11 @@ describe.sequential("Workspace Editorial source/draft integration", () => {
         })
       ).rejects.toBeTruthy();
     } finally {
+      if (boardId) {
+        await db
+          .delete(workspaceKanbanCards)
+          .where(eq(workspaceKanbanCards.boardId, boardId));
+      }
       await db
         .delete(workspaceWorkspaces)
         .where(eq(workspaceWorkspaces.id, workspace.workspaceId));

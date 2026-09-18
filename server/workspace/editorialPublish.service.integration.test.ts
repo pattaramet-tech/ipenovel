@@ -61,6 +61,26 @@ function source(revisionKey: string, bodyText: string): EditorialSourcePayload {
   };
 }
 
+function rangePublishSource(revisionKey: string): EditorialSourcePayload {
+  return {
+    sourceKind: "uploaded_file",
+    sourceKey: "uploaded-file:ipe055g-range-publish",
+    mimeType: "text/plain",
+    title: "episodes-036-038.txt",
+    revisionKey,
+    tabs: [36, 37, 38].map((episode, index) => ({
+      sourceTabId: `publish-tab-${episode}`,
+      tabOrder: index,
+      title: `แท็บ ${index + 1}`,
+      paragraphs: [
+        `บทที่ ${episode} ชื่อบท ${episode}`,
+        `เนื้อหาตอน ${episode} ${"ก".repeat(500)}`,
+        "จบตอน",
+      ],
+    })),
+  };
+}
+
 describe.sequential("IPE-055-G Controlled Publish integration", () => {
   it("blocks stale Editorial state before provider execution, then publishes durably and projects Kanban once", async () => {
     if (!process.env.TEST_DATABASE_URL) return;
@@ -198,9 +218,8 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
         workItemId,
-        expectedStageId: staged.stage.id,
+        expectedStageSetSha256: readyV1.stageSetSha256!,
         expectedStagedDraftSha256: staged.stage.stagedDraftSha256,
-        expectedEpisodeStateSha256: staged.stage.episodeStateSha256,
         expectedCutoverEpoch: 1,
         expectedOwnershipVersion: 1,
         executionEnabled: false,
@@ -216,9 +235,8 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
         workItemId,
-        expectedStageId: staged.stage.id,
+        expectedStageSetSha256: preparedV1.stageSetSha256!,
         expectedStagedDraftSha256: staged.stage.stagedDraftSha256,
-        expectedEpisodeStateSha256: staged.stage.episodeStateSha256,
         expectedCutoverEpoch: 1,
         expectedOwnershipVersion: 1,
         executionEnabled: true,
@@ -310,14 +328,18 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
       });
       expect(stagedV2.episode.id).toBe(staged.episode.id);
       expect(stagedV2.episode.isPublished).toBe(false);
+      const readyV2 = await getEditorialPublishReadModel({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workItemId,
+      });
 
       await expect(requestEditorialPublish({
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
         workItemId,
-        expectedStageId: stagedV2.stage.id,
+        expectedStageSetSha256: readyV2.stageSetSha256!,
         expectedStagedDraftSha256: stagedV2.stage.stagedDraftSha256,
-        expectedEpisodeStateSha256: stagedV2.stage.episodeStateSha256,
         expectedCutoverEpoch: 1,
         expectedOwnershipVersion: 1,
         executionEnabled: false,
@@ -334,9 +356,8 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
         workItemId,
-        expectedStageId: stagedV2.stage.id,
+        expectedStageSetSha256: preparedV2.stageSetSha256!,
         expectedStagedDraftSha256: stagedV2.stage.stagedDraftSha256,
-        expectedEpisodeStateSha256: stagedV2.stage.episodeStateSha256,
         expectedCutoverEpoch: 1,
         expectedOwnershipVersion: 1,
         executionEnabled: true,
@@ -403,6 +424,303 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
       if (stagedEpisodeId) {
         await db.delete(episodes).where(eq(episodes.id, stagedEpisodeId));
       }
+      await db.delete(novels).where(eq(novels.id, novel.id));
+      await db.delete(users).where(eq(users.id, owner.id));
+    }
+  });
+
+  it("publishes a staged Episode range as multiple items, retries only the failed item, and projects Published after the whole batch is durable", async () => {
+    if (!process.env.TEST_DATABASE_URL) return;
+    assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
+
+    const db = getTestDb();
+    const owner = await createTestUser({ role: "admin" });
+    const novel = await createTestNovel();
+    const workspace = await createWorkspace(owner.id, "IPE-055-G range publish");
+    let boardId: number | null = null;
+
+    try {
+      const workspaceNovel = await bindPublicationNovel({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        novelId: novel.id,
+      });
+      const board = await ensureEditorialBoard({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+      });
+      boardId = board?.board.id ?? null;
+
+      const created = await createEditorialEpisodeWorkItem({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workspaceNovelId: workspaceNovel.workspaceNovelId,
+        episodeNumber: "036 - 038",
+        episodeTitle: null,
+      });
+      const card = created.board?.columns
+        .flatMap(column => column.cards)
+        .find(
+          item =>
+            item.workItemType === "NEW_EPISODE" &&
+            item.episodeNumber === "036 - 038"
+        );
+      const workItemId = card!.workItemId!;
+
+      const imported = await importEditorialSource({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workItemId,
+        payload: rangePublishSource("ipe055g-range-r1"),
+      });
+      await runEditorialForeignChecker({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workItemId,
+        expectedDraftId: imported.latestDraftId!,
+      });
+      const approvalState = await getEditorialApprovalReadModel({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workItemId,
+      });
+      const approved = await approveEditorialDraft({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workItemId,
+        expectedDraftId: approvalState.latestDraft!.id,
+        expectedDraftVersion: approvalState.latestDraft!.version,
+        expectedDraftSha256: approvalState.latestDraft!.draftSha256,
+        expectedCheckerRunId: approvalState.qc.checkerRunId!,
+        expectedQcEvidenceSha256: approvalState.qc.qcEvidenceSha256!,
+        idempotencyKey: "ipe055g-range-approve",
+      });
+      const staged = await stageEditorialEpisodeDraft({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workItemId,
+        approvalId: approved.approval.id,
+        expectedDraftId: approvalState.latestDraft!.id,
+        expectedDraftVersion: approvalState.latestDraft!.version,
+        expectedDraftSha256: approvalState.latestDraft!.draftSha256,
+        idempotencyKey: "ipe055g-range-stage",
+      });
+      expect(staged.episodes).toHaveLength(3);
+
+      const connection = await saveGoogleConnection({
+        userId: owner.id,
+        providerSubject: "ipe055g-range-google-owner",
+        credential: {
+          keyVersion: 1,
+          encryptedRefreshToken: "v1.redacted.range.ciphertext.tag",
+        },
+        grantedScopes:
+          "https://www.googleapis.com/auth/drive.metadata.readonly https://www.googleapis.com/auth/documents.readonly",
+      });
+      const binding = await bindGoogleDocument({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workspaceNovelId: workspaceNovel.workspaceNovelId,
+        connectionId: connection.connectionId,
+        providerFileId: "doc_ipe055g_range_anchor",
+        mimeType: GOOGLE_DOC_MIME_TYPE,
+        title: "IPE-055-G range publish anchor",
+        role: "chapter",
+        sequence: 1,
+        correlationId: "ipe055g-range-bind",
+      });
+      await observeBoundGoogleDocument({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        bindingId: binding.bindingId,
+        accessToken: "server-only-range-token",
+        correlationId: "ipe055g-range-observe",
+        adapter: {
+          getMetadata: vi.fn(async () => ({
+            providerFileId: "doc_ipe055g_range_anchor",
+            revision: "rev-range-1",
+            mimeType: GOOGLE_DOC_MIME_TYPE,
+            title: "IPE-055-G range publish anchor",
+          })),
+          getNormalizedText: vi.fn(
+            async () => "IPE-055-G range publish anchor"
+          ),
+          revoke: vi.fn(async () => undefined),
+        },
+      });
+      await db
+        .update(workspaceMigrationRegistry)
+        .set({ owner: "workspace", cutoverEpoch: 1 })
+        .where(
+          and(
+            eq(
+              workspaceMigrationRegistry.workspaceNovelId,
+              workspaceNovel.workspaceNovelId
+            ),
+            eq(workspaceMigrationRegistry.capability, "publish")
+          )
+        );
+
+      const ready = await getEditorialPublishReadModel({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workItemId,
+      });
+      expect(ready.stages).toHaveLength(3);
+      expect(ready.stageSetSha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(ready.requestReady).toBe(true);
+
+      await expect(
+        requestEditorialPublish({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          expectedStageSetSha256: ready.stageSetSha256!,
+          expectedStagedDraftSha256: ready.stage!.stagedDraftSha256,
+          expectedCutoverEpoch: 1,
+          expectedOwnershipVersion: 1,
+          executionEnabled: false,
+        })
+      ).rejects.toMatchObject({ code: "EXECUTION_DISABLED" });
+
+      const prepared = await getEditorialPublishReadModel({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workItemId,
+      });
+      expect(prepared.publishItems).toHaveLength(3);
+      const runId = prepared.publishRun!.id;
+      const enqueued = await requestEditorialPublish({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workItemId,
+        expectedStageSetSha256: prepared.stageSetSha256!,
+        expectedStagedDraftSha256: prepared.stage!.stagedDraftSha256,
+        expectedCutoverEpoch: 1,
+        expectedOwnershipVersion: 1,
+        executionEnabled: true,
+        executionScope: {
+          workspaceId: workspace.workspaceId,
+          workspaceNovelId: workspaceNovel.workspaceNovelId,
+          runId,
+          expectedCutoverEpoch: 1,
+          expectedOwnershipVersion: 1,
+        },
+      });
+
+      const baseProvider = createIpeNovelWorkspacePublishProvider();
+      const failEpisodeId = staged.episodes[1].id;
+      const firstExecute = vi.fn(async (request: any) => {
+        if (request.episodeId === failEpisodeId) {
+          return {
+            status: "failed" as const,
+            errorClass: "SYNTHETIC_RANGE_FAILURE",
+          };
+        }
+        return baseProvider.execute(request);
+      });
+      const firstPass = await runScopedPublishWorkerOnce({
+        scope: enqueued.scope,
+        leaseOwner: "ipe055g-range-worker-1",
+        provider: {
+          mode: "external",
+          reconcile: request => baseProvider.reconcile(request),
+          execute: firstExecute,
+        },
+        executionEnabled: true,
+        allowExternalProvider: true,
+      });
+      expect(firstPass.result.status).toBe("partially_failed");
+      expect(firstPass.editorialProjection).toMatchObject({
+        matched: true,
+        projected: false,
+      });
+
+      const firstItems = await db
+        .select()
+        .from(workspacePublishItems)
+        .where(eq(workspacePublishItems.runId, runId));
+      expect(firstItems.filter(item => item.status === "published")).toHaveLength(
+        2
+      );
+      expect(firstItems.filter(item => item.status === "failed")).toHaveLength(1);
+
+      await new Promise(resolve => setTimeout(resolve, 1_050));
+      const retryExecute = vi.fn((request: any) => baseProvider.execute(request));
+      const retry = await runScopedPublishWorkerOnce({
+        scope: enqueued.scope,
+        leaseOwner: "ipe055g-range-worker-2",
+        provider: {
+          mode: "external",
+          reconcile: request => baseProvider.reconcile(request),
+          execute: retryExecute,
+        },
+        executionEnabled: true,
+        allowExternalProvider: true,
+      });
+      expect(retry.result.status).toBe("published");
+      expect(retryExecute).toHaveBeenCalledTimes(1);
+      expect(retryExecute.mock.calls[0][0].episodeId).toBe(failEpisodeId);
+      expect(retry.editorialProjection).toMatchObject({
+        matched: true,
+        projected: true,
+        itemCount: 3,
+      });
+
+      const finalItems = await db
+        .select()
+        .from(workspacePublishItems)
+        .where(eq(workspacePublishItems.runId, runId));
+      expect(finalItems).toHaveLength(3);
+      expect(
+        finalItems.every(
+          item => item.status === "published" && Boolean(item.providerReceipt)
+        )
+      ).toBe(true);
+      const finalEpisodes = await db
+        .select()
+        .from(episodes)
+        .where(eq(episodes.novelId, novel.id));
+      expect(finalEpisodes).toHaveLength(3);
+      expect(finalEpisodes.every(episode => episode.isPublished)).toBe(true);
+
+      const publishedBoard = await getEditorialBoard({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+      });
+      expect(
+        publishedBoard?.columns.find(column =>
+          column.cards.some(item => item.workItemId === workItemId)
+        )?.key
+      ).toBe("published");
+
+      const replayExecute = vi.fn((request: any) => baseProvider.execute(request));
+      const replay = await runScopedPublishWorkerOnce({
+        scope: enqueued.scope,
+        leaseOwner: "ipe055g-range-worker-replay",
+        provider: {
+          mode: "external",
+          reconcile: request => baseProvider.reconcile(request),
+          execute: replayExecute,
+        },
+        executionEnabled: true,
+        allowExternalProvider: true,
+      });
+      expect(replay.claimed).toBe(false);
+      expect(replayExecute).not.toHaveBeenCalled();
+    } finally {
+      if (boardId) {
+        await db
+          .delete(workspaceKanbanCards)
+          .where(eq(workspaceKanbanCards.boardId, boardId));
+      }
+      await db
+        .delete(workspaceWorkspaces)
+        .where(eq(workspaceWorkspaces.id, workspace.workspaceId));
+      await db
+        .delete(workspaceGoogleConnections)
+        .where(eq(workspaceGoogleConnections.userId, owner.id));
+      await db.delete(episodes).where(eq(episodes.novelId, novel.id));
       await db.delete(novels).where(eq(novels.id, novel.id));
       await db.delete(users).where(eq(users.id, owner.id));
     }

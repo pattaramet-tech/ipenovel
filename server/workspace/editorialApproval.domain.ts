@@ -101,6 +101,337 @@ function countWords(content: string) {
   return trimmed ? trimmed.split(/\s+/).filter(Boolean).length : 0;
 }
 
+function episodeNumbersEquivalent(a: string, b: string) {
+  const left = normalizeEditorialEpisodeNumber(a);
+  const right = normalizeEditorialEpisodeNumber(b);
+  if (/^\d+$/.test(left) && /^\d+$/.test(right)) {
+    return Number(left) === Number(right);
+  }
+  return left === right;
+}
+
+export type EditorialEpisodeDraftBatchAnomaly = {
+  code:
+    | "COUNT_MISMATCH"
+    | "TAB_NUMBER_MISSING"
+    | "TAB_NUMBER_CONFLICT"
+    | "TAB_NUMBER_DUPLICATE"
+    | "TAB_NUMBER_OUT_OF_RANGE"
+    | "TAB_NUMBER_OUT_OF_ORDER"
+    | "EXPECTED_EPISODE_MISSING"
+    | "TAB_EMPTY"
+    | "TAB_CONTENT_INVALID"
+    | "TAB_CONTENT_SHORT";
+  severity: "blocker" | "warning";
+  message: string;
+  sourceTabId?: string;
+  sourceTabTitle?: string;
+  episodeNumber?: string;
+};
+
+export type EditorialEpisodeDraftBatchPlan = {
+  mode: "single" | "range";
+  requestedEpisodeNumber: string;
+  expectedEpisodeNumbers: string[];
+  items: EditorialEpisodeDraftPlan[];
+  anomalies: EditorialEpisodeDraftBatchAnomaly[];
+  blockers: EditorialEpisodeDraftBatchAnomaly[];
+  ready: boolean;
+};
+
+export function parseEditorialEpisodeRange(value: string) {
+  const normalized = normalizeEditorialEpisodeNumber(value);
+  const match = normalized.match(/^(\d+)\s+-\s+(\d+)$/);
+  if (!match) return null;
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(end) ||
+    start < 0 ||
+    end < start ||
+    end - start + 1 > 500
+  ) {
+    return null;
+  }
+  const width = Math.max(match[1].length, match[2].length);
+  const episodeNumbers = Array.from(
+    { length: end - start + 1 },
+    (_, index) => String(start + index).padStart(width, "0")
+  );
+  return { start, end, width, episodeNumbers };
+}
+
+function canonicalRangeEpisodeNumber(value: string | null | undefined, width: number) {
+  const normalized = normalizeEditorialEpisodeNumber(value ?? "");
+  if (!/^\d+$/.test(normalized)) return null;
+  const number = Number(normalized);
+  if (!Number.isSafeInteger(number) || number < 0) return null;
+  return String(number).padStart(width, "0");
+}
+
+function tabDetectedEpisodeNumber(
+  tab: EditorialEpisodeDraftInput["tabs"][number],
+  width: number
+) {
+  const paragraphs = tab.paragraphs
+    .slice()
+    .sort((a, b) => a.paragraphOrder - b.paragraphOrder);
+  const firstLine = paragraphs.find(row => String(row.text || "").trim());
+  const heading = firstLine
+    ? parseEditorialEpisodeHeading(String(firstLine.text || "").trim())
+    : null;
+  const titleHeading = parseEditorialEpisodeHeading(tab.title);
+  const candidates = [
+    heading?.episodeNumber ?? null,
+    tab.chapterNumber ?? null,
+    titleHeading?.episodeNumber ?? null,
+  ]
+    .map(value => canonicalRangeEpisodeNumber(value, width))
+    .filter((value): value is string => Boolean(value));
+  const unique = Array.from(new Set(candidates));
+  return {
+    firstLine: firstLine ? String(firstLine.text || "").trim() : "",
+    candidates: unique,
+    episodeNumber: unique.length === 1 ? unique[0] : null,
+    conflict: unique.length > 1,
+  };
+}
+
+function median(values: number[]) {
+  if (!values.length) return 0;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? sorted[middle]
+    : Math.floor((sorted[middle - 1] + sorted[middle]) / 2);
+}
+
+export function analyzeEditorialEpisodeDraftBatch(
+  input: EditorialEpisodeDraftInput
+): EditorialEpisodeDraftBatchPlan {
+  const requestedEpisodeNumber = normalizeEditorialEpisodeNumber(
+    input.episodeNumber ?? ""
+  );
+  const range = parseEditorialEpisodeRange(requestedEpisodeNumber);
+  if (!range) {
+    try {
+      const plan = buildEditorialEpisodeDraftPlan(input);
+      return {
+        mode: "single",
+        requestedEpisodeNumber,
+        expectedEpisodeNumbers: [plan.episodeNumber],
+        items: [plan],
+        anomalies: [],
+        blockers: [],
+        ready: true,
+      };
+    } catch (error) {
+      const message =
+        error instanceof EditorialApprovalDomainError
+          ? error.message
+          : "Episode staging plan could not be derived.";
+      const anomaly: EditorialEpisodeDraftBatchAnomaly = {
+        code:
+          input.tabs.length === 0
+            ? "TAB_EMPTY"
+            : input.tabs.length !== 1
+              ? "COUNT_MISMATCH"
+              : "TAB_CONTENT_INVALID",
+        severity: "blocker",
+        message,
+      };
+      return {
+        mode: "single",
+        requestedEpisodeNumber,
+        expectedEpisodeNumbers: requestedEpisodeNumber
+          ? [requestedEpisodeNumber]
+          : [],
+        items: [],
+        anomalies: [anomaly],
+        blockers: [anomaly],
+        ready: false,
+      };
+    }
+  }
+
+  const expected = range.episodeNumbers;
+  const expectedSet = new Set(expected);
+  const tabs = input.tabs.slice().sort((a, b) => a.tabOrder - b.tabOrder);
+  const anomalies: EditorialEpisodeDraftBatchAnomaly[] = [];
+  const detectedRows: Array<{
+    tab: EditorialEpisodeDraftInput["tabs"][number];
+    episodeNumber: string;
+  }> = [];
+
+  if (tabs.length !== expected.length) {
+    anomalies.push({
+      code: "COUNT_MISMATCH",
+      severity: "blocker",
+      message: `ช่วงตอน ${requestedEpisodeNumber} ต้องมี ${expected.length} แท็บ แต่ Draft มี ${tabs.length} แท็บ`,
+    });
+  }
+
+  for (const tab of tabs) {
+    const detected = tabDetectedEpisodeNumber(tab, range.width);
+    if (!detected.firstLine) {
+      anomalies.push({
+        code: "TAB_EMPTY",
+        severity: "blocker",
+        message: `${tab.title} ไม่มีเนื้อหา`,
+        sourceTabId: tab.sourceTabId,
+        sourceTabTitle: tab.title,
+      });
+      continue;
+    }
+    if (detected.conflict) {
+      anomalies.push({
+        code: "TAB_NUMBER_CONFLICT",
+        severity: "blocker",
+        message: `${tab.title} มีเลขตอนขัดแย้งกัน: ${detected.candidates.join(", ")}`,
+        sourceTabId: tab.sourceTabId,
+        sourceTabTitle: tab.title,
+      });
+      continue;
+    }
+    if (!detected.episodeNumber) {
+      anomalies.push({
+        code: "TAB_NUMBER_MISSING",
+        severity: "blocker",
+        message: `${tab.title} อ่านเลขตอนไม่ได้จากหัวบท/chapter metadata`,
+        sourceTabId: tab.sourceTabId,
+        sourceTabTitle: tab.title,
+      });
+      continue;
+    }
+    if (!expectedSet.has(detected.episodeNumber)) {
+      anomalies.push({
+        code: "TAB_NUMBER_OUT_OF_RANGE",
+        severity: "blocker",
+        message: `${tab.title} ระบุตอน ${detected.episodeNumber} ซึ่งอยู่นอกช่วง ${requestedEpisodeNumber}`,
+        sourceTabId: tab.sourceTabId,
+        sourceTabTitle: tab.title,
+        episodeNumber: detected.episodeNumber,
+      });
+      continue;
+    }
+    detectedRows.push({ tab, episodeNumber: detected.episodeNumber });
+  }
+
+  const seen = new Map<string, number>();
+  for (const row of detectedRows) {
+    seen.set(row.episodeNumber, (seen.get(row.episodeNumber) ?? 0) + 1);
+  }
+  for (const [episodeNumber, count] of Array.from(seen.entries())) {
+    if (count > 1) {
+      anomalies.push({
+        code: "TAB_NUMBER_DUPLICATE",
+        severity: "blocker",
+        message: `พบเลขตอน ${episodeNumber} ซ้ำ ${count} แท็บ`,
+        episodeNumber,
+      });
+    }
+  }
+  for (const episodeNumber of expected) {
+    if (!seen.has(episodeNumber)) {
+      anomalies.push({
+        code: "EXPECTED_EPISODE_MISSING",
+        severity: "blocker",
+        message: `ไม่พบแท็บสำหรับตอน ${episodeNumber}`,
+        episodeNumber,
+      });
+    }
+  }
+
+  const detectedOrder = detectedRows.map(row => row.episodeNumber);
+  if (
+    detectedRows.length === expected.length &&
+    new Set(detectedOrder).size === expected.length &&
+    detectedOrder.some((value, index) => value !== expected[index])
+  ) {
+    anomalies.push({
+      code: "TAB_NUMBER_OUT_OF_ORDER",
+      severity: "warning",
+      message: "เลขตอนในแท็บไม่เรียงตามลำดับ แต่ระบบจะ map ตามเลขตอนจริง",
+    });
+  }
+
+  const duplicated = new Set(
+    Array.from(seen.entries())
+      .filter(([, count]) => count > 1)
+      .map(([episodeNumber]) => episodeNumber)
+  );
+  const items: EditorialEpisodeDraftPlan[] = [];
+  for (const row of detectedRows) {
+    if (duplicated.has(row.episodeNumber)) continue;
+    try {
+      items.push(
+        buildEditorialEpisodeDraftPlan({
+          workItemType: "new_episode",
+          episodeNumber: row.episodeNumber,
+          episodeTitle: null,
+          tabs: [row.tab],
+        })
+      );
+    } catch (error) {
+      anomalies.push({
+        code: "TAB_CONTENT_INVALID",
+        severity: "blocker",
+        message:
+          error instanceof EditorialApprovalDomainError
+            ? `${row.tab.title}: ${error.message}`
+            : `${row.tab.title}: เนื้อหาไม่สามารถ stage ได้`,
+        sourceTabId: row.tab.sourceTabId,
+        sourceTabTitle: row.tab.title,
+        episodeNumber: row.episodeNumber,
+      });
+    }
+  }
+
+  const lengths = items.map(item => item.content.length).filter(length => length > 0);
+  const medianCharacters = median(lengths);
+  const shortThreshold =
+    medianCharacters >= 400
+      ? Math.max(120, Math.floor(medianCharacters * 0.25))
+      : 80;
+  for (const item of items) {
+    if (item.content.length < shortThreshold) {
+      anomalies.push({
+        code: "TAB_CONTENT_SHORT",
+        severity: "warning",
+        message: `ตอน ${item.episodeNumber} มีเนื้อหา ${item.content.length} ตัวอักษร ซึ่งสั้นผิดปกติเมื่อเทียบกับชุดนี้`,
+        sourceTabId: item.sourceTabId,
+        sourceTabTitle: item.sourceTabTitle,
+        episodeNumber: item.episodeNumber,
+      });
+    }
+  }
+
+  const blockers = anomalies.filter(anomaly => anomaly.severity === "blocker");
+  const expectedIndex = new Map(
+    expected.map((episodeNumber, index) => [episodeNumber, index] as const)
+  );
+  items.sort(
+    (a, b) =>
+      (expectedIndex.get(a.episodeNumber) ?? Number.MAX_SAFE_INTEGER) -
+      (expectedIndex.get(b.episodeNumber) ?? Number.MAX_SAFE_INTEGER)
+  );
+  const ready =
+    blockers.length === 0 &&
+    items.length === expected.length &&
+    items.every((item, index) => item.episodeNumber === expected[index]);
+
+  return {
+    mode: "range",
+    requestedEpisodeNumber,
+    expectedEpisodeNumbers: expected,
+    items,
+    anomalies,
+    blockers,
+    ready,
+  };
+}
+
 export function buildEditorialEpisodeDraftPlan(
   input: EditorialEpisodeDraftInput
 ): EditorialEpisodeDraftPlan {
@@ -146,7 +477,7 @@ export function buildEditorialEpisodeDraftPlan(
   const detectedNumber = parsedHeading?.episodeNumber || chapterNumber || null;
   if (
     detectedNumber &&
-    normalizeEditorialEpisodeNumber(detectedNumber) !== episodeNumber
+    !episodeNumbersEquivalent(detectedNumber, episodeNumber)
   ) {
     throw new EditorialApprovalDomainError(
       "EPISODE_NUMBER_CONFLICT",

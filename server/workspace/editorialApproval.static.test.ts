@@ -17,6 +17,16 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
     );
   });
 
+  it("migration 0051 widens approval staging cardinality only to approval + episode", () => {
+    const migration = source(
+      "drizzle/0051_workspace_editorial_multitab_stage.sql"
+    );
+    expect(migration).toContain("DROP INDEX `wees_approval_unique`");
+    expect(migration).toContain("wees_approval_episode_unique");
+    expect(migration).toContain("UNIQUE(`approvalId`,`episodeNumber`)");
+    expect(migration).not.toMatch(/DROP TABLE|DROP COLUMN|ALTER TABLE `episodes`/i);
+  });
+
   it("binds approval to exact Draft id/version/hash, checker run and QC evidence", () => {
     const service = source("server/workspace/editorialApproval.service.ts");
     expect(service).toContain("draft.id !== input.expectedDraftId");
@@ -53,12 +63,12 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
 
   it("does not overwrite an unrelated or externally modified unpublished Episode", () => {
     const service = source("server/workspace/editorialApproval.service.ts");
-    expect(service).toContain("is not owned by this editorial work item");
+    expect(service).toContain("is not owned by this Editorial work item");
     expect(service).toContain(
       "existingState !== previousStage.episodeStateSha256"
     );
     expect(service).toContain(
-      "changed after the previous Workspace stage; refusing to overwrite"
+      "drifted after its previous Workspace stage"
     );
   });
 
@@ -85,6 +95,18 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
     expect(service + domain).not.toMatch(
       /workspaceAi|DocumentApp|documents:batchUpdate|requestPublishExecution|workspaceOutbox|openai|gemini|fetch\(/i
     );
+  });
+
+  it("derives and stages a fail-closed multi-tab Episode batch atomically", () => {
+    const domain = source("server/workspace/editorialApproval.domain.ts");
+    const service = source("server/workspace/editorialApproval.service.ts");
+    expect(domain).toContain("analyzeEditorialEpisodeDraftBatch");
+    expect(domain).toContain('"COUNT_MISMATCH"');
+    expect(domain).toContain('"TAB_NUMBER_DUPLICATE"');
+    expect(domain).toContain('"EXPECTED_EPISODE_MISSING"');
+    expect(service).toContain("for (const plan of batchPlan.items)");
+    expect(service).toContain("staged.length !== batchPlan.items.length");
+    expect(service).toContain("stageItemIdempotencyKey");
   });
 
   it("shows explicit Confirm and unpublished Episode staging controls in Workspace", () => {

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
 import {
   episodes,
@@ -131,33 +132,76 @@ async function loadAnchor(db: any, workspaceNovelId: number) {
   return rows.length === 1 ? rows[0] : null;
 }
 
-async function loadMatchingRun(
+function editorialStageSetSha256(stages: any[]) {
+  const payload = stages
+    .map(stage => ({
+      id: Number(stage.id),
+      episodeId: Number(stage.episodeId),
+      episodeNumber: String(stage.episodeNumber),
+      stagedDraftSha256: String(stage.stagedDraftSha256).toLowerCase(),
+      contentSha256: String(stage.contentSha256).toLowerCase(),
+      episodeStateSha256: String(stage.episodeStateSha256).toLowerCase(),
+    }))
+    .sort((a, b) =>
+      a.episodeNumber.localeCompare(b.episodeNumber, "en", { numeric: true }) ||
+      a.id - b.id
+    );
+  return createHash("sha256")
+    .update(JSON.stringify(payload), "utf8")
+    .digest("hex");
+}
+
+async function loadMatchingRunBatch(
   db: any,
   workspaceNovelId: number,
-  stageId: number,
-  episodeId: number,
-  sourceSha256: string
+  stages: any[]
 ) {
-  const rows = await db
+  if (stages.length === 0) return null;
+  const expected = stages
+    .map(stage => ({
+      itemKey: editorialItemKey(stage.id, stage.episodeId),
+      episodeId: stage.episodeId,
+      sourceSha256: stage.contentSha256.toLowerCase(),
+    }))
+    .sort((a, b) => a.itemKey.localeCompare(b.itemKey));
+
+  const candidates = await db
     .select({
       run: workspacePublishRuns,
-      item: workspacePublishItems,
       destination: workspacePublishingDestinations,
     })
-    .from(workspacePublishItems)
-    .innerJoin(workspacePublishRuns, eq(workspacePublishItems.runId, workspacePublishRuns.id))
+    .from(workspacePublishRuns)
     .innerJoin(
       workspacePublishingDestinations,
       eq(workspacePublishRuns.destinationId, workspacePublishingDestinations.id)
     )
-    .where(and(
-      eq(workspacePublishingDestinations.workspaceNovelId, workspaceNovelId),
-      eq(workspacePublishItems.episodeId, episodeId),
-      eq(workspacePublishItems.sourceSha256, sourceSha256.toLowerCase())
-    ))
+    .where(eq(workspacePublishingDestinations.workspaceNovelId, workspaceNovelId))
     .orderBy(desc(workspacePublishRuns.id));
-  const expectedItemKey = editorialItemKey(stageId, episodeId);
-  return rows.find((row: any) => row.item.itemKey === expectedItemKey) ?? null;
+
+  for (const candidate of candidates) {
+    const items = await db
+      .select()
+      .from(workspacePublishItems)
+      .where(eq(workspacePublishItems.runId, candidate.run.id));
+    if (items.length !== expected.length) continue;
+    const actual = items
+      .map((item: any) => ({
+        itemKey: item.itemKey,
+        episodeId: item.episodeId,
+        sourceSha256: item.sourceSha256.toLowerCase(),
+      }))
+      .sort((a: any, b: any) => a.itemKey.localeCompare(b.itemKey));
+    const matches = expected.every(
+      (item, index) =>
+        actual[index]?.itemKey === item.itemKey &&
+        actual[index]?.episodeId === item.episodeId &&
+        actual[index]?.sourceSha256 === item.sourceSha256
+    );
+    if (matches) {
+      return { ...candidate, items };
+    }
+  }
+  return null;
 }
 
 export async function getEditorialPublishReadModel(input: {
@@ -176,15 +220,12 @@ export async function getEditorialPublishReadModel(input: {
     context.workspaceNovel.novelId
   );
   const anchor = await loadAnchor(db, context.workspaceNovel.id);
-  const matching = approval.stage && approval.stageEpisode
-    ? await loadMatchingRun(
-        db,
-        context.workspaceNovel.id,
-        approval.stage.id,
-        approval.stageEpisode.id,
-        approval.stage.contentSha256
-      )
-    : null;
+  const stages = (approval.stages ?? []).filter(Boolean);
+  const stageEpisodes = (approval.stageEpisodes ?? []).filter(Boolean);
+  const matching =
+    approval.readyToPublish && stages.length > 0
+      ? await loadMatchingRunBatch(db, context.workspaceNovel.id, stages)
+      : null;
   const outbox = matching
     ? await db.select().from(workspaceOutbox)
         .where(eq(workspaceOutbox.publishRunId, matching.run.id))
@@ -193,8 +234,8 @@ export async function getEditorialPublishReadModel(input: {
 
   const stageReady = Boolean(
     approval.readyToPublish &&
-    approval.stage &&
-    approval.stageEpisode &&
+    stages.length > 0 &&
+    stageEpisodes.length === stages.length &&
     context.column.key === "ready_to_publish"
   );
   const ownershipReady = Boolean(
@@ -205,9 +246,12 @@ export async function getEditorialPublishReadModel(input: {
     workItem: context.workItem,
     workspaceNovel: context.workspaceNovel,
     kanbanColumnKey: context.column.key,
-    stage: approval.stage,
+    stages,
+    stageEpisodes,
+    stage: stages[0] ?? null,
     stageStatus: approval.stageStatus,
-    stageEpisode: approval.stageEpisode,
+    stageEpisode: stageEpisodes[0] ?? null,
+    stageSetSha256: stages.length > 0 ? editorialStageSetSha256(stages) : null,
     approvalStatus: approval.approvalStatus,
     qc: approval.qc,
     readyToPublish: approval.readyToPublish,
@@ -220,7 +264,8 @@ export async function getEditorialPublishReadModel(input: {
       lastPublishedSha256: anchor.fingerprint.lastPublishedSha256 ?? null,
     } : null,
     publishRun: matching?.run ?? null,
-    publishItem: matching?.item ?? null,
+    publishItems: matching?.items ?? [],
+    publishItem: matching?.items?.[0] ?? null,
     outbox,
     requestReady: stageReady && ownershipReady && Boolean(anchor),
     blocker: !stageReady
@@ -237,9 +282,8 @@ export async function requestEditorialPublish(input: {
   actorUserId: number;
   workspaceId: number;
   workItemId: number;
-  expectedStageId: number;
+  expectedStageSetSha256: string;
   expectedStagedDraftSha256: string;
-  expectedEpisodeStateSha256: string;
   expectedCutoverEpoch: number;
   expectedOwnershipVersion: number;
   executionEnabled: boolean;
@@ -250,21 +294,28 @@ export async function requestEditorialPublish(input: {
     workspaceId: input.workspaceId,
     workItemId: input.workItemId,
   });
-  if (!state.stage || !state.stageEpisode || !state.readyToPublish ||
-      state.kanbanColumnKey !== "ready_to_publish") {
+  if (
+    state.stages.length === 0 ||
+    state.stageEpisodes.length !== state.stages.length ||
+    !state.readyToPublish ||
+    state.kanbanColumnKey !== "ready_to_publish"
+  ) {
     throw new WorkspaceEditorialPublishError(
       "STAGE_NOT_READY",
-      "Controlled Publish requires the current approved staged Episode in ready_to_publish."
+      "Controlled Publish requires the complete current approved Episode stage batch in ready_to_publish."
     );
   }
   if (
-    state.stage.id !== input.expectedStageId ||
-    state.stage.stagedDraftSha256 !== input.expectedStagedDraftSha256.toLowerCase() ||
-    state.stage.episodeStateSha256 !== input.expectedEpisodeStateSha256.toLowerCase()
+    state.stageSetSha256 !== input.expectedStageSetSha256.toLowerCase() ||
+    state.stages.some(
+      (stage: any) =>
+        stage.stagedDraftSha256 !==
+        input.expectedStagedDraftSha256.toLowerCase()
+    )
   ) {
     throw new WorkspaceEditorialPublishError(
       "STAGE_CONFLICT",
-      "Editorial stage changed before Controlled Publish was requested."
+      "Editorial stage batch changed before Controlled Publish was requested."
     );
   }
   if (
@@ -304,12 +355,13 @@ export async function requestEditorialPublish(input: {
         workspaceId: input.workspaceId,
         destinationId: destination.id,
         snapshotId: state.anchor.snapshotId,
-        expectedLastPublishedSha256: state.anchor.lastPublishedSha256 ?? undefined,
-        items: [{
-          itemKey: editorialItemKey(state.stage.id, state.stageEpisode.id),
-          episodeId: state.stageEpisode.id,
-          sourceSha256: state.stage.contentSha256,
-        }],
+        expectedLastPublishedSha256:
+          state.anchor.lastPublishedSha256 ?? undefined,
+        items: state.stages.map((stage: any) => ({
+          itemKey: editorialItemKey(stage.id, stage.episodeId),
+          episodeId: stage.episodeId,
+          sourceSha256: stage.contentSha256,
+        })),
       });
 
   const execution = await requestPublishExecution({
@@ -362,13 +414,24 @@ export async function assertEditorialPublishRequestCurrent(
     workItemId: stage.workItemId,
   });
   const context = await loadContext(db, request.workspaceId, stage.workItemId);
+  const stageCurrent = (state.stages ?? []).some(
+    (candidate: any) =>
+      candidate.id === stage.id &&
+      candidate.episodeId === stage.episodeId &&
+      candidate.contentSha256 === stage.contentSha256
+  );
+  const currentEpisode = (state.stageEpisodes ?? []).find(
+    (episode: any) => episode?.id === stage.episodeId
+  );
   if (
     stage.novelId !== request.targetId ||
     context.workspaceNovel.novelId !== request.targetId ||
     context.column.key !== "ready_to_publish" ||
-    !state.readyToPublish ||
-    state.stage?.id !== stage.id ||
-    state.stageEpisode?.id !== stage.episodeId
+    !state.approvalStatus?.valid ||
+    !state.stagePlan?.ready ||
+    !stageCurrent ||
+    !currentEpisode ||
+    currentEpisode.isPublished
   ) {
     throw new WorkspaceEditorialPublishError(
       "STAGE_NOT_READY",
@@ -411,40 +474,89 @@ export async function reconcileEditorialPublishRun(input: {
     .map((item: any) => ({ item, identity: parseEditorialItemKey(item.itemKey) }))
     .filter((row: any) => row.identity);
   if (editorial.length === 0) return { matched: false as const, reason: "NOT_EDITORIAL" as const };
-  if (editorial.length !== 1 || items.length !== 1) {
+  if (editorial.length !== items.length) {
     throw new WorkspaceEditorialPublishError(
       "PUBLISH_STATE_CONFLICT",
-      "Editorial Controlled Publish requires exactly one staged Episode item per run."
+      "Editorial Controlled Publish cannot mix Editorial and non-Editorial items in one run."
     );
   }
 
-  const { item, identity } = editorial[0] as any;
-  const [stage] = await db.select().from(workspaceEditorialEpisodeStages)
-    .where(eq(workspaceEditorialEpisodeStages.id, identity.stageId)).limit(1);
-  if (!stage || stage.episodeId !== item.episodeId ||
-      stage.contentSha256 !== item.sourceSha256) {
-    throw new WorkspaceEditorialPublishError(
-      "STAGE_CONFLICT",
-      "Published run no longer resolves to its exact Editorial stage evidence."
-    );
+  const resolved: Array<{ item: any; stage: any; episode: any }> = [];
+  for (const row of editorial as any[]) {
+    const { item, identity } = row;
+    const [stage] = await db
+      .select()
+      .from(workspaceEditorialEpisodeStages)
+      .where(eq(workspaceEditorialEpisodeStages.id, identity.stageId))
+      .limit(1);
+    if (
+      !stage ||
+      stage.episodeId !== item.episodeId ||
+      stage.contentSha256 !== item.sourceSha256
+    ) {
+      throw new WorkspaceEditorialPublishError(
+        "STAGE_CONFLICT",
+        "Published run no longer resolves to its exact Editorial stage evidence."
+      );
+    }
+    const [episode] = await db
+      .select()
+      .from(episodes)
+      .where(eq(episodes.id, stage.episodeId))
+      .limit(1);
+    if (!episode) {
+      throw new WorkspaceEditorialPublishError(
+        "STAGE_CONFLICT",
+        "Published run references an Editorial Episode that no longer exists."
+      );
+    }
+    resolved.push({ item, stage, episode });
   }
-  const [episode] = await db.select().from(episodes)
-    .where(eq(episodes.id, stage.episodeId)).limit(1);
-  const [outbox] = await db.select().from(workspaceOutbox)
-    .where(eq(workspaceOutbox.publishRunId, input.runId))
-    .orderBy(desc(workspaceOutbox.id)).limit(1);
 
+  const first = resolved[0];
   if (
-    runContext.run.status !== "published" ||
-    item.status !== "published" ||
-    !item.providerReceipt ||
-    outbox?.status !== "delivered" ||
-    episode?.isPublished !== true
+    !first ||
+    resolved.some(
+      row =>
+        row.stage.workItemId !== first.stage.workItemId ||
+        row.stage.draftId !== first.stage.draftId ||
+        row.stage.approvalId !== first.stage.approvalId
+    )
   ) {
+    throw new WorkspaceEditorialPublishError(
+      "PUBLISH_STATE_CONFLICT",
+      "Editorial publish batch must resolve to one work item, Draft, and approval."
+    );
+  }
+
+  const [outbox] = await db
+    .select()
+    .from(workspaceOutbox)
+    .where(eq(workspaceOutbox.publishRunId, input.runId))
+    .orderBy(desc(workspaceOutbox.id))
+    .limit(1);
+
+  const allDurable =
+    runContext.run.status === "published" &&
+    outbox?.status === "delivered" &&
+    resolved.every(
+      row =>
+        row.item.status === "published" &&
+        Boolean(row.item.providerReceipt) &&
+        row.episode.isPublished === true
+    );
+  if (!allDurable) {
     return {
       matched: true as const,
       projected: false as const,
       reason: "PUBLISH_NOT_DURABLE" as const,
+      itemCount: resolved.length,
+      durableItemCount: resolved.filter(
+        row =>
+          row.item.status === "published" &&
+          Boolean(row.item.providerReceipt) &&
+          row.episode.isPublished === true
+      ).length,
     };
   }
 
@@ -454,7 +566,7 @@ export async function reconcileEditorialPublishRun(input: {
       .from(workspaceEditorialWorkItems)
       .innerJoin(workspaceKanbanCards, eq(workspaceEditorialWorkItems.cardId, workspaceKanbanCards.id))
       .innerJoin(workspaceKanbanColumns, eq(workspaceKanbanCards.columnId, workspaceKanbanColumns.id))
-      .where(eq(workspaceEditorialWorkItems.id, stage.workItemId))
+      .where(eq(workspaceEditorialWorkItems.id, first.stage.workItemId))
       .for("update")
       .limit(1);
     if (!context) {
@@ -473,12 +585,12 @@ export async function reconcileEditorialPublishRun(input: {
       );
     }
     const projected = await projectEditorialQcColumn(tx, {
-      workItemId: stage.workItemId,
-      expectedDraftId: stage.draftId,
+      workItemId: first.stage.workItemId,
+      expectedDraftId: first.stage.draftId,
       targetColumnKey: "published",
-      actorUserId: stage.stagedByUserId,
-      reason: `Durable Controlled Publish run #${input.runId} delivered a provider receipt.`,
-      idempotencyKey: `editorial-published:${input.runId}:${stage.id}`,
+      actorUserId: first.stage.stagedByUserId,
+      reason: `Durable Controlled Publish run #${input.runId} delivered ${resolved.length} provider receipt(s).`,
+      idempotencyKey: `editorial-published:${input.runId}:${first.stage.workItemId}`,
     });
     if ((projected as any).reason) {
       throw new WorkspaceEditorialPublishError(
@@ -493,10 +605,14 @@ export async function reconcileEditorialPublishRun(input: {
     matched: true as const,
     projected: true as const,
     projection,
-    stageId: stage.id,
-    workItemId: stage.workItemId,
-    episodeId: stage.episodeId,
+    stageId: first.stage.id,
+    stageIds: resolved.map(row => row.stage.id),
+    workItemId: first.stage.workItemId,
+    episodeId: first.stage.episodeId,
+    episodeIds: resolved.map(row => row.stage.episodeId),
     publishRunId: input.runId,
-    providerReceipt: item.providerReceipt,
+    providerReceipt: first.item.providerReceipt,
+    providerReceipts: resolved.map(row => row.item.providerReceipt),
+    itemCount: resolved.length,
   };
 }

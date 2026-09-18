@@ -4,6 +4,7 @@ import {
   episodes,
   novels,
   users,
+  workspaceKanbanCards,
   workspaceWorkspaces,
 } from "../../drizzle/schema";
 import { assertSafeTestDatabaseUrl } from "../test-helpers/testDatabaseGuard";
@@ -33,6 +34,7 @@ describe.sequential("Workspace Editorial Kanban B1/B2 integration", () => {
     const owner = await createTestUser({ role: "admin" });
     const novel = await createTestNovel();
     const workspace = await createWorkspace(owner.id, "Editorial B1");
+    let boardId: number | null = null;
 
     try {
       await bindPublicationNovel({
@@ -45,6 +47,7 @@ describe.sequential("Workspace Editorial Kanban B1/B2 integration", () => {
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
       });
+      boardId = first?.board.id ?? null;
       const second = await ensureEditorialBoard({
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
@@ -93,6 +96,11 @@ describe.sequential("Workspace Editorial Kanban B1/B2 integration", () => {
       );
       expect(options.find(option => option.id === novel.id)?.bound).toBe(true);
     } finally {
+      if (boardId) {
+        await db
+          .delete(workspaceKanbanCards)
+          .where(eq(workspaceKanbanCards.boardId, boardId));
+      }
       await db
         .delete(workspaceWorkspaces)
         .where(eq(workspaceWorkspaces.id, workspace.workspaceId));
@@ -111,6 +119,7 @@ describe.sequential("Workspace Editorial Kanban B1/B2 integration", () => {
     const outsider = await createTestUser();
     const workspace = await createWorkspace(owner.id, "Editorial B2");
     let createdNovelId: number | undefined;
+    let boardId: number | null = null;
 
     try {
       const createdNovel = await createWorkspacePublicationNovel({
@@ -125,6 +134,7 @@ describe.sequential("Workspace Editorial Kanban B1/B2 integration", () => {
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
       });
+      boardId = board?.board.id ?? null;
       const storyCard = board?.columns.flatMap(column => column.cards)
         .find(card => card.workItemType === "NEW_STORY");
       expect(storyCard?.workItemId).toBeTruthy();
@@ -207,6 +217,11 @@ describe.sequential("Workspace Editorial Kanban B1/B2 integration", () => {
         .where(eq(episodes.novelId, createdNovel.novelId));
       expect(publicationEpisodes).toHaveLength(0);
     } finally {
+      if (boardId) {
+        await db
+          .delete(workspaceKanbanCards)
+          .where(eq(workspaceKanbanCards.boardId, boardId));
+      }
       await db
         .delete(workspaceWorkspaces)
         .where(eq(workspaceWorkspaces.id, workspace.workspaceId));

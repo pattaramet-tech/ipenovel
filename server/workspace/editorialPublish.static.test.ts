@@ -11,8 +11,10 @@ describe("IPE-055-G Controlled Publish static boundaries", () => {
     expect(service).toContain("requestPublishExecution");
     expect(service).toContain("workspacePublishItems");
     expect(service).toContain("workspaceOutbox");
-    expect(service).toContain("const expectedItemKey = editorialItemKey(stageId, episodeId)");
-    expect(service).toContain("row.item.itemKey === expectedItemKey");
+    expect(service).toContain("loadMatchingRunBatch");
+    expect(service).toContain("editorialItemKey(stage.id, stage.episodeId)");
+    expect(service).toContain("items: state.stages.map");
+    expect(service).toContain("editorialStageSetSha256");
     expect(service).not.toMatch(/workspaceAi|openai|gemini|fetch\(/i);
   });
 
@@ -26,19 +28,19 @@ describe("IPE-055-G Controlled Publish static boundaries", () => {
     expect(execute).toBeGreaterThan(preflight);
   });
 
-  it("projects Published only after durable publish evidence agrees", () => {
+  it("projects Published only after every batch item has durable receipt + reader visibility", () => {
     const service = source("server/workspace/editorialPublish.service.ts");
-    const run = service.indexOf('runContext.run.status !== "published"');
-    const item = service.indexOf('item.status !== "published"');
-    const receipt = service.indexOf("!item.providerReceipt");
-    const outbox = service.indexOf('outbox?.status !== "delivered"');
-    const visible = service.indexOf("episode?.isPublished !== true");
+    const run = service.indexOf('runContext.run.status === "published"');
+    const outbox = service.indexOf('outbox?.status === "delivered"');
+    const item = service.indexOf('row.item.status === "published"');
+    const receipt = service.indexOf("Boolean(row.item.providerReceipt)");
+    const visible = service.indexOf("row.episode.isPublished === true");
     const projection = service.indexOf('targetColumnKey: "published"');
     expect(run).toBeGreaterThan(-1);
-    expect(item).toBeGreaterThan(run);
+    expect(outbox).toBeGreaterThan(run);
+    expect(item).toBeGreaterThan(outbox);
     expect(receipt).toBeGreaterThan(item);
-    expect(outbox).toBeGreaterThan(receipt);
-    expect(visible).toBeGreaterThan(outbox);
+    expect(visible).toBeGreaterThan(receipt);
     expect(projection).toBeGreaterThan(visible);
   });
 

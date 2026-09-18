@@ -1019,9 +1019,8 @@ export const workspaceRouter = router({
     requestPublish: adminProcedure
       .input(workspaceIdInput.extend({
         workItemId: z.number().int().positive(),
-        expectedStageId: z.number().int().positive(),
+        expectedStageSetSha256: z.string().trim().length(64),
         expectedStagedDraftSha256: z.string().trim().length(64),
-        expectedEpisodeStateSha256: z.string().trim().length(64),
         expectedCutoverEpoch: z.number().int().positive(),
         expectedOwnershipVersion: z.number().int().positive(),
       }))

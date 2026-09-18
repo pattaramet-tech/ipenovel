@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, asc, desc, eq } from "drizzle-orm";
 import {
   episodes,
@@ -18,12 +19,14 @@ import {
 import { getDb } from "../db";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import {
+  analyzeEditorialEpisodeDraftBatch,
   buildEditorialEpisodeDraftPlan,
   editorialApprovalPayloadSha256,
   EditorialApprovalDomainError,
   editorialEpisodeStagePayloadSha256,
   editorialEpisodeStateSha256,
   editorialQcEvidenceSha256,
+  type EditorialEpisodeDraftBatchPlan,
   type EditorialEpisodeDraftPlan,
 } from "./editorialApproval.domain";
 import { EDITORIAL_BOARD_SLUG } from "./editorialBoard.domain";
@@ -76,6 +79,13 @@ function isDuplicateKey(error: unknown) {
     value?.cause?.code === "ER_DUP_ENTRY" ||
     value?.cause?.errno === 1062
   );
+}
+
+function stageItemIdempotencyKey(base: string, episodeNumber: string) {
+  const digest = createHash("sha256")
+    .update(`${base}\n${episodeNumber}`, "utf8")
+    .digest("hex");
+  return `editorial-stage-item:${digest}`;
 }
 
 async function database() {
@@ -290,8 +300,7 @@ async function currentQcEvidence(
   };
 }
 
-function stagePlanSummary(plan: EditorialEpisodeDraftPlan | null) {
-  if (!plan) return null;
+function stagePlanItemSummary(plan: EditorialEpisodeDraftPlan) {
   return {
     episodeNumber: plan.episodeNumber,
     title: plan.title,
@@ -301,6 +310,23 @@ function stagePlanSummary(plan: EditorialEpisodeDraftPlan | null) {
     sourceTabTitle: plan.sourceTabTitle,
     sourceTitleLine: plan.sourceTitleLine,
     contentSha256: plan.contentSha256,
+  };
+}
+
+function stagePlanSummary(plan: EditorialEpisodeDraftBatchPlan | null) {
+  if (!plan) return null;
+  const first = plan.items[0] ?? null;
+  return {
+    mode: plan.mode,
+    requestedEpisodeNumber: plan.requestedEpisodeNumber,
+    itemCount: plan.items.length,
+    expectedCount: plan.expectedEpisodeNumbers.length,
+    expectedEpisodeNumbers: plan.expectedEpisodeNumbers,
+    items: plan.items.map(stagePlanItemSummary),
+    anomalies: plan.anomalies,
+    blockers: plan.blockers,
+    ready: plan.ready,
+    ...(first ? stagePlanItemSummary(first) : {}),
   };
 }
 
@@ -317,17 +343,25 @@ async function latestApproval(db: any, workItemId: number) {
   return approval ?? null;
 }
 
-async function latestStage(db: any, workItemId: number) {
-  const [stage] = await db
+async function stagesForApproval(
+  db: any,
+  workItemId: number,
+  approvalId: number | null
+) {
+  if (!approvalId) return [];
+  return db
     .select()
     .from(workspaceEditorialEpisodeStages)
-    .where(eq(workspaceEditorialEpisodeStages.workItemId, workItemId))
-    .orderBy(
-      desc(workspaceEditorialEpisodeStages.createdAt),
-      desc(workspaceEditorialEpisodeStages.id)
+    .where(
+      and(
+        eq(workspaceEditorialEpisodeStages.workItemId, workItemId),
+        eq(workspaceEditorialEpisodeStages.approvalId, approvalId)
+      )
     )
-    .limit(1);
-  return stage ?? null;
+    .orderBy(
+      asc(workspaceEditorialEpisodeStages.episodeNumber),
+      asc(workspaceEditorialEpisodeStages.id)
+    );
 }
 
 function currentApprovalStatus(input: {
@@ -357,49 +391,74 @@ function currentApprovalStatus(input: {
   return { valid: true, reason: null };
 }
 
-async function episodeForStage(db: any, stage: any) {
-  if (!stage) return null;
-  const [episode] = await db
-    .select()
-    .from(episodes)
-    .where(eq(episodes.id, stage.episodeId))
-    .limit(1);
-  return episode ?? null;
+async function episodesForStages(db: any, stages: any[]) {
+  const result = [];
+  for (const stage of stages) {
+    const [episode] = await db
+      .select()
+      .from(episodes)
+      .where(eq(episodes.id, stage.episodeId))
+      .limit(1);
+    result.push(episode ?? null);
+  }
+  return result;
 }
 
-function currentStageStatus(input: {
-  stage: any;
+function currentStageBatchStatus(input: {
+  stages: any[];
   approvalStatus: ReturnType<typeof currentApprovalStatus>;
   approval: any;
-  episode: any;
+  episodes: any[];
+  plan: EditorialEpisodeDraftBatchPlan | null;
 }) {
-  if (!input.stage) {
+  if (!input.approvalStatus.valid || !input.approval) {
+    return { valid: false, reason: "APPROVAL_CHANGED" as const };
+  }
+  if (!input.plan?.ready) {
+    return { valid: false, reason: "STAGE_PLAN_INVALID" as const };
+  }
+  if (input.stages.length === 0) {
     return { valid: false, reason: "STAGE_REQUIRED" as const };
   }
   if (
-    !input.approvalStatus.valid ||
-    !input.approval ||
-    input.stage.approvalId !== input.approval.id
+    input.stages.length !== input.plan.items.length ||
+    input.episodes.length !== input.plan.items.length
   ) {
-    return { valid: false, reason: "APPROVAL_CHANGED" as const };
+    return { valid: false, reason: "STAGE_BATCH_INCOMPLETE" as const };
   }
-  if (!input.episode) {
-    return { valid: false, reason: "EPISODE_MISSING" as const };
-  }
-  if (input.episode.isPublished) {
-    return { valid: false, reason: "EPISODE_PUBLISHED" as const };
-  }
-  const currentState = editorialEpisodeStateSha256({
-    novelId: input.episode.novelId,
-    episodeNumber: input.episode.episodeNumber,
-    title: input.episode.title,
-    content: input.episode.content,
-    contentFormat: input.episode.contentFormat,
-    wordCount: input.episode.wordCount,
-    isPublished: input.episode.isPublished,
-  });
-  if (currentState !== input.stage.episodeStateSha256) {
-    return { valid: false, reason: "EPISODE_DRIFTED" as const };
+
+  const planByEpisode = new Map(
+    input.plan.items.map(plan => [plan.episodeNumber, plan] as const)
+  );
+  for (let index = 0; index < input.stages.length; index += 1) {
+    const stage = input.stages[index];
+    const episode = input.episodes[index];
+    const plan = planByEpisode.get(stage.episodeNumber);
+    if (!plan || stage.approvalId !== input.approval.id) {
+      return { valid: false, reason: "APPROVAL_CHANGED" as const };
+    }
+    if (!episode) {
+      return { valid: false, reason: "EPISODE_MISSING" as const };
+    }
+    if (episode.isPublished) {
+      return { valid: false, reason: "EPISODE_PUBLISHED" as const };
+    }
+    const currentState = editorialEpisodeStateSha256({
+      novelId: episode.novelId,
+      episodeNumber: episode.episodeNumber,
+      title: episode.title,
+      content: episode.content,
+      contentFormat: episode.contentFormat,
+      wordCount: episode.wordCount,
+      isPublished: episode.isPublished,
+    });
+    if (
+      currentState !== stage.episodeStateSha256 ||
+      stage.contentSha256 !== plan.contentSha256 ||
+      stage.episodeId !== episode.id
+    ) {
+      return { valid: false, reason: "EPISODE_DRIFTED" as const };
+    }
   }
   return { valid: true, reason: null };
 }
@@ -445,31 +504,43 @@ export async function getEditorialApprovalReadModel(input: {
   );
   const approval = await latestApproval(db, input.workItemId);
   const approvalStatus = currentApprovalStatus({ approval, draft, qc });
-  const stage = await latestStage(db, input.workItemId);
-  const episode = await episodeForStage(db, stage);
-  const stageStatus = currentStageStatus({
-    stage,
+  const tabs = await loadDraftTabs(db, draft.id);
+  const batchPlan = analyzeEditorialEpisodeDraftBatch({
+    workItemType: context.workItem.workItemType,
+    episodeNumber: context.workItem.episodeNumber,
+    episodeTitle: context.workItem.episodeTitle,
+    tabs,
+  });
+  const stages = await stagesForApproval(
+    db,
+    input.workItemId,
+    approval?.id ?? null
+  );
+  const stageEpisodesRaw = await episodesForStages(db, stages);
+  const stageStatus = currentStageBatchStatus({
+    stages,
     approvalStatus,
     approval,
-    episode,
+    episodes: stageEpisodesRaw,
+    plan: batchPlan,
   });
-
-  let plan: EditorialEpisodeDraftPlan | null = null;
-  let stagePlanError: string | null = null;
-  try {
-    const tabs = await loadDraftTabs(db, draft.id);
-    plan = buildEditorialEpisodeDraftPlan({
-      workItemType: context.workItem.workItemType,
-      episodeNumber: context.workItem.episodeNumber,
-      episodeTitle: context.workItem.episodeTitle,
-      tabs,
-    });
-  } catch (error) {
-    stagePlanError =
-      error instanceof EditorialApprovalDomainError
-        ? error.message
-        : "Episode staging plan could not be derived.";
-  }
+  const stageEpisodes = stageEpisodesRaw.map((episode: any) =>
+    episode
+      ? {
+          id: episode.id,
+          novelId: episode.novelId,
+          episodeNumber: episode.episodeNumber,
+          title: episode.title,
+          contentFormat: episode.contentFormat,
+          wordCount: episode.wordCount,
+          isPublished: episode.isPublished,
+          publishedAt: episode.publishedAt,
+        }
+      : null
+  );
+  const stagePlanError = batchPlan.ready
+    ? null
+    : batchPlan.blockers.map(item => item.message).join(" · ");
 
   return {
     latestDraft: draft,
@@ -482,21 +553,12 @@ export async function getEditorialApprovalReadModel(input: {
     },
     approval,
     approvalStatus,
-    stage,
-    stageEpisode: episode
-      ? {
-          id: episode.id,
-          novelId: episode.novelId,
-          episodeNumber: episode.episodeNumber,
-          title: episode.title,
-          contentFormat: episode.contentFormat,
-          wordCount: episode.wordCount,
-          isPublished: episode.isPublished,
-          publishedAt: episode.publishedAt,
-        }
-      : null,
+    stages,
+    stageEpisodes,
+    stage: stages[0] ?? null,
+    stageEpisode: stageEpisodes[0] ?? null,
     stageStatus,
-    stagePlan: stagePlanSummary(plan),
+    stagePlan: stagePlanSummary(batchPlan),
     stagePlanError,
     readyToPublish: Boolean(stageStatus.valid),
   };
@@ -675,7 +737,6 @@ export async function stageEditorialEpisodeDraft(input: {
         "Editorial work item was removed before Episode staging."
       );
     }
-
     const context = await requireWorkItem(
       tx,
       input.actorUserId,
@@ -732,62 +793,215 @@ export async function stageEditorialEpisodeDraft(input: {
     }
 
     const tabs = await loadDraftTabs(tx, draft.id);
-    let plan: EditorialEpisodeDraftPlan;
-    try {
-      plan = buildEditorialEpisodeDraftPlan({
-        workItemType: context.workItem.workItemType,
-        episodeNumber: context.workItem.episodeNumber,
-        episodeTitle: context.workItem.episodeTitle,
-        tabs,
-      });
-    } catch (error) {
-      if (error instanceof EditorialApprovalDomainError) {
-        throw new WorkspaceEditorialApprovalError(
-          "STAGE_INVALID",
-          error.message
-        );
-      }
-      throw error;
+    const batchPlan = analyzeEditorialEpisodeDraftBatch({
+      workItemType: context.workItem.workItemType,
+      episodeNumber: context.workItem.episodeNumber,
+      episodeTitle: context.workItem.episodeTitle,
+      tabs,
+    });
+    if (!batchPlan.ready) {
+      throw new WorkspaceEditorialApprovalError(
+        "STAGE_INVALID",
+        batchPlan.blockers.map(item => item.message).join(" · ") ||
+          "Episode range mapping is ambiguous."
+      );
     }
 
     const novelId = context.workspaceNovel.novelId;
-    const payloadSha256 = editorialEpisodeStagePayloadSha256({
-      workItemId: input.workItemId,
-      approvalId: approval.id,
-      draftId: draft.id,
-      draftSha256: draft.draftSha256,
-      qcEvidenceSha256: qc.qcEvidenceSha256,
-      novelId,
-      plan,
-    });
+    const staged: Array<{ stage: any; episode: any; replayed: boolean }> = [];
 
-    const [replayByKey] = await tx
-      .select()
-      .from(workspaceEditorialEpisodeStages)
-      .where(
-        and(
-          eq(workspaceEditorialEpisodeStages.workItemId, input.workItemId),
-          eq(
-            workspaceEditorialEpisodeStages.idempotencyKey,
-            input.idempotencyKey
+    for (const plan of batchPlan.items) {
+      const payloadSha256 = editorialEpisodeStagePayloadSha256({
+        workItemId: input.workItemId,
+        approvalId: approval.id,
+        draftId: draft.id,
+        draftSha256: draft.draftSha256,
+        qcEvidenceSha256: qc.qcEvidenceSha256,
+        novelId,
+        plan,
+      });
+      const itemIdempotencyKey = stageItemIdempotencyKey(
+        input.idempotencyKey,
+        plan.episodeNumber
+      );
+
+      const [existingStage] = await tx
+        .select()
+        .from(workspaceEditorialEpisodeStages)
+        .where(
+          and(
+            eq(workspaceEditorialEpisodeStages.approvalId, approval.id),
+            eq(workspaceEditorialEpisodeStages.episodeNumber, plan.episodeNumber)
           )
         )
-      )
-      .limit(1);
-    const replayStage = async (stage: any) => {
+        .limit(1)
+        .for("update");
+
+      if (existingStage) {
+        if (
+          existingStage.payloadSha256 !== payloadSha256 ||
+          existingStage.stagedByUserId !== input.actorUserId ||
+          existingStage.stagedDraftSha256 !== draft.draftSha256 ||
+          existingStage.qcEvidenceSha256 !== qc.qcEvidenceSha256
+        ) {
+          throw new WorkspaceEditorialApprovalError(
+            "EPISODE_CONFLICT",
+            `Episode ${plan.episodeNumber} was already staged from different evidence.`
+          );
+        }
+        const [episode] = await tx
+          .select()
+          .from(episodes)
+          .where(eq(episodes.id, existingStage.episodeId))
+          .limit(1)
+          .for("update");
+        if (!episode) {
+          throw new WorkspaceEditorialApprovalError(
+            "EPISODE_CONFLICT",
+            `Previously staged Episode ${plan.episodeNumber} no longer exists.`
+          );
+        }
+        const currentState = editorialEpisodeStateSha256({
+          novelId: episode.novelId,
+          episodeNumber: episode.episodeNumber,
+          title: episode.title,
+          content: episode.content,
+          contentFormat: episode.contentFormat,
+          wordCount: episode.wordCount,
+          isPublished: episode.isPublished,
+        });
+        if (
+          episode.isPublished ||
+          currentState !== existingStage.episodeStateSha256 ||
+          existingStage.contentSha256 !== plan.contentSha256
+        ) {
+          throw new WorkspaceEditorialApprovalError(
+            episode.isPublished ? "EPISODE_PUBLISHED" : "EPISODE_CONFLICT",
+            `Previously staged Episode ${plan.episodeNumber} is no longer safe to replay.`
+          );
+        }
+        staged.push({ stage: existingStage, episode, replayed: true });
+        continue;
+      }
+
+      const [existingEpisode] = await tx
+        .select()
+        .from(episodes)
+        .where(
+          and(
+            eq(episodes.novelId, novelId),
+            eq(episodes.episodeNumber, plan.episodeNumber)
+          )
+        )
+        .limit(1)
+        .for("update");
+
+      let episodeId: number;
+      if (!existingEpisode) {
+        try {
+          episodeId = insertId(
+            await tx.insert(episodes).values({
+              novelId,
+              episodeNumber: plan.episodeNumber,
+              title: plan.title,
+              content: plan.content,
+              contentFormat: plan.contentFormat,
+              saleMode: "chapter",
+              isPublished: false,
+              publishedAt: null,
+              wordCount: plan.wordCount,
+            })
+          );
+        } catch (error) {
+          if (isDuplicateKey(error)) {
+            throw new WorkspaceEditorialApprovalError(
+              "EPISODE_CONFLICT",
+              `Episode ${plan.episodeNumber} was staged concurrently.`
+            );
+          }
+          throw error;
+        }
+      } else {
+        if (existingEpisode.isPublished) {
+          throw new WorkspaceEditorialApprovalError(
+            "EPISODE_PUBLISHED",
+            `Published Episode ${plan.episodeNumber} already exists.`
+          );
+        }
+        const [previousStage] = await tx
+          .select()
+          .from(workspaceEditorialEpisodeStages)
+          .where(
+            and(
+              eq(workspaceEditorialEpisodeStages.workItemId, input.workItemId),
+              eq(workspaceEditorialEpisodeStages.episodeId, existingEpisode.id)
+            )
+          )
+          .orderBy(
+            desc(workspaceEditorialEpisodeStages.createdAt),
+            desc(workspaceEditorialEpisodeStages.id)
+          )
+          .limit(1);
+        if (!previousStage) {
+          throw new WorkspaceEditorialApprovalError(
+            "EPISODE_CONFLICT",
+            `Unpublished Episode ${plan.episodeNumber} is not owned by this Editorial work item.`
+          );
+        }
+        const existingState = editorialEpisodeStateSha256({
+          novelId: existingEpisode.novelId,
+          episodeNumber: existingEpisode.episodeNumber,
+          title: existingEpisode.title,
+          content: existingEpisode.content,
+          contentFormat: existingEpisode.contentFormat,
+          wordCount: existingEpisode.wordCount,
+          isPublished: existingEpisode.isPublished,
+        });
+        if (existingState !== previousStage.episodeStateSha256) {
+          throw new WorkspaceEditorialApprovalError(
+            "EPISODE_CONFLICT",
+            `Unpublished Episode ${plan.episodeNumber} drifted after its previous Workspace stage.`
+          );
+        }
+        const update = await tx
+          .update(episodes)
+          .set({
+            title: plan.title,
+            content: plan.content,
+            contentFormat: plan.contentFormat,
+            wordCount: plan.wordCount,
+            isPublished: false,
+            publishedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(episodes.id, existingEpisode.id),
+              eq(episodes.novelId, novelId),
+              eq(episodes.isPublished, false)
+            )
+          );
+        if (affectedRows(update) !== 1) {
+          throw new WorkspaceEditorialApprovalError(
+            "EPISODE_CONFLICT",
+            `Episode ${plan.episodeNumber} changed concurrently during staging.`
+          );
+        }
+        episodeId = existingEpisode.id;
+      }
+
       const [episode] = await tx
         .select()
         .from(episodes)
-        .where(eq(episodes.id, stage.episodeId))
-        .limit(1)
-        .for("update");
-      if (!episode) {
+        .where(eq(episodes.id, episodeId))
+        .limit(1);
+      if (!episode || episode.novelId !== novelId || episode.isPublished) {
         throw new WorkspaceEditorialApprovalError(
           "EPISODE_CONFLICT",
-          "Previously staged Episode no longer exists."
+          `Staged Episode ${plan.episodeNumber} could not be verified as unpublished.`
         );
       }
-      const currentState = editorialEpisodeStateSha256({
+      const episodeStateSha256 = editorialEpisodeStateSha256({
         novelId: episode.novelId,
         episodeNumber: episode.episodeNumber,
         title: episode.title,
@@ -796,226 +1010,66 @@ export async function stageEditorialEpisodeDraft(input: {
         wordCount: episode.wordCount,
         isPublished: episode.isPublished,
       });
-      if (currentState !== stage.episodeStateSha256) {
-        throw new WorkspaceEditorialApprovalError(
-          episode.isPublished ? "EPISODE_PUBLISHED" : "EPISODE_CONFLICT",
-          episode.isPublished
-            ? "Episode is already published."
-            : "Previously staged Episode changed outside this Workspace stage."
-        );
-      }
-      const projection = await projectEditorialQcColumn(tx, {
-        workItemId: input.workItemId,
-        expectedDraftId: draft.id,
-        targetColumnKey: "ready_to_publish",
-        actorUserId: input.actorUserId,
-        reason: "editorial_episode_stage_reconciled",
-        idempotencyKey: `editorial-stage-${stage.id}-ready`,
-      });
-      if ((projection as any).reason) {
-        throw new WorkspaceEditorialApprovalError(
-          "KANBAN_CONFLICT",
-          "Episode stage is valid but the ready-to-publish Kanban projection could not be reconciled."
-        );
-      }
-      return { stage, episode, replayed: true };
-    };
 
-    if (replayByKey) {
-      if (
-        replayByKey.payloadSha256 !== payloadSha256 ||
-        replayByKey.stagedByUserId !== input.actorUserId
-      ) {
-        throw new WorkspaceEditorialApprovalError(
-          "EPISODE_CONFLICT",
-          "Episode staging idempotency key was reused with another payload."
-        );
-      }
-      return replayStage(replayByKey);
-    }
-
-    const [stageForApproval] = await tx
-      .select()
-      .from(workspaceEditorialEpisodeStages)
-      .where(eq(workspaceEditorialEpisodeStages.approvalId, approval.id))
-      .limit(1);
-    if (stageForApproval) {
-      if (stageForApproval.payloadSha256 !== payloadSha256) {
-        throw new WorkspaceEditorialApprovalError(
-          "EPISODE_CONFLICT",
-          "This approval was already staged with different Episode metadata."
-        );
-      }
-      return replayStage(stageForApproval);
-    }
-
-    const [existingEpisode] = await tx
-      .select()
-      .from(episodes)
-      .where(
-        and(
-          eq(episodes.novelId, novelId),
-          eq(episodes.episodeNumber, plan.episodeNumber)
-        )
-      )
-      .limit(1)
-      .for("update");
-
-    let episodeId: number;
-    if (!existingEpisode) {
-      try {
-        episodeId = insertId(
-          await tx.insert(episodes).values({
-            novelId,
-            episodeNumber: plan.episodeNumber,
-            title: plan.title,
-            content: plan.content,
-            contentFormat: plan.contentFormat,
-            saleMode: "chapter",
-            isPublished: false,
-            publishedAt: null,
-            wordCount: plan.wordCount,
-          })
-        );
-      } catch (error) {
-        if (isDuplicateKey(error)) {
-          throw new WorkspaceEditorialApprovalError(
-            "EPISODE_CONFLICT",
-            "Another Episode with this novel/episode number was staged concurrently."
-          );
-        }
-        throw error;
-      }
-    } else {
-      if (existingEpisode.isPublished) {
-        throw new WorkspaceEditorialApprovalError(
-          "EPISODE_PUBLISHED",
-          "A published Episode already uses this novel/episode number."
-        );
-      }
-      const [previousStage] = await tx
+      const stageId = insertId(
+        await tx.insert(workspaceEditorialEpisodeStages).values({
+          workItemId: input.workItemId,
+          approvalId: approval.id,
+          draftId: draft.id,
+          stagedDraftSha256: draft.draftSha256,
+          qcEvidenceSha256: qc.qcEvidenceSha256,
+          episodeId,
+          novelId,
+          episodeNumber: plan.episodeNumber,
+          episodeTitle: plan.title,
+          contentSha256: plan.contentSha256,
+          episodeStateSha256,
+          payloadSha256,
+          idempotencyKey: itemIdempotencyKey,
+          stagedByUserId: input.actorUserId,
+        })
+      );
+      const [stage] = await tx
         .select()
         .from(workspaceEditorialEpisodeStages)
-        .where(
-          and(
-            eq(workspaceEditorialEpisodeStages.workItemId, input.workItemId),
-            eq(workspaceEditorialEpisodeStages.episodeId, existingEpisode.id)
-          )
-        )
-        .orderBy(
-          desc(workspaceEditorialEpisodeStages.createdAt),
-          desc(workspaceEditorialEpisodeStages.id)
-        )
+        .where(eq(workspaceEditorialEpisodeStages.id, stageId))
         .limit(1);
-      if (!previousStage) {
-        throw new WorkspaceEditorialApprovalError(
-          "EPISODE_CONFLICT",
-          "An unpublished Episode already uses this episode number but is not owned by this editorial work item."
-        );
-      }
-      const existingState = editorialEpisodeStateSha256({
-        novelId: existingEpisode.novelId,
-        episodeNumber: existingEpisode.episodeNumber,
-        title: existingEpisode.title,
-        content: existingEpisode.content,
-        contentFormat: existingEpisode.contentFormat,
-        wordCount: existingEpisode.wordCount,
-        isPublished: existingEpisode.isPublished,
-      });
-      if (existingState !== previousStage.episodeStateSha256) {
-        throw new WorkspaceEditorialApprovalError(
-          "EPISODE_CONFLICT",
-          "Unpublished Episode changed after the previous Workspace stage; refusing to overwrite it."
-        );
-      }
-      const update = await tx
-        .update(episodes)
-        .set({
-          title: plan.title,
-          content: plan.content,
-          contentFormat: plan.contentFormat,
-          wordCount: plan.wordCount,
-          isPublished: false,
-          publishedAt: null,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(episodes.id, existingEpisode.id),
-            eq(episodes.novelId, novelId),
-            eq(episodes.isPublished, false)
-          )
-        );
-      if (affectedRows(update) !== 1) {
-        throw new WorkspaceEditorialApprovalError(
-          "EPISODE_CONFLICT",
-          "Episode changed concurrently during staging."
-        );
-      }
-      episodeId = existingEpisode.id;
+      staged.push({ stage, episode, replayed: false });
     }
 
-    const [episode] = await tx
-      .select()
-      .from(episodes)
-      .where(eq(episodes.id, episodeId))
-      .limit(1);
-    if (!episode || episode.novelId !== novelId || episode.isPublished) {
+    if (staged.length !== batchPlan.items.length) {
       throw new WorkspaceEditorialApprovalError(
         "EPISODE_CONFLICT",
-        "Staged Episode could not be verified as unpublished."
+        "Episode staging batch was not persisted completely."
       );
     }
-    const episodeStateSha256 = editorialEpisodeStateSha256({
-      novelId: episode.novelId,
-      episodeNumber: episode.episodeNumber,
-      title: episode.title,
-      content: episode.content,
-      contentFormat: episode.contentFormat,
-      wordCount: episode.wordCount,
-      isPublished: episode.isPublished,
-    });
-
-    const stageId = insertId(
-      await tx.insert(workspaceEditorialEpisodeStages).values({
-        workItemId: input.workItemId,
-        approvalId: approval.id,
-        draftId: draft.id,
-        stagedDraftSha256: draft.draftSha256,
-        qcEvidenceSha256: qc.qcEvidenceSha256,
-        episodeId,
-        novelId,
-        episodeNumber: plan.episodeNumber,
-        episodeTitle: plan.title,
-        contentSha256: plan.contentSha256,
-        episodeStateSha256,
-        payloadSha256,
-        idempotencyKey: input.idempotencyKey,
-        stagedByUserId: input.actorUserId,
-      })
-    );
-    const [stage] = await tx
-      .select()
-      .from(workspaceEditorialEpisodeStages)
-      .where(eq(workspaceEditorialEpisodeStages.id, stageId))
-      .limit(1);
 
     const projection = await projectEditorialQcColumn(tx, {
       workItemId: input.workItemId,
       expectedDraftId: draft.id,
       targetColumnKey: "ready_to_publish",
       actorUserId: input.actorUserId,
-      reason: "editorial_episode_staged_from_approved_draft",
-      idempotencyKey: `editorial-stage-${stageId}-ready`,
+      reason:
+        batchPlan.items.length === 1
+          ? "editorial_episode_staged_from_approved_draft"
+          : "editorial_episode_range_staged_from_approved_draft",
+      idempotencyKey: `editorial-stage-batch:${approval.id}:${draft.id}:${draft.draftSha256.slice(0, 24)}`,
     });
     if ((projection as any).reason) {
       throw new WorkspaceEditorialApprovalError(
         "KANBAN_CONFLICT",
-        "Episode was staged but the ready-to-publish Kanban projection could not be validated."
+        "Episode batch was staged but ready-to-publish Kanban projection could not be validated."
       );
     }
 
-    return { stage, episode, replayed: false };
+    return {
+      stages: staged.map(row => row.stage),
+      episodes: staged.map(row => row.episode),
+      stage: staged[0]?.stage ?? null,
+      episode: staged[0]?.episode ?? null,
+      replayed: staged.every(row => row.replayed),
+      batchCount: staged.length,
+    };
   });
 
   return {

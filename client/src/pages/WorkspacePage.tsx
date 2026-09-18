@@ -1702,52 +1702,45 @@ export default function WorkspacePage() {
                     </details>
                   )}
 
-                  <div className="space-y-3 rounded-md border p-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
+                  <details className="rounded-md border">
+                    <summary className="cursor-pointer list-none p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="font-medium">Workspace Editor</div>
-                        <div className="text-xs text-muted-foreground">
-                          แก้ใน Workspace เท่านั้น ทุกการบันทึกสร้าง Draft version/hash ใหม่แบบ CAS และตรวจซ้ำอัตโนมัติ
+                        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                          <span>Draft v{latestEditorialDraft?.version ?? "—"}</span>
+                          <span>SHA {shortHash(latestEditorialDraft?.draftSha256)}</span>
+                          <span>แก้ไข {editorialEditorData?.history?.length ?? 0}</span>
                         </div>
                       </div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        disabled={
-                          !editorialEditorData?.canUndo ||
-                          !latestEditorialDraft ||
-                          undoEditorialEdit.isPending
-                        }
-                        onClick={() => {
-                          if (!latestEditorialDraft) return;
-                          undoEditorialEdit.mutate({
-                            workspaceId: selectedWorkspaceId,
-                            workItemId: selectedSourceWorkItemId,
-                            expectedDraftId: latestEditorialDraft.id,
-                            expectedDraftVersion: latestEditorialDraft.version,
-                            expectedDraftSha256: latestEditorialDraft.draftSha256,
-                            idempotencyKey: `editor-undo:${latestEditorialDraft.id}:${latestEditorialDraft.version}`,
-                          });
-                        }}
-                      >
-                        {undoEditorialEdit.isPending && (
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        )}
-                        Undo last edit
-                      </Button>
-                    </div>
-
-                    <div className="grid gap-2 md:grid-cols-3">
-                      <div className="rounded border p-2 text-sm">
-                        Draft v{latestEditorialDraft?.version ?? "—"}
+                    </summary>
+                    <div className="space-y-3 border-t p-3">
+                      <div className="flex justify-end">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={
+                            !editorialEditorData?.canUndo ||
+                            !latestEditorialDraft ||
+                            undoEditorialEdit.isPending
+                          }
+                          onClick={() => {
+                            if (!latestEditorialDraft) return;
+                            undoEditorialEdit.mutate({
+                              workspaceId: selectedWorkspaceId,
+                              workItemId: selectedSourceWorkItemId,
+                              expectedDraftId: latestEditorialDraft.id,
+                              expectedDraftVersion: latestEditorialDraft.version,
+                              expectedDraftSha256: latestEditorialDraft.draftSha256,
+                              idempotencyKey: `editor-undo:${latestEditorialDraft.id}:${latestEditorialDraft.version}`,
+                            });
+                          }}
+                        >
+                          {undoEditorialEdit.isPending && (
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          )}
+                          Undo
+                        </Button>
                       </div>
-                      <div className="rounded border p-2 text-sm">
-                        SHA {shortHash(latestEditorialDraft?.draftSha256)}
-                      </div>
-                      <div className="rounded border p-2 text-sm">
-                        Edit history {editorialEditorData?.history?.length ?? 0}
-                      </div>
-                    </div>
 
                     {editorTarget && !editorTarget.findingId && (
                       <div className="space-y-2 rounded-md border bg-muted/20 p-3">
@@ -1848,6 +1841,7 @@ export default function WorkspacePage() {
                       ))}
                     </div>
                   </div>
+                  </details>
 
                   <div className="space-y-3 rounded-md border p-3">
                     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1892,24 +1886,70 @@ export default function WorkspacePage() {
                       <div className="rounded border p-2 text-sm">
                         Episode stage {editorialApprovalData?.stageStatus?.valid ? "ready" : "not ready"}
                         <div className="text-xs text-muted-foreground">
-                          {editorialApprovalData?.stageEpisode
-                            ? `#${editorialApprovalData.stageEpisode.id} · unpublished=${!editorialApprovalData.stageEpisode.isPublished}`
+                          {(editorialApprovalData?.stages?.length ?? 0) > 0
+                            ? `${editorialApprovalData.stages.length} ตอน · unpublished ${editorialApprovalData.stageEpisodes?.filter((episode: any) => episode && !episode.isPublished).length ?? 0}`
                             : editorialApprovalData?.stageStatus?.reason ?? "ยังไม่ stage"}
                         </div>
                       </div>
                     </div>
 
                     {editorialApprovalData?.stagePlan ? (
-                      <div className="rounded-md border bg-muted/20 p-3 text-sm">
-                        <div className="font-medium">
-                          Episode {editorialApprovalData.stagePlan.episodeNumber} · {editorialApprovalData.stagePlan.title}
+                      <div className="space-y-2 rounded-md border bg-muted/20 p-3 text-sm">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="font-medium">
+                            {editorialApprovalData.stagePlan.ready
+                              ? `พร้อม Stage ${editorialApprovalData.stagePlan.itemCount} ตอน`
+                              : "Mapping ยังไม่พร้อม Stage"}
+                          </div>
+                          <span className="text-xs text-muted-foreground">
+                            {editorialApprovalData.stagePlan.requestedEpisodeNumber} · mapped{" "}
+                            {editorialApprovalData.stagePlan.itemCount}/
+                            {editorialApprovalData.stagePlan.expectedCount}
+                          </span>
                         </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {editorialApprovalData.stagePlan.wordCount} words · plain_text · content {shortHash(editorialApprovalData.stagePlan.contentSha256)}
-                        </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          ใช้บรรทัด non-empty แรกเป็น title boundary ตาม Production exporter และ stage เฉพาะเนื้อหาหลัง title
-                        </div>
+
+                        {editorialApprovalData.stagePlan.anomalies?.length > 0 && (
+                          <div className="space-y-1 text-xs">
+                            {editorialApprovalData.stagePlan.anomalies.map(
+                              (anomaly: any, index: number) => (
+                                <div
+                                  key={`${anomaly.code}:${anomaly.episodeNumber ?? anomaly.sourceTabId ?? index}`}
+                                  className={
+                                    anomaly.severity === "blocker"
+                                      ? "font-medium text-destructive"
+                                      : "text-muted-foreground"
+                                  }
+                                >
+                                  {anomaly.severity === "blocker" ? "Blocker" : "Warning"} ·{" "}
+                                  {anomaly.message}
+                                </div>
+                              )
+                            )}
+                          </div>
+                        )}
+
+                        {editorialApprovalData.stagePlan.items?.length > 0 && (
+                          <details className="rounded border bg-background">
+                            <summary className="cursor-pointer px-3 py-2 text-xs font-medium">
+                              Mapping {editorialApprovalData.stagePlan.items.length} ตอน
+                            </summary>
+                            <div className="max-h-72 space-y-1 overflow-auto border-t p-2 text-xs">
+                              {editorialApprovalData.stagePlan.items.map((item: any) => (
+                                <div
+                                  key={item.sourceTabId}
+                                  className="flex flex-wrap justify-between gap-2 rounded px-2 py-1"
+                                >
+                                  <span>
+                                    {item.episodeNumber} → {item.sourceTabTitle}
+                                  </span>
+                                  <span className="text-muted-foreground">
+                                    {item.wordCount} words · {shortHash(item.contentSha256)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        )}
                       </div>
                     ) : (
                       <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
@@ -1956,7 +1996,7 @@ export default function WorkspacePage() {
                         disabled={
                           !editorialApprovalData?.approvalStatus?.valid ||
                           !editorialApprovalData?.approval?.id ||
-                          !editorialApprovalData?.stagePlan ||
+                          !editorialApprovalData?.stagePlan?.ready ||
                           editorialApprovalData?.stageStatus?.valid ||
                           stageEditorialEpisode.isPending
                         }
@@ -1978,14 +2018,18 @@ export default function WorkspacePage() {
                         {stageEditorialEpisode.isPending && (
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                         )}
-                        Stage Episode Draft
+                        {(editorialApprovalData?.stagePlan?.itemCount ?? 1) > 1
+                          ? `Stage ${editorialApprovalData.stagePlan.itemCount} Episode Drafts`
+                          : "Stage Episode Draft"}
                       </Button>
                     </div>
 
                     {editorialApprovalData?.readyToPublish && (
                       <div className="space-y-2 rounded-md border p-3 text-sm">
                         <div>
-                          พร้อมสำหรับขั้น Controlled Publish: Episode #{editorialApprovalData.stageEpisode?.id} ยังเป็น <strong>unpublished</strong> และผูกกับ Draft SHA {shortHash(editorialApprovalData.stage?.stagedDraftSha256)}
+                          พร้อม Controlled Publish{" "}
+                          <strong>{editorialApprovalData.stages?.length ?? 1} ตอน</strong> · unpublished ครบ · Draft SHA{" "}
+                          {shortHash(editorialApprovalData.stage?.stagedDraftSha256)}
                         </div>
                         <div className="text-xs text-muted-foreground">
                           publish owner {(editorialPublish.data as any)?.ownership?.owner ?? "—"} · epoch {(editorialPublish.data as any)?.ownership?.cutoverEpoch ?? "—"} · run #{(editorialPublish.data as any)?.publishRun?.id ?? "ยังไม่สร้าง"} · {(editorialPublish.data as any)?.blocker ?? "พร้อม enqueue"}
@@ -2002,9 +2046,8 @@ export default function WorkspacePage() {
                             requestEditorialPublish.mutate({
                               workspaceId: selectedWorkspaceId,
                               workItemId: selectedSourceWorkItemId,
-                              expectedStageId: publish.stage.id,
+                              expectedStageSetSha256: publish.stageSetSha256,
                               expectedStagedDraftSha256: publish.stage.stagedDraftSha256,
-                              expectedEpisodeStateSha256: publish.stage.episodeStateSha256,
                               expectedCutoverEpoch: publish.ownership.cutoverEpoch,
                               expectedOwnershipVersion: publish.ownership.version,
                             });
