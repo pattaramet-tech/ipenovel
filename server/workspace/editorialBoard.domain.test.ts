@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   EDITORIAL_BOARD_SLUG,
   EDITORIAL_COLUMNS,
+  editorialEpisodeLogicalKey,
   editorialStoryLogicalKey,
   isCanonicalEditorialColumn,
+  normalizeEditorialEpisodeKey,
+  parseEditorialEpisodeLogicalKey,
+  parseEditorialLogicalKey,
   parseEditorialStoryLogicalKey,
 } from "./editorialBoard.domain";
 
@@ -32,6 +36,22 @@ describe("Workspace Editorial board domain", () => {
     });
     expect(parseEditorialStoryLogicalKey("episode:42:10")).toBeNull();
     expect(() => editorialStoryLogicalKey(0)).toThrow();
+  });
+
+  it("uses a normalized durable NEW EPISODE logical identity", () => {
+    expect(normalizeEditorialEpisodeKey("  ตอน  10  ")).toBe("ตอน 10");
+    expect(editorialEpisodeLogicalKey(42, "  ตอน  10  ")).toBe(
+      "episode:42:ตอน 10"
+    );
+    expect(parseEditorialEpisodeLogicalKey("episode:42:ตอน 10")).toEqual({
+      workItemType: "NEW_EPISODE",
+      workspaceNovelId: 42,
+      itemKey: "ตอน 10",
+    });
+    expect(parseEditorialLogicalKey("episode:42:ตอน 10")?.workItemType).toBe(
+      "NEW_EPISODE"
+    );
+    expect(() => editorialEpisodeLogicalKey(42, "   ")).toThrow();
   });
 
   it("detects canonical column drift instead of silently redefining workflow", () => {

@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { nanoid } from "nanoid";
 import {
   novels,
   workspaceMembers,
@@ -21,6 +22,7 @@ export class WorkspaceServiceError extends Error {
       | "DATABASE_UNAVAILABLE"
       | "WORKSPACE_NOT_FOUND"
       | "NOVEL_NOT_FOUND"
+      | "INVALID_NOVEL_INPUT"
       | "MEMBERSHIP_CONFLICT"
       | "INVALID_MEMBERSHIP_CHANGE",
     message: string
@@ -131,6 +133,82 @@ export async function listPublicationNovelOptions(userId: number, workspaceId: n
     ...novel,
     bound: boundNovelIds.has(Number(novel.id)),
   }));
+}
+
+export async function createWorkspacePublicationNovel(input: {
+  actorUserId: number;
+  workspaceId: number;
+  title: string;
+  author?: string;
+  description?: string;
+}) {
+  const db = await database();
+  await requireWorkspace(db, input.workspaceId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
+
+  const title = input.title.trim();
+  if (!title) {
+    throw new WorkspaceServiceError(
+      "INVALID_NOVEL_INPUT",
+      "Novel title is required."
+    );
+  }
+
+  return db.transaction(async (tx: any) => {
+    const slugBase =
+      title
+        .toLowerCase()
+        .replace(/\s+/g, "-")
+        .replace(/[^a-z0-9-]/g, "")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "")
+        .slice(0, 440) || "novel";
+    const slug = `${slugBase}-${nanoid(10)}`;
+    const novelId = insertId(
+      await tx.insert(novels).values({
+        title,
+        author: input.author?.trim() || "",
+        description: input.description?.trim() || "",
+        coverImageUrl: "",
+        slug,
+        publicationStatus: "archived",
+        storyStatus: "ongoing",
+      })
+    );
+    const workspaceNovelId = insertId(
+      await tx.insert(workspaceNovels).values({
+        workspaceId: input.workspaceId,
+        novelId,
+        status: "active",
+      })
+    );
+
+    await tx.insert(workspaceReadOnlyBindings).values({
+      workspaceNovelId,
+      sourceKind: "synthetic",
+      sourceKey: `publication-novel:${novelId}`,
+      displayName: `Synthetic source for ${title}`,
+      role: "source",
+      sequence: 1,
+      status: "active",
+    });
+    await tx.insert(workspaceMigrationRegistry).values(
+      buildInitialMigrationOwnership().map(entry => ({
+        workspaceNovelId,
+        capability: entry.capability,
+        owner: entry.owner,
+        cutoverEpoch: entry.cutoverEpoch,
+        changedBy: input.actorUserId,
+      }))
+    );
+
+    return {
+      novelId,
+      workspaceNovelId,
+      publicationStatus: "archived" as const,
+      storyStatus: "ongoing" as const,
+    };
+  });
 }
 
 export async function addOrUpdateMember(input: {

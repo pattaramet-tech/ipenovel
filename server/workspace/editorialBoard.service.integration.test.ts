@@ -1,21 +1,30 @@
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
-import { novels, users, workspaceWorkspaces } from "../../drizzle/schema";
+import {
+  episodes,
+  novels,
+  users,
+  workspaceWorkspaces,
+} from "../../drizzle/schema";
 import { assertSafeTestDatabaseUrl } from "../test-helpers/testDatabaseGuard";
 import { getTestDb } from "../test-helpers/testDb";
 import { createTestNovel, createTestUser } from "../test-helpers/fixtures";
 import {
+  assignEditorialWorkItem,
+  createEditorialEpisodeWorkItem,
   ensureEditorialBoard,
   getEditorialBoard,
+  listEditorialAssignees,
 } from "./editorialBoard.service";
 import { transitionKanbanCard } from "./checkerKanban.service";
 import {
   bindPublicationNovel,
   createWorkspace,
+  createWorkspacePublicationNovel,
   listPublicationNovelOptions,
 } from "./service";
 
-describe.sequential("Workspace Editorial Kanban B1 integration", () => {
+describe.sequential("Workspace Editorial Kanban B1/B2 integration", () => {
   it("idempotently materializes bound novels as NEW STORY cards and preserves later transitions", async () => {
     if (!process.env.TEST_DATABASE_URL) return;
     assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
@@ -89,6 +98,124 @@ describe.sequential("Workspace Editorial Kanban B1 integration", () => {
         .where(eq(workspaceWorkspaces.id, workspace.workspaceId));
       await db.delete(novels).where(eq(novels.id, novel.id));
       await db.delete(users).where(eq(users.id, owner.id));
+    }
+  });
+
+  it("creates hidden novels, durable NEW EPISODE items, admin assignments and combined history", async () => {
+    if (!process.env.TEST_DATABASE_URL) return;
+    assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
+
+    const db = getTestDb();
+    const owner = await createTestUser({ role: "admin" });
+    const assignee = await createTestUser({ role: "admin" });
+    const outsider = await createTestUser();
+    const workspace = await createWorkspace(owner.id, "Editorial B2");
+    let createdNovelId: number | undefined;
+
+    try {
+      const createdNovel = await createWorkspacePublicationNovel({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        title: "เรื่องใหม่ B2",
+      });
+      createdNovelId = createdNovel.novelId;
+      expect(createdNovel.publicationStatus).toBe("archived");
+
+      const board = await ensureEditorialBoard({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+      });
+      const storyCard = board?.columns.flatMap(column => column.cards)
+        .find(card => card.workItemType === "NEW_STORY");
+      expect(storyCard?.workItemId).toBeTruthy();
+
+      const firstEpisode = await createEditorialEpisodeWorkItem({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workspaceNovelId: createdNovel.workspaceNovelId,
+        episodeNumber: "  ตอน  10 ",
+        episodeTitle: "เริ่มต้น",
+        assigneeUserId: null,
+      });
+      const sameEpisode = await createEditorialEpisodeWorkItem({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workspaceNovelId: createdNovel.workspaceNovelId,
+        episodeNumber: "ตอน 10",
+        episodeTitle: "เริ่มต้น",
+        assigneeUserId: null,
+      });
+      expect(firstEpisode.created).toBe(true);
+      expect(sameEpisode.created).toBe(false);
+
+      const episodeCard = firstEpisode.board?.columns.flatMap(column => column.cards)
+        .find(card => card.workItemType === "NEW_EPISODE");
+      expect(episodeCard?.episodeNumber).toBe("ตอน  10");
+      expect(episodeCard?.episodeTitle).toBe("เริ่มต้น");
+
+      const assigned = await assignEditorialWorkItem({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workItemId: episodeCard!.workItemId,
+        assigneeUserId: assignee.id,
+        expectedVersion: episodeCard!.workItemVersion,
+        idempotencyKey: "b2-assign-1",
+      });
+      expect(assigned.replayed).toBe(false);
+      const replay = await assignEditorialWorkItem({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workItemId: episodeCard!.workItemId,
+        assigneeUserId: assignee.id,
+        expectedVersion: episodeCard!.workItemVersion,
+        idempotencyKey: "b2-assign-1",
+      });
+      expect(replay.replayed).toBe(true);
+
+      await expect(
+        assignEditorialWorkItem({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId: episodeCard!.workItemId,
+          assigneeUserId: outsider.id,
+          expectedVersion: assigned.workItem.version,
+          idempotencyKey: "b2-invalid-assignee",
+        })
+      ).rejects.toMatchObject({ code: "EDITORIAL_ASSIGNEE_INVALID" });
+
+      const after = await getEditorialBoard({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+      });
+      const assignedCard = after?.columns.flatMap(column => column.cards)
+        .find(card => card.workItemId === episodeCard!.workItemId);
+      expect(assignedCard?.assigneeUserId).toBe(assignee.id);
+      expect(assignedCard?.history.some(entry => entry.eventType === "assignee_changed")).toBe(true);
+
+      const assignees = await listEditorialAssignees({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+      });
+      expect(assignees.map(row => row.id)).toEqual(
+        expect.arrayContaining([owner.id, assignee.id])
+      );
+      expect(assignees.map(row => row.id)).not.toContain(outsider.id);
+
+      const publicationEpisodes = await db
+        .select()
+        .from(episodes)
+        .where(eq(episodes.novelId, createdNovel.novelId));
+      expect(publicationEpisodes).toHaveLength(0);
+    } finally {
+      await db
+        .delete(workspaceWorkspaces)
+        .where(eq(workspaceWorkspaces.id, workspace.workspaceId));
+      if (createdNovelId) {
+        await db.delete(novels).where(eq(novels.id, createdNovelId));
+      }
+      await db.delete(users).where(eq(users.id, owner.id));
+      await db.delete(users).where(eq(users.id, assignee.id));
+      await db.delete(users).where(eq(users.id, outsider.id));
     }
   });
 });

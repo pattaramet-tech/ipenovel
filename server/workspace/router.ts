@@ -38,8 +38,11 @@ import {
   WorkspaceDocsServiceError,
 } from "./googleDocs.service";
 import {
+  assignEditorialWorkItem,
+  createEditorialEpisodeWorkItem,
   ensureEditorialBoard,
   getEditorialBoard,
+  listEditorialAssignees,
   WorkspaceEditorialBoardError,
 } from "./editorialBoard.service";
 import {
@@ -79,6 +82,7 @@ import {
   addOrUpdateMember,
   bindPublicationNovel,
   createWorkspace,
+  createWorkspacePublicationNovel,
   getWorkspaceDetail,
   listMigrationOwnership,
   listPublicationNovelOptions,
@@ -225,9 +229,11 @@ function mapWorkspaceError(error: unknown): never {
     const code =
       error.code === "WORKSPACE_NOT_FOUND" || error.code === "NOVEL_NOT_FOUND"
         ? "NOT_FOUND"
-        : error.code === "INVALID_MEMBERSHIP_CHANGE" || error.code === "MEMBERSHIP_CONFLICT"
-          ? "CONFLICT"
-          : "SERVICE_UNAVAILABLE";
+        : error.code === "INVALID_NOVEL_INPUT"
+          ? "BAD_REQUEST"
+          : error.code === "INVALID_MEMBERSHIP_CHANGE" || error.code === "MEMBERSHIP_CONFLICT"
+            ? "CONFLICT"
+            : "SERVICE_UNAVAILABLE";
     throw new TRPCError({ code, message: error.message });
   }
   throw error;
@@ -697,6 +703,68 @@ export const workspaceRouter = router({
           return await getEditorialBoard({
             actorUserId: ctx.user.id,
             workspaceId: input.workspaceId,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    assignees: adminProcedure
+      .input(workspaceIdInput)
+      .query(async ({ ctx, input }) => {
+        try {
+          return await listEditorialAssignees({
+            actorUserId: ctx.user.id,
+            workspaceId: input.workspaceId,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    createNovel: adminProcedure
+      .input(workspaceIdInput.extend({
+        title: z.string().trim().min(1).max(500),
+        author: z.string().trim().max(255).optional(),
+        description: z.string().trim().max(10000).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await createWorkspacePublicationNovel({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    createEpisode: adminProcedure
+      .input(workspaceIdInput.extend({
+        workspaceNovelId: z.number().int().positive(),
+        episodeNumber: z.string().trim().min(1).max(100),
+        episodeTitle: z.string().trim().max(500).optional(),
+        assigneeUserId: z.number().int().positive().nullable().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await createEditorialEpisodeWorkItem({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    assignWorkItem: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        assigneeUserId: z.number().int().positive().nullable(),
+        expectedVersion: z.number().int().positive(),
+        idempotencyKey: z.string().trim().min(1).max(255),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await assignEditorialWorkItem({
+            actorUserId: ctx.user.id,
+            ...input,
           });
         } catch (error) {
           return mapWorkspaceError(error);

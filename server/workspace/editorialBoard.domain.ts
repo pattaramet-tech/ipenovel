@@ -28,6 +28,40 @@ export function parseEditorialStoryLogicalKey(value: string) {
     : null;
 }
 
+export function normalizeEditorialEpisodeKey(value: string) {
+  return value.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+export function editorialEpisodeLogicalKey(
+  workspaceNovelId: number,
+  episodeNumber: string
+) {
+  if (!Number.isInteger(workspaceNovelId) || workspaceNovelId <= 0) {
+    throw new Error("workspaceNovelId must be a positive integer.");
+  }
+  const itemKey = normalizeEditorialEpisodeKey(episodeNumber);
+  if (!itemKey) throw new Error("episodeNumber is required.");
+  if (itemKey.length > 100) throw new Error("episodeNumber is too long.");
+  return `episode:${workspaceNovelId}:${itemKey}`;
+}
+
+export function parseEditorialEpisodeLogicalKey(value: string) {
+  const match = /^episode:(\d+):(.+)$/.exec(String(value || ""));
+  if (!match) return null;
+  const workspaceNovelId = Number(match[1]);
+  const itemKey = normalizeEditorialEpisodeKey(match[2]);
+  return Number.isInteger(workspaceNovelId) && workspaceNovelId > 0 && itemKey
+    ? { workItemType: "NEW_EPISODE" as const, workspaceNovelId, itemKey }
+    : null;
+}
+
+export function parseEditorialLogicalKey(value: string) {
+  return (
+    parseEditorialStoryLogicalKey(value) ??
+    parseEditorialEpisodeLogicalKey(value)
+  );
+}
+
 export function isCanonicalEditorialColumn(column: {
   key: string;
   name: string;

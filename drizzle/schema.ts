@@ -2329,6 +2329,96 @@ export const workspaceKanbanTransitions = mysqlTable(
   })
 );
 
+/** IPE-055 Editorial work-item metadata layered on generic Kanban cards. */
+export const workspaceEditorialWorkItems = mysqlTable(
+  "workspaceEditorialWorkItems",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    cardId: int("cardId").notNull(),
+    workspaceNovelId: int("workspaceNovelId").notNull(),
+    workItemType: mysqlEnum("workItemType", ["new_story", "new_episode"]).notNull(),
+    itemKey: varchar("itemKey", { length: 160 }).notNull(),
+    episodeNumber: varchar("episodeNumber", { length: 100 }),
+    episodeTitle: varchar("episodeTitle", { length: 500 }),
+    assigneeUserId: int("assigneeUserId"),
+    createdByUserId: int("createdByUserId").notNull(),
+    version: int("version").default(1).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    cardUnique: uniqueIndex("wei_card_unique").on(table.cardId),
+    novelTypeItemUnique: uniqueIndex("wei_novel_type_item_unique").on(
+      table.workspaceNovelId,
+      table.workItemType,
+      table.itemKey
+    ),
+    novelIdx: index("wei_novel_idx").on(table.workspaceNovelId),
+    assigneeIdx: index("wei_assignee_idx").on(table.assigneeUserId),
+    cardFk: foreignKey({
+      name: "wei_card_fk",
+      columns: [table.cardId],
+      foreignColumns: [workspaceKanbanCards.id],
+    }).onDelete("cascade"),
+    workspaceNovelFk: foreignKey({
+      name: "wei_workspace_novel_fk",
+      columns: [table.workspaceNovelId],
+      foreignColumns: [workspaceNovels.id],
+    }).onDelete("cascade"),
+    assigneeFk: foreignKey({
+      name: "wei_assignee_fk",
+      columns: [table.assigneeUserId],
+      foreignColumns: [users.id],
+    }).onDelete("set null"),
+    createdByFk: foreignKey({
+      name: "wei_created_by_fk",
+      columns: [table.createdByUserId],
+      foreignColumns: [users.id],
+    }),
+  })
+);
+
+export const workspaceEditorialWorkItemEvents = mysqlTable(
+  "workspaceEditorialWorkItemEvents",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workItemId: int("workItemId").notNull(),
+    eventType: mysqlEnum("eventType", ["created", "backfilled", "assignee_changed"]).notNull(),
+    actorUserId: int("actorUserId").notNull(),
+    fromAssigneeUserId: int("fromAssigneeUserId"),
+    toAssigneeUserId: int("toAssigneeUserId"),
+    idempotencyKey: varchar("idempotencyKey", { length: 255 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    workItemIdempotencyUnique: uniqueIndex("weie_item_idempotency_unique").on(
+      table.workItemId,
+      table.idempotencyKey
+    ),
+    workItemCreatedIdx: index("weie_item_created_idx").on(table.workItemId, table.createdAt),
+    workItemFk: foreignKey({
+      name: "weie_item_fk",
+      columns: [table.workItemId],
+      foreignColumns: [workspaceEditorialWorkItems.id],
+    }).onDelete("cascade"),
+    actorFk: foreignKey({
+      name: "weie_actor_fk",
+      columns: [table.actorUserId],
+      foreignColumns: [users.id],
+    }),
+    fromAssigneeFk: foreignKey({
+      name: "weie_from_assignee_fk",
+      columns: [table.fromAssigneeUserId],
+      foreignColumns: [users.id],
+    }).onDelete("set null"),
+    toAssigneeFk: foreignKey({
+      name: "weie_to_assignee_fk",
+      columns: [table.toAssigneeUserId],
+      foreignColumns: [users.id],
+    }).onDelete("set null"),
+  })
+);
+
 /** Immutable M03 Checker configuration versions. */
 export const workspaceCheckerRuleSets = mysqlTable(
   "workspaceCheckerRuleSets",

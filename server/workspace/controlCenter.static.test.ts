@@ -41,5 +41,9 @@ describe("Workspace Control Center controlled-operations contract", () => {
     expect(page).toContain("aiQueue.retry.useMutation");
     expect(page).toContain("checker.queueRun.useMutation");
     expect(page).toContain("kanban.transitionCard.useMutation");
+    expect(page).toContain("editorial.createNovel.useMutation");
+    expect(page).toContain("editorial.createEpisode.useMutation");
+    expect(page).toContain("editorial.assignWorkItem.useMutation");
+    expect(page).toContain("Editorial assignee filter");
   });
 });
