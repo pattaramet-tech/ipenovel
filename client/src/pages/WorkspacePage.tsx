@@ -65,6 +65,21 @@ export default function WorkspacePage() {
     mimeType: string;
     paragraphs: string[];
   }>();
+  const [editorTarget, setEditorTarget] = useState<{
+    kind: "replace_sentence" | "replace_range" | "replace_paragraph";
+    label: string;
+    paragraphKey: string;
+    expectedParagraphFingerprint: string;
+    startOffset?: number;
+    endOffset?: number;
+    expectedText: string;
+    draftId: number;
+    draftVersion: number;
+    draftSha256: string;
+    findingId?: number;
+    findingKey?: string;
+  }>();
+  const [editorText, setEditorText] = useState("");
   const [selectedCheckerRunId, setSelectedCheckerRunId] = useState<number>();
   const [selectedAiJobId, setSelectedAiJobId] = useState<number>();
   const [selectedPublishRunId, setSelectedPublishRunId] = useState<number>();
@@ -106,6 +121,16 @@ export default function WorkspacePage() {
     }
   );
   const editorialForeignChecker = trpc.workspace.editorial.foreignChecker.useQuery(
+    {
+      workspaceId: selectedWorkspaceId ?? 0,
+      workItemId: selectedSourceWorkItemId ?? 0,
+    },
+    {
+      enabled: isAdmin && Boolean(selectedWorkspaceId && selectedSourceWorkItemId),
+      retry: false,
+    }
+  );
+  const editorialEditor = trpc.workspace.editorial.editor.useQuery(
     {
       workspaceId: selectedWorkspaceId ?? 0,
       workItemId: selectedSourceWorkItemId ?? 0,
@@ -210,6 +235,8 @@ export default function WorkspacePage() {
     setGoogleConnectionId("");
     setGoogleDocUrl("");
     setUploadedSource(undefined);
+    setEditorTarget(undefined);
+    setEditorText("");
     setSelectedCheckerRunId(undefined);
     setSelectedAiJobId(undefined);
     setSelectedPublishRunId(undefined);
@@ -351,12 +378,71 @@ export default function WorkspacePage() {
   });
   const runEditorialForeignChecker = trpc.workspace.editorial.foreignCheckerRun.useMutation({
     onSuccess: async (result) => {
-      await editorialForeignChecker.refetch();
+      await Promise.all([
+        editorialForeignChecker.refetch(),
+        editorialBoard.refetch(),
+      ]);
       toast.success(
         result.unresolvedCount
           ? `พบ ${result.unresolvedCount} จุดที่ต้องตรวจ`
           : "ไม่พบคำต่างประเทศที่ค้างตรวจ"
       );
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const editEditorialDraft = trpc.workspace.editorial.editorEdit.useMutation({
+    onSuccess: async (result) => {
+      setEditorTarget(undefined);
+      setEditorText("");
+      await Promise.all([
+        editorialSourceDraft.refetch(),
+        editorialEditor.refetch(),
+        editorialForeignChecker.refetch(),
+        editorialBoard.refetch(),
+      ]);
+      if (
+        selectedWorkspaceId &&
+        selectedSourceWorkItemId &&
+        result.draft?.id &&
+        result.isCurrent !== false
+      ) {
+        await runEditorialForeignChecker.mutateAsync({
+          workspaceId: selectedWorkspaceId,
+          workItemId: selectedSourceWorkItemId,
+          expectedDraftId: result.draft.id,
+        });
+      }
+      toast.success(
+        result.replayed
+          ? "ใช้ผลบันทึกเดิมอย่างปลอดภัย"
+          : "บันทึก Draft เวอร์ชันใหม่และตรวจซ้ำแล้ว"
+      );
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const undoEditorialEdit = trpc.workspace.editorial.editorUndo.useMutation({
+    onSuccess: async (result) => {
+      setEditorTarget(undefined);
+      setEditorText("");
+      await Promise.all([
+        editorialSourceDraft.refetch(),
+        editorialEditor.refetch(),
+        editorialForeignChecker.refetch(),
+        editorialBoard.refetch(),
+      ]);
+      if (
+        selectedWorkspaceId &&
+        selectedSourceWorkItemId &&
+        result.draft?.id &&
+        result.isCurrent !== false
+      ) {
+        await runEditorialForeignChecker.mutateAsync({
+          workspaceId: selectedWorkspaceId,
+          workItemId: selectedSourceWorkItemId,
+          expectedDraftId: result.draft.id,
+        });
+      }
+      toast.success("Undo สร้าง Draft เวอร์ชันใหม่และตรวจซ้ำแล้ว");
     },
     onError: (error) => toast.error(error.message),
   });
@@ -392,6 +478,61 @@ export default function WorkspacePage() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const submitEditorEdit = (source: "manual" | "autosave") => {
+    if (
+      !selectedWorkspaceId ||
+      !selectedSourceWorkItemId ||
+      !editorTarget ||
+      editEditorialDraft.isPending ||
+      editorText === editorTarget.expectedText
+    ) {
+      return;
+    }
+    const command =
+      editorTarget.kind === "replace_paragraph"
+        ? {
+            kind: "replace_paragraph" as const,
+            paragraphKey: editorTarget.paragraphKey,
+            expectedParagraphFingerprint:
+              editorTarget.expectedParagraphFingerprint,
+            expectedText: editorTarget.expectedText,
+            replacementText: editorText,
+          }
+        : {
+            kind: editorTarget.kind,
+            paragraphKey: editorTarget.paragraphKey,
+            expectedParagraphFingerprint:
+              editorTarget.expectedParagraphFingerprint,
+            startOffset: editorTarget.startOffset ?? 0,
+            endOffset: editorTarget.endOffset ?? 0,
+            expectedText: editorTarget.expectedText,
+            replacementText: editorText,
+          };
+    editEditorialDraft.mutate({
+      workspaceId: selectedWorkspaceId,
+      workItemId: selectedSourceWorkItemId,
+      expectedDraftId: editorTarget.draftId,
+      expectedDraftVersion: editorTarget.draftVersion,
+      expectedDraftSha256: editorTarget.draftSha256,
+      findingId: editorTarget.findingId,
+      findingKey: editorTarget.findingKey,
+      command,
+      idempotencyKey: `editor-${source}:${editorTarget.draftId}:${editorTarget.paragraphKey}:${Date.now()}`,
+    });
+  };
+
+  useEffect(() => {
+    if (
+      !editorTarget ||
+      editorText === editorTarget.expectedText ||
+      editEditorialDraft.isPending
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(() => submitEditorEdit("autosave"), 3000);
+    return () => window.clearTimeout(timer);
+  }, [editorTarget, editorText, editEditorialDraft.isPending]);
+
   const bindNovel = trpc.workspace.bindings.bindPublicationNovel.useMutation({
     onSuccess: async () => {
       setNovelId("");
@@ -422,6 +563,9 @@ export default function WorkspacePage() {
   const selectedSourceCard = editorialCards.find(
     (card: any) => card.workItemId === selectedSourceWorkItemId
   );
+  const editorialDraftData = editorialSourceDraft.data as any;
+  const latestEditorialDraft = editorialDraftData?.latestDraft;
+  const editorialEditorData = editorialEditor.data as any;
   const editorialCheckerData = editorialForeignChecker.data as any;
   const editorialCheckerRunStale = Boolean(
     editorialCheckerData?.run &&
@@ -1037,6 +1181,153 @@ export default function WorkspacePage() {
                   <div className="space-y-3 rounded-md border p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
+                        <div className="font-medium">Workspace Editor</div>
+                        <div className="text-xs text-muted-foreground">
+                          แก้ใน Workspace เท่านั้น ทุกการบันทึกสร้าง Draft version/hash ใหม่แบบ CAS และตรวจซ้ำอัตโนมัติ
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={
+                          !editorialEditorData?.canUndo ||
+                          !latestEditorialDraft ||
+                          undoEditorialEdit.isPending
+                        }
+                        onClick={() => {
+                          if (!latestEditorialDraft) return;
+                          undoEditorialEdit.mutate({
+                            workspaceId: selectedWorkspaceId,
+                            workItemId: selectedSourceWorkItemId,
+                            expectedDraftId: latestEditorialDraft.id,
+                            expectedDraftVersion: latestEditorialDraft.version,
+                            expectedDraftSha256: latestEditorialDraft.draftSha256,
+                            idempotencyKey: `editor-undo:${latestEditorialDraft.id}:${latestEditorialDraft.version}`,
+                          });
+                        }}
+                      >
+                        {undoEditorialEdit.isPending && (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        )}
+                        Undo last edit
+                      </Button>
+                    </div>
+
+                    <div className="grid gap-2 md:grid-cols-3">
+                      <div className="rounded border p-2 text-sm">
+                        Draft v{latestEditorialDraft?.version ?? "—"}
+                      </div>
+                      <div className="rounded border p-2 text-sm">
+                        SHA {shortHash(latestEditorialDraft?.draftSha256)}
+                      </div>
+                      <div className="rounded border p-2 text-sm">
+                        Edit history {editorialEditorData?.history?.length ?? 0}
+                      </div>
+                    </div>
+
+                    {editorTarget && (
+                      <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <div className="font-medium">{editorTarget.label}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {editorTarget.kind} · Draft v{editorTarget.draftVersion} · auto-save หลังหยุดพิมพ์ 3 วินาที
+                            </div>
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={editEditorialDraft.isPending}
+                            onClick={() => {
+                              setEditorTarget(undefined);
+                              setEditorText("");
+                            }}
+                          >
+                            ยกเลิก
+                          </Button>
+                        </div>
+                        <textarea
+                          className="min-h-28 w-full rounded-md border bg-background p-3 text-sm"
+                          value={editorText}
+                          maxLength={200000}
+                          disabled={editEditorialDraft.isPending}
+                          onChange={(event) => setEditorText(event.target.value)}
+                        />
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                          <span>
+                            {editorText.length.toLocaleString()} ตัวอักษร · ห้ามสร้างบรรทัดใหม่ใน mutation เดียว
+                          </span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={
+                              editEditorialDraft.isPending ||
+                              editorText === editorTarget.expectedText
+                            }
+                            onClick={() => submitEditorEdit("manual")}
+                          >
+                            {editEditorialDraft.isPending && (
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            )}
+                            บันทึกทันที + ตรวจซ้ำ
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="space-y-2">
+                      {(editorialDraftData?.tabs ?? []).map((tab: any) => (
+                        <details key={tab.id} className="rounded-md border">
+                          <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
+                            {tab.title} · {tab.paragraphs.length} paragraphs
+                          </summary>
+                          <div className="space-y-2 border-t p-3">
+                            {tab.paragraphs.map((paragraph: any) => (
+                              <div
+                                key={paragraph.paragraphKey}
+                                className="rounded border bg-background p-2 text-sm"
+                              >
+                                <div className="mb-1 flex items-center justify-between gap-2">
+                                  <span className="text-xs text-muted-foreground">
+                                    ¶{paragraph.paragraphOrder} · {shortHash(paragraph.paragraphFingerprint)}
+                                  </span>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={!latestEditorialDraft || editEditorialDraft.isPending}
+                                    onClick={() => {
+                                      if (!latestEditorialDraft) return;
+                                      setEditorTarget({
+                                        kind: "replace_paragraph",
+                                        label: `แก้ย่อหน้า ¶${paragraph.paragraphOrder}`,
+                                        paragraphKey: paragraph.paragraphKey,
+                                        expectedParagraphFingerprint:
+                                          paragraph.paragraphFingerprint,
+                                        expectedText: paragraph.text,
+                                        draftId: latestEditorialDraft.id,
+                                        draftVersion: latestEditorialDraft.version,
+                                        draftSha256: latestEditorialDraft.draftSha256,
+                                      });
+                                      setEditorText(paragraph.text);
+                                    }}
+                                  >
+                                    แก้ย่อหน้า
+                                  </Button>
+                                </div>
+                                <div className="whitespace-pre-wrap">{paragraph.text || "—"}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-3 rounded-md border p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
                         <div className="font-medium">Deterministic Foreign-word Checker</div>
                         <div className="text-xs text-muted-foreground">
                           ตรวจ Draft ปัจจุบันแบบไม่ใช้ AI/API และผูก finding กับ paragraph key + UTF-16 offsets
@@ -1123,6 +1414,36 @@ export default function WorkspacePage() {
                             {finding.sentenceText}
                           </div>
                           <div className="mt-2 flex flex-wrap gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              disabled={
+                                editorialCheckerRunStale ||
+                                !latestEditorialDraft ||
+                                editEditorialDraft.isPending
+                              }
+                              onClick={() => {
+                                if (!latestEditorialDraft) return;
+                                setEditorTarget({
+                                  kind: "replace_sentence",
+                                  label: `แก้ประโยคที่พบ “${finding.token}”`,
+                                  paragraphKey: finding.paragraphKey,
+                                  expectedParagraphFingerprint:
+                                    finding.paragraphFingerprint,
+                                  startOffset: finding.sentenceStartOffset,
+                                  endOffset: finding.sentenceEndOffset,
+                                  expectedText: finding.sentenceText,
+                                  draftId: latestEditorialDraft.id,
+                                  draftVersion: latestEditorialDraft.version,
+                                  draftSha256: latestEditorialDraft.draftSha256,
+                                  findingId: finding.id,
+                                  findingKey: finding.findingKey,
+                                });
+                                setEditorText(finding.sentenceText);
+                              }}
+                            >
+                              แก้ประโยค
+                            </Button>
                             <Button
                               type="button"
                               size="sm"

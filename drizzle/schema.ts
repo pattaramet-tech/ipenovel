@@ -2635,6 +2635,64 @@ export const workspaceEditorialDraftTransforms = mysqlTable(
   })
 );
 
+/** IPE-055-E manual Workspace editor audit/idempotency events. */
+export const workspaceEditorialDraftEditEvents = mysqlTable(
+  "workspaceEditorialDraftEditEvents",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workItemId: int("workItemId").notNull(),
+    fromDraftId: int("fromDraftId").notNull(),
+    toDraftId: int("toDraftId").notNull(),
+    editKind: mysqlEnum("editKind", [
+      "replace_sentence",
+      "replace_range",
+      "replace_paragraph",
+      "undo",
+    ]).notNull(),
+    paragraphKey: varchar("paragraphKey", { length: 64 }),
+    findingKey: varchar("findingKey", { length: 64 }),
+    startOffset: int("startOffset"),
+    endOffset: int("endOffset"),
+    expectedTextSha256: varchar("expectedTextSha256", { length: 64 }).notNull(),
+    replacementTextSha256: varchar("replacementTextSha256", { length: 64 }).notNull(),
+    payloadSha256: varchar("payloadSha256", { length: 64 }).notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 255 }).notNull(),
+    actorUserId: int("actorUserId").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    itemIdempotencyUnique: uniqueIndex("wede_item_idempotency_unique").on(
+      table.workItemId,
+      table.idempotencyKey
+    ),
+    itemCreatedIdx: index("wede_item_created_idx").on(
+      table.workItemId,
+      table.createdAt
+    ),
+    toDraftUnique: uniqueIndex("wede_to_draft_unique").on(table.toDraftId),
+    workItemFk: foreignKey({
+      name: "wede_work_item_fk",
+      columns: [table.workItemId],
+      foreignColumns: [workspaceEditorialWorkItems.id],
+    }).onDelete("cascade"),
+    fromDraftFk: foreignKey({
+      name: "wede_from_draft_fk",
+      columns: [table.fromDraftId],
+      foreignColumns: [workspaceEditorialDrafts.id],
+    }).onDelete("cascade"),
+    toDraftFk: foreignKey({
+      name: "wede_to_draft_fk",
+      columns: [table.toDraftId],
+      foreignColumns: [workspaceEditorialDrafts.id],
+    }).onDelete("cascade"),
+    actorFk: foreignKey({
+      name: "wede_actor_fk",
+      columns: [table.actorUserId],
+      foreignColumns: [users.id],
+    }),
+  })
+);
+
 /** IPE-055-D deterministic foreign-word checker over Workspace editorial drafts. */
 export const workspaceEditorialCheckerAllowWords = mysqlTable(
   "workspaceEditorialCheckerAllowWords",

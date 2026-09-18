@@ -395,7 +395,7 @@ function plainDocument(
   };
 }
 
-function reindexDocument(document: EditorialDraftDocument) {
+export function reindexEditorialDraftDocument(document: EditorialDraftDocument) {
   const tabs = document.tabs.map(tab => {
     const withFingerprints = tab.paragraphs.map((paragraph, index) => {
       const text = String(paragraph.text ?? "");
@@ -475,9 +475,9 @@ function addPipelineVersion(
   after: EditorialDraftDocument,
   details: Record<string, unknown>
 ) {
-  const reindexed = reindexDocument(after);
+  const reindexed = reindexEditorialDraftDocument(after);
   const beforeSha256 = before
-    ? editorialDraftSha256(reindexDocument(before))
+    ? editorialDraftSha256(reindexEditorialDraftDocument(before))
     : null;
   const afterSha256 = editorialDraftSha256(reindexed);
   if (beforeSha256 === afterSha256 && transformCode !== "source_base") return;
@@ -512,7 +512,7 @@ export function runEditorialPreparationPipeline(
   }
 
   const versions: EditorialDraftPipelineVersion[] = [];
-  let current = reindexDocument(plainDocument(payload));
+  let current = reindexEditorialDraftDocument(plainDocument(payload));
   addPipelineVersion(versions, "source_base", null, current, {
     normalizationVersion: EDITORIAL_DRAFT_NORMALIZATION_VERSION,
     presentation: EDITORIAL_DRAFT_PRESENTATION,
@@ -525,7 +525,7 @@ export function runEditorialPreparationPipeline(
     }
   }
   addPipelineVersion(versions, "unicode_thai_digit_cleanup", current, next, {});
-  current = reindexDocument(next);
+  current = reindexEditorialDraftDocument(next);
 
   next = cloneDocument(current);
   const englishReports: Record<string, unknown>[] = [];
@@ -546,14 +546,14 @@ export function runEditorialPreparationPipeline(
   addPipelineVersion(versions, "english_source_cleanup", current, next, {
     reports: englishReports,
   });
-  current = reindexDocument(next);
+  current = reindexEditorialDraftDocument(next);
 
   next = cloneDocument(current);
   for (const tab of next.tabs) {
     tab.paragraphs = cleanupChapterParagraphs(tab.paragraphs);
   }
   addPipelineVersion(versions, "chapter_heading_cleanup", current, next, {});
-  current = reindexDocument(next);
+  current = reindexEditorialDraftDocument(next);
 
   next = cloneDocument(current);
   for (const tab of next.tabs) {
@@ -590,14 +590,14 @@ export function runEditorialPreparationPipeline(
     tab.paragraphs = expanded;
   }
   addPipelineVersion(versions, "quote_bracket_split", current, next, {});
-  current = reindexDocument(next);
+  current = reindexEditorialDraftDocument(next);
 
   next = cloneDocument(current);
   for (const tab of next.tabs) {
     tab.paragraphs = tab.paragraphs.filter(p => normalizeEditorialText(p.text));
   }
   addPipelineVersion(versions, "blank_line_cleanup", current, next, {});
-  current = reindexDocument(next);
+  current = reindexEditorialDraftDocument(next);
 
   next = cloneDocument(current);
   for (const tab of next.tabs) {

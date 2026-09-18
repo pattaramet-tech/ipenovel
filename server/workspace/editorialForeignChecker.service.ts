@@ -16,6 +16,7 @@ import {
 import { getDb } from "../db";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import { EDITORIAL_BOARD_SLUG } from "./editorialBoard.domain";
+import { projectEditorialQcColumn } from "./editorialQcProjection.service";
 import {
   EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION,
   EDITORIAL_FOREIGN_CHECKER_RULES,
@@ -507,7 +508,7 @@ export async function runEditorialForeignChecker(input: {
       .where(eq(workspaceEditorialCheckerRuns.idempotencyKey, idempotencyKey))
       .limit(1);
     if (existing) {
-      return { runId: existing.id, created: false };
+      return { runId: existing.id, draftId: existing.draftId, created: false };
     }
 
     const paragraphs = await loadDraftParagraphs(tx, draft.id);
@@ -553,17 +554,35 @@ export async function runEditorialForeignChecker(input: {
         }))
       );
     }
-    return { runId, created: true };
+    return { runId, draftId: draft.id, created: true };
   });
+
+  const readModel = await getEditorialForeignCheckerReadModel({
+    actorUserId: input.actorUserId,
+    workspaceId: input.workspaceId,
+    workItemId: input.workItemId,
+    runId: result.runId,
+  });
+  const targetColumnKey =
+    readModel.unresolvedCount > 0 ? "needs_fix" : "pending_confirm";
+  const kanbanProjection = await db.transaction((tx: any) =>
+    projectEditorialQcColumn(tx, {
+      workItemId: input.workItemId,
+      expectedDraftId: result.draftId,
+      targetColumnKey,
+      actorUserId: input.actorUserId,
+      reason:
+        targetColumnKey === "needs_fix"
+          ? "editorial_checker_findings_open"
+          : "editorial_checker_clean",
+      idempotencyKey: `editorial-qc-${result.runId}-${targetColumnKey}`,
+    })
+  );
 
   return {
     created: result.created,
-    ...(await getEditorialForeignCheckerReadModel({
-      actorUserId: input.actorUserId,
-      workspaceId: input.workspaceId,
-      workItemId: input.workItemId,
-      runId: result.runId,
-    })),
+    ...readModel,
+    kanbanProjection,
   };
 }
 

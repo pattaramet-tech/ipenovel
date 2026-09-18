@@ -66,6 +66,12 @@ import {
   WorkspaceEditorialForeignCheckerError,
 } from "./editorialForeignChecker.service";
 import {
+  applyEditorialEditorEdit,
+  getEditorialEditorReadModel,
+  undoEditorialEditorEdit,
+  WorkspaceEditorialEditorError,
+} from "./editorialEditor.service";
+import {
   createPublishDestination,
   createPublishDryRun,
   getPublishRunDetail,
@@ -273,6 +279,18 @@ function mapWorkspaceError(error: unknown): never {
             : "BAD_REQUEST";
     throw new TRPCError({ code, message: error.message });
   }
+  if (error instanceof WorkspaceEditorialEditorError) {
+    const code =
+      error.code === "DATABASE_UNAVAILABLE"
+        ? "SERVICE_UNAVAILABLE"
+        : error.code.endsWith("_NOT_FOUND")
+          ? "NOT_FOUND"
+          : error.code.endsWith("_CONFLICT") ||
+              error.code === "UNDO_NOT_AVAILABLE"
+            ? "CONFLICT"
+            : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
   if (error instanceof WorkspaceDocsServiceError) {
     const code =
       error.code === "DATABASE_UNAVAILABLE"
@@ -309,6 +327,24 @@ const editorialSourcePayloadInput = z.object({
     paragraphs: z.array(z.string().max(200000)).max(10000),
   })).min(1).max(500),
 });
+const editorialEditCommandInput = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.enum(["replace_sentence", "replace_range"]),
+    paragraphKey: z.string().trim().length(64),
+    expectedParagraphFingerprint: z.string().trim().length(64),
+    startOffset: z.number().int().nonnegative(),
+    endOffset: z.number().int().nonnegative(),
+    expectedText: z.string().max(200000),
+    replacementText: z.string().max(200000),
+  }),
+  z.object({
+    kind: z.literal("replace_paragraph"),
+    paragraphKey: z.string().trim().length(64),
+    expectedParagraphFingerprint: z.string().trim().length(64),
+    expectedText: z.string().max(200000),
+    replacementText: z.string().max(200000),
+  }),
+]);
 const legacyRetirementEvidenceInput = z.object({
   sustainedParity: z.object({ passed: z.boolean(), evidenceRef: z.string().trim().min(1).max(255) }),
   slo: z.object({ passed: z.boolean(), evidenceRef: z.string().trim().min(1).max(255) }),
@@ -818,6 +854,59 @@ export const workspaceRouter = router({
       .query(async ({ ctx, input }) => {
         try {
           return await getEditorialSourceSnapshot({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    editor: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getEditorialEditorReadModel({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    editorEdit: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        expectedDraftId: z.number().int().positive(),
+        expectedDraftVersion: z.number().int().positive(),
+        expectedDraftSha256: z.string().trim().length(64),
+        findingId: z.number().int().positive().optional(),
+        findingKey: z.string().trim().length(64).optional(),
+        command: editorialEditCommandInput,
+        idempotencyKey: z.string().trim().min(1).max(255),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await applyEditorialEditorEdit({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    editorUndo: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        expectedDraftId: z.number().int().positive(),
+        expectedDraftVersion: z.number().int().positive(),
+        expectedDraftSha256: z.string().trim().length(64),
+        idempotencyKey: z.string().trim().min(1).max(255),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await undoEditorialEditorEdit({
             actorUserId: ctx.user.id,
             ...input,
           });
