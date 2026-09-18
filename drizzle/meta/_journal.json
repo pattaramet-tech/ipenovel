@@ -351,6 +351,13 @@
       "when": 1789731864147,
       "tag": "0049_workspace_editorial_editor",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "5",
+      "when": 1789735698314,
+      "tag": "0050_workspace_editorial_approval_episode_stage",
+      "breakpoints": true
     }
   ]
 }

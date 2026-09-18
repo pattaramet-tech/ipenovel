@@ -7,7 +7,8 @@ import {
   workspaceKanbanTransitions,
 } from "../../drizzle/schema";
 
-export type EditorialQcColumnKey = "editing" | "needs_fix" | "pending_confirm";
+export type EditorialQcColumnKey =
+  "editing" | "needs_fix" | "pending_confirm" | "ready_to_publish";
 
 export async function projectEditorialQcColumn(
   tx: any,

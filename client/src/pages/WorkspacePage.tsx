@@ -140,6 +140,16 @@ export default function WorkspacePage() {
       retry: false,
     }
   );
+  const editorialApproval = trpc.workspace.editorial.approval.useQuery(
+    {
+      workspaceId: selectedWorkspaceId ?? 0,
+      workItemId: selectedSourceWorkItemId ?? 0,
+    },
+    {
+      enabled: isAdmin && Boolean(selectedWorkspaceId && selectedSourceWorkItemId),
+      retry: false,
+    }
+  );
   const ownership = trpc.workspace.migrationOwnership.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
     { enabled: isAdmin && Boolean(selectedWorkspaceId) }
@@ -349,6 +359,7 @@ export default function WorkspacePage() {
       await Promise.all([
         editorialSourceDraft.refetch(),
         editorialForeignChecker.refetch(),
+        editorialApproval.refetch(),
       ]);
       toast.success(
         result.refreshBlocked
@@ -365,6 +376,7 @@ export default function WorkspacePage() {
       await Promise.all([
         editorialSourceDraft.refetch(),
         editorialForeignChecker.refetch(),
+        editorialApproval.refetch(),
       ]);
       toast.success(
         result.refreshBlocked
@@ -380,6 +392,7 @@ export default function WorkspacePage() {
     onSuccess: async (result) => {
       await Promise.all([
         editorialForeignChecker.refetch(),
+        editorialApproval.refetch(),
         editorialBoard.refetch(),
       ]);
       toast.success(
@@ -398,6 +411,7 @@ export default function WorkspacePage() {
         editorialSourceDraft.refetch(),
         editorialEditor.refetch(),
         editorialForeignChecker.refetch(),
+        editorialApproval.refetch(),
         editorialBoard.refetch(),
       ]);
       if (
@@ -428,6 +442,7 @@ export default function WorkspacePage() {
         editorialSourceDraft.refetch(),
         editorialEditor.refetch(),
         editorialForeignChecker.refetch(),
+        editorialApproval.refetch(),
         editorialBoard.refetch(),
       ]);
       if (
@@ -446,9 +461,37 @@ export default function WorkspacePage() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const approveEditorialDraft = trpc.workspace.editorial.approveDraft.useMutation({
+    onSuccess: async (result) => {
+      await editorialApproval.refetch();
+      toast.success(
+        result.replayed
+          ? "Draft นี้ได้รับการยืนยันไว้แล้ว"
+          : "ยืนยัน Draft hash และ QC evidence แล้ว"
+      );
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const stageEditorialEpisode = trpc.workspace.editorial.stageEpisodeDraft.useMutation({
+    onSuccess: async (result) => {
+      await Promise.all([
+        editorialApproval.refetch(),
+        editorialBoard.refetch(),
+      ]);
+      toast.success(
+        result.replayed
+          ? "Episode draft นี้ถูก stage ไว้แล้ว"
+          : "สร้าง/อัปเดต Episode draft แบบ unpublished แล้ว"
+      );
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const resolveEditorialFinding = trpc.workspace.editorial.foreignCheckerResolve.useMutation({
     onSuccess: async () => {
-      await editorialForeignChecker.refetch();
+      await Promise.all([
+        editorialForeignChecker.refetch(),
+        editorialApproval.refetch(),
+      ]);
     },
     onError: (error) => toast.error(error.message),
   });
@@ -566,6 +609,7 @@ export default function WorkspacePage() {
   const editorialDraftData = editorialSourceDraft.data as any;
   const latestEditorialDraft = editorialDraftData?.latestDraft;
   const editorialEditorData = editorialEditor.data as any;
+  const editorialApprovalData = editorialApproval.data as any;
   const editorialCheckerData = editorialForeignChecker.data as any;
   const editorialCheckerRunStale = Boolean(
     editorialCheckerData?.run &&
@@ -1511,6 +1555,146 @@ export default function WorkspacePage() {
                         </div>
                       ))}
                     </div>
+                  </div>
+
+                  <div className="space-y-3 rounded-md border p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className="font-medium">Confirm + Episode Draft Staging</div>
+                        <div className="text-xs text-muted-foreground">
+                          การยืนยันผูกกับ Draft SHA256 + deterministic QC evidence แบบ exact; แก้ Draft หรือเปลี่ยน QC ภายหลังจะทำให้ approval เดิมใช้ต่อไม่ได้
+                        </div>
+                      </div>
+                      <StatusPill
+                        value={
+                          editorialApprovalData?.readyToPublish
+                            ? "ready_to_publish"
+                            : editorialApprovalData?.approvalStatus?.valid
+                              ? "approved"
+                              : "pending_confirm"
+                        }
+                      />
+                    </div>
+
+                    <div className="grid gap-2 md:grid-cols-4">
+                      <div className="rounded border p-2 text-sm">
+                        Draft v{editorialApprovalData?.latestDraft?.version ?? "—"}
+                        <div className="text-xs text-muted-foreground">
+                          {shortHash(editorialApprovalData?.latestDraft?.draftSha256)}
+                        </div>
+                      </div>
+                      <div className="rounded border p-2 text-sm">
+                        QC {editorialApprovalData?.qc?.ready ? "clean" : "not ready"}
+                        <div className="text-xs text-muted-foreground">
+                          run #{editorialApprovalData?.qc?.checkerRunId ?? "—"} · open {editorialApprovalData?.qc?.unresolvedCount ?? "—"}
+                        </div>
+                      </div>
+                      <div className="rounded border p-2 text-sm">
+                        Approval {editorialApprovalData?.approvalStatus?.valid ? "valid" : "not current"}
+                        <div className="text-xs text-muted-foreground">
+                          {editorialApprovalData?.approval
+                            ? `#${editorialApprovalData.approval.id} · ${shortHash(editorialApprovalData.approval.approvedDraftSha256)}`
+                            : editorialApprovalData?.approvalStatus?.reason ?? "ยังไม่ยืนยัน"}
+                        </div>
+                      </div>
+                      <div className="rounded border p-2 text-sm">
+                        Episode stage {editorialApprovalData?.stageStatus?.valid ? "ready" : "not ready"}
+                        <div className="text-xs text-muted-foreground">
+                          {editorialApprovalData?.stageEpisode
+                            ? `#${editorialApprovalData.stageEpisode.id} · unpublished=${!editorialApprovalData.stageEpisode.isPublished}`
+                            : editorialApprovalData?.stageStatus?.reason ?? "ยังไม่ stage"}
+                        </div>
+                      </div>
+                    </div>
+
+                    {editorialApprovalData?.stagePlan ? (
+                      <div className="rounded-md border bg-muted/20 p-3 text-sm">
+                        <div className="font-medium">
+                          Episode {editorialApprovalData.stagePlan.episodeNumber} · {editorialApprovalData.stagePlan.title}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {editorialApprovalData.stagePlan.wordCount} words · plain_text · content {shortHash(editorialApprovalData.stagePlan.contentSha256)}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          ใช้บรรทัด non-empty แรกเป็น title boundary ตาม Production exporter และ stage เฉพาะเนื้อหาหลัง title
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+                        {editorialApprovalData?.stagePlanError ??
+                          "ยังไม่สามารถสร้าง Episode staging plan ได้"}
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        disabled={
+                          !editorialApprovalData?.latestDraft ||
+                          !editorialApprovalData?.qc?.ready ||
+                          !editorialApprovalData?.qc?.checkerRunId ||
+                          !editorialApprovalData?.qc?.qcEvidenceSha256 ||
+                          editorialApprovalData?.approvalStatus?.valid ||
+                          approveEditorialDraft.isPending
+                        }
+                        onClick={() => {
+                          const draft = editorialApprovalData?.latestDraft;
+                          const qc = editorialApprovalData?.qc;
+                          if (!draft || !qc?.checkerRunId || !qc?.qcEvidenceSha256) return;
+                          approveEditorialDraft.mutate({
+                            workspaceId: selectedWorkspaceId,
+                            workItemId: selectedSourceWorkItemId,
+                            expectedDraftId: draft.id,
+                            expectedDraftVersion: draft.version,
+                            expectedDraftSha256: draft.draftSha256,
+                            expectedCheckerRunId: qc.checkerRunId,
+                            expectedQcEvidenceSha256: qc.qcEvidenceSha256,
+                            idempotencyKey: `editorial-approve:${draft.id}:${qc.qcEvidenceSha256}`,
+                          });
+                        }}
+                      >
+                        {approveEditorialDraft.isPending && (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        )}
+                        ยืนยัน Draft ปัจจุบัน
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={
+                          !editorialApprovalData?.approvalStatus?.valid ||
+                          !editorialApprovalData?.approval?.id ||
+                          !editorialApprovalData?.stagePlan ||
+                          editorialApprovalData?.stageStatus?.valid ||
+                          stageEditorialEpisode.isPending
+                        }
+                        onClick={() => {
+                          const draft = editorialApprovalData?.latestDraft;
+                          const approval = editorialApprovalData?.approval;
+                          if (!draft || !approval?.id) return;
+                          stageEditorialEpisode.mutate({
+                            workspaceId: selectedWorkspaceId,
+                            workItemId: selectedSourceWorkItemId,
+                            approvalId: approval.id,
+                            expectedDraftId: draft.id,
+                            expectedDraftVersion: draft.version,
+                            expectedDraftSha256: draft.draftSha256,
+                            idempotencyKey: `editorial-stage:${approval.id}:${draft.id}:${draft.draftSha256.slice(0, 16)}`,
+                          });
+                        }}
+                      >
+                        {stageEditorialEpisode.isPending && (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        )}
+                        Stage Episode Draft
+                      </Button>
+                    </div>
+
+                    {editorialApprovalData?.readyToPublish && (
+                      <div className="rounded-md border p-3 text-sm">
+                        พร้อมสำหรับขั้น Controlled Publish: Episode #{editorialApprovalData.stageEpisode?.id} ยังเป็น <strong>unpublished</strong> และผูกกับ Draft SHA {shortHash(editorialApprovalData.stage?.stagedDraftSha256)}
+                      </div>
+                    )}
                   </div>
                 </>
               )}

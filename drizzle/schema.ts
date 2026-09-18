@@ -2693,6 +2693,120 @@ export const workspaceEditorialDraftEditEvents = mysqlTable(
   })
 );
 
+/** IPE-055-F exact-Draft approval evidence. */
+export const workspaceEditorialDraftApprovals = mysqlTable(
+  "workspaceEditorialDraftApprovals",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workItemId: int("workItemId").notNull(),
+    draftId: int("draftId").notNull(),
+    draftVersion: int("draftVersion").notNull(),
+    approvedDraftSha256: varchar("approvedDraftSha256", { length: 64 }).notNull(),
+    checkerRunId: int("checkerRunId").notNull(),
+    qcEvidenceSha256: varchar("qcEvidenceSha256", { length: 64 }).notNull(),
+    payloadSha256: varchar("payloadSha256", { length: 64 }).notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 255 }).notNull(),
+    approvedByUserId: int("approvedByUserId").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    itemIdempotencyUnique: uniqueIndex("weda_item_idempotency_unique").on(
+      table.workItemId,
+      table.idempotencyKey
+    ),
+    itemDraftIdx: index("weda_item_draft_idx").on(
+      table.workItemId,
+      table.draftId,
+      table.createdAt
+    ),
+    workItemFk: foreignKey({
+      name: "weda_work_item_fk",
+      columns: [table.workItemId],
+      foreignColumns: [workspaceEditorialWorkItems.id],
+    }).onDelete("cascade"),
+    draftFk: foreignKey({
+      name: "weda_draft_fk",
+      columns: [table.draftId],
+      foreignColumns: [workspaceEditorialDrafts.id],
+    }).onDelete("cascade"),
+    checkerRunFk: foreignKey({
+      name: "weda_checker_run_fk",
+      columns: [table.checkerRunId],
+      foreignColumns: [workspaceEditorialCheckerRuns.id],
+    }).onDelete("cascade"),
+    approvedByFk: foreignKey({
+      name: "weda_approved_by_fk",
+      columns: [table.approvedByUserId],
+      foreignColumns: [users.id],
+    }),
+  })
+);
+
+/** IPE-055-F immutable Episode staging events; the Episode itself stays unpublished. */
+export const workspaceEditorialEpisodeStages = mysqlTable(
+  "workspaceEditorialEpisodeStages",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workItemId: int("workItemId").notNull(),
+    approvalId: int("approvalId").notNull(),
+    draftId: int("draftId").notNull(),
+    stagedDraftSha256: varchar("stagedDraftSha256", { length: 64 }).notNull(),
+    qcEvidenceSha256: varchar("qcEvidenceSha256", { length: 64 }).notNull(),
+    episodeId: int("episodeId").notNull(),
+    novelId: int("novelId").notNull(),
+    episodeNumber: varchar("episodeNumber", { length: 100 }).notNull(),
+    episodeTitle: varchar("episodeTitle", { length: 500 }).notNull(),
+    contentSha256: varchar("contentSha256", { length: 64 }).notNull(),
+    episodeStateSha256: varchar("episodeStateSha256", { length: 64 }).notNull(),
+    payloadSha256: varchar("payloadSha256", { length: 64 }).notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 255 }).notNull(),
+    stagedByUserId: int("stagedByUserId").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    itemIdempotencyUnique: uniqueIndex("wees_item_idempotency_unique").on(
+      table.workItemId,
+      table.idempotencyKey
+    ),
+    approvalUnique: uniqueIndex("wees_approval_unique").on(table.approvalId),
+    itemCreatedIdx: index("wees_item_created_idx").on(
+      table.workItemId,
+      table.createdAt
+    ),
+    episodeIdx: index("wees_episode_idx").on(table.episodeId, table.createdAt),
+    workItemFk: foreignKey({
+      name: "wees_work_item_fk",
+      columns: [table.workItemId],
+      foreignColumns: [workspaceEditorialWorkItems.id],
+    }).onDelete("cascade"),
+    approvalFk: foreignKey({
+      name: "wees_approval_fk",
+      columns: [table.approvalId],
+      foreignColumns: [workspaceEditorialDraftApprovals.id],
+    }).onDelete("cascade"),
+    draftFk: foreignKey({
+      name: "wees_draft_fk",
+      columns: [table.draftId],
+      foreignColumns: [workspaceEditorialDrafts.id],
+    }).onDelete("cascade"),
+    episodeFk: foreignKey({
+      name: "wees_episode_fk",
+      columns: [table.episodeId],
+      foreignColumns: [episodes.id],
+    }),
+    novelFk: foreignKey({
+      name: "wees_novel_fk",
+      columns: [table.novelId],
+      foreignColumns: [novels.id],
+    }),
+    stagedByFk: foreignKey({
+      name: "wees_staged_by_fk",
+      columns: [table.stagedByUserId],
+      foreignColumns: [users.id],
+    }),
+  })
+);
+
 /** IPE-055-D deterministic foreign-word checker over Workspace editorial drafts. */
 export const workspaceEditorialCheckerAllowWords = mysqlTable(
   "workspaceEditorialCheckerAllowWords",

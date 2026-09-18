@@ -72,6 +72,12 @@ import {
   WorkspaceEditorialEditorError,
 } from "./editorialEditor.service";
 import {
+  approveEditorialDraft,
+  getEditorialApprovalReadModel,
+  stageEditorialEpisodeDraft,
+  WorkspaceEditorialApprovalError,
+} from "./editorialApproval.service";
+import {
   createPublishDestination,
   createPublishDryRun,
   getPublishRunDetail,
@@ -287,6 +293,21 @@ function mapWorkspaceError(error: unknown): never {
           ? "NOT_FOUND"
           : error.code.endsWith("_CONFLICT") ||
               error.code === "UNDO_NOT_AVAILABLE"
+            ? "CONFLICT"
+            : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
+  if (error instanceof WorkspaceEditorialApprovalError) {
+    const code =
+      error.code === "DATABASE_UNAVAILABLE"
+        ? "SERVICE_UNAVAILABLE"
+        : error.code.endsWith("_NOT_FOUND")
+          ? "NOT_FOUND"
+          : error.code.endsWith("_CONFLICT") ||
+              error.code === "CHECKER_STALE" ||
+              error.code === "QC_UNRESOLVED" ||
+              error.code === "EPISODE_PUBLISHED" ||
+              error.code === "KANBAN_CONFLICT"
             ? "CONFLICT"
             : "BAD_REQUEST";
     throw new TRPCError({ code, message: error.message });
@@ -907,6 +928,59 @@ export const workspaceRouter = router({
       .mutation(async ({ ctx, input }) => {
         try {
           return await undoEditorialEditorEdit({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    approval: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getEditorialApprovalReadModel({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    approveDraft: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        expectedDraftId: z.number().int().positive(),
+        expectedDraftVersion: z.number().int().positive(),
+        expectedDraftSha256: z.string().trim().length(64),
+        expectedCheckerRunId: z.number().int().positive(),
+        expectedQcEvidenceSha256: z.string().trim().length(64),
+        idempotencyKey: z.string().trim().min(1).max(255),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await approveEditorialDraft({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    stageEpisodeDraft: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        approvalId: z.number().int().positive(),
+        expectedDraftId: z.number().int().positive(),
+        expectedDraftVersion: z.number().int().positive(),
+        expectedDraftSha256: z.string().trim().length(64),
+        idempotencyKey: z.string().trim().min(1).max(255),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await stageEditorialEpisodeDraft({
             actorUserId: ctx.user.id,
             ...input,
           });
