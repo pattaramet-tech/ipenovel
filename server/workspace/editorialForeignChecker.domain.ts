@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION =
-  "workspace-editorial-foreign-checker-v1" as const;
+  "workspace-editorial-foreign-checker-v2" as const;
 
 export const EDITORIAL_FOREIGN_CHECKER_RULES = {
   foreignScript: "foreign_script",
@@ -308,6 +308,9 @@ export function evaluateEditorialForeignParagraph(
     if (isLikelyKaomoji(latinContext)) continue;
     if (longSpans.some(span => start >= span.start && end <= span.end))
       continue;
+    // Isolated ASCII letters are structural labels/noise in translated prose
+    // (for example: room A, route X) and are intentionally non-blocking.
+    if (/^[A-Za-z]$/.test(latinMatch[0])) continue;
     const normalized = normalizeEditorialAllowedWord(latinMatch[0]);
     if (allowWords.has(normalized)) continue;
     findings.push(

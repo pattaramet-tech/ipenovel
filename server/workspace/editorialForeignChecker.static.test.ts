@@ -34,6 +34,7 @@ describe("Workspace Editorial foreign-word checker static boundaries", () => {
   it("adds short ASCII-word detection as a separate deterministic rule and stores whole sentence/context", () => {
     const domain = source("server/workspace/editorialForeignChecker.domain.ts");
     expect(domain).toContain('latinWord: "latin_word"');
+    expect(domain).toContain('if (/^[A-Za-z]$/.test(latinMatch[0])) continue;');
     expect(domain).toContain("sentenceText");
     expect(domain).toContain("contextText");
     expect(domain).toContain('offsetEncoding: "utf16"');
@@ -78,6 +79,8 @@ describe("Workspace Editorial foreign-word checker static boundaries", () => {
     const page = source("client/src/pages/WorkspacePage.tsx");
     expect(page).toContain("Deterministic Foreign-word Checker");
     expect(page).toContain("finding.sentenceText");
+    expect(page).toContain("editorTarget && editorTarget.findingId === finding.id");
+    expect(page).toContain("แก้ตรง finding นี้");
     expect(page).toContain("ยอมรับคำนี้");
     expect(page).toContain("Mark fixed");
     expect(page).not.toContain("contentEditable");

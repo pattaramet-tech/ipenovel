@@ -85,6 +85,8 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(page).toContain("Workspace Editor");
     expect(page).toContain("แก้ประโยค");
     expect(page).toContain("แก้ย่อหน้า");
+    expect(page).toContain("editorTarget && editorTarget.findingId === finding.id");
+    expect(page).toContain("editorTarget && !editorTarget.findingId");
     expect(page).toContain('submitEditorEdit("autosave")');
     expect(page).toContain("บันทึกทันที + ตรวจซ้ำ");
     expect(page).toContain("Undo last edit");

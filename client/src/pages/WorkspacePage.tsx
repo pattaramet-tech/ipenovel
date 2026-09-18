@@ -6,6 +6,7 @@ import { useAdminGuard } from "@/hooks/useAdminGuard";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { summarizeEditorialDraftTabs } from "./workspaceEditorialDraftSummary";
 import {
   Activity,
   BookOpen,
@@ -31,6 +32,14 @@ function shortHash(value: unknown) {
   if (!value) return "—";
   const text = String(value);
   return text.length > 16 ? `${text.slice(0, 8)}…${text.slice(-6)}` : text;
+}
+
+function compactTabTitles(rows: Array<{ title: string }>, limit = 6) {
+  const shown = rows.slice(0, limit).map(row => row.title);
+  const remainder = rows.length - shown.length;
+  return remainder > 0
+    ? `${shown.join(", ")} และอีก ${remainder}`
+    : shown.join(", ");
 }
 
 function StatusPill({ value }: { value: unknown }) {
@@ -60,6 +69,8 @@ export default function WorkspacePage() {
   const [selectedSourceWorkItemId, setSelectedSourceWorkItemId] = useState<number>();
   const [googleConnectionId, setGoogleConnectionId] = useState("");
   const [googleDocUrl, setGoogleDocUrl] = useState("");
+  const [newNovelGoogleDocUrl, setNewNovelGoogleDocUrl] = useState("");
+  const [episodeGoogleDocUrl, setEpisodeGoogleDocUrl] = useState("");
   const [uploadedSource, setUploadedSource] = useState<{
     name: string;
     mimeType: string;
@@ -333,28 +344,114 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const createEditorialNovel = trpc.workspace.editorial.createNovel.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (result) => {
+      const quickDocUrl = newNovelGoogleDocUrl.trim();
+      let quickImportSucceeded = false;
       setNewNovelTitle("");
+      setNewNovelGoogleDocUrl("");
+      let board: any;
       if (selectedWorkspaceId) {
-        await ensureEditorialBoard.mutateAsync({ workspaceId: selectedWorkspaceId });
+        board = await ensureEditorialBoard.mutateAsync({ workspaceId: selectedWorkspaceId });
       }
-      await Promise.all([
+      const refreshed = await Promise.all([
         detail.refetch(),
         bindings.refetch(),
         ownership.refetch(),
         availableNovels.refetch(),
         editorialBoard.refetch(),
       ]);
-      toast.success("New hidden novel added to Editorial Workspace");
+      board = refreshed[4]?.data ?? board;
+      const storyCard = board?.columns
+        ?.flatMap((column: any) => column.cards ?? [])
+        .find(
+          (card: any) =>
+            card.workItemType === "NEW_STORY" &&
+            card.workspaceNovelId === result.workspaceNovelId
+        );
+      if (storyCard?.workItemId) {
+        setSelectedSourceWorkItemId(storyCard.workItemId);
+      }
+      if (quickDocUrl) {
+        setGoogleDocUrl(quickDocUrl);
+        if (!storyCard?.workItemId) {
+          toast.error("สร้างเรื่องแล้ว แต่ยังหา Editorial work item สำหรับ Quick Import ไม่พบ");
+        } else {
+          const connectionId =
+            Number(googleConnectionId) || Number(googleConnections[0]?.id);
+          if (!connectionId) {
+            toast.error("สร้างเรื่องแล้ว แต่ยังไม่มี Google Docs connection สำหรับ Quick Import");
+          } else {
+            try {
+              await importEditorialGoogleDoc.mutateAsync({
+                workspaceId: selectedWorkspaceId!,
+                workItemId: storyCard.workItemId,
+                connectionId,
+                documentUrlOrId: quickDocUrl,
+              });
+              quickImportSucceeded = true;
+            } catch {
+              // The Google import mutation already reports the provider error.
+            }
+          }
+        }
+      }
+      toast.success(
+        quickImportSucceeded
+          ? "สร้างเรื่องใหม่และนำเข้า Google Docs แล้ว"
+          : "New hidden novel added to Editorial Workspace"
+      );
     },
     onError: (error) => toast.error(error.message),
   });
   const createEditorialEpisode = trpc.workspace.editorial.createEpisode.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (result, variables) => {
+      const quickDocUrl = episodeGoogleDocUrl.trim();
+      let quickImportSucceeded = false;
       setEpisodeNumber("");
       setEpisodeTitle("");
-      await editorialBoard.refetch();
-      toast.success("Episode work item added");
+      setEpisodeGoogleDocUrl("");
+      const refreshed = await editorialBoard.refetch();
+      const board: any = refreshed.data ?? result.board;
+      const episodeCard = board?.columns
+        ?.flatMap((column: any) => column.cards ?? [])
+        .find(
+          (card: any) =>
+            card.workItemType === "NEW_EPISODE" &&
+            card.workspaceNovelId === variables.workspaceNovelId &&
+            String(card.episodeNumber ?? "").trim() === variables.episodeNumber.trim()
+        );
+      if (episodeCard?.workItemId) {
+        setSelectedSourceWorkItemId(episodeCard.workItemId);
+      }
+      if (quickDocUrl) {
+        setGoogleDocUrl(quickDocUrl);
+        if (!episodeCard?.workItemId) {
+          toast.error("เพิ่มตอนแล้ว แต่ยังหา Editorial work item สำหรับ Quick Import ไม่พบ");
+        } else {
+          const connectionId =
+            Number(googleConnectionId) || Number(googleConnections[0]?.id);
+          if (!connectionId) {
+            toast.error("เพิ่มตอนแล้ว แต่ยังไม่มี Google Docs connection สำหรับ Quick Import");
+          } else {
+            try {
+              await importEditorialGoogleDoc.mutateAsync({
+                workspaceId: selectedWorkspaceId!,
+                workItemId: episodeCard.workItemId,
+                connectionId,
+                documentUrlOrId: quickDocUrl,
+              });
+              quickImportSucceeded = true;
+            } catch {
+              // The Google import mutation already reports the provider error.
+            }
+          }
+        }
+      }
+      toast.success(
+        quickImportSucceeded
+          ? "เพิ่มตอนและนำเข้า Google Docs แล้ว"
+          : "Episode work item added"
+      );
     },
     onError: (error) => toast.error(error.message),
   });
@@ -648,6 +745,16 @@ export default function WorkspacePage() {
   const googleConnections = (
     (editorialGoogleConnections.data as any[] | undefined) ?? []
   ).filter((connection: any) => connection.status === "active" && connection.scopeReady);
+  const firstGoogleConnectionId = googleConnections[0]?.id;
+  const draftStructureSummary = useMemo(
+    () => summarizeEditorialDraftTabs(editorialDraftData?.tabs ?? []),
+    [editorialDraftData?.tabs]
+  );
+  useEffect(() => {
+    if (!googleConnectionId && firstGoogleConnectionId) {
+      setGoogleConnectionId(String(firstGoogleConnectionId));
+    }
+  }, [firstGoogleConnectionId, googleConnectionId]);
   const novelOptions = ((availableNovels.data as any[] | undefined) ?? []);
   const unboundNovelOptions = novelOptions.filter((novel: any) => !novel.bound);
   const workspaceNovelOptions = (((selected as any)?.novels as any[] | undefined) ?? []);
@@ -762,6 +869,26 @@ export default function WorkspacePage() {
                 <StatusPill value={(editorialBoard.data as any)?.board?.status ?? "initializing"} />
               </div>
 
+              <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/10 p-3 text-sm">
+                <span className="font-medium">Google Docs สำหรับ Quick Import</span>
+                <select
+                  aria-label="Quick import Google Docs connection"
+                  className="h-9 min-w-52 rounded-md border bg-background px-3 text-sm"
+                  value={googleConnectionId}
+                  onChange={(event) => setGoogleConnectionId(event.target.value)}
+                >
+                  <option value="">เลือก Google connection</option>
+                  {googleConnections.map((connection: any) => (
+                    <option key={connection.id} value={connection.id}>
+                      Connection #{connection.id}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-xs text-muted-foreground">
+                  ใส่ลิงก์ตอนสร้างเรื่อง/เพิ่มตอนได้เลย · รองรับ Google Docs ที่มีหลายแท็บในลิงก์เดียว
+                </span>
+              </div>
+
               <div className="grid gap-3 lg:grid-cols-3">
                 <form
                   className="space-y-2 rounded-md border bg-muted/20 p-3"
@@ -814,6 +941,16 @@ export default function WorkspacePage() {
                     maxLength={500}
                     placeholder="ชื่อเรื่อง"
                   />
+                  <Input
+                    value={newNovelGoogleDocUrl}
+                    onChange={(event) => setNewNovelGoogleDocUrl(event.target.value)}
+                    maxLength={1000}
+                    placeholder="Google Docs link สำหรับ Import (ถ้ามี)"
+                    disabled={createEditorialNovel.isPending}
+                  />
+                  <div className="text-xs text-muted-foreground">
+                    ถ้าใส่ลิงก์ ระบบจะสร้างเรื่อง เลือกการ์ด และ Import Draft ให้อัตโนมัติ
+                  </div>
                   <Button type="submit" className="w-full" disabled={!newNovelTitle.trim() || createEditorialNovel.isPending}>
                     {createEditorialNovel.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                     สร้างเป็นฉบับซ่อน
@@ -856,6 +993,13 @@ export default function WorkspacePage() {
                     <Input value={episodeNumber} onChange={(event) => setEpisodeNumber(event.target.value)} maxLength={100} placeholder="ตอน / ช่วงตอน" />
                     <Input value={episodeTitle} onChange={(event) => setEpisodeTitle(event.target.value)} maxLength={500} placeholder="ชื่อตอน (ถ้ามี)" />
                   </div>
+                  <Input
+                    value={episodeGoogleDocUrl}
+                    onChange={(event) => setEpisodeGoogleDocUrl(event.target.value)}
+                    maxLength={1000}
+                    placeholder="Google Docs link สำหรับ Import (ถ้ามี)"
+                    disabled={createEditorialEpisode.isPending}
+                  />
                   <select
                     aria-label="Initial episode assignee"
                     className="h-10 w-full rounded-md border bg-background px-3 text-sm"
@@ -1229,175 +1373,6 @@ export default function WorkspacePage() {
                     </div>
                   )}
 
-                  {!!(editorialSourceDraft.data as any)?.tabs?.length && (
-                    <div className="space-y-2">
-                      <div className="text-sm font-medium">Draft structure</div>
-                      {(editorialSourceDraft.data as any).tabs.map((tab: any) => (
-                        <div key={tab.id} className="rounded-md border p-3 text-sm">
-                          <div className="flex flex-wrap justify-between gap-2">
-                            <span>{tab.title}</span>
-                            <span className="text-xs text-muted-foreground">
-                              {tab.paragraphs.length} paragraphs · {shortHash(tab.structuralSha256)}
-                            </span>
-                          </div>
-                          {(tab.chapterNumber || tab.warnings?.length) && (
-                            <div className="mt-1 text-xs text-muted-foreground">
-                              {tab.chapterNumber ? `บทที่ ${tab.chapterNumber}${tab.chapterTitle ? ` · ${tab.chapterTitle}` : ""}` : ""}
-                              {tab.warnings?.length ? ` · ${tab.warnings.join(", ")}` : ""}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="space-y-3 rounded-md border p-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <div className="font-medium">Workspace Editor</div>
-                        <div className="text-xs text-muted-foreground">
-                          แก้ใน Workspace เท่านั้น ทุกการบันทึกสร้าง Draft version/hash ใหม่แบบ CAS และตรวจซ้ำอัตโนมัติ
-                        </div>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        disabled={
-                          !editorialEditorData?.canUndo ||
-                          !latestEditorialDraft ||
-                          undoEditorialEdit.isPending
-                        }
-                        onClick={() => {
-                          if (!latestEditorialDraft) return;
-                          undoEditorialEdit.mutate({
-                            workspaceId: selectedWorkspaceId,
-                            workItemId: selectedSourceWorkItemId,
-                            expectedDraftId: latestEditorialDraft.id,
-                            expectedDraftVersion: latestEditorialDraft.version,
-                            expectedDraftSha256: latestEditorialDraft.draftSha256,
-                            idempotencyKey: `editor-undo:${latestEditorialDraft.id}:${latestEditorialDraft.version}`,
-                          });
-                        }}
-                      >
-                        {undoEditorialEdit.isPending && (
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        )}
-                        Undo last edit
-                      </Button>
-                    </div>
-
-                    <div className="grid gap-2 md:grid-cols-3">
-                      <div className="rounded border p-2 text-sm">
-                        Draft v{latestEditorialDraft?.version ?? "—"}
-                      </div>
-                      <div className="rounded border p-2 text-sm">
-                        SHA {shortHash(latestEditorialDraft?.draftSha256)}
-                      </div>
-                      <div className="rounded border p-2 text-sm">
-                        Edit history {editorialEditorData?.history?.length ?? 0}
-                      </div>
-                    </div>
-
-                    {editorTarget && (
-                      <div className="space-y-2 rounded-md border bg-muted/20 p-3">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div>
-                            <div className="font-medium">{editorTarget.label}</div>
-                            <div className="text-xs text-muted-foreground">
-                              {editorTarget.kind} · Draft v{editorTarget.draftVersion} · auto-save หลังหยุดพิมพ์ 3 วินาที
-                            </div>
-                          </div>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="ghost"
-                            disabled={editEditorialDraft.isPending}
-                            onClick={() => {
-                              setEditorTarget(undefined);
-                              setEditorText("");
-                            }}
-                          >
-                            ยกเลิก
-                          </Button>
-                        </div>
-                        <textarea
-                          className="min-h-28 w-full rounded-md border bg-background p-3 text-sm"
-                          value={editorText}
-                          maxLength={200000}
-                          disabled={editEditorialDraft.isPending}
-                          onChange={(event) => setEditorText(event.target.value)}
-                        />
-                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                          <span>
-                            {editorText.length.toLocaleString()} ตัวอักษร · ห้ามสร้างบรรทัดใหม่ใน mutation เดียว
-                          </span>
-                          <Button
-                            type="button"
-                            size="sm"
-                            disabled={
-                              editEditorialDraft.isPending ||
-                              editorText === editorTarget.expectedText
-                            }
-                            onClick={() => submitEditorEdit("manual")}
-                          >
-                            {editEditorialDraft.isPending && (
-                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            )}
-                            บันทึกทันที + ตรวจซ้ำ
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="space-y-2">
-                      {(editorialDraftData?.tabs ?? []).map((tab: any) => (
-                        <details key={tab.id} className="rounded-md border">
-                          <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
-                            {tab.title} · {tab.paragraphs.length} paragraphs
-                          </summary>
-                          <div className="space-y-2 border-t p-3">
-                            {tab.paragraphs.map((paragraph: any) => (
-                              <div
-                                key={paragraph.paragraphKey}
-                                className="rounded border bg-background p-2 text-sm"
-                              >
-                                <div className="mb-1 flex items-center justify-between gap-2">
-                                  <span className="text-xs text-muted-foreground">
-                                    ¶{paragraph.paragraphOrder} · {shortHash(paragraph.paragraphFingerprint)}
-                                  </span>
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="outline"
-                                    disabled={!latestEditorialDraft || editEditorialDraft.isPending}
-                                    onClick={() => {
-                                      if (!latestEditorialDraft) return;
-                                      setEditorTarget({
-                                        kind: "replace_paragraph",
-                                        label: `แก้ย่อหน้า ¶${paragraph.paragraphOrder}`,
-                                        paragraphKey: paragraph.paragraphKey,
-                                        expectedParagraphFingerprint:
-                                          paragraph.paragraphFingerprint,
-                                        expectedText: paragraph.text,
-                                        draftId: latestEditorialDraft.id,
-                                        draftVersion: latestEditorialDraft.version,
-                                        draftSha256: latestEditorialDraft.draftSha256,
-                                      });
-                                      setEditorText(paragraph.text);
-                                    }}
-                                  >
-                                    แก้ย่อหน้า
-                                  </Button>
-                                </div>
-                                <div className="whitespace-pre-wrap">{paragraph.text || "—"}</div>
-                              </div>
-                            ))}
-                          </div>
-                        </details>
-                      ))}
-                    </div>
-                  </div>
-
                   <div className="space-y-3 rounded-md border p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
@@ -1486,6 +1461,57 @@ export default function WorkspacePage() {
                           <div className="mt-2 rounded bg-background p-2">
                             {finding.sentenceText}
                           </div>
+                          {editorTarget && editorTarget.findingId === finding.id && (
+                            <div className="mt-2 space-y-2 rounded-md border bg-background p-3">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                  <div className="font-medium">{editorTarget.label}</div>
+                                  <div className="text-xs text-muted-foreground">
+                                    แก้ตรง finding นี้ · Draft v{editorTarget.draftVersion} · auto-save หลังหยุดพิมพ์ 3 วินาที
+                                  </div>
+                                </div>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={editEditorialDraft.isPending}
+                                  onClick={() => {
+                                    setEditorTarget(undefined);
+                                    setEditorText("");
+                                  }}
+                                >
+                                  ยกเลิก
+                                </Button>
+                              </div>
+                              <textarea
+                                className="min-h-28 w-full rounded-md border bg-background p-3 text-sm"
+                                value={editorText}
+                                maxLength={200000}
+                                disabled={editEditorialDraft.isPending}
+                                onChange={(event) => setEditorText(event.target.value)}
+                                autoFocus
+                              />
+                              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                                <span>
+                                  {editorText.length.toLocaleString()} ตัวอักษร · บันทึกแล้วตรวจซ้ำอัตโนมัติ
+                                </span>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  disabled={
+                                    editEditorialDraft.isPending ||
+                                    editorText === editorTarget.expectedText
+                                  }
+                                  onClick={() => submitEditorEdit("manual")}
+                                >
+                                  {editEditorialDraft.isPending && (
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                  )}
+                                  บันทึกทันที + ตรวจซ้ำ
+                                </Button>
+                              </div>
+                            </div>
+                          )}
                           <div className="mt-2 flex flex-wrap gap-2">
                             <Button
                               type="button"
@@ -1582,6 +1608,243 @@ export default function WorkspacePage() {
                             </Button>
                           </div>
                         </div>
+                      ))}
+                    </div>
+                  </div>
+
+
+                  {!!(editorialSourceDraft.data as any)?.tabs?.length && (
+                    <details className="rounded-md border bg-muted/10">
+                      <summary className="cursor-pointer list-none p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="font-medium">
+                            Draft structure · {draftStructureSummary.totalTabs} แท็บ
+                          </div>
+                          <div className="flex flex-wrap gap-2 text-xs">
+                            {draftStructureSummary.sequenceIssues.length > 0 && (
+                              <span className="rounded-full border px-2 py-0.5">
+                                เลขแท็บไม่เรียง {draftStructureSummary.sequenceIssues.length}
+                              </span>
+                            )}
+                            {draftStructureSummary.emptyTabs.length > 0 && (
+                              <span className="rounded-full border px-2 py-0.5">
+                                แท็บว่าง {draftStructureSummary.emptyTabs.length}
+                              </span>
+                            )}
+                            {draftStructureSummary.unnumberedTabs.length > 0 && (
+                              <span className="rounded-full border px-2 py-0.5">
+                                ไม่มีเลขแท็บ {draftStructureSummary.unnumberedTabs.length}
+                              </span>
+                            )}
+                            {draftStructureSummary.shortTabs.length > 0 && (
+                              <span className="rounded-full border px-2 py-0.5">
+                                เนื้อหาสั้นผิดปกติ {draftStructureSummary.shortTabs.length}
+                              </span>
+                            )}
+                            {draftStructureSummary.warningTabs.length > 0 && (
+                              <span className="rounded-full border px-2 py-0.5">
+                                warning {draftStructureSummary.warningTabs.length}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                          {draftStructureSummary.sequenceIssues.length > 0 && (
+                            <div>ลำดับ: {draftStructureSummary.sequenceIssues.join(", ")}</div>
+                          )}
+                          {draftStructureSummary.emptyTabs.length > 0 && (
+                            <div>
+                              ไม่มีเนื้อหา: {compactTabTitles(draftStructureSummary.emptyTabs)}
+                            </div>
+                          )}
+                          {draftStructureSummary.unnumberedTabs.length > 0 && (
+                            <div>
+                              อ่านเลขแท็บไม่ได้: {compactTabTitles(draftStructureSummary.unnumberedTabs)}
+                            </div>
+                          )}
+                          {draftStructureSummary.shortTabs.length > 0 && (
+                            <div>
+                              สั้นผิดปกติ: {draftStructureSummary.shortTabs
+                                .slice(0, 6)
+                                .map(tab => `${tab.title} (${tab.characterCount} ตัวอักษร)`)
+                                .join(", ")}
+                              {draftStructureSummary.shortTabs.length > 6
+                                ? ` และอีก ${draftStructureSummary.shortTabs.length - 6}`
+                                : ""}
+                            </div>
+                          )}
+                          {!draftStructureSummary.sequenceIssues.length &&
+                            !draftStructureSummary.emptyTabs.length &&
+                            !draftStructureSummary.unnumberedTabs.length &&
+                            !draftStructureSummary.shortTabs.length && (
+                              <div>โครงสร้างแท็บปกติ · กดเพื่อดูรายละเอียดทุกแท็บ</div>
+                            )}
+                        </div>
+                      </summary>
+                      <div className="space-y-2 border-t p-3">
+                        {(editorialSourceDraft.data as any).tabs.map((tab: any) => (
+                          <div key={tab.id} className="rounded-md border bg-background p-3 text-sm">
+                            <div className="flex flex-wrap justify-between gap-2">
+                              <span>{tab.title}</span>
+                              <span className="text-xs text-muted-foreground">
+                                {tab.paragraphs.length} paragraphs · {shortHash(tab.structuralSha256)}
+                              </span>
+                            </div>
+                            {(tab.chapterNumber || tab.warnings?.length) && (
+                              <div className="mt-1 text-xs text-muted-foreground">
+                                {tab.chapterNumber ? `บทที่ ${tab.chapterNumber}${tab.chapterTitle ? ` · ${tab.chapterTitle}` : ""}` : ""}
+                                {tab.warnings?.length ? ` · ${tab.warnings.join(", ")}` : ""}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+
+                  <div className="space-y-3 rounded-md border p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="font-medium">Workspace Editor</div>
+                        <div className="text-xs text-muted-foreground">
+                          แก้ใน Workspace เท่านั้น ทุกการบันทึกสร้าง Draft version/hash ใหม่แบบ CAS และตรวจซ้ำอัตโนมัติ
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={
+                          !editorialEditorData?.canUndo ||
+                          !latestEditorialDraft ||
+                          undoEditorialEdit.isPending
+                        }
+                        onClick={() => {
+                          if (!latestEditorialDraft) return;
+                          undoEditorialEdit.mutate({
+                            workspaceId: selectedWorkspaceId,
+                            workItemId: selectedSourceWorkItemId,
+                            expectedDraftId: latestEditorialDraft.id,
+                            expectedDraftVersion: latestEditorialDraft.version,
+                            expectedDraftSha256: latestEditorialDraft.draftSha256,
+                            idempotencyKey: `editor-undo:${latestEditorialDraft.id}:${latestEditorialDraft.version}`,
+                          });
+                        }}
+                      >
+                        {undoEditorialEdit.isPending && (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        )}
+                        Undo last edit
+                      </Button>
+                    </div>
+
+                    <div className="grid gap-2 md:grid-cols-3">
+                      <div className="rounded border p-2 text-sm">
+                        Draft v{latestEditorialDraft?.version ?? "—"}
+                      </div>
+                      <div className="rounded border p-2 text-sm">
+                        SHA {shortHash(latestEditorialDraft?.draftSha256)}
+                      </div>
+                      <div className="rounded border p-2 text-sm">
+                        Edit history {editorialEditorData?.history?.length ?? 0}
+                      </div>
+                    </div>
+
+                    {editorTarget && !editorTarget.findingId && (
+                      <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <div className="font-medium">{editorTarget.label}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {editorTarget.kind} · Draft v{editorTarget.draftVersion} · auto-save หลังหยุดพิมพ์ 3 วินาที
+                            </div>
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={editEditorialDraft.isPending}
+                            onClick={() => {
+                              setEditorTarget(undefined);
+                              setEditorText("");
+                            }}
+                          >
+                            ยกเลิก
+                          </Button>
+                        </div>
+                        <textarea
+                          className="min-h-28 w-full rounded-md border bg-background p-3 text-sm"
+                          value={editorText}
+                          maxLength={200000}
+                          disabled={editEditorialDraft.isPending}
+                          onChange={(event) => setEditorText(event.target.value)}
+                        />
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                          <span>
+                            {editorText.length.toLocaleString()} ตัวอักษร · ห้ามสร้างบรรทัดใหม่ใน mutation เดียว
+                          </span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={
+                              editEditorialDraft.isPending ||
+                              editorText === editorTarget.expectedText
+                            }
+                            onClick={() => submitEditorEdit("manual")}
+                          >
+                            {editEditorialDraft.isPending && (
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            )}
+                            บันทึกทันที + ตรวจซ้ำ
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="space-y-2">
+                      {(editorialDraftData?.tabs ?? []).map((tab: any) => (
+                        <details key={tab.id} className="rounded-md border">
+                          <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
+                            {tab.title} · {tab.paragraphs.length} paragraphs
+                          </summary>
+                          <div className="space-y-2 border-t p-3">
+                            {tab.paragraphs.map((paragraph: any) => (
+                              <div
+                                key={paragraph.paragraphKey}
+                                className="rounded border bg-background p-2 text-sm"
+                              >
+                                <div className="mb-1 flex items-center justify-between gap-2">
+                                  <span className="text-xs text-muted-foreground">
+                                    ¶{paragraph.paragraphOrder} · {shortHash(paragraph.paragraphFingerprint)}
+                                  </span>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={!latestEditorialDraft || editEditorialDraft.isPending}
+                                    onClick={() => {
+                                      if (!latestEditorialDraft) return;
+                                      setEditorTarget({
+                                        kind: "replace_paragraph",
+                                        label: `แก้ย่อหน้า ¶${paragraph.paragraphOrder}`,
+                                        paragraphKey: paragraph.paragraphKey,
+                                        expectedParagraphFingerprint:
+                                          paragraph.paragraphFingerprint,
+                                        expectedText: paragraph.text,
+                                        draftId: latestEditorialDraft.id,
+                                        draftVersion: latestEditorialDraft.version,
+                                        draftSha256: latestEditorialDraft.draftSha256,
+                                      });
+                                      setEditorText(paragraph.text);
+                                    }}
+                                  >
+                                    แก้ย่อหน้า
+                                  </Button>
+                                </div>
+                                <div className="whitespace-pre-wrap">{paragraph.text || "—"}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
                       ))}
                     </div>
                   </div>

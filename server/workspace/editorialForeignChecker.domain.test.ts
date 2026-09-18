@@ -58,6 +58,24 @@ describe("Editorial deterministic foreign-word checker", () => {
     });
   });
 
+  it("auto-exempts every isolated ASCII letter A-Z and a-z without hiding real Latin words", () => {
+    const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    for (const letter of letters) {
+      expect(
+        evaluateEditorialForeignParagraph(
+          paragraph(`ประตู ${letter} ปิดอยู่`),
+          new Set()
+        )
+      ).toEqual([]);
+    }
+
+    const findings = evaluateEditorialForeignParagraph(
+      paragraph("ประตู A ปิดอยู่ แต่ยังมี support ค้างในประโยค"),
+      new Set()
+    );
+    expect(findings.map(item => item.token)).toEqual(["support"]);
+  });
+
   it("normalizes ASCII allow words case-insensitively while keeping non-Latin tokens exact", () => {
     expect(normalizeEditorialAllowedWord("  Support  ")).toBe("support");
     expect(normalizeEditorialAllowedWord(" テスト ")).toBe("テスト");
