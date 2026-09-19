@@ -83,6 +83,7 @@ import {
   requestEditorialPublish,
   WorkspaceEditorialPublishError,
 } from "./editorialPublish.service";
+import { getEditorialEvidenceStatuses } from "./editorialStatus.service";
 import {
   createPublishDestination,
   createPublishDryRun,
@@ -837,6 +838,21 @@ export const workspaceRouter = router({
   }),
 
   editorial: router({
+    evidenceStatuses: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemIds: z.array(z.number().int().positive()).max(500),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getEditorialEvidenceStatuses({
+            actorUserId: ctx.user.id,
+            workspaceId: input.workspaceId,
+            workItemIds: input.workItemIds,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
     board: adminProcedure
       .input(workspaceIdInput)
       .query(async ({ ctx, input }) => {

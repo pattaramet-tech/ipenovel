@@ -32,6 +32,18 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).toContain("searchableWorkspaceNovelOptions");
   });
 
+  it("binds table status columns and quick filters to durable evidence", () => {
+    const source = page();
+    expect(source).toContain("editorial.evidenceStatuses.useQuery");
+    expect(source).toContain("card.evidence?.checker");
+    expect(source).toContain("card.evidence?.approval");
+    expect(source).toContain("card.evidence?.stage");
+    expect(source).toContain("card.evidence?.readyToPublish");
+    expect(source).toContain("card.evidence?.published");
+    expect(source).toContain("Publish run + receipt + outbox + reader visibility ครบ");
+    expect(source).not.toContain('type="checkbox"');
+  });
+
   it("offers Google Docs quick import while creating a story or episode", () => {
     const source = page();
     expect(source).toContain("Google Docs สำหรับ Quick Import");

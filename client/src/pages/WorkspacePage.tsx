@@ -120,6 +120,14 @@ export default function WorkspacePage() {
     { workspaceId: selectedWorkspaceId ?? 0 },
     { enabled: isAdmin && Boolean(selectedWorkspaceId) }
   );
+  const editorialEvidenceWorkItemIds = (((editorialBoard.data as any)?.columns ?? []) as any[])
+    .flatMap((column: any) => column.cards ?? [])
+    .map((card: any) => card.workItemId)
+    .filter((id: any): id is number => Number.isInteger(id) && id > 0);
+  const editorialEvidenceStatuses = trpc.workspace.editorial.evidenceStatuses.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0, workItemIds: editorialEvidenceWorkItemIds },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) && editorialEvidenceWorkItemIds.length > 0, retry: false }
+  );
   const editorialGoogleConnections = trpc.workspace.editorial.googleConnections.useQuery(
     undefined,
     { enabled: isAdmin }
@@ -738,8 +746,16 @@ export default function WorkspacePage() {
   const editorialColumns = (((editorialBoard.data as any)?.columns as any[] | undefined) ?? []);
   const editorialTransitions = (((editorialBoard.data as any)?.transitions as any[] | undefined) ?? []);
   const editorialAssignees = (((editorialBoard.data as any)?.assignees as any[] | undefined) ?? []);
+  const editorialEvidenceByWorkItemId = new Map(
+    (((editorialEvidenceStatuses.data as any[]) ?? [])).map((status: any) => [status.workItemId, status])
+  );
   const editorialCards = editorialColumns.flatMap((column: any) =>
-    (column.cards ?? []).map((card: any) => ({ ...card, columnKey: column.key, columnName: column.name }))
+    (column.cards ?? []).map((card: any) => ({
+      ...card,
+      columnKey: column.key,
+      columnName: column.name,
+      evidence: editorialEvidenceByWorkItemId.get(card.workItemId) ?? null,
+    }))
   );
   const selectedSourceCard = editorialCards.find(
     (card: any) => card.workItemId === selectedSourceWorkItemId
@@ -794,13 +810,13 @@ export default function WorkspacePage() {
     const matchesSearch = !normalizedEditorialSearch || haystack.includes(normalizedEditorialSearch);
     const matchesQuickFilter =
       editorialQuickFilter === "all" ||
-      (editorialQuickFilter === "new" && card.columnKey === "new") ||
-      (editorialQuickFilter === "unchecked" && ["new", "checking"].includes(card.columnKey)) ||
-      (editorialQuickFilter === "needs_fix" && card.columnKey === "needs_fix") ||
-      (editorialQuickFilter === "awaiting_confirm" && ["checking", "review"].includes(card.columnKey)) ||
-      (editorialQuickFilter === "ready_stage" && card.columnKey === "approved") ||
-      (editorialQuickFilter === "ready_publish" && card.columnKey === "ready_to_publish") ||
-      (editorialQuickFilter === "published" && card.columnKey === "published");
+      (editorialQuickFilter === "new" && !card.evidence?.checkerRan) ||
+      (editorialQuickFilter === "unchecked" && !card.evidence?.checker) ||
+      (editorialQuickFilter === "needs_fix" && card.evidence?.checkerRan && !card.evidence?.checker) ||
+      (editorialQuickFilter === "awaiting_confirm" && card.evidence?.checker && !card.evidence?.approval) ||
+      (editorialQuickFilter === "ready_stage" && card.evidence?.approval && !card.evidence?.stage) ||
+      (editorialQuickFilter === "ready_publish" && card.evidence?.readyToPublish && !card.evidence?.published) ||
+      (editorialQuickFilter === "published" && card.evidence?.published);
     return matchesSearch && matchesQuickFilter;
   });
   const normalizedEpisodeNovelSearch = episodeNovelSearch.trim().toLocaleLowerCase("th");
@@ -1090,7 +1106,21 @@ export default function WorkspacePage() {
                       <tbody>{group.cards.slice().sort((a: any,b: any)=>String(a.episodeNumber??"").localeCompare(String(b.episodeNumber??""),"th",{numeric:true})).map((card:any)=>(
                         <tr key={card.id} className="border-b last:border-b-0 hover:bg-muted/10">
                           <td className="px-3 py-3"><button type="button" className="text-left font-medium text-primary hover:underline" disabled={!card.workItemId} onClick={()=>setSelectedSourceWorkItemId(card.workItemId)}>{card.workItemType==="NEW_EPISODE" ? card.episodeNumber||"ตอนใหม่" : "เรื่องใหม่ / Draft แรก"}</button>{card.episodeTitle&&<div className="mt-0.5 text-xs text-muted-foreground">{card.episodeTitle}</div>}<div className="mt-0.5 text-[11px] text-muted-foreground">{card.columnName}</div></td>
-                          {["checker","approval","stage","ready","published"].map((key)=><td key={key} className="px-3 py-3 text-center text-muted-foreground" title="เชื่อม evidence ใน IPE-056-C">—</td>)}
+                          {[
+                            ["checker", card.evidence?.checker, "Deterministic Checker ผ่านบน Draft ปัจจุบัน"],
+                            ["approval", card.evidence?.approval, "Approval ตรงกับ Draft/QC ปัจจุบัน"],
+                            ["stage", card.evidence?.stage, "Episode staging ครบและยัง valid"],
+                            ["ready", card.evidence?.readyToPublish, "Publish readiness ผ่าน stage + ownership + anchor"],
+                            ["published", card.evidence?.published, "Publish run + receipt + outbox + reader visibility ครบ"],
+                          ].map(([key, passed, label]) => (
+                            <td key={String(key)} className="px-3 py-3 text-center" title={String(label)}>
+                              {card.evidence ? (
+                                <span aria-label={passed ? "ผ่าน" : "ยังไม่ผ่าน"} className={passed ? "font-semibold text-foreground" : "text-muted-foreground"}>
+                                  {passed ? "✓" : "—"}
+                                </span>
+                              ) : <span className="text-muted-foreground">…</span>}
+                            </td>
+                          ))}
                           <td className="px-3 py-2"><Input key={String(card.workItemId) + ":" + String(card.workItemVersion) + ":" + String(card.note ?? "")} defaultValue={card.note??""} maxLength={1000} placeholder="บันทึกหมายเหตุ" disabled={!card.workItemId||!card.workItemVersion||updateEditorialWorkItemNote.isPending} onBlur={(event)=>{const next=event.currentTarget.value.trim();if(next===(card.note??""))return;updateEditorialWorkItemNote.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId,note:next||null,expectedVersion:card.workItemVersion});}} /></td>
                         </tr>
                       ))}</tbody>
