@@ -420,6 +420,17 @@ export default function ReaderPage() {
     return true;
   };
 
+  // NovelDetail chapter projection links to the parent package plus a chapter
+  // query. Once package content is readable, jump to that internal TOC entry.
+  useEffect(() => {
+    if (!canRead || !isPackage || toc.length === 0) return;
+    const requestedChapter = new URLSearchParams(window.location.search).get("chapter");
+    if (!requestedChapter) return;
+    const entry = findTocEntryByChapterNumber(toc, requestedChapter);
+    if (!entry) return;
+    requestAnimationFrame(() => scrollToAnchor(entry.anchorId));
+  }, [episodeId, canRead, isPackage, toc]);
+
   const handleResumeReading = () => {
     setShowResumeBanner(false);
     if (!progressData) return;

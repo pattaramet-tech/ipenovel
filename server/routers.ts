@@ -33,6 +33,7 @@ import { ocrMetricsRouter } from "./routers/ocrMetricsRouter";
 import { r2Put, R2StorageError } from "./services/r2Storage";
 import { optimizeImageToWebp, ImageOptimizeError, SPORTS_MATCH_IMAGE_PRESET } from "./services/imageOptimizer";
 import * as readerService from "./services/readerService";
+import { projectPackageToc } from "./services/packageTocProjectionService";
 import * as packageZipImportService from "./services/packageZipImportService";
 import {
   runMediaMigrationBatch,
@@ -539,6 +540,10 @@ export const appRouter = router({
           // field name for the frontend's sale-type tab classification.
           const saleMode = readerService.resolveSaleMode(ep);
           const saleType = saleMode;
+          // Package TOC is safe storefront metadata: headings only, never prose.
+          // It lets NovelDetail project one commercial package into its readable
+          // chapter rows without exposing the locked package content.
+          const packageToc = saleMode === "package" ? projectPackageToc(content) : [];
 
           return {
             ...safeEpisode,
@@ -550,6 +555,8 @@ export const appRouter = router({
             hasLegacyFile,
             saleMode,
             saleType,
+            packageToc,
+            packageChapterCount: packageToc.length,
             fileUrl: canRead
               ? await resolveStoredFileValueSafe(fileUrl, "episodeFile", "novels.episodes")
               : null,
