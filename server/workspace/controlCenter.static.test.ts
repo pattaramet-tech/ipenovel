@@ -30,7 +30,7 @@ describe("Workspace Control Center controlled-operations contract", () => {
     const page = read("client/src/pages/WorkspacePage.tsx");
 
     expect(page).toContain("Editorial Workspace");
-    expect(page).toContain("Editorial Kanban");
+    expect(page).toContain("Editorial Episode Packs");
     expect(page).toContain("trpc.workspace.controlCenter.publishOverview.useQuery");
     expect(page).toContain("trpc.workspace.publishCutover.readiness.useQuery");
     expect(page).toContain("trpc.workspace.publishFinalGate.package.useQuery");
@@ -44,6 +44,8 @@ describe("Workspace Control Center controlled-operations contract", () => {
     expect(page).toContain("editorial.createNovel.useMutation");
     expect(page).toContain("editorial.createEpisode.useMutation");
     expect(page).toContain("editorial.assignWorkItem.useMutation");
-    expect(page).toContain("Editorial assignee filter");
+    expect(page).toContain("editorial.updateWorkItemNote.useMutation");
+    expect(page).toContain("หมายเหตุ");
+    expect(page).not.toContain("Editorial assignee filter");
   });
 });

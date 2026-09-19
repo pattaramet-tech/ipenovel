@@ -6,6 +6,17 @@ const page = () =>
   readFileSync(new URL("client/src/pages/WorkspacePage.tsx", root), "utf8");
 
 describe("Workspace Editorial Preview UX", () => {
+  it("uses a collapsed Novel-grouped Episode Pack table with durable notes", () => {
+    const source = page();
+    expect(source).toContain("Table-first Editorial");
+    expect(source).toContain("editorialNovelGroups.map");
+    expect(source).toContain("<details key={group.workspaceNovelId");
+    expect(source).toContain("เรื่อง / ช่วงตอน");
+    expect(source).toContain("หมายเหตุ");
+    expect(source).toContain("updateWorkItemNote.useMutation");
+    expect(source).not.toContain("Editorial assignee filter");
+  });
+
   it("offers Google Docs quick import while creating a story or episode", () => {
     const source = page();
     expect(source).toContain("Google Docs สำหรับ Quick Import");

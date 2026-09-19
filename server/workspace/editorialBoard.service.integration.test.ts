@@ -16,6 +16,7 @@ import {
   ensureEditorialBoard,
   getEditorialBoard,
   listEditorialAssignees,
+  updateEditorialWorkItemNote,
 } from "./editorialBoard.service";
 import { transitionKanbanCard } from "./checkerKanban.service";
 import {
@@ -163,12 +164,29 @@ describe.sequential("Workspace Editorial Kanban B1/B2 integration", () => {
       expect(episodeCard?.episodeNumber).toBe("ตอน  10");
       expect(episodeCard?.episodeTitle).toBe("เริ่มต้น");
 
+      const noted = await updateEditorialWorkItemNote({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workItemId: episodeCard!.workItemId,
+        note: "รอตรวจรอบสุดท้าย",
+        expectedVersion: episodeCard!.workItemVersion,
+      });
+      expect(noted.workItem.note).toBe("รอตรวจรอบสุดท้าย");
+      const boardWithNote = await getEditorialBoard({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+      });
+      const notedCard = boardWithNote?.columns
+        .flatMap(column => column.cards)
+        .find(card => card.workItemId === episodeCard!.workItemId);
+      expect(notedCard?.note).toBe("รอตรวจรอบสุดท้าย");
+
       const assigned = await assignEditorialWorkItem({
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
         workItemId: episodeCard!.workItemId,
         assigneeUserId: assignee.id,
-        expectedVersion: episodeCard!.workItemVersion,
+        expectedVersion: noted.workItem.version,
         idempotencyKey: "b2-assign-1",
       });
       expect(assigned.replayed).toBe(false);

@@ -43,6 +43,7 @@ import {
   ensureEditorialBoard,
   getEditorialBoard,
   listEditorialAssignees,
+  updateEditorialWorkItemNote,
   WorkspaceEditorialBoardError,
 } from "./editorialBoard.service";
 import {
@@ -1217,6 +1218,22 @@ export const workspaceRouter = router({
       .mutation(async ({ ctx, input }) => {
         try {
           return await assignEditorialWorkItem({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    updateWorkItemNote: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        note: z.string().max(1000).nullable(),
+        expectedVersion: z.number().int().positive(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await updateEditorialWorkItemNote({
             actorUserId: ctx.user.id,
             ...input,
           });

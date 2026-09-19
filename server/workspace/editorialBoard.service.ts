@@ -239,6 +239,7 @@ async function loadEditorialBoardReadModel(db: any, workspaceId: number) {
       novel: story?.novel ?? null,
       episodeNumber: workItem?.episodeNumber ?? null,
       episodeTitle: workItem?.episodeTitle ?? null,
+      note: workItem?.note ?? null,
       assigneeUserId: workItem?.assigneeUserId ?? null,
       assignee: workItem?.assigneeUserId
         ? adminsById.get(workItem.assigneeUserId) ?? null
@@ -683,6 +684,70 @@ export async function createEditorialEpisodeWorkItem(input: {
       workspaceId: input.workspaceId,
     }),
   };
+}
+
+export async function updateEditorialWorkItemNote(input: {
+  actorUserId: number;
+  workspaceId: number;
+  workItemId: number;
+  note: string | null;
+  expectedVersion: number;
+}) {
+  const db = await database();
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
+  await requireActiveWorkspace(db, input.workspaceId);
+  const note = input.note?.trim() || null;
+  if (note && note.length > 1000) {
+    throw new WorkspaceEditorialBoardError(
+      "EDITORIAL_WORK_ITEM_CONFLICT",
+      "Editorial note must not exceed 1000 characters."
+    );
+  }
+
+  const [owned] = await db
+    .select({ id: workspaceEditorialWorkItems.id })
+    .from(workspaceEditorialWorkItems)
+    .innerJoin(workspaceKanbanCards, eq(workspaceEditorialWorkItems.cardId, workspaceKanbanCards.id))
+    .innerJoin(workspaceKanbanBoards, eq(workspaceKanbanCards.boardId, workspaceKanbanBoards.id))
+    .where(
+      and(
+        eq(workspaceEditorialWorkItems.id, input.workItemId),
+        eq(workspaceKanbanBoards.workspaceId, input.workspaceId),
+        eq(workspaceKanbanBoards.slug, EDITORIAL_BOARD_SLUG)
+      )
+    )
+    .limit(1);
+  if (!owned) {
+    throw new WorkspaceEditorialBoardError(
+      "EDITORIAL_WORK_ITEM_NOT_FOUND",
+      "Editorial work item was not found."
+    );
+  }
+  const result = await db
+    .update(workspaceEditorialWorkItems)
+    .set({
+      note,
+      version: sql`${workspaceEditorialWorkItems.version} + 1`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(workspaceEditorialWorkItems.id, input.workItemId),
+        eq(workspaceEditorialWorkItems.version, input.expectedVersion)
+      )
+    );
+  if (Number(result?.[0]?.affectedRows ?? 0) !== 1) {
+    throw new WorkspaceEditorialBoardError(
+      "EDITORIAL_WORK_ITEM_CONFLICT",
+      "Editorial work item changed before the note could be saved."
+    );
+  }
+  const [workItem] = await db
+    .select()
+    .from(workspaceEditorialWorkItems)
+    .where(eq(workspaceEditorialWorkItems.id, input.workItemId))
+    .limit(1);
+  return { workItem };
 }
 
 export async function assignEditorialWorkItem(input: {

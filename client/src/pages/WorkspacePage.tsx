@@ -461,6 +461,13 @@ export default function WorkspacePage() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const updateEditorialWorkItemNote = trpc.workspace.editorial.updateWorkItemNote.useMutation({
+    onSuccess: async () => {
+      await editorialBoard.refetch();
+      toast.success("บันทึกหมายเหตุแล้ว");
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const importEditorialSource = trpc.workspace.editorial.importSource.useMutation({
     onSuccess: async (result) => {
       await Promise.all([
@@ -728,7 +735,9 @@ export default function WorkspacePage() {
   const editorialColumns = (((editorialBoard.data as any)?.columns as any[] | undefined) ?? []);
   const editorialTransitions = (((editorialBoard.data as any)?.transitions as any[] | undefined) ?? []);
   const editorialAssignees = (((editorialBoard.data as any)?.assignees as any[] | undefined) ?? []);
-  const editorialCards = editorialColumns.flatMap((column: any) => column.cards ?? []);
+  const editorialCards = editorialColumns.flatMap((column: any) =>
+    (column.cards ?? []).map((card: any) => ({ ...card, columnKey: column.key, columnName: column.name }))
+  );
   const selectedSourceCard = editorialCards.find(
     (card: any) => card.workItemId === selectedSourceWorkItemId
   );
@@ -773,6 +782,15 @@ export default function WorkspacePage() {
         return typeMatch && assigneeMatch;
       }),
     }));
+  const editorialNovelGroups = Array.from(
+    editorialCards.reduce((groups: Map<number, any>, card: any) => {
+      const key = Number(card.workspaceNovelId ?? card.novel?.id ?? card.id);
+      const existing = groups.get(key) ?? { workspaceNovelId: card.workspaceNovelId, novel: card.novel, cards: [] };
+      existing.cards.push(card);
+      groups.set(key, existing);
+      return groups;
+    }, new Map<number, any>()).values()
+  ).sort((a: any, b: any) => String(a.novel?.title ?? "").localeCompare(String(b.novel?.title ?? ""), "th"));
   const checkerRuleSets = (((dualRunState.data as any)?.ruleSets as any[] | undefined) ?? []).filter((ruleSet: any) => ruleSet.status === "published");
   const snapshotOptions = Array.from(new Map(operationalRows.map((row: any) => [row.fingerprint.snapshotId, row.fingerprint])).values()) as any[];
   const effectiveCheckerSnapshotId = Number(checkerSnapshotId) || snapshotOptions[0]?.snapshotId;
@@ -860,10 +878,10 @@ export default function WorkspacePage() {
                 <div>
                   <div className="flex items-center gap-2">
                     <Columns3 className="h-5 w-5 text-primary" />
-                    <h2 className="text-xl font-semibold">Editorial Kanban</h2>
+                    <h2 className="text-xl font-semibold">Editorial Episode Packs</h2>
                   </div>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    One board per Workspace. Bound novels appear once as NEW STORY cards; movement is backed by immutable Kanban transitions.
+                    Table-first workspace: Novel เป็นกลุ่ม และแต่ละแถวคือ Episode Pack / ไฟล์งาน โดย workflow เดิมยังคงเป็น durable evidence ด้านหลัง.
                   </p>
                 </div>
                 <StatusPill value={(editorialBoard.data as any)?.board?.status ?? "initializing"} />
@@ -1018,172 +1036,29 @@ export default function WorkspacePage() {
                 </form>
               </div>
 
-              <div className="grid gap-2 rounded-md border p-3 sm:grid-cols-3">
-                <select
-                  aria-label="Editorial column filter"
-                  className="h-10 rounded-md border bg-background px-3 text-sm"
-                  value={editorialColumnFilter}
-                  onChange={(event) => setEditorialColumnFilter(event.target.value)}
-                >
-                  <option value="all">ทุกสถานะ</option>
-                  {editorialColumns.map((column: any) => <option key={column.id} value={column.key}>{column.name}</option>)}
-                </select>
-                <select
-                  aria-label="Editorial type filter"
-                  className="h-10 rounded-md border bg-background px-3 text-sm"
-                  value={editorialTypeFilter}
-                  onChange={(event) => setEditorialTypeFilter(event.target.value)}
-                >
-                  <option value="all">ทุกประเภท</option>
-                  <option value="NEW_STORY">เรื่องใหม่</option>
-                  <option value="NEW_EPISODE">ตอนใหม่</option>
-                </select>
-                <select
-                  aria-label="Editorial assignee filter"
-                  className="h-10 rounded-md border bg-background px-3 text-sm"
-                  value={editorialAssigneeFilter}
-                  onChange={(event) => setEditorialAssigneeFilter(event.target.value)}
-                >
-                  <option value="all">ผู้รับผิดชอบทั้งหมด</option>
-                  <option value="unassigned">ยังไม่มอบหมาย</option>
-                  {editorialAssignees.map((admin: any) => (
-                    <option key={admin.id} value={admin.id}>{admin.name || admin.email || `Admin #${admin.id}`}</option>
-                  ))}
-                </select>
+              <div className="flex items-center justify-between gap-3 rounded-md border bg-muted/10 p-3">
+                <div><div className="font-medium">Table-first Editorial</div><div className="text-xs text-muted-foreground">1 แถว = 1 Episode Pack / ไฟล์ · กลุ่มเรื่องพับไว้เป็นค่าเริ่มต้น</div></div>
+                <span className="text-xs text-muted-foreground">{editorialCards.length} pack(s)</span>
               </div>
-
               {editorialBoard.isLoading || ensureEditorialBoard.isPending ? (
                 <div className="flex min-h-32 items-center justify-center"><Loader2 className="h-6 w-6 animate-spin" /></div>
-              ) : editorialColumns.length ? (
-                <div className="overflow-x-auto pb-2">
-                  <div className="flex min-w-max gap-3">
-                    {filteredEditorialColumns.map((column: any) => (
-                      <div key={column.id} className="w-64 shrink-0 rounded-lg border bg-muted/20 p-3">
-                        <div className="mb-3 flex items-center justify-between gap-2">
-                          <strong className="text-sm">{column.name}</strong>
-                          <span className="rounded-full bg-background px-2 py-0.5 text-xs text-muted-foreground">{column.cards.length}</span>
-                        </div>
-                        <div className="space-y-2">
-                          {column.cards.map((card: any) => (
-                            <div key={card.id} className="rounded-md border bg-background p-3 shadow-sm">
-                              <div className="mb-2 flex items-center justify-between gap-2">
-                                <span className="rounded bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">
-                                  {card.workItemType === "NEW_STORY" ? "เรื่องใหม่" : card.workItemType === "NEW_EPISODE" ? "ตอนใหม่" : card.workItemType}
-                                </span>
-                                <span className="text-[11px] text-muted-foreground">
-                                  card v{card.version}{card.workItemVersion ? ` · item v${card.workItemVersion}` : ""}
-                                </span>
-                              </div>
-                              <div className="text-sm font-medium">{card.novel?.title ?? card.logicalItemKey}</div>
-                              {card.workItemType === "NEW_EPISODE" && (
-                                <div className="mt-1 text-xs">
-                                  ตอน {card.episodeNumber || "—"}{card.episodeTitle ? ` · ${card.episodeTitle}` : ""}
-                                </div>
-                              )}
-                              <div className="mt-1 text-xs text-muted-foreground">Novel #{card.novel?.id ?? "—"}</div>
-                              <select
-                                aria-label={`Assignee for card ${card.id}`}
-                                className="mt-2 h-8 w-full rounded-md border bg-background px-2 text-xs"
-                                value={card.assigneeUserId ? String(card.assigneeUserId) : ""}
-                                disabled={!card.workItemId || !card.workItemVersion || assignEditorialWorkItem.isPending}
-                                onChange={(event) => {
-                                  if (!card.workItemId || !card.workItemVersion) return;
-                                  const nextAssignee = event.target.value ? Number(event.target.value) : null;
-                                  assignEditorialWorkItem.mutate({
-                                    workspaceId: selectedWorkspaceId,
-                                    workItemId: card.workItemId,
-                                    assigneeUserId: nextAssignee,
-                                    expectedVersion: card.workItemVersion,
-                                    idempotencyKey: `editorial-assignee:${card.workItemId}:${card.workItemVersion}:${nextAssignee ?? "none"}`,
-                                  });
-                                }}
-                              >
-                                <option value="">ยังไม่มอบหมาย</option>
-                                {editorialAssignees.map((admin: any) => (
-                                  <option key={admin.id} value={admin.id}>{admin.name || admin.email || `Admin #${admin.id}`}</option>
-                                ))}
-                              </select>
-                              <details className="mt-2 text-xs text-muted-foreground">
-                                <summary className="cursor-pointer">ประวัติ {card.history?.length ?? 0} รายการ</summary>
-                                <ul className="mt-2 space-y-1 border-l pl-2">
-                                  {(card.history ?? []).slice(0, 6).map((entry: any) => (
-                                    <li key={`${entry.kind}:${entry.id}`}>
-                                      {entry.kind === "transition"
-                                        ? `${entry.fromColumnId ? editorialColumnNameById.get(entry.fromColumnId) ?? "?" : "เริ่ม"} → ${editorialColumnNameById.get(entry.toColumnId) ?? "?"}`
-                                        : entry.eventType === "assignee_changed"
-                                          ? "เปลี่ยนผู้รับผิดชอบ"
-                                          : "สร้างงาน"}
-                                      {" · "}{formatDate(entry.createdAt)}
-                                    </li>
-                                  ))}
-                                </ul>
-                              </details>
-                              <Button
-                                type="button"
-                                variant={selectedSourceWorkItemId === card.workItemId ? "default" : "outline"}
-                                className="mt-3 h-8 w-full text-xs"
-                                disabled={!card.workItemId}
-                                onClick={() => setSelectedSourceWorkItemId(card.workItemId)}
-                              >
-                                ต้นฉบับ / Draft
-                              </Button>
-                              <div className="mt-2 flex justify-between">
-                                <Button
-                                  type="button"
-                                  size="icon"
-                                  variant="outline"
-                                  className="h-8 w-8"
-                                  disabled={editorialColumns.findIndex((item: any) => item.id === column.id) === 0 || moveEditorialCard.isPending}
-                                  onClick={() => {
-                                    const currentIndex = editorialColumns.findIndex((item: any) => item.id === column.id);
-                                    const target = editorialColumns[currentIndex - 1];
-                                    if (!target) return;
-                                    moveEditorialCard.mutate({
-                                      workspaceId: selectedWorkspaceId,
-                                      cardId: card.id,
-                                      toColumnKey: target.key,
-                                      reason: "editorial_manual_move",
-                                      idempotencyKey: `editorial:${card.id}:${card.version}:${target.key}`,
-                                      expectedVersion: card.version,
-                                    });
-                                  }}
-                                >
-                                  <ChevronLeft className="h-4 w-4" />
-                                </Button>
-                                <Button
-                                  type="button"
-                                  size="icon"
-                                  variant="outline"
-                                  className="h-8 w-8"
-                                  disabled={editorialColumns.findIndex((item: any) => item.id === column.id) === editorialColumns.length - 1 || moveEditorialCard.isPending}
-                                  onClick={() => {
-                                    const currentIndex = editorialColumns.findIndex((item: any) => item.id === column.id);
-                                    const target = editorialColumns[currentIndex + 1];
-                                    if (!target) return;
-                                    moveEditorialCard.mutate({
-                                      workspaceId: selectedWorkspaceId,
-                                      cardId: card.id,
-                                      toColumnKey: target.key,
-                                      reason: "editorial_manual_move",
-                                      idempotencyKey: `editorial:${card.id}:${card.version}:${target.key}`,
-                                      expectedVersion: card.version,
-                                    });
-                                  }}
-                                >
-                                  <ChevronRight className="h-4 w-4" />
-                                </Button>
-                              </div>
-                            </div>
-                          ))}
-                          {!column.cards.length && <p className="rounded border border-dashed p-2 text-xs text-muted-foreground">ไม่มีงาน</p>}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <EmptyState>Editorial board is being prepared for this Workspace.</EmptyState>
-              )}
+              ) : editorialNovelGroups.length ? (
+                <div className="space-y-3">{editorialNovelGroups.map((group: any) => (
+                  <details key={group.workspaceNovelId ?? group.novel?.id} className="overflow-hidden rounded-lg border bg-background">
+                    <summary className="cursor-pointer select-none bg-muted/20 px-4 py-3"><span className="font-semibold">{group.novel?.title ?? "Untitled novel"}</span><span className="ml-2 text-xs text-muted-foreground">{group.cards.length} pack(s) · Novel #{group.novel?.id ?? "—"}</span></summary>
+                    <div className="overflow-x-auto"><table className="w-full min-w-[980px] border-collapse text-sm">
+                      <thead><tr className="border-y bg-muted/10 text-left text-xs text-muted-foreground"><th className="px-3 py-2 font-medium">เรื่อง / ช่วงตอน</th><th className="px-3 py-2 text-center font-medium">ตรวจคำ</th><th className="px-3 py-2 text-center font-medium">ตรวจแล้ว</th><th className="px-3 py-2 text-center font-medium">Stage</th><th className="px-3 py-2 text-center font-medium">พร้อมลง</th><th className="px-3 py-2 text-center font-medium">เผยแพร่</th><th className="min-w-72 px-3 py-2 font-medium">หมายเหตุ</th></tr></thead>
+                      <tbody>{group.cards.slice().sort((a: any,b: any)=>String(a.episodeNumber??"").localeCompare(String(b.episodeNumber??""),"th",{numeric:true})).map((card:any)=>(
+                        <tr key={card.id} className="border-b last:border-b-0 hover:bg-muted/10">
+                          <td className="px-3 py-3"><button type="button" className="text-left font-medium text-primary hover:underline" disabled={!card.workItemId} onClick={()=>setSelectedSourceWorkItemId(card.workItemId)}>{card.workItemType==="NEW_EPISODE" ? card.episodeNumber||"ตอนใหม่" : "เรื่องใหม่ / Draft แรก"}</button>{card.episodeTitle&&<div className="mt-0.5 text-xs text-muted-foreground">{card.episodeTitle}</div>}<div className="mt-0.5 text-[11px] text-muted-foreground">{card.columnName}</div></td>
+                          {["checker","approval","stage","ready","published"].map((key)=><td key={key} className="px-3 py-3 text-center text-muted-foreground" title="เชื่อม evidence ใน IPE-056-C">—</td>)}
+                          <td className="px-3 py-2"><Input key={String(card.workItemId) + ":" + String(card.workItemVersion) + ":" + String(card.note ?? "")} defaultValue={card.note??""} maxLength={1000} placeholder="บันทึกหมายเหตุ" disabled={!card.workItemId||!card.workItemVersion||updateEditorialWorkItemNote.isPending} onBlur={(event)=>{const next=event.currentTarget.value.trim();if(next===(card.note??""))return;updateEditorialWorkItemNote.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId,note:next||null,expectedVersion:card.workItemVersion});}} /></td>
+                        </tr>
+                      ))}</tbody>
+                    </table></div>
+                  </details>
+                ))}</div>
+              ) : <EmptyState>Editorial board is being prepared for this Workspace.</EmptyState>}
 
               <div className="text-xs text-muted-foreground">
                 Kanban transitions: {editorialTransitions.length} event(s). Card history also includes immutable assignment events. Episode intake creates Workspace work items only and does not create publication episodes.

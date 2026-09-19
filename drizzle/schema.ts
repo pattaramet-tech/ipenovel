@@ -2340,6 +2340,7 @@ export const workspaceEditorialWorkItems = mysqlTable(
     itemKey: varchar("itemKey", { length: 160 }).notNull(),
     episodeNumber: varchar("episodeNumber", { length: 100 }),
     episodeTitle: varchar("episodeTitle", { length: 500 }),
+    note: varchar("note", { length: 1000 }),
     assigneeUserId: int("assigneeUserId"),
     createdByUserId: int("createdByUserId").notNull(),
     version: int("version").default(1).notNull(),
