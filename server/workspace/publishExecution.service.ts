@@ -30,6 +30,7 @@ export class WorkspacePublishExecutionError extends Error {
     readonly code:
       | "DATABASE_UNAVAILABLE"
       | "EXECUTION_DISABLED"
+      | "EXECUTION_SCOPE_REQUIRED"
       | "EXECUTION_SCOPE_MISMATCH"
       | "EXTERNAL_PROVIDER_DISABLED"
       | "PUBLISH_OWNERSHIP_AMBIGUOUS"
@@ -148,14 +149,15 @@ export async function requestPublishExecution(input: {
   return db.transaction(async (tx: any) => {
     const context = await loadRunContext(tx, input.workspaceId, input.runId, true);
     const scope = input.executionScope;
+    if (!scope) {
+      throw new WorkspacePublishExecutionError("EXECUTION_SCOPE_REQUIRED", "Publish execution requires an exact configured Workspace/run ownership scope.");
+    }
     if (
-      scope && (
-        scope.workspaceId !== input.workspaceId ||
+      scope.workspaceId !== input.workspaceId ||
         scope.workspaceNovelId !== context.workspaceNovel.id ||
         scope.runId !== input.runId ||
         scope.expectedCutoverEpoch !== input.expectedCutoverEpoch ||
         scope.expectedOwnershipVersion !== input.expectedOwnershipVersion
-      )
     ) {
       throw new WorkspacePublishExecutionError("EXECUTION_SCOPE_MISMATCH", "Publish execution is outside the exact configured Workspace/run ownership scope.");
     }

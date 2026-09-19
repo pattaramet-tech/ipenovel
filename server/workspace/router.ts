@@ -101,7 +101,7 @@ import {
   requestPublishExecution,
   WorkspacePublishExecutionError,
 } from "./publishExecution.service";
-import { parseWorkspacePublishExecutionScope, WorkspacePublishRuntimeError } from "./publishExecution.runtime";
+import { parseWorkspacePublishExecutionScope, requirePreviewPublishExecutionSafety, WorkspacePublishRuntimeError } from "./publishExecution.runtime";
 import {
   getPublishCutoverReadiness,
   rehearsePublishCutoverRollback,
@@ -742,6 +742,7 @@ export const workspaceRouter = router({
           const executionScope = executionEnabled
             ? parseWorkspacePublishExecutionScope(process.env.WORKSPACE_PUBLISH_EXECUTION_SCOPE)
             : undefined;
+          if (executionEnabled) requirePreviewPublishExecutionSafety();
           return await requestPublishExecution({
             actorUserId: ctx.user.id,
             workspaceId: input.workspaceId,
@@ -1097,6 +1098,7 @@ export const workspaceRouter = router({
           const executionScope = executionEnabled
             ? parseWorkspacePublishExecutionScope(process.env.WORKSPACE_PUBLISH_EXECUTION_SCOPE)
             : undefined;
+          if (executionEnabled) requirePreviewPublishExecutionSafety();
           return await requestEditorialPublish({
             actorUserId: ctx.user.id,
             ...input,

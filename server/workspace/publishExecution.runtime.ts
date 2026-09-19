@@ -11,7 +11,7 @@ import {
 } from "./editorialPublish.service";
 
 export class WorkspacePublishRuntimeError extends Error {
-  constructor(readonly code: "EXECUTION_SCOPE_REQUIRED" | "EXECUTION_SCOPE_INVALID", message: string) {
+  constructor(readonly code: "EXECUTION_SCOPE_REQUIRED" | "EXECUTION_SCOPE_INVALID" | "PREVIEW_SAFETY_GATE_BLOCKED", message: string) {
     super(message);
     this.name = "WorkspacePublishRuntimeError";
   }
@@ -48,6 +48,36 @@ export function parseWorkspacePublishExecutionScope(raw: string | undefined): Wo
     expectedCutoverEpoch: positiveInt(fields.epoch, "epoch"),
     expectedOwnershipVersion: positiveInt(fields.version, "version"),
   };
+}
+
+export function requirePreviewPublishExecutionSafety(env: NodeJS.ProcessEnv = process.env) {
+  if (env.WORKSPACE_PUBLISH_ACCEPTANCE_TIER !== "preview") {
+    throw new WorkspacePublishRuntimeError(
+      "PREVIEW_SAFETY_GATE_BLOCKED",
+      "Preview Controlled Publish requires WORKSPACE_PUBLISH_ACCEPTANCE_TIER=preview."
+    );
+  }
+  const expectedDatabase = env.WORKSPACE_PUBLISH_PREVIEW_DATABASE_NAME?.trim();
+  if (!expectedDatabase) {
+    throw new WorkspacePublishRuntimeError(
+      "PREVIEW_SAFETY_GATE_BLOCKED",
+      "Preview Controlled Publish requires an explicit WORKSPACE_PUBLISH_PREVIEW_DATABASE_NAME."
+    );
+  }
+  let actualDatabase: string;
+  try {
+    const databaseUrl = new URL(env.DATABASE_URL ?? "");
+    actualDatabase = decodeURIComponent(databaseUrl.pathname.replace(/^\//, ""));
+  } catch {
+    throw new WorkspacePublishRuntimeError("PREVIEW_SAFETY_GATE_BLOCKED", "Preview database identity cannot be parsed.");
+  }
+  if (!actualDatabase || actualDatabase !== expectedDatabase) {
+    throw new WorkspacePublishRuntimeError(
+      "PREVIEW_SAFETY_GATE_BLOCKED",
+      "Preview Controlled Publish database identity does not match the explicit preview database allowlist."
+    );
+  }
+  return { tier: "preview" as const, databaseName: actualDatabase };
 }
 
 export function scopeMatches(input: WorkspacePublishExecutionScope, expected: WorkspacePublishExecutionScope) {
