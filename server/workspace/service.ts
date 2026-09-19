@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import {
   novels,
@@ -23,6 +23,8 @@ export class WorkspaceServiceError extends Error {
       | "WORKSPACE_NOT_FOUND"
       | "NOVEL_NOT_FOUND"
       | "INVALID_NOVEL_INPUT"
+      | "DUPLICATE_NOVEL_TITLE"
+      | "WORKSPACE_NOT_EMPTY"
       | "MEMBERSHIP_CONFLICT"
       | "INVALID_MEMBERSHIP_CHANGE",
     message: string
@@ -83,6 +85,20 @@ export async function createWorkspace(userId: number, name: string) {
     });
     return { workspaceId };
   });
+}
+
+export async function deleteWorkspace(userId: number, workspaceId: number) {
+  const db = await database();
+  await requireWorkspace(db, workspaceId);
+  await requireWorkspacePlatformAdmin(db, userId);
+  const [{ count }] = await db.select({ count: sql<number>`count(*)` }).from(workspaceNovels)
+    .where(and(eq(workspaceNovels.workspaceId, workspaceId), eq(workspaceNovels.status, "active")));
+  if (Number(count) > 0) {
+    throw new WorkspaceServiceError("WORKSPACE_NOT_EMPTY", "ลบ Workspace ไม่ได้ขณะที่ยังมีนิยายอยู่ กรุณาย้าย/นำเรื่องออกก่อน");
+  }
+  await db.update(workspaceWorkspaces).set({ status: "archived", deletedAt: new Date() })
+    .where(eq(workspaceWorkspaces.id, workspaceId));
+  return { workspaceId, deleted: true as const };
 }
 
 export async function getWorkspaceDetail(userId: number, workspaceId: number) {
@@ -151,6 +167,18 @@ export async function createWorkspacePublicationNovel(input: {
     throw new WorkspaceServiceError(
       "INVALID_NOVEL_INPUT",
       "Novel title is required."
+    );
+  }
+
+  const normalizedTitle = title.normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase("th");
+  const titleCandidates = await db.select({ id: novels.id, title: novels.title }).from(novels);
+  const duplicate = titleCandidates.find((row: any) =>
+    String(row.title ?? "").normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase("th") === normalizedTitle
+  );
+  if (duplicate) {
+    throw new WorkspaceServiceError(
+      "DUPLICATE_NOVEL_TITLE",
+      `มีเรื่องชื่อนี้อยู่แล้ว (Novel #${duplicate.id}) กรุณาใช้ “เพิ่มเรื่องเดิม” แทน`
     );
   }
 

@@ -122,6 +122,7 @@ import {
   addOrUpdateMember,
   bindPublicationNovel,
   createWorkspace,
+  deleteWorkspace,
   createWorkspacePublicationNovel,
   getWorkspaceDetail,
   listMigrationOwnership,
@@ -404,6 +405,16 @@ export const workspaceRouter = router({
     .mutation(async ({ ctx, input }) => {
       try {
         return await createWorkspace(ctx.user.id, input.name);
+      } catch (error) {
+        return mapWorkspaceError(error);
+      }
+    }),
+
+  delete: adminProcedure
+    .input(workspaceIdInput)
+    .mutation(async ({ ctx, input }) => {
+      try {
+        return await deleteWorkspace(ctx.user.id, input.workspaceId);
       } catch (error) {
         return mapWorkspaceError(error);
       }

@@ -58,6 +58,7 @@ export default function WorkspacePage() {
   const [name, setName] = useState("");
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number>();
   const [novelId, setNovelId] = useState("");
+  const [existingNovelSearch, setExistingNovelSearch] = useState("");
   const [newNovelTitle, setNewNovelTitle] = useState("");
   const [episodeWorkspaceNovelId, setEpisodeWorkspaceNovelId] = useState("");
   const [episodeNumber, setEpisodeNumber] = useState("");
@@ -351,6 +352,15 @@ export default function WorkspacePage() {
   const moveEditorialCard = trpc.workspace.kanban.transitionCard.useMutation({
     onSuccess: async () => {
       await editorialBoard.refetch();
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const deleteWorkspace = trpc.workspace.delete.useMutation({
+    onSuccess: async () => {
+      setSelectedWorkspaceId(undefined);
+      setSelectedSourceWorkItemId(undefined);
+      await workspaces.refetch();
+      toast.success("ลบ Workspace แล้ว");
     },
     onError: (error) => toast.error(error.message),
   });
@@ -748,6 +758,15 @@ export default function WorkspacePage() {
   }, [firstGoogleConnectionId, googleConnectionId]);
   const novelOptions = ((availableNovels.data as any[] | undefined) ?? []);
   const unboundNovelOptions = novelOptions.filter((novel: any) => !novel.bound);
+  const normalizedExistingNovelSearch = existingNovelSearch.trim().toLocaleLowerCase("th");
+  const searchableUnboundNovelOptions = unboundNovelOptions.filter((novel: any) =>
+    !normalizedExistingNovelSearch ||
+    [novel.title, novel.id].join(" ").toLocaleLowerCase("th").includes(normalizedExistingNovelSearch)
+  );
+  const normalizedNewNovelTitle = newNovelTitle.normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase("th");
+  const duplicateNovel = normalizedNewNovelTitle
+    ? novelOptions.find((novel: any) => String(novel.title ?? "").normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase("th") === normalizedNewNovelTitle)
+    : null;
   const workspaceNovelOptions = (((selected as any)?.novels as any[] | undefined) ?? []);
   const editorialColumnNameById = new Map(editorialColumns.map((column: any) => [column.id, column.name]));
   const filteredEditorialColumns = editorialColumns
@@ -838,6 +857,21 @@ export default function WorkspacePage() {
           <option value="">เลือก Workspace</option>
           {(workspaces.data as any[] | undefined)?.map(({ workspace }: any) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
         </select>
+        {selectedWorkspaceId && (
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            disabled={deleteWorkspace.isPending}
+            onClick={() => {
+              if (window.confirm("ลบ Workspace นี้หรือไม่? ระบบจะไม่ยอมลบหากยังมีนิยายอยู่ใน Workspace")) {
+                deleteWorkspace.mutate({ workspaceId: selectedWorkspaceId });
+              }
+            }}
+          >
+            ลบ Workspace
+          </Button>
+        )}
       </div>
 
       <section className="space-y-6">
@@ -934,6 +968,11 @@ export default function WorkspacePage() {
                   }}
                 >
                   <div className="text-sm font-medium">เพิ่มเรื่องเดิม</div>
+                  <Input
+                    value={existingNovelSearch}
+                    onChange={(event) => setExistingNovelSearch(event.target.value)}
+                    placeholder="ค้นหาชื่อเรื่อง / Novel ID"
+                  />
                   <select
                     aria-label="Existing publication novel"
                     className="h-10 w-full rounded-md border bg-background px-3 text-sm"
@@ -942,7 +981,7 @@ export default function WorkspacePage() {
                     disabled={bindNovel.isPending || availableNovels.isLoading}
                   >
                     <option value="">เลือกนิยาย</option>
-                    {unboundNovelOptions.map((novel: any) => (
+                    {searchableUnboundNovelOptions.map((novel: any) => (
                       <option key={novel.id} value={novel.id}>
                         {novel.title} · #{novel.id}
                       </option>
@@ -972,10 +1011,16 @@ export default function WorkspacePage() {
                     maxLength={500}
                     placeholder="ชื่อเรื่อง"
                   />
-                  <div className="text-xs text-muted-foreground">
-                    สร้าง Novel container เท่านั้น · ยังไม่สร้าง Episode Pack หรือ Draft ให้เพิ่มช่วงตอนจาก “เพิ่มตอนใหม่” เมื่อพร้อม
-                  </div>
-                  <Button type="submit" className="w-full" disabled={!newNovelTitle.trim() || createEditorialNovel.isPending}>
+                  {duplicateNovel ? (
+                    <div className="text-xs font-medium text-destructive">
+                      มีเรื่องนี้แล้ว: {duplicateNovel.title} · Novel #{duplicateNovel.id} — ใช้ “เพิ่มเรื่องเดิม” แทน
+                    </div>
+                  ) : (
+                    <div className="text-xs text-muted-foreground">
+                      สร้าง Novel container เท่านั้น · ยังไม่สร้าง Episode Pack หรือ Draft ให้เพิ่มช่วงตอนจาก “เพิ่มตอนใหม่” เมื่อพร้อม
+                    </div>
+                  )}
+                  <Button type="submit" className="w-full" disabled={!newNovelTitle.trim() || Boolean(duplicateNovel) || createEditorialNovel.isPending}>
                     {createEditorialNovel.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                     สร้างเป็นฉบับซ่อน
                   </Button>
