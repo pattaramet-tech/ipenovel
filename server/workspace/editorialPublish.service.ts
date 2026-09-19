@@ -4,7 +4,9 @@ import {
   episodes,
   workspaceDocumentBindings,
   workspaceDocumentFingerprints,
+  workspaceDocuments,
   workspaceEditorialEpisodeStages,
+  workspaceEditorialSources,
   workspaceEditorialWorkItems,
   workspaceKanbanCards,
   workspaceKanbanColumns,
@@ -118,8 +120,51 @@ async function loadDestination(db: any, workspaceNovelId: number, novelId: numbe
   return destination ?? null;
 }
 
-async function loadAnchor(db: any, workspaceNovelId: number) {
+async function loadAnchor(db: any, workspaceNovelId: number, workItemId: number) {
   const rows = await db
+    .select({
+      binding: workspaceDocumentBindings,
+      fingerprint: workspaceDocumentFingerprints,
+      source: workspaceEditorialSources,
+    })
+    .from(workspaceEditorialSources)
+    .innerJoin(
+      workspaceDocuments,
+      eq(workspaceDocuments.providerFileId, workspaceEditorialSources.providerDocumentId)
+    )
+    .innerJoin(
+      workspaceDocumentBindings,
+      and(
+        eq(workspaceDocumentBindings.documentId, workspaceDocuments.id),
+        eq(workspaceDocumentBindings.workspaceNovelId, workspaceNovelId)
+      )
+    )
+    .innerJoin(
+      workspaceDocumentFingerprints,
+      eq(workspaceDocumentFingerprints.bindingId, workspaceDocumentBindings.id)
+    )
+    .where(and(
+      eq(workspaceEditorialSources.workItemId, workItemId),
+      eq(workspaceEditorialSources.sourceKind, "google_doc"),
+      eq(workspaceEditorialSources.status, "active"),
+      eq(workspaceDocuments.status, "active"),
+      eq(workspaceDocumentBindings.status, "active")
+    ));
+  if (rows.length === 1) return rows[0];
+
+  const activeGoogleSources = await db
+    .select({ id: workspaceEditorialSources.id })
+    .from(workspaceEditorialSources)
+    .where(and(
+      eq(workspaceEditorialSources.workItemId, workItemId),
+      eq(workspaceEditorialSources.sourceKind, "google_doc"),
+      eq(workspaceEditorialSources.status, "active")
+    ));
+  if (activeGoogleSources.length > 0) return null;
+
+  // Legacy/uploaded-file work items have no provider document identity. Preserve
+  // the original fail-closed behavior: only a single novel-wide anchor is valid.
+  const legacyRows = await db
     .select({ binding: workspaceDocumentBindings, fingerprint: workspaceDocumentFingerprints })
     .from(workspaceDocumentBindings)
     .innerJoin(
@@ -130,7 +175,7 @@ async function loadAnchor(db: any, workspaceNovelId: number) {
       eq(workspaceDocumentBindings.workspaceNovelId, workspaceNovelId),
       eq(workspaceDocumentBindings.status, "active")
     ));
-  return rows.length === 1 ? rows[0] : null;
+  return legacyRows.length === 1 ? legacyRows[0] : null;
 }
 
 function editorialStageSetSha256(stages: any[]) {
@@ -220,7 +265,7 @@ export async function getEditorialPublishReadModel(input: {
     context.workspaceNovel.id,
     context.workspaceNovel.novelId
   );
-  const anchor = await loadAnchor(db, context.workspaceNovel.id);
+  const anchor = await loadAnchor(db, context.workspaceNovel.id, input.workItemId);
   const stages = (approval.stages ?? []).filter(Boolean);
   const stageEpisodes = (approval.stageEpisodes ?? []).filter(Boolean);
   const matching =
