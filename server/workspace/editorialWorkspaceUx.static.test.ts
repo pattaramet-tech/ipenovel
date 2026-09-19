@@ -44,6 +44,14 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).not.toContain('type="checkbox"');
   });
 
+  it("exposes the table-selected Episode Pack detail workflow", () => {
+    const source = page();
+    expect(source).toContain("Episode Pack Detail");
+    expect(source).toContain("Google Docs Import → Draft → Checker → แก้ประโยค → Confirm → Stage → Controlled Publish");
+    expect(source).toContain("คลิกช่วงตอนในตารางเพื่อเปิด Episode Pack Detail");
+    expect(source).toContain("Publish (Controlled)");
+  });
+
   it("offers Google Docs quick import while creating a story or episode", () => {
     const source = page();
     expect(source).toContain("Google Docs สำหรับ Quick Import");

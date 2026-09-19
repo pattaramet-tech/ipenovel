@@ -1138,15 +1138,15 @@ export default function WorkspacePage() {
               <div>
                 <div className="flex items-center gap-2">
                   <FileCheck2 className="h-5 w-5 text-primary" />
-                  <h2 className="text-xl font-semibold">Source Import + Draft</h2>
+                  <h2 className="text-xl font-semibold">Episode Pack Detail</h2>
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  เลือกการ์ดจาก Kanban แล้วนำเข้า/รีเฟรช Google Docs หรือไฟล์ข้อความ ต้นฉบับเดิมถูกเก็บเป็น immutable snapshot และ Sarabun 18 / indent 36 / spacing 10 เป็น presentation contract แยกจากเนื้อหา
+                  เปิดแถว Episode Pack จากตาราง แล้วทำงานตามลำดับ Google Docs Import → Draft → Checker → แก้ประโยค → Confirm → Stage → Controlled Publish โดยทุกสถานะยังยึด durable evidence เดิม
                 </p>
               </div>
 
               {!selectedSourceWorkItemId ? (
-                <EmptyState>กด “ต้นฉบับ / Draft” บนการ์ดเรื่องหรือตอนที่ต้องการก่อน</EmptyState>
+                <EmptyState>คลิกช่วงตอนในตารางเพื่อเปิด Episode Pack Detail</EmptyState>
               ) : (
                 <>
                   <div className="rounded-md border bg-muted/20 p-3 text-sm">

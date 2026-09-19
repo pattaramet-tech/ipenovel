@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { workspaceGoogleConnections } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -14,7 +15,6 @@ import type {
 } from "./editorialDraft.domain";
 
 const GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
-const GOOGLE_DRIVE_FILES_ENDPOINT = "https://www.googleapis.com/drive/v3/files";
 const GOOGLE_DOCS_ENDPOINT = "https://docs.googleapis.com/v1/documents";
 const GOOGLE_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_RESPONSE_CHARS = 20_000_000;
@@ -324,22 +324,9 @@ export async function fetchEditorialGoogleDocSource(input: {
     connectionId: input.connectionId,
     fetchImpl,
   });
-  const metadata = await checkedJsonFetch(
-    `${GOOGLE_DRIVE_FILES_ENDPOINT}/${encodeURIComponent(providerDocumentId)}?fields=id,name,mimeType,version,trashed`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
-    fetchImpl
-  );
-  if (
-    metadata?.id !== providerDocumentId ||
-    metadata?.mimeType !== GOOGLE_DOC_MIME_TYPE ||
-    metadata?.trashed === true ||
-    typeof metadata?.version !== "string"
-  ) {
-    throw new WorkspaceEditorialGoogleSourceError(
-      "GOOGLE_RESPONSE_INVALID",
-      "Selected Google file is not an active Google Docs document."
-    );
-  }
+  // The Docs API already returns the canonical document title and revision.
+  // Avoid a Drive files.get preflight here: an otherwise valid documents.readonly
+  // connection can surface a provider 404 at that extra endpoint and block import.
   const document = await checkedJsonFetch(
     `${GOOGLE_DOCS_ENDPOINT}/${encodeURIComponent(providerDocumentId)}?includeTabsContent=true`,
     { headers: { Authorization: `Bearer ${accessToken}` } },
@@ -362,8 +349,8 @@ export async function fetchEditorialGoogleDocSource(input: {
       sourceTabId: "root",
       tabOrder: 0,
       title:
-        typeof metadata?.name === "string" && metadata.name.trim()
-          ? metadata.name.trim()
+        typeof document?.title === "string" && document.title.trim()
+          ? document.title.trim()
           : "Document",
       paragraphs,
     });
@@ -380,10 +367,12 @@ export async function fetchEditorialGoogleDocSource(input: {
     providerDocumentId,
     mimeType: GOOGLE_DOC_MIME_TYPE,
     title:
-      typeof metadata.name === "string" && metadata.name.trim()
-        ? metadata.name.trim()
+      typeof document.title === "string" && document.title.trim()
+        ? document.title.trim()
         : "Google Document",
-    revisionKey: documentRevisionId || metadata.version,
+    revisionKey: documentRevisionId || createHash("sha256")
+      .update(JSON.stringify(document.tabs ?? document.body ?? {}))
+      .digest("hex"),
     tabs,
   };
 }
