@@ -1236,6 +1236,7 @@ export const workspaceRouter = router({
             workspaceId: input.workspaceId,
             workItemId: input.workItemId,
             payload,
+            googleConnectionId: input.connectionId,
           });
         } catch (error) {
           return mapWorkspaceError(error);

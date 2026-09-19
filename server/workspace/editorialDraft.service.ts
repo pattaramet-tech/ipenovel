@@ -271,6 +271,7 @@ export async function importEditorialSource(input: {
   workspaceId: number;
   workItemId: number;
   payload: EditorialSourcePayload;
+  googleConnectionId?: number | null;
 }) {
   const db = await database();
   await requireWorkItem(
@@ -280,6 +281,12 @@ export async function importEditorialSource(input: {
     input.workItemId
   );
   const payload = normalizeSourcePayload(input.payload);
+  if (payload.sourceKind === "google_doc" && !input.googleConnectionId) {
+    throw new WorkspaceEditorialDraftError(
+      "SOURCE_INVALID",
+      "Google Docs imports require a durable Google connection identity."
+    );
+  }
   const sourceSha256 = sourcePayloadSha256(payload);
   const rawContentJson = JSON.stringify(payload);
   if (Buffer.byteLength(rawContentJson, "utf8") > 20_000_000) {
@@ -340,6 +347,7 @@ export async function importEditorialSource(input: {
           sourceKind: payload.sourceKind,
           sourceKey: payload.sourceKey,
           providerDocumentId: payload.providerDocumentId,
+          googleConnectionId: payload.sourceKind === "google_doc" ? (input.googleConnectionId ?? null) : null,
           mimeType: payload.mimeType,
           title: payload.title,
           status: "active",
@@ -352,10 +360,24 @@ export async function importEditorialSource(input: {
         .where(eq(workspaceEditorialSources.id, sourceId))
         .limit(1);
     } else {
+      if (
+        payload.sourceKind === "google_doc" &&
+        source.googleConnectionId &&
+        input.googleConnectionId &&
+        source.googleConnectionId !== input.googleConnectionId
+      ) {
+        throw new WorkspaceEditorialDraftError(
+          "SOURCE_CONFLICT",
+          "This Google Docs source is already bound to a different durable connection identity."
+        );
+      }
       await tx
         .update(workspaceEditorialSources)
         .set({
           providerDocumentId: payload.providerDocumentId,
+          googleConnectionId: payload.sourceKind === "google_doc"
+            ? (input.googleConnectionId ?? source.googleConnectionId ?? null)
+            : null,
           mimeType: payload.mimeType,
           title: payload.title,
           updatedAt: new Date(),

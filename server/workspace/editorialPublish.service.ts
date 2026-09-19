@@ -133,7 +133,10 @@ async function loadAnchor(db: any, workspaceNovelId: number, workItemId: number)
     .from(workspaceEditorialSources)
     .innerJoin(
       workspaceDocuments,
-      eq(workspaceDocuments.providerFileId, workspaceEditorialSources.providerDocumentId)
+      and(
+        eq(workspaceDocuments.providerFileId, workspaceEditorialSources.providerDocumentId),
+        eq(workspaceDocuments.connectionId, workspaceEditorialSources.googleConnectionId)
+      )
     )
     .innerJoin(
       workspaceDocumentBindings,
@@ -192,12 +195,26 @@ async function materializeEditorialGoogleAnchor(db: any, input: {
   if (sources.length !== 1 || !sources[0]?.providerDocumentId) return null;
   const source = sources[0];
 
-  const connections = await db.select().from(workspaceGoogleConnections).where(and(
-    eq(workspaceGoogleConnections.userId, source.createdByUserId),
+  let connectionId = source.googleConnectionId ? Number(source.googleConnectionId) : null;
+  if (!connectionId) {
+    // Compatibility backfill is allowed only when one active connection is
+    // provably the sole candidate for the source creator. Otherwise fail closed
+    // and require a Google Docs re-import to persist the chosen connection.
+    const candidates = await db.select().from(workspaceGoogleConnections).where(and(
+      eq(workspaceGoogleConnections.userId, source.createdByUserId),
+      eq(workspaceGoogleConnections.status, "active")
+    ));
+    if (candidates.length !== 1) return null;
+    connectionId = Number(candidates[0].id);
+    await db.update(workspaceEditorialSources)
+      .set({ googleConnectionId: connectionId, updatedAt: new Date() })
+      .where(eq(workspaceEditorialSources.id, source.id));
+  }
+  const [connection] = await db.select().from(workspaceGoogleConnections).where(and(
+    eq(workspaceGoogleConnections.id, connectionId),
     eq(workspaceGoogleConnections.status, "active")
-  ));
-  if (connections.length !== 1) return null;
-  const connection = connections[0];
+  )).limit(1);
+  if (!connection) return null;
 
   const [sourceSnapshot] = await db.select().from(workspaceEditorialSourceSnapshots)
     .where(eq(workspaceEditorialSourceSnapshots.sourceId, source.id))

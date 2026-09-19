@@ -2429,6 +2429,7 @@ export const workspaceEditorialSources = mysqlTable(
     sourceKind: mysqlEnum("sourceKind", ["google_doc", "uploaded_file"]).notNull(),
     sourceKey: varchar("sourceKey", { length: 255 }).notNull(),
     providerDocumentId: varchar("providerDocumentId", { length: 255 }),
+    googleConnectionId: int("googleConnectionId"),
     mimeType: varchar("mimeType", { length: 160 }).notNull(),
     title: varchar("title", { length: 500 }).notNull(),
     status: mysqlEnum("status", ["active", "removed"]).default("active").notNull(),
@@ -2448,6 +2449,11 @@ export const workspaceEditorialSources = mysqlTable(
       columns: [table.workItemId],
       foreignColumns: [workspaceEditorialWorkItems.id],
     }).onDelete("cascade"),
+    googleConnectionFk: foreignKey({
+      name: "wes_google_connection_fk",
+      columns: [table.googleConnectionId],
+      foreignColumns: [workspaceGoogleConnections.id],
+    }).onDelete("restrict"),
     createdByFk: foreignKey({
       name: "wes_created_by_fk",
       columns: [table.createdByUserId],

@@ -9,7 +9,7 @@ describe("IPE-056-M preview fingerprint diagnostics and repair", () => {
   it("materializes a missing Google anchor only from one durable source and one owned active connection", () => {
     expect(publish).toContain("materializeEditorialGoogleAnchor");
     expect(publish).toContain("sources.length !== 1");
-    expect(publish).toContain("connections.length !== 1");
+    expect(publish).toContain("candidates.length !== 1");
     expect(publish).toContain("workspaceEditorialSourceSnapshots");
     expect(publish).toContain("workspaceDocumentFingerprints");
   });
