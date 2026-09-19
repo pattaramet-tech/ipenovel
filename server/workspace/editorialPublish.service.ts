@@ -4,9 +4,12 @@ import {
   episodes,
   workspaceDocumentBindings,
   workspaceDocumentFingerprints,
+  workspaceDocumentSnapshots,
   workspaceDocuments,
   workspaceEditorialEpisodeStages,
   workspaceEditorialSources,
+  workspaceEditorialSourceSnapshots,
+  workspaceGoogleConnections,
   workspaceEditorialWorkItems,
   workspaceKanbanCards,
   workspaceKanbanColumns,
@@ -178,6 +181,95 @@ async function loadAnchor(db: any, workspaceNovelId: number, workItemId: number)
   return legacyRows.length === 1 ? legacyRows[0] : null;
 }
 
+async function materializeEditorialGoogleAnchor(db: any, input: {
+  actorUserId: number; workspaceNovelId: number; workItemId: number;
+}) {
+  const sources = await db.select().from(workspaceEditorialSources).where(and(
+    eq(workspaceEditorialSources.workItemId, input.workItemId),
+    eq(workspaceEditorialSources.sourceKind, "google_doc"),
+    eq(workspaceEditorialSources.status, "active")
+  )).limit(2);
+  if (sources.length !== 1 || !sources[0]?.providerDocumentId) return null;
+  const source = sources[0];
+
+  const connections = await db.select().from(workspaceGoogleConnections).where(and(
+    eq(workspaceGoogleConnections.userId, source.createdByUserId),
+    eq(workspaceGoogleConnections.status, "active")
+  ));
+  if (connections.length !== 1) return null;
+  const connection = connections[0];
+
+  const [sourceSnapshot] = await db.select().from(workspaceEditorialSourceSnapshots)
+    .where(eq(workspaceEditorialSourceSnapshots.sourceId, source.id))
+    .orderBy(desc(workspaceEditorialSourceSnapshots.createdAt), desc(workspaceEditorialSourceSnapshots.id))
+    .limit(1);
+  if (!sourceSnapshot) return null;
+
+  return db.transaction(async (tx: any) => {
+    let [document] = await tx.select().from(workspaceDocuments).where(and(
+      eq(workspaceDocuments.connectionId, connection.id),
+      eq(workspaceDocuments.providerFileId, source.providerDocumentId)
+    )).limit(1);
+    if (!document) {
+      const result = await tx.insert(workspaceDocuments).values({
+        connectionId: connection.id, providerFileId: source.providerDocumentId,
+        mimeType: source.mimeType, titleCache: source.title, status: "active",
+      });
+      const id = Number(result?.[0]?.insertId ?? result?.insertId);
+      [document] = await tx.select().from(workspaceDocuments).where(eq(workspaceDocuments.id, id)).limit(1);
+    }
+    if (!document) return null;
+
+    let [binding] = await tx.select().from(workspaceDocumentBindings).where(and(
+      eq(workspaceDocumentBindings.workspaceNovelId, input.workspaceNovelId),
+      eq(workspaceDocumentBindings.documentId, document.id),
+      eq(workspaceDocumentBindings.role, "chapter")
+    )).limit(1);
+    if (!binding) {
+      const result = await tx.insert(workspaceDocumentBindings).values({
+        workspaceNovelId: input.workspaceNovelId, documentId: document.id,
+        role: "chapter", sequence: input.workItemId, status: "active",
+      });
+      const id = Number(result?.[0]?.insertId ?? result?.insertId);
+      [binding] = await tx.select().from(workspaceDocumentBindings).where(eq(workspaceDocumentBindings.id, id)).limit(1);
+    }
+    if (!binding) return null;
+
+    let [snapshot] = await tx.select().from(workspaceDocumentSnapshots).where(and(
+      eq(workspaceDocumentSnapshots.documentId, document.id),
+      eq(workspaceDocumentSnapshots.providerRevisionId, sourceSnapshot.revisionKey)
+    )).limit(1);
+    if (!snapshot) {
+      const result = await tx.insert(workspaceDocumentSnapshots).values({
+        documentId: document.id, providerRevisionId: sourceSnapshot.revisionKey,
+        normalizedSha256: sourceSnapshot.sourceSha256, normalizationVersion: 1,
+        byteLength: sourceSnapshot.byteLength,
+      });
+      const id = Number(result?.[0]?.insertId ?? result?.insertId);
+      [snapshot] = await tx.select().from(workspaceDocumentSnapshots).where(eq(workspaceDocumentSnapshots.id, id)).limit(1);
+    }
+    if (!snapshot) return null;
+
+    const [existingFingerprint] = await tx.select().from(workspaceDocumentFingerprints)
+      .where(eq(workspaceDocumentFingerprints.bindingId, binding.id)).limit(1);
+    if (existingFingerprint) {
+      await tx.update(workspaceDocumentFingerprints).set({
+        snapshotId: snapshot.id, providerRevisionId: snapshot.providerRevisionId,
+        normalizedSha256: snapshot.normalizedSha256, normalizationVersion: snapshot.normalizationVersion,
+        version: existingFingerprint.version + 1,
+      }).where(eq(workspaceDocumentFingerprints.id, existingFingerprint.id));
+    } else {
+      await tx.insert(workspaceDocumentFingerprints).values({
+        bindingId: binding.id, snapshotId: snapshot.id,
+        providerRevisionId: snapshot.providerRevisionId,
+        normalizedSha256: snapshot.normalizedSha256,
+        normalizationVersion: snapshot.normalizationVersion,
+      });
+    }
+    return loadAnchor(tx, input.workspaceNovelId, input.workItemId);
+  });
+}
+
 function editorialStageSetSha256(stages: any[]) {
   const payload = stages
     .map(stage => ({
@@ -329,12 +421,21 @@ export async function prepareEditorialPublishOwnership(input: {
   workspaceId: number;
   workItemId: number;
 }) {
-  const state = await getEditorialPublishReadModel(input);
+  let state = await getEditorialPublishReadModel(input);
   if (!state.readyToPublish || state.stages.length === 0 || state.kanbanColumnKey !== "ready_to_publish") {
     throw new WorkspaceEditorialPublishError("STAGE_NOT_READY", "Publish ownership preparation requires the complete current approved stage batch.");
   }
   if (!state.anchor) {
-    throw new WorkspaceEditorialPublishError("PUBLISH_ANCHOR_AMBIGUOUS", "Publish ownership preparation requires exactly one current active document fingerprint.");
+    const db = await database();
+    const repaired = await materializeEditorialGoogleAnchor(db, {
+      actorUserId: input.actorUserId,
+      workspaceNovelId: state.workspaceNovel.id,
+      workItemId: input.workItemId,
+    });
+    if (repaired) state = await getEditorialPublishReadModel(input);
+  }
+  if (!state.anchor) {
+    throw new WorkspaceEditorialPublishError("PUBLISH_ANCHOR_AMBIGUOUS", "Publish ownership preparation requires exactly one current active document fingerprint. Re-import the Google Doc if its connection is ambiguous or unavailable.");
   }
   if (!state.ownership) {
     throw new WorkspaceEditorialPublishError("PUBLISH_OWNERSHIP_CONFLICT", "Publish ownership evidence is missing.");

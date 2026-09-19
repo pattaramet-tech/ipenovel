@@ -7,10 +7,11 @@ const source = () => fs.readFileSync(path.resolve(process.cwd(), "server/workspa
 describe("Editorial evidence status projection", () => {
   it("derives all statuses from durable read models", () => {
     const text = source();
-    expect(text).toContain("state.qc?.ready");
-    expect(text).toContain("state.approvalStatus?.valid");
-    expect(text).toContain("state.stageStatus?.valid");
+    expect(text).toContain("approvalState.qc?.ready");
+    expect(text).toContain("approvalState.approvalStatus?.valid");
+    expect(text).toContain("approvalState.stageStatus?.valid");
     expect(text).toContain("state.requestReady");
+    expect(text).toContain("Publish diagnostics must not erase independently durable QC/approval/stage evidence.");
   });
 
   it("requires complete durable publish evidence", () => {
