@@ -66,6 +66,9 @@ export default function WorkspacePage() {
   const [editorialTypeFilter, setEditorialTypeFilter] = useState("all");
   const [editorialAssigneeFilter, setEditorialAssigneeFilter] = useState("all");
   const [editorialColumnFilter, setEditorialColumnFilter] = useState("all");
+  const [editorialSearch, setEditorialSearch] = useState("");
+  const [editorialQuickFilter, setEditorialQuickFilter] = useState("all");
+  const [episodeNovelSearch, setEpisodeNovelSearch] = useState("");
   const [selectedSourceWorkItemId, setSelectedSourceWorkItemId] = useState<number>();
   const [googleConnectionId, setGoogleConnectionId] = useState("");
   const [googleDocUrl, setGoogleDocUrl] = useState("");
@@ -782,8 +785,31 @@ export default function WorkspacePage() {
         return typeMatch && assigneeMatch;
       }),
     }));
+  const normalizedEditorialSearch = editorialSearch.trim().toLocaleLowerCase("th");
+  const visibleEditorialCards = editorialCards.filter((card: any) => {
+    const haystack = [card.novel?.title, card.novel?.id, card.episodeNumber, card.episodeTitle, card.note, card.columnName]
+      .filter((value) => value != null)
+      .join(" ")
+      .toLocaleLowerCase("th");
+    const matchesSearch = !normalizedEditorialSearch || haystack.includes(normalizedEditorialSearch);
+    const matchesQuickFilter =
+      editorialQuickFilter === "all" ||
+      (editorialQuickFilter === "new" && card.columnKey === "new") ||
+      (editorialQuickFilter === "unchecked" && ["new", "checking"].includes(card.columnKey)) ||
+      (editorialQuickFilter === "needs_fix" && card.columnKey === "needs_fix") ||
+      (editorialQuickFilter === "awaiting_confirm" && ["checking", "review"].includes(card.columnKey)) ||
+      (editorialQuickFilter === "ready_stage" && card.columnKey === "approved") ||
+      (editorialQuickFilter === "ready_publish" && card.columnKey === "ready_to_publish") ||
+      (editorialQuickFilter === "published" && card.columnKey === "published");
+    return matchesSearch && matchesQuickFilter;
+  });
+  const normalizedEpisodeNovelSearch = episodeNovelSearch.trim().toLocaleLowerCase("th");
+  const searchableWorkspaceNovelOptions = workspaceNovelOptions.filter(({ workspaceNovel, novel }: any) =>
+    !normalizedEpisodeNovelSearch ||
+    [novel.title, novel.id, workspaceNovel.id].join(" ").toLocaleLowerCase("th").includes(normalizedEpisodeNovelSearch)
+  );
   const editorialNovelGroups = Array.from(
-    editorialCards.reduce((groups: Map<number, any>, card: any) => {
+    visibleEditorialCards.reduce((groups: Map<number, any>, card: any) => {
       const key = Number(card.workspaceNovelId ?? card.novel?.id ?? card.id);
       const existing = groups.get(key) ?? { workspaceNovelId: card.workspaceNovelId, novel: card.novel, cards: [] };
       existing.cards.push(card);
@@ -994,6 +1020,11 @@ export default function WorkspacePage() {
                   }}
                 >
                   <div className="text-sm font-medium">เพิ่มตอนใหม่</div>
+                  <Input
+                    value={episodeNovelSearch}
+                    onChange={(event) => setEpisodeNovelSearch(event.target.value)}
+                    placeholder="ค้นหาเรื่องด้วยชื่อ / Novel ID"
+                  />
                   <select
                     aria-label="Episode novel"
                     className="h-10 w-full rounded-md border bg-background px-3 text-sm"
@@ -1001,9 +1032,9 @@ export default function WorkspacePage() {
                     onChange={(event) => setEpisodeWorkspaceNovelId(event.target.value)}
                   >
                     <option value="">เลือกเรื่อง</option>
-                    {workspaceNovelOptions.map(({ workspaceNovel, novel }: any) => (
+                    {searchableWorkspaceNovelOptions.map(({ workspaceNovel, novel }: any) => (
                       <option key={workspaceNovel.id} value={workspaceNovel.id}>
-                        {novel.title}
+                        {novel.title} · Novel #{novel.id}
                       </option>
                     ))}
                   </select>
@@ -1036,9 +1067,17 @@ export default function WorkspacePage() {
                 </form>
               </div>
 
-              <div className="flex items-center justify-between gap-3 rounded-md border bg-muted/10 p-3">
-                <div><div className="font-medium">Table-first Editorial</div><div className="text-xs text-muted-foreground">1 แถว = 1 Episode Pack / ไฟล์ · กลุ่มเรื่องพับไว้เป็นค่าเริ่มต้น</div></div>
-                <span className="text-xs text-muted-foreground">{editorialCards.length} pack(s)</span>
+              <div className="space-y-3 rounded-md border bg-muted/10 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div><div className="font-medium">Table-first Editorial</div><div className="text-xs text-muted-foreground">1 แถว = 1 Episode Pack / ไฟล์ · กลุ่มเรื่องพับไว้เป็นค่าเริ่มต้น</div></div>
+                  <span className="text-xs text-muted-foreground">{visibleEditorialCards.length}/{editorialCards.length} pack(s)</span>
+                </div>
+                <Input value={editorialSearch} onChange={(event) => setEditorialSearch(event.target.value)} placeholder="ค้นหาชื่อเรื่อง / Novel ID / ช่วงตอน / ชื่อตอน / หมายเหตุ" aria-label="Editorial pack search" />
+                <div className="flex flex-wrap gap-2">
+                  {[["all","ทั้งหมด"],["new","มาใหม่"],["unchecked","ยังไม่ตรวจ"],["needs_fix","ต้องแก้"],["awaiting_confirm","รอยืนยัน"],["ready_stage","พร้อม Stage"],["ready_publish","พร้อมลง"],["published","ลงแล้ว"]].map(([key,label]) => (
+                    <Button key={key} type="button" size="sm" variant={editorialQuickFilter === key ? "default" : "outline"} onClick={() => setEditorialQuickFilter(key)}>{label}</Button>
+                  ))}
+                </div>
               </div>
               {editorialBoard.isLoading || ensureEditorialBoard.isPending ? (
                 <div className="flex min-h-32 items-center justify-center"><Loader2 className="h-6 w-6 animate-spin" /></div>

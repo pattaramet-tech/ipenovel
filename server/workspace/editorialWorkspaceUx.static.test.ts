@@ -17,6 +17,21 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).not.toContain("Editorial assignee filter");
   });
 
+  it("supports table search, quick filters and searchable episode intake", () => {
+    const source = page();
+    expect(source).toContain("Editorial pack search");
+    expect(source).toContain("ค้นหาชื่อเรื่อง / Novel ID / ช่วงตอน / ชื่อตอน / หมายเหตุ");
+    expect(source).toContain('["new","มาใหม่"]');
+    expect(source).toContain('["unchecked","ยังไม่ตรวจ"]');
+    expect(source).toContain('["needs_fix","ต้องแก้"]');
+    expect(source).toContain('["awaiting_confirm","รอยืนยัน"]');
+    expect(source).toContain('["ready_stage","พร้อม Stage"]');
+    expect(source).toContain('["ready_publish","พร้อมลง"]');
+    expect(source).toContain('["published","ลงแล้ว"]');
+    expect(source).toContain("ค้นหาเรื่องด้วยชื่อ / Novel ID");
+    expect(source).toContain("searchableWorkspaceNovelOptions");
+  });
+
   it("offers Google Docs quick import while creating a story or episode", () => {
     const source = page();
     expect(source).toContain("Google Docs สำหรับ Quick Import");
