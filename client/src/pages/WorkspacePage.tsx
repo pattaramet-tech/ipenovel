@@ -387,6 +387,21 @@ export default function WorkspacePage() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const updateEditorialEpisode = trpc.workspace.editorial.updateEpisode.useMutation({
+    onSuccess: async () => {
+      await editorialBoard.refetch();
+      toast.success("แก้ไข Episode Pack แล้ว");
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const removeEditorialEpisode = trpc.workspace.editorial.removeEpisode.useMutation({
+    onSuccess: async (_result, variables) => {
+      if (selectedSourceWorkItemId === variables.workItemId) setSelectedSourceWorkItemId(undefined);
+      await editorialBoard.refetch();
+      toast.success("นำ Episode Pack ออกจาก Workspace แล้ว");
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const createEditorialEpisode = trpc.workspace.editorial.createEpisode.useMutation({
     onSuccess: async (result, variables) => {
       const quickDocUrl = episodeGoogleDocUrl.trim();
@@ -1169,7 +1184,7 @@ export default function WorkspacePage() {
                       <thead><tr className="border-y bg-muted/10 text-left text-xs text-muted-foreground"><th className="px-3 py-2 font-medium">เรื่อง / ช่วงตอน</th><th className="px-3 py-2 text-center font-medium">ตรวจคำ</th><th className="px-3 py-2 text-center font-medium">ตรวจแล้ว</th><th className="px-3 py-2 text-center font-medium">Stage</th><th className="px-3 py-2 text-center font-medium">พร้อมลง</th><th className="px-3 py-2 text-center font-medium">เผยแพร่</th><th className="min-w-72 px-3 py-2 font-medium">หมายเหตุ</th></tr></thead>
                       <tbody>{group.cards.slice().sort((a: any,b: any)=>String(a.episodeNumber??"").localeCompare(String(b.episodeNumber??""),"th",{numeric:true})).map((card:any)=>(
                         <tr key={card.id} className="border-b last:border-b-0 hover:bg-muted/10">
-                          <td className="px-3 py-3"><button type="button" className="text-left font-medium text-primary hover:underline" disabled={!card.workItemId} onClick={()=>setSelectedSourceWorkItemId(card.workItemId)}>{card.workItemType==="NEW_EPISODE" ? card.episodeNumber||"ตอนใหม่" : "เรื่องใหม่ / Draft แรก"}</button>{card.episodeTitle&&<div className="mt-0.5 text-xs text-muted-foreground">{card.episodeTitle}</div>}<div className="mt-0.5 text-[11px] text-muted-foreground">{card.columnName}</div></td>
+                          <td className="px-3 py-3"><button type="button" className="text-left font-medium text-primary hover:underline" disabled={!card.workItemId} onClick={()=>setSelectedSourceWorkItemId(card.workItemId)}>{card.workItemType==="NEW_EPISODE" ? card.episodeNumber||"ตอนใหม่" : "เรื่องใหม่ / Draft แรก"}</button>{card.episodeTitle&&<div className="mt-0.5 text-xs text-muted-foreground">{card.episodeTitle}</div>}<div className="mt-0.5 text-[11px] text-muted-foreground">{card.columnName}</div>{card.columnKey==="new"&&card.workItemId&&<div className="mt-2 flex gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>{const next=window.prompt("แก้ช่วงตอน",card.episodeNumber||"");if(next&&next.trim()&&next.trim()!==String(card.episodeNumber||"").trim())updateEditorialEpisode.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId,episodeNumber:next.trim(),episodeTitle:card.episodeTitle||undefined});}}>แก้ไข</Button><Button type="button" size="sm" variant="outline" onClick={()=>{if(window.confirm(`นำ Episode Pack ${card.episodeNumber||""} ออกจาก Workspace หรือไม่?`))removeEditorialEpisode.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId});}}>นำออก</Button></div>}</td>
                           {[
                             ["checker", card.evidence?.checker, "Deterministic Checker ผ่านบน Draft ปัจจุบัน"],
                             ["approval", card.evidence?.approval, "Approval ตรงกับ Draft/QC ปัจจุบัน"],

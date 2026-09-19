@@ -43,6 +43,8 @@ import {
   ensureEditorialBoard,
   getEditorialBoard,
   listEditorialAssignees,
+  removeEditorialEpisodeWorkItem,
+  updateEditorialEpisodeWorkItem,
   updateEditorialWorkItemNote,
   WorkspaceEditorialBoardError,
 } from "./editorialBoard.service";
@@ -1257,6 +1259,22 @@ export const workspaceRouter = router({
         } catch (error) {
           return mapWorkspaceError(error);
         }
+      }),
+    updateEpisode: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        episodeNumber: z.string().trim().min(1).max(100),
+        episodeTitle: z.string().trim().max(500).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try { return await updateEditorialEpisodeWorkItem({ actorUserId: ctx.user.id, ...input }); }
+        catch (error) { return mapWorkspaceError(error); }
+      }),
+    removeEpisode: adminProcedure
+      .input(workspaceIdInput.extend({ workItemId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        try { return await removeEditorialEpisodeWorkItem({ actorUserId: ctx.user.id, ...input }); }
+        catch (error) { return mapWorkspaceError(error); }
       }),
     assignWorkItem: adminProcedure
       .input(workspaceIdInput.extend({

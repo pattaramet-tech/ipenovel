@@ -2,6 +2,7 @@ import { and, asc, desc, eq, sql } from "drizzle-orm";
 import {
   novels,
   users,
+  workspaceEditorialSources,
   workspaceEditorialWorkItemEvents,
   workspaceEditorialWorkItems,
   workspaceKanbanBoards,
@@ -112,7 +113,7 @@ async function loadEditorialBoardReadModel(db: any, workspaceId: number) {
     db
       .select()
       .from(workspaceKanbanCards)
-      .where(eq(workspaceKanbanCards.boardId, board.id))
+      .where(and(eq(workspaceKanbanCards.boardId, board.id), eq(workspaceKanbanCards.status, "active")))
       .orderBy(asc(workspaceKanbanCards.rank), asc(workspaceKanbanCards.id)),
     db
       .select({ transition: workspaceKanbanTransitions })
@@ -486,6 +487,20 @@ export async function listEditorialAssignees(input: {
     .orderBy(asc(users.id));
 }
 
+function parseEpisodeSpan(value: string): { start: number; end: number } | null {
+  const normalized = value.normalize("NFKC").trim().replace(/[–—]/g, "-");
+  const match = normalized.match(/^(\d+)\s*(?:-\s*(\d+))?$/);
+  if (!match) return null;
+  const start = Number(match[1]);
+  const end = Number(match[2] ?? match[1]);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start) return null;
+  return { start, end };
+}
+
+function spansOverlap(a: { start: number; end: number }, b: { start: number; end: number }) {
+  return a.start <= b.end && b.start <= a.end;
+}
+
 export async function createEditorialEpisodeWorkItem(input: {
   actorUserId: number;
   workspaceId: number;
@@ -551,6 +566,27 @@ export async function createEditorialEpisodeWorkItem(input: {
         "EDITORIAL_BOARD_CONFLICT",
         "Editorial New column was not found."
       );
+    }
+
+    const requestedSpan = parseEpisodeSpan(input.episodeNumber);
+    if (requestedSpan) {
+      const siblingItems = await tx.select().from(workspaceEditorialWorkItems)
+        .innerJoin(workspaceKanbanCards, eq(workspaceEditorialWorkItems.cardId, workspaceKanbanCards.id))
+        .where(and(
+          eq(workspaceEditorialWorkItems.workspaceNovelId, input.workspaceNovelId),
+          eq(workspaceEditorialWorkItems.workItemType, "new_episode"),
+          eq(workspaceKanbanCards.status, "active")
+        ));
+      const overlap = siblingItems.find((row: any) => {
+        const span = parseEpisodeSpan(row.workspaceEditorialWorkItems.episodeNumber ?? "");
+        return span && spansOverlap(requestedSpan, span);
+      });
+      if (overlap) {
+        throw new WorkspaceEditorialBoardError(
+          "EDITORIAL_WORK_ITEM_CONFLICT",
+          `Episode range overlaps existing pack ${overlap.workspaceEditorialWorkItems.episodeNumber}.`
+        );
+      }
     }
 
     const [existingWorkItem] = await tx
@@ -748,6 +784,53 @@ export async function updateEditorialWorkItemNote(input: {
     .where(eq(workspaceEditorialWorkItems.id, input.workItemId))
     .limit(1);
   return { workItem };
+}
+
+async function requireEditableEpisodePack(tx: any, workspaceId: number, workItemId: number) {
+  const [row] = await tx.select({ workItem: workspaceEditorialWorkItems, card: workspaceKanbanCards, column: workspaceKanbanColumns })
+    .from(workspaceEditorialWorkItems)
+    .innerJoin(workspaceKanbanCards, eq(workspaceEditorialWorkItems.cardId, workspaceKanbanCards.id))
+    .innerJoin(workspaceKanbanColumns, eq(workspaceKanbanCards.columnId, workspaceKanbanColumns.id))
+    .where(and(eq(workspaceEditorialWorkItems.id, workItemId), eq(workspaceEditorialWorkItems.workItemType, "new_episode"), eq(workspaceKanbanCards.status, "active")))
+    .limit(1);
+  if (!row || row.column.key !== "new") throw new WorkspaceEditorialBoardError("EDITORIAL_WORK_ITEM_CONFLICT", "Episode Pack can only be edited/removed while it is still in New.");
+  const [source] = await tx.select({ id: workspaceEditorialSources.id }).from(workspaceEditorialSources)
+    .where(and(eq(workspaceEditorialSources.workItemId, workItemId), eq(workspaceEditorialSources.status, "active"))).limit(1);
+  if (source) throw new WorkspaceEditorialBoardError("EDITORIAL_WORK_ITEM_CONFLICT", "Episode Pack already has source/Draft evidence. Keep its durable history; create a corrected pack instead.");
+  const [workspaceNovel] = await tx.select().from(workspaceNovels).where(and(eq(workspaceNovels.id, row.workItem.workspaceNovelId), eq(workspaceNovels.workspaceId, workspaceId))).limit(1);
+  if (!workspaceNovel) throw new WorkspaceEditorialBoardError("EDITORIAL_WORK_ITEM_NOT_FOUND", "Episode Pack does not belong to this Workspace.");
+  return row;
+}
+
+export async function updateEditorialEpisodeWorkItem(input: { actorUserId: number; workspaceId: number; workItemId: number; episodeNumber: string; episodeTitle?: string; }) {
+  const db = await database();
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
+  await requireActiveWorkspace(db, input.workspaceId);
+  const itemKey = normalizeEditorialEpisodeKey(input.episodeNumber);
+  const requestedSpan = parseEpisodeSpan(input.episodeNumber);
+  if (!itemKey || !requestedSpan) throw new WorkspaceEditorialBoardError("EDITORIAL_WORK_ITEM_CONFLICT", "Episode number/range must be numeric, for example 31 or 031-060.");
+  return db.transaction(async (tx: any) => {
+    const row = await requireEditableEpisodePack(tx, input.workspaceId, input.workItemId);
+    const siblings = await tx.select({ item: workspaceEditorialWorkItems, card: workspaceKanbanCards }).from(workspaceEditorialWorkItems)
+      .innerJoin(workspaceKanbanCards, eq(workspaceEditorialWorkItems.cardId, workspaceKanbanCards.id))
+      .where(and(eq(workspaceEditorialWorkItems.workspaceNovelId, row.workItem.workspaceNovelId), eq(workspaceEditorialWorkItems.workItemType, "new_episode"), eq(workspaceKanbanCards.status, "active")));
+    const overlap = siblings.find((entry: any) => entry.item.id !== input.workItemId && (() => { const span = parseEpisodeSpan(entry.item.episodeNumber ?? ""); return span && spansOverlap(requestedSpan, span); })());
+    if (overlap) throw new WorkspaceEditorialBoardError("EDITORIAL_WORK_ITEM_CONFLICT", `Episode range overlaps existing pack ${overlap.item.episodeNumber}.`);
+    await tx.update(workspaceEditorialWorkItems).set({ itemKey, episodeNumber: input.episodeNumber.trim(), episodeTitle: input.episodeTitle?.trim() || null, version: sql`${workspaceEditorialWorkItems.version} + 1` }).where(eq(workspaceEditorialWorkItems.id, input.workItemId));
+    await tx.update(workspaceKanbanCards).set({ logicalItemKey: editorialEpisodeLogicalKey(row.workItem.workspaceNovelId, input.episodeNumber) }).where(eq(workspaceKanbanCards.id, row.card.id));
+    return { workItemId: input.workItemId, updated: true as const };
+  });
+}
+
+export async function removeEditorialEpisodeWorkItem(input: { actorUserId: number; workspaceId: number; workItemId: number; }) {
+  const db = await database();
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
+  await requireActiveWorkspace(db, input.workspaceId);
+  return db.transaction(async (tx: any) => {
+    const row = await requireEditableEpisodePack(tx, input.workspaceId, input.workItemId);
+    await tx.update(workspaceKanbanCards).set({ status: "archived" }).where(eq(workspaceKanbanCards.id, row.card.id));
+    return { workItemId: input.workItemId, removed: true as const };
+  });
 }
 
 export async function assignEditorialWorkItem(input: {
