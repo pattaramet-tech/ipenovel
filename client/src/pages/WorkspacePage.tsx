@@ -73,7 +73,6 @@ export default function WorkspacePage() {
   const [selectedSourceWorkItemId, setSelectedSourceWorkItemId] = useState<number>();
   const [googleConnectionId, setGoogleConnectionId] = useState("");
   const [googleDocUrl, setGoogleDocUrl] = useState("");
-  const [newNovelGoogleDocUrl, setNewNovelGoogleDocUrl] = useState("");
   const [episodeGoogleDocUrl, setEpisodeGoogleDocUrl] = useState("");
   const [uploadedSource, setUploadedSource] = useState<{
     name: string;
@@ -356,62 +355,16 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const createEditorialNovel = trpc.workspace.editorial.createNovel.useMutation({
-    onSuccess: async (result) => {
-      const quickDocUrl = newNovelGoogleDocUrl.trim();
-      let quickImportSucceeded = false;
+    onSuccess: async () => {
       setNewNovelTitle("");
-      setNewNovelGoogleDocUrl("");
-      let board: any;
-      if (selectedWorkspaceId) {
-        board = await ensureEditorialBoard.mutateAsync({ workspaceId: selectedWorkspaceId });
-      }
-      const refreshed = await Promise.all([
+      await Promise.all([
         detail.refetch(),
         bindings.refetch(),
         ownership.refetch(),
         availableNovels.refetch(),
         editorialBoard.refetch(),
       ]);
-      board = refreshed[4]?.data ?? board;
-      const storyCard = board?.columns
-        ?.flatMap((column: any) => column.cards ?? [])
-        .find(
-          (card: any) =>
-            card.workItemType === "NEW_STORY" &&
-            card.workspaceNovelId === result.workspaceNovelId
-        );
-      if (storyCard?.workItemId) {
-        setSelectedSourceWorkItemId(storyCard.workItemId);
-      }
-      if (quickDocUrl) {
-        setGoogleDocUrl(quickDocUrl);
-        if (!storyCard?.workItemId) {
-          toast.error("สร้างเรื่องแล้ว แต่ยังหา Editorial work item สำหรับ Quick Import ไม่พบ");
-        } else {
-          const connectionId =
-            Number(googleConnectionId) || Number(googleConnections[0]?.id);
-          if (!connectionId) {
-            toast.error("สร้างเรื่องแล้ว แต่ยังไม่มี Google Docs connection สำหรับ Quick Import");
-          } else {
-            try {
-              await importEditorialGoogleDoc.mutateAsync({
-                workspaceId: selectedWorkspaceId!,
-                workItemId: storyCard.workItemId,
-                connectionId,
-                documentUrlOrId: quickDocUrl,
-              });
-              quickImportSucceeded = true;
-            } catch {
-              // The Google import mutation already reports the provider error.
-            }
-          }
-        }
-      }
-      toast.success(
-        quickImportSucceeded
-          ? "สร้างเรื่องใหม่และนำเข้า Google Docs แล้ว"
-          : "New hidden novel added to Editorial Workspace"
-      );
+      toast.success("สร้างเรื่องใหม่แล้ว — เพิ่ม Episode Pack เมื่อต้องการเริ่มงานตอน");
     },
     onError: (error) => toast.error(error.message),
   });
@@ -613,6 +566,13 @@ export default function WorkspacePage() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const prepareEditorialPublishOwnership = trpc.workspace.editorial.preparePublishOwnership.useMutation({
+    onSuccess: async () => {
+      await Promise.all([editorialPublish.refetch(), ownership.refetch(), publishOverview.refetch()]);
+      toast.success("Publish ownership พร้อมแล้ว — ตรวจสถานะก่อนกด Publish (Controlled)");
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const requestEditorialPublish = trpc.workspace.editorial.requestPublish.useMutation({
     onSuccess: async () => {
       await Promise.all([
@@ -751,12 +711,14 @@ export default function WorkspacePage() {
     (((editorialEvidenceStatuses.data as any[]) ?? [])).map((status: any) => [status.workItemId, status])
   );
   const editorialCards = editorialColumns.flatMap((column: any) =>
-    (column.cards ?? []).map((card: any) => ({
-      ...card,
-      columnKey: column.key,
-      columnName: column.name,
-      evidence: editorialEvidenceByWorkItemId.get(card.workItemId) ?? null,
-    }))
+    (column.cards ?? [])
+      .filter((card: any) => card.workItemType !== "NEW_STORY")
+      .map((card: any) => ({
+        ...card,
+        columnKey: column.key,
+        columnName: column.name,
+        evidence: editorialEvidenceByWorkItemId.get(card.workItemId) ?? null,
+      }))
   );
   const selectedSourceCard = editorialCards.find(
     (card: any) => card.workItemId === selectedSourceWorkItemId
@@ -870,8 +832,16 @@ export default function WorkspacePage() {
         Checker/AI operational controls below are unchanged and are not required for this board.
       </div>
 
-      <section className="grid gap-6 lg:grid-cols-[minmax(260px,0.75fr)_minmax(0,2.25fr)]">
-        <Card className="h-fit space-y-4 p-5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-medium">Workspace</span>
+        <select aria-label="Workspace" className="h-9 min-w-64 rounded-md border bg-background px-3 text-sm" value={selectedWorkspaceId ?? ""} onChange={(event) => setSelectedWorkspaceId(Number(event.target.value) || undefined)}>
+          <option value="">เลือก Workspace</option>
+          {(workspaces.data as any[] | undefined)?.map(({ workspace }: any) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
+        </select>
+      </div>
+
+      <section className="space-y-6">
+        <Card className="hidden">
           <div>
             <h2 className="font-semibold">Workspaces</h2>
             <p className="text-sm text-muted-foreground">All platform admins can open every active workspace.</p>
@@ -1002,15 +972,8 @@ export default function WorkspacePage() {
                     maxLength={500}
                     placeholder="ชื่อเรื่อง"
                   />
-                  <Input
-                    value={newNovelGoogleDocUrl}
-                    onChange={(event) => setNewNovelGoogleDocUrl(event.target.value)}
-                    maxLength={1000}
-                    placeholder="Google Docs link สำหรับ Import (ถ้ามี)"
-                    disabled={createEditorialNovel.isPending}
-                  />
                   <div className="text-xs text-muted-foreground">
-                    ถ้าใส่ลิงก์ ระบบจะสร้างเรื่อง เลือกการ์ด และ Import Draft ให้อัตโนมัติ
+                    สร้าง Novel container เท่านั้น · ยังไม่สร้าง Episode Pack หรือ Draft ให้เพิ่มช่วงตอนจาก “เพิ่มตอนใหม่” เมื่อพร้อม
                   </div>
                   <Button type="submit" className="w-full" disabled={!newNovelTitle.trim() || createEditorialNovel.isPending}>
                     {createEditorialNovel.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
@@ -2016,6 +1979,12 @@ export default function WorkspacePage() {
                         <div className="text-xs text-muted-foreground">
                           publish owner {(editorialPublish.data as any)?.ownership?.owner ?? "—"} · epoch {(editorialPublish.data as any)?.ownership?.cutoverEpoch ?? "—"} · run #{(editorialPublish.data as any)?.publishRun?.id ?? "ยังไม่สร้าง"} · {(editorialPublish.data as any)?.blocker ?? "พร้อม enqueue"}
                         </div>
+                        {(editorialPublish.data as any)?.blocker === "PUBLISH_OWNERSHIP_CONFLICT" && (editorialPublish.data as any)?.ownership?.owner === "sheets" && (editorialPublish.data as any)?.ownership?.cutoverEpoch === 0 && (
+                          <Button type="button" variant="outline" disabled={prepareEditorialPublishOwnership.isPending} onClick={() => prepareEditorialPublishOwnership.mutate({ workspaceId: selectedWorkspaceId, workItemId: selectedSourceWorkItemId })}>
+                            {prepareEditorialPublishOwnership.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                            Prepare Publish Ownership
+                          </Button>
+                        )}
                         <Button
                           type="button"
                           disabled={

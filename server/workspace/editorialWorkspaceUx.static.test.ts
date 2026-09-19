@@ -44,6 +44,17 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).not.toContain('type="checkbox"');
   });
 
+  it("applies Preview feedback for compact Workspace, container-only novel intake and guarded ownership prep", () => {
+    const source = page();
+    expect(source).toContain('aria-label="Workspace"');
+    expect(source).toContain('<Card className="hidden">');
+    expect(source).toContain('card.workItemType !== "NEW_STORY"');
+    expect(source).toContain("สร้าง Novel container เท่านั้น");
+    expect(source).not.toContain("newNovelGoogleDocUrl");
+    expect(source).toContain("preparePublishOwnership.useMutation");
+    expect(source).toContain("Prepare Publish Ownership");
+  });
+
   it("defaults to Table with Kanban parity and collapses operator evidence", () => {
     const source = page();
     expect(source).toContain('useState<"table" | "kanban">("table")');
@@ -62,12 +73,11 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).toContain("Publish (Controlled)");
   });
 
-  it("offers Google Docs quick import while creating a story or episode", () => {
+  it("keeps Google Docs quick import on Episode Pack intake only", () => {
     const source = page();
     expect(source).toContain("Google Docs สำหรับ Quick Import");
-    expect(source).toContain("newNovelGoogleDocUrl");
+    expect(source).not.toContain("newNovelGoogleDocUrl");
     expect(source).toContain("episodeGoogleDocUrl");
-    expect(source).toContain("สร้างเรื่องใหม่และนำเข้า Google Docs แล้ว");
     expect(source).toContain("เพิ่มตอนและนำเข้า Google Docs แล้ว");
     expect(source).toContain("รองรับ Google Docs ที่มีหลายแท็บในลิงก์เดียว");
   });

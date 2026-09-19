@@ -80,6 +80,7 @@ import {
 } from "./editorialApproval.service";
 import {
   getEditorialPublishReadModel,
+  prepareEditorialPublishOwnership,
   requestEditorialPublish,
   WorkspaceEditorialPublishError,
 } from "./editorialPublish.service";
@@ -1029,6 +1030,17 @@ export const workspaceRouter = router({
             actorUserId: ctx.user.id,
             ...input,
           });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    preparePublishOwnership: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await prepareEditorialPublishOwnership({ actorUserId: ctx.user.id, ...input });
         } catch (error) {
           return mapWorkspaceError(error);
         }

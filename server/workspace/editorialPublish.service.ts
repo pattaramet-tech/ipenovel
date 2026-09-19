@@ -21,6 +21,7 @@ import { getEditorialApprovalReadModel } from "./editorialApproval.service";
 import { projectEditorialQcColumn } from "./editorialQcProjection.service";
 import { createPublishDestination, createPublishDryRun } from "./publishDryRun.service";
 import { requestPublishExecution } from "./publishExecution.service";
+import { cutoverPublishOwnership } from "./publishOwnershipTransition.service";
 import type {
   WorkspacePublishExecutionScope,
   WorkspacePublishProviderRequest,
@@ -276,6 +277,61 @@ export async function getEditorialPublishReadModel(input: {
           ? "PUBLISH_ANCHOR_AMBIGUOUS"
           : null,
   };
+}
+
+export async function prepareEditorialPublishOwnership(input: {
+  actorUserId: number;
+  workspaceId: number;
+  workItemId: number;
+}) {
+  const state = await getEditorialPublishReadModel(input);
+  if (!state.readyToPublish || state.stages.length === 0 || state.kanbanColumnKey !== "ready_to_publish") {
+    throw new WorkspaceEditorialPublishError("STAGE_NOT_READY", "Publish ownership preparation requires the complete current approved stage batch.");
+  }
+  if (!state.anchor) {
+    throw new WorkspaceEditorialPublishError("PUBLISH_ANCHOR_AMBIGUOUS", "Publish ownership preparation requires exactly one current active document fingerprint.");
+  }
+  if (!state.ownership) {
+    throw new WorkspaceEditorialPublishError("PUBLISH_OWNERSHIP_CONFLICT", "Publish ownership evidence is missing.");
+  }
+  if (state.ownership.owner === "workspace") return { prepared: false, ownership: state.ownership };
+  if (state.ownership.owner !== "sheets" || state.ownership.cutoverEpoch !== 0) {
+    throw new WorkspaceEditorialPublishError("PUBLISH_OWNERSHIP_CONFLICT", "Only the guarded initial Sheets epoch 0 → Workspace epoch 1 cutover can be prepared here.");
+  }
+  let destination = state.destination;
+  if (!destination) {
+    destination = (await createPublishDestination({
+      actorUserId: input.actorUserId,
+      workspaceId: input.workspaceId,
+      workspaceNovelId: state.workspaceNovel.id,
+      targetType: "novel",
+      targetId: state.workspaceNovel.novelId,
+      policyVersion: EDITORIAL_PUBLISH_POLICY_VERSION,
+    })).destination;
+  }
+  const plan = state.publishRun
+    ? { run: state.publishRun, created: false }
+    : await createPublishDryRun({
+        actorUserId: input.actorUserId,
+        workspaceId: input.workspaceId,
+        destinationId: destination.id,
+        snapshotId: state.anchor.snapshotId,
+        expectedLastPublishedSha256: state.anchor.lastPublishedSha256 ?? undefined,
+        items: state.stages.map((stage: any) => ({
+          itemKey: editorialItemKey(stage.id, stage.episodeId),
+          episodeId: stage.episodeId,
+          sourceSha256: stage.contentSha256,
+        })),
+      });
+  const transition = await cutoverPublishOwnership({
+    actorUserId: input.actorUserId,
+    workspaceId: input.workspaceId,
+    runId: plan.run.id,
+    expectedOwner: "sheets",
+    expectedCutoverEpoch: 0,
+    expectedVersion: state.ownership.version,
+  });
+  return { prepared: true, plan, transition };
 }
 
 export async function requestEditorialPublish(input: {
