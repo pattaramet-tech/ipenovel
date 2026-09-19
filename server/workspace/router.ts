@@ -70,7 +70,9 @@ import {
 } from "./editorialForeignChecker.service";
 import {
   applyEditorialEditorEdit,
+  excludeEditorialDraftTab,
   getEditorialEditorReadModel,
+  restoreEditorialDraftTab,
   undoEditorialEditorEdit,
   WorkspaceEditorialEditorError,
 } from "./editorialEditor.service";
@@ -951,6 +953,18 @@ export const workspaceRouter = router({
         } catch (error) {
           return mapWorkspaceError(error);
         }
+      }),
+    editorExcludeTab: adminProcedure
+      .input(workspaceIdInput.extend({ workItemId: z.number().int().positive(), expectedDraftId: z.number().int().positive(), expectedDraftSha256: z.string().trim().length(64), sourceTabId: z.string().trim().min(1).max(255) }))
+      .mutation(async ({ ctx, input }) => {
+        try { return await excludeEditorialDraftTab({ actorUserId: ctx.user.id, ...input }); }
+        catch (error) { return mapWorkspaceError(error); }
+      }),
+    editorRestoreTab: adminProcedure
+      .input(workspaceIdInput.extend({ workItemId: z.number().int().positive(), expectedDraftId: z.number().int().positive(), expectedDraftSha256: z.string().trim().length(64), sourceTabId: z.string().trim().min(1).max(255) }))
+      .mutation(async ({ ctx, input }) => {
+        try { return await restoreEditorialDraftTab({ actorUserId: ctx.user.id, ...input }); }
+        catch (error) { return mapWorkspaceError(error); }
       }),
     editorEdit: adminProcedure
       .input(workspaceIdInput.extend({

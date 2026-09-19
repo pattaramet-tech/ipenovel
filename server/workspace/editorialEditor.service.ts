@@ -195,7 +195,7 @@ async function persistManualDraft(
     parentDraftId: number;
     version: number;
     actorUserId: number;
-    transformCode: "manual_edit" | "manual_undo";
+    transformCode: "manual_edit" | "manual_undo" | "manual_tab_exclude" | "manual_tab_restore";
     beforeSha256: string;
     document: EditorialDraftDocument;
     presentationJson: string;
@@ -379,8 +379,24 @@ export async function getEditorialEditorReadModel(input: {
     )
     .limit(20);
 
+  const currentDocument = await loadDraftDocument(db, draft.id);
+  let rootDraft = draft;
+  let baselineDocument = currentDocument;
+  while (rootDraft.parentDraftId) {
+    const prior = await draftById(db, input.workItemId, rootDraft.parentDraftId);
+    if (!prior) break;
+    rootDraft = prior;
+    baselineDocument = await loadDraftDocument(db, prior.id);
+  }
+  const currentIds = new Set(currentDocument.tabs.map(tab => tab.sourceTabId));
+  const excludedTabs = baselineDocument.tabs
+    .filter(tab => !currentIds.has(tab.sourceTabId))
+    .map(tab => ({ sourceTabId: tab.sourceTabId, title: tab.title, tabOrder: tab.tabOrder }));
+
   return {
     latestDraft: draft,
+    tabs: currentDocument.tabs.map(tab => ({ sourceTabId: tab.sourceTabId, title: tab.title, tabOrder: tab.tabOrder })),
+    excludedTabs,
     canUndo: Boolean(
       draft.origin === "manual" &&
       draft.parentDraftId &&
@@ -390,6 +406,63 @@ export async function getEditorialEditorReadModel(input: {
     lastEdit: lastEdit ?? null,
     history,
   };
+}
+
+async function createTabRevision(input: {
+  actorUserId: number; workspaceId: number; workItemId: number;
+  expectedDraftId: number; expectedDraftSha256: string; sourceTabId: string;
+  action: "exclude" | "restore";
+}) {
+  const db = await database();
+  await requireWorkItem(db, input.actorUserId, input.workspaceId, input.workItemId);
+  return db.transaction(async (tx: any) => {
+    const current = await latestDraft(tx, input.workItemId);
+    if (!current || current.id !== input.expectedDraftId || current.draftSha256 !== input.expectedDraftSha256) {
+      throw new WorkspaceEditorialEditorError("DRAFT_CONFLICT", "Draft changed before the tab action was applied.");
+    }
+    const document = await loadDraftDocument(tx, current.id);
+    let nextDocument: EditorialDraftDocument;
+    if (input.action === "exclude") {
+      if (document.tabs.length <= 1) throw new WorkspaceEditorialEditorError("EDIT_INVALID", "Draft must keep at least one tab.");
+      const target = document.tabs.find(tab => tab.sourceTabId === input.sourceTabId);
+      if (!target) throw new WorkspaceEditorialEditorError("EDIT_CONFLICT", "Tab is not present in the current Draft.");
+      nextDocument = { ...document, tabs: document.tabs.filter(tab => tab.sourceTabId !== input.sourceTabId) };
+    } else {
+      if (document.tabs.some(tab => tab.sourceTabId === input.sourceTabId)) throw new WorkspaceEditorialEditorError("EDIT_CONFLICT", "Tab is already present in the current Draft.");
+      let cursor = current;
+      let restored: EditorialDraftDocument["tabs"][number] | undefined;
+      while (cursor.parentDraftId && !restored) {
+        const prior = await draftById(tx, input.workItemId, cursor.parentDraftId);
+        if (!prior) break;
+        const priorDocument = await loadDraftDocument(tx, prior.id);
+        restored = priorDocument.tabs.find(tab => tab.sourceTabId === input.sourceTabId);
+        cursor = prior;
+      }
+      if (!restored) throw new WorkspaceEditorialEditorError("EDIT_CONFLICT", "Excluded tab could not be restored from Draft history.");
+      nextDocument = { ...document, tabs: [...document.tabs, restored].sort((a,b) => a.tabOrder - b.tabOrder) };
+    }
+    nextDocument.warnings = Array.from(new Set(nextDocument.tabs.flatMap(tab => tab.warnings)));
+    const persisted = await persistManualDraft(tx, {
+      workItemId: input.workItemId, sourceSnapshotId: current.sourceSnapshotId, parentDraftId: current.id,
+      version: current.version + 1, actorUserId: input.actorUserId,
+      transformCode: input.action === "exclude" ? "manual_tab_exclude" : "manual_tab_restore",
+      beforeSha256: current.draftSha256, document: nextDocument, presentationJson: current.presentationJson,
+      details: { action: input.action, sourceTabId: input.sourceTabId },
+    });
+    await projectEditorialQcColumn(tx, {
+      workItemId: input.workItemId, expectedDraftId: persisted.draftId, targetColumnKey: "editing",
+      actorUserId: input.actorUserId, reason: `workspace_editor_tab_${input.action}`,
+      idempotencyKey: `editor-tab-${input.action}-${persisted.draftId}`,
+    });
+    return { draft: await draftById(tx, input.workItemId, persisted.draftId), action: input.action, sourceTabId: input.sourceTabId };
+  });
+}
+
+export async function excludeEditorialDraftTab(input: Omit<Parameters<typeof createTabRevision>[0], "action">) {
+  return createTabRevision({ ...input, action: "exclude" });
+}
+export async function restoreEditorialDraftTab(input: Omit<Parameters<typeof createTabRevision>[0], "action">) {
+  return createTabRevision({ ...input, action: "restore" });
 }
 
 export async function applyEditorialEditorEdit(input: {

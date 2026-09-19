@@ -547,6 +547,20 @@ export default function WorkspacePage() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const refreshAfterTabRevision = async () => {
+    await Promise.all([
+      editorialSourceDraft.refetch(), editorialEditor.refetch(), editorialForeignChecker.refetch(),
+      editorialApproval.refetch(), editorialBoard.refetch(),
+    ]);
+  };
+  const excludeEditorialTab = trpc.workspace.editorial.editorExcludeTab.useMutation({
+    onSuccess: async () => { await refreshAfterTabRevision(); toast.success("นำแท็บออกจาก Draft แล้ว — กรุณารัน Checker และ Confirm ใหม่"); },
+    onError: (error) => toast.error(error.message),
+  });
+  const restoreEditorialTab = trpc.workspace.editorial.editorRestoreTab.useMutation({
+    onSuccess: async () => { await refreshAfterTabRevision(); toast.success("คืนแท็บเข้า Draft แล้ว — กรุณารัน Checker และ Confirm ใหม่"); },
+    onError: (error) => toast.error(error.message),
+  });
   const undoEditorialEdit = trpc.workspace.editorial.editorUndo.useMutation({
     onSuccess: async (result) => {
       setEditorTarget(undefined);
@@ -1737,6 +1751,7 @@ export default function WorkspacePage() {
                       </div>
                     </summary>
                     <div className="space-y-3 border-t p-3">
+                      {editorialEditorData?.latestDraft && <div className="rounded-lg border p-3"><div className="font-medium">Draft tabs</div><div className="mt-2 space-y-2">{(editorialEditorData.tabs ?? []).map((tab:any)=><div key={tab.sourceTabId} className="flex items-center justify-between rounded border p-2"><span>{tab.title}</span><Button type="button" size="sm" variant="outline" disabled={excludeEditorialTab.isPending || editorialEditorData.tabs.length<=1} onClick={()=>{if(window.confirm(`Remove tab ${tab.title} from this Draft? A new Draft revision will be created and current QC/approval becomes stale.`))excludeEditorialTab.mutate({workspaceId:selectedWorkspaceId!,workItemId:selectedSourceWorkItemId!,expectedDraftId:editorialEditorData.latestDraft.id,expectedDraftSha256:editorialEditorData.latestDraft.draftSha256,sourceTabId:tab.sourceTabId});}}>นำออก</Button></div>)}</div>{(editorialEditorData.excludedTabs ?? []).length>0&&<div className="mt-4"><div className="text-sm font-medium">แท็บที่นำออก</div>{editorialEditorData.excludedTabs.map((tab:any)=><div key={tab.sourceTabId} className="mt-2 flex items-center justify-between rounded border p-2"><span>{tab.title}</span><Button type="button" size="sm" variant="outline" onClick={()=>restoreEditorialTab.mutate({workspaceId:selectedWorkspaceId!,workItemId:selectedSourceWorkItemId!,expectedDraftId:editorialEditorData.latestDraft.id,expectedDraftSha256:editorialEditorData.latestDraft.draftSha256,sourceTabId:tab.sourceTabId})}>คืนแท็บ</Button></div>)}</div>}</div>}
                       <div className="flex justify-end">
                         <Button
                           type="button"
