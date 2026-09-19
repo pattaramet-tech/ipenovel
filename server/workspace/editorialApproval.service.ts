@@ -21,6 +21,7 @@ import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import {
   analyzeEditorialEpisodeDraftBatch,
   buildEditorialEpisodeDraftPlan,
+  buildEditorialEpisodePackPlan,
   editorialApprovalPayloadSha256,
   EditorialApprovalDomainError,
   editorialEpisodeStagePayloadSha256,
@@ -316,6 +317,9 @@ function stagePlanItemSummary(plan: EditorialEpisodeDraftPlan) {
 function stagePlanSummary(plan: EditorialEpisodeDraftBatchPlan | null) {
   if (!plan) return null;
   const first = plan.items[0] ?? null;
+  const pack = plan.ready && plan.items.length > 0
+    ? buildEditorialEpisodePackPlan(plan)
+    : null;
   return {
     mode: plan.mode,
     requestedEpisodeNumber: plan.requestedEpisodeNumber,
@@ -326,6 +330,14 @@ function stagePlanSummary(plan: EditorialEpisodeDraftBatchPlan | null) {
     excludedTabs: plan.excludedTabs,
     excludedCount: plan.excludedTabs.length,
     draftTabCount: plan.items.length + plan.excludedTabs.length,
+    commerce: pack ? {
+      saleMode: pack.saleMode,
+      episodeNumber: pack.episodeNumber,
+      title: pack.title,
+      billableTabCount: pack.billableTabCount,
+      excludedTabCount: pack.excludedTabCount,
+      price: pack.price,
+    } : null,
     anomalies: plan.anomalies,
     blockers: plan.blockers,
     ready: plan.ready,
@@ -423,15 +435,20 @@ function currentStageBatchStatus(input: {
   if (input.stages.length === 0) {
     return { valid: false, reason: "STAGE_REQUIRED" as const };
   }
+  // Q writes one package stage per Docs work item. Keep the legacy per-tab
+  // shape readable so already-published acceptance evidence is not orphaned.
+  const expectedPlans = input.stages.length === 1
+    ? [buildEditorialEpisodePackPlan(input.plan)]
+    : input.plan.items;
   if (
-    input.stages.length !== input.plan.items.length ||
-    input.episodes.length !== input.plan.items.length
+    input.stages.length !== expectedPlans.length ||
+    input.episodes.length !== expectedPlans.length
   ) {
     return { valid: false, reason: "STAGE_BATCH_INCOMPLETE" as const };
   }
 
   const planByEpisode = new Map(
-    input.plan.items.map(plan => [plan.episodeNumber, plan] as const)
+    expectedPlans.map(plan => [plan.episodeNumber, plan] as const)
   );
   for (let index = 0; index < input.stages.length; index += 1) {
     const stage = input.stages[index];
@@ -536,6 +553,9 @@ export async function getEditorialApprovalReadModel(input: {
           title: episode.title,
           contentFormat: episode.contentFormat,
           wordCount: episode.wordCount,
+          saleMode: episode.saleMode,
+          price: episode.price,
+          isFree: episode.isFree,
           isPublished: episode.isPublished,
           publishedAt: episode.publishedAt,
         }
@@ -812,8 +832,13 @@ export async function stageEditorialEpisodeDraft(input: {
 
     const novelId = context.workspaceNovel.novelId;
     const staged: Array<{ stage: any; episode: any; replayed: boolean }> = [];
+    // A Workspace Google Docs work item is one commercial Episode Pack. Tabs
+    // are chapters inside that package, not independently purchasable rows.
+    // Front-matter exclusions are already absent from batchPlan.items, so the
+    // pack price is derived only from billable content tabs.
+    const packPlan = buildEditorialEpisodePackPlan(batchPlan);
 
-    for (const plan of batchPlan.items) {
+    for (const plan of [packPlan]) {
       const payloadSha256 = editorialEpisodeStagePayloadSha256({
         workItemId: input.workItemId,
         approvalId: approval.id,
@@ -909,7 +934,9 @@ export async function stageEditorialEpisodeDraft(input: {
               title: plan.title,
               content: plan.content,
               contentFormat: plan.contentFormat,
-              saleMode: "chapter",
+              saleMode: "package",
+              price: packPlan.price,
+              isFree: false,
               isPublished: false,
               publishedAt: null,
               wordCount: plan.wordCount,
@@ -973,6 +1000,9 @@ export async function stageEditorialEpisodeDraft(input: {
             content: plan.content,
             contentFormat: plan.contentFormat,
             wordCount: plan.wordCount,
+            saleMode: "package",
+            price: packPlan.price,
+            isFree: false,
             isPublished: false,
             publishedAt: null,
             updatedAt: new Date(),
@@ -1040,10 +1070,10 @@ export async function stageEditorialEpisodeDraft(input: {
       staged.push({ stage, episode, replayed: false });
     }
 
-    if (staged.length !== batchPlan.items.length) {
+    if (staged.length !== 1) {
       throw new WorkspaceEditorialApprovalError(
         "EPISODE_CONFLICT",
-        "Episode staging batch was not persisted completely."
+        "Episode Pack staging was not persisted completely."
       );
     }
 

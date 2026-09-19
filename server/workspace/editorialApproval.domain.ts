@@ -34,6 +34,17 @@ export type EditorialEpisodeDraftPlan = {
   contentSha256: string;
 };
 
+export type EditorialEpisodePackPlan = EditorialEpisodeDraftPlan & {
+  saleMode: "package";
+  billableTabCount: number;
+  excludedTabCount: number;
+  price: string;
+  memberEpisodeNumbers: string[];
+};
+
+/** Workspace Docs commerce policy: one included content tab = ฿2 of the pack price. */
+export const EDITORIAL_EPISODE_PACK_PRICE_PER_TAB_BAHT = 2;
+
 export class EditorialApprovalDomainError extends Error {
   constructor(
     readonly code:
@@ -507,6 +518,47 @@ export function analyzeEditorialEpisodeDraftBatch(
     anomalies,
     blockers,
     ready,
+  };
+}
+
+export function buildEditorialEpisodePackPlan(
+  batch: EditorialEpisodeDraftBatchPlan
+): EditorialEpisodePackPlan {
+  if (!batch.ready || batch.items.length === 0) {
+    throw new EditorialApprovalDomainError(
+      "DRAFT_STRUCTURE_AMBIGUOUS",
+      "Episode Pack requires a ready Draft batch with at least one billable content tab."
+    );
+  }
+  const items = batch.items;
+  const first = items[0];
+  const last = items[items.length - 1];
+  const episodeNumber = items.length === 1
+    ? first.episodeNumber
+    : `${first.episodeNumber} - ${last.episodeNumber}`;
+  // Preserve each source heading in the package blob so ReaderPage's existing
+  // package TOC parser can expose every chapter after one package purchase.
+  const content = items
+    .map(item => `${item.sourceTitleLine}\n\n${item.content}`.trim())
+    .join("\n\n");
+  const billableTabCount = items.length;
+  return {
+    episodeNumber,
+    title: items.length === 1
+      ? first.title
+      : `แพ็กตอน ${first.episodeNumber} - ${last.episodeNumber}`,
+    content,
+    contentFormat: "plain_text",
+    wordCount: countWords(content),
+    sourceTabId: first.sourceTabId,
+    sourceTabTitle: first.sourceTabTitle,
+    sourceTitleLine: first.sourceTitleLine,
+    contentSha256: sha256(content),
+    saleMode: "package",
+    billableTabCount,
+    excludedTabCount: batch.excludedTabs.length,
+    price: (billableTabCount * EDITORIAL_EPISODE_PACK_PRICE_PER_TAB_BAHT).toFixed(2),
+    memberEpisodeNumbers: items.map(item => item.episodeNumber),
   };
 }
 

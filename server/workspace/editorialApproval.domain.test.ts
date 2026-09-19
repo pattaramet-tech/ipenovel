@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   analyzeEditorialEpisodeDraftBatch,
   buildEditorialEpisodeDraftPlan,
+  buildEditorialEpisodePackPlan,
   editorialApprovalPayloadSha256,
   editorialEpisodeStagePayloadSha256,
   editorialEpisodeStateSha256,
@@ -530,5 +531,47 @@ describe("Editorial approval/staging domain", () => {
         isPublished: false,
       })
     ).not.toBe(state);
+  });
+});
+
+describe("Episode Pack commerce plan", () => {
+  it("turns one Docs range into one priced package with an internal chapter TOC", () => {
+    const tabs = Array.from({ length: 50 }, (_, index) => {
+      const number = 36 + index;
+      return {
+        sourceTabId: `tab-${number}`, tabOrder: index, title: `Chapter ${number}`,
+        chapterNumber: String(number), chapterTitle: `Chapter ${number}`,
+        paragraphs: [
+          { paragraphOrder: 0, text: `Chapter ${number} Title ${number}` },
+          { paragraphOrder: 1, text: `Content ${number} ${"x".repeat(100)}` },
+        ],
+      };
+    });
+    const batch = analyzeEditorialEpisodeDraftBatch({ workItemType: "new_episode", episodeNumber: "036 - 085", episodeTitle: null, tabs });
+    const pack = buildEditorialEpisodePackPlan(batch);
+    expect(pack.saleMode).toBe("package");
+    expect(pack.episodeNumber).toBe("036 - 085");
+    expect(pack.billableTabCount).toBe(50);
+    expect(pack.price).toBe("100.00");
+    expect(pack.memberEpisodeNumbers).toHaveLength(50);
+    expect(pack.content).toContain("Chapter 36 Title 36");
+    expect(pack.content).toContain("Chapter 85 Title 85");
+  });
+
+  it("prices only billable content tabs", () => {
+    const batch = analyzeEditorialEpisodeDraftBatch({
+      workItemType: "new_episode", episodeNumber: "001 - 049", episodeTitle: null,
+      tabs: Array.from({ length: 49 }, (_, index) => {
+        const number = index + 1;
+        return { sourceTabId: `tab-${number}`, tabOrder: index, title: `Chapter ${number}`, chapterNumber: String(number), chapterTitle: null, paragraphs: [{ paragraphOrder: 0, text: `Chapter ${number} Title` }, { paragraphOrder: 1, text: `Content ${"y".repeat(100)}` }] };
+      }),
+    });
+    // Exclusions are metadata about source tabs that were deliberately left
+    // out of batch.items; they must never increase the commercial price.
+    batch.excludedTabs.push({ sourceTabId: "note", sourceTabTitle: "note", tabOrder: 49, kind: "front_matter", label: "front matter" });
+    const pack = buildEditorialEpisodePackPlan(batch);
+    expect(pack.billableTabCount).toBe(49);
+    expect(pack.excludedTabCount).toBe(1);
+    expect(pack.price).toBe("98.00");
   });
 });

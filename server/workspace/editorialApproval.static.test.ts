@@ -104,8 +104,11 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
     expect(domain).toContain('"COUNT_MISMATCH"');
     expect(domain).toContain('"TAB_NUMBER_DUPLICATE"');
     expect(domain).toContain('"EXPECTED_EPISODE_MISSING"');
-    expect(service).toContain("for (const plan of batchPlan.items)");
-    expect(service).toContain("staged.length !== batchPlan.items.length");
+    expect(service).toContain("buildEditorialEpisodePackPlan(batchPlan)");
+    expect(service).toContain("for (const plan of [packPlan])");
+    expect(service).toContain("staged.length !== 1");
+    expect(service).toContain('saleMode: "package"');
+    expect(service).toContain("price: packPlan.price");
     expect(service).toContain("stageItemIdempotencyKey");
   });
 

@@ -1936,7 +1936,7 @@ export default function WorkspacePage() {
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="font-medium">
                             {editorialApprovalData.stagePlan.ready
-                              ? `พร้อม Stage ${editorialApprovalData.stagePlan.itemCount} ตอน`
+                              ? `พร้อม Stage 1 แพ็ก · ${editorialApprovalData.stagePlan.itemCount} บท`
                               : "Mapping ยังไม่พร้อม Stage"}
                           </div>
                           <span className="text-xs text-muted-foreground">
@@ -1948,6 +1948,15 @@ export default function WorkspacePage() {
                               : ""}
                           </span>
                         </div>
+                        {editorialApprovalData.stagePlan.commerce && (
+                          <div className="rounded border bg-background px-3 py-2 text-xs">
+                            ขายเป็นแพ็ก {editorialApprovalData.stagePlan.commerce.episodeNumber} ·{" "}
+                            {editorialApprovalData.stagePlan.commerce.billableTabCount} บท · ฿{editorialApprovalData.stagePlan.commerce.price}
+                            {(editorialApprovalData.stagePlan.commerce.excludedTabCount ?? 0) > 0
+                              ? ` · ไม่นับ ${editorialApprovalData.stagePlan.commerce.excludedTabCount} แท็บ`
+                              : ""}
+                          </div>
+                        )}
 
                         {(editorialApprovalData.stagePlan.excludedTabs?.length ?? 0) > 0 && (
                           <details className="rounded border bg-background">
