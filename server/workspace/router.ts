@@ -101,7 +101,7 @@ import {
   requestPublishExecution,
   WorkspacePublishExecutionError,
 } from "./publishExecution.service";
-import { parseWorkspacePublishExecutionScope, requirePreviewPublishExecutionSafety, WorkspacePublishRuntimeError } from "./publishExecution.runtime";
+import { requirePreviewPublishExecutionSafety, WorkspacePublishRuntimeError } from "./publishExecution.runtime";
 import {
   getPublishCutoverReadiness,
   rehearsePublishCutoverRollback,
@@ -739,9 +739,6 @@ export const workspaceRouter = router({
       .mutation(async ({ ctx, input }) => {
         try {
           const executionEnabled = process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true";
-          const executionScope = executionEnabled
-            ? parseWorkspacePublishExecutionScope(process.env.WORKSPACE_PUBLISH_EXECUTION_SCOPE)
-            : undefined;
           if (executionEnabled) requirePreviewPublishExecutionSafety();
           return await requestPublishExecution({
             actorUserId: ctx.user.id,
@@ -749,7 +746,6 @@ export const workspaceRouter = router({
             runId: input.runId,
             expectedCutoverEpoch: input.expectedCutoverEpoch,
             expectedOwnershipVersion: input.expectedOwnershipVersion,
-            executionScope,
             executionEnabled,
           });
         } catch (error) {
@@ -1095,15 +1091,11 @@ export const workspaceRouter = router({
       .mutation(async ({ ctx, input }) => {
         try {
           const executionEnabled = process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true";
-          const executionScope = executionEnabled
-            ? parseWorkspacePublishExecutionScope(process.env.WORKSPACE_PUBLISH_EXECUTION_SCOPE)
-            : undefined;
           if (executionEnabled) requirePreviewPublishExecutionSafety();
           return await requestEditorialPublish({
             actorUserId: ctx.user.id,
             ...input,
             executionEnabled,
-            executionScope,
           });
         } catch (error) {
           return mapWorkspaceError(error);

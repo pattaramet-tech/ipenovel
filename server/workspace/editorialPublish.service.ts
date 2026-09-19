@@ -28,7 +28,6 @@ import { createPublishDestination, createPublishDryRun } from "./publishDryRun.s
 import { requestPublishExecution } from "./publishExecution.service";
 import { cutoverPublishOwnership } from "./publishOwnershipTransition.service";
 import type {
-  WorkspacePublishExecutionScope,
   WorkspacePublishProviderRequest,
 } from "./publishExecution.domain";
 
@@ -523,7 +522,6 @@ export async function requestEditorialPublish(input: {
   expectedCutoverEpoch: number;
   expectedOwnershipVersion: number;
   executionEnabled: boolean;
-  executionScope?: WorkspacePublishExecutionScope;
 }) {
   const state = await getEditorialPublishReadModel({
     actorUserId: input.actorUserId,
@@ -606,7 +604,6 @@ export async function requestEditorialPublish(input: {
     runId: plan.run.id,
     expectedCutoverEpoch: input.expectedCutoverEpoch,
     expectedOwnershipVersion: input.expectedOwnershipVersion,
-    executionScope: input.executionScope,
     executionEnabled: input.executionEnabled,
   });
 

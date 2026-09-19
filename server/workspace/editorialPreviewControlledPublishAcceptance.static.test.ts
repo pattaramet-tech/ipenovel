@@ -15,10 +15,11 @@ describe("IPE-056-P Preview Controlled Publish safety gate", () => {
     expect(worker).toContain("requirePreviewPublishExecutionSafety()");
     expect(router).toContain("if (executionEnabled) requirePreviewPublishExecutionSafety()");
   });
-  it("requires an exact execution scope even below the router boundary", () => {
-    expect(execution).toContain('throw new WorkspacePublishExecutionError("EXECUTION_SCOPE_REQUIRED"');
-    expect(runtime).toContain("workspaceNovelId");
-    expect(runtime).toContain("expectedOwnershipVersion");
+  it("derives worker scope from the queued run and current ownership instead of per-run env", () => {
+    expect(execution).toContain("resolvePendingPublishExecutionScope");
+    expect(worker).toContain("resolvePendingPublishExecutionScope()");
+    expect(worker).not.toContain("WORKSPACE_PUBLISH_EXECUTION_SCOPE");
+    expect(router).not.toContain("WORKSPACE_PUBLISH_EXECUTION_SCOPE");
   });
   it("keeps real reader visibility behind the explicit external provider worker", () => {
     expect(provider).toContain("isPublished: true");

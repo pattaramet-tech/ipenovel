@@ -137,7 +137,6 @@ export async function requestPublishExecution(input: {
   runId: number;
   expectedCutoverEpoch: number;
   expectedOwnershipVersion?: number;
-  executionScope?: WorkspacePublishExecutionScope;
   executionEnabled: boolean;
 }) {
   if (!input.executionEnabled) {
@@ -148,19 +147,8 @@ export async function requestPublishExecution(input: {
 
   return db.transaction(async (tx: any) => {
     const context = await loadRunContext(tx, input.workspaceId, input.runId, true);
-    const scope = input.executionScope;
-    if (!scope) {
-      throw new WorkspacePublishExecutionError("EXECUTION_SCOPE_REQUIRED", "Publish execution requires an exact configured Workspace/run ownership scope.");
-    }
-    if (
-      scope.workspaceId !== input.workspaceId ||
-        scope.workspaceNovelId !== context.workspaceNovel.id ||
-        scope.runId !== input.runId ||
-        scope.expectedCutoverEpoch !== input.expectedCutoverEpoch ||
-        scope.expectedOwnershipVersion !== input.expectedOwnershipVersion
-    ) {
-      throw new WorkspacePublishExecutionError("EXECUTION_SCOPE_MISMATCH", "Publish execution is outside the exact configured Workspace/run ownership scope.");
-    }
+    // T: execution scope is bound durably by the run/destination plus the
+    // ownership epoch persisted on the outbox. No mutable per-run env scope.
     await requireWorkspacePublishOwnership(
       tx,
       context.workspaceNovel.id,
@@ -229,6 +217,47 @@ export async function requestPublishExecution(input: {
     const [run] = await tx.select().from(workspacePublishRuns).where(eq(workspacePublishRuns.id, context.run.id)).limit(1);
     return { run, outbox, created: !existing };
   });
+}
+
+export async function resolvePendingPublishExecutionScope() {
+  const db = await database();
+  const [candidate] = await db.select({
+    outbox: workspaceOutbox,
+    workspaceNovel: workspaceNovels,
+    ownership: workspaceMigrationRegistry,
+  })
+    .from(workspaceOutbox)
+    .innerJoin(workspacePublishRuns, eq(workspaceOutbox.publishRunId, workspacePublishRuns.id))
+    .innerJoin(workspacePublishingDestinations, eq(workspacePublishRuns.destinationId, workspacePublishingDestinations.id))
+    .innerJoin(workspaceNovels, eq(workspacePublishingDestinations.workspaceNovelId, workspaceNovels.id))
+    .innerJoin(workspaceMigrationRegistry, and(
+      eq(workspaceMigrationRegistry.workspaceNovelId, workspaceNovels.id),
+      eq(workspaceMigrationRegistry.capability, "publish")
+    ))
+    .where(and(
+      eq(workspaceOutbox.eventType, WORKSPACE_PUBLISH_OUTBOX_EVENT),
+      eq(workspaceMigrationRegistry.owner, "workspace"),
+      sql`${workspaceOutbox.attempts} < ${WORKSPACE_PUBLISH_MAX_ATTEMPTS}`,
+      sql`${workspaceOutbox.availableAt} <= NOW()`,
+      or(
+        eq(workspaceOutbox.status, "pending"),
+        eq(workspaceOutbox.status, "failed"),
+        and(eq(workspaceOutbox.status, "claimed"), sql`${workspaceOutbox.leaseExpiresAt} <= NOW()`)
+      )
+    ))
+    .orderBy(asc(workspaceOutbox.availableAt), asc(workspaceOutbox.id))
+    .limit(1);
+  if (!candidate || candidate.outbox.ownershipEpoch === null) return undefined;
+  if (candidate.outbox.ownershipEpoch !== candidate.ownership.cutoverEpoch) {
+    throw new WorkspacePublishExecutionError("PUBLISH_OWNERSHIP_AMBIGUOUS", "Queued publish ownership epoch is stale.");
+  }
+  return {
+    workspaceId: candidate.outbox.workspaceId,
+    workspaceNovelId: candidate.workspaceNovel.id,
+    runId: candidate.outbox.publishRunId,
+    expectedCutoverEpoch: candidate.ownership.cutoverEpoch,
+    expectedOwnershipVersion: candidate.ownership.version,
+  } satisfies WorkspacePublishExecutionScope;
 }
 
 export async function claimPublishOutbox(input: {
