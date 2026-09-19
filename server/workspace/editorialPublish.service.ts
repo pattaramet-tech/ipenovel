@@ -249,6 +249,12 @@ async function materializeEditorialGoogleAnchor(db: any, input: {
       });
       const id = Number(result?.[0]?.insertId ?? result?.insertId);
       [binding] = await tx.select().from(workspaceDocumentBindings).where(eq(workspaceDocumentBindings.id, id)).limit(1);
+    } else if (binding.status !== "active") {
+      await tx.update(workspaceDocumentBindings)
+        .set({ status: "active", version: binding.version + 1, updatedAt: new Date() })
+        .where(eq(workspaceDocumentBindings.id, binding.id));
+      [binding] = await tx.select().from(workspaceDocumentBindings)
+        .where(eq(workspaceDocumentBindings.id, binding.id)).limit(1);
     }
     if (!binding) return null;
 
@@ -374,7 +380,17 @@ export async function getEditorialPublishReadModel(input: {
     context.workspaceNovel.id,
     context.workspaceNovel.novelId
   );
-  const anchor = await loadAnchor(db, context.workspaceNovel.id, input.workItemId);
+  let anchor = await loadAnchor(db, context.workspaceNovel.id, input.workItemId);
+  // New Google Docs work items should not require a second import merely to
+  // obtain publish identity. Materialize the deterministic document/binding/
+  // fingerprint from the durable editorial source snapshot on read.
+  if (!anchor) {
+    anchor = await materializeEditorialGoogleAnchor(db, {
+      actorUserId: input.actorUserId,
+      workspaceNovelId: context.workspaceNovel.id,
+      workItemId: input.workItemId,
+    });
+  }
   const stages = (approval.stages ?? []).filter(Boolean);
   const stageEpisodes = (approval.stageEpisodes ?? []).filter(Boolean);
   const matching =

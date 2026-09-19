@@ -11,7 +11,8 @@ describe("IPE-056-L current fingerprint reconciliation", () => {
     expect(service).toContain('eq(workspaceEditorialSources.sourceKind, "google_doc")');
     expect(service).toContain("eq(workspaceDocuments.providerFileId, workspaceEditorialSources.providerDocumentId)");
     expect(service).toContain("eq(workspaceDocumentBindings.workspaceNovelId, workspaceNovelId)");
-    expect(service).toContain("const anchor = await loadAnchor(db, context.workspaceNovel.id, input.workItemId)");
+    expect(service).toContain("let anchor = await loadAnchor(db, context.workspaceNovel.id, input.workItemId)");
+    expect(service).toContain("anchor = await materializeEditorialGoogleAnchor(db");
   });
 
   it("fails closed for ambiguous or missing current Google source fingerprints", () => {
