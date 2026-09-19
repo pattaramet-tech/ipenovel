@@ -493,6 +493,7 @@ export async function prepareEditorialPublishOwnership(input: {
     expectedOwner: "sheets",
     expectedCutoverEpoch: 0,
     expectedVersion: state.ownership.version,
+    readinessPhase: "pre_publish",
   });
   return { prepared: true, plan, transition };
 }
