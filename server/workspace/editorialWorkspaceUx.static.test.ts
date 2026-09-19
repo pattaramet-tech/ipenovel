@@ -8,7 +8,7 @@ const page = () =>
 describe("Workspace Editorial Preview UX", () => {
   it("uses a collapsed Novel-grouped Episode Pack table with durable notes", () => {
     const source = page();
-    expect(source).toContain("Table-first Editorial");
+    expect(source).toContain("Editorial Workspace");
     expect(source).toContain("editorialNovelGroups.map");
     expect(source).toContain("<details key={group.workspaceNovelId");
     expect(source).toContain("เรื่อง / ช่วงตอน");
@@ -42,6 +42,16 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).toContain("card.evidence?.published");
     expect(source).toContain("Publish run + receipt + outbox + reader visibility ครบ");
     expect(source).not.toContain('type="checkbox"');
+  });
+
+  it("defaults to Table with Kanban parity and collapses operator evidence", () => {
+    const source = page();
+    expect(source).toContain('useState<"table" | "kanban">("table")');
+    expect(source).toContain('setEditorialView("table")');
+    expect(source).toContain('setEditorialView("kanban")');
+    expect(source).toContain('editorialView === "kanban"');
+    expect(source).toContain("Operations / Advanced");
+    expect(source).toContain("publish runs/outbox · ownership evidence");
   });
 
   it("exposes the table-selected Episode Pack detail workflow", () => {

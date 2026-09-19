@@ -68,6 +68,7 @@ export default function WorkspacePage() {
   const [editorialColumnFilter, setEditorialColumnFilter] = useState("all");
   const [editorialSearch, setEditorialSearch] = useState("");
   const [editorialQuickFilter, setEditorialQuickFilter] = useState("all");
+  const [editorialView, setEditorialView] = useState<"table" | "kanban">("table");
   const [episodeNovelSearch, setEpisodeNovelSearch] = useState("");
   const [selectedSourceWorkItemId, setSelectedSourceWorkItemId] = useState<number>();
   const [googleConnectionId, setGoogleConnectionId] = useState("");
@@ -1085,8 +1086,14 @@ export default function WorkspacePage() {
 
               <div className="space-y-3 rounded-md border bg-muted/10 p-3">
                 <div className="flex items-center justify-between gap-3">
-                  <div><div className="font-medium">Table-first Editorial</div><div className="text-xs text-muted-foreground">1 แถว = 1 Episode Pack / ไฟล์ · กลุ่มเรื่องพับไว้เป็นค่าเริ่มต้น</div></div>
-                  <span className="text-xs text-muted-foreground">{visibleEditorialCards.length}/{editorialCards.length} pack(s)</span>
+                  <div><div className="font-medium">Editorial Workspace</div><div className="text-xs text-muted-foreground">Table เป็นมุมมองหลัก · Kanban ใช้ดู workflow เดิมจากข้อมูลชุดเดียวกัน</div></div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex rounded-md border bg-background p-1" aria-label="Editorial view">
+                      <Button type="button" size="sm" variant={editorialView === "table" ? "default" : "ghost"} onClick={() => setEditorialView("table")}>Table</Button>
+                      <Button type="button" size="sm" variant={editorialView === "kanban" ? "default" : "ghost"} onClick={() => setEditorialView("kanban")}>Kanban</Button>
+                    </div>
+                    <span className="text-xs text-muted-foreground">{visibleEditorialCards.length}/{editorialCards.length} pack(s)</span>
+                  </div>
                 </div>
                 <Input value={editorialSearch} onChange={(event) => setEditorialSearch(event.target.value)} placeholder="ค้นหาชื่อเรื่อง / Novel ID / ช่วงตอน / ชื่อตอน / หมายเหตุ" aria-label="Editorial pack search" />
                 <div className="flex flex-wrap gap-2">
@@ -1097,6 +1104,19 @@ export default function WorkspacePage() {
               </div>
               {editorialBoard.isLoading || ensureEditorialBoard.isPending ? (
                 <div className="flex min-h-32 items-center justify-center"><Loader2 className="h-6 w-6 animate-spin" /></div>
+              ) : editorialView === "kanban" ? (
+                <div className="grid gap-3 xl:grid-cols-4">
+                  {editorialColumns.map((column: any) => {
+                    const cards = visibleEditorialCards.filter((card: any) => card.columnId === column.id);
+                    return <div key={column.id} className="rounded-lg border bg-muted/10">
+                      <div className="flex items-center justify-between border-b px-3 py-2"><strong className="text-sm">{column.name}</strong><span className="text-xs text-muted-foreground">{cards.length}</span></div>
+                      <div className="space-y-2 p-2">
+                        {cards.map((card: any) => <button key={card.id} type="button" disabled={!card.workItemId} onClick={() => setSelectedSourceWorkItemId(card.workItemId)} className="w-full rounded-md border bg-background p-3 text-left text-sm hover:bg-muted/20"><div className="font-medium">{card.novel?.title ?? "Untitled novel"}</div><div className="mt-1 text-xs text-muted-foreground">{card.workItemType === "NEW_EPISODE" ? card.episodeNumber || "ตอนใหม่" : "เรื่องใหม่ / Draft แรก"}</div>{card.note && <div className="mt-2 line-clamp-2 text-xs text-muted-foreground">{card.note}</div>}</button>)}
+                        {!cards.length && <div className="p-3 text-center text-xs text-muted-foreground">ไม่มี Episode Pack</div>}
+                      </div>
+                    </div>;
+                  })}
+                </div>
               ) : editorialNovelGroups.length ? (
                 <div className="space-y-3">{editorialNovelGroups.map((group: any) => (
                   <details key={group.workspaceNovelId ?? group.novel?.id} className="overflow-hidden rounded-lg border bg-background">
@@ -2027,6 +2047,12 @@ export default function WorkspacePage() {
               )}
             </Card>
 
+            <details className="rounded-lg border bg-background">
+              <summary className="cursor-pointer select-none px-5 py-4">
+                <span className="font-semibold">Operations / Advanced</span>
+                <span className="ml-2 text-xs text-muted-foreground">fingerprints · Checker/AI jobs · source bindings · publish runs/outbox · ownership evidence</span>
+              </summary>
+              <div className="space-y-5 border-t p-5">
             <Card className="space-y-5 p-5">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
@@ -2292,6 +2318,8 @@ export default function WorkspacePage() {
               ) : <EmptyState>No publish ownership transitions exist in this workspace.</EmptyState>}
               <p className="text-xs text-muted-foreground">Control Center publish projection reports sideEffectsApplied = {String((publishOverview.data as any)?.sideEffectsApplied ?? false)} and readOnly = {String((publishOverview.data as any)?.readOnly ?? true)}.</p>
             </Card>
+              </div>
+            </details>
           </div>
         ) : null}
       </section>
