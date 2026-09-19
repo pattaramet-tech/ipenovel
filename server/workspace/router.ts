@@ -129,6 +129,7 @@ import {
   listPublicationNovelOptions,
   listReadOnlyBindings,
   listWorkspacesForUser,
+  unbindPublicationNovel,
   WorkspaceServiceError,
 } from "./service";
 
@@ -464,6 +465,16 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
+    removePublicationNovel: adminProcedure
+      .input(workspaceIdInput.extend({ workspaceNovelId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await unbindPublicationNovel({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+
     bindPublicationNovel: adminProcedure
       .input(workspaceIdInput.extend({ novelId: z.number().int().positive() }))
       .mutation(async ({ ctx, input }) => {

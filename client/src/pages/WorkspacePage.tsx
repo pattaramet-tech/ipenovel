@@ -355,6 +355,15 @@ export default function WorkspacePage() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const removeWorkspaceNovel = trpc.workspace.bindings.removePublicationNovel.useMutation({
+    onSuccess: async () => {
+      setEpisodeWorkspaceNovelId("");
+      setSelectedSourceWorkItemId(undefined);
+      await Promise.all([detail.refetch(), availableNovels.refetch(), editorialBoard.refetch()]);
+      toast.success("นำเรื่องออกจาก Workspace แล้ว — ตัวนิยายต้นฉบับยังอยู่");
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const deleteWorkspace = trpc.workspace.delete.useMutation({
     onSuccess: async () => {
       setSelectedWorkspaceId(undefined);
@@ -992,6 +1001,33 @@ export default function WorkspacePage() {
                     เพิ่มเข้า Workspace
                   </Button>
                 </form>
+
+                {workspaceNovelOptions.length > 0 && (
+                  <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                    <div className="text-sm font-medium">เรื่องใน Workspace</div>
+                    {workspaceNovelOptions.map(({ workspaceNovel, novel }: any) => (
+                      <div key={workspaceNovel.id} className="flex items-center justify-between gap-2 rounded-md border bg-background p-2">
+                        <div className="min-w-0 text-sm">
+                          <div className="truncate font-medium">{novel.title}</div>
+                          <div className="text-xs text-muted-foreground">Novel #{novel.id}</div>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={removeWorkspaceNovel.isPending}
+                          onClick={() => {
+                            if (window.confirm(`นำ “${novel.title}” ออกจาก Workspace หรือไม่? ตัวนิยายต้นฉบับจะไม่ถูกลบ`)) {
+                              removeWorkspaceNovel.mutate({ workspaceId: selectedWorkspaceId, workspaceNovelId: workspaceNovel.id });
+                            }
+                          }}
+                        >
+                          นำออก
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 <form
                   className="space-y-2 rounded-md border bg-muted/20 p-3"

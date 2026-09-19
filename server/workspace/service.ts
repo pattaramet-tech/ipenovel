@@ -111,7 +111,7 @@ export async function getWorkspaceDetail(userId: number, workspaceId: number) {
       .select({ workspaceNovel: workspaceNovels, novel: novels })
       .from(workspaceNovels)
       .innerJoin(novels, eq(workspaceNovels.novelId, novels.id))
-      .where(eq(workspaceNovels.workspaceId, workspaceId)),
+      .where(and(eq(workspaceNovels.workspaceId, workspaceId), eq(workspaceNovels.status, "active"))),
   ]);
   const workspace = await requireWorkspace(db, workspaceId);
   return { workspace, membership: null, members, novels: novelRows };
@@ -309,6 +309,12 @@ export async function bindPublicationNovel(input: {
           status: "active",
         }));
 
+    if (existing[0] && existing[0].status !== "active") {
+      await tx.update(workspaceNovels)
+        .set({ status: "active", version: sql`${workspaceNovels.version} + 1` })
+        .where(eq(workspaceNovels.id, workspaceNovelId));
+    }
+
     if (!existing[0]) {
       await tx.insert(workspaceReadOnlyBindings).values({
         workspaceNovelId,
@@ -331,6 +337,26 @@ export async function bindPublicationNovel(input: {
     }
     return { workspaceNovelId, created: !existing[0] };
   });
+}
+
+export async function unbindPublicationNovel(input: {
+  actorUserId: number;
+  workspaceId: number;
+  workspaceNovelId: number;
+}) {
+  const db = await database();
+  await requireWorkspace(db, input.workspaceId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
+  const rows = await db.select().from(workspaceNovels).where(and(
+    eq(workspaceNovels.id, input.workspaceNovelId),
+    eq(workspaceNovels.workspaceId, input.workspaceId),
+    eq(workspaceNovels.status, "active")
+  )).limit(1);
+  if (!rows[0]) throw new WorkspaceServiceError("NOVEL_NOT_FOUND", "Workspace novel not found.");
+  await db.update(workspaceNovels)
+    .set({ status: "unlinked", version: sql`${workspaceNovels.version} + 1` })
+    .where(eq(workspaceNovels.id, input.workspaceNovelId));
+  return { workspaceNovelId: input.workspaceNovelId, unlinked: true as const };
 }
 
 export async function listReadOnlyBindings(userId: number, workspaceId: number) {
