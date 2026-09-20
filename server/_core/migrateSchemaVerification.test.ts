@@ -71,6 +71,8 @@ describe("findMissingSchemaObjects - required object lists", () => {
       "dailyCheckinRewardRules",
       "dailyCheckinRewardGrants",
       "coupons",
+      "workspaceEditorialWorkItems",
+      "workspaceEditorialEpisodeStages",
     ]);
   });
 
@@ -82,6 +84,13 @@ describe("findMissingSchemaObjects - required object lists", () => {
       { table: "dailyCheckins", column: "couponId" },
       { table: "dailyCheckinRewardGrants", column: "pointsTransactionId" },
       { table: "dailyCheckinRewardGrants", column: "streakCountAtGrant" },
+      { table: "workspaceEditorialWorkItems", column: "saleMode" },
+      { table: "workspaceEditorialWorkItems", column: "price" },
+      { table: "workspaceEditorialWorkItems", column: "isFree" },
+      { table: "workspaceEditorialEpisodeStages", column: "stageContract" },
+      { table: "workspaceEditorialEpisodeStages", column: "saleMode" },
+      { table: "workspaceEditorialEpisodeStages", column: "price" },
+      { table: "workspaceEditorialEpisodeStages", column: "isFree" },
     ]);
   });
 
@@ -89,7 +98,16 @@ describe("findMissingSchemaObjects - required object lists", () => {
     // A point-only check-in mints no coupon. On a database still at 0030 the
     // column is NOT NULL and every point claim would fail at INSERT time, so
     // this is verified at boot and fails the deploy closed instead.
-    expect(REQUIRED_NULLABLE_COLUMNS).toEqual([{ table: "dailyCheckins", column: "couponId" }]);
+    expect(REQUIRED_NULLABLE_COLUMNS).toEqual([
+      { table: "dailyCheckins", column: "couponId" },
+      { table: "workspaceEditorialWorkItems", column: "saleMode" },
+      { table: "workspaceEditorialWorkItems", column: "price" },
+      { table: "workspaceEditorialWorkItems", column: "isFree" },
+      { table: "workspaceEditorialEpisodeStages", column: "stageContract" },
+      { table: "workspaceEditorialEpisodeStages", column: "saleMode" },
+      { table: "workspaceEditorialEpisodeStages", column: "price" },
+      { table: "workspaceEditorialEpisodeStages", column: "isFree" },
+    ]);
   });
 
   it("requires coupons_ownerUserId_idx plus the dailyCheckins indexes and reward-grant idempotency guards", () => {
@@ -151,12 +169,12 @@ describe("findMissingSchemaObjects - case-insensitive table name comparison (reg
     expect(missing).toEqual(REQUIRED_COLUMNS.map((c) => `column ${c.table}.${c.column}`));
   });
 
-  it("reports a NOT NULL dailyCheckins.couponId as missing nullability (database still at migration 0030)", async () => {
+  it("reports every required nullable column when the database still has NOT NULL definitions", async () => {
     const { query } = fakeConn("lower", REQUIRED_TABLES, true, REQUIRED_INDEXES.map((i) => i.index), false);
     const missing = await findMissingSchemaObjects({ query });
-    expect(missing).toEqual([
-      "column dailyCheckins.couponId must be nullable (migration 0031 not applied)",
-    ]);
+    expect(missing).toEqual(
+      REQUIRED_NULLABLE_COLUMNS.map((c) => `column ${c.table}.${c.column} must be nullable`)
+    );
   });
 
   it("does not report a missing index for a table that is itself missing (no duplicate root cause)", async () => {

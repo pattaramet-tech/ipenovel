@@ -145,6 +145,9 @@ describe.sequential("Workspace Editorial Kanban B1/B2 integration", () => {
         workspaceNovelId: createdNovel.workspaceNovelId,
         episodeNumber: "  ตอน  10 ",
         episodeTitle: "เริ่มต้น",
+        saleMode: "package",
+        price: "35.00",
+        isFree: false,
         assigneeUserId: null,
       });
       const sameEpisode = await createEditorialEpisodeWorkItem({
@@ -153,6 +156,9 @@ describe.sequential("Workspace Editorial Kanban B1/B2 integration", () => {
         workspaceNovelId: createdNovel.workspaceNovelId,
         episodeNumber: "ตอน 10",
         episodeTitle: "เริ่มต้น",
+        saleMode: "package",
+        price: "35.00",
+        isFree: false,
         assigneeUserId: null,
       });
       expect(firstEpisode.created).toBe(true);

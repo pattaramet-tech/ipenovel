@@ -23,8 +23,12 @@ import {
   buildEditorialEpisodeDraftPlan,
   editorialApprovalPayloadSha256,
   EditorialApprovalDomainError,
+  EDITORIAL_EPISODE_STAGE_CONTRACT,
+  EDITORIAL_EPISODE_STAGE_CONTRACT_V2,
   editorialEpisodeStagePayloadSha256,
+  editorialEpisodeStagePayloadSha256V2,
   editorialEpisodeStateSha256,
+  editorialEpisodeStateSha256V2,
   editorialQcEvidenceSha256,
   type EditorialEpisodeDraftBatchPlan,
   type EditorialEpisodeDraftPlan,
@@ -446,19 +450,36 @@ function currentStageBatchStatus(input: {
     if (episode.isPublished) {
       return { valid: false, reason: "EPISODE_PUBLISHED" as const };
     }
-    const currentState = editorialEpisodeStateSha256({
-      novelId: episode.novelId,
-      episodeNumber: episode.episodeNumber,
-      title: episode.title,
-      content: episode.content,
-      contentFormat: episode.contentFormat,
-      wordCount: episode.wordCount,
-      isPublished: episode.isPublished,
-    });
+    const currentState = stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2
+      ? editorialEpisodeStateSha256V2({
+          novelId: episode.novelId,
+          episodeNumber: episode.episodeNumber,
+          title: episode.title,
+          content: episode.content,
+          contentFormat: episode.contentFormat,
+          wordCount: episode.wordCount,
+          isPublished: episode.isPublished,
+          saleMode: episode.saleMode,
+          price: episode.price,
+          isFree: episode.isFree,
+        })
+      : editorialEpisodeStateSha256({
+          novelId: episode.novelId,
+          episodeNumber: episode.episodeNumber,
+          title: episode.title,
+          content: episode.content,
+          contentFormat: episode.contentFormat,
+          wordCount: episode.wordCount,
+          isPublished: episode.isPublished,
+        });
     if (
       currentState !== stage.episodeStateSha256 ||
       stage.contentSha256 !== plan.contentSha256 ||
-      stage.episodeId !== episode.id
+      stage.episodeId !== episode.id ||
+      (stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2 &&
+        (stage.saleMode !== episode.saleMode ||
+          stage.price !== episode.price ||
+          stage.isFree !== episode.isFree))
     ) {
       return { valid: false, reason: "EPISODE_DRIFTED" as const };
     }
@@ -536,6 +557,9 @@ export async function getEditorialApprovalReadModel(input: {
           title: episode.title,
           contentFormat: episode.contentFormat,
           wordCount: episode.wordCount,
+          saleMode: episode.saleMode,
+          price: episode.price,
+          isFree: episode.isFree,
           isPublished: episode.isPublished,
           publishedAt: episode.publishedAt,
         }
@@ -811,10 +835,26 @@ export async function stageEditorialEpisodeDraft(input: {
     }
 
     const novelId = context.workspaceNovel.novelId;
+    const saleMode = context.workItem.saleMode;
+    const price = context.workItem.price;
+    const isFree = context.workItem.isFree;
+    const numericPrice = price === null ? Number.NaN : Number(price);
+    if (
+      (saleMode !== "chapter" && saleMode !== "package") ||
+      price === null ||
+      typeof isFree !== "boolean" ||
+      !Number.isFinite(numericPrice) ||
+      (isFree ? price !== "0.00" : numericPrice <= 0)
+    ) {
+      throw new WorkspaceEditorialApprovalError(
+        "STAGE_INVALID",
+        "Episode sale metadata is missing or invalid; historical intake rows must be completed before staging."
+      );
+    }
     const staged: Array<{ stage: any; episode: any; replayed: boolean }> = [];
 
     for (const plan of batchPlan.items) {
-      const payloadSha256 = editorialEpisodeStagePayloadSha256({
+      const legacyPayloadSha256 = editorialEpisodeStagePayloadSha256({
         workItemId: input.workItemId,
         approvalId: approval.id,
         draftId: draft.id,
@@ -822,6 +862,18 @@ export async function stageEditorialEpisodeDraft(input: {
         qcEvidenceSha256: qc.qcEvidenceSha256,
         novelId,
         plan,
+      });
+      const payloadSha256 = editorialEpisodeStagePayloadSha256V2({
+        workItemId: input.workItemId,
+        approvalId: approval.id,
+        draftId: draft.id,
+        draftSha256: draft.draftSha256,
+        qcEvidenceSha256: qc.qcEvidenceSha256,
+        novelId,
+        plan,
+        saleMode,
+        price,
+        isFree,
       });
       const itemIdempotencyKey = stageItemIdempotencyKey(
         input.idempotencyKey,
@@ -841,8 +893,16 @@ export async function stageEditorialEpisodeDraft(input: {
         .for("update");
 
       if (existingStage) {
+        const expectedPayloadSha256 =
+          existingStage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2
+            ? payloadSha256
+            : existingStage.stageContract === null ||
+                existingStage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT
+              ? legacyPayloadSha256
+              : null;
         if (
-          existingStage.payloadSha256 !== payloadSha256 ||
+          expectedPayloadSha256 === null ||
+          existingStage.payloadSha256 !== expectedPayloadSha256 ||
           existingStage.stagedByUserId !== input.actorUserId ||
           existingStage.stagedDraftSha256 !== draft.draftSha256 ||
           existingStage.qcEvidenceSha256 !== qc.qcEvidenceSha256
@@ -864,15 +924,28 @@ export async function stageEditorialEpisodeDraft(input: {
             `Previously staged Episode ${plan.episodeNumber} no longer exists.`
           );
         }
-        const currentState = editorialEpisodeStateSha256({
-          novelId: episode.novelId,
-          episodeNumber: episode.episodeNumber,
-          title: episode.title,
-          content: episode.content,
-          contentFormat: episode.contentFormat,
-          wordCount: episode.wordCount,
-          isPublished: episode.isPublished,
-        });
+        const currentState = existingStage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2
+          ? editorialEpisodeStateSha256V2({
+              novelId: episode.novelId,
+              episodeNumber: episode.episodeNumber,
+              title: episode.title,
+              content: episode.content,
+              contentFormat: episode.contentFormat,
+              wordCount: episode.wordCount,
+              isPublished: episode.isPublished,
+              saleMode: episode.saleMode,
+              price: episode.price,
+              isFree: episode.isFree,
+            })
+          : editorialEpisodeStateSha256({
+              novelId: episode.novelId,
+              episodeNumber: episode.episodeNumber,
+              title: episode.title,
+              content: episode.content,
+              contentFormat: episode.contentFormat,
+              wordCount: episode.wordCount,
+              isPublished: episode.isPublished,
+            });
         if (
           episode.isPublished ||
           currentState !== existingStage.episodeStateSha256 ||
@@ -909,7 +982,9 @@ export async function stageEditorialEpisodeDraft(input: {
               title: plan.title,
               content: plan.content,
               contentFormat: plan.contentFormat,
-              saleMode: "chapter",
+              saleMode,
+              price,
+              isFree,
               isPublished: false,
               publishedAt: null,
               wordCount: plan.wordCount,
@@ -951,15 +1026,28 @@ export async function stageEditorialEpisodeDraft(input: {
             `Unpublished Episode ${plan.episodeNumber} is not owned by this Editorial work item.`
           );
         }
-        const existingState = editorialEpisodeStateSha256({
-          novelId: existingEpisode.novelId,
-          episodeNumber: existingEpisode.episodeNumber,
-          title: existingEpisode.title,
-          content: existingEpisode.content,
-          contentFormat: existingEpisode.contentFormat,
-          wordCount: existingEpisode.wordCount,
-          isPublished: existingEpisode.isPublished,
-        });
+        const existingState = previousStage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2
+          ? editorialEpisodeStateSha256V2({
+              novelId: existingEpisode.novelId,
+              episodeNumber: existingEpisode.episodeNumber,
+              title: existingEpisode.title,
+              content: existingEpisode.content,
+              contentFormat: existingEpisode.contentFormat,
+              wordCount: existingEpisode.wordCount,
+              isPublished: existingEpisode.isPublished,
+              saleMode: existingEpisode.saleMode,
+              price: existingEpisode.price,
+              isFree: existingEpisode.isFree,
+            })
+          : editorialEpisodeStateSha256({
+              novelId: existingEpisode.novelId,
+              episodeNumber: existingEpisode.episodeNumber,
+              title: existingEpisode.title,
+              content: existingEpisode.content,
+              contentFormat: existingEpisode.contentFormat,
+              wordCount: existingEpisode.wordCount,
+              isPublished: existingEpisode.isPublished,
+            });
         if (existingState !== previousStage.episodeStateSha256) {
           throw new WorkspaceEditorialApprovalError(
             "EPISODE_CONFLICT",
@@ -973,6 +1061,9 @@ export async function stageEditorialEpisodeDraft(input: {
             content: plan.content,
             contentFormat: plan.contentFormat,
             wordCount: plan.wordCount,
+            saleMode,
+            price,
+            isFree,
             isPublished: false,
             publishedAt: null,
             updatedAt: new Date(),
@@ -1004,7 +1095,7 @@ export async function stageEditorialEpisodeDraft(input: {
           `Staged Episode ${plan.episodeNumber} could not be verified as unpublished.`
         );
       }
-      const episodeStateSha256 = editorialEpisodeStateSha256({
+      const episodeStateSha256 = editorialEpisodeStateSha256V2({
         novelId: episode.novelId,
         episodeNumber: episode.episodeNumber,
         title: episode.title,
@@ -1012,6 +1103,9 @@ export async function stageEditorialEpisodeDraft(input: {
         contentFormat: episode.contentFormat,
         wordCount: episode.wordCount,
         isPublished: episode.isPublished,
+        saleMode: episode.saleMode,
+        price: episode.price,
+        isFree: episode.isFree,
       });
 
       const stageId = insertId(
@@ -1025,6 +1119,10 @@ export async function stageEditorialEpisodeDraft(input: {
           novelId,
           episodeNumber: plan.episodeNumber,
           episodeTitle: plan.title,
+          stageContract: EDITORIAL_EPISODE_STAGE_CONTRACT_V2,
+          saleMode,
+          price,
+          isFree,
           contentSha256: plan.contentSha256,
           episodeStateSha256,
           payloadSha256,

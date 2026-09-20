@@ -365,6 +365,13 @@
       "when": 1789752570408,
       "tag": "0051_workspace_editorial_multitab_stage",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "5",
+      "when": 1789932500000,
+      "tag": "0052_workspace_editorial_sale_metadata",
+      "breakpoints": true
     }
   ]
 }

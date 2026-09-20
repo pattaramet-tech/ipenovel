@@ -27,6 +27,20 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
     expect(migration).not.toMatch(/DROP TABLE|DROP COLUMN|ALTER TABLE `episodes`/i);
   });
 
+  it("keeps migration 0052 additive and scoped to nullable Editorial sale metadata", () => {
+    const migration = source("drizzle/0052_workspace_editorial_sale_metadata.sql");
+    expect(migration).toContain("workspaceEditorialWorkItems");
+    expect(migration).toContain("workspaceEditorialEpisodeStages");
+    expect(migration).toContain("`saleMode` enum('chapter','package')");
+    expect(migration).toContain("`price` decimal(10,2)");
+    expect(migration).toContain("`isFree` boolean");
+    expect(migration).toContain("`stageContract` varchar(100)");
+    expect(migration).not.toMatch(/DROP TABLE|DROP COLUMN|DROP FOREIGN KEY|ALTER TABLE `episodes`/i);
+    const journal = source("drizzle/meta/_journal.json");
+    expect(journal).toContain('"idx": 52');
+    expect(journal).toContain('"tag": "0052_workspace_editorial_sale_metadata"');
+  });
+
   it("binds approval to exact Draft id/version/hash, checker run and QC evidence", () => {
     const service = source("server/workspace/editorialApproval.service.ts");
     expect(service).toContain("draft.id !== input.expectedDraftId");
