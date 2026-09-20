@@ -241,6 +241,9 @@ async function loadEditorialBoardReadModel(db: any, workspaceId: number) {
       episodeNumber: workItem?.episodeNumber ?? null,
       episodeTitle: workItem?.episodeTitle ?? null,
       note: workItem?.note ?? null,
+      saleMode: workItem?.saleMode ?? null,
+      price: workItem?.price ?? null,
+      isFree: workItem?.isFree ?? null,
       assigneeUserId: workItem?.assigneeUserId ?? null,
       assignee: workItem?.assigneeUserId
         ? adminsById.get(workItem.assigneeUserId) ?? null
@@ -501,12 +504,53 @@ function spansOverlap(a: { start: number; end: number }, b: { start: number; end
   return a.start <= b.end && b.start <= a.end;
 }
 
+export function normalizeEditorialSaleMetadata(input: {
+  saleMode?: "chapter" | "package";
+  price?: string;
+  isFree?: boolean;
+}) {
+  if (!input.saleMode || input.price === undefined || input.isFree === undefined) {
+    throw new WorkspaceEditorialBoardError(
+      "EDITORIAL_WORK_ITEM_CONFLICT",
+      "Episode saleMode, price, and isFree are required."
+    );
+  }
+  const rawPrice = input.price.trim();
+  if (!/^\d+(?:\.\d{1,2})?$/.test(rawPrice)) {
+    throw new WorkspaceEditorialBoardError(
+      "EDITORIAL_WORK_ITEM_CONFLICT",
+      "Episode price must be a non-negative amount with at most two decimals."
+    );
+  }
+  const numericPrice = Number(rawPrice);
+  if (!Number.isFinite(numericPrice) || numericPrice > 99_999_999.99) {
+    throw new WorkspaceEditorialBoardError(
+      "EDITORIAL_WORK_ITEM_CONFLICT",
+      "Episode price is outside the supported range."
+    );
+  }
+  if (!input.isFree && numericPrice <= 0) {
+    throw new WorkspaceEditorialBoardError(
+      "EDITORIAL_WORK_ITEM_CONFLICT",
+      "Paid Episodes require a price greater than zero."
+    );
+  }
+  return {
+    saleMode: input.saleMode,
+    price: input.isFree ? "0.00" : numericPrice.toFixed(2),
+    isFree: input.isFree,
+  } as const;
+}
+
 export async function createEditorialEpisodeWorkItem(input: {
   actorUserId: number;
   workspaceId: number;
   workspaceNovelId: number;
   episodeNumber: string;
   episodeTitle?: string;
+  saleMode?: "chapter" | "package";
+  price?: string;
+  isFree?: boolean;
   assigneeUserId?: number | null;
 }) {
   await ensureEditorialBoard({
@@ -517,6 +561,7 @@ export async function createEditorialEpisodeWorkItem(input: {
   await requireAdminAssignee(db, input.assigneeUserId ?? null);
   const itemKey = normalizeEditorialEpisodeKey(input.episodeNumber);
   const episodeTitle = input.episodeTitle?.trim() || null;
+  const sale = normalizeEditorialSaleMetadata(input);
   if (!itemKey || itemKey.length > 100) {
     throw new WorkspaceEditorialBoardError(
       "EDITORIAL_WORK_ITEM_CONFLICT",
@@ -603,6 +648,9 @@ export async function createEditorialEpisodeWorkItem(input: {
     if (existingWorkItem) {
       if (
         (existingWorkItem.episodeTitle ?? null) !== episodeTitle ||
+        existingWorkItem.saleMode !== sale.saleMode ||
+        existingWorkItem.price !== sale.price ||
+        existingWorkItem.isFree !== sale.isFree ||
         (existingWorkItem.assigneeUserId ?? null) !==
           (input.assigneeUserId ?? null)
       ) {
@@ -657,6 +705,9 @@ export async function createEditorialEpisodeWorkItem(input: {
         itemKey,
         episodeNumber: input.episodeNumber.trim(),
         episodeTitle,
+        saleMode: sale.saleMode,
+        price: sale.price,
+        isFree: sale.isFree,
         assigneeUserId: input.assigneeUserId ?? null,
         createdByUserId: input.actorUserId,
       })
@@ -674,6 +725,9 @@ export async function createEditorialEpisodeWorkItem(input: {
       workItem.workItemType !== "new_episode" ||
       workItem.itemKey !== itemKey ||
       (workItem.episodeTitle ?? null) !== episodeTitle ||
+      workItem.saleMode !== sale.saleMode ||
+      workItem.price !== sale.price ||
+      workItem.isFree !== sale.isFree ||
       (workItem.assigneeUserId ?? null) !== (input.assigneeUserId ?? null)
     ) {
       throw new WorkspaceEditorialBoardError(

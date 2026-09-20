@@ -63,6 +63,9 @@ export default function WorkspacePage() {
   const [episodeWorkspaceNovelId, setEpisodeWorkspaceNovelId] = useState("");
   const [episodeNumber, setEpisodeNumber] = useState("");
   const [episodeTitle, setEpisodeTitle] = useState("");
+  const [episodeSaleMode, setEpisodeSaleMode] = useState<"" | "chapter" | "package">("");
+  const [episodePrice, setEpisodePrice] = useState("");
+  const [episodeFreeState, setEpisodeFreeState] = useState<"" | "free" | "paid">("");
   const [episodeAssigneeUserId, setEpisodeAssigneeUserId] = useState("");
   const [editorialTypeFilter, setEditorialTypeFilter] = useState("all");
   const [editorialAssigneeFilter, setEditorialAssigneeFilter] = useState("all");
@@ -270,6 +273,9 @@ export default function WorkspacePage() {
     setEpisodeWorkspaceNovelId("");
     setEpisodeNumber("");
     setEpisodeTitle("");
+    setEpisodeSaleMode("");
+    setEpisodePrice("");
+    setEpisodeFreeState("");
     setEpisodeAssigneeUserId("");
     setEditorialTypeFilter("all");
     setEditorialAssigneeFilter("all");
@@ -408,6 +414,9 @@ export default function WorkspacePage() {
       let quickImportSucceeded = false;
       setEpisodeNumber("");
       setEpisodeTitle("");
+      setEpisodeSaleMode("");
+      setEpisodePrice("");
+      setEpisodeFreeState("");
       setEpisodeGoogleDocUrl("");
       const refreshed = await editorialBoard.refetch();
       const board: any = refreshed.data ?? result.board;
@@ -1100,11 +1109,18 @@ export default function WorkspacePage() {
                       toast.error("Select a novel and enter an episode number");
                       return;
                     }
+                    if (!episodeSaleMode || !episodeFreeState || (episodeFreeState === "paid" && !episodePrice.trim())) {
+                      toast.error("Select sale mode, free/paid status, and a paid price");
+                      return;
+                    }
                     createEditorialEpisode.mutate({
                       workspaceId: selectedWorkspaceId,
                       workspaceNovelId,
                       episodeNumber: episodeNumber.trim(),
                       episodeTitle: episodeTitle.trim() || undefined,
+                      saleMode: episodeSaleMode,
+                      price: episodeFreeState === "free" ? "0.00" : episodePrice.trim(),
+                      isFree: episodeFreeState === "free",
                       assigneeUserId: episodeAssigneeUserId ? Number(episodeAssigneeUserId) : null,
                     });
                   }}
@@ -1131,6 +1147,19 @@ export default function WorkspacePage() {
                   <div className="grid grid-cols-2 gap-2">
                     <Input value={episodeNumber} onChange={(event) => setEpisodeNumber(event.target.value)} maxLength={100} placeholder="ตอน / ช่วงตอน" />
                     <Input value={episodeTitle} onChange={(event) => setEpisodeTitle(event.target.value)} maxLength={500} placeholder="ชื่อตอน (ถ้ามี)" />
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <select aria-label="Episode sale mode" className="h-10 rounded-md border bg-background px-3 text-sm" value={episodeSaleMode} onChange={(event) => setEpisodeSaleMode(event.target.value as "" | "chapter" | "package")}>
+                      <option value="">รูปแบบขาย</option>
+                      <option value="chapter">รายบท</option>
+                      <option value="package">แพ็กเกจ</option>
+                    </select>
+                    <select aria-label="Episode free or paid" className="h-10 rounded-md border bg-background px-3 text-sm" value={episodeFreeState} onChange={(event) => setEpisodeFreeState(event.target.value as "" | "free" | "paid")}>
+                      <option value="">ฟรี / ขาย</option>
+                      <option value="free">ฟรี</option>
+                      <option value="paid">ขาย</option>
+                    </select>
+                    <Input value={episodeFreeState === "free" ? "0.00" : episodePrice} onChange={(event) => setEpisodePrice(event.target.value)} placeholder="ราคา" disabled={episodeFreeState === "free"} />
                   </div>
                   <Input
                     value={episodeGoogleDocUrl}

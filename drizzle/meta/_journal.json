@@ -379,6 +379,13 @@
       "when": 1789845561098,
       "tag": "0053_workspace_editorial_google_connection_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "5",
+      "when": 1789932500000,
+      "tag": "0054_workspace_editorial_sale_metadata",
+      "breakpoints": true
     }
   ]
 }

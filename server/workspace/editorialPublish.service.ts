@@ -22,6 +22,7 @@ import {
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
+import { EDITORIAL_EPISODE_STAGE_CONTRACT_V2 } from "./editorialApproval.domain";
 import { getEditorialApprovalReadModel } from "./editorialApproval.service";
 import { projectEditorialQcColumn } from "./editorialQcProjection.service";
 import { createPublishDestination, createPublishDryRun } from "./publishDryRun.service";
@@ -664,7 +665,11 @@ export async function assertEditorialPublishRequestCurrent(
     !state.stagePlan?.ready ||
     !stageCurrent ||
     !currentEpisode ||
-    currentEpisode.isPublished
+    currentEpisode.isPublished ||
+    (stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2 &&
+      (stage.saleMode !== currentEpisode.saleMode ||
+        stage.price !== currentEpisode.price ||
+        stage.isFree !== currentEpisode.isFree))
   ) {
     throw new WorkspaceEditorialPublishError(
       "STAGE_NOT_READY",
@@ -741,6 +746,17 @@ export async function reconcileEditorialPublishRun(input: {
       throw new WorkspaceEditorialPublishError(
         "STAGE_CONFLICT",
         "Published run references an Editorial Episode that no longer exists."
+      );
+    }
+    if (
+      stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2 &&
+      (stage.saleMode !== episode.saleMode ||
+        stage.price !== episode.price ||
+        stage.isFree !== episode.isFree)
+    ) {
+      throw new WorkspaceEditorialPublishError(
+        "STAGE_CONFLICT",
+        "Published run Episode sale metadata no longer matches immutable stage evidence."
       );
     }
     resolved.push({ item, stage, episode });

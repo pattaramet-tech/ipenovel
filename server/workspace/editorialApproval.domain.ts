@@ -4,6 +4,8 @@ export const EDITORIAL_APPROVAL_CONTRACT =
   "workspace-editorial-approval-v1" as const;
 export const EDITORIAL_EPISODE_STAGE_CONTRACT =
   "workspace-editorial-episode-stage-v1" as const;
+export const EDITORIAL_EPISODE_STAGE_CONTRACT_V2 =
+  "workspace-editorial-episode-stage-v2" as const;
 
 export type EditorialEpisodeDraftInput = {
   workItemType: "new_story" | "new_episode";
@@ -728,6 +730,35 @@ export function editorialEpisodeStateSha256(input: {
   );
 }
 
+export function editorialEpisodeStateSha256V2(input: {
+  novelId: number;
+  episodeNumber: string;
+  title: string;
+  content: string | null;
+  contentFormat: string | null;
+  wordCount: number | null;
+  isPublished: boolean;
+  saleMode: "chapter" | "package";
+  price: string;
+  isFree: boolean;
+}) {
+  return sha256(
+    JSON.stringify({
+      contract: EDITORIAL_EPISODE_STAGE_CONTRACT_V2,
+      novelId: input.novelId,
+      episodeNumber: normalizeEditorialEpisodeNumber(input.episodeNumber),
+      title: input.title,
+      content: input.content ?? "",
+      contentFormat: input.contentFormat ?? "plain_text",
+      wordCount: input.wordCount ?? 0,
+      isPublished: Boolean(input.isPublished),
+      saleMode: input.saleMode,
+      price: input.price,
+      isFree: Boolean(input.isFree),
+    })
+  );
+}
+
 export function editorialEpisodeStagePayloadSha256(input: {
   workItemId: number;
   approvalId: number;
@@ -752,6 +783,40 @@ export function editorialEpisodeStagePayloadSha256(input: {
       contentFormat: input.plan.contentFormat,
       wordCount: input.plan.wordCount,
       sourceTabId: input.plan.sourceTabId,
+    })
+  );
+}
+
+export function editorialEpisodeStagePayloadSha256V2(input: {
+  workItemId: number;
+  approvalId: number;
+  draftId: number;
+  draftSha256: string;
+  qcEvidenceSha256: string;
+  novelId: number;
+  plan: EditorialEpisodeDraftPlan;
+  saleMode: "chapter" | "package";
+  price: string;
+  isFree: boolean;
+}) {
+  return sha256(
+    JSON.stringify({
+      contract: EDITORIAL_EPISODE_STAGE_CONTRACT_V2,
+      workItemId: input.workItemId,
+      approvalId: input.approvalId,
+      draftId: input.draftId,
+      draftSha256: input.draftSha256.toLowerCase(),
+      qcEvidenceSha256: input.qcEvidenceSha256.toLowerCase(),
+      novelId: input.novelId,
+      episodeNumber: input.plan.episodeNumber,
+      title: input.plan.title,
+      contentSha256: input.plan.contentSha256,
+      contentFormat: input.plan.contentFormat,
+      wordCount: input.plan.wordCount,
+      sourceTabId: input.plan.sourceTabId,
+      saleMode: input.saleMode,
+      price: input.price,
+      isFree: Boolean(input.isFree),
     })
   );
 }

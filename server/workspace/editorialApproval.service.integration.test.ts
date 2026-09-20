@@ -112,6 +112,9 @@ describe.sequential(
           workspaceNovelId: story!.workspaceNovelId!,
           episodeNumber: "12",
           episodeTitle: "ชื่อจาก Intake",
+          saleMode: "chapter",
+          price: "12.00",
+          isFree: false,
         });
         const episodeCard = created.board?.columns
           .flatMap(column => column.cards)
@@ -356,6 +359,9 @@ describe.sequential(
           workspaceNovelId: workspaceNovel.workspaceNovelId,
           episodeNumber: "036 - 085",
           episodeTitle: null,
+          saleMode: "package",
+          price: "99.00",
+          isFree: false,
         });
         const card = created.board?.columns
           .flatMap(column => column.cards)

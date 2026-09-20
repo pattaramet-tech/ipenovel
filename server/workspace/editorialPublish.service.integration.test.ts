@@ -114,6 +114,9 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
         workspaceNovelId: workspaceNovel.workspaceNovelId,
         episodeNumber: "55",
         episodeTitle: "Controlled Publish",
+        saleMode: "chapter",
+        price: "15.00",
+        isFree: false,
       });
       const workItem = created.board?.columns.flatMap(column => column.cards)
         .find(card => card.workItemType === "NEW_EPISODE" && card.episodeNumber === "55");
@@ -457,6 +460,9 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
         workspaceNovelId: workspaceNovel.workspaceNovelId,
         episodeNumber: "036 - 038",
         episodeTitle: null,
+        saleMode: "package",
+        price: "49.00",
+        isFree: false,
       });
       const card = created.board?.columns
         .flatMap(column => column.cards)

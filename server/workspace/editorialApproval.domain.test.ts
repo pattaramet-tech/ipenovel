@@ -5,7 +5,9 @@ import {
   buildEditorialEpisodePackPlan,
   editorialApprovalPayloadSha256,
   editorialEpisodeStagePayloadSha256,
+  editorialEpisodeStagePayloadSha256V2,
   editorialEpisodeStateSha256,
+  editorialEpisodeStateSha256V2,
   editorialQcEvidenceSha256,
   normalizeEditorialEpisodeNumber,
   parseEditorialEpisodeHeading,
@@ -531,6 +533,48 @@ describe("Editorial approval/staging domain", () => {
         isPublished: false,
       })
     ).not.toBe(state);
+  });
+
+  it("preserves the historical v1 Episode state hash algorithm", () => {
+    expect(editorialEpisodeStateSha256({
+      novelId: 6,
+      episodeNumber: "10",
+      title: "Title",
+      content: "Body",
+      contentFormat: "plain_text",
+      wordCount: 1,
+      isPublished: false,
+    })).toBe("bbfb407ee4ee3cce0063d384c4f25dd9314a81d69662a0661134b9ff19653d28");
+  });
+
+  it("binds v2 Episode state hash to saleMode", () => {
+    const base = { novelId: 6, episodeNumber: "10", title: "T", content: "B", contentFormat: "plain_text", wordCount: 1, isPublished: false, price: "10.00", isFree: false } as const;
+    expect(editorialEpisodeStateSha256V2({ ...base, saleMode: "chapter" })).not.toBe(
+      editorialEpisodeStateSha256V2({ ...base, saleMode: "package" })
+    );
+  });
+
+  it("binds v2 Episode state hash to normalized price", () => {
+    const base = { novelId: 6, episodeNumber: "10", title: "T", content: "B", contentFormat: "plain_text", wordCount: 1, isPublished: false, saleMode: "chapter" as const, isFree: false };
+    expect(editorialEpisodeStateSha256V2({ ...base, price: "10.00" })).not.toBe(
+      editorialEpisodeStateSha256V2({ ...base, price: "11.00" })
+    );
+  });
+
+  it("binds v2 Episode state hash to isFree", () => {
+    const base = { novelId: 6, episodeNumber: "10", title: "T", content: "B", contentFormat: "plain_text", wordCount: 1, isPublished: false, saleMode: "chapter" as const, price: "0.00" };
+    expect(editorialEpisodeStateSha256V2({ ...base, isFree: true })).not.toBe(
+      editorialEpisodeStateSha256V2({ ...base, isFree: false })
+    );
+  });
+
+  it("binds v2 stage payload hash to sale metadata", () => {
+    const plan = buildEditorialEpisodeDraftPlan(input());
+    const base = { workItemId: 1, approvalId: 2, draftId: 3, draftSha256: "d".repeat(64), qcEvidenceSha256: "a".repeat(64), novelId: 4, plan, saleMode: "chapter" as const, price: "10.00", isFree: false };
+    const hash = editorialEpisodeStagePayloadSha256V2(base);
+    expect(editorialEpisodeStagePayloadSha256V2({ ...base, price: "11.00" })).not.toBe(hash);
+    expect(editorialEpisodeStagePayloadSha256V2({ ...base, saleMode: "package" })).not.toBe(hash);
+    expect(editorialEpisodeStagePayloadSha256V2({ ...base, isFree: true })).not.toBe(hash);
   });
 });
 

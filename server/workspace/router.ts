@@ -1257,6 +1257,9 @@ export const workspaceRouter = router({
         workspaceNovelId: z.number().int().positive(),
         episodeNumber: z.string().trim().min(1).max(100),
         episodeTitle: z.string().trim().max(500).optional(),
+        saleMode: z.enum(["chapter", "package"]),
+        price: z.string().trim().regex(/^\d+(?:\.\d{1,2})?$/),
+        isFree: z.boolean(),
         assigneeUserId: z.number().int().positive().nullable().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
