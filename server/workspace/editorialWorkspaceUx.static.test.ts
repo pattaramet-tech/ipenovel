@@ -56,6 +56,13 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).toContain('aria-label={passed ? "ผ่าน" : "ยังไม่ผ่าน"}');
     expect(source).toContain('border-primary bg-primary text-primary-foreground');
     expect(source).toContain('border-muted-foreground/40 text-transparent');
+    expect(source).toContain('aria-label="เลือก Episode Pack ทั้งหมด"');
+    expect(source).toContain("ตรวจงานที่เลือก");
+    expect(source).toContain("เผยแพร่ที่เลือก");
+    expect(source).toContain("bulkRunChecker.useMutation");
+    expect(source).toContain("bulkRequestPublish.useMutation");
+    expect(source).toContain("bg-emerald-50");
+    expect(source).toContain("bg-blue-50");
   });
 
   it("applies Preview feedback for compact Workspace, container-only novel intake and guarded ownership prep", () => {

@@ -75,6 +75,7 @@ export default function WorkspacePage() {
   const [editorialView, setEditorialView] = useState<"table" | "kanban">("table");
   const [episodeNovelSearch, setEpisodeNovelSearch] = useState("");
   const [selectedSourceWorkItemId, setSelectedSourceWorkItemId] = useState<number>();
+  const [selectedEditorialWorkItemIds, setSelectedEditorialWorkItemIds] = useState<number[]>([]);
   const [googleConnectionId, setGoogleConnectionId] = useState("");
   const [googleDocUrl, setGoogleDocUrl] = useState("");
   const [episodeGoogleDocUrl, setEpisodeGoogleDocUrl] = useState("");
@@ -334,6 +335,22 @@ export default function WorkspacePage() {
     await aiJobs.refetch();
     if (jobId) await aiOperational.refetch();
   };
+  const bulkRunEditorialChecker = trpc.workspace.editorial.bulkRunChecker.useMutation({
+    onSuccess: async (results) => {
+      await editorialBoard.refetch();
+      const failed = results.filter((result) => !result.ok);
+      toast[failed.length ? "error" : "success"](`ตรวจงาน ${results.length - failed.length}/${results.length} ตอน${failed.length ? ` · ไม่ผ่าน ${failed.length}` : ""}`);
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const bulkRequestEditorialPublish = trpc.workspace.editorial.bulkRequestPublish.useMutation({
+    onSuccess: async (results) => {
+      await Promise.all([editorialBoard.refetch(), publishOverview.refetch()]);
+      const failed = results.filter((result) => !result.ok);
+      toast[failed.length ? "error" : "success"](`ส่งเผยแพร่ ${results.length - failed.length}/${results.length} ตอน${failed.length ? ` · ไม่พร้อม ${failed.length}` : ""}`);
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const queueChecker = trpc.workspace.checker.queueRun.useMutation({
     onSuccess: async (run: any) => {
       await refreshChecker(run.id);
@@ -780,6 +797,10 @@ export default function WorkspacePage() {
   const selectedSourceCard = editorialCards.find(
     (card: any) => card.workItemId === selectedSourceWorkItemId
   );
+  const selectableEditorialWorkItemIds = editorialCards.map((card: any) => card.workItemId).filter((id: any): id is number => Number.isInteger(id));
+  const selectedEditorialSet = new Set(selectedEditorialWorkItemIds);
+  const allEditorialSelected = selectableEditorialWorkItemIds.length > 0 && selectableEditorialWorkItemIds.every((id) => selectedEditorialSet.has(id));
+  const toggleEditorialSelection = (workItemId: number) => setSelectedEditorialWorkItemIds((current) => current.includes(workItemId) ? current.filter((id) => id !== workItemId) : [...current, workItemId]);
   const editorialDraftData = editorialSourceDraft.data as any;
   const latestEditorialDraft = editorialDraftData?.latestDraft;
   const editorialEditorData = editorialEditor.data as any;
@@ -1204,6 +1225,13 @@ export default function WorkspacePage() {
                   ))}
                 </div>
               </div>
+              {editorialView === "table" && <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/10 px-3 py-2">
+                <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" aria-label="เลือก Episode Pack ทั้งหมด" checked={allEditorialSelected} onChange={(event) => setSelectedEditorialWorkItemIds(event.target.checked ? selectableEditorialWorkItemIds : [])} /> เลือกทั้งหมด</label>
+                <span className="text-xs text-muted-foreground">เลือกแล้ว {selectedEditorialWorkItemIds.length} ตอน</span>
+                <Button type="button" size="sm" variant="outline" disabled={!selectedEditorialWorkItemIds.length || bulkRunEditorialChecker.isPending} onClick={() => bulkRunEditorialChecker.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds })}>ตรวจงานที่เลือก</Button>
+                <Button type="button" size="sm" disabled={!selectedEditorialWorkItemIds.length || bulkRequestEditorialPublish.isPending} onClick={() => { if (window.confirm(`ส่ง ${selectedEditorialWorkItemIds.length} Episode Pack เข้า Controlled Publish? ระบบจะเผยแพร่เฉพาะรายการที่ผ่าน readiness/ownership gates`)) bulkRequestEditorialPublish.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds }); }}>เผยแพร่ที่เลือก</Button>
+                <span className="text-[11px] text-muted-foreground">รายการที่ยังไม่ผ่าน Stage / ownership / evidence จะถูกปฏิเสธ ไม่ข้าม safety gate</span>
+              </div>}
               {editorialBoard.isLoading || ensureEditorialBoard.isPending ? (
                 <div className="flex min-h-32 items-center justify-center"><Loader2 className="h-6 w-6 animate-spin" /></div>
               ) : editorialView === "kanban" ? (
@@ -1224,10 +1252,11 @@ export default function WorkspacePage() {
                   <details key={group.workspaceNovelId ?? group.novel?.id} className="overflow-hidden rounded-lg border bg-background">
                     <summary className="cursor-pointer select-none bg-muted/20 px-4 py-3"><span className="font-semibold">{group.novel?.title ?? "Untitled novel"}</span><span className="ml-2 text-xs text-muted-foreground">{group.cards.length} pack(s) · Novel #{group.novel?.id ?? "—"}</span></summary>
                     <div className="overflow-x-auto"><table className="w-full min-w-[980px] border-collapse text-sm">
-                      <thead><tr className="border-y bg-muted/10 text-left text-xs text-muted-foreground"><th className="px-3 py-2 font-medium">เรื่อง / ช่วงตอน</th><th className="px-3 py-2 text-center font-medium">ตรวจคำ</th><th className="px-3 py-2 text-center font-medium">ตรวจแล้ว</th><th className="px-3 py-2 text-center font-medium">Stage</th><th className="px-3 py-2 text-center font-medium">พร้อมลง</th><th className="px-3 py-2 text-center font-medium">เผยแพร่</th><th className="min-w-72 px-3 py-2 font-medium">หมายเหตุ</th></tr></thead>
+                      <thead><tr className="border-y bg-muted/10 text-left text-xs text-muted-foreground"><th className="w-10 px-3 py-2"><span className="sr-only">เลือก</span></th><th className="px-3 py-2 font-medium">เรื่อง / ช่วงตอน</th><th className="px-3 py-2 text-center font-medium">ตรวจคำ</th><th className="px-3 py-2 text-center font-medium">ตรวจแล้ว</th><th className="px-3 py-2 text-center font-medium">Stage</th><th className="px-3 py-2 text-center font-medium">พร้อมลง</th><th className="px-3 py-2 text-center font-medium">เผยแพร่</th><th className="min-w-72 px-3 py-2 font-medium">หมายเหตุ</th></tr></thead>
                       <tbody>{group.cards.slice().sort((a: any,b: any)=>String(a.episodeNumber??"").localeCompare(String(b.episodeNumber??""),"th",{numeric:true})).map((card:any)=>(
-                        <tr key={card.id} className="border-b last:border-b-0 hover:bg-muted/10">
-                          <td className="px-3 py-3"><button type="button" className="text-left font-medium text-primary hover:underline" disabled={!card.workItemId} onClick={()=>setSelectedSourceWorkItemId(card.workItemId)}>{card.workItemType==="NEW_EPISODE" ? card.episodeNumber||"ตอนใหม่" : "เรื่องใหม่ / Draft แรก"}</button>{card.episodeTitle&&<div className="mt-0.5 text-xs text-muted-foreground">{card.episodeTitle}</div>}<div className="mt-0.5 text-[11px] text-muted-foreground">{card.columnName}</div>{card.columnKey==="new"&&card.workItemId&&<div className="mt-2 flex gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>{const next=window.prompt("แก้ช่วงตอน",card.episodeNumber||"");if(next&&next.trim()&&next.trim()!==String(card.episodeNumber||"").trim())updateEditorialEpisode.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId,episodeNumber:next.trim(),episodeTitle:card.episodeTitle||undefined});}}>แก้ไข</Button><Button type="button" size="sm" variant="outline" onClick={()=>{if(window.confirm(`นำ Episode Pack ${card.episodeNumber||""} ออกจาก Workspace หรือไม่?`))removeEditorialEpisode.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId});}}>นำออก</Button></div>}</td>
+                        <tr key={card.id} className={`border-b last:border-b-0 hover:bg-muted/10 ${selectedEditorialSet.has(card.workItemId) ? "bg-primary/5" : ""}`}>
+                          <td className="px-3 py-3 align-top"><input type="checkbox" aria-label={`เลือก Episode Pack ${card.episodeNumber || card.workItemId}`} checked={selectedEditorialSet.has(card.workItemId)} disabled={!card.workItemId} onChange={() => card.workItemId && toggleEditorialSelection(card.workItemId)} /></td>
+                          <td className="px-3 py-3"><button type="button" className="text-left font-medium text-primary hover:underline" disabled={!card.workItemId} onClick={()=>setSelectedSourceWorkItemId(card.workItemId)}>{card.workItemType==="NEW_EPISODE" ? card.episodeNumber||"ตอนใหม่" : "เรื่องใหม่ / Draft แรก"}</button>{card.episodeTitle&&<div className="mt-0.5 text-xs text-muted-foreground">{card.episodeTitle}</div>}<div className="mt-1"><span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${card.evidence?.published ? "border-emerald-300 bg-emerald-50 text-emerald-700" : card.evidence?.readyToPublish ? "border-blue-300 bg-blue-50 text-blue-700" : card.evidence?.stage ? "border-violet-300 bg-violet-50 text-violet-700" : card.evidence?.approval ? "border-amber-300 bg-amber-50 text-amber-700" : card.evidence?.checker ? "border-cyan-300 bg-cyan-50 text-cyan-700" : "border-slate-300 bg-slate-50 text-slate-600"}`}>{card.evidence?.published ? "เผยแพร่แล้ว" : card.evidence?.readyToPublish ? "พร้อมลง" : card.evidence?.stage ? "Stage แล้ว" : card.evidence?.approval ? "ยืนยันแล้ว" : card.evidence?.checker ? "ตรวจแล้ว" : card.columnName}</span></div>{card.columnKey==="new"&&card.workItemId&&<div className="mt-2 flex gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>{const next=window.prompt("แก้ช่วงตอน",card.episodeNumber||"");if(next&&next.trim()&&next.trim()!==String(card.episodeNumber||"").trim())updateEditorialEpisode.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId,episodeNumber:next.trim(),episodeTitle:card.episodeTitle||undefined});}}>แก้ไข</Button><Button type="button" size="sm" variant="outline" onClick={()=>{if(window.confirm(`นำ Episode Pack ${card.episodeNumber||""} ออกจาก Workspace หรือไม่?`))removeEditorialEpisode.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId});}}>นำออก</Button></div>}</td>
                           {[
                             ["checker", card.evidence?.checker, "Deterministic Checker ผ่านบน Draft ปัจจุบัน"],
                             ["approval", card.evidence?.approval, "Approval ตรงกับ Draft/QC ปัจจุบัน"],

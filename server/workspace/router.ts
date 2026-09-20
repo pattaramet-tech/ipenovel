@@ -862,6 +862,40 @@ export const workspaceRouter = router({
   }),
 
   editorial: router({
+    bulkRunChecker: adminProcedure
+      .input(workspaceIdInput.extend({ workItemIds: z.array(z.number().int().positive()).min(1).max(100) }))
+      .mutation(async ({ ctx, input }) => {
+        const results = [];
+        for (const workItemId of Array.from(new Set(input.workItemIds))) {
+          try {
+            await runEditorialForeignChecker({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId });
+            results.push({ workItemId, ok: true as const });
+          } catch (error) {
+            results.push({ workItemId, ok: false as const, error: error instanceof Error ? error.message : String(error) });
+          }
+        }
+        return results;
+      }),
+    bulkRequestPublish: adminProcedure
+      .input(workspaceIdInput.extend({ workItemIds: z.array(z.number().int().positive()).min(1).max(100) }))
+      .mutation(async ({ ctx, input }) => {
+        const executionEnabled = process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true";
+        if (executionEnabled) requirePreviewPublishExecutionSafety();
+        const results = [];
+        for (const workItemId of Array.from(new Set(input.workItemIds))) {
+          try {
+            await prepareEditorialPublishOwnership({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId });
+            const state = await getEditorialPublishReadModel({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId });
+            const stagedDraftSha256 = state.stages[0]?.draftSha256;
+            if (!state.requestReady || !state.stageSetSha256 || !stagedDraftSha256 || !state.ownership) throw new Error(state.blocker ?? "Publish evidence is incomplete.");
+            await requestEditorialPublish({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId, expectedStageSetSha256: state.stageSetSha256, expectedStagedDraftSha256: stagedDraftSha256, expectedCutoverEpoch: state.ownership.cutoverEpoch, expectedOwnershipVersion: state.ownership.version, executionEnabled });
+            results.push({ workItemId, ok: true as const });
+          } catch (error) {
+            results.push({ workItemId, ok: false as const, error: error instanceof Error ? error.message : String(error) });
+          }
+        }
+        return results;
+      }),
     evidenceStatuses: adminProcedure
       .input(workspaceIdInput.extend({
         workItemIds: z.array(z.number().int().positive()).max(500),
