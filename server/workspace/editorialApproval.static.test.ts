@@ -5,6 +5,18 @@ const root = new URL("../..", import.meta.url);
 const source = (path: string) => readFileSync(new URL(path, root), "utf8");
 
 describe("Workspace Editorial approval + Episode staging static boundaries", () => {
+  it("keeps bulk editorial actions on the same guarded workflow services", () => {
+    const router = source("server/workspace/router.ts");
+    expect(router).toContain("bulkApproveDrafts: adminProcedure");
+    expect(router).toContain("approveEditorialDraft");
+    expect(router).toContain("bulkStageDrafts: adminProcedure");
+    expect(router).toContain("stageEditorialEpisodeDraft");
+    expect(router).toContain("bulkRequestPublish: adminProcedure");
+    expect(router).toContain("prepareEditorialPublishOwnership");
+    expect(router).toContain("expectedStageSetSha256: state.stageSetSha256");
+    expect(router).toContain("expectedOwnershipVersion: state.ownership.version");
+    expect(router).toContain("requirePreviewPublishExecutionSafety()");
+  });
   it("keeps migration 0050 additive and scoped to editorial approval/staging", () => {
     const migration = source(
       "drizzle/0050_workspace_editorial_approval_episode_stage.sql"
