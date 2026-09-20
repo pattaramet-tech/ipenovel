@@ -131,8 +131,7 @@ export async function listPublicationNovelOptions(userId: number, workspaceId: n
         storyStatus: novels.storyStatus,
       })
       .from(novels)
-      .orderBy(asc(novels.title), asc(novels.id))
-      .limit(200),
+      .orderBy(asc(novels.title), asc(novels.id)),
     db
       .select({ novelId: workspaceNovels.novelId })
       .from(workspaceNovels)

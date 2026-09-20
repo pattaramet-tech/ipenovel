@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 const root = new URL("../..", import.meta.url);
 const page = () =>
   readFileSync(new URL("client/src/pages/WorkspacePage.tsx", root), "utf8");
+const workspaceService = () =>
+  readFileSync(new URL("server/workspace/service.ts", root), "utf8");
 
 describe("Workspace Editorial Preview UX", () => {
   it("uses a collapsed Novel-grouped Episode Pack table with durable notes", () => {
@@ -15,6 +17,16 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).toContain("หมายเหตุ");
     expect(source).toContain("updateWorkItemNote.useMutation");
     expect(source).not.toContain("Editorial assignee filter");
+  });
+
+  it("does not truncate the publication novel selector to 200 rows", () => {
+    const source = workspaceService();
+    expect(source).toContain("export async function listPublicationNovelOptions");
+    const functionBody = source.slice(
+      source.indexOf("export async function listPublicationNovelOptions"),
+      source.indexOf("export async function createWorkspacePublicationNovel")
+    );
+    expect(functionBody).not.toContain(".limit(200)");
   });
 
   it("supports table search, quick filters and searchable episode intake", () => {
