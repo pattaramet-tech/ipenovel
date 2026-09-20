@@ -755,6 +755,10 @@ export const workspaceRouter = router({
       .mutation(async ({ ctx, input }) => {
         try {
           const executionEnabled = process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true";
+          const externalProviderEnabled = process.env.WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true";
+          if (executionEnabled && !externalProviderEnabled) {
+            throw new WorkspacePublishExecutionError("EXTERNAL_PROVIDER_DISABLED", "Workspace publish external provider is not enabled.");
+          }
           if (executionEnabled) requirePreviewPublishExecutionSafety();
           return await requestPublishExecution({
             actorUserId: ctx.user.id,
@@ -1196,6 +1200,10 @@ export const workspaceRouter = router({
       .mutation(async ({ ctx, input }) => {
         try {
           const executionEnabled = process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true";
+          const externalProviderEnabled = process.env.WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true";
+          if (executionEnabled && !externalProviderEnabled) {
+            throw new WorkspacePublishExecutionError("EXTERNAL_PROVIDER_DISABLED", "Workspace publish external provider is not enabled.");
+          }
           if (executionEnabled) requirePreviewPublishExecutionSafety();
           return await requestEditorialPublish({
             actorUserId: ctx.user.id,
