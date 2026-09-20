@@ -53,7 +53,9 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).toContain("card.evidence?.readyToPublish");
     expect(source).toContain("card.evidence?.published");
     expect(source).toContain("Publish run + receipt + outbox + reader visibility ครบ");
-    expect(source).not.toContain('type="checkbox"');
+    expect(source).toContain('aria-label={passed ? "ผ่าน" : "ยังไม่ผ่าน"}');
+    expect(source).toContain('border-primary bg-primary text-primary-foreground');
+    expect(source).toContain('border-muted-foreground/40 text-transparent');
   });
 
   it("applies Preview feedback for compact Workspace, container-only novel intake and guarded ownership prep", () => {

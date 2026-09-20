@@ -1237,8 +1237,8 @@ export default function WorkspacePage() {
                           ].map(([key, passed, label]) => (
                             <td key={String(key)} className="px-3 py-3 text-center" title={String(label)}>
                               {card.evidence ? (
-                                <span aria-label={passed ? "ผ่าน" : "ยังไม่ผ่าน"} className={passed ? "font-semibold text-foreground" : "text-muted-foreground"}>
-                                  {passed ? "✓" : "—"}
+                                <span aria-label={passed ? "ผ่าน" : "ยังไม่ผ่าน"} className={`inline-flex h-5 w-5 items-center justify-center rounded border text-xs font-bold ${passed ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/40 text-transparent"}`}>
+                                  ✓
                                 </span>
                               ) : <span className="text-muted-foreground">…</span>}
                             </td>
