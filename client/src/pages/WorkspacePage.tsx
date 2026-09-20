@@ -1242,6 +1242,7 @@ export default function WorkspacePage() {
                   ))}
                 </div>
               </div>
+              {editorialView === "table" && editorialEvidenceStatuses.isError && <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">โหลดสถานะตารางไม่สำเร็จ: {editorialEvidenceStatuses.error.message}</div>}
               {editorialView === "table" && <div className="space-y-2 rounded-lg border bg-muted/10 px-3 py-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" aria-label="เลือก Episode Pack ที่มองเห็นทั้งหมด" checked={visibleEditorialWorkItemIds.length > 0 && visibleEditorialWorkItemIds.every((id) => selectedEditorialSet.has(id))} disabled={bulkBusy} onChange={(event) => setSelectedEditorialWorkItemIds(event.target.checked ? visibleEditorialWorkItemIds : [])} /> เลือกที่มองเห็น</label>
@@ -1277,27 +1278,40 @@ export default function WorkspacePage() {
                 <div className="space-y-3">{editorialNovelGroups.map((group: any) => (
                   <details key={group.workspaceNovelId ?? group.novel?.id} className="overflow-hidden rounded-lg border bg-background">
                     <summary className="cursor-pointer select-none bg-muted/20 px-4 py-3"><span className="font-semibold">{group.novel?.title ?? "Untitled novel"}</span><span className="ml-2 text-xs text-muted-foreground">{group.cards.length} pack(s) · Novel #{group.novel?.id ?? "—"}</span></summary>
-                    <div className="overflow-x-auto"><table className="w-full min-w-[980px] border-collapse text-sm">
-                      <thead><tr className="border-y bg-muted/10 text-left text-xs text-muted-foreground"><th className="w-10 px-3 py-2"><span className="sr-only">เลือก</span></th><th className="px-3 py-2 font-medium">เรื่อง / ช่วงตอน</th><th className="px-3 py-2 text-center font-medium">ตรวจคำ</th><th className="px-3 py-2 text-center font-medium">ตรวจแล้ว</th><th className="px-3 py-2 text-center font-medium">Stage</th><th className="px-3 py-2 text-center font-medium">พร้อมลง</th><th className="px-3 py-2 text-center font-medium">เผยแพร่</th><th className="min-w-72 px-3 py-2 font-medium">หมายเหตุ</th></tr></thead>
+                    <div className="overflow-x-auto"><table className="w-full min-w-[1240px] border-collapse text-sm">
+                      <thead><tr className="border-y bg-muted/10 text-left text-xs text-muted-foreground"><th className="w-10 px-3 py-2"><span className="sr-only">เลือก</span></th><th className="px-3 py-2 font-medium">เรื่อง / ช่วงตอน</th><th className="px-3 py-2 font-medium">การขาย</th><th className="px-3 py-2 text-center font-medium">ตรวจคำ</th><th className="px-3 py-2 text-center font-medium">ผ่านตรวจ</th><th className="px-3 py-2 text-center font-medium">ยืนยัน</th><th className="px-3 py-2 text-center font-medium">Stage</th><th className="px-3 py-2 text-center font-medium">พร้อมลง</th><th className="px-3 py-2 text-center font-medium">เผยแพร่</th><th className="min-w-72 px-3 py-2 font-medium">หมายเหตุ</th></tr></thead>
                       <tbody>{group.cards.slice().sort((a: any,b: any)=>String(a.episodeNumber??"").localeCompare(String(b.episodeNumber??""),"th",{numeric:true})).map((card:any)=>(
                         <tr key={card.id} className={`border-b last:border-b-0 hover:bg-muted/10 ${selectedEditorialSet.has(card.workItemId) ? "bg-primary/5" : ""}`}>
                           <td className="px-3 py-3 align-top"><input type="checkbox" aria-label={`เลือก Episode Pack ${card.episodeNumber || card.workItemId}`} checked={selectedEditorialSet.has(card.workItemId)} disabled={!card.workItemId || bulkBusy} onChange={() => card.workItemId && toggleEditorialSelection(card.workItemId)} /></td>
                           <td className="px-3 py-3"><button type="button" className="text-left font-medium text-primary hover:underline" disabled={!card.workItemId} onClick={()=>setSelectedSourceWorkItemId(card.workItemId)}>{card.workItemType==="NEW_EPISODE" ? card.episodeNumber||"ตอนใหม่" : "เรื่องใหม่ / Draft แรก"}</button>{card.episodeTitle&&<div className="mt-0.5 text-xs text-muted-foreground">{card.episodeTitle}</div>}<div className="mt-1"><span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${card.evidence?.published ? "border-emerald-300 bg-emerald-50 text-emerald-700" : card.evidence?.readyToPublish ? "border-blue-300 bg-blue-50 text-blue-700" : card.evidence?.stage ? "border-violet-300 bg-violet-50 text-violet-700" : card.evidence?.approval ? "border-amber-300 bg-amber-50 text-amber-700" : card.evidence?.checker ? "border-cyan-300 bg-cyan-50 text-cyan-700" : "border-slate-300 bg-slate-50 text-slate-600"}`}>{card.evidence?.published ? "เผยแพร่แล้ว" : card.evidence?.readyToPublish ? "พร้อมลง" : card.evidence?.stage ? "Stage แล้ว" : card.evidence?.approval ? "ยืนยันแล้ว" : card.evidence?.checker ? "ตรวจแล้ว" : card.columnName}</span></div>{card.columnKey==="new"&&card.workItemId&&<div className="mt-2 flex gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>{const next=window.prompt("แก้ช่วงตอน",card.episodeNumber||"");if(next&&next.trim()&&next.trim()!==String(card.episodeNumber||"").trim())updateEditorialEpisode.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId,episodeNumber:next.trim(),episodeTitle:card.episodeTitle||undefined});}}>แก้ไข</Button><Button type="button" size="sm" variant="outline" onClick={()=>{if(window.confirm(`นำ Episode Pack ${card.episodeNumber||""} ออกจาก Workspace หรือไม่?`))removeEditorialEpisode.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId});}}>นำออก</Button></div>}</td>
+                          <td className="px-3 py-3">
+                            {card.isFree === true ? (
+                              <span className="inline-flex rounded-full border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">ฟรี</span>
+                            ) : card.saleMode === "chapter" ? (
+                              <span className="inline-flex rounded-full border border-blue-300 bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700">ขายรายตอน · ฿{card.price ?? "—"}</span>
+                            ) : card.saleMode === "package" ? (
+                              <span className="inline-flex rounded-full border border-violet-300 bg-violet-50 px-2 py-1 text-xs font-semibold text-violet-700">แพ็กเกจ · ฿{card.price ?? "—"}</span>
+                            ) : (
+                              <span className="inline-flex rounded-full border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-700">ยังไม่กำหนดการขาย</span>
+                            )}
+                          </td>
                           {[
+                            ["checkerRan", card.evidence?.checkerRan, "รัน Deterministic Checker แล้ว"],
                             ["checker", card.evidence?.checker, "Deterministic Checker ผ่านบน Draft ปัจจุบัน"],
                             ["approval", card.evidence?.approval, "Approval ตรงกับ Draft/QC ปัจจุบัน"],
                             ["stage", card.evidence?.stage, "Episode staging ครบและยัง valid"],
                             ["ready", card.evidence?.readyToPublish, "Publish readiness ผ่าน stage + ownership + anchor"],
                             ["published", card.evidence?.published, "Publish run + receipt + outbox + reader visibility ครบ"],
-                          ].map(([key, passed, label]) => (
-                            <td key={String(key)} className="px-3 py-3 text-center" title={String(label)}>
-                              {card.evidence ? (
-                                <span aria-label={passed ? "ผ่าน" : "ยังไม่ผ่าน"} className={`inline-flex h-5 w-5 items-center justify-center rounded border text-xs font-bold ${passed ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/40 text-transparent"}`}>
-                                  ✓
-                                </span>
-                              ) : <span className="text-muted-foreground">…</span>}
-                            </td>
-                          ))}
+                          ].map(([key, passed, label]) => {
+                            const passedClass = key === "checkerRan" ? "bg-cyan-50 text-cyan-800" : key === "checker" ? "bg-teal-50 text-teal-800" : key === "approval" ? "bg-amber-50 text-amber-800" : key === "stage" ? "bg-violet-50 text-violet-800" : key === "ready" ? "bg-blue-50 text-blue-800" : "bg-emerald-50 text-emerald-800";
+                            const tickClass = key === "checkerRan" ? "border-cyan-500 bg-cyan-600 text-white" : key === "checker" ? "border-teal-500 bg-teal-600 text-white" : key === "approval" ? "border-amber-500 bg-amber-500 text-white" : key === "stage" ? "border-violet-500 bg-violet-600 text-white" : key === "ready" ? "border-blue-500 bg-blue-600 text-white" : "border-emerald-500 bg-emerald-600 text-white";
+                            const available = card.evidence?.available !== false;
+                            return <td key={String(key)} className={`px-3 py-3 text-center ${card.evidence ? (available ? (passed ? passedClass : "bg-slate-50 text-slate-500") : "bg-red-50 text-red-700") : ""}`} title={available ? String(label) : String(card.evidence?.error ?? "โหลดสถานะไม่สำเร็จ")}>
+                              {card.evidence ? available ? (
+                                <span aria-label={passed ? "ผ่าน" : "ยังไม่ผ่าน"} className={`inline-flex h-6 w-6 items-center justify-center rounded-md border text-sm font-bold ${passed ? tickClass : "border-slate-300 bg-white text-slate-300"}`}>{passed ? "✓" : "—"}</span>
+                              ) : <span aria-label="โหลดสถานะไม่สำเร็จ" className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-red-300 bg-red-100 text-xs font-bold text-red-700">!</span> : <span className="text-muted-foreground">…</span>}
+                            </td>;
+                          })}
                           <td className="px-3 py-2"><Input key={String(card.workItemId) + ":" + String(card.workItemVersion) + ":" + String(card.note ?? "")} defaultValue={card.note??""} maxLength={1000} placeholder="บันทึกหมายเหตุ" disabled={!card.workItemId||!card.workItemVersion||updateEditorialWorkItemNote.isPending} onBlur={(event)=>{const next=event.currentTarget.value.trim();if(next===(card.note??""))return;updateEditorialWorkItemNote.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId,note:next||null,expectedVersion:card.workItemVersion});}} /></td>
                         </tr>
                       ))}</tbody>

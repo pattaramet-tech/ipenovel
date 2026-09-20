@@ -47,6 +47,7 @@ describe("Workspace Editorial Preview UX", () => {
   it("binds table status columns and quick filters to durable evidence", () => {
     const source = page();
     expect(source).toContain("editorial.evidenceStatuses.useQuery");
+    expect(source).toContain("card.evidence?.checkerRan");
     expect(source).toContain("card.evidence?.checker");
     expect(source).toContain("card.evidence?.approval");
     expect(source).toContain("card.evidence?.stage");
@@ -54,8 +55,16 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).toContain("card.evidence?.published");
     expect(source).toContain("Publish run + receipt + outbox + reader visibility ครบ");
     expect(source).toContain('aria-label={passed ? "ผ่าน" : "ยังไม่ผ่าน"}');
-    expect(source).toContain('border-primary bg-primary text-primary-foreground');
-    expect(source).toContain('border-muted-foreground/40 text-transparent');
+    expect(source).toContain('border-emerald-500 bg-emerald-600 text-white');
+    expect(source).toContain('border-slate-300 bg-white text-slate-300');
+    expect(source).toContain('bg-cyan-50 text-cyan-800');
+    expect(source).toContain('bg-violet-50 text-violet-800');
+    expect(source).toContain('bg-blue-50 text-blue-800');
+    expect(source).toContain('bg-emerald-50 text-emerald-800');
+    expect(source).toContain("โหลดสถานะตารางไม่สำเร็จ");
+    expect(source).toContain("ขายรายตอน · ฿");
+    expect(source).toContain("แพ็กเกจ · ฿");
+    expect(source).toContain("ยังไม่กำหนดการขาย");
     expect(source).toContain('aria-label="เลือก Episode Pack ที่มองเห็นทั้งหมด"');
     expect(source).toContain("เลือกยังไม่ตรวจ");
     expect(source).toContain("เลือกพร้อมลง");
