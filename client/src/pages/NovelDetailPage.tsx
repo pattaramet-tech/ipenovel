@@ -218,15 +218,12 @@ export default function NovelDetailPage() {
   // Grouping always orders episodes numerically within a group regardless of
   // the active sortBy, since a table of contents should read top-to-bottom by
   // chapter number - groupEpisodesByHundreds sorts each bucket internally.
-  // New per-chapter purchases are cut from the main storefront, but a chapter
-  // that's free or already owned must stay visible/readable here - otherwise
-  // free-to-read novels using single chapters would show nothing, and past
-  // per-chapter buyers would lose visibility of what they already paid for.
+  // Reader TOC visibility is independent from entitlement. Published legacy
+  // chapter rows must remain visible even when locked; hiding unowned rows made
+  // otherwise valid novels render as 0 episodes. Commerce for new content is
+  // package-based, while existing chapter entitlements remain backward compatible.
   const visibleReaderEpisodes = useMemo(
-    () =>
-      filteredAndSortedEpisodes.readerEpisodes.filter(
-        (ep: any) => ep.isFree === true || ep.isPurchased === true || ep.hasPurchased === true
-      ),
+    () => filteredAndSortedEpisodes.readerEpisodes,
     [filteredAndSortedEpisodes.readerEpisodes]
   );
   const readerEpisodeGroups = useMemo(
@@ -415,19 +412,10 @@ export default function NovelDetailPage() {
                 {episode.progressPercent > 0 ? "อ่านต่อ" : "อ่าน"}
               </button>
             ) : (
-              // Unpurchased paid chapter - direct wallet purchase only, never cart
-              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
-                <span className="font-semibold text-sm text-foreground">
-                  ฿{episode.price ?? "ไม่ระบุ"}
-                </span>
-                <button
-                  onClick={() => handleBuyNow(episode.id)}
-                  disabled={purchasingEpisodeId === episode.id}
-                  className="inline-flex items-center justify-center px-4 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition disabled:opacity-60 disabled:cursor-wait"
-                  title="ซื้อบทนี้ด้วยเงินในกระเป๋า"
-                >
-                  {purchasingEpisodeId === episode.id ? "กำลังซื้อ..." : "ซื้อทันที"}
-                </button>
+              // Legacy chapter rows remain visible for TOC/backward compatibility,
+              // but new commerce is package-only: never offer per-chapter purchase.
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>🔒</span><span>ล็อก</span>
               </div>
             )}
           </div>

@@ -507,12 +507,18 @@ export const appRouter = router({
       };
     }),
 
-    episodes: protectedProcedure.input(z.object({ novelId: z.number() })).query(async ({ input, ctx }) => {
-      const episodes = await db.getEpisodesByNovelId(input.novelId);
-      const isAdmin = ctx.user.role === "admin";
-      // One batch query for all episodes' reading progress, instead of one
-      // query per episode inside the loop below.
-      const progressMap = await db.getReadingProgressBatch(ctx.user.id, episodes.map((ep: any) => ep.id));
+    episodes: publicProcedure.input(z.object({ novelId: z.number() })).query(async ({ input, ctx }) => {
+      const allEpisodes = await db.getEpisodesByNovelId(input.novelId);
+      // Novel TOC is a public storefront surface. Never expose staged/draft rows
+      // here; admin preview of unpublished content belongs in admin/workspace UI.
+      const episodes = allEpisodes.filter((ep: any) => ep.isPublished === true);
+      const isAdmin = ctx.user?.role === "admin";
+      const userId = ctx.user?.id;
+      // Anonymous readers must be able to see the published TOC. Entitlement
+      // enrichment is optional and only queried for an authenticated reader.
+      const progressMap = userId
+        ? await db.getReadingProgressBatch(userId, episodes.map((ep: any) => ep.id))
+        : new Map<number, any>();
 
       // Enrich episodes with purchase status. IMPORTANT: isPurchased/hasPurchased
       // must be computed from actual purchase records only (episodePurchases +
@@ -521,7 +527,7 @@ export const appRouter = router({
       const enriched = await Promise.all(
         episodes.map(async (ep: any) => {
           const isFree = ep.isFree === true;
-          const hasPurchased = await readerService.hasPurchasedEpisode(ctx.user.id, ep.id);
+          const hasPurchased = userId ? await readerService.hasPurchasedEpisode(userId, ep.id) : false;
           const canRead = isFree || hasPurchased || isAdmin;
           const progress = progressMap.get(ep.id);
 

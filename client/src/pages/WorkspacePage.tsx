@@ -1721,11 +1721,18 @@ export default function WorkspacePage() {
                       <div className="space-y-2 border-t p-3">
                         {(editorialSourceDraft.data as any).tabs.map((tab: any) => (
                           <div key={tab.id} className="rounded-md border bg-background p-3 text-sm">
-                            <div className="flex flex-wrap justify-between gap-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
                               <span>{tab.title}</span>
-                              <span className="text-xs text-muted-foreground">
-                                {tab.paragraphs.length} paragraphs · {shortHash(tab.structuralSha256)}
-                              </span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs text-muted-foreground">
+                                  {tab.paragraphs.length} paragraphs · {shortHash(tab.structuralSha256)}
+                                </span>
+                                {editorialEditorData?.latestDraft && (() => {
+                                  const draftTab = (editorialEditorData.tabs ?? []).find((candidate: any) => candidate.sourceTabId === tab.sourceTabId);
+                                  if (!draftTab) return null;
+                                  return <Button type="button" size="sm" variant="outline" disabled={excludeEditorialTab.isPending || editorialEditorData.tabs.length <= 1} onClick={(event) => { event.preventDefault(); event.stopPropagation(); if(window.confirm(`นำแท็บ ${tab.title} ออกจาก Draft นี้หรือไม่? ระบบจะสร้าง Draft revision ใหม่ และต้องตรวจ QC/ยืนยันใหม่`)) excludeEditorialTab.mutate({workspaceId:selectedWorkspaceId!,workItemId:selectedSourceWorkItemId!,expectedDraftId:editorialEditorData.latestDraft.id,expectedDraftSha256:editorialEditorData.latestDraft.draftSha256,sourceTabId:draftTab.sourceTabId}); }}>นำออก</Button>;
+                                })()}
+                              </div>
                             </div>
                             {(tab.chapterNumber || tab.warnings?.length) && (
                               <div className="mt-1 text-xs text-muted-foreground">
