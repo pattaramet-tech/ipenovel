@@ -255,10 +255,6 @@ export default function NovelDetailPage() {
     rows.sort(sortBy === "episodeDesc" ? compareEpisodesDesc : compareEpisodes);
     return rows;
   }, [episodes, searchTerm, sortBy]);
-  const projectedPackageGroups = useMemo(
-    () => groupEpisodesByHundreds(projectedPackageChapters),
-    [projectedPackageChapters]
-  );
   const totalReadableChapterCount = visibleReaderEpisodes.length + projectedPackageChapters.length;
   const freeReadableChapterCount = visibleReaderEpisodes.filter((ep: any) => ep.isFree === true).length + projectedPackageChapters.filter((ep: any) => ep.isFree).length;
   const paidReadableChapterCount = totalReadableChapterCount - freeReadableChapterCount;
@@ -571,34 +567,6 @@ export default function NovelDetailPage() {
     );
   };
 
-  const renderProjectedPackageChapterCard = (chapter: any) => (
-    <Card key={chapter.id} className="p-4 border border-border">
-      <div className="flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <p className="font-semibold text-sm">{formatEpisodeLabel(chapter.episodeNumber, chapter.title)}</p>
-          <p className="text-xs text-muted-foreground mt-1">
-            แพ็ก {chapter.packageEpisodeNumber} · {chapter.unlocked ? "ปลดล็อกแล้ว" : `ล็อก · ฿${chapter.packagePrice}`}
-          </p>
-        </div>
-        {chapter.unlocked ? (
-          <Button size="sm" onClick={() => setLocation(`/read/${chapter.packageId}?chapter=${encodeURIComponent(chapter.episodeNumber)}`)}>
-            <BookOpen className="w-3.5 h-3.5 mr-1.5" />อ่าน
-          </Button>
-        ) : (
-          <Button size="sm" variant="outline" onClick={() => {
-            const pkg = (episodes as any[])?.find((ep: any) => ep.id === chapter.packageId);
-            if (pkg) {
-              const inCart = cartItems.some((item: any) => item.episodeId === pkg.id);
-              handleEpisodeToggle(pkg.id, !inCart);
-            }
-          }}>
-            ซื้อแพ็ก
-          </Button>
-        )}
-      </div>
-    </Card>
-  );
-
   // Table-of-contents accordion: renders each hundred-range group as a
   // collapsible section, with episodes inside always in numeric order.
   // `prefix` namespaces expandedGroups keys so chapter/file sections (and the
@@ -867,14 +835,10 @@ export default function NovelDetailPage() {
                     {renderEpisodeGroupAccordion(readerEpisodeGroups, "chapter", renderChapterEpisodeCard)}
                   </div>
                 )}
-                {projectedPackageChapters.length > 0 && (
-                  <div>
-                    <h3 className="text-lg font-semibold mb-3 text-blue-600">ตอนในแพ็ก ({projectedPackageChapters.length})</h3>
-                    {renderEpisodeGroupAccordion(projectedPackageGroups, "package-chapter", renderProjectedPackageChapterCard)}
-                  </div>
-                )}
-                {/* The commercial SKU remains visible separately: one checkout
-                    unlocks every projected chapter above. */}
+                {/* Package chapter headings stay available as safe metadata for
+                    reader navigation/counts, but the public storefront shows only
+                    the commercial package cards rather than hundreds of projected
+                    chapter rows. */}
                 {packageEpisodes.length > 0 && (
                   <div>
                     <h3 className="text-lg font-semibold mb-3 text-amber-600">แพ็กสำหรับซื้อ ({packageEpisodes.length})</h3>
