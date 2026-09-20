@@ -516,9 +516,15 @@ export const appRouter = router({
       const userId = ctx.user?.id;
       // Anonymous readers must be able to see the published TOC. Entitlement
       // enrichment is optional and only queried for an authenticated reader.
-      const progressMap = userId
-        ? await db.getReadingProgressBatch(userId, episodes.map((ep: any) => ep.id))
-        : new Map<number, any>();
+      let progressMap = new Map<number, any>();
+      if (userId) {
+        try {
+          progressMap = await db.getReadingProgressBatch(userId, episodes.map((ep: any) => ep.id));
+        } catch (error) {
+          // Public TOC visibility must not depend on optional per-user progress.
+          console.error("[novels.episodes] Reading-progress enrichment failed", { novelId: input.novelId });
+        }
+      }
 
       // Enrich episodes with purchase status. IMPORTANT: isPurchased/hasPurchased
       // must be computed from actual purchase records only (episodePurchases +
@@ -527,7 +533,19 @@ export const appRouter = router({
       const enriched = await Promise.all(
         episodes.map(async (ep: any) => {
           const isFree = ep.isFree === true;
-          const hasPurchased = userId ? await readerService.hasPurchasedEpisode(userId, ep.id) : false;
+          let hasPurchased = false;
+          if (userId) {
+            try {
+              hasPurchased = await readerService.hasPurchasedEpisode(userId, ep.id);
+            } catch (error) {
+              // Entitlement enrichment is optional storefront personalization.
+              // Fail closed for this row, but never hide the published TOC.
+              console.error("[novels.episodes] Entitlement enrichment failed", {
+                novelId: input.novelId,
+                episodeId: ep.id,
+              });
+            }
+          }
           const canRead = isFree || hasPurchased || isAdmin;
           const progress = progressMap.get(ep.id);
 

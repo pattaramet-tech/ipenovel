@@ -51,7 +51,7 @@ export default function NovelDetailPage() {
   );
 
   // Always call episodes query (never conditionally) - gated by validNovelId only
-  const { data: episodes } = trpc.novels.episodes.useQuery(
+  const { data: episodes, error: episodesError, isLoading: episodesLoading } = trpc.novels.episodes.useQuery(
     { novelId: validNovelId },
     { enabled: !!validNovelId }
   );
@@ -773,15 +773,15 @@ export default function NovelDetailPage() {
             <div className="grid grid-cols-3 gap-3 p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border">
               <div>
                 <p className="text-xs font-semibold text-muted-foreground mb-1">{t("status.totalEpisodes")}</p>
-                <p className="text-2xl font-bold">{totalReadableChapterCount}</p>
+                <p className="text-2xl font-bold">{episodesError ? "—" : episodesLoading ? "…" : totalReadableChapterCount}</p>
               </div>
               <div>
                 <p className="text-xs font-semibold text-muted-foreground mb-1">{t("status.freeEpisodes")}</p>
-                <p className="text-2xl font-bold text-green-600">{freeReadableChapterCount}</p>
+                <p className="text-2xl font-bold text-green-600">{episodesError ? "—" : episodesLoading ? "…" : freeReadableChapterCount}</p>
               </div>
               <div>
                 <p className="text-xs font-semibold text-muted-foreground mb-1">{t("status.paidEpisodes")}</p>
-                <p className="text-2xl font-bold text-blue-600">{paidReadableChapterCount}</p>
+                <p className="text-2xl font-bold text-blue-600">{episodesError ? "—" : episodesLoading ? "…" : paidReadableChapterCount}</p>
               </div>
             </div>
           </div>
@@ -845,7 +845,14 @@ export default function NovelDetailPage() {
 
           {/* Episodes List - grouped as a table of contents (บทที่ 1-100, 101-200, ...) */}
           <div className="space-y-6">
-            {saleType === "all" && totalReadableChapterCount === 0 ? (
+            {episodesError ? (
+              <Card className="border-red-200 bg-red-50 p-8 text-center">
+                <p className="font-medium text-red-700">โหลดรายการตอนที่เผยแพร่ไม่สำเร็จ</p>
+                <p className="mt-2 text-sm text-red-600">กรุณาลองรีเฟรชอีกครั้ง หากยังพบปัญหาให้แจ้งผู้ดูแลระบบ</p>
+              </Card>
+            ) : episodesLoading ? (
+              <Card className="p-8 text-center"><p className="text-muted-foreground">กำลังโหลดรายการตอน…</p></Card>
+            ) : saleType === "all" && totalReadableChapterCount === 0 ? (
               <Card className="p-8 text-center">
                 <p className="text-muted-foreground">ไม่มีตอนที่ตรงกับการค้นหา</p>
               </Card>
