@@ -213,17 +213,19 @@ export default function NovelDetailPage() {
 
     return { freeEpisodes, paidEpisodes, packageEpisodes, readerEpisodes };
   }, [episodes, searchTerm, sortBy]);
+  const { packageEpisodes } = filteredAndSortedEpisodes;
 
   // Table-of-contents groups (บทที่ 1-100, 101-200, ...) for each sale type.
   // Grouping always orders episodes numerically within a group regardless of
   // the active sortBy, since a table of contents should read top-to-bottom by
   // chapter number - groupEpisodesByHundreds sorts each bucket internally.
-  // Reader TOC visibility is independent from entitlement. Published legacy
-  // chapter rows must remain visible even when locked; hiding unowned rows made
-  // otherwise valid novels render as 0 episodes. Commerce for new content is
-  // package-based, while existing chapter entitlements remain backward compatible.
+  // The public storefront is package-first. Legacy chapter rows stay visible
+  // only when they are actually free or already owned; locked chapter rows are
+  // historical commerce artifacts and must not masquerade as current products.
   const visibleReaderEpisodes = useMemo(
-    () => filteredAndSortedEpisodes.readerEpisodes,
+    () => filteredAndSortedEpisodes.readerEpisodes.filter((ep: any) =>
+      ep?.isFree === true || ep?.isPurchased === true || ep?.hasPurchased === true
+    ),
     [filteredAndSortedEpisodes.readerEpisodes]
   );
   const readerEpisodeGroups = useMemo(
@@ -231,32 +233,12 @@ export default function NovelDetailPage() {
     [visibleReaderEpisodes]
   );
 
-  // A package is one commercial SKU but its TOC represents the chapters a
-  // reader actually sees. Project those headings into storefront rows while
-  // keeping entitlement/cart actions attached to the parent package id.
-  const projectedPackageChapters = useMemo(() => {
-    if (!episodes || !Array.isArray(episodes)) return [];
-    const needle = searchTerm.trim().toLowerCase();
-    const rows = episodes.flatMap((pkg: any) => {
-      if (!pkg || pkg.saleMode !== "package" || !Array.isArray(pkg.packageToc)) return [];
-      const unlocked = pkg.isFree === true || pkg.isPurchased === true || pkg.hasPurchased === true;
-      return pkg.packageToc.map((entry: any) => ({
-        id: `package-${pkg.id}-chapter-${entry.chapterNumber}`,
-        episodeNumber: entry.chapterNumber,
-        title: entry.title,
-        packageId: pkg.id,
-        packagePrice: pkg.price,
-        packageEpisodeNumber: pkg.episodeNumber,
-        unlocked,
-        isFree: pkg.isFree === true,
-        lineIndex: entry.lineIndex,
-      }));
-    }).filter((row: any) => !needle || row.title.toLowerCase().includes(needle) || String(row.episodeNumber).includes(needle));
-    rows.sort(sortBy === "episodeDesc" ? compareEpisodesDesc : compareEpisodes);
-    return rows;
-  }, [episodes, searchTerm, sortBy]);
-  const totalReadableChapterCount = visibleReaderEpisodes.length + projectedPackageChapters.length;
-  const freeReadableChapterCount = visibleReaderEpisodes.filter((ep: any) => ep.isFree === true).length + projectedPackageChapters.filter((ep: any) => ep.isFree).length;
+  // Storefront counts are commercial rows, matching the package list shown
+  // below (not the number of chapter headings embedded inside packageToc).
+  const totalReadableChapterCount = visibleReaderEpisodes.length + packageEpisodes.length;
+  const freeReadableChapterCount =
+    visibleReaderEpisodes.filter((ep: any) => ep.isFree === true).length +
+    packageEpisodes.filter((ep: any) => ep.isFree === true).length;
   const paidReadableChapterCount = totalReadableChapterCount - freeReadableChapterCount;
 
   // SEO: only set page-specific tags once the novel has actually loaded -
@@ -659,8 +641,6 @@ export default function NovelDetailPage() {
     );
   }
 
-  const { freeEpisodes, paidEpisodes, packageEpisodes } = filteredAndSortedEpisodes;
-
   return (
     <div className="min-h-screen bg-background">
       <div className="container max-w-4xl px-4 py-6 md:py-8">
@@ -835,13 +815,11 @@ export default function NovelDetailPage() {
                     {renderEpisodeGroupAccordion(readerEpisodeGroups, "chapter", renderChapterEpisodeCard)}
                   </div>
                 )}
-                {/* Package chapter headings stay available as safe metadata for
-                    reader navigation/counts, but the public storefront shows only
-                    the commercial package cards rather than hundreds of projected
-                    chapter rows. */}
+                {/* Public commerce is one row per Episode Pack. packageToc stays
+                    backend/reader metadata and is never expanded into storefront rows. */}
                 {packageEpisodes.length > 0 && (
                   <div>
-                    <h3 className="text-lg font-semibold mb-3 text-amber-600">แพ็กสำหรับซื้อ ({packageEpisodes.length})</h3>
+                    <h3 className="text-lg font-semibold mb-3 text-amber-600">ขายแพ็ก ({packageEpisodes.length})</h3>
                     <div className="space-y-3">{packageEpisodes.map(renderPackageEpisodeCard)}</div>
                   </div>
                 )}

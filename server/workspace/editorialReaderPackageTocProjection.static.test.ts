@@ -9,14 +9,13 @@ describe("IPE-056-S Reader Episode Pack TOC projection + entitlement UI", () => 
     expect(router).toContain("packageChapterCount: packageToc.length");
   });
 
-  it("keeps package TOC metadata for counts/reader flow without rendering projected chapter rows on the public storefront", () => {
+  it("keeps package TOC metadata out of the public storefront and renders one commercial row per package", () => {
     const page = readFileSync("client/src/pages/NovelDetailPage.tsx", "utf8");
-    expect(page).toContain("projectedPackageChapters");
-    expect(page).toContain("packageId: pkg.id");
-    expect(page).toContain("pkg.isPurchased === true || pkg.hasPurchased === true");
+    expect(page).not.toContain("projectedPackageChapters");
     expect(page).not.toContain("ตอนในแพ็ก (");
-    expect(page).toContain("แพ็กสำหรับซื้อ");
+    expect(page).toContain("ขายแพ็ก");
     expect(page).toContain("packageEpisodes.map(renderPackageEpisodeCard)");
+    expect(page).toContain("visibleReaderEpisodes.length + packageEpisodes.length");
   });
 
   it("deep-links an unlocked projected chapter into the package reader TOC", () => {

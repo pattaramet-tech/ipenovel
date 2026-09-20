@@ -44,10 +44,12 @@ import {
   getEditorialBoard,
   listEditorialAssignees,
   removeEditorialEpisodeWorkItem,
+  updateEditorialEpisodeSaleMetadata,
   updateEditorialEpisodeWorkItem,
   updateEditorialWorkItemNote,
   WorkspaceEditorialBoardError,
 } from "./editorialBoard.service";
+import { projectEditorialBoardSaleFallback } from "./editorialBoardCommerceProjection.service";
 import {
   getEditorialDraftReadModel,
   getEditorialSourceSnapshot,
@@ -59,6 +61,11 @@ import {
   listEditorialGoogleConnections,
   WorkspaceEditorialGoogleSourceError,
 } from "./editorialSource.googleDocs";
+import {
+  getHistoricalPackRepairPreview,
+  repairHistoricalPublishedPack,
+  WorkspaceHistoricalPackRepairError,
+} from "./editorialHistoricalPackRepair.service";
 import {
   allowEditorialFindingWord,
   getEditorialForeignCheckerReadModel,
@@ -262,6 +269,15 @@ function mapWorkspaceError(error: unknown): never {
           : error.code.endsWith("_CONFLICT")
             ? "CONFLICT"
             : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
+  if (error instanceof WorkspaceHistoricalPackRepairError) {
+    const code =
+      error.code === "DATABASE_UNAVAILABLE"
+        ? "SERVICE_UNAVAILABLE"
+        : error.code === "WORK_ITEM_NOT_FOUND"
+          ? "NOT_FOUND"
+          : "CONFLICT";
     throw new TRPCError({ code, message: error.message });
   }
   if (error instanceof WorkspaceEditorialDraftError) {
@@ -862,6 +878,30 @@ export const workspaceRouter = router({
   }),
 
   editorial: router({
+    historicalPackRepairPreview: adminProcedure
+      .input(workspaceIdInput.extend({ workItemId: z.number().int().positive() }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getHistoricalPackRepairPreview({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    repairHistoricalPack: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        expectedChapterEpisodeIds: z.array(z.number().int().positive()).min(1).max(5000),
+        price: z.string().trim().regex(/^\d+(?:\.\d{1,2})?$/),
+        isFree: z.boolean(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          requirePreviewPublishExecutionSafety();
+          return await repairHistoricalPublishedPack({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
     bulkApproveDrafts: adminProcedure
       .input(workspaceIdInput.extend({ workItemIds: z.array(z.number().int().positive()).min(1).max(100) }))
       .mutation(async ({ ctx, input }) => {
@@ -945,10 +985,11 @@ export const workspaceRouter = router({
       .input(workspaceIdInput)
       .query(async ({ ctx, input }) => {
         try {
-          return await getEditorialBoard({
+          const board = await getEditorialBoard({
             actorUserId: ctx.user.id,
             workspaceId: input.workspaceId,
           });
+          return board ? await projectEditorialBoardSaleFallback(board) : board;
         } catch (error) {
           return mapWorkspaceError(error);
         }
@@ -1321,7 +1362,7 @@ export const workspaceRouter = router({
         workspaceNovelId: z.number().int().positive(),
         episodeNumber: z.string().trim().min(1).max(100),
         episodeTitle: z.string().trim().max(500).optional(),
-        saleMode: z.enum(["chapter", "package"]),
+        saleMode: z.literal("package").default("package"),
         price: z.string().trim().regex(/^\d+(?:\.\d{1,2})?$/),
         isFree: z.boolean(),
         assigneeUserId: z.number().int().positive().nullable().optional(),
@@ -1344,6 +1385,16 @@ export const workspaceRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         try { return await updateEditorialEpisodeWorkItem({ actorUserId: ctx.user.id, ...input }); }
+        catch (error) { return mapWorkspaceError(error); }
+      }),
+    updateEpisodeSale: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        price: z.string().trim().regex(/^\d+(?:\.\d{1,2})?$/),
+        isFree: z.boolean(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try { return await updateEditorialEpisodeSaleMetadata({ actorUserId: ctx.user.id, ...input }); }
         catch (error) { return mapWorkspaceError(error); }
       }),
     removeEpisode: adminProcedure

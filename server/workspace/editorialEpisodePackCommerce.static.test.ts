@@ -4,13 +4,18 @@ import { readFileSync } from "node:fs";
 const source = (path: string) => readFileSync(path, "utf8");
 
 describe("IPE-056-Q Episode Pack commerce + reader entitlement", () => {
-  it("stages one package product instead of one chapter product per Docs tab", () => {
+  it("stages one package product and binds the Workspace-configured commerce metadata", () => {
     const service = source("server/workspace/editorialApproval.service.ts");
-    const domain = source("server/workspace/editorialApproval.domain.ts");
+    const board = source("server/workspace/editorialBoard.service.ts");
+    const router = source("server/workspace/router.ts");
     expect(service).toContain("buildEditorialEpisodePackPlan(batchPlan)");
-    expect(service).toContain('saleMode: "package"');
-    expect(service).toContain("price: packPlan.price");
-    expect(domain).toContain("billableTabCount * EDITORIAL_EPISODE_PACK_PRICE_PER_TAB_BAHT");
+    expect(service).toContain("for (const plan of [packPlan])");
+    expect(service).toContain("const saleMode = context.workItem.saleMode");
+    expect(service).toContain("const price = context.workItem.price");
+    expect(service).toContain("const isFree = context.workItem.isFree");
+    expect(service).toContain("price: sale?.price ?? pack.price");
+    expect(board).toContain("Workspace Episode Pack intake supports package commerce only.");
+    expect(router).toContain('saleMode: z.literal("package").default("package")');
   });
 
   it("routes package purchase through cart/checkout and package entitlement", () => {

@@ -23,10 +23,11 @@ describe("IPE-056-K discoverability + public reader TOC regression", () => {
     expect(page).toContain("โหลดรายการตอนที่เผยแพร่ไม่สำเร็จ");
     expect(page).toContain('episodesError ? "—" : episodesLoading ? "…" : totalReadableChapterCount');
   });
-  it("keeps locked legacy chapter rows visible without restoring per-chapter commerce", () => {
+  it("hides locked legacy chapter products while keeping free/already-owned legacy rows readable", () => {
     const page = read("client/src/pages/NovelDetailPage.tsx");
-    expect(page).toContain("() => filteredAndSortedEpisodes.readerEpisodes");
-    expect(page).toContain("<span>ล็อก</span>");
-    expect(page).toContain("new commerce is package-only");
+    expect(page).toContain("filteredAndSortedEpisodes.readerEpisodes.filter");
+    expect(page).toContain("ep?.isFree === true || ep?.isPurchased === true || ep?.hasPurchased === true");
+    expect(page).toContain("ตอนฟรี / ที่ซื้อแล้ว");
+    expect(page).toContain("Public commerce is one row per Episode Pack");
   });
 });

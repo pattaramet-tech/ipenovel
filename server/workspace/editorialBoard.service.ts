@@ -2,6 +2,7 @@ import { and, asc, desc, eq, sql } from "drizzle-orm";
 import {
   novels,
   users,
+  workspaceEditorialEpisodeStages,
   workspaceEditorialSources,
   workspaceEditorialWorkItemEvents,
   workspaceEditorialWorkItems,
@@ -561,7 +562,13 @@ export async function createEditorialEpisodeWorkItem(input: {
   await requireAdminAssignee(db, input.assigneeUserId ?? null);
   const itemKey = normalizeEditorialEpisodeKey(input.episodeNumber);
   const episodeTitle = input.episodeTitle?.trim() || null;
-  const sale = normalizeEditorialSaleMetadata(input);
+  if (input.saleMode && input.saleMode !== "package") {
+    throw new WorkspaceEditorialBoardError(
+      "EDITORIAL_WORK_ITEM_CONFLICT",
+      "Workspace Episode Pack intake supports package commerce only."
+    );
+  }
+  const sale = normalizeEditorialSaleMetadata({ saleMode: "package", price: input.price, isFree: input.isFree });
   if (!itemKey || itemKey.length > 100) {
     throw new WorkspaceEditorialBoardError(
       "EDITORIAL_WORK_ITEM_CONFLICT",
@@ -856,6 +863,27 @@ async function requireEditableEpisodePack(tx: any, workspaceId: number, workItem
   return row;
 }
 
+async function requireSaleEditableEpisodePack(tx: any, workspaceId: number, workItemId: number) {
+  const [row] = await tx.select({ workItem: workspaceEditorialWorkItems, card: workspaceKanbanCards })
+    .from(workspaceEditorialWorkItems)
+    .innerJoin(workspaceKanbanCards, eq(workspaceEditorialWorkItems.cardId, workspaceKanbanCards.id))
+    .where(and(eq(workspaceEditorialWorkItems.id, workItemId), eq(workspaceEditorialWorkItems.workItemType, "new_episode"), eq(workspaceKanbanCards.status, "active")))
+    .limit(1);
+  if (!row) throw new WorkspaceEditorialBoardError("EDITORIAL_WORK_ITEM_NOT_FOUND", "Episode Pack was not found.");
+  const [workspaceNovel] = await tx.select().from(workspaceNovels)
+    .where(and(eq(workspaceNovels.id, row.workItem.workspaceNovelId), eq(workspaceNovels.workspaceId, workspaceId))).limit(1);
+  if (!workspaceNovel) throw new WorkspaceEditorialBoardError("EDITORIAL_WORK_ITEM_NOT_FOUND", "Episode Pack does not belong to this Workspace.");
+  const [stage] = await tx.select({ id: workspaceEditorialEpisodeStages.id }).from(workspaceEditorialEpisodeStages)
+    .where(eq(workspaceEditorialEpisodeStages.workItemId, workItemId)).limit(1);
+  if (stage) {
+    throw new WorkspaceEditorialBoardError(
+      "EDITORIAL_WORK_ITEM_CONFLICT",
+      "Episode Pack sale metadata is immutable after Stage evidence exists."
+    );
+  }
+  return row;
+}
+
 export async function updateEditorialEpisodeWorkItem(input: { actorUserId: number; workspaceId: number; workItemId: number; episodeNumber: string; episodeTitle?: string; }) {
   const db = await database();
   await requireWorkspacePlatformAdmin(db, input.actorUserId);
@@ -873,6 +901,29 @@ export async function updateEditorialEpisodeWorkItem(input: { actorUserId: numbe
     await tx.update(workspaceEditorialWorkItems).set({ itemKey, episodeNumber: input.episodeNumber.trim(), episodeTitle: input.episodeTitle?.trim() || null, version: sql`${workspaceEditorialWorkItems.version} + 1` }).where(eq(workspaceEditorialWorkItems.id, input.workItemId));
     await tx.update(workspaceKanbanCards).set({ logicalItemKey: editorialEpisodeLogicalKey(row.workItem.workspaceNovelId, input.episodeNumber) }).where(eq(workspaceKanbanCards.id, row.card.id));
     return { workItemId: input.workItemId, updated: true as const };
+  });
+}
+
+export async function updateEditorialEpisodeSaleMetadata(input: {
+  actorUserId: number;
+  workspaceId: number;
+  workItemId: number;
+  price: string;
+  isFree: boolean;
+}) {
+  const db = await database();
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
+  await requireActiveWorkspace(db, input.workspaceId);
+  const sale = normalizeEditorialSaleMetadata({ saleMode: "package", price: input.price, isFree: input.isFree });
+  return db.transaction(async (tx: any) => {
+    await requireSaleEditableEpisodePack(tx, input.workspaceId, input.workItemId);
+    await tx.update(workspaceEditorialWorkItems).set({
+      saleMode: "package",
+      price: sale.price,
+      isFree: sale.isFree,
+      version: sql`${workspaceEditorialWorkItems.version} + 1`,
+    }).where(eq(workspaceEditorialWorkItems.id, input.workItemId));
+    return { workItemId: input.workItemId, saleMode: "package" as const, price: sale.price, isFree: sale.isFree, updated: true as const };
   });
 }
 

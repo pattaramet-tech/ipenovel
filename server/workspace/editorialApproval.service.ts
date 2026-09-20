@@ -318,7 +318,10 @@ function stagePlanItemSummary(plan: EditorialEpisodeDraftPlan) {
   };
 }
 
-function stagePlanSummary(plan: EditorialEpisodeDraftBatchPlan | null) {
+function stagePlanSummary(
+  plan: EditorialEpisodeDraftBatchPlan | null,
+  sale?: { saleMode: "chapter" | "package" | null; price: string | null; isFree: boolean | null }
+) {
   if (!plan) return null;
   const first = plan.items[0] ?? null;
   const pack = plan.ready && plan.items.length > 0
@@ -335,12 +338,13 @@ function stagePlanSummary(plan: EditorialEpisodeDraftBatchPlan | null) {
     excludedCount: plan.excludedTabs.length,
     draftTabCount: plan.items.length + plan.excludedTabs.length,
     commerce: pack ? {
-      saleMode: pack.saleMode,
+      saleMode: sale?.saleMode ?? pack.saleMode,
       episodeNumber: pack.episodeNumber,
       title: pack.title,
       billableTabCount: pack.billableTabCount,
       excludedTabCount: pack.excludedTabCount,
-      price: pack.price,
+      price: sale?.price ?? pack.price,
+      isFree: sale?.isFree ?? null,
     } : null,
     anomalies: plan.anomalies,
     blockers: plan.blockers,
@@ -602,7 +606,11 @@ export async function getEditorialApprovalReadModel(input: {
     stage: stages[0] ?? null,
     stageEpisode: stageEpisodes[0] ?? null,
     stageStatus,
-    stagePlan: stagePlanSummary(batchPlan),
+    stagePlan: stagePlanSummary(batchPlan, {
+      saleMode: context.workItem.saleMode,
+      price: context.workItem.price,
+      isFree: context.workItem.isFree,
+    }),
     stagePlanError,
     readyToPublish: Boolean(stageStatus.valid),
   };

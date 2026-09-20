@@ -63,7 +63,6 @@ export default function WorkspacePage() {
   const [episodeWorkspaceNovelId, setEpisodeWorkspaceNovelId] = useState("");
   const [episodeNumber, setEpisodeNumber] = useState("");
   const [episodeTitle, setEpisodeTitle] = useState("");
-  const [episodeSaleMode, setEpisodeSaleMode] = useState<"" | "chapter" | "package">("");
   const [episodePrice, setEpisodePrice] = useState("");
   const [episodeFreeState, setEpisodeFreeState] = useState<"" | "free" | "paid">("");
   const [episodeAssigneeUserId, setEpisodeAssigneeUserId] = useState("");
@@ -274,7 +273,6 @@ export default function WorkspacePage() {
     setEpisodeWorkspaceNovelId("");
     setEpisodeNumber("");
     setEpisodeTitle("");
-    setEpisodeSaleMode("");
     setEpisodePrice("");
     setEpisodeFreeState("");
     setEpisodeAssigneeUserId("");
@@ -428,6 +426,13 @@ export default function WorkspacePage() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const updateEditorialEpisodeSale = trpc.workspace.editorial.updateEpisodeSale.useMutation({
+    onSuccess: async () => {
+      await editorialBoard.refetch();
+      toast.success("อัปเดตการขายของ Episode Pack แล้ว");
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const removeEditorialEpisode = trpc.workspace.editorial.removeEpisode.useMutation({
     onSuccess: async (_result, variables) => {
       if (selectedSourceWorkItemId === variables.workItemId) setSelectedSourceWorkItemId(undefined);
@@ -442,7 +447,6 @@ export default function WorkspacePage() {
       let quickImportSucceeded = false;
       setEpisodeNumber("");
       setEpisodeTitle("");
-      setEpisodeSaleMode("");
       setEpisodePrice("");
       setEpisodeFreeState("");
       setEpisodeGoogleDocUrl("");
@@ -1147,8 +1151,8 @@ export default function WorkspacePage() {
                       toast.error("Select a novel and enter an episode number");
                       return;
                     }
-                    if (!episodeSaleMode || !episodeFreeState || (episodeFreeState === "paid" && !episodePrice.trim())) {
-                      toast.error("Select sale mode, free/paid status, and a paid price");
+                    if (!episodeFreeState || (episodeFreeState === "paid" && !episodePrice.trim())) {
+                      toast.error("เลือก ฟรี/ขาย และระบุราคาสำหรับแพ็กที่ขาย");
                       return;
                     }
                     createEditorialEpisode.mutate({
@@ -1156,7 +1160,7 @@ export default function WorkspacePage() {
                       workspaceNovelId,
                       episodeNumber: episodeNumber.trim(),
                       episodeTitle: episodeTitle.trim() || undefined,
-                      saleMode: episodeSaleMode,
+                      saleMode: "package",
                       price: episodeFreeState === "free" ? "0.00" : episodePrice.trim(),
                       isFree: episodeFreeState === "free",
                       assigneeUserId: episodeAssigneeUserId ? Number(episodeAssigneeUserId) : null,
@@ -1187,17 +1191,13 @@ export default function WorkspacePage() {
                     <Input value={episodeTitle} onChange={(event) => setEpisodeTitle(event.target.value)} maxLength={500} placeholder="ชื่อตอน (ถ้ามี)" />
                   </div>
                   <div className="grid grid-cols-3 gap-2">
-                    <select aria-label="Episode sale mode" className="h-10 rounded-md border bg-background px-3 text-sm" value={episodeSaleMode} onChange={(event) => setEpisodeSaleMode(event.target.value as "" | "chapter" | "package")}>
-                      <option value="">รูปแบบขาย</option>
-                      <option value="chapter">รายบท</option>
-                      <option value="package">แพ็กเกจ</option>
-                    </select>
+                    <div className="flex h-10 items-center rounded-md border bg-violet-50 px-3 text-sm font-medium text-violet-700">Episode Pack</div>
                     <select aria-label="Episode free or paid" className="h-10 rounded-md border bg-background px-3 text-sm" value={episodeFreeState} onChange={(event) => setEpisodeFreeState(event.target.value as "" | "free" | "paid")}>
                       <option value="">ฟรี / ขาย</option>
                       <option value="free">ฟรี</option>
                       <option value="paid">ขาย</option>
                     </select>
-                    <Input value={episodeFreeState === "free" ? "0.00" : episodePrice} onChange={(event) => setEpisodePrice(event.target.value)} placeholder="ราคา" disabled={episodeFreeState === "free"} />
+                    <Input value={episodeFreeState === "free" ? "0.00" : episodePrice} onChange={(event) => setEpisodePrice(event.target.value)} placeholder={episodeFreeState === "paid" ? "ราคาแพ็ก" : "ราคา"} disabled={episodeFreeState === "free"} />
                   </div>
                   <Input
                     value={episodeGoogleDocUrl}
@@ -1293,6 +1293,12 @@ export default function WorkspacePage() {
                               <span className="inline-flex rounded-full border border-violet-300 bg-violet-50 px-2 py-1 text-xs font-semibold text-violet-700">แพ็กเกจ · ฿{card.price ?? "—"}</span>
                             ) : (
                               <span className="inline-flex rounded-full border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-700">ยังไม่กำหนดการขาย</span>
+                            )}
+                            {card.saleMetadataSource === "published_episode" && <div className="mt-1 text-[10px] text-muted-foreground">ข้อมูลจากตอนที่เผยแพร่</div>}
+                            {card.workItemId && !card.evidence?.stage && !card.evidence?.published && (
+                              <div className="mt-2">
+                                <Button type="button" size="sm" variant="outline" disabled={updateEditorialEpisodeSale.isPending} onClick={()=>{const current=card.isFree===true?"free":"paid";const mode=window.prompt("การขาย Episode Pack: พิมพ์ free = ฟรี หรือ paid = ขาย",current)?.trim().toLowerCase();if(mode!=="free"&&mode!=="paid")return;if(mode==="free"){updateEditorialEpisodeSale.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId,price:"0.00",isFree:true});return;}const price=window.prompt("ราคาแพ็ก (บาท)",card.price&&Number(card.price)>0?String(card.price):"100.00")?.trim();if(price)updateEditorialEpisodeSale.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId,price,isFree:false});}}>แก้การขาย</Button>
+                              </div>
                             )}
                           </td>
                           {[

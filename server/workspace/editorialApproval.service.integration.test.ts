@@ -112,7 +112,7 @@ describe.sequential(
           workspaceNovelId: story!.workspaceNovelId!,
           episodeNumber: "12",
           episodeTitle: "ชื่อจาก Intake",
-          saleMode: "chapter",
+          saleMode: "package",
           price: "12.00",
           isFree: false,
         });

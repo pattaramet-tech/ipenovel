@@ -114,7 +114,7 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
         workspaceNovelId: workspaceNovel.workspaceNovelId,
         episodeNumber: "55",
         episodeTitle: "Controlled Publish",
-        saleMode: "chapter",
+        saleMode: "package",
         price: "15.00",
         isFree: false,
       });

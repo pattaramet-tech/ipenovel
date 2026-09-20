@@ -31,11 +31,39 @@ describe("M12D.7 sale metadata contract", () => {
       .toThrow("greater than zero");
   });
 
-  it("makes intake idempotency include identical sale metadata", () => {
+  it("makes Workspace intake package-only and keeps sale metadata in idempotency", () => {
     const board = source("server/workspace/editorialBoard.service.ts");
+    const router = source("server/workspace/router.ts");
+    const page = source("client/src/pages/WorkspacePage.tsx");
+    expect(board).toContain("Workspace Episode Pack intake supports package commerce only.");
+    expect(board).toContain('saleMode: "package"');
+    expect(router).toContain('saleMode: z.literal("package").default("package")');
+    expect(page).toContain('saleMode: "package"');
+    expect(page).toContain("Episode Pack");
+    expect(page).not.toContain('<option value="chapter">รายบท</option>');
     expect(board).toContain("existingWorkItem.saleMode !== sale.saleMode");
     expect(board).toContain("existingWorkItem.price !== sale.price");
     expect(board).toContain("existingWorkItem.isFree !== sale.isFree");
+  });
+
+  it("allows sale correction only through the pre-Draft editable Episode Pack guard", () => {
+    const board = source("server/workspace/editorialBoard.service.ts");
+    const router = source("server/workspace/router.ts");
+    const page = source("client/src/pages/WorkspacePage.tsx");
+    expect(board).toContain("updateEditorialEpisodeSaleMetadata");
+    expect(board).toContain("requireSaleEditableEpisodePack(tx, input.workspaceId, input.workItemId)");
+    expect(board).toContain("Episode Pack sale metadata is immutable after Stage evidence exists.");
+    expect(router).toContain("updateEpisodeSale: adminProcedure");
+    expect(page).toContain("แก้การขาย");
+  });
+
+  it("falls back to exact published Episode Pack sale metadata for historical Workspace rows", () => {
+    const projection = source("server/workspace/editorialBoardCommerceProjection.service.ts");
+    const router = source("server/workspace/router.ts");
+    expect(projection).toContain("sameSpan(episode.episodeNumber, card.episodeNumber)");
+    expect(projection).toContain('saleMetadataSource: "published_episode"');
+    expect(projection).toContain("episodes.isPublished");
+    expect(router).toContain("projectEditorialBoardSaleFallback(board)");
   });
 
   it("rejects an existing episode identity with different sale metadata", () => {

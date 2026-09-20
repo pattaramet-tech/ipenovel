@@ -23,6 +23,8 @@ describe("IPE-056-P Preview Controlled Publish safety gate", () => {
   });
   it("keeps real reader visibility behind the explicit external provider worker", () => {
     expect(provider).toContain("isPublished: true");
+    expect(provider).toContain('publicationStatus: "published"');
+    expect(provider).toContain("same transaction as the episode + provider receipt");
     expect(provider).toContain('mode: "external"');
     expect(worker).toContain('WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true"');
     expect(worker).toContain('WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true"');
