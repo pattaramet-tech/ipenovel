@@ -996,7 +996,7 @@ export const workspaceRouter = router({
           try {
             await prepareEditorialPublishOwnership({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId });
             const state = await getEditorialPublishReadModel({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId });
-            const stagedDraftSha256 = state.stages[0]?.draftSha256;
+            const stagedDraftSha256 = state.stages[0]?.stagedDraftSha256;
             if (!state.requestReady || !state.stageSetSha256 || !stagedDraftSha256 || !state.ownership) throw new Error(state.blocker ?? "Publish evidence is incomplete.");
             await requestEditorialPublish({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId, expectedStageSetSha256: state.stageSetSha256, expectedStagedDraftSha256: stagedDraftSha256, expectedCutoverEpoch: state.ownership.cutoverEpoch, expectedOwnershipVersion: state.ownership.version, executionEnabled });
             results.push({ workItemId, ok: true as const });

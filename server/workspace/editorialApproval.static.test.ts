@@ -27,6 +27,9 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
     expect(router).toContain("bulkRequestPublish: adminProcedure");
     expect(router).toContain("prepareEditorialPublishOwnership");
     expect(router).toContain("expectedStageSetSha256: state.stageSetSha256");
+    expect(router).toContain("const stagedDraftSha256 = state.stages[0]?.stagedDraftSha256");
+    expect(router).not.toContain("const stagedDraftSha256 = state.stages[0]?.draftSha256");
+    expect(router).toContain("expectedStagedDraftSha256: stagedDraftSha256");
     expect(router).toContain("expectedOwnershipVersion: state.ownership.version");
     expect(router).toContain("requirePreviewPublishExecutionSafety()");
     expect(router).toContain('WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true"');
