@@ -1389,6 +1389,76 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
+    bulkImportGoogleDocs: adminProcedure
+      .input(workspaceIdInput.extend({
+        workspaceNovelId: z.number().int().positive(),
+        connectionId: z.number().int().positive(),
+        price: z.string().trim().regex(/^\d+(?:\.\d{1,2})?$/),
+        isFree: z.boolean(),
+        assigneeUserId: z.number().int().positive().nullable().optional(),
+        rows: z.array(z.object({
+          episodeNumber: z.string().trim().min(1).max(100),
+          episodeTitle: z.string().trim().max(500).optional(),
+          documentUrlOrId: z.string().trim().min(1).max(1000),
+        })).min(1).max(30),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const results = [];
+        for (let rowIndex = 0; rowIndex < input.rows.length; rowIndex += 1) {
+          const row = input.rows[rowIndex]!;
+          try {
+            const payload = await fetchEditorialGoogleDocSource({
+              actorUserId: ctx.user.id,
+              connectionId: input.connectionId,
+              documentUrlOrId: row.documentUrlOrId,
+            });
+            const created = await createEditorialEpisodeWorkItem({
+              actorUserId: ctx.user.id,
+              workspaceId: input.workspaceId,
+              workspaceNovelId: input.workspaceNovelId,
+              episodeNumber: row.episodeNumber,
+              episodeTitle: row.episodeTitle,
+              saleMode: "package",
+              price: input.isFree ? "0.00" : input.price,
+              isFree: input.isFree,
+              assigneeUserId: input.assigneeUserId ?? null,
+            });
+            const card = (created.board?.columns ?? [])
+              .flatMap((column: any) => column.cards ?? [])
+              .find((candidate: any) =>
+                candidate.workItemType === "NEW_EPISODE" &&
+                candidate.workspaceNovelId === input.workspaceNovelId &&
+                String(candidate.episodeNumber ?? "").trim() === row.episodeNumber.trim()
+              );
+            if (!card?.workItemId) throw new Error("Created Episode Pack work item could not be resolved.");
+            const imported = await importEditorialSource({
+              actorUserId: ctx.user.id,
+              workspaceId: input.workspaceId,
+              workItemId: card.workItemId,
+              payload,
+              googleConnectionId: input.connectionId,
+            });
+            results.push({
+              rowIndex,
+              episodeNumber: row.episodeNumber,
+              documentTitle: payload.title,
+              workItemId: card.workItemId,
+              ok: true as const,
+              created: created.created,
+              draftCreated: imported.draftCreated,
+              refreshBlocked: imported.refreshBlocked,
+            });
+          } catch (error) {
+            results.push({
+              rowIndex,
+              episodeNumber: row.episodeNumber,
+              ok: false as const,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        return results;
+      }),
     bulkImportEpisodeFiles: adminProcedure
       .input(workspaceIdInput.extend({
         workspaceNovelId: z.number().int().positive(),

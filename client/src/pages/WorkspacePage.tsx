@@ -91,6 +91,15 @@ export default function WorkspacePage() {
   const [googleConnectionId, setGoogleConnectionId] = useState("");
   const [googleDocUrl, setGoogleDocUrl] = useState("");
   const [episodeGoogleDocUrl, setEpisodeGoogleDocUrl] = useState("");
+  const [episodeIntakeMode, setEpisodeIntakeMode] = useState<"single" | "bulk_docs" | "bulk_files">("bulk_docs");
+  const [episodeGoogleBatchRows, setEpisodeGoogleBatchRows] = useState<Array<{
+    episodeNumber: string;
+    episodeTitle: string;
+    documentUrlOrId: string;
+  }>>([
+    { episodeNumber: "", episodeTitle: "", documentUrlOrId: "" },
+    { episodeNumber: "", episodeTitle: "", documentUrlOrId: "" },
+  ]);
   const [episodeBatchFiles, setEpisodeBatchFiles] = useState<Array<{
     name: string;
     mimeType: string;
@@ -458,6 +467,36 @@ export default function WorkspacePage() {
       if (selectedSourceWorkItemId === variables.workItemId) setSelectedSourceWorkItemId(undefined);
       await editorialBoard.refetch();
       toast.success("นำ Episode Pack ออกจาก Workspace แล้ว");
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const bulkImportGoogleDocs = trpc.workspace.editorial.bulkImportGoogleDocs.useMutation({
+    onSuccess: async (results, variables) => {
+      await Promise.all([editorialBoard.refetch(), editorialEvidenceStatuses.refetch()]);
+      const failed = results.filter((result) => !result.ok);
+      const firstSuccess = results.find((result) => result.ok && result.workItemId);
+      if (firstSuccess?.workItemId) setSelectedSourceWorkItemId(firstSuccess.workItemId);
+      if (!failed.length) {
+        setEpisodeGoogleBatchRows([
+          { episodeNumber: "", episodeTitle: "", documentUrlOrId: "" },
+          { episodeNumber: "", episodeTitle: "", documentUrlOrId: "" },
+        ]);
+        setEpisodePrice("");
+        setEpisodeFreeState("");
+      } else {
+        const failedIndexes = new Set(failed.map((result) => result.rowIndex));
+        setEpisodeGoogleBatchRows(
+          variables.rows
+            .filter((_row, index) => failedIndexes.has(index))
+            .map((row) => ({ ...row, episodeTitle: row.episodeTitle ?? "" }))
+        );
+      }
+      const firstError = failed[0]?.error;
+      toast[failed.length ? "error" : "success"](
+        failed.length
+          ? `นำเข้า Google Docs สำเร็จ ${results.length - failed.length}/${results.length} แพ็ก · ${firstError ?? `ไม่ผ่าน ${failed.length}`}`
+          : `นำเข้า Google Docs ${results.length} แพ็กแล้ว`
+      );
     },
     onError: (error) => toast.error(error.message),
   });
@@ -1175,7 +1214,44 @@ export default function WorkspacePage() {
                       toast.error("เลือก ฟรี/ขาย และระบุราคาสำหรับแพ็กที่ขาย");
                       return;
                     }
-                    if (episodeBatchFiles.length > 0) {
+                    if (episodeIntakeMode === "bulk_docs") {
+                      const rows = episodeGoogleBatchRows.filter((row) =>
+                        row.episodeNumber.trim() || row.episodeTitle.trim() || row.documentUrlOrId.trim()
+                      );
+                      if (!rows.length) {
+                        toast.error("เพิ่มช่วงตอนและลิงก์ Google Docs อย่างน้อย 1 แถว");
+                        return;
+                      }
+                      const incomplete = rows.find((row) => !row.episodeNumber.trim() || !row.documentUrlOrId.trim());
+                      if (incomplete) {
+                        toast.error("ทุกแถวต้องมีช่วงตอนและลิงก์ Google Docs");
+                        return;
+                      }
+                      const connectionId = Number(googleConnectionId) || Number(googleConnections[0]?.id);
+                      if (!connectionId) {
+                        toast.error("ยังไม่มี Google Docs connection");
+                        return;
+                      }
+                      bulkImportGoogleDocs.mutate({
+                        workspaceId: selectedWorkspaceId,
+                        workspaceNovelId,
+                        connectionId,
+                        price: episodeFreeState === "free" ? "0.00" : episodePrice.trim(),
+                        isFree: episodeFreeState === "free",
+                        assigneeUserId: episodeAssigneeUserId ? Number(episodeAssigneeUserId) : null,
+                        rows: rows.map((row) => ({
+                          episodeNumber: row.episodeNumber.trim(),
+                          episodeTitle: row.episodeTitle.trim() || undefined,
+                          documentUrlOrId: row.documentUrlOrId.trim(),
+                        })),
+                      });
+                      return;
+                    }
+                    if (episodeIntakeMode === "bulk_files") {
+                      if (!episodeBatchFiles.length) {
+                        toast.error("เลือกไฟล์ก่อน");
+                        return;
+                      }
                       const incomplete = episodeBatchFiles.find((file) => !file.episodeNumber.trim());
                       if (incomplete) {
                         toast.error(`ระบุช่วงตอนให้ไฟล์ ${incomplete.name}`);
@@ -1232,9 +1308,10 @@ export default function WorkspacePage() {
                       </option>
                     ))}
                   </select>
-                  <div className="grid grid-cols-2 gap-2">
-                    <Input value={episodeNumber} onChange={(event) => setEpisodeNumber(event.target.value)} maxLength={100} placeholder="ตอน / ช่วงตอน" disabled={episodeBatchFiles.length > 0} />
-                    <Input value={episodeTitle} onChange={(event) => setEpisodeTitle(event.target.value)} maxLength={500} placeholder="ชื่อตอน (ถ้ามี)" disabled={episodeBatchFiles.length > 0} />
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" size="sm" variant={episodeIntakeMode === "bulk_docs" ? "default" : "outline"} onClick={() => setEpisodeIntakeMode("bulk_docs")}>Google Docs หลายตอน</Button>
+                    <Button type="button" size="sm" variant={episodeIntakeMode === "single" ? "default" : "outline"} onClick={() => setEpisodeIntakeMode("single")}>ตอนเดียว</Button>
+                    <Button type="button" size="sm" variant={episodeIntakeMode === "bulk_files" ? "default" : "outline"} onClick={() => setEpisodeIntakeMode("bulk_files")}>ไฟล์หลายตอน</Button>
                   </div>
                   <div className="grid grid-cols-3 gap-2">
                     <div className="flex h-10 items-center rounded-md border bg-violet-50 px-3 text-sm font-medium text-violet-700">Episode Pack</div>
@@ -1245,75 +1322,121 @@ export default function WorkspacePage() {
                     </select>
                     <Input value={episodeFreeState === "free" ? "0.00" : episodePrice} onChange={(event) => setEpisodePrice(event.target.value)} placeholder={episodeFreeState === "paid" ? "ราคาแพ็ก" : "ราคา"} disabled={episodeFreeState === "free"} />
                   </div>
-                  <Input
-                    value={episodeGoogleDocUrl}
-                    onChange={(event) => setEpisodeGoogleDocUrl(event.target.value)}
-                    maxLength={1000}
-                    placeholder="Google Docs link สำหรับ Import (ถ้ามี)"
-                    disabled={createEditorialEpisode.isPending || episodeBatchFiles.length > 0}
-                  />
-                  <input
-                    type="file"
-                    multiple
-                    accept=".txt,.md,text/plain,text/markdown"
-                    aria-label="Import multiple Episode Pack files"
-                    className="block w-full text-sm"
-                    disabled={bulkImportEpisodeFiles.isPending || createEditorialEpisode.isPending}
-                    onChange={async (event) => {
-                      const files = Array.from(event.target.files ?? []);
-                      if (!files.length) {
-                        setEpisodeBatchFiles([]);
-                        return;
-                      }
-                      if (files.length > 50) {
-                        toast.error("เลือกได้สูงสุด 50 ไฟล์ต่อครั้ง");
-                        event.target.value = "";
-                        return;
-                      }
-                      if (files.some((file) => file.size > 10 * 1024 * 1024) || files.reduce((sum, file) => sum + file.size, 0) > 40 * 1024 * 1024) {
-                        toast.error("แต่ละไฟล์ต้องไม่เกิน 10 MB และรวมไม่เกิน 40 MB");
-                        event.target.value = "";
-                        return;
-                      }
-                      const rows = await Promise.all(files.map(async (file) => {
-                        const content = await file.text();
-                        const paragraphs = content.replace(/\r\n?/g, "\n").split("\n");
-                        const parsed = parseEpisodeRangeFromFileName(file.name);
-                        return {
-                          name: file.name,
-                          mimeType: file.type || "text/plain",
-                          paragraphs,
-                          episodeNumber: parsed.episodeNumber,
-                          episodeTitle: parsed.episodeTitle,
-                        };
-                      }));
-                      if (rows.some((row) => row.paragraphs.length > 10000)) {
-                        toast.error("ไฟล์ต้องมีไม่เกิน 10,000 บรรทัด");
-                        event.target.value = "";
-                        return;
-                      }
-                      setEpisodeBatchFiles(rows);
-                    }}
-                  />
-                  {episodeBatchFiles.length > 0 && (
-                    <div className="max-h-64 space-y-2 overflow-auto rounded-md border bg-background p-2">
-                      {episodeBatchFiles.map((file, index) => (
-                        <div key={`${file.name}:${index}`} className="grid gap-2 md:grid-cols-[minmax(0,1fr)_120px_minmax(0,1fr)]">
-                          <div className="truncate self-center text-xs font-medium" title={file.name}>{file.name}</div>
+                  {episodeIntakeMode === "single" && (
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-2 gap-2">
+                        <Input value={episodeNumber} onChange={(event) => setEpisodeNumber(event.target.value)} maxLength={100} placeholder="ตอน / ช่วงตอน" />
+                        <Input value={episodeTitle} onChange={(event) => setEpisodeTitle(event.target.value)} maxLength={500} placeholder="ชื่อตอน (ถ้ามี)" />
+                      </div>
+                      <Input
+                        value={episodeGoogleDocUrl}
+                        onChange={(event) => setEpisodeGoogleDocUrl(event.target.value)}
+                        maxLength={1000}
+                        placeholder="Google Docs link สำหรับ Import (ถ้ามี)"
+                        disabled={createEditorialEpisode.isPending}
+                      />
+                    </div>
+                  )}
+                  {episodeIntakeMode === "bulk_docs" && (
+                    <div className="space-y-2 rounded-md border bg-background p-2">
+                      <div className="text-sm font-medium">Bulk Google Docs</div>
+                      {episodeGoogleBatchRows.map((row, index) => (
+                        <div key={index} className="grid gap-2 md:grid-cols-[120px_minmax(0,0.7fr)_minmax(0,1.5fr)_auto]">
                           <Input
-                            value={file.episodeNumber}
-                            onChange={(event) => setEpisodeBatchFiles((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, episodeNumber: event.target.value } : row))}
+                            value={row.episodeNumber}
+                            onChange={(event) => setEpisodeGoogleBatchRows((current) => current.map((item, rowIndex) => rowIndex === index ? { ...item, episodeNumber: event.target.value } : item))}
                             placeholder="ช่วงตอน"
                             maxLength={100}
+                            aria-label={`Bulk episode range ${index + 1}`}
                           />
                           <Input
-                            value={file.episodeTitle}
-                            onChange={(event) => setEpisodeBatchFiles((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, episodeTitle: event.target.value } : row))}
-                            placeholder="ชื่อตอน"
+                            value={row.episodeTitle}
+                            onChange={(event) => setEpisodeGoogleBatchRows((current) => current.map((item, rowIndex) => rowIndex === index ? { ...item, episodeTitle: event.target.value } : item))}
+                            placeholder="ชื่อตอน (ถ้ามี)"
                             maxLength={500}
+                            aria-label={`Bulk episode title ${index + 1}`}
                           />
+                          <Input
+                            value={row.documentUrlOrId}
+                            onChange={(event) => setEpisodeGoogleBatchRows((current) => current.map((item, rowIndex) => rowIndex === index ? { ...item, documentUrlOrId: event.target.value } : item))}
+                            placeholder="วางลิงก์ Google Docs"
+                            maxLength={1000}
+                            aria-label={`Bulk Google Docs link ${index + 1}`}
+                          />
+                          <Button type="button" size="sm" variant="ghost" disabled={episodeGoogleBatchRows.length <= 1} onClick={() => setEpisodeGoogleBatchRows((current) => current.filter((_item, rowIndex) => rowIndex !== index))}>ลบ</Button>
                         </div>
                       ))}
+                      <Button type="button" size="sm" variant="outline" disabled={episodeGoogleBatchRows.length >= 30} onClick={() => setEpisodeGoogleBatchRows((current) => [...current, { episodeNumber: "", episodeTitle: "", documentUrlOrId: "" }])}>
+                        <Plus className="mr-1 h-4 w-4" /> เพิ่มแถว
+                      </Button>
+                    </div>
+                  )}
+                  {episodeIntakeMode === "bulk_files" && (
+                    <div className="space-y-2">
+                      <input
+                        type="file"
+                        multiple
+                        accept=".txt,.md,text/plain,text/markdown"
+                        aria-label="Import multiple Episode Pack files"
+                        className="block w-full text-sm"
+                        disabled={bulkImportEpisodeFiles.isPending || createEditorialEpisode.isPending}
+                        onChange={async (event) => {
+                          const files = Array.from(event.target.files ?? []);
+                          if (!files.length) {
+                            setEpisodeBatchFiles([]);
+                            return;
+                          }
+                          if (files.length > 50) {
+                            toast.error("เลือกได้สูงสุด 50 ไฟล์ต่อครั้ง");
+                            event.target.value = "";
+                            return;
+                          }
+                          if (files.some((file) => file.size > 10 * 1024 * 1024) || files.reduce((sum, file) => sum + file.size, 0) > 40 * 1024 * 1024) {
+                            toast.error("แต่ละไฟล์ต้องไม่เกิน 10 MB และรวมไม่เกิน 40 MB");
+                            event.target.value = "";
+                            return;
+                          }
+                          const rows = await Promise.all(files.map(async (file) => {
+                            const content = await file.text();
+                            const paragraphs = content.replace(/\r\n?/g, "\n").split("\n");
+                            const parsed = parseEpisodeRangeFromFileName(file.name);
+                            return {
+                              name: file.name,
+                              mimeType: file.type || "text/plain",
+                              paragraphs,
+                              episodeNumber: parsed.episodeNumber,
+                              episodeTitle: parsed.episodeTitle,
+                            };
+                          }));
+                          if (rows.some((row) => row.paragraphs.length > 10000)) {
+                            toast.error("ไฟล์ต้องมีไม่เกิน 10,000 บรรทัด");
+                            event.target.value = "";
+                            return;
+                          }
+                          setEpisodeBatchFiles(rows);
+                        }}
+                      />
+                      {episodeBatchFiles.length > 0 && (
+                        <div className="max-h-64 space-y-2 overflow-auto rounded-md border bg-background p-2">
+                          {episodeBatchFiles.map((file, index) => (
+                            <div key={`${file.name}:${index}`} className="grid gap-2 md:grid-cols-[minmax(0,1fr)_120px_minmax(0,1fr)]">
+                              <div className="truncate self-center text-xs font-medium" title={file.name}>{file.name}</div>
+                              <Input
+                                value={file.episodeNumber}
+                                onChange={(event) => setEpisodeBatchFiles((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, episodeNumber: event.target.value } : row))}
+                                placeholder="ช่วงตอน"
+                                maxLength={100}
+                              />
+                              <Input
+                                value={file.episodeTitle}
+                                onChange={(event) => setEpisodeBatchFiles((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, episodeTitle: event.target.value } : row))}
+                                placeholder="ชื่อตอน"
+                                maxLength={500}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                   <select
@@ -1327,9 +1450,17 @@ export default function WorkspacePage() {
                       <option key={admin.id} value={admin.id}>{admin.name || admin.email || `Admin #${admin.id}`}</option>
                     ))}
                   </select>
-                  <Button type="submit" className="w-full" disabled={!episodeWorkspaceNovelId || (!episodeNumber.trim() && !episodeBatchFiles.length) || createEditorialEpisode.isPending || bulkImportEpisodeFiles.isPending}>
-                    {(createEditorialEpisode.isPending || bulkImportEpisodeFiles.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                    {episodeBatchFiles.length ? `นำเข้า ${episodeBatchFiles.length} ไฟล์` : "เพิ่มงานตอน"}
+                  <Button
+                    type="submit"
+                    className="w-full"
+                    disabled={!episodeWorkspaceNovelId || createEditorialEpisode.isPending || bulkImportGoogleDocs.isPending || bulkImportEpisodeFiles.isPending}
+                  >
+                    {(createEditorialEpisode.isPending || bulkImportGoogleDocs.isPending || bulkImportEpisodeFiles.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    {episodeIntakeMode === "bulk_docs"
+                      ? `นำเข้า Google Docs ${episodeGoogleBatchRows.filter((row) => row.episodeNumber.trim() || row.documentUrlOrId.trim()).length} แพ็ก`
+                      : episodeIntakeMode === "bulk_files"
+                        ? `นำเข้า ${episodeBatchFiles.length} ไฟล์`
+                        : "เพิ่มงานตอน"}
                   </Button>
                 </form>
               </div>
