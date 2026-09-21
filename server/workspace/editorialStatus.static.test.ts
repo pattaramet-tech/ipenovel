@@ -22,7 +22,7 @@ describe("Editorial evidence status projection", () => {
     expect(text).toContain("results.push(...batch)");
   });
 
-  it("requires complete durable publish evidence", () => {
+  it("prefers complete durable publish evidence but recognizes exact historical reader-visible publication", () => {
     const text = source();
     expect(text).toContain('state.publishRun?.status === "published"');
     expect(text).toContain('item.status === "published"');
@@ -30,5 +30,17 @@ describe("Editorial evidence status projection", () => {
     expect(text).toContain('item.status === "delivered"');
     expect(text).toContain("episode.isPublished === true");
     expect(text).toContain('state.kanbanColumnKey === "published"');
+    expect(text).toContain('publishedSource = "workspace_receipt"');
+    expect(text).toContain("loadPublishedEpisodeFallbacks");
+    expect(text).toContain("sameEpisodeSpan(episode.episodeNumber, context.episodeNumber)");
+    expect(text).toContain('publishedSource = "published_episode"');
+  });
+
+  it("does not fabricate Stage/readiness when publication is historical", () => {
+    const text = source();
+    const fallback = text.indexOf('publishedSource = "published_episode"');
+    expect(fallback).toBeGreaterThan(-1);
+    expect(text.slice(fallback, fallback + 180)).not.toContain("stage = true");
+    expect(text.slice(fallback, fallback + 180)).not.toContain("readyToPublish = true");
   });
 });

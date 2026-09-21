@@ -54,6 +54,8 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).toContain("card.evidence?.readyToPublish");
     expect(source).toContain("card.evidence?.published");
     expect(source).toContain("Publish run + receipt + outbox + reader visibility ครบ");
+    expect(source).toContain('card.evidence?.publishedSource === "published_episode"');
+    expect(source).toContain("historical/legacy publication");
     expect(source).toContain('aria-label={passed ? "ผ่าน" : "ยังไม่ผ่าน"}');
     expect(source).toContain('border-emerald-500 bg-emerald-600 text-white');
     expect(source).toContain('border-slate-300 bg-white text-slate-300');

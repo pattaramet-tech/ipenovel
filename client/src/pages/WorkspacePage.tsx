@@ -1307,7 +1307,7 @@ export default function WorkspacePage() {
                             ["approval", card.evidence?.approval, "Approval ตรงกับ Draft/QC ปัจจุบัน"],
                             ["stage", card.evidence?.stage, "Episode staging ครบและยัง valid"],
                             ["ready", card.evidence?.readyToPublish, "Publish readiness ผ่าน stage + ownership + anchor"],
-                            ["published", card.evidence?.published, "Publish run + receipt + outbox + reader visibility ครบ"],
+                            ["published", card.evidence?.published, card.evidence?.publishedSource === "published_episode" ? "พบ Episode ที่เผยแพร่จริงตรงกับ Novel + ช่วงตอน (historical/legacy publication)" : "Publish run + receipt + outbox + reader visibility ครบ"],
                           ].map(([key, passed, label]) => {
                             const passedClass = key === "checkerRan" ? "bg-cyan-50 text-cyan-800" : key === "checker" ? "bg-teal-50 text-teal-800" : key === "approval" ? "bg-amber-50 text-amber-800" : key === "stage" ? "bg-violet-50 text-violet-800" : key === "ready" ? "bg-blue-50 text-blue-800" : "bg-emerald-50 text-emerald-800";
                             const tickClass = key === "checkerRan" ? "border-cyan-500 bg-cyan-600 text-white" : key === "checker" ? "border-teal-500 bg-teal-600 text-white" : key === "approval" ? "border-amber-500 bg-amber-500 text-white" : key === "stage" ? "border-violet-500 bg-violet-600 text-white" : key === "ready" ? "border-blue-500 bg-blue-600 text-white" : "border-emerald-500 bg-emerald-600 text-white";
