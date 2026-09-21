@@ -954,6 +954,10 @@ export const workspaceRouter = router({
       .input(workspaceIdInput.extend({ workItemIds: z.array(z.number().int().positive()).min(1).max(100) }))
       .mutation(async ({ ctx, input }) => {
         const executionEnabled = process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true";
+        const externalProviderEnabled = process.env.WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true";
+        if (executionEnabled && !externalProviderEnabled) {
+          throw new WorkspacePublishExecutionError("EXTERNAL_PROVIDER_DISABLED", "Workspace publish external provider is not enabled.");
+        }
         if (executionEnabled) requirePreviewPublishExecutionSafety();
         const results = [];
         for (const workItemId of Array.from(new Set(input.workItemIds))) {
@@ -1384,6 +1388,78 @@ export const workspaceRouter = router({
         } catch (error) {
           return mapWorkspaceError(error);
         }
+      }),
+    bulkImportEpisodeFiles: adminProcedure
+      .input(workspaceIdInput.extend({
+        workspaceNovelId: z.number().int().positive(),
+        price: z.string().trim().regex(/^\d+(?:\.\d{1,2})?$/),
+        isFree: z.boolean(),
+        assigneeUserId: z.number().int().positive().nullable().optional(),
+        files: z.array(z.object({
+          episodeNumber: z.string().trim().min(1).max(100),
+          episodeTitle: z.string().trim().max(500).optional(),
+          fileName: z.string().trim().min(1).max(500),
+          mimeType: z.string().trim().min(1).max(160),
+          paragraphs: z.array(z.string().max(200000)).min(1).max(10000),
+        })).min(1).max(50),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const results = [];
+        for (const file of input.files) {
+          try {
+            const created = await createEditorialEpisodeWorkItem({
+              actorUserId: ctx.user.id,
+              workspaceId: input.workspaceId,
+              workspaceNovelId: input.workspaceNovelId,
+              episodeNumber: file.episodeNumber,
+              episodeTitle: file.episodeTitle,
+              saleMode: "package",
+              price: input.isFree ? "0.00" : input.price,
+              isFree: input.isFree,
+              assigneeUserId: input.assigneeUserId ?? null,
+            });
+            const card = (created.board?.columns ?? [])
+              .flatMap((column: any) => column.cards ?? [])
+              .find((candidate: any) =>
+                candidate.workItemType === "NEW_EPISODE" &&
+                candidate.workspaceNovelId === input.workspaceNovelId &&
+                String(candidate.episodeNumber ?? "").trim() === file.episodeNumber.trim()
+              );
+            if (!card?.workItemId) throw new Error("Created Episode Pack work item could not be resolved.");
+            const imported = await importEditorialSource({
+              actorUserId: ctx.user.id,
+              workspaceId: input.workspaceId,
+              workItemId: card.workItemId,
+              payload: {
+                sourceKind: "uploaded_file",
+                sourceKey: `uploaded-file:work-item-${card.workItemId}`,
+                mimeType: file.mimeType,
+                title: file.fileName,
+                tabs: [{
+                  sourceTabId: "file-main",
+                  tabOrder: 0,
+                  title: file.fileName,
+                  paragraphs: file.paragraphs,
+                }],
+              },
+            });
+            results.push({
+              episodeNumber: file.episodeNumber,
+              workItemId: card.workItemId,
+              ok: true as const,
+              created: created.created,
+              draftCreated: imported.draftCreated,
+              refreshBlocked: imported.refreshBlocked,
+            });
+          } catch (error) {
+            results.push({
+              episodeNumber: file.episodeNumber,
+              ok: false as const,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        return results;
       }),
     updateEpisode: adminProcedure
       .input(workspaceIdInput.extend({

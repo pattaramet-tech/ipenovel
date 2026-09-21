@@ -7,6 +7,8 @@ const source = (path: string) => readFileSync(new URL(path, root), "utf8");
 describe("Workspace Editorial approval + Episode staging static boundaries", () => {
   it("keeps bulk editorial actions on the same guarded workflow services", () => {
     const router = source("server/workspace/router.ts");
+    expect(router).toContain("bulkRunChecker: adminProcedure");
+    expect(router).toContain("runEditorialForeignChecker");
     expect(router).toContain("bulkApproveDrafts: adminProcedure");
     expect(router).toContain("approveEditorialDraft");
     expect(router).toContain("bulkStageDrafts: adminProcedure");
@@ -16,6 +18,8 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
     expect(router).toContain("expectedStageSetSha256: state.stageSetSha256");
     expect(router).toContain("expectedOwnershipVersion: state.ownership.version");
     expect(router).toContain("requirePreviewPublishExecutionSafety()");
+    expect(router).toContain('WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true"');
+    expect(router).toContain('WorkspacePublishExecutionError("EXTERNAL_PROVIDER_DISABLED"');
   });
   it("keeps migration 0050 additive and scoped to editorial approval/staging", () => {
     const migration = source(
@@ -141,9 +145,8 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
 
   it("shows explicit Confirm and unpublished Episode staging controls in Workspace", () => {
     const page = source("client/src/pages/WorkspacePage.tsx");
-    expect(page).toContain("Confirm + Episode Draft Staging");
-    expect(page).toContain("ยืนยัน Draft ปัจจุบัน");
-    expect(page).toContain("Stage Episode Draft");
+    expect(page).toContain("4. ยืนยัน Draft ปัจจุบัน");
+    expect(page).toContain("5. Stage");
     expect(page).toContain("unpublished");
   });
 });

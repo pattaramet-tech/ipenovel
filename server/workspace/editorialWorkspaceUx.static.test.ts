@@ -70,10 +70,10 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).toContain('aria-label="เลือก Episode Pack ที่มองเห็นทั้งหมด"');
     expect(source).toContain("เลือกยังไม่ตรวจ");
     expect(source).toContain("เลือกพร้อมลง");
-    expect(source).toContain("ตรวจงานที่เลือก");
-    expect(source).toContain("ยืนยันที่เลือก");
-    expect(source).toContain("Stage ที่เลือก");
-    expect(source).toContain("เผยแพร่ที่เลือก");
+    expect(source).toContain("3. ตรวจ / ตรวจซ้ำ");
+    expect(source).toContain("4. ยืนยัน Draft ปัจจุบัน");
+    expect(source).toContain("5. Stage");
+    expect(source).toContain("6. Publish");
     expect(source).toContain("bulkRunChecker.useMutation");
     expect(source).toContain("bulkApproveDrafts.useMutation");
     expect(source).toContain("bulkStageDrafts.useMutation");
@@ -90,7 +90,9 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).toContain('aria-label="Workspace"');
     expect(source).toContain('<Card className="hidden">');
     expect(source).toContain('card.workItemType !== "NEW_STORY"');
-    expect(source).toContain("สร้าง Novel container เท่านั้น");
+    expect(source).toContain("1. สร้างเรื่องใหม่");
+    expect(source).toContain("2. เพิ่มตอนใหม่");
+    expect(source).not.toContain("สร้าง Novel container เท่านั้น");
     expect(source).not.toContain("newNovelGoogleDocUrl");
     expect(source).toContain("preparePublishOwnership.useMutation");
     expect(source).toContain("Prepare Publish Ownership");
@@ -103,29 +105,57 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).toContain('setEditorialView("kanban")');
     expect(source).toContain('editorialView === "kanban"');
     expect(source).toContain("Operations / Advanced");
-    expect(source).toContain("publish runs/outbox · ownership evidence");
+    expect(source).not.toContain("publish runs/outbox · ownership evidence");
   });
 
-  it("exposes the table-selected Episode Pack detail workflow", () => {
+  it("exposes the table-selected Episode Pack detail workflow with numbered actions and no helper paragraph", () => {
     const source = page();
     expect(source).toContain("Episode Pack Detail");
-    expect(source).toContain("Google Docs Import → Draft → Checker → แก้ประโยค → Confirm → Stage → Controlled Publish");
+    expect(source).toContain("3. ตรวจ / ตรวจซ้ำ");
+    expect(source).toContain("4. ยืนยัน Draft ปัจจุบัน");
+    expect(source).toContain("5. Stage");
+    expect(source).toContain("6. Publish");
     expect(source).toContain("คลิกช่วงตอนในตารางเพื่อเปิด Episode Pack Detail");
-    expect(source).toContain("Publish (Controlled)");
+    expect(source).not.toContain("Google Docs Import → Draft → Checker → แก้ประโยค → Confirm → Stage → Controlled Publish");
   });
 
-  it("keeps Google Docs quick import on Episode Pack intake only", () => {
+  it("keeps Google Docs quick import on Episode Pack intake without helper prose", () => {
     const source = page();
     expect(source).toContain("Google Docs สำหรับ Quick Import");
     expect(source).not.toContain("newNovelGoogleDocUrl");
     expect(source).toContain("episodeGoogleDocUrl");
     expect(source).toContain("เพิ่มตอนและนำเข้า Google Docs แล้ว");
-    expect(source).toContain("รองรับ Google Docs ที่มีหลายแท็บในลิงก์เดียว");
+    expect(source).not.toContain("รองรับ Google Docs ที่มีหลายแท็บในลิงก์เดียว");
+  });
+
+  it("supports importing multiple Episode Pack text files in one intake action", () => {
+    const source = page();
+    const router = readFileSync(new URL("server/workspace/router.ts", root), "utf8");
+    expect(source).toContain("parseEpisodeRangeFromFileName");
+    expect(source).toContain('aria-label="Import multiple Episode Pack files"');
+    expect(source).toContain("multiple");
+    expect(source).toContain("bulkImportEpisodeFiles.useMutation");
+    expect(source).toContain("นำเข้า ${episodeBatchFiles.length} ไฟล์");
+    expect(router).toContain("bulkImportEpisodeFiles: adminProcedure");
+    expect(router).toContain("createEditorialEpisodeWorkItem");
+    expect(router).toContain("importEditorialSource");
+    expect(router).toContain("sourceKey: `uploaded-file:work-item-${card.workItemId}`");
+  });
+
+  it("removes persistent explanatory prose from the primary Editorial operator flow", () => {
+    const source = page();
+    expect(source).not.toContain("Kanban transitions:");
+    expect(source).not.toContain("Card history also includes immutable assignment events");
+    expect(source).not.toContain("Table เป็นมุมมองหลัก");
+    expect(source).not.toContain("Bulk actions ใช้ workflow เดิม");
+    expect(source).not.toContain("เปิดแถว Episode Pack จากตาราง แล้วทำงานตามลำดับ");
+    expect(source).not.toContain("ตรวจ Draft ปัจจุบันแบบไม่ใช้ AI/API");
+    expect(source).not.toContain("การยืนยันผูกกับ Draft SHA256");
   });
 
   it("puts deterministic checker before the collapsible Draft structure", () => {
     const source = page();
-    const checker = source.indexOf("Deterministic Foreign-word Checker");
+    const checker = source.indexOf("3. ตรวจ / ตรวจซ้ำ");
     const draft = source.indexOf("Draft structure ·");
     expect(checker).toBeGreaterThan(-1);
     expect(draft).toBeGreaterThan(checker);

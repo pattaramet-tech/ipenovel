@@ -42,6 +42,19 @@ function compactTabTitles(rows: Array<{ title: string }>, limit = 6) {
     : shown.join(", ");
 }
 
+function parseEpisodeRangeFromFileName(fileName: string) {
+  const base = fileName.replace(/\.[^.]+$/, "").trim();
+  const match = base.match(/^(\d{1,6})(?:\s*[-–—]\s*(\d{1,6}))?(?:\s+|[_-]+)?(.*)$/);
+  if (!match) return { episodeNumber: "", episodeTitle: base };
+  const start = Number(match[1]);
+  const end = Number(match[2] ?? match[1]);
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start <= 0 || end < start) {
+    return { episodeNumber: "", episodeTitle: base };
+  }
+  const episodeNumber = match[2] ? `${match[1]} - ${match[2]}` : match[1];
+  return { episodeNumber, episodeTitle: String(match[3] ?? "").replace(/[_-]+/g, " ").trim() };
+}
+
 function StatusPill({ value }: { value: unknown }) {
   return (
     <span className="inline-flex rounded-full border bg-muted/40 px-2 py-0.5 text-xs font-medium text-foreground">
@@ -78,6 +91,13 @@ export default function WorkspacePage() {
   const [googleConnectionId, setGoogleConnectionId] = useState("");
   const [googleDocUrl, setGoogleDocUrl] = useState("");
   const [episodeGoogleDocUrl, setEpisodeGoogleDocUrl] = useState("");
+  const [episodeBatchFiles, setEpisodeBatchFiles] = useState<Array<{
+    name: string;
+    mimeType: string;
+    paragraphs: string[];
+    episodeNumber: string;
+    episodeTitle: string;
+  }>>([]);
   const [uploadedSource, setUploadedSource] = useState<{
     name: string;
     mimeType: string;
@@ -438,6 +458,26 @@ export default function WorkspacePage() {
       if (selectedSourceWorkItemId === variables.workItemId) setSelectedSourceWorkItemId(undefined);
       await editorialBoard.refetch();
       toast.success("นำ Episode Pack ออกจาก Workspace แล้ว");
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const bulkImportEpisodeFiles = trpc.workspace.editorial.bulkImportEpisodeFiles.useMutation({
+    onSuccess: async (results) => {
+      await Promise.all([editorialBoard.refetch(), editorialEvidenceStatuses.refetch()]);
+      const failed = results.filter((result) => !result.ok);
+      const firstSuccess = results.find((result) => result.ok && result.workItemId);
+      if (firstSuccess?.workItemId) setSelectedSourceWorkItemId(firstSuccess.workItemId);
+      if (!failed.length) {
+        setEpisodeBatchFiles([]);
+        setEpisodeNumber("");
+        setEpisodeTitle("");
+        setEpisodePrice("");
+        setEpisodeFreeState("");
+        setEpisodeGoogleDocUrl("");
+      }
+      toast[failed.length ? "error" : "success"](
+        `นำเข้าไฟล์ ${results.length - failed.length}/${results.length} แพ็ก${failed.length ? ` · ไม่ผ่าน ${failed.length}` : ""}`
+      );
     },
     onError: (error) => toast.error(error.message),
   });
@@ -926,19 +966,9 @@ export default function WorkspacePage() {
         <div>
           <p className="text-sm font-medium text-primary">IpeNovel Workspace - Editorial Workspace · Admin Operational Control Center</p>
           <h1 className="text-3xl font-bold tracking-tight">Editorial Board</h1>
-          <p className="mt-2 max-w-3xl text-muted-foreground">
-            Day-to-day novel intake and workflow are shown first. Existing M03–M06 operational
-            evidence remains available below; publish execution and ownership changes stay disabled.
-          </p>
         </div>
         <Link href="/novels" className="text-sm text-primary underline">Back to IpeNovel</Link>
       </header>
-
-      <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
-        <strong>Editorial MVP.</strong> Story and episode work items move through the transition-backed
-        Editorial Kanban with admin assignment/history. Publish execution and ownership changes remain unavailable;
-        Checker/AI operational controls below are unchanged and are not required for this board.
-      </div>
 
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm font-medium">Workspace</span>
@@ -1016,9 +1046,6 @@ export default function WorkspacePage() {
                     <Columns3 className="h-5 w-5 text-primary" />
                     <h2 className="text-xl font-semibold">Editorial Episode Packs</h2>
                   </div>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Table-first workspace: Novel เป็นกลุ่ม และแต่ละแถวคือ Episode Pack / ไฟล์งาน โดย workflow เดิมยังคงเป็น durable evidence ด้านหลัง.
-                  </p>
                 </div>
                 <StatusPill value={(editorialBoard.data as any)?.board?.status ?? "initializing"} />
               </div>
@@ -1038,9 +1065,6 @@ export default function WorkspacePage() {
                     </option>
                   ))}
                 </select>
-                <span className="text-xs text-muted-foreground">
-                  ใส่ลิงก์ตอนสร้างเรื่อง/เพิ่มตอนได้เลย · รองรับ Google Docs ที่มีหลายแท็บในลิงก์เดียว
-                </span>
               </div>
 
               <div className="grid gap-3 lg:grid-cols-3">
@@ -1120,20 +1144,16 @@ export default function WorkspacePage() {
                     });
                   }}
                 >
-                  <div className="text-sm font-medium">สร้างเรื่องใหม่</div>
+                  <div className="text-sm font-medium">1. สร้างเรื่องใหม่</div>
                   <Input
                     value={newNovelTitle}
                     onChange={(event) => setNewNovelTitle(event.target.value)}
                     maxLength={500}
                     placeholder="ชื่อเรื่อง"
                   />
-                  {duplicateNovel ? (
+                  {duplicateNovel && (
                     <div className="text-xs font-medium text-destructive">
-                      มีเรื่องนี้แล้ว: {duplicateNovel.title} · Novel #{duplicateNovel.id} — ใช้ “เพิ่มเรื่องเดิม” แทน
-                    </div>
-                  ) : (
-                    <div className="text-xs text-muted-foreground">
-                      สร้าง Novel container เท่านั้น · ยังไม่สร้าง Episode Pack หรือ Draft ให้เพิ่มช่วงตอนจาก “เพิ่มตอนใหม่” เมื่อพร้อม
+                      มีเรื่องนี้แล้ว: {duplicateNovel.title} · Novel #{duplicateNovel.id}
                     </div>
                   )}
                   <Button type="submit" className="w-full" disabled={!newNovelTitle.trim() || Boolean(duplicateNovel) || createEditorialNovel.isPending}>
@@ -1147,12 +1167,38 @@ export default function WorkspacePage() {
                   onSubmit={(event) => {
                     event.preventDefault();
                     const workspaceNovelId = Number(episodeWorkspaceNovelId);
-                    if (!Number.isInteger(workspaceNovelId) || workspaceNovelId <= 0 || !episodeNumber.trim()) {
-                      toast.error("Select a novel and enter an episode number");
+                    if (!Number.isInteger(workspaceNovelId) || workspaceNovelId <= 0) {
+                      toast.error("เลือกเรื่องก่อน");
                       return;
                     }
                     if (!episodeFreeState || (episodeFreeState === "paid" && !episodePrice.trim())) {
                       toast.error("เลือก ฟรี/ขาย และระบุราคาสำหรับแพ็กที่ขาย");
+                      return;
+                    }
+                    if (episodeBatchFiles.length > 0) {
+                      const incomplete = episodeBatchFiles.find((file) => !file.episodeNumber.trim());
+                      if (incomplete) {
+                        toast.error(`ระบุช่วงตอนให้ไฟล์ ${incomplete.name}`);
+                        return;
+                      }
+                      bulkImportEpisodeFiles.mutate({
+                        workspaceId: selectedWorkspaceId,
+                        workspaceNovelId,
+                        price: episodeFreeState === "free" ? "0.00" : episodePrice.trim(),
+                        isFree: episodeFreeState === "free",
+                        assigneeUserId: episodeAssigneeUserId ? Number(episodeAssigneeUserId) : null,
+                        files: episodeBatchFiles.map((file) => ({
+                          episodeNumber: file.episodeNumber.trim(),
+                          episodeTitle: file.episodeTitle.trim() || undefined,
+                          fileName: file.name,
+                          mimeType: file.mimeType,
+                          paragraphs: file.paragraphs,
+                        })),
+                      });
+                      return;
+                    }
+                    if (!episodeNumber.trim()) {
+                      toast.error("ระบุตอน / ช่วงตอน");
                       return;
                     }
                     createEditorialEpisode.mutate({
@@ -1167,7 +1213,7 @@ export default function WorkspacePage() {
                     });
                   }}
                 >
-                  <div className="text-sm font-medium">เพิ่มตอนใหม่</div>
+                  <div className="text-sm font-medium">2. เพิ่มตอนใหม่</div>
                   <Input
                     value={episodeNovelSearch}
                     onChange={(event) => setEpisodeNovelSearch(event.target.value)}
@@ -1187,8 +1233,8 @@ export default function WorkspacePage() {
                     ))}
                   </select>
                   <div className="grid grid-cols-2 gap-2">
-                    <Input value={episodeNumber} onChange={(event) => setEpisodeNumber(event.target.value)} maxLength={100} placeholder="ตอน / ช่วงตอน" />
-                    <Input value={episodeTitle} onChange={(event) => setEpisodeTitle(event.target.value)} maxLength={500} placeholder="ชื่อตอน (ถ้ามี)" />
+                    <Input value={episodeNumber} onChange={(event) => setEpisodeNumber(event.target.value)} maxLength={100} placeholder="ตอน / ช่วงตอน" disabled={episodeBatchFiles.length > 0} />
+                    <Input value={episodeTitle} onChange={(event) => setEpisodeTitle(event.target.value)} maxLength={500} placeholder="ชื่อตอน (ถ้ามี)" disabled={episodeBatchFiles.length > 0} />
                   </div>
                   <div className="grid grid-cols-3 gap-2">
                     <div className="flex h-10 items-center rounded-md border bg-violet-50 px-3 text-sm font-medium text-violet-700">Episode Pack</div>
@@ -1204,8 +1250,72 @@ export default function WorkspacePage() {
                     onChange={(event) => setEpisodeGoogleDocUrl(event.target.value)}
                     maxLength={1000}
                     placeholder="Google Docs link สำหรับ Import (ถ้ามี)"
-                    disabled={createEditorialEpisode.isPending}
+                    disabled={createEditorialEpisode.isPending || episodeBatchFiles.length > 0}
                   />
+                  <input
+                    type="file"
+                    multiple
+                    accept=".txt,.md,text/plain,text/markdown"
+                    aria-label="Import multiple Episode Pack files"
+                    className="block w-full text-sm"
+                    disabled={bulkImportEpisodeFiles.isPending || createEditorialEpisode.isPending}
+                    onChange={async (event) => {
+                      const files = Array.from(event.target.files ?? []);
+                      if (!files.length) {
+                        setEpisodeBatchFiles([]);
+                        return;
+                      }
+                      if (files.length > 50) {
+                        toast.error("เลือกได้สูงสุด 50 ไฟล์ต่อครั้ง");
+                        event.target.value = "";
+                        return;
+                      }
+                      if (files.some((file) => file.size > 10 * 1024 * 1024) || files.reduce((sum, file) => sum + file.size, 0) > 40 * 1024 * 1024) {
+                        toast.error("แต่ละไฟล์ต้องไม่เกิน 10 MB และรวมไม่เกิน 40 MB");
+                        event.target.value = "";
+                        return;
+                      }
+                      const rows = await Promise.all(files.map(async (file) => {
+                        const content = await file.text();
+                        const paragraphs = content.replace(/\r\n?/g, "\n").split("\n");
+                        const parsed = parseEpisodeRangeFromFileName(file.name);
+                        return {
+                          name: file.name,
+                          mimeType: file.type || "text/plain",
+                          paragraphs,
+                          episodeNumber: parsed.episodeNumber,
+                          episodeTitle: parsed.episodeTitle,
+                        };
+                      }));
+                      if (rows.some((row) => row.paragraphs.length > 10000)) {
+                        toast.error("ไฟล์ต้องมีไม่เกิน 10,000 บรรทัด");
+                        event.target.value = "";
+                        return;
+                      }
+                      setEpisodeBatchFiles(rows);
+                    }}
+                  />
+                  {episodeBatchFiles.length > 0 && (
+                    <div className="max-h-64 space-y-2 overflow-auto rounded-md border bg-background p-2">
+                      {episodeBatchFiles.map((file, index) => (
+                        <div key={`${file.name}:${index}`} className="grid gap-2 md:grid-cols-[minmax(0,1fr)_120px_minmax(0,1fr)]">
+                          <div className="truncate self-center text-xs font-medium" title={file.name}>{file.name}</div>
+                          <Input
+                            value={file.episodeNumber}
+                            onChange={(event) => setEpisodeBatchFiles((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, episodeNumber: event.target.value } : row))}
+                            placeholder="ช่วงตอน"
+                            maxLength={100}
+                          />
+                          <Input
+                            value={file.episodeTitle}
+                            onChange={(event) => setEpisodeBatchFiles((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, episodeTitle: event.target.value } : row))}
+                            placeholder="ชื่อตอน"
+                            maxLength={500}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <select
                     aria-label="Initial episode assignee"
                     className="h-10 w-full rounded-md border bg-background px-3 text-sm"
@@ -1217,16 +1327,16 @@ export default function WorkspacePage() {
                       <option key={admin.id} value={admin.id}>{admin.name || admin.email || `Admin #${admin.id}`}</option>
                     ))}
                   </select>
-                  <Button type="submit" className="w-full" disabled={!episodeWorkspaceNovelId || !episodeNumber.trim() || createEditorialEpisode.isPending}>
-                    {createEditorialEpisode.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                    เพิ่มงานตอน
+                  <Button type="submit" className="w-full" disabled={!episodeWorkspaceNovelId || (!episodeNumber.trim() && !episodeBatchFiles.length) || createEditorialEpisode.isPending || bulkImportEpisodeFiles.isPending}>
+                    {(createEditorialEpisode.isPending || bulkImportEpisodeFiles.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    {episodeBatchFiles.length ? `นำเข้า ${episodeBatchFiles.length} ไฟล์` : "เพิ่มงานตอน"}
                   </Button>
                 </form>
               </div>
 
               <div className="space-y-3 rounded-md border bg-muted/10 p-3">
                 <div className="flex items-center justify-between gap-3">
-                  <div><div className="font-medium">Editorial Workspace</div><div className="text-xs text-muted-foreground">Table เป็นมุมมองหลัก · Kanban ใช้ดู workflow เดิมจากข้อมูลชุดเดียวกัน</div></div>
+                  <div className="font-medium">Editorial Workspace</div>
                   <div className="flex items-center gap-2">
                     <div className="flex rounded-md border bg-background p-1" aria-label="Editorial view">
                       <Button type="button" size="sm" variant={editorialView === "table" ? "default" : "ghost"} onClick={() => setEditorialView("table")}>Table</Button>
@@ -1252,12 +1362,11 @@ export default function WorkspacePage() {
                   <span className="text-xs text-muted-foreground">เลือกแล้ว {selectedEditorialWorkItemIds.length} ตอน · ที่มองเห็น {visibleEditorialWorkItemIds.length}</span>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <Button type="button" size="sm" variant="outline" disabled={!selectedEditorialWorkItemIds.length || bulkBusy} onClick={() => bulkRunEditorialChecker.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds })}>{bulkRunEditorialChecker.isPending ? "กำลังตรวจ…" : "ตรวจงานที่เลือก"}</Button>
-                  <Button type="button" size="sm" variant="outline" disabled={!selectedEditorialWorkItemIds.length || bulkBusy} onClick={() => bulkApproveEditorialDrafts.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds })}>{bulkApproveEditorialDrafts.isPending ? "กำลังยืนยัน…" : "ยืนยันที่เลือก"}</Button>
-                  <Button type="button" size="sm" variant="outline" disabled={!selectedEditorialWorkItemIds.length || bulkBusy} onClick={() => bulkStageEditorialDrafts.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds })}>{bulkStageEditorialDrafts.isPending ? "กำลัง Stage…" : "Stage ที่เลือก"}</Button>
-                  <Button type="button" size="sm" disabled={!selectedEditorialWorkItemIds.length || bulkBusy} onClick={() => { const readyCount = selectedEditorialCards.filter((card: any) => card.evidence?.readyToPublish && !card.evidence?.published).length; const blockedCount = selectedEditorialCards.length - readyCount; if (window.confirm(`Controlled Publish\n\nพร้อมลง ${readyCount} ตอน · ยังไม่พร้อม ${blockedCount} ตอน\n\n${bulkSelectionLabel}\n\nรายการที่ไม่ผ่าน readiness / ownership / evidence จะไม่ถูกเผยแพร่`)) bulkRequestEditorialPublish.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds }); }}>{bulkRequestEditorialPublish.isPending ? "กำลังเผยแพร่…" : "เผยแพร่ที่เลือก"}</Button>
+                  <Button type="button" size="sm" variant="outline" disabled={!selectedEditorialWorkItemIds.length || bulkBusy} onClick={() => bulkRunEditorialChecker.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds })}>{bulkRunEditorialChecker.isPending ? "กำลังตรวจ…" : "3. ตรวจ / ตรวจซ้ำ"}</Button>
+                  <Button type="button" size="sm" variant="outline" disabled={!selectedEditorialWorkItemIds.length || bulkBusy} onClick={() => bulkApproveEditorialDrafts.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds })}>{bulkApproveEditorialDrafts.isPending ? "กำลังยืนยัน…" : "4. ยืนยัน Draft ปัจจุบัน"}</Button>
+                  <Button type="button" size="sm" variant="outline" disabled={!selectedEditorialWorkItemIds.length || bulkBusy} onClick={() => bulkStageEditorialDrafts.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds })}>{bulkStageEditorialDrafts.isPending ? "กำลัง Stage…" : "5. Stage"}</Button>
+                  <Button type="button" size="sm" disabled={!selectedEditorialWorkItemIds.length || bulkBusy} onClick={() => { const readyCount = selectedEditorialCards.filter((card: any) => card.evidence?.readyToPublish && !card.evidence?.published).length; const blockedCount = selectedEditorialCards.length - readyCount; if (window.confirm(`Controlled Publish\n\nพร้อมลง ${readyCount} ตอน · ยังไม่พร้อม ${blockedCount} ตอน\n\n${bulkSelectionLabel}\n\nรายการที่ไม่ผ่าน readiness / ownership / evidence จะไม่ถูกเผยแพร่`)) bulkRequestEditorialPublish.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds }); }}>{bulkRequestEditorialPublish.isPending ? "กำลังเผยแพร่…" : "6. Publish"}</Button>
                 </div>
-                <div className="text-[11px] text-muted-foreground">Bulk actions ใช้ workflow เดิมทีละ Episode Pack; รายการที่ไม่ผ่าน QC / approval / Stage / ownership / evidence จะรายงานว่าไม่ผ่านและไม่ข้าม safety gate</div>
               </div>}
               {editorialBoard.isLoading || ensureEditorialBoard.isPending ? (
                 <div className="flex min-h-32 items-center justify-center"><Loader2 className="h-6 w-6 animate-spin" /></div>
@@ -1279,7 +1388,7 @@ export default function WorkspacePage() {
                   <details key={group.workspaceNovelId ?? group.novel?.id} className="overflow-hidden rounded-lg border bg-background">
                     <summary className="cursor-pointer select-none bg-muted/20 px-4 py-3"><span className="font-semibold">{group.novel?.title ?? "Untitled novel"}</span><span className="ml-2 text-xs text-muted-foreground">{group.cards.length} pack(s) · Novel #{group.novel?.id ?? "—"}</span></summary>
                     <div className="overflow-x-auto"><table className="w-full min-w-[1240px] border-collapse text-sm">
-                      <thead><tr className="border-y bg-muted/10 text-left text-xs text-muted-foreground"><th className="w-10 px-3 py-2"><span className="sr-only">เลือก</span></th><th className="px-3 py-2 font-medium">เรื่อง / ช่วงตอน</th><th className="px-3 py-2 font-medium">การขาย</th><th className="px-3 py-2 text-center font-medium">ตรวจคำ</th><th className="px-3 py-2 text-center font-medium">ผ่านตรวจ</th><th className="px-3 py-2 text-center font-medium">ยืนยัน</th><th className="px-3 py-2 text-center font-medium">Stage</th><th className="px-3 py-2 text-center font-medium">พร้อมลง</th><th className="px-3 py-2 text-center font-medium">เผยแพร่</th><th className="min-w-72 px-3 py-2 font-medium">หมายเหตุ</th></tr></thead>
+                      <thead><tr className="border-y bg-muted/10 text-left text-xs text-muted-foreground"><th className="w-10 px-3 py-2"><span className="sr-only">เลือก</span></th><th className="px-3 py-2 font-medium">เรื่อง / ช่วงตอน</th><th className="px-3 py-2 font-medium">การขาย</th><th className="px-3 py-2 text-center font-medium">3. ตรวจ</th><th className="px-3 py-2 text-center font-medium">ผลตรวจ</th><th className="px-3 py-2 text-center font-medium">4. ยืนยัน</th><th className="px-3 py-2 text-center font-medium">5. Stage</th><th className="px-3 py-2 text-center font-medium">พร้อมลง</th><th className="px-3 py-2 text-center font-medium">6. เผยแพร่</th><th className="min-w-72 px-3 py-2 font-medium">หมายเหตุ</th></tr></thead>
                       <tbody>{group.cards.slice().sort((a: any,b: any)=>String(a.episodeNumber??"").localeCompare(String(b.episodeNumber??""),"th",{numeric:true})).map((card:any)=>(
                         <tr key={card.id} className={`border-b last:border-b-0 hover:bg-muted/10 ${selectedEditorialSet.has(card.workItemId) ? "bg-primary/5" : ""}`}>
                           <td className="px-3 py-3 align-top"><input type="checkbox" aria-label={`เลือก Episode Pack ${card.episodeNumber || card.workItemId}`} checked={selectedEditorialSet.has(card.workItemId)} disabled={!card.workItemId || bulkBusy} onChange={() => card.workItemId && toggleEditorialSelection(card.workItemId)} /></td>
@@ -1326,9 +1435,6 @@ export default function WorkspacePage() {
                 ))}</div>
               ) : <EmptyState>Editorial board is being prepared for this Workspace.</EmptyState>}
 
-              <div className="text-xs text-muted-foreground">
-                Kanban transitions: {editorialTransitions.length} event(s). Card history also includes immutable assignment events. Episode intake creates Workspace work items only and does not create publication episodes.
-              </div>
             </Card>
 
             <Card className="space-y-5 p-5">
@@ -1337,9 +1443,6 @@ export default function WorkspacePage() {
                   <FileCheck2 className="h-5 w-5 text-primary" />
                   <h2 className="text-xl font-semibold">Episode Pack Detail</h2>
                 </div>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  เปิดแถว Episode Pack จากตาราง แล้วทำงานตามลำดับ Google Docs Import → Draft → Checker → แก้ประโยค → Confirm → Stage → Controlled Publish โดยทุกสถานะยังยึด durable evidence เดิม
-                </p>
               </div>
 
               {!selectedSourceWorkItemId ? (
@@ -1463,7 +1566,7 @@ export default function WorkspacePage() {
                       <div className="text-xs text-muted-foreground">
                         {uploadedSource
                           ? `${uploadedSource.name} · ${uploadedSource.paragraphs.length} บรรทัด`
-                          : "รองรับ TXT / Markdown; source identity คงที่ตาม work item และเปลี่ยนชื่อไฟล์ได้โดยไม่สร้าง source ใหม่"}
+                          : "—"}
                       </div>
                       <Button
                         type="submit"
@@ -1517,10 +1620,7 @@ export default function WorkspacePage() {
                   <div className="space-y-3 rounded-md border p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
-                        <div className="font-medium">Deterministic Foreign-word Checker</div>
-                        <div className="text-xs text-muted-foreground">
-                          ตรวจ Draft ปัจจุบันแบบไม่ใช้ AI/API และผูก finding กับ paragraph key + UTF-16 offsets
-                        </div>
+                        <div className="font-medium">3. ตรวจ / ตรวจซ้ำ</div>
                       </div>
                       <Button
                         type="button"
@@ -1814,12 +1914,6 @@ export default function WorkspacePage() {
                                 : ""}
                             </div>
                           )}
-                          {!draftStructureSummary.sequenceIssues.length &&
-                            !draftStructureSummary.emptyTabs.length &&
-                            !draftStructureSummary.unnumberedTabs.length &&
-                            !draftStructureSummary.shortTabs.length && (
-                              <div>โครงสร้างแท็บปกติ · กดเพื่อดูรายละเอียดทุกแท็บ</div>
-                            )}
                         </div>
                       </summary>
                       <div className="space-y-2 border-t p-3">
@@ -1995,10 +2089,7 @@ export default function WorkspacePage() {
                   <div className="space-y-3 rounded-md border p-3">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
-                        <div className="font-medium">Confirm + Episode Draft Staging</div>
-                        <div className="text-xs text-muted-foreground">
-                          การยืนยันผูกกับ Draft SHA256 + deterministic QC evidence แบบ exact; แก้ Draft หรือเปลี่ยน QC ภายหลังจะทำให้ approval เดิมใช้ต่อไม่ได้
-                        </div>
+                        <div className="font-medium">4. ยืนยัน Draft ปัจจุบัน</div>
                       </div>
                       <StatusPill
                         value={
@@ -2047,8 +2138,8 @@ export default function WorkspacePage() {
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="font-medium">
                             {editorialApprovalData.stagePlan.ready
-                              ? `พร้อม Stage 1 แพ็ก · ${editorialApprovalData.stagePlan.itemCount} บท`
-                              : "Mapping ยังไม่พร้อม Stage"}
+                              ? `5. Stage · พร้อม 1 แพ็ก · ${editorialApprovalData.stagePlan.itemCount} บท`
+                              : "5. Stage · ยังไม่พร้อม"}
                           </div>
                           <span className="text-xs text-muted-foreground">
                             {editorialApprovalData.stagePlan.requestedEpisodeNumber} · Draft{" "}
@@ -2164,7 +2255,7 @@ export default function WorkspacePage() {
                         {approveEditorialDraft.isPending && (
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                         )}
-                        ยืนยัน Draft ปัจจุบัน
+                        4. ยืนยัน Draft ปัจจุบัน
                       </Button>
                       <Button
                         type="button"
@@ -2195,18 +2286,14 @@ export default function WorkspacePage() {
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                         )}
                         {(editorialApprovalData?.stagePlan?.itemCount ?? 1) > 1
-                          ? `Stage ${editorialApprovalData.stagePlan.itemCount} Episode Drafts`
-                          : "Stage Episode Draft"}
+                          ? `5. Stage ${editorialApprovalData.stagePlan.itemCount} Episode Drafts`
+                          : "5. Stage"}
                       </Button>
                     </div>
 
                     {editorialApprovalData?.readyToPublish && (
                       <div className="space-y-2 rounded-md border p-3 text-sm">
-                        <div>
-                          พร้อม Controlled Publish{" "}
-                          <strong>{editorialApprovalData.stages?.length ?? 1} ตอน</strong> · unpublished ครบ · Draft SHA{" "}
-                          {shortHash(editorialApprovalData.stage?.stagedDraftSha256)}
-                        </div>
+                        <div className="font-medium">6. Publish</div>
                         <div className="text-xs text-muted-foreground">
                           publish owner {(editorialPublish.data as any)?.ownership?.owner ?? "—"} · epoch {(editorialPublish.data as any)?.ownership?.cutoverEpoch ?? "—"} · run #{(editorialPublish.data as any)?.publishRun?.id ?? "ยังไม่สร้าง"} · {(editorialPublish.data as any)?.blocker ?? "พร้อม enqueue"}
                         </div>
@@ -2238,7 +2325,7 @@ export default function WorkspacePage() {
                           {requestEditorialPublish.isPending && (
                             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                           )}
-                          Publish (Controlled)
+                          6. Publish
                         </Button>
                       </div>
                     )}
@@ -2250,7 +2337,6 @@ export default function WorkspacePage() {
             <details className="rounded-lg border bg-background">
               <summary className="cursor-pointer select-none px-5 py-4">
                 <span className="font-semibold">Operations / Advanced</span>
-                <span className="ml-2 text-xs text-muted-foreground">fingerprints · Checker/AI jobs · source bindings · publish runs/outbox · ownership evidence</span>
               </summary>
               <div className="space-y-5 border-t p-5">
             <Card className="space-y-5 p-5">
@@ -2260,28 +2346,11 @@ export default function WorkspacePage() {
                     <ShieldCheck className="h-5 w-5 text-primary" />
                     <h2 className="text-xl font-semibold">{selected.workspace.name}</h2>
                   </div>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Platform admin access: <span className="font-medium">full</span>. Workspace membership and per-workspace roles do not restrict admin operations.
-                  </p>
                 </div>
                 <StatusPill value={selected.workspace.status} />
               </div>
 
-              <div className="rounded-md border bg-muted/30 p-4">
-                <h3 className="font-medium">Operational detail</h3>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Novel intake now lives in the Editorial Kanban above. The sections below retain
-                  legacy ownership, source-binding, Checker/AI and publish evidence for operators.
-                </p>
-              </div>
-
-              <div className="grid gap-5 md:grid-cols-3">
-                <div>
-                  <h3 className="font-medium">Admin access</h3>
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    Every platform admin has the same Workspace authority. Historical membership rows are not used for authorization.
-                  </p>
-                </div>
+              <div className="grid gap-5 md:grid-cols-2">
                 <div>
                   <h3 className="font-medium">Capability ownership</h3>
                   <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
@@ -2325,7 +2394,6 @@ export default function WorkspacePage() {
                 <Database className="h-5 w-5 text-primary" />
                 <div>
                   <h3 className="font-semibold">Document fingerprints & operational projection</h3>
-                  <p className="text-sm text-muted-foreground">Metadata/hash only; document body content is not returned by this read model.</p>
                 </div>
               </div>
               {operationalState.isLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : operationalRows.length ? (
@@ -2359,7 +2427,6 @@ export default function WorkspacePage() {
                 <FileCheck2 className="h-5 w-5 text-primary" />
                 <div>
                   <h3 className="font-semibold">Checker runs & findings</h3>
-                  <p className="text-sm text-muted-foreground">Queue deterministic Checker work against an immutable snapshot and published rule set; execution remains lease-controlled by the Checker worker.</p>
                 </div>
               </div>
               <div className="grid gap-2 rounded-md border bg-muted/20 p-3 md:grid-cols-[1fr_1fr_auto]">
@@ -2406,7 +2473,6 @@ export default function WorkspacePage() {
                 <Bot className="h-5 w-5 text-primary" />
                 <div>
                   <h3 className="font-semibold">AI QC operational state</h3>
-                  <p className="text-sm text-muted-foreground">Queue advisory AI QC work against an immutable snapshot, or retry a failed job. Provider execution remains worker/config gated.</p>
                 </div>
               </div>
               <div className="grid gap-2 rounded-md border bg-muted/20 p-3 md:grid-cols-[1fr_auto]">
@@ -2451,7 +2517,6 @@ export default function WorkspacePage() {
                 <Activity className="h-5 w-5 text-primary" />
                 <div>
                   <h3 className="font-semibold">Publish runs, outbox & readiness</h3>
-                  <p className="text-sm text-muted-foreground">Read-only operational evidence. No execute, cutover or rollback controls are exposed.</p>
                 </div>
               </div>
               {publishRows.length ? (
@@ -2505,7 +2570,6 @@ export default function WorkspacePage() {
                 <GitBranch className="h-5 w-5 text-primary" />
                 <div>
                   <h3 className="font-semibold">Ownership & cutover history</h3>
-                  <p className="text-sm text-muted-foreground">Persisted transition evidence only; this panel cannot change registry ownership.</p>
                 </div>
               </div>
               {publishTransitions.length ? (
@@ -2516,7 +2580,6 @@ export default function WorkspacePage() {
                   </table>
                 </div>
               ) : <EmptyState>No publish ownership transitions exist in this workspace.</EmptyState>}
-              <p className="text-xs text-muted-foreground">Control Center publish projection reports sideEffectsApplied = {String((publishOverview.data as any)?.sideEffectsApplied ?? false)} and readOnly = {String((publishOverview.data as any)?.readOnly ?? true)}.</p>
             </Card>
               </div>
             </details>
