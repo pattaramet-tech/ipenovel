@@ -92,6 +92,7 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).toContain("bulk-allow:");
     expect(source).toContain("ตรวจไม่สำเร็จ:");
     expect(source).toContain("bulkApproveDrafts.useMutation");
+    expect(source).toContain("const firstError = failed.find");
     expect(source).toContain("bulkStageDrafts.useMutation");
     expect(source).toContain("bulkRequestPublish.useMutation");
     expect(source).toContain("bulkBusy");

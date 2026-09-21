@@ -19,8 +19,11 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
     expect(router).toContain("sampleFindings: checker.findings");
     expect(router).toContain("bulkApproveDrafts: adminProcedure");
     expect(router).toContain("approveEditorialDraft");
+    expect(router).toContain("expectedDraftSha256: state.latestDraft.draftSha256");
+    expect(router).not.toContain("expectedDraftSha256: state.latestDraft.contentSha256");
     expect(router).toContain("bulkStageDrafts: adminProcedure");
     expect(router).toContain("stageEditorialEpisodeDraft");
+    expect(router).toContain("expectedDraftSha256: state.latestDraft.draftSha256");
     expect(router).toContain("bulkRequestPublish: adminProcedure");
     expect(router).toContain("prepareEditorialPublishOwnership");
     expect(router).toContain("expectedStageSetSha256: state.stageSetSha256");

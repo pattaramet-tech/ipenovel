@@ -914,8 +914,8 @@ export const workspaceRouter = router({
           try {
             const state = await getEditorialApprovalReadModel({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId });
             if (state.approvalStatus?.valid) { results.push({ workItemId, ok: true as const, skipped: true as const }); continue; }
-            if (!state.latestDraft?.id || !state.latestDraft?.version || !state.latestDraft?.contentSha256 || !state.qc?.ready || !state.qc?.checkerRunId || !state.qc?.qcEvidenceSha256) throw new Error(state.qc?.reason ?? "Draft/QC evidence is not ready for approval.");
-            await approveEditorialDraft({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId, expectedDraftId: state.latestDraft.id, expectedDraftVersion: state.latestDraft.version, expectedDraftSha256: state.latestDraft.contentSha256, expectedCheckerRunId: state.qc.checkerRunId, expectedQcEvidenceSha256: state.qc.qcEvidenceSha256, idempotencyKey: `bulk-approve:${input.workspaceId}:${workItemId}:${state.latestDraft.id}:${state.qc.checkerRunId}` });
+            if (!state.latestDraft?.id || !state.latestDraft?.version || !state.latestDraft?.draftSha256 || !state.qc?.ready || !state.qc?.checkerRunId || !state.qc?.qcEvidenceSha256) throw new Error(state.qc?.reason ?? "Draft/QC evidence is not ready for approval.");
+            await approveEditorialDraft({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId, expectedDraftId: state.latestDraft.id, expectedDraftVersion: state.latestDraft.version, expectedDraftSha256: state.latestDraft.draftSha256, expectedCheckerRunId: state.qc.checkerRunId, expectedQcEvidenceSha256: state.qc.qcEvidenceSha256, idempotencyKey: `bulk-approve:${input.workspaceId}:${workItemId}:${state.latestDraft.id}:${state.qc.checkerRunId}` });
             results.push({ workItemId, ok: true as const, skipped: false as const });
           } catch (error) { results.push({ workItemId, ok: false as const, error: error instanceof Error ? error.message : String(error) }); }
         }
@@ -929,8 +929,8 @@ export const workspaceRouter = router({
           try {
             const state = await getEditorialApprovalReadModel({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId });
             if (state.stageStatus?.valid) { results.push({ workItemId, ok: true as const, skipped: true as const }); continue; }
-            if (!state.approvalStatus?.valid || !state.approval?.id || !state.latestDraft?.id || !state.latestDraft?.version || !state.latestDraft?.contentSha256) throw new Error(state.approvalStatus?.reason ?? state.stagePlanError ?? "Approval/stage evidence is not ready.");
-            await stageEditorialEpisodeDraft({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId, approvalId: state.approval.id, expectedDraftId: state.latestDraft.id, expectedDraftVersion: state.latestDraft.version, expectedDraftSha256: state.latestDraft.contentSha256, idempotencyKey: `bulk-stage:${input.workspaceId}:${workItemId}:${state.approval.id}:${state.latestDraft.id}` });
+            if (!state.approvalStatus?.valid || !state.approval?.id || !state.latestDraft?.id || !state.latestDraft?.version || !state.latestDraft?.draftSha256) throw new Error(state.approvalStatus?.reason ?? state.stagePlanError ?? "Approval/stage evidence is not ready.");
+            await stageEditorialEpisodeDraft({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId, approvalId: state.approval.id, expectedDraftId: state.latestDraft.id, expectedDraftVersion: state.latestDraft.version, expectedDraftSha256: state.latestDraft.draftSha256, idempotencyKey: `bulk-stage:${input.workspaceId}:${workItemId}:${state.approval.id}:${state.latestDraft.id}` });
             results.push({ workItemId, ok: true as const, skipped: false as const });
           } catch (error) { results.push({ workItemId, ok: false as const, error: error instanceof Error ? error.message : String(error) }); }
         }

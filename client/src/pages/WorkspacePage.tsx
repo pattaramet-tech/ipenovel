@@ -400,7 +400,14 @@ export default function WorkspacePage() {
     await Promise.all([editorialBoard.refetch(), editorialEvidenceStatuses.refetch(), editorialApproval.refetch(), editorialPublish.refetch(), publishOverview.refetch()]);
   };
   const bulkApproveEditorialDrafts = trpc.workspace.editorial.bulkApproveDrafts.useMutation({
-    onSuccess: async (results) => { await refreshBulkEditorial(); const failed = results.filter((result) => !result.ok); toast[failed.length ? "error" : "success"](`ยืนยัน ${results.length - failed.length}/${results.length} ตอน${failed.length ? ` · ไม่ผ่าน ${failed.length}` : ""}`); },
+    onSuccess: async (results) => {
+      await refreshBulkEditorial();
+      const failed = results.filter((result) => !result.ok);
+      const firstError = failed.find((result: any) => result.error)?.error;
+      toast[failed.length ? "error" : "success"](
+        `ยืนยัน ${results.length - failed.length}/${results.length} ตอน${failed.length ? ` · ไม่ผ่าน ${failed.length}${firstError ? ` · ${firstError}` : ""}` : ""}`
+      );
+    },
     onError: (error) => toast.error(error.message),
   });
   const bulkStageEditorialDrafts = trpc.workspace.editorial.bulkStageDrafts.useMutation({
