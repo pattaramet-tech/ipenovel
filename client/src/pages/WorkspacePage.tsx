@@ -428,6 +428,30 @@ export default function WorkspacePage() {
     },
   });
   const rerunBulkEditedChecker = trpc.workspace.editorial.foreignCheckerRun.useMutation();
+  const rerunBulkAfterAllow = trpc.workspace.editorial.bulkRunChecker.useMutation();
+  const bulkAllowEditorialFinding = trpc.workspace.editorial.foreignCheckerAllow.useMutation({
+    onSuccess: async (result, variables) => {
+      const workItemIds = bulkCheckerSummary
+        .map((item: any) => Number(item.workItemId))
+        .filter((workItemId) => Number.isInteger(workItemId) && workItemId > 0);
+      try {
+        if (workItemIds.length) {
+          const rerun = await rerunBulkAfterAllow.mutateAsync({
+            workspaceId: variables.workspaceId,
+            workItemIds,
+          });
+          setBulkCheckerSummary(rerun as any[]);
+        }
+        await refreshBulkEditorial();
+        toast.success(`ยกเว้นคำ “${result.normalizedWord}” แล้ว · ตรวจซ้ำ ${workItemIds.length} ตอน`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await refreshBulkEditorial();
+        toast.error(`ยกเว้นคำแล้ว แต่ตรวจซ้ำไม่สำเร็จ: ${message}`);
+      }
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const bulkEditEditorialFinding = trpc.workspace.editorial.editorEdit.useMutation({
     onSuccess: async (result, variables) => {
       setBulkEditorTarget(undefined);
@@ -1083,7 +1107,7 @@ export default function WorkspacePage() {
   const visibleEditorialWorkItemIds = visibleEditorialCards.map((card: any) => card.workItemId).filter((id: any): id is number => Number.isInteger(id));
   const uncheckedEditorialWorkItemIds = visibleEditorialCards.filter((card: any) => !card.evidence?.checker).map((card: any) => card.workItemId);
   const readyEditorialWorkItemIds = visibleEditorialCards.filter((card: any) => card.evidence?.readyToPublish && !card.evidence?.published).map((card: any) => card.workItemId);
-  const bulkBusy = Boolean(bulkEditorTarget) || bulkRunEditorialChecker.isPending || bulkEditEditorialFinding.isPending || rerunBulkEditedChecker.isPending || bulkApproveEditorialDrafts.isPending || bulkStageEditorialDrafts.isPending || bulkRequestEditorialPublish.isPending;
+  const bulkBusy = Boolean(bulkEditorTarget) || bulkRunEditorialChecker.isPending || bulkEditEditorialFinding.isPending || rerunBulkEditedChecker.isPending || bulkAllowEditorialFinding.isPending || rerunBulkAfterAllow.isPending || bulkApproveEditorialDrafts.isPending || bulkStageEditorialDrafts.isPending || bulkRequestEditorialPublish.isPending;
   const selectedEditorialCards = editorialCards.filter((card: any) => selectedEditorialSet.has(card.workItemId));
   const bulkSelectionLabel = selectedEditorialCards.map((card: any) => `${card.novel?.title ?? "ไม่ทราบเรื่อง"} ${card.episodeNumber ? `ตอน ${card.episodeNumber}` : ""}`.trim()).join("\n");
   const normalizedEpisodeNovelSearch = episodeNovelSearch.trim().toLocaleLowerCase("th");
@@ -1677,6 +1701,31 @@ export default function WorkspacePage() {
                                     >แก้ย่อหน้านี้</Button>}
                                   </div>
                                   <div className="mt-2 whitespace-pre-wrap rounded bg-background p-2 text-sm leading-6">{paragraph.contextText}</div>
+                                  {!editing && (
+                                    <div className="mt-2 flex flex-wrap gap-2">
+                                      {Array.from(new Map(paragraph.findings.map((finding: any) => [finding.token, finding])).values()).map((finding: any) => (
+                                        <Button
+                                          key={`${finding.id}:${finding.token}`}
+                                          type="button"
+                                          size="sm"
+                                          variant="outline"
+                                          disabled={finding.ruleKey === "long_english" || bulkBusy}
+                                          onClick={() => {
+                                            if (!window.confirm(`ยกเว้นคำ “${finding.token}” สำหรับ Checker ทั้ง Workspace?`)) return;
+                                            bulkAllowEditorialFinding.mutate({
+                                              workspaceId: selectedWorkspaceId!,
+                                              workItemId: result.workItemId,
+                                              findingId: finding.id,
+                                              expectedVersion: finding.resolutionVersion ?? 0,
+                                              idempotencyKey: `bulk-allow:${finding.id}:${finding.resolutionVersion ?? 0}`,
+                                            });
+                                          }}
+                                        >
+                                          ยกเว้นคำ “{finding.token}”
+                                        </Button>
+                                      ))}
+                                    </div>
+                                  )}
                                   {editing && bulkEditorTarget && (
                                     <div className="mt-2 space-y-2">
                                       <textarea

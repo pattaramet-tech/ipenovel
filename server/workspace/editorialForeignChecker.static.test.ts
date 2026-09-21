@@ -82,6 +82,8 @@ describe("Workspace Editorial foreign-word checker static boundaries", () => {
     expect(page).toContain("editorTarget && editorTarget.findingId === finding.id");
     expect(page).toContain("แก้ตรง finding นี้");
     expect(page).toContain("ยอมรับคำนี้");
+    expect(page).toContain("ยกเว้นคำ “");
+    expect(page).toContain("foreignCheckerAllow.useMutation");
     expect(page).toContain("Mark fixed");
     expect(page).not.toContain("contentEditable");
   });

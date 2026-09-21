@@ -85,6 +85,11 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).toContain('kind: "replace_paragraph"');
     expect(source).toContain("bulkEditEditorialFinding");
     expect(source).toContain("rerunBulkEditedChecker");
+    expect(source).toContain("bulkAllowEditorialFinding");
+    expect(source).toContain("rerunBulkAfterAllow");
+    expect(source).toContain("ยกเว้นคำ “");
+    expect(source).toContain("สำหรับ Checker ทั้ง Workspace?");
+    expect(source).toContain("bulk-allow:");
     expect(source).toContain("ตรวจไม่สำเร็จ:");
     expect(source).toContain("bulkApproveDrafts.useMutation");
     expect(source).toContain("bulkStageDrafts.useMutation");
