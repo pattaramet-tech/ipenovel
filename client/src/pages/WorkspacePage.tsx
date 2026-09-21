@@ -88,6 +88,7 @@ export default function WorkspacePage() {
   const [episodeNovelSearch, setEpisodeNovelSearch] = useState("");
   const [selectedSourceWorkItemId, setSelectedSourceWorkItemId] = useState<number>();
   const [selectedEditorialWorkItemIds, setSelectedEditorialWorkItemIds] = useState<number[]>([]);
+  const [bulkCheckerSummary, setBulkCheckerSummary] = useState<Array<any>>([]);
   const [googleConnectionId, setGoogleConnectionId] = useState("");
   const [googleDocUrl, setGoogleDocUrl] = useState("");
   const [episodeGoogleDocUrl, setEpisodeGoogleDocUrl] = useState("");
@@ -309,6 +310,7 @@ export default function WorkspacePage() {
     setEditorialAssigneeFilter("all");
     setEditorialColumnFilter("all");
     setSelectedSourceWorkItemId(undefined);
+    setBulkCheckerSummary([]);
     setGoogleConnectionId("");
     setGoogleDocUrl("");
     setUploadedSource(undefined);
@@ -374,12 +376,20 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const bulkRunEditorialChecker = trpc.workspace.editorial.bulkRunChecker.useMutation({
+    onMutate: () => setBulkCheckerSummary([]),
     onSuccess: async (results) => {
+      setBulkCheckerSummary(results as any[]);
       await refreshBulkEditorial();
-      const failed = results.filter((result) => !result.ok);
-      toast[failed.length ? "error" : "success"](`ตรวจงาน ${results.length - failed.length}/${results.length} ตอน${failed.length ? ` · ไม่ผ่าน ${failed.length}` : ""}`);
+      const technicalFailed = results.filter((result) => !result.ok);
+      const needsFix = results.filter((result: any) => result.ok && result.effectiveStatus === "failed");
+      toast[technicalFailed.length || needsFix.length ? "error" : "success"](
+        `ตรวจ ${results.length} ตอน · ผ่าน ${results.length - technicalFailed.length - needsFix.length} · ต้องแก้ ${needsFix.length}${technicalFailed.length ? ` · ผิดพลาด ${technicalFailed.length}` : ""}`
+      );
     },
-    onError: (error) => toast.error(error.message),
+    onError: (error) => {
+      setBulkCheckerSummary([]);
+      toast.error(error.message);
+    },
   });
   const bulkRequestEditorialPublish = trpc.workspace.editorial.bulkRequestPublish.useMutation({
     onSuccess: async (results) => {
@@ -1498,6 +1508,39 @@ export default function WorkspacePage() {
                   <Button type="button" size="sm" variant="outline" disabled={!selectedEditorialWorkItemIds.length || bulkBusy} onClick={() => bulkStageEditorialDrafts.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds })}>{bulkStageEditorialDrafts.isPending ? "กำลัง Stage…" : "5. Stage"}</Button>
                   <Button type="button" size="sm" disabled={!selectedEditorialWorkItemIds.length || bulkBusy} onClick={() => { const readyCount = selectedEditorialCards.filter((card: any) => card.evidence?.readyToPublish && !card.evidence?.published).length; const blockedCount = selectedEditorialCards.length - readyCount; if (window.confirm(`Controlled Publish\n\nพร้อมลง ${readyCount} ตอน · ยังไม่พร้อม ${blockedCount} ตอน\n\n${bulkSelectionLabel}\n\nรายการที่ไม่ผ่าน readiness / ownership / evidence จะไม่ถูกเผยแพร่`)) bulkRequestEditorialPublish.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds }); }}>{bulkRequestEditorialPublish.isPending ? "กำลังเผยแพร่…" : "6. Publish"}</Button>
                 </div>
+                {bulkCheckerSummary.length > 0 && (() => {
+                  const passed = bulkCheckerSummary.filter((result: any) => result.ok && result.effectiveStatus === "passed").length;
+                  const needsFix = bulkCheckerSummary.filter((result: any) => result.ok && result.effectiveStatus === "failed").length;
+                  const technicalFailed = bulkCheckerSummary.filter((result: any) => !result.ok).length;
+                  const openFindings = bulkCheckerSummary.reduce((sum: number, result: any) => sum + (result.ok ? Number(result.unresolvedCount ?? 0) : 0), 0);
+                  return <div className="space-y-2 rounded-md border bg-background p-3">
+                    <div className="flex flex-wrap items-center gap-3 text-sm font-medium">
+                      <span>สรุปผลตรวจ {bulkCheckerSummary.length} ตอน</span>
+                      <span className="text-emerald-700">ผ่าน {passed}</span>
+                      <span className="text-amber-700">ต้องแก้ {needsFix}</span>
+                      <span className="text-red-700">ผิดพลาด {technicalFailed}</span>
+                      <span>ค้างตรวจ {openFindings}</span>
+                    </div>
+                    <div className="space-y-1">
+                      {bulkCheckerSummary.map((result: any) => {
+                        const card = editorialCards.find((candidate: any) => candidate.workItemId === result.workItemId);
+                        const label = `${card?.novel?.title ?? "ไม่ทราบเรื่อง"} · ${card?.episodeNumber ?? `Work item #${result.workItemId}`}`;
+                        const samples = (result.sampleFindings ?? []).map((finding: any) => finding.token).filter(Boolean);
+                        return <div key={result.workItemId} className="grid gap-1 rounded border px-3 py-2 text-xs md:grid-cols-[minmax(0,1fr)_auto]">
+                          <div>
+                            <div className="font-medium">{label}</div>
+                            {result.ok && result.effectiveStatus === "failed" && <div className="text-amber-700">พบ {result.findingCount ?? result.unresolvedCount ?? 0} · ค้าง {result.unresolvedCount ?? 0}{samples.length ? ` · ตัวอย่าง: ${samples.join(", ")}` : ""}</div>}
+                            {result.ok && result.effectiveStatus === "passed" && <div className="text-emerald-700">ผ่าน · ไม่พบคำต่างประเทศที่ต้องแก้</div>}
+                            {!result.ok && <div className="text-red-700">ตรวจไม่สำเร็จ: {result.error}</div>}
+                          </div>
+                          <div className={result.ok ? (result.effectiveStatus === "passed" ? "text-emerald-700" : "text-amber-700") : "text-red-700"}>
+                            {result.ok ? (result.effectiveStatus === "passed" ? "ผ่าน" : "ต้องแก้") : "ผิดพลาด"}
+                          </div>
+                        </div>;
+                      })}
+                    </div>
+                  </div>;
+                })()}
               </div>}
               {editorialBoard.isLoading || ensureEditorialBoard.isPending ? (
                 <div className="flex min-h-32 items-center justify-center"><Loader2 className="h-6 w-6 animate-spin" /></div>

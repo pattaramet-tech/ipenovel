@@ -74,7 +74,7 @@ describe.sequential(
           workItemId,
           payload: source("checker-r1", [
             "บทที่ 1 เริ่มตรวจ",
-            "เขาบอกว่าจะ support เรื่องนี้ให้เต็มที่",
+            "เขาเจอ Привет แล้วเดินต่อ",
             "เขาเจอ テスト แล้วเดินต่อไป",
           ]),
         });
@@ -90,20 +90,20 @@ describe.sequential(
         expect(first.created).toBe(true);
         expect(first.run.status).toBe("failed");
         expect(first.unresolvedCount).toBe(2);
-        const support = first.findings.find(
-          (finding: any) => finding.token === "support"
+        const cyrillic = first.findings.find(
+          (finding: any) => finding.token === "Привет"
         );
         const japanese = first.findings.find(
           (finding: any) => finding.token === "テスト"
         );
-        expect(support).toMatchObject({
-          ruleKey: "latin_word",
+        expect(cyrillic).toMatchObject({
+          ruleKey: "foreign_script",
           offsetEncoding: "utf16",
           disposition: "open",
           resolutionVersion: 0,
         });
-        expect(support.sentenceText).toContain("support");
-        expect(support.contextText).toContain("support");
+        expect(cyrillic.sentenceText).toContain("Привет");
+        expect(cyrillic.contextText).toContain("Привет");
         expect(japanese).toMatchObject({
           ruleKey: "foreign_script",
           offsetEncoding: "utf16",
@@ -124,11 +124,11 @@ describe.sequential(
           actorUserId: owner.id,
           workspaceId: workspace.workspaceId,
           workItemId,
-          findingId: support.id,
+          findingId: cyrillic.id,
           disposition: "ignored",
           note: "manual fixture decision",
           expectedVersion: 0,
-          idempotencyKey: "checker-ignore-support-v1",
+          idempotencyKey: "checker-ignore-cyrillic-v1",
         });
         const allowed = await allowEditorialFindingWord({
           actorUserId: owner.id,
@@ -149,7 +149,7 @@ describe.sequential(
         expect(afterAllow.created).toBe(true);
         expect(
           afterAllow.findings.map((finding: any) => finding.token)
-        ).toEqual(["support"]);
+        ).toEqual(["Привет"]);
         expect(afterAllow.findings[0].disposition).toBe("ignored");
         expect(afterAllow.unresolvedCount).toBe(0);
         expect(afterAllow.effectiveStatus).toBe("passed");
@@ -229,7 +229,7 @@ describe.sequential(
             actorUserId: owner.id,
             workspaceId: workspace.workspaceId,
             workItemId,
-            findingId: support.id,
+            findingId: cyrillic.id,
             disposition: "open",
             expectedVersion: 1,
             idempotencyKey: "stale-draft-resolution",

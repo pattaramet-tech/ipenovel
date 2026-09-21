@@ -9,6 +9,10 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
     const router = source("server/workspace/router.ts");
     expect(router).toContain("bulkRunChecker: adminProcedure");
     expect(router).toContain("runEditorialForeignChecker");
+    expect(router).toContain("effectiveStatus: checker.effectiveStatus");
+    expect(router).toContain("findingCount: checker.findings.length");
+    expect(router).toContain("unresolvedCount: checker.unresolvedCount");
+    expect(router).toContain("sampleFindings: checker.findings");
     expect(router).toContain("bulkApproveDrafts: adminProcedure");
     expect(router).toContain("approveEditorialDraft");
     expect(router).toContain("bulkStageDrafts: adminProcedure");

@@ -19,22 +19,22 @@ describe("Workspace Editorial foreign-word checker static boundaries", () => {
     );
   });
 
-  it("ports Production foreign-script, kaomoji and long-English rules without GAS writes", () => {
+  it("keeps Production foreign-script/kaomoji detection while alphabet checks are non-blocking", () => {
     const domain = source("server/workspace/editorialForeignChecker.domain.ts");
     expect(domain).toContain("\\u0600-\\u06FF");
     expect(domain).toContain("\\u3040-\\u30FF");
     expect(domain).toContain("\\uAC00-\\uD7AF");
-    expect(domain).toContain("words.length >= 8");
-    expect(domain).toContain("latinCount >= 45");
-    expect(domain).toContain("trim().length >= 60");
     expect(domain).toContain("isLikelyKaomoji");
+    expect(domain).toContain("const checkAsciiAlphabet = false");
+    expect(domain).toContain("v3 only emits findings for non-ASCII foreign scripts");
     expect(domain).not.toMatch(/SpreadsheetApp|DocumentApp|setBackgroundColor/);
   });
 
-  it("adds short ASCII-word detection as a separate deterministic rule and stores whole sentence/context", () => {
+  it("keeps historical alphabet rule keys for old evidence but excludes A-Z/a-z from new v3 findings", () => {
     const domain = source("server/workspace/editorialForeignChecker.domain.ts");
     expect(domain).toContain('latinWord: "latin_word"');
-    expect(domain).toContain('if (/^[A-Za-z]$/.test(latinMatch[0])) continue;');
+    expect(domain).toContain('longEnglish: "long_english"');
+    expect(domain).toContain("const checkAsciiAlphabet = false");
     expect(domain).toContain("sentenceText");
     expect(domain).toContain("contextText");
     expect(domain).toContain('offsetEncoding: "utf16"');
@@ -77,7 +77,7 @@ describe("Workspace Editorial foreign-word checker static boundaries", () => {
 
   it("provides a minimal sentence-finding QC surface without introducing the full editor early", () => {
     const page = source("client/src/pages/WorkspacePage.tsx");
-    expect(page).toContain("Deterministic Foreign-word Checker");
+    expect(page).toContain("3. ตรวจ / ตรวจซ้ำ");
     expect(page).toContain("finding.sentenceText");
     expect(page).toContain("editorTarget && editorTarget.findingId === finding.id");
     expect(page).toContain("แก้ตรง finding นี้");

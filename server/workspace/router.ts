@@ -942,8 +942,19 @@ export const workspaceRouter = router({
         const results = [];
         for (const workItemId of Array.from(new Set(input.workItemIds))) {
           try {
-            await runEditorialForeignChecker({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId });
-            results.push({ workItemId, ok: true as const });
+            const checker = await runEditorialForeignChecker({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId });
+            results.push({
+              workItemId,
+              ok: true as const,
+              runId: checker.run?.id ?? null,
+              effectiveStatus: checker.effectiveStatus,
+              findingCount: checker.findings.length,
+              unresolvedCount: checker.unresolvedCount,
+              sampleFindings: checker.findings
+                .filter((finding: any) => finding.disposition === "open")
+                .slice(0, 5)
+                .map((finding: any) => ({ token: finding.token, ruleKey: finding.ruleKey })),
+            });
           } catch (error) {
             results.push({ workItemId, ok: false as const, error: error instanceof Error ? error.message : String(error) });
           }

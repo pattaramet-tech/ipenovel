@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION =
-  "workspace-editorial-foreign-checker-v2" as const;
+  "workspace-editorial-foreign-checker-v3" as const;
 
 export const EDITORIAL_FOREIGN_CHECKER_RULES = {
   foreignScript: "foreign_script",
@@ -278,50 +278,53 @@ export function evaluateEditorialForeignParagraph(
   const findings: EditorialForeignFinding[] = [];
   const urlEmailRanges = skipRanges(text);
   const kaomojiSkipMap = buildKaomojiSkipMap(text);
-  const longSpans = englishSpans(text).filter(span =>
-    isLongEnglishSpan(span.text)
-  );
+  // Product rule: basic A-Z/a-z alphabet is intentionally non-blocking.
+  // We keep the historical latin_word/long_english rule keys for old evidence,
+  // but v3 only emits findings for non-ASCII foreign scripts.
+  const checkAsciiAlphabet = false;
+  if (checkAsciiAlphabet) {
+    const longSpans = englishSpans(text).filter(span =>
+      isLongEnglishSpan(span.text)
+    );
 
-  for (const span of longSpans) {
-    findings.push(
-      buildFinding(
-        paragraph,
-        EDITORIAL_FOREIGN_CHECKER_RULES.longEnglish,
-        span.start,
-        span.end,
-        span.text
-      )
-    );
-  }
+    for (const span of longSpans) {
+      findings.push(
+        buildFinding(
+          paragraph,
+          EDITORIAL_FOREIGN_CHECKER_RULES.longEnglish,
+          span.start,
+          span.end,
+          span.text
+        )
+      );
+    }
 
-  const latin = new RegExp(LATIN_WORD_RE.source, "g");
-  let latinMatch: RegExpExecArray | null;
-  while ((latinMatch = latin.exec(text)) !== null) {
-    const start = latinMatch.index;
-    const end = start + latinMatch[0].length;
-    if (overlapsRange(start, end, urlEmailRanges)) continue;
-    if (kaomojiSkipMap[start]) continue;
-    const latinContext = text.slice(
-      Math.max(0, start - 20),
-      Math.min(text.length, end + 21)
-    );
-    if (isLikelyKaomoji(latinContext)) continue;
-    if (longSpans.some(span => start >= span.start && end <= span.end))
-      continue;
-    // Isolated ASCII letters are structural labels/noise in translated prose
-    // (for example: room A, route X) and are intentionally non-blocking.
-    if (/^[A-Za-z]$/.test(latinMatch[0])) continue;
-    const normalized = normalizeEditorialAllowedWord(latinMatch[0]);
-    if (allowWords.has(normalized)) continue;
-    findings.push(
-      buildFinding(
-        paragraph,
-        EDITORIAL_FOREIGN_CHECKER_RULES.latinWord,
-        start,
-        end,
-        latinMatch[0]
-      )
-    );
+    const latin = new RegExp(LATIN_WORD_RE.source, "g");
+    let latinMatch: RegExpExecArray | null;
+    while ((latinMatch = latin.exec(text)) !== null) {
+      const start = latinMatch.index;
+      const end = start + latinMatch[0].length;
+      if (overlapsRange(start, end, urlEmailRanges)) continue;
+      if (kaomojiSkipMap[start]) continue;
+      const latinContext = text.slice(
+        Math.max(0, start - 20),
+        Math.min(text.length, end + 21)
+      );
+      if (isLikelyKaomoji(latinContext)) continue;
+      if (longSpans.some(span => start >= span.start && end <= span.end))
+        continue;
+      const normalized = normalizeEditorialAllowedWord(latinMatch[0]);
+      if (allowWords.has(normalized)) continue;
+      findings.push(
+        buildFinding(
+          paragraph,
+          EDITORIAL_FOREIGN_CHECKER_RULES.latinWord,
+          start,
+          end,
+          latinMatch[0]
+        )
+      );
+    }
   }
 
   const foreign = new RegExp(FOREIGN_SCRIPT_RE.source, "g");

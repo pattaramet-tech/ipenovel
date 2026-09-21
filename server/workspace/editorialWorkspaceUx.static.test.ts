@@ -75,6 +75,11 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).toContain("5. Stage");
     expect(source).toContain("6. Publish");
     expect(source).toContain("bulkRunChecker.useMutation");
+    expect(source).toContain("bulkCheckerSummary");
+    expect(source).toContain("สรุปผลตรวจ");
+    expect(source).toContain("ค้างตรวจ");
+    expect(source).toContain("sampleFindings");
+    expect(source).toContain("ตรวจไม่สำเร็จ:");
     expect(source).toContain("bulkApproveDrafts.useMutation");
     expect(source).toContain("bulkStageDrafts.useMutation");
     expect(source).toContain("bulkRequestPublish.useMutation");

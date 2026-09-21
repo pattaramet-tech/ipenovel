@@ -82,7 +82,7 @@ describe.sequential("Workspace Editorial editor integration", () => {
         workItemId,
         payload: source([
           "บทที่ 1 เริ่ม",
-          "เขาบอกว่าจะ support เรื่องนี้ให้เต็มที่",
+          "เขาบอกว่า テスト เรื่องนี้ให้เต็มที่",
         ]),
       });
       const initialDraftId = imported.latestDraftId!;
@@ -93,7 +93,7 @@ describe.sequential("Workspace Editorial editor integration", () => {
         expectedDraftId: initialDraftId,
       });
       const finding = firstRun.findings.find(
-        (row: any) => row.token === "support"
+        (row: any) => row.token === "テスト"
       );
       expect(finding).toBeTruthy();
 
@@ -104,8 +104,8 @@ describe.sequential("Workspace Editorial editor integration", () => {
       });
       const latestBefore = draftBefore.latestDraft!;
       const replacementSentence = finding.sentenceText.replace(
-        "support",
-        "ช่วยเหลือ"
+        "テスト",
+        "ทดสอบ"
       );
       const editInput = {
         actorUserId: owner.id,
@@ -144,7 +144,7 @@ describe.sequential("Workspace Editorial editor integration", () => {
       });
       expect(
         afterEdit.tabs[0].paragraphs.some((p: any) =>
-          p.text.includes("ช่วยเหลือ")
+          p.text.includes("ทดสอบ")
         )
       ).toBe(true);
 
@@ -162,7 +162,7 @@ describe.sequential("Workspace Editorial editor integration", () => {
         expectedDraftId: afterEdit.latestDraft!.id,
       });
       expect(
-        secondRun.findings.some((row: any) => row.token === "support")
+        secondRun.findings.some((row: any) => row.token === "テスト")
       ).toBe(false);
       expect(secondRun.effectiveStatus).toBe("passed");
 
@@ -212,7 +212,7 @@ describe.sequential("Workspace Editorial editor integration", () => {
       });
       expect(
         afterUndo.tabs[0].paragraphs.some((p: any) =>
-          p.text.includes("support")
+          p.text.includes("テスト")
         )
       ).toBe(true);
       const undoRun = await runEditorialForeignChecker({
@@ -221,7 +221,7 @@ describe.sequential("Workspace Editorial editor integration", () => {
         workItemId,
         expectedDraftId: afterUndo.latestDraft!.id,
       });
-      expect(undoRun.findings.some((row: any) => row.token === "support")).toBe(
+      expect(undoRun.findings.some((row: any) => row.token === "テスト")).toBe(
         true
       );
       const boardAfterUndoCheck = await getEditorialBoard({

@@ -42,38 +42,19 @@ describe("Editorial deterministic foreign-word checker", () => {
     expect(finding.findingKey).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it("detects a short untranslated ASCII word such as support as a separate deterministic product rule", () => {
-    const text = "เขาบอกว่าจะ support เรื่องนี้ให้เต็มที่";
-    const findings = evaluateEditorialForeignParagraph(
-      paragraph(text),
-      new Set()
-    );
-    expect(findings).toHaveLength(1);
-    expect(findings[0]).toMatchObject({
-      ruleKey: EDITORIAL_FOREIGN_CHECKER_RULES.latinWord,
-      token: "support",
-      normalizedToken: "support",
-      sentenceText: text,
-      contextText: text,
-    });
+  it("ignores basic A-Z/a-z alphabet words and acronyms", () => {
+    const text = "เขาบอกว่าจะ support BLUE WGO เรื่องนี้ให้เต็มที่";
+    expect(
+      evaluateEditorialForeignParagraph(paragraph(text), new Set())
+    ).toEqual([]);
   });
 
-  it("auto-exempts every isolated ASCII letter A-Z and a-z without hiding real Latin words", () => {
-    const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-    for (const letter of letters) {
-      expect(
-        evaluateEditorialForeignParagraph(
-          paragraph(`ประตู ${letter} ปิดอยู่`),
-          new Set()
-        )
-      ).toEqual([]);
-    }
-
+  it("ignores isolated and multi-letter ASCII alphabet tokens while preserving non-ASCII foreign scripts", () => {
     const findings = evaluateEditorialForeignParagraph(
-      paragraph("ประตู A ปิดอยู่ แต่ยังมี support ค้างในประโยค"),
+      paragraph("ประตู A ปิดอยู่ BLUE WGO support แล้วเจอ テスト"),
       new Set()
     );
-    expect(findings.map(item => item.token)).toEqual(["support"]);
+    expect(findings.map(item => item.token)).toEqual(["テスト"]);
   });
 
   it("normalizes ASCII allow words case-insensitively while keeping non-Latin tokens exact", () => {
@@ -94,19 +75,12 @@ describe("Editorial deterministic foreign-word checker", () => {
     ).toEqual([]);
   });
 
-  it("suppresses individual Latin-word noise inside a long-English span and emits one long-English finding", () => {
+  it("ignores long English alphabet spans", () => {
     const text =
       "นี่คือ The quick brown fox jumps over the lazy dog while another person keeps writing a sufficiently long untranslated English sentence ต่อด้วยไทย";
-    const findings = evaluateEditorialForeignParagraph(
-      paragraph(text),
-      new Set()
-    );
-    expect(findings).toHaveLength(1);
-    expect(findings[0].ruleKey).toBe(
-      EDITORIAL_FOREIGN_CHECKER_RULES.longEnglish
-    );
-    expect(findings[0].token).toContain("quick brown fox");
-    expect(findings[0].sentenceText).toBe(text);
+    expect(
+      evaluateEditorialForeignParagraph(paragraph(text), new Set())
+    ).toEqual([]);
   });
 
   it("does not treat short English names or skill labels as long-English spans", () => {
@@ -149,25 +123,25 @@ describe("Editorial deterministic foreign-word checker", () => {
   });
 
   it("keeps finding identity stable for the same paragraph content and offsets across deterministic rechecks", () => {
-    const input = paragraph("เขาบอกว่าจะ support เรื่องนี้");
+    const input = paragraph("เขาบอกว่า テスト เรื่องนี้");
     const first = evaluateEditorialForeignParagraph(input, new Set())[0];
     const second = evaluateEditorialForeignParagraph(input, new Set())[0];
     expect(second).toEqual(first);
   });
 
-  it("changes finding identity when paragraph content changes even if the token remains at the same offset", () => {
+  it("changes finding identity when paragraph content changes even if the foreign token remains at the same offset", () => {
     const first = evaluateEditorialForeignParagraph(
-      paragraph("abc support", {
+      paragraph("ไทย テスト", {
         paragraphFingerprint: "fingerprint-before",
       }),
-      new Set(["abc"])
-    ).find(item => item.token === "support")!;
+      new Set()
+    ).find(item => item.token === "テスト")!;
     const second = evaluateEditorialForeignParagraph(
-      paragraph("abc support", {
+      paragraph("ไทย テスト", {
         paragraphFingerprint: "fingerprint-after",
       }),
-      new Set(["abc"])
-    ).find(item => item.token === "support")!;
+      new Set()
+    ).find(item => item.token === "テスト")!;
     expect(first.findingKey).not.toBe(second.findingKey);
   });
 
@@ -179,7 +153,7 @@ describe("Editorial deterministic foreign-word checker", () => {
           paragraphKey: "p-b",
           paragraphOrder: 1,
         }),
-        paragraph("ไทย support", {
+        paragraph("ไทย Привет", {
           sourceTabId: "tab-a",
           paragraphKey: "p-a",
           paragraphOrder: 2,
