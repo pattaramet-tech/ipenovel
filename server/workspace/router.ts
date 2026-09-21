@@ -950,6 +950,27 @@ export const workspaceRouter = router({
               effectiveStatus: checker.effectiveStatus,
               findingCount: checker.findings.length,
               unresolvedCount: checker.unresolvedCount,
+              latestDraft: checker.latestDraft
+                ? {
+                    id: checker.latestDraft.id,
+                    version: checker.latestDraft.version,
+                    draftSha256: checker.latestDraft.draftSha256,
+                  }
+                : null,
+              openFindings: checker.findings
+                .filter((finding: any) => finding.disposition === "open")
+                .map((finding: any) => ({
+                  id: finding.id,
+                  findingKey: finding.findingKey,
+                  ruleKey: finding.ruleKey,
+                  token: finding.token,
+                  paragraphKey: finding.paragraphKey,
+                  paragraphFingerprint: finding.paragraphFingerprint,
+                  paragraphOrder: finding.paragraphOrder,
+                  sentenceText: finding.sentenceText,
+                  contextText: finding.contextText,
+                  resolutionVersion: finding.resolutionVersion ?? 0,
+                })),
               sampleFindings: checker.findings
                 .filter((finding: any) => finding.disposition === "open")
                 .slice(0, 5)

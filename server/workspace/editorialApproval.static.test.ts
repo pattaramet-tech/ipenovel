@@ -12,6 +12,10 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
     expect(router).toContain("effectiveStatus: checker.effectiveStatus");
     expect(router).toContain("findingCount: checker.findings.length");
     expect(router).toContain("unresolvedCount: checker.unresolvedCount");
+    expect(router).toContain("latestDraft: checker.latestDraft");
+    expect(router).toContain("openFindings: checker.findings");
+    expect(router).toContain("paragraphFingerprint: finding.paragraphFingerprint");
+    expect(router).toContain("contextText: finding.contextText");
     expect(router).toContain("sampleFindings: checker.findings");
     expect(router).toContain("bulkApproveDrafts: adminProcedure");
     expect(router).toContain("approveEditorialDraft");

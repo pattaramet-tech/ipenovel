@@ -42,6 +42,26 @@ function compactTabTitles(rows: Array<{ title: string }>, limit = 6) {
     : shown.join(", ");
 }
 
+function groupBulkCheckerParagraphs(findings: any[]) {
+  const groups = new Map<string, any>();
+  for (const finding of findings ?? []) {
+    const key = `${finding.paragraphKey}:${finding.paragraphFingerprint}`;
+    const current = groups.get(key);
+    if (current) {
+      current.findings.push(finding);
+    } else {
+      groups.set(key, {
+        paragraphKey: finding.paragraphKey,
+        paragraphFingerprint: finding.paragraphFingerprint,
+        paragraphOrder: finding.paragraphOrder,
+        contextText: finding.contextText,
+        findings: [finding],
+      });
+    }
+  }
+  return Array.from(groups.values()).sort((a, b) => Number(a.paragraphOrder ?? 0) - Number(b.paragraphOrder ?? 0));
+}
+
 function parseEpisodeRangeFromFileName(fileName: string) {
   const base = fileName.replace(/\.[^.]+$/, "").trim();
   const match = base.match(/^(\d{1,6})(?:\s*[-–—]\s*(\d{1,6}))?(?:\s+|[_-]+)?(.*)$/);
@@ -89,6 +109,18 @@ export default function WorkspacePage() {
   const [selectedSourceWorkItemId, setSelectedSourceWorkItemId] = useState<number>();
   const [selectedEditorialWorkItemIds, setSelectedEditorialWorkItemIds] = useState<number[]>([]);
   const [bulkCheckerSummary, setBulkCheckerSummary] = useState<Array<any>>([]);
+  const [bulkEditorTarget, setBulkEditorTarget] = useState<{
+    workItemId: number;
+    paragraphKey: string;
+    paragraphFingerprint: string;
+    expectedText: string;
+    draftId: number;
+    draftVersion: number;
+    draftSha256: string;
+    findingId: number;
+    findingKey: string;
+  }>();
+  const [bulkEditorText, setBulkEditorText] = useState("");
   const [googleConnectionId, setGoogleConnectionId] = useState("");
   const [googleDocUrl, setGoogleDocUrl] = useState("");
   const [episodeGoogleDocUrl, setEpisodeGoogleDocUrl] = useState("");
@@ -376,7 +408,11 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const bulkRunEditorialChecker = trpc.workspace.editorial.bulkRunChecker.useMutation({
-    onMutate: () => setBulkCheckerSummary([]),
+    onMutate: () => {
+      setBulkCheckerSummary([]);
+      setBulkEditorTarget(undefined);
+      setBulkEditorText("");
+    },
     onSuccess: async (results) => {
       setBulkCheckerSummary(results as any[]);
       await refreshBulkEditorial();
@@ -390,6 +426,77 @@ export default function WorkspacePage() {
       setBulkCheckerSummary([]);
       toast.error(error.message);
     },
+  });
+  const rerunBulkEditedChecker = trpc.workspace.editorial.foreignCheckerRun.useMutation();
+  const bulkEditEditorialFinding = trpc.workspace.editorial.editorEdit.useMutation({
+    onSuccess: async (result, variables) => {
+      setBulkEditorTarget(undefined);
+      setBulkEditorText("");
+      if (!result.draft?.id || result.isCurrent === false) {
+        setBulkCheckerSummary((current) => current.map((item: any) =>
+          item.workItemId === variables.workItemId
+            ? { ...item, ok: false, error: "บันทึกแล้ว แต่ Draft ปัจจุบันเปลี่ยนก่อนตรวจซ้ำ" }
+            : item
+        ));
+        await refreshBulkEditorial();
+        toast.error("บันทึกแล้ว แต่ Draft ปัจจุบันเปลี่ยนก่อนตรวจซ้ำ");
+        return;
+      }
+      try {
+        const checker = await rerunBulkEditedChecker.mutateAsync({
+          workspaceId: variables.workspaceId,
+          workItemId: variables.workItemId,
+          expectedDraftId: result.draft.id,
+        });
+        const openFindings = (checker.findings ?? [])
+          .filter((finding: any) => finding.disposition === "open")
+          .map((finding: any) => ({
+            id: finding.id,
+            findingKey: finding.findingKey,
+            ruleKey: finding.ruleKey,
+            token: finding.token,
+            paragraphKey: finding.paragraphKey,
+            paragraphFingerprint: finding.paragraphFingerprint,
+            paragraphOrder: finding.paragraphOrder,
+            sentenceText: finding.sentenceText,
+            contextText: finding.contextText,
+            resolutionVersion: finding.resolutionVersion ?? 0,
+          }));
+        setBulkCheckerSummary((current) => current.map((item: any) =>
+          item.workItemId === variables.workItemId
+            ? {
+                workItemId: variables.workItemId,
+                ok: true,
+                runId: checker.run?.id ?? null,
+                effectiveStatus: checker.effectiveStatus,
+                findingCount: checker.findings?.length ?? 0,
+                unresolvedCount: checker.unresolvedCount ?? 0,
+                latestDraft: checker.latestDraft
+                  ? {
+                      id: checker.latestDraft.id,
+                      version: checker.latestDraft.version,
+                      draftSha256: checker.latestDraft.draftSha256,
+                    }
+                  : null,
+                openFindings,
+                sampleFindings: openFindings.slice(0, 5).map((finding: any) => ({ token: finding.token, ruleKey: finding.ruleKey })),
+              }
+            : item
+        ));
+        await refreshBulkEditorial();
+        toast.success(checker.unresolvedCount ? `บันทึกแล้ว · ยังเหลือ ${checker.unresolvedCount} จุด` : "บันทึกแล้ว · ผ่านการตรวจ");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setBulkCheckerSummary((current) => current.map((item: any) =>
+          item.workItemId === variables.workItemId
+            ? { ...item, ok: false, error: `บันทึกแล้ว แต่ตรวจซ้ำไม่สำเร็จ: ${message}` }
+            : item
+        ));
+        await refreshBulkEditorial();
+        toast.error(`บันทึกแล้ว แต่ตรวจซ้ำไม่สำเร็จ: ${message}`);
+      }
+    },
+    onError: (error) => toast.error(error.message),
   });
   const bulkRequestEditorialPublish = trpc.workspace.editorial.bulkRequestPublish.useMutation({
     onSuccess: async (results) => {
@@ -976,7 +1083,7 @@ export default function WorkspacePage() {
   const visibleEditorialWorkItemIds = visibleEditorialCards.map((card: any) => card.workItemId).filter((id: any): id is number => Number.isInteger(id));
   const uncheckedEditorialWorkItemIds = visibleEditorialCards.filter((card: any) => !card.evidence?.checker).map((card: any) => card.workItemId);
   const readyEditorialWorkItemIds = visibleEditorialCards.filter((card: any) => card.evidence?.readyToPublish && !card.evidence?.published).map((card: any) => card.workItemId);
-  const bulkBusy = bulkRunEditorialChecker.isPending || bulkApproveEditorialDrafts.isPending || bulkStageEditorialDrafts.isPending || bulkRequestEditorialPublish.isPending;
+  const bulkBusy = Boolean(bulkEditorTarget) || bulkRunEditorialChecker.isPending || bulkEditEditorialFinding.isPending || rerunBulkEditedChecker.isPending || bulkApproveEditorialDrafts.isPending || bulkStageEditorialDrafts.isPending || bulkRequestEditorialPublish.isPending;
   const selectedEditorialCards = editorialCards.filter((card: any) => selectedEditorialSet.has(card.workItemId));
   const bulkSelectionLabel = selectedEditorialCards.map((card: any) => `${card.novel?.title ?? "ไม่ทราบเรื่อง"} ${card.episodeNumber ? `ตอน ${card.episodeNumber}` : ""}`.trim()).join("\n");
   const normalizedEpisodeNovelSearch = episodeNovelSearch.trim().toLocaleLowerCase("th");
@@ -1525,17 +1632,95 @@ export default function WorkspacePage() {
                       {bulkCheckerSummary.map((result: any) => {
                         const card = editorialCards.find((candidate: any) => candidate.workItemId === result.workItemId);
                         const label = `${card?.novel?.title ?? "ไม่ทราบเรื่อง"} · ${card?.episodeNumber ?? `Work item #${result.workItemId}`}`;
-                        const samples = (result.sampleFindings ?? []).map((finding: any) => finding.token).filter(Boolean);
-                        return <div key={result.workItemId} className="grid gap-1 rounded border px-3 py-2 text-xs md:grid-cols-[minmax(0,1fr)_auto]">
-                          <div>
-                            <div className="font-medium">{label}</div>
-                            {result.ok && result.effectiveStatus === "failed" && <div className="text-amber-700">พบ {result.findingCount ?? result.unresolvedCount ?? 0} · ค้าง {result.unresolvedCount ?? 0}{samples.length ? ` · ตัวอย่าง: ${samples.join(", ")}` : ""}</div>}
-                            {result.ok && result.effectiveStatus === "passed" && <div className="text-emerald-700">ผ่าน · ไม่พบคำต่างประเทศที่ต้องแก้</div>}
-                            {!result.ok && <div className="text-red-700">ตรวจไม่สำเร็จ: {result.error}</div>}
+                        const paragraphs = result.ok ? groupBulkCheckerParagraphs(result.openFindings ?? []) : [];
+                        return <div key={result.workItemId} className="rounded border px-3 py-2 text-xs">
+                          <div className="grid gap-1 md:grid-cols-[minmax(0,1fr)_auto]">
+                            <div>
+                              <div className="font-medium">{label}</div>
+                              {result.ok && result.effectiveStatus === "failed" && <div className="text-amber-700">พบ {result.findingCount ?? result.unresolvedCount ?? 0} · ค้าง {result.unresolvedCount ?? 0} · {paragraphs.length} ย่อหน้าที่ต้องแก้</div>}
+                              {result.ok && result.effectiveStatus === "passed" && <div className="text-emerald-700">ผ่าน · ไม่พบคำต่างประเทศที่ต้องแก้</div>}
+                              {!result.ok && <div className="text-red-700">ตรวจไม่สำเร็จ: {result.error}</div>}
+                            </div>
+                            <div className={result.ok ? (result.effectiveStatus === "passed" ? "text-emerald-700" : "text-amber-700") : "text-red-700"}>
+                              {result.ok ? (result.effectiveStatus === "passed" ? "ผ่าน" : "ต้องแก้") : "ผิดพลาด"}
+                            </div>
                           </div>
-                          <div className={result.ok ? (result.effectiveStatus === "passed" ? "text-emerald-700" : "text-amber-700") : "text-red-700"}>
-                            {result.ok ? (result.effectiveStatus === "passed" ? "ผ่าน" : "ต้องแก้") : "ผิดพลาด"}
-                          </div>
+                          {result.ok && result.effectiveStatus === "failed" && paragraphs.length > 0 && (
+                            <div className="mt-2 space-y-2">
+                              {paragraphs.map((paragraph: any) => {
+                                const anchorFinding = paragraph.findings[0];
+                                const tokens = Array.from(new Set(paragraph.findings.map((finding: any) => finding.token).filter(Boolean)));
+                                const editing = bulkEditorTarget?.workItemId === result.workItemId && bulkEditorTarget?.paragraphKey === paragraph.paragraphKey;
+                                return <div key={`${result.workItemId}:${paragraph.paragraphKey}:${paragraph.paragraphFingerprint}`} className="rounded-md border bg-muted/10 p-3">
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div className="font-medium">ย่อหน้า {paragraph.paragraphOrder} · พบ {paragraph.findings.length} จุด{tokens.length ? ` · ${tokens.join(", ")}` : ""}</div>
+                                    {!editing && <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      disabled={!result.latestDraft || !anchorFinding || bulkBusy}
+                                      onClick={() => {
+                                        if (!result.latestDraft || !anchorFinding) return;
+                                        setBulkEditorTarget({
+                                          workItemId: result.workItemId,
+                                          paragraphKey: paragraph.paragraphKey,
+                                          paragraphFingerprint: paragraph.paragraphFingerprint,
+                                          expectedText: paragraph.contextText,
+                                          draftId: result.latestDraft.id,
+                                          draftVersion: result.latestDraft.version,
+                                          draftSha256: result.latestDraft.draftSha256,
+                                          findingId: anchorFinding.id,
+                                          findingKey: anchorFinding.findingKey,
+                                        });
+                                        setBulkEditorText(paragraph.contextText);
+                                      }}
+                                    >แก้ย่อหน้านี้</Button>}
+                                  </div>
+                                  <div className="mt-2 whitespace-pre-wrap rounded bg-background p-2 text-sm leading-6">{paragraph.contextText}</div>
+                                  {editing && bulkEditorTarget && (
+                                    <div className="mt-2 space-y-2">
+                                      <textarea
+                                        className="min-h-32 w-full rounded-md border bg-background p-3 text-sm leading-6"
+                                        value={bulkEditorText}
+                                        maxLength={200000}
+                                        disabled={bulkEditEditorialFinding.isPending || rerunBulkEditedChecker.isPending}
+                                        onChange={(event) => setBulkEditorText(event.target.value)}
+                                        autoFocus
+                                      />
+                                      <div className="flex flex-wrap justify-end gap-2">
+                                        <Button type="button" size="sm" variant="ghost" disabled={bulkEditEditorialFinding.isPending || rerunBulkEditedChecker.isPending} onClick={() => { setBulkEditorTarget(undefined); setBulkEditorText(""); }}>ยกเลิก</Button>
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          disabled={bulkEditEditorialFinding.isPending || rerunBulkEditedChecker.isPending || bulkEditorText === bulkEditorTarget.expectedText}
+                                          onClick={() => bulkEditEditorialFinding.mutate({
+                                            workspaceId: selectedWorkspaceId!,
+                                            workItemId: bulkEditorTarget.workItemId,
+                                            expectedDraftId: bulkEditorTarget.draftId,
+                                            expectedDraftVersion: bulkEditorTarget.draftVersion,
+                                            expectedDraftSha256: bulkEditorTarget.draftSha256,
+                                            findingId: bulkEditorTarget.findingId,
+                                            findingKey: bulkEditorTarget.findingKey,
+                                            command: {
+                                              kind: "replace_paragraph",
+                                              paragraphKey: bulkEditorTarget.paragraphKey,
+                                              expectedParagraphFingerprint: bulkEditorTarget.paragraphFingerprint,
+                                              expectedText: bulkEditorTarget.expectedText,
+                                              replacementText: bulkEditorText,
+                                            },
+                                            idempotencyKey: `bulk-editor:${bulkEditorTarget.draftId}:${bulkEditorTarget.findingId}:${Date.now()}`,
+                                          })}
+                                        >
+                                          {(bulkEditEditorialFinding.isPending || rerunBulkEditedChecker.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                                          บันทึก + ตรวจซ้ำ
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>;
+                              })}
+                            </div>
+                          )}
                         </div>;
                       })}
                     </div>

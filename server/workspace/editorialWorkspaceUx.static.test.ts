@@ -78,7 +78,13 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).toContain("bulkCheckerSummary");
     expect(source).toContain("สรุปผลตรวจ");
     expect(source).toContain("ค้างตรวจ");
-    expect(source).toContain("sampleFindings");
+    expect(source).toContain("openFindings");
+    expect(source).toContain("groupBulkCheckerParagraphs");
+    expect(source).toContain("แก้ย่อหน้านี้");
+    expect(source).toContain("บันทึก + ตรวจซ้ำ");
+    expect(source).toContain('kind: "replace_paragraph"');
+    expect(source).toContain("bulkEditEditorialFinding");
+    expect(source).toContain("rerunBulkEditedChecker");
     expect(source).toContain("ตรวจไม่สำเร็จ:");
     expect(source).toContain("bulkApproveDrafts.useMutation");
     expect(source).toContain("bulkStageDrafts.useMutation");
