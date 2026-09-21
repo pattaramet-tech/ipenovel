@@ -24,6 +24,7 @@ import {
   createWorkspace,
   createWorkspacePublicationNovel,
   listPublicationNovelOptions,
+  unbindPublicationNovel,
 } from "./service";
 
 describe.sequential("Workspace Editorial Kanban B1/B2 integration", () => {
@@ -38,7 +39,7 @@ describe.sequential("Workspace Editorial Kanban B1/B2 integration", () => {
     let boardId: number | null = null;
 
     try {
-      await bindPublicationNovel({
+      const binding = await bindPublicationNovel({
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
         novelId: novel.id,
@@ -96,6 +97,37 @@ describe.sequential("Workspace Editorial Kanban B1/B2 integration", () => {
         workspace.workspaceId
       );
       expect(options.find(option => option.id === novel.id)?.bound).toBe(true);
+
+      await unbindPublicationNovel({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workspaceNovelId: binding.workspaceNovelId,
+      });
+      const hiddenAfterUnlink = await getEditorialBoard({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+      });
+      expect(hiddenAfterUnlink?.columns.flatMap(column => column.cards)).toHaveLength(0);
+      expect(hiddenAfterUnlink?.transitions).toHaveLength(0);
+      const [durableCard] = await db.select().from(workspaceKanbanCards).where(eq(workspaceKanbanCards.id, storyCard!.id)).limit(1);
+      expect(durableCard?.status).toBe("active");
+
+      const rebound = await bindPublicationNovel({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        novelId: novel.id,
+      });
+      expect(rebound.workspaceNovelId).toBe(binding.workspaceNovelId);
+      expect(rebound.created).toBe(false);
+      const restoredAfterRelink = await getEditorialBoard({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+      });
+      const restoredCards = restoredAfterRelink?.columns.flatMap(column => column.cards) ?? [];
+      expect(restoredCards).toHaveLength(1);
+      expect(restoredCards[0]?.id).toBe(storyCard!.id);
+      expect(restoredCards[0]?.novel?.id).toBe(novel.id);
+      expect(restoredAfterRelink?.transitions).toHaveLength(2);
     } finally {
       if (boardId) {
         await db

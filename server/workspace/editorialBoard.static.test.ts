@@ -37,6 +37,19 @@ describe("Workspace Editorial board B1/B2 static boundaries", () => {
     expect(service).toContain('reason: "editorial_episode_intake"');
   });
 
+  it("projects only cards from actively linked Workspace novels and filters transition counts to the same visible set", () => {
+    const service = source("server/workspace/editorialBoard.service.ts");
+    const workspaceService = source("server/workspace/service.ts");
+    expect(service).toContain('eq(workspaceNovels.status, "active")');
+    expect(service).toContain("stories.has(card.workspaceNovelId)");
+    expect(service).toContain("const visibleCardIds = new Set(projectedCards.map");
+    expect(service).toContain("visibleCardIds.has(row.transition.cardId)");
+    expect(workspaceService).toContain('set({ status: "unlinked"');
+    expect(workspaceService).toContain('set({ status: "active", version:');
+    expect(service).not.toContain("delete(workspaceEditorialWorkItems)");
+    expect(service).not.toContain("delete(workspaceKanbanCards)");
+  });
+
   it("keeps intake admin-gated and creates new publication novels hidden", () => {
     const router = source("server/workspace/router.ts");
     const workspaceService = source("server/workspace/service.ts");

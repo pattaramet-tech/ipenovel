@@ -251,7 +251,10 @@ async function loadEditorialBoardReadModel(db: any, workspaceId: number) {
         : null,
       history,
     };
-  });
+  }).filter((card: any) =>
+    Number.isInteger(card.workspaceNovelId) && stories.has(card.workspaceNovelId)
+  );
+  const visibleCardIds = new Set(projectedCards.map((card: any) => card.id));
 
   return {
     board,
@@ -259,7 +262,9 @@ async function loadEditorialBoardReadModel(db: any, workspaceId: number) {
       ...column,
       cards: projectedCards.filter((card: any) => card.columnId === column.id),
     })),
-    transitions: transitions.map((row: any) => row.transition),
+    transitions: transitions
+      .filter((row: any) => visibleCardIds.has(row.transition.cardId))
+      .map((row: any) => row.transition),
     assignees: adminUsers,
   };
 }
