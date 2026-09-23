@@ -7,8 +7,10 @@ import {
   pingDatabase,
   DB_PING_TIMEOUT_MS,
   normalizeDeploymentRevision,
+  normalizeDeploymentEnvironment,
   type DatabasePing,
   type RevisionProvider,
+  type EnvironmentProvider,
 } from "./healthReadiness";
 import { __setDbForTests } from "../db";
 
@@ -23,11 +25,18 @@ import { __setDbForTests } from "../db";
 async function startTestServer(
   ping?: DatabasePing,
   timeoutMs?: number,
-  revisionProvider: RevisionProvider = () => undefined
+  revisionProvider: RevisionProvider = () => undefined,
+  environmentProvider: EnvironmentProvider = () => undefined
 ): Promise<{ baseUrl: string; server: Server }> {
   const app = express();
   app.set("trust proxy", 1);
-  registerHealthReadinessRoutes(app, ping, timeoutMs, revisionProvider);
+  registerHealthReadinessRoutes(
+    app,
+    ping,
+    timeoutMs,
+    revisionProvider,
+    environmentProvider
+  );
   app.use((req, res) => {
     res.redirect(301, "https://canonical.example.test" + req.originalUrl);
   });
@@ -45,13 +54,22 @@ function closeServer(server: Server): Promise<void> {
   return new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
 }
 
-describe("normalizeDeploymentRevision", () => {
-  it("normalizes valid Git revisions and rejects arbitrary environment text", () => {
+describe("deployment readiness metadata normalization", () => {
+  it("normalizes valid Git revisions and rejects arbitrary revision text", () => {
     expect(normalizeDeploymentRevision(" AEE7BF2F11FBB4918EA82BC19AF51EB964AC4857 ")).toBe(
       "aee7bf2f11fbb4918ea82bc19af51eb964ac4857"
     );
     expect(normalizeDeploymentRevision("not-a-git-sha")).toBeUndefined();
     expect(normalizeDeploymentRevision(undefined)).toBeUndefined();
+  });
+
+  it("allows only explicit deployment environment labels", () => {
+    expect(normalizeDeploymentEnvironment(" production-staging ")).toBe(
+      "production-staging"
+    );
+    expect(normalizeDeploymentEnvironment("production")).toBe("production");
+    expect(normalizeDeploymentEnvironment("preview")).toBe("preview");
+    expect(normalizeDeploymentEnvironment("secret-prod-east")).toBeUndefined();
   });
 });
 
@@ -106,6 +124,43 @@ describe("registerHealthReadinessRoutes", () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ status: "ready", revision: revision.toLowerCase() });
+  });
+
+  it("GET /readyz includes only an allowlisted deployment environment", async () => {
+    const ping = vi.fn().mockResolvedValue(undefined);
+    const revision = "AEE7BF2F11FBB4918EA82BC19AF51EB964AC4857";
+    const started = await startTestServer(
+      ping,
+      undefined,
+      () => revision,
+      () => "production-staging"
+    );
+    server = started.server;
+
+    const res = await fetch(`${started.baseUrl}/readyz`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      status: "ready",
+      revision: revision.toLowerCase(),
+      environment: "production-staging",
+    });
+  });
+
+  it("GET /readyz omits an arbitrary deployment environment", async () => {
+    const ping = vi.fn().mockResolvedValue(undefined);
+    const started = await startTestServer(
+      ping,
+      undefined,
+      () => undefined,
+      () => "private-prod-east-secret"
+    );
+    server = started.server;
+
+    const res = await fetch(`${started.baseUrl}/readyz`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "ready" });
   });
 
   it("GET /readyz omits an invalid SOURCE_COMMIT-like value", async () => {

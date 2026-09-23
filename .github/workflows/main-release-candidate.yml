@@ -1,0 +1,91 @@
+name: Main Production Release Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact current main HEAD to bind as the release candidate
+        required: true
+        type: string
+      production_baseline_sha:
+        description: Exact currently deployed Production rollback/baseline SHA
+        required: true
+        type: string
+      confirmation:
+        description: Type CREATE_MAIN_RELEASE_CANDIDATE exactly
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: main-production-release-candidate
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Bind exact main release candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PRODUCTION_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      PRODUCTION_BASELINE_SHA: ${{ inputs.production_baseline_sha }}
+      PRODUCTION_RC_CONFIRMATION: ${{ inputs.confirmation }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Require dispatch from main
+        run: |
+          test "$GITHUB_REF_NAME" = "main" || {
+            echo "Release candidate creation must be dispatched from main"
+            exit 1
+          }
+
+      - name: Refresh main
+        run: git fetch --no-tags origin main
+
+      - name: Mark main-bound RC pending
+        run: node scripts/production-staging-status.mjs rc pending
+
+      - name: Validate exact main-bound candidate
+        run: node scripts/main-release-candidate-preflight.mjs
+
+      - name: Upload release candidate manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: main-release-candidate-${{ github.run_id }}
+          retention-days: 30
+          path: main-release-candidate-manifest.json
+
+  record:
+    name: Record main-bound release candidate
+    if: ${{ always() }}
+    needs:
+      - validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PRODUCTION_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      PRODUCTION_BASELINE_SHA: ${{ inputs.production_baseline_sha }}
+      PRODUCTION_RESULT: ${{ needs.validate.result }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Record final main-bound status
+        run: node scripts/production-staging-status.mjs rc final
+
+      - name: Bind RC to Production baseline
+        run: node scripts/production-staging-status.mjs rc-baseline final

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       candidate_sha:
-        description: Full 40-character SHA already proven on Preview
+        description: Full 40-character main-bound SHA proven on isolated Production staging
         required: true
         type: string
       rollback_sha:
@@ -52,9 +52,8 @@ jobs:
       PRODUCTION_BASELINE_CONFIRMED: ${{ inputs.baseline_confirmed && '1' || '0' }}
       PRODUCTION_MIGRATION_REVIEW_CONFIRMED: ${{ inputs.migration_review_confirmed && '1' || '0' }}
       PRODUCTION_CONFIRMATION: ${{ inputs.confirmation }}
-      PRODUCTION_PREVIEW_BRANCH: fix/m12d8-reconcile-056-ui
       PRODUCTION_LEGACY_BRANCH: fix/ipe045-account-recovery-survivor-donor
-      PRODUCTION_PREVIEW_URL: https://r2-preview.ipenovel.com
+      PRODUCTION_STAGING_URL: https://production-staging.ipenovel.com
       PRODUCTION_BASE_URL: https://ipenovel.com
       VITE_PAYMENT_QR_IMAGE_URL: ${{ vars.PRODUCTION_VITE_PAYMENT_QR_IMAGE_URL }}
       GITHUB_TOKEN: ${{ github.token }}
@@ -73,7 +72,9 @@ jobs:
 
       - name: Fetch controlled source branches
         run: |
-          git fetch --no-tags origin             fix/m12d8-reconcile-056-ui             fix/ipe045-account-recovery-survivor-donor
+          git fetch --no-tags origin \
+            main \
+            fix/ipe045-account-recovery-survivor-donor
 
       - name: Mark Production promotion authorization pending
         env:

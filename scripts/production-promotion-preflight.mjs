@@ -4,10 +4,11 @@ import process from "node:process";
 import { execFileSync } from "node:child_process";
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
-const PREVIEW_STATUS_CONTEXT = "preview/promotion-eligibility";
-const PREVIEW_HOST = "r2-preview.ipenovel.com";
+const MAIN_BOUND_CONTEXT = "production-staging/main-bound-rc";
+const STAGING_STATUS_CONTEXT = "production-staging/release-candidate";
+const STAGING_ENVIRONMENT = "production-staging";
+const STAGING_HOST = "production-staging.ipenovel.com";
 const PRODUCTION_HOST = "ipenovel.com";
-const DEFAULT_PREVIEW_BRANCH = "fix/m12d8-reconcile-056-ui";
 const DEFAULT_LEGACY_PROD_BRANCH = "fix/ipe045-account-recovery-survivor-donor";
 const CONFIRMATION = "AUTHORIZE_PRODUCTION_PROMOTION";
 
@@ -27,8 +28,9 @@ function truthy(value) {
 
 function fullSha(name) {
   const value = required(name).toLowerCase();
-  if (!SHA_PATTERN.test(value))
+  if (!SHA_PATTERN.test(value)) {
     fail(`${name} must be a full 40-character Git SHA.`);
+  }
   return value;
 }
 
@@ -80,14 +82,17 @@ async function fetchJson(url, token) {
     headers.Authorization = `Bearer ${token}`;
     headers["X-GitHub-Api-Version"] = "2022-11-28";
   }
+
   const response = await fetch(url, {
     headers,
     signal: AbortSignal.timeout(10_000),
   });
+
   let body = null;
   try {
     body = await response.json();
   } catch {}
+
   if (!response.ok) {
     fail(`Request failed HTTP ${response.status}: ${new URL(url).pathname}`);
   }
@@ -102,8 +107,8 @@ function assertHost(urlString, expectedHost, name) {
   return url;
 }
 
-function extractRunId(targetUrl, repository) {
-  if (!targetUrl) fail("Preview promotion status has no workflow target URL.");
+function extractRunId(targetUrl, repository, label) {
+  if (!targetUrl) fail(`${label} status has no workflow target URL.`);
   const url = new URL(targetUrl);
   const expectedPathPrefix = `/${repository}/actions/runs/`;
   if (
@@ -112,12 +117,14 @@ function extractRunId(targetUrl, repository) {
     !url.pathname.startsWith(expectedPathPrefix)
   ) {
     fail(
-      "Preview promotion status target URL is not a workflow run for this repository."
+      `${label} status target URL is not a workflow run for this repository.`
     );
   }
+
   const runId = url.pathname.slice(expectedPathPrefix.length).split("/")[0];
-  if (!/^\d+$/.test(runId))
-    fail("Preview promotion workflow run ID is invalid.");
+  if (!/^\d+$/.test(runId)) {
+    fail(`${label} workflow run ID is invalid.`);
+  }
   return runId;
 }
 
@@ -133,6 +140,7 @@ function migrationDelta(rollback, candidate) {
   const riskyPattern =
     /\b(DROP\s+(?:TABLE|COLUMN|INDEX)|TRUNCATE\b|DELETE\s+FROM\b|RENAME\s+COLUMN\b|MODIFY\s+COLUMN\b|CHANGE\s+COLUMN\b)\s*/gi;
   const risky = [];
+
   for (const file of files) {
     const text = git(["show", `${candidate}:${file}`]);
     for (const match of text.matchAll(riskyPattern)) {
@@ -155,12 +163,10 @@ async function main() {
   const apiBase =
     process.env.GITHUB_API_URL?.trim() || "https://api.github.com";
   const token = process.env.GITHUB_TOKEN?.trim() || "";
-  const previewBranch =
-    process.env.PRODUCTION_PREVIEW_BRANCH?.trim() || DEFAULT_PREVIEW_BRANCH;
   const legacyProdBranch =
     process.env.PRODUCTION_LEGACY_BRANCH?.trim() || DEFAULT_LEGACY_PROD_BRANCH;
-  const previewBase =
-    process.env.PRODUCTION_PREVIEW_URL?.trim() || `https://${PREVIEW_HOST}`;
+  const stagingBase =
+    process.env.PRODUCTION_STAGING_URL?.trim() || `https://${STAGING_HOST}`;
   const productionBase =
     process.env.PRODUCTION_BASE_URL?.trim() || `https://${PRODUCTION_HOST}`;
   const manifestPath = path.resolve(
@@ -168,7 +174,7 @@ async function main() {
       "production-promotion-manifest.json"
   );
 
-  assertHost(previewBase, PREVIEW_HOST, "PRODUCTION_PREVIEW_URL");
+  assertHost(stagingBase, STAGING_HOST, "PRODUCTION_STAGING_URL");
   assertHost(productionBase, PRODUCTION_HOST, "PRODUCTION_BASE_URL");
 
   if (required("PRODUCTION_CONFIRMATION") !== CONFIRMATION) {
@@ -181,56 +187,102 @@ async function main() {
     fail("Production rollback baseline confirmation is required.");
   }
 
-  if (!gitExists(candidate))
+  if (!gitExists(candidate)) {
     fail("Candidate SHA is not present in the fetched repository.");
-  if (!gitExists(rollback))
+  }
+  if (!gitExists(rollback)) {
     fail("Rollback SHA is not present in the fetched repository.");
+  }
   if (!isAncestor(rollback, candidate)) {
     fail(
       "Rollback SHA is not an ancestor of the candidate; refusing non-linear promotion."
     );
   }
 
-  const previewHead = remoteBranchHead(previewBranch);
-  if (previewHead !== candidate) {
-    fail(
-      `Candidate is not current origin/${previewBranch} HEAD (expected ${previewHead}).`
-    );
+  const mainHead = remoteBranchHead("main");
+  if (!isAncestor(candidate, mainHead)) {
+    fail("Candidate is not contained in current origin/main history.");
   }
 
   const legacyProdHead = remoteBranchHead(legacyProdBranch);
 
-  const ready = await fetchJson(new URL("/readyz", previewBase), "");
+  const stagingReady = await fetchJson(new URL("/readyz", stagingBase), "");
   if (
-    ready?.status !== "ready" ||
-    String(ready?.revision || "").toLowerCase() !== candidate
+    stagingReady?.status !== "ready" ||
+    String(stagingReady?.revision || "").toLowerCase() !== candidate ||
+    stagingReady?.environment !== STAGING_ENVIRONMENT
   ) {
-    fail("Preview /readyz does not report the exact candidate revision.");
+    fail(
+      "Production staging /readyz does not report the exact candidate and production-staging environment."
+    );
   }
 
   const statuses = await fetchJson(
     `${apiBase}/repos/${repository}/commits/${candidate}/statuses?per_page=100`,
     token
   );
-  const previewStatus = statuses.find(
-    item => item?.context === PREVIEW_STATUS_CONTEXT
+
+  const mainBoundStatus = statuses.find(
+    item => item?.context === MAIN_BOUND_CONTEXT
   );
-  if (!previewStatus || previewStatus.state !== "success") {
-    fail("Candidate does not have preview/promotion-eligibility=success.");
+  if (!mainBoundStatus || mainBoundStatus.state !== "success") {
+    fail("Candidate does not have production-staging/main-bound-rc=success.");
   }
 
-  const previewRunId = extractRunId(previewStatus.target_url, repository);
-  const previewRun = await fetchJson(
-    `${apiBase}/repos/${repository}/actions/runs/${previewRunId}`,
+  const stagingStatus = statuses.find(
+    item => item?.context === STAGING_STATUS_CONTEXT
+  );
+  if (!stagingStatus || stagingStatus.state !== "success") {
+    fail(
+      "Candidate does not have production-staging/release-candidate=success."
+    );
+  }
+
+  const releaseBaselineContext = `production-staging/release-baseline/${rollback}`;
+  const releaseBaselineStatus = statuses.find(
+    item => item?.context === releaseBaselineContext
+  );
+  if (!releaseBaselineStatus || releaseBaselineStatus.state !== "success") {
+    fail(
+      "Candidate staging evidence is not bound to the requested Production rollback baseline."
+    );
+  }
+
+  const mainBoundRunId = extractRunId(
+    mainBoundStatus.target_url,
+    repository,
+    "Main-bound RC"
+  );
+  const mainBoundRun = await fetchJson(
+    `${apiBase}/repos/${repository}/actions/runs/${mainBoundRunId}`,
     token
   );
   if (
-    previewRun?.event !== "repository_dispatch" ||
-    previewRun?.conclusion !== "success" ||
-    previewRun?.display_title !== "preview-deployed"
+    mainBoundRun?.event !== "workflow_dispatch" ||
+    mainBoundRun?.conclusion !== "success" ||
+    mainBoundRun?.name !== "Main Production Release Candidate"
   ) {
     fail(
-      "Preview promotion status does not point to a successful preview-deployed repository_dispatch run."
+      "Main-bound RC status does not point to a successful Main Production Release Candidate workflow run."
+    );
+  }
+
+  const stagingRunId = extractRunId(
+    stagingStatus.target_url,
+    repository,
+    "Production staging"
+  );
+  const stagingRun = await fetchJson(
+    `${apiBase}/repos/${repository}/actions/runs/${stagingRunId}`,
+    token
+  );
+  if (
+    stagingRun?.event !== "repository_dispatch" ||
+    stagingRun?.conclusion !== "success" ||
+    stagingRun?.name !== "Production Staging Regression Gate"
+  ) {
+    fail(
+      "Production staging status does not point to a successful repository_dispatch regression run."
     );
   }
 
@@ -238,6 +290,7 @@ async function main() {
   const observedProdRevision = String(prodReady?.revision || "")
     .trim()
     .toLowerCase();
+
   let baselineMode = "revision-aware";
   if (observedProdRevision) {
     if (
@@ -268,18 +321,26 @@ async function main() {
   }
 
   const manifest = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     generatedAt: new Date().toISOString(),
     repository,
     candidateSha: candidate,
     rollbackSha: rollback,
-    previewBranch,
-    previewBranchHead: previewHead,
-    previewEligibility: {
-      context: PREVIEW_STATUS_CONTEXT,
-      state: previewStatus.state,
-      workflowRunId: Number(previewRunId),
-      workflowRunUrl: previewStatus.target_url,
+    main: {
+      currentHead: mainHead,
+      candidateContainedInMain: true,
+      mainBoundContext: MAIN_BOUND_CONTEXT,
+      mainBoundWorkflowRunId: Number(mainBoundRunId),
+      mainBoundWorkflowRunUrl: mainBoundStatus.target_url,
+    },
+    productionStaging: {
+      environment: STAGING_ENVIRONMENT,
+      url: stagingBase,
+      revision: candidate,
+      eligibilityContext: STAGING_STATUS_CONTEXT,
+      workflowRunId: Number(stagingRunId),
+      workflowRunUrl: stagingStatus.target_url,
+      releaseBaselineContext,
     },
     productionBaseline: {
       mode: baselineMode,
@@ -311,8 +372,9 @@ async function main() {
 
   console.log(`[production-preflight] candidate=${candidate}`);
   console.log(`[production-preflight] rollback=${rollback}`);
+  console.log(`[production-preflight] mainBound=success run=${mainBoundRunId}`);
   console.log(
-    `[production-preflight] previewEligibility=success run=${previewRunId}`
+    `[production-preflight] productionStaging=success run=${stagingRunId}`
   );
   console.log(`[production-preflight] baselineMode=${baselineMode}`);
   console.log(
@@ -328,7 +390,7 @@ async function main() {
   }
   console.log(`[production-preflight] manifest=${manifestPath}`);
   console.log(
-    "[production-preflight] PASS: candidate is authorized for explicit Production activation."
+    "[production-preflight] PASS: main-bound candidate passed isolated Production staging and is authorized for explicit Production activation."
   );
 }
 
