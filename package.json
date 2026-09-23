@@ -31,7 +31,10 @@
     "test:e2e:admin": "playwright test --project=admin",
     "test:e2e:typecheck": "tsc --noEmit -p tsconfig.e2e.json",
     "test:e2e:preview-gate": "node scripts/e2e-preview-gate.mjs",
-    "preview:promotion:check": "node scripts/e2e-check-promotion-eligibility.mjs"
+    "preview:promotion:check": "node scripts/e2e-check-promotion-eligibility.mjs",
+    "production:promotion:preflight": "node scripts/production-promotion-preflight.mjs",
+    "production:promotion:check": "node scripts/production-promotion-check.mjs",
+    "production:deployment:verify": "node scripts/production-deployment-verify.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",

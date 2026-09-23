@@ -1,0 +1,156 @@
+name: Controlled Production Promotion
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Full 40-character SHA already proven on Preview
+        required: true
+        type: string
+      rollback_sha:
+        description: Full 40-character SHA currently deployed on Production / rollback target
+        required: true
+        type: string
+      backup_confirmed:
+        description: Confirm a restorable Production backup exists
+        required: true
+        type: boolean
+        default: false
+      baseline_confirmed:
+        description: Confirm rollback_sha matches the current Production deployment/baseline
+        required: true
+        type: boolean
+        default: false
+      migration_review_confirmed:
+        description: Confirm the migration delta and flagged schema operations were reviewed
+        required: true
+        type: boolean
+        default: false
+      confirmation:
+        description: Type AUTHORIZE_PRODUCTION_PROMOTION exactly
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  statuses: write
+
+concurrency:
+  group: controlled-production-promotion
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Production promotion preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PRODUCTION_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      PRODUCTION_ROLLBACK_SHA: ${{ inputs.rollback_sha }}
+      PRODUCTION_BACKUP_CONFIRMED: ${{ inputs.backup_confirmed && '1' || '0' }}
+      PRODUCTION_BASELINE_CONFIRMED: ${{ inputs.baseline_confirmed && '1' || '0' }}
+      PRODUCTION_MIGRATION_REVIEW_CONFIRMED: ${{ inputs.migration_review_confirmed && '1' || '0' }}
+      PRODUCTION_CONFIRMATION: ${{ inputs.confirmation }}
+      PRODUCTION_PREVIEW_BRANCH: fix/m12d8-reconcile-056-ui
+      PRODUCTION_LEGACY_BRANCH: fix/ipe045-account-recovery-survivor-donor
+      PRODUCTION_PREVIEW_URL: https://r2-preview.ipenovel.com
+      PRODUCTION_BASE_URL: https://ipenovel.com
+      VITE_PAYMENT_QR_IMAGE_URL: ${{ vars.PRODUCTION_VITE_PAYMENT_QR_IMAGE_URL }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout promotion control plane
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate control-plane ref
+        run: |
+          test "$GITHUB_REF_NAME" = "main" || {
+            echo "Controlled Production Promotion must be dispatched from main"
+            exit 1
+          }
+
+      - name: Fetch controlled source branches
+        run: |
+          git fetch --no-tags origin             fix/m12d8-reconcile-056-ui             fix/ipe045-account-recovery-survivor-donor
+
+      - name: Mark Production promotion authorization pending
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/production-promotion-status.mjs authorization pending
+
+      - name: Validate Production public build configuration
+        run: |
+          test -n "$VITE_PAYMENT_QR_IMAGE_URL" || {
+            echo "Missing repository variable PRODUCTION_VITE_PAYMENT_QR_IMAGE_URL"
+            exit 1
+          }
+
+      - name: Run SHA-bound Production preflight
+        run: node scripts/production-promotion-preflight.mjs
+
+      - name: Checkout exact candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          path: candidate
+          fetch-depth: 1
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: candidate/pnpm-lock.yaml
+
+      - name: Install exact candidate dependencies
+        working-directory: candidate
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck exact candidate
+        working-directory: candidate
+        run: pnpm check
+
+      - name: Build exact candidate
+        working-directory: candidate
+        run: pnpm build
+
+      - name: Run exact candidate release gate
+        working-directory: candidate
+        run: pnpm test:gate
+
+      - name: Upload Production promotion manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: production-promotion-manifest-${{ github.run_id }}
+          retention-days: 30
+          path: production-promotion-manifest.json
+
+  authorization-status:
+    name: Record Production promotion authorization
+    if: ${{ always() }}
+    needs:
+      - authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PRODUCTION_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      PRODUCTION_RESULT: ${{ needs.authorize.result }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout promotion control plane
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Record final authorization status
+        run: node scripts/production-promotion-status.mjs authorization final
