@@ -2,7 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 
 export const PREVIEW_HOST = "r2-preview.ipenovel.com";
-const SAFE_HOSTS = new Set([PREVIEW_HOST, "localhost", "127.0.0.1"]);
+export const PRODUCTION_STAGING_HOST = "production-staging.ipenovel.com";
+const SAFE_HOSTS = new Set([
+  PREVIEW_HOST,
+  PRODUCTION_STAGING_HOST,
+  "localhost",
+  "127.0.0.1",
+]);
 
 export const e2eBaseUrl =
   process.env.E2E_BASE_URL?.trim() || `https://${PREVIEW_HOST}`;

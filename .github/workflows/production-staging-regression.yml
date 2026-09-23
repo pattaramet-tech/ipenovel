@@ -1,0 +1,108 @@
+name: Production Staging Regression Gate
+
+on:
+  repository_dispatch:
+    types:
+      - production-staging-deployed
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: production-staging-regression
+  cancel-in-progress: false
+
+jobs:
+  regression:
+    name: Isolated Production staging regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PRODUCTION_CANDIDATE_SHA: ${{ github.event.client_payload.deployed_sha || '' }}
+      PRODUCTION_BASELINE_SHA: ${{ github.event.client_payload.baseline_sha || '' }}
+      PRODUCTION_STAGING_ENVIRONMENT: ${{ github.event.client_payload.environment || '' }}
+      PRODUCTION_STAGING_SOURCE_BRANCH: ${{ github.event.client_payload.source_branch || '' }}
+      PRODUCTION_STAGING_URL: https://production-staging.ipenovel.com
+      E2E_BASE_URL: https://production-staging.ipenovel.com
+      E2E_EXPECTED_REVISION: ${{ github.event.client_payload.deployed_sha || '' }}
+      E2E_EXPECTED_ENVIRONMENT: production-staging
+      E2E_STAGING_USER_STORAGE_STATE_B64: ${{ secrets.E2E_PRODUCTION_STAGING_USER_STORAGE_STATE_B64 }}
+      E2E_STAGING_ADMIN_STORAGE_STATE_B64: ${{ secrets.E2E_PRODUCTION_STAGING_ADMIN_STORAGE_STATE_B64 }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout exact deployed candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.client_payload.deployed_sha }}
+          fetch-depth: 0
+
+      - name: Refresh main
+        run: git fetch --no-tags origin main
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Typecheck E2E
+        run: pnpm test:e2e:typecheck
+
+      - name: Validate main-bound staging identity
+        run: node scripts/production-staging-preflight.mjs
+
+      - name: Mark staging release gate pending
+        run: node scripts/production-staging-status.mjs gate pending
+
+      - name: Run isolated Production staging Full Gate
+        run: node scripts/e2e-production-staging-gate.mjs
+
+      - name: Upload Playwright failure artifacts
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: production-staging-playwright-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: ignore
+          path: |
+            playwright-report/
+            test-results/playwright/
+
+  record:
+    name: Record Production staging eligibility
+    if: ${{ always() }}
+    needs:
+      - regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PRODUCTION_CANDIDATE_SHA: ${{ github.event.client_payload.deployed_sha || '' }}
+      PRODUCTION_BASELINE_SHA: ${{ github.event.client_payload.baseline_sha || '' }}
+      PRODUCTION_RESULT: ${{ needs.regression.result }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Record final staging gate status
+        run: node scripts/production-staging-status.mjs gate final
+
+      - name: Bind successful staging release to rehearsed baseline
+        run: node scripts/production-staging-status.mjs release-baseline final

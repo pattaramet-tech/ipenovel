@@ -57,14 +57,21 @@ describe("M12D.9 Controlled Production Promotion", () => {
     expect(combined).not.toContain("119.10.137.15");
   });
 
-  it("binds authorization to exact Preview eligibility, revision, and rollback ancestry", () => {
+  it("binds authorization to exact main-bound Production staging evidence and rollback ancestry", () => {
     expect(preflight).toContain(
-      'const PREVIEW_STATUS_CONTEXT = "preview/promotion-eligibility"'
+      'const MAIN_BOUND_CONTEXT = "production-staging/main-bound-rc"'
     );
-    expect(preflight).toContain('new URL("/readyz", previewBase)');
+    expect(preflight).toContain(
+      'const STAGING_STATUS_CONTEXT = "production-staging/release-candidate"'
+    );
+    expect(preflight).toContain('new URL("/readyz", stagingBase)');
+    expect(preflight).toContain(
+      "stagingReady?.environment !== STAGING_ENVIRONMENT"
+    );
     expect(preflight).toContain("isAncestor(rollback, candidate)");
-    expect(preflight).toContain("previewHead !== candidate");
-    expect(preflight).toContain('previewRun?.event !== "repository_dispatch"');
+    expect(preflight).toContain("isAncestor(candidate, mainHead)");
+    expect(preflight).toContain('stagingRun?.event !== "repository_dispatch"');
+    expect(preflight).toContain("production-staging/release-baseline/");
   });
 
   it("reports migration delta and blocks unreviewed destructive-looking schema operations", () => {

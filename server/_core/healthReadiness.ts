@@ -122,8 +122,14 @@ export async function pingDatabase(): Promise<void> {
 
 export type DatabasePing = () => Promise<void>;
 export type RevisionProvider = () => string | undefined;
+export type EnvironmentProvider = () => string | undefined;
 
 const GIT_REVISION_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+const DEPLOYMENT_ENVIRONMENTS = new Set([
+  "preview",
+  "production-staging",
+  "production",
+]);
 
 export function normalizeDeploymentRevision(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -134,6 +140,16 @@ export function normalizeDeploymentRevision(value: unknown): string | undefined 
 
 export function getDeploymentRevision(): string | undefined {
   return normalizeDeploymentRevision(process.env.SOURCE_COMMIT);
+}
+
+export function normalizeDeploymentEnvironment(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const environment = value.trim().toLowerCase();
+  return DEPLOYMENT_ENVIRONMENTS.has(environment) ? environment : undefined;
+}
+
+export function getDeploymentEnvironment(): string | undefined {
+  return normalizeDeploymentEnvironment(process.env.DEPLOYMENT_ENVIRONMENT);
 }
 
 // Bounds how long a single /readyz request waits before answering -
@@ -169,7 +185,8 @@ export function registerHealthReadinessRoutes(
   app: Express,
   ping: DatabasePing = pingDatabase,
   timeoutMs: number = READYZ_PING_TIMEOUT_MS,
-  revisionProvider: RevisionProvider = getDeploymentRevision
+  revisionProvider: RevisionProvider = getDeploymentRevision,
+  environmentProvider: EnvironmentProvider = getDeploymentEnvironment
 ): void {
   app.get("/healthz", (_req: Request, res: Response) => {
     res.set("Cache-Control", "no-store");
@@ -228,7 +245,12 @@ export function registerHealthReadinessRoutes(
         return;
       }
       const revision = normalizeDeploymentRevision(revisionProvider());
-      res.status(200).json(revision ? { status: "ready", revision } : { status: "ready" });
+      const environment = normalizeDeploymentEnvironment(environmentProvider());
+      res.status(200).json({
+        status: "ready",
+        ...(revision ? { revision } : {}),
+        ...(environment ? { environment } : {}),
+      });
     } catch (error) {
       logReadyFailureThrottled(error);
       res.status(503).json({ status: "not_ready" });

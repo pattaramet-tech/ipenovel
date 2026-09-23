@@ -34,7 +34,10 @@
     "preview:promotion:check": "node scripts/e2e-check-promotion-eligibility.mjs",
     "production:promotion:preflight": "node scripts/production-promotion-preflight.mjs",
     "production:promotion:check": "node scripts/production-promotion-check.mjs",
-    "production:deployment:verify": "node scripts/production-deployment-verify.mjs"
+    "production:deployment:verify": "node scripts/production-deployment-verify.mjs",
+    "production:staging:gate": "node scripts/e2e-production-staging-gate.mjs",
+    "production:staging:preflight": "node scripts/production-staging-preflight.mjs",
+    "database:identity": "node scripts/database-identity-fingerprint.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",

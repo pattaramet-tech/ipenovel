@@ -13,6 +13,7 @@ import { checkUploadServiceHealth } from "../helpers/uploadHealthCheck";
 import { canonicalDomainRedirect } from "./canonicalDomainRedirect";
 import { handleSitemapXml } from "./sitemap";
 import { ensureDatabaseMigrated } from "./startupMigrations";
+import { assertProductionStagingDatabaseIsolation } from "./productionStagingSafety";
 import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
 import { registerHealthReadinessRoutes } from "./healthReadiness";
 
@@ -60,6 +61,11 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 }
 
 async function startServer() {
+  // Production-staging must prove that DATABASE_URL points at the explicitly
+  // approved isolated staging database, and that this identity differs from
+  // Production, before any startup migration process is allowed to run.
+  assertProductionStagingDatabaseIsolation();
+
   // STEP 1-3: environment is loaded by `import "dotenv/config"` at the top of
   // this file; migrations and the post-migration read-only schema
   // verification both run here, inside scripts/migrate.mjs. Nothing below
