@@ -14,6 +14,9 @@ const expectedRevisionRaw = process.env.E2E_EXPECTED_REVISION?.trim() || "";
 const requireExpectedRevision = /^(1|true|yes)$/i.test(
   process.env.E2E_REQUIRE_EXPECTED_REVISION?.trim() || ""
 );
+const deployedBranch = process.env.E2E_DEPLOYED_BRANCH?.trim() || "";
+const requiredDeployBranch =
+  process.env.E2E_REQUIRED_DEPLOY_BRANCH?.trim() || "fix/m12d8-reconcile-056-ui";
 const GIT_REVISION_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const expectedRevision = expectedRevisionRaw.toLowerCase();
 const readyTimeoutMs = Number(process.env.E2E_GATE_READY_TIMEOUT_MS || 180_000);
@@ -41,6 +44,11 @@ function assertExpectedRevision() {
   }
   if (expectedRevisionRaw && !GIT_REVISION_PATTERN.test(expectedRevisionRaw)) {
     fail(`Invalid E2E_EXPECTED_REVISION: ${expectedRevisionRaw}`);
+  }
+  if (requireExpectedRevision && deployedBranch !== requiredDeployBranch) {
+    fail(
+      `Repository-dispatch gate requires branch "${requiredDeployBranch}", received "${deployedBranch || "missing"}".`
+    );
   }
 }
 
@@ -218,6 +226,9 @@ async function main() {
   );
   console.log(
     `[preview-gate] expectedRevision=${expectedRevision || "not-enforced"} requireExpectedRevision=${requireExpectedRevision}`
+  );
+  console.log(
+    `[preview-gate] deployedBranch=${deployedBranch || "not-enforced"} requiredDeployBranch=${requiredDeployBranch}`
   );
   await waitForStablePreview();
 
