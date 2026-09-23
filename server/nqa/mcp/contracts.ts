@@ -32,6 +32,7 @@ export type NqaGatewayPrincipal = z.infer<typeof NqaGatewayPrincipalSchema>;
 export const NqaGatewayTargetSchema = z
   .object({
     row: z.number().int().positive().nullable().optional(),
+    rowEnd: z.number().int().positive().nullable().optional(),
     novelId: z.string().min(1).max(100).nullable().optional(),
     bundleId: z.string().min(1).max(150).nullable().optional(),
     chapter: z.number().int().positive().nullable().optional(),

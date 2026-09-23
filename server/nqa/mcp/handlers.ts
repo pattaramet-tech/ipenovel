@@ -8,6 +8,7 @@ export type NqaGatewayHandlerContext = {
   capability: NqaCapability;
   target: {
     row?: number | null;
+    rowEnd?: number | null;
     novelId?: string | null;
     bundleId?: string | null;
     chapter?: number | null;
