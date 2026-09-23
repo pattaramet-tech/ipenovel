@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: preview-regression-gate
@@ -32,11 +33,23 @@ jobs:
       E2E_GATE_PROFILE: ${{ github.event.client_payload.profile || inputs.profile || 'public' }}
       E2E_EXPECTED_REVISION: ${{ github.event.client_payload.deployed_sha || '' }}
       E2E_REQUIRE_EXPECTED_REVISION: ${{ github.event_name == 'repository_dispatch' && '1' || '0' }}
+      E2E_DEPLOYED_BRANCH: ${{ github.event.client_payload.branch || '' }}
+      E2E_REQUIRED_DEPLOY_BRANCH: fix/m12d8-reconcile-056-ui
       E2E_USER_STORAGE_STATE_B64: ${{ secrets.E2E_PREVIEW_USER_STORAGE_STATE_B64 }}
       E2E_ADMIN_STORAGE_STATE_B64: ${{ secrets.E2E_PREVIEW_ADMIN_STORAGE_STATE_B64 }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+
+      - name: Mark Preview promotion eligibility pending
+        if: github.event_name == 'repository_dispatch'
+        env:
+          PROMOTION_SHA: ${{ github.event.client_payload.deployed_sha }}
+          PROMOTION_PROFILE: ${{ github.event.client_payload.profile }}
+          PROMOTION_BRANCH: ${{ github.event.client_payload.branch }}
+          PROMOTION_REQUIRED_BRANCH: fix/m12d8-reconcile-056-ui
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/e2e-promotion-status.mjs pending
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
@@ -71,3 +84,29 @@ jobs:
           path: |
             playwright-report/
             test-results/playwright/
+
+  promotion-eligibility:
+    name: Preview promotion eligibility
+    if: ${{ always() && github.event_name == 'repository_dispatch' }}
+    needs:
+      - preview-regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Record SHA-bound promotion eligibility
+        env:
+          PROMOTION_SHA: ${{ github.event.client_payload.deployed_sha }}
+          PROMOTION_PROFILE: ${{ github.event.client_payload.profile }}
+          PROMOTION_BRANCH: ${{ github.event.client_payload.branch }}
+          PROMOTION_REQUIRED_BRANCH: fix/m12d8-reconcile-056-ui
+          PROMOTION_GATE_RESULT: ${{ needs.preview-regression.result }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/e2e-promotion-status.mjs final
