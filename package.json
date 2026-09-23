@@ -21,7 +21,16 @@
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
     "migrate:media:dry": "tsx scripts/migrate-media-to-r2.ts --dry-run --limit=20 --type=all",
     "migrate:media": "tsx scripts/migrate-media-to-r2.ts --limit=20 --type=all",
-    "migrate:legacy-manus-assets:dry": "tsx scripts/migrate-legacy-manus-assets-to-r2.ts --dry-run --limit=20 --type=all"
+    "migrate:legacy-manus-assets:dry": "tsx scripts/migrate-legacy-manus-assets-to-r2.ts --dry-run --limit=20 --type=all",
+    "test:e2e": "playwright test",
+    "test:e2e:public": "playwright test --project=public",
+    "test:e2e:auth": "playwright test --project=auth",
+    "test:e2e:mutation": "playwright test --project=mutation",
+    "test:e2e:auth:capture": "node scripts/e2e-capture-auth.mjs",
+    "test:e2e:install": "playwright install chromium",
+    "test:e2e:admin": "playwright test --project=admin",
+    "test:e2e:typecheck": "tsc --noEmit -p tsconfig.e2e.json",
+    "test:e2e:preview-gate": "node scripts/e2e-preview-gate.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",
@@ -96,6 +105,7 @@
   },
   "devDependencies": {
     "@builder.io/vite-plugin-jsx-loc": "^0.1.1",
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/typography": "^0.5.15",
     "@tailwindcss/vite": "^4.1.3",
     "@types/adm-zip": "^0.5.8",
