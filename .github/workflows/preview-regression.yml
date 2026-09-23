@@ -30,6 +30,8 @@ jobs:
     env:
       E2E_BASE_URL: https://r2-preview.ipenovel.com
       E2E_GATE_PROFILE: ${{ github.event.client_payload.profile || inputs.profile || 'public' }}
+      E2E_EXPECTED_REVISION: ${{ github.event.client_payload.deployed_sha || '' }}
+      E2E_REQUIRE_EXPECTED_REVISION: ${{ github.event_name == 'repository_dispatch' && '1' || '0' }}
       E2E_USER_STORAGE_STATE_B64: ${{ secrets.E2E_PREVIEW_USER_STORAGE_STATE_B64 }}
       E2E_ADMIN_STORAGE_STATE_B64: ${{ secrets.E2E_PREVIEW_ADMIN_STORAGE_STATE_B64 }}
     steps:

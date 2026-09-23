@@ -6,7 +6,9 @@ import {
   registerHealthReadinessRoutes,
   pingDatabase,
   DB_PING_TIMEOUT_MS,
+  normalizeDeploymentRevision,
   type DatabasePing,
+  type RevisionProvider,
 } from "./healthReadiness";
 import { __setDbForTests } from "../db";
 
@@ -20,11 +22,12 @@ import { __setDbForTests } from "../db";
  */
 async function startTestServer(
   ping?: DatabasePing,
-  timeoutMs?: number
+  timeoutMs?: number,
+  revisionProvider: RevisionProvider = () => undefined
 ): Promise<{ baseUrl: string; server: Server }> {
   const app = express();
   app.set("trust proxy", 1);
-  registerHealthReadinessRoutes(app, ping, timeoutMs);
+  registerHealthReadinessRoutes(app, ping, timeoutMs, revisionProvider);
   app.use((req, res) => {
     res.redirect(301, "https://canonical.example.test" + req.originalUrl);
   });
@@ -41,6 +44,16 @@ async function startTestServer(
 function closeServer(server: Server): Promise<void> {
   return new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
 }
+
+describe("normalizeDeploymentRevision", () => {
+  it("normalizes valid Git revisions and rejects arbitrary environment text", () => {
+    expect(normalizeDeploymentRevision(" AEE7BF2F11FBB4918EA82BC19AF51EB964AC4857 ")).toBe(
+      "aee7bf2f11fbb4918ea82bc19af51eb964ac4857"
+    );
+    expect(normalizeDeploymentRevision("not-a-git-sha")).toBeUndefined();
+    expect(normalizeDeploymentRevision(undefined)).toBeUndefined();
+  });
+});
 
 describe("registerHealthReadinessRoutes", () => {
   let server: Server | null = null;
@@ -81,6 +94,29 @@ describe("registerHealthReadinessRoutes", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ status: "ready" });
     expect(ping).toHaveBeenCalledTimes(1);
+  });
+
+  it("GET /readyz includes a validated deployment revision when available", async () => {
+    const ping = vi.fn().mockResolvedValue(undefined);
+    const revision = "AEE7BF2F11FBB4918EA82BC19AF51EB964AC4857";
+    const started = await startTestServer(ping, undefined, () => revision);
+    server = started.server;
+
+    const res = await fetch(`${started.baseUrl}/readyz`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "ready", revision: revision.toLowerCase() });
+  });
+
+  it("GET /readyz omits an invalid SOURCE_COMMIT-like value", async () => {
+    const ping = vi.fn().mockResolvedValue(undefined);
+    const started = await startTestServer(ping, undefined, () => "not-a-git-sha;do-not-expose");
+    server = started.server;
+
+    const res = await fetch(`${started.baseUrl}/readyz`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "ready" });
   });
 
   it("GET /readyz responds 503 when the database ping fails", async () => {

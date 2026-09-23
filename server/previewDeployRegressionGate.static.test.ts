@@ -57,6 +57,24 @@ describe("M12D.8.2 Preview deploy regression gate", () => {
     expect(runner).toContain("stableRequired");
   });
 
+  it("requires a deployed revision for repository-dispatch runs", () => {
+    expect(workflow).toContain(
+      "E2E_EXPECTED_REVISION: ${{ github.event.client_payload.deployed_sha || '' }}"
+    );
+    expect(workflow).toContain(
+      "E2E_REQUIRE_EXPECTED_REVISION: ${{ github.event_name == 'repository_dispatch' && '1' || '0' }}"
+    );
+    expect(runner).toContain(
+      "Repository-dispatch gate requires E2E_EXPECTED_REVISION"
+    );
+  });
+
+  it("blocks Playwright until /readyz reports the expected deployed revision", () => {
+    expect(runner).toContain("actualRevision === expectedRevision");
+    expect(runner).toContain("ready.body?.revision");
+    expect(runner).toContain("Preview revision did not stabilize");
+  });
+
   it("exposes the gate through the package script", () => {
     expect(pkg.scripts["test:e2e:preview-gate"]).toBe(
       "node scripts/e2e-preview-gate.mjs"
