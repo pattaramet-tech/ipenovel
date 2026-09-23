@@ -1,8 +1,10 @@
 /**
  * Coolify-facing liveness/readiness endpoints. Deliberately unauthenticated
  * (Coolify's health checker has no credentials) and deliberately minimal -
- * neither response body may leak environment, host, commit SHA, database
- * name, or error detail. See registerHealthReadinessRoutes's call site in
+ * neither response body may leak environment, host, database name, or
+ * error detail. /readyz may expose only a validated Git deployment revision
+ * from SOURCE_COMMIT so the Preview regression gate can prove it is testing
+ * the container that Coolify just deployed. See registerHealthReadinessRoutes's call site in
  * index.ts for why these must be mounted before the canonical-domain
  * redirect, body parsers, OAuth routes, tRPC, and the SPA static fallback.
  */
@@ -119,6 +121,20 @@ export async function pingDatabase(): Promise<void> {
 }
 
 export type DatabasePing = () => Promise<void>;
+export type RevisionProvider = () => string | undefined;
+
+const GIT_REVISION_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+
+export function normalizeDeploymentRevision(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const revision = value.trim();
+  if (!GIT_REVISION_PATTERN.test(revision)) return undefined;
+  return revision.toLowerCase();
+}
+
+export function getDeploymentRevision(): string | undefined {
+  return normalizeDeploymentRevision(process.env.SOURCE_COMMIT);
+}
 
 // Bounds how long a single /readyz request waits before answering -
 // including any time still spent waiting for pool.getConnection() to
@@ -152,7 +168,8 @@ const READYZ_TIMED_OUT = Symbol("readyz-ping-timed-out");
 export function registerHealthReadinessRoutes(
   app: Express,
   ping: DatabasePing = pingDatabase,
-  timeoutMs: number = READYZ_PING_TIMEOUT_MS
+  timeoutMs: number = READYZ_PING_TIMEOUT_MS,
+  revisionProvider: RevisionProvider = getDeploymentRevision
 ): void {
   app.get("/healthz", (_req: Request, res: Response) => {
     res.set("Cache-Control", "no-store");
@@ -210,7 +227,8 @@ export function registerHealthReadinessRoutes(
         res.status(503).json({ status: "not_ready" });
         return;
       }
-      res.status(200).json({ status: "ready" });
+      const revision = normalizeDeploymentRevision(revisionProvider());
+      res.status(200).json(revision ? { status: "ready", revision } : { status: "ready" });
     } catch (error) {
       logReadyFailureThrottled(error);
       res.status(503).json({ status: "not_ready" });
