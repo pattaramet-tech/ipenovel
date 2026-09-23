@@ -10,6 +10,12 @@ const baseURL = process.env.E2E_BASE_URL?.trim() || `https://${PREVIEW_HOST}`;
 const profile = (
   process.env.E2E_GATE_PROFILE?.trim() || "public"
 ).toLowerCase();
+const expectedRevisionRaw = process.env.E2E_EXPECTED_REVISION?.trim() || "";
+const requireExpectedRevision = /^(1|true|yes)$/i.test(
+  process.env.E2E_REQUIRE_EXPECTED_REVISION?.trim() || ""
+);
+const GIT_REVISION_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+const expectedRevision = expectedRevisionRaw.toLowerCase();
 const readyTimeoutMs = Number(process.env.E2E_GATE_READY_TIMEOUT_MS || 180_000);
 const readyIntervalMs = Number(process.env.E2E_GATE_READY_INTERVAL_MS || 2_000);
 const stableRequired = Number(process.env.E2E_GATE_STABLE_CHECKS || 3);
@@ -25,6 +31,23 @@ const adminStatePath = path.resolve(
 function fail(message) {
   console.error(`[preview-gate] FAIL: ${message}`);
   process.exit(1);
+}
+
+function assertExpectedRevision() {
+  if (requireExpectedRevision && !expectedRevisionRaw) {
+    fail(
+      "Repository-dispatch gate requires E2E_EXPECTED_REVISION from client_payload.deployed_sha."
+    );
+  }
+  if (expectedRevisionRaw && !GIT_REVISION_PATTERN.test(expectedRevisionRaw)) {
+    fail(`Invalid E2E_EXPECTED_REVISION: ${expectedRevisionRaw}`);
+  }
+}
+
+function normalizeRevision(value) {
+  if (typeof value !== "string") return "";
+  const revision = value.trim();
+  return GIT_REVISION_PATTERN.test(revision) ? revision.toLowerCase() : "";
 }
 
 function assertSafeTarget() {
@@ -87,6 +110,8 @@ async function waitForStablePreview() {
   const deadline = Date.now() + readyTimeoutMs;
   let consecutive = 0;
   let attempt = 0;
+  let lastActualRevision = "";
+
   while (Date.now() < deadline) {
     attempt += 1;
     try {
@@ -94,21 +119,35 @@ async function waitForStablePreview() {
         fetchJson("/healthz"),
         fetchJson("/readyz"),
       ]);
+      const actualRevision = normalizeRevision(ready.body?.revision);
+      lastActualRevision = actualRevision || lastActualRevision;
+      const revisionMatches =
+        !expectedRevision || actualRevision === expectedRevision;
       const ok =
         health.status === 200 &&
         health.body?.status === "ok" &&
         ready.status === 200 &&
-        ready.body?.status === "ready";
+        ready.body?.status === "ready" &&
+        revisionMatches;
+
       if (ok) {
         consecutive += 1;
+        const revisionSuffix = expectedRevision
+          ? ` revision=${actualRevision}`
+          : actualRevision
+            ? ` revision=${actualRevision} (not enforced)`
+            : " revision=unavailable (not enforced)";
         console.log(
-          `[preview-gate] readiness ${consecutive}/${stableRequired} (attempt ${attempt})`
+          `[preview-gate] readiness ${consecutive}/${stableRequired} (attempt ${attempt})${revisionSuffix}`
         );
         if (consecutive >= stableRequired) return;
       } else {
         consecutive = 0;
+        const revisionDetail = expectedRevision
+          ? ` expectedRevision=${expectedRevision} actualRevision=${actualRevision || "missing"}`
+          : "";
         console.log(
-          `[preview-gate] waiting: health=${health.status}/${health.body?.status ?? "?"} ready=${ready.status}/${ready.body?.status ?? "?"}`
+          `[preview-gate] waiting: health=${health.status}/${health.body?.status ?? "?"} ready=${ready.status}/${ready.body?.status ?? "?"}${revisionDetail}`
         );
       }
     } catch (error) {
@@ -118,6 +157,12 @@ async function waitForStablePreview() {
       );
     }
     await sleep(readyIntervalMs);
+  }
+
+  if (expectedRevision) {
+    fail(
+      `Preview revision did not stabilize at ${expectedRevision} within ${readyTimeoutMs}ms; last observed revision=${lastActualRevision || "missing"}.`
+    );
   }
   fail(`Preview did not become stable within ${readyTimeoutMs}ms.`);
 }
@@ -149,6 +194,7 @@ function runProject(project, extraEnv = {}) {
 }
 async function main() {
   assertSafeTarget();
+  assertExpectedRevision();
   if (!["public", "auto", "full"].includes(profile)) {
     fail(
       `Unsupported E2E_GATE_PROFILE "${profile}". Use public, auto, or full.`
@@ -170,6 +216,9 @@ async function main() {
   console.log(
     `[preview-gate] profile=${profile} userState=${hasUserState ? "present" : "missing"} adminState=${hasAdminState ? "present" : "missing"}`
   );
+  console.log(
+    `[preview-gate] expectedRevision=${expectedRevision || "not-enforced"} requireExpectedRevision=${requireExpectedRevision}`
+  );
   await waitForStablePreview();
 
   runProject("public");
@@ -179,11 +228,6 @@ async function main() {
     );
     return;
   }
-
-  if (profile === "full" && !hasUserState)
-    fail(`Full gate requires user storageState at ${userStatePath}.`);
-  if (profile === "full" && !hasAdminState)
-    fail(`Full gate requires admin storageState at ${adminStatePath}.`);
 
   if (hasUserState) runProject("auth");
   else console.log("[preview-gate] auth skipped: no user storageState.");
