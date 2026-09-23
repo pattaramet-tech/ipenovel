@@ -1,0 +1,72 @@
+name: Preview Regression Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Regression profile to run against Preview
+        required: true
+        default: public
+        type: choice
+        options:
+          - public
+          - full
+  repository_dispatch:
+    types:
+      - preview-deployed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-regression-gate
+  cancel-in-progress: false
+
+jobs:
+  preview-regression:
+    name: Preview regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      E2E_BASE_URL: https://r2-preview.ipenovel.com
+      E2E_GATE_PROFILE: ${{ github.event.client_payload.profile || inputs.profile || 'public' }}
+      E2E_USER_STORAGE_STATE_B64: ${{ secrets.E2E_PREVIEW_USER_STORAGE_STATE_B64 }}
+      E2E_ADMIN_STORAGE_STATE_B64: ${{ secrets.E2E_PREVIEW_ADMIN_STORAGE_STATE_B64 }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Typecheck Playwright harness
+        run: pnpm test:e2e:typecheck
+
+      - name: Run Preview deploy regression gate
+        run: pnpm test:e2e:preview-gate
+
+      - name: Upload Playwright failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-regression-${{ github.run_id }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            playwright-report/
+            test-results/playwright/

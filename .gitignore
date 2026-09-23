@@ -112,3 +112,8 @@ temp/
 
 # Manus local database query/cache files
 .manus/db/
+
+# Playwright E2E artifacts and local authenticated browser state
+.playwright/
+playwright-report/
+test-results/playwright/
