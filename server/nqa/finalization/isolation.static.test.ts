@@ -18,7 +18,7 @@ function productionSources(): string {
     .join("\n");
 }
 
-describe("NQA M20 finalization isolation", () => {
+describe("NQA M20-M21 finalization/runtime isolation", () => {
   it("contains no Google/content mutation, HTTP listener, production DB, or raw novel-text persistence", () => {
     const source = productionSources();
     const forbidden = [
@@ -45,5 +45,15 @@ describe("NQA M20 finalization isolation", () => {
     expect(source).not.toMatch(/rollbackNqaActivePolicy\s*\(/);
     expect(source).not.toMatch(/expandNqaControlledRolloutScope\s*\(/);
     expect(source).not.toMatch(/\.rm\s*\([^)]*events/i);
+  });
+
+  it("keeps M21 baseline adoption lineage-backed and release evaluation side-effect free", () => {
+    const runtime = fs.readFileSync(path.join(DIR, "runtime.ts"), "utf8");
+    const release = fs.readFileSync(path.join(DIR, "releaseGate.ts"), "utf8");
+
+    expect(runtime).not.toMatch(/DEFAULT_NQA_ALIGNMENT_POLICY/);
+    expect(runtime).not.toMatch(/rollbackNqaActivePolicy\s*\(/);
+    expect(release).not.toMatch(/node:child_process|\bexec\s*\(|\bspawn\s*\(/);
+    expect(release).not.toMatch(/git\s+push|gh\s+pr|git\s+merge/i);
   });
 });

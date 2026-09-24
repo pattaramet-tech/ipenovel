@@ -198,6 +198,9 @@ function makeGateway(input?: {
   structurePolicy?: Parameters<
     typeof createNqaSemanticQaHandlers
   >[0]["structurePolicy"];
+  alignmentPolicyResolver?: Parameters<
+    typeof createNqaSemanticQaHandlers
+  >[0]["alignmentPolicyResolver"];
   deterministicPolicy?: Partial<NqaDeterministicPolicy>;
   includeTranslation?: boolean;
   validContract?: boolean;
@@ -220,6 +223,7 @@ function makeGateway(input?: {
     smallLlmProvider: input?.smallLlmProvider,
     structureProvider: input?.structureProvider,
     structurePolicy: input?.structurePolicy,
+    alignmentPolicyResolver: input?.alignmentPolicyResolver,
     expectedInternalSequence: chapter => (chapter === 197 ? 198 : null),
     deterministicPolicy: {
       minChapterCharsReview: 1,
@@ -490,6 +494,67 @@ describe("NQA semantic QA MCP handler", () => {
       },
     });
     expect(reranker.calls).toBe(1);
+  });
+
+  it("uses an async runtime alignment policy resolver when configured", async () => {
+    const provider: NqaEmbeddingProvider = {
+      providerId: "fixture-embedding",
+      modelVersion: "fixture-runtime-policy",
+      async embed(texts: string[]) {
+        return texts.map(text => {
+          if (text.includes("source-196")) return [0, 1, 0];
+          if (text.includes("source-197")) return [1, 0, 0];
+          if (text.includes("source-205")) return [0, 0, 1];
+          if (text.includes("thai-query")) return [1, 0, 0];
+          throw new Error("unexpected runtime policy fixture text");
+        });
+      },
+    };
+    const reranker: NqaRerankerProvider = {
+      providerId: "fixture-reranker",
+      modelVersion: "fixture-runtime-policy-reranker",
+      async rerank(pairs) {
+        return pairs.map(pair => ({ pairId: pair.pairId, score: 0.95 }));
+      },
+    };
+    const alignmentPolicyResolver = vi.fn(async () => ({
+      version: "nqa-finalized-baseline-fixture-v2",
+      targetChunkChars: 1200,
+      maxChunkChars: 1800,
+      denseTopK: 4,
+      maxRerankPairs: 160,
+      minPassMeanScore: 0.7,
+      minPassTranslationCoverage: 0.85,
+      minPassSourceCoverage: 0.8,
+      minReviewMeanScore: 0.45,
+      minReviewTranslationCoverage: 0.6,
+      minReviewSourceCoverage: 0.55,
+      majorGapFraction: 0.3,
+      lowScoreThreshold: 0.45,
+      maxLowScoreFractionPass: 0.3,
+    }));
+    const { gateway } = makeGateway({
+      provider,
+      rerankerProvider: reranker,
+      alignmentPolicyResolver,
+    });
+
+    const result = await gateway.dispatch({
+      request: request("9".repeat(64)),
+      principal: qaPrincipal,
+    });
+
+    expect(result).toMatchObject({
+      status: "OK",
+      result: {
+        semantic: {
+          alignment: {
+            policyVersion: "nqa-finalized-baseline-fixture-v2",
+          },
+        },
+      },
+    });
+    expect(alignmentPolicyResolver).toHaveBeenCalledTimes(1);
   });
 
   it("runs M11 adjudication only for upstream REVIEW evidence", async () => {

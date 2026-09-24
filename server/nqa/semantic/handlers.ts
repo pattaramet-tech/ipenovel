@@ -94,6 +94,7 @@ export function createNqaSemanticQaHandlers(input: {
   deterministicPolicy?: Partial<NqaDeterministicPolicy>;
   semanticPolicy?: Partial<NqaSemanticSearchPolicy>;
   alignmentPolicy?: Partial<NqaAlignmentPolicy>;
+  alignmentPolicyResolver?: () => Promise<NqaAlignmentPolicy>;
   adjudicationPolicy?: Partial<NqaAdjudicationPolicy>;
   structurePolicy?: Partial<NqaStructurePolicy>;
 }): SemanticHandlerMap {
@@ -181,6 +182,10 @@ export function createNqaSemanticQaHandlers(input: {
         policy: input.semanticPolicy,
       });
 
+      const runtimeAlignmentPolicy = input.alignmentPolicyResolver
+        ? await input.alignmentPolicyResolver()
+        : input.alignmentPolicy;
+
       const alignment =
         input.rerankerProvider &&
         source !== null &&
@@ -190,7 +195,7 @@ export function createNqaSemanticQaHandlers(input: {
               translation,
               embeddingProvider: input.embeddingProvider,
               rerankerProvider: input.rerankerProvider,
-              policy: input.alignmentPolicy,
+              policy: runtimeAlignmentPolicy,
             })
           : null;
 
@@ -225,7 +230,7 @@ export function createNqaSemanticQaHandlers(input: {
                 source,
                 translation,
                 policy: input.adjudicationPolicy,
-                alignmentPolicy: input.alignmentPolicy,
+                alignmentPolicy: runtimeAlignmentPolicy,
               }),
               jevProvider: input.jevProvider,
               smallLlmProvider: input.smallLlmProvider,
@@ -251,7 +256,7 @@ export function createNqaSemanticQaHandlers(input: {
                 source,
                 translation,
                 policy: input.structurePolicy,
-                alignmentPolicy: input.alignmentPolicy,
+                alignmentPolicy: runtimeAlignmentPolicy,
               }),
               provider: input.structureProvider,
               policy: input.structurePolicy,
