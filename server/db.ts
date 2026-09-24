@@ -60,6 +60,10 @@ import {
   workspaceGoogleConsentAttempts,
   workspaceGoogleConnections,
   workspaceAuditEvents,
+  workspaceKanbanTransitions,
+  workspacePublishOwnershipTransitions,
+  adminGiftEntitlements,
+  adminGiftWalletAdjustments,
   adminUserAuditLogs,
   Novel,
   couponUsages as couponUsagesTable,
@@ -7163,6 +7167,8 @@ const ACCOUNT_RECOVERY_ECONOMIC_DATA_CHECKS: Array<{
   { table: "sportsMatchVotes", check: async (userId, db) => (await db.select({ id: sportsMatchVotes.id }).from(sportsMatchVotes).where(eq(sportsMatchVotes.userId, userId)).limit(1)).length },
   { table: "sportsMatchRewards", check: async (userId, db) => (await db.select({ id: sportsMatchRewards.id }).from(sportsMatchRewards).where(eq(sportsMatchRewards.userId, userId)).limit(1)).length },
   { table: "dailyCheckinRewardGrants", check: async (userId, db) => (await db.select({ id: dailyCheckinRewardGrants.id }).from(dailyCheckinRewardGrants).where(eq(dailyCheckinRewardGrants.userId, userId)).limit(1)).length },
+  { table: "adminGiftEntitlements", check: async (userId, db) => (await db.select({ id: adminGiftEntitlements.id }).from(adminGiftEntitlements).where(eq(adminGiftEntitlements.userId, userId)).limit(1)).length },
+  { table: "adminGiftWalletAdjustments", check: async (userId, db) => (await db.select({ id: adminGiftWalletAdjustments.id }).from(adminGiftWalletAdjustments).where(eq(adminGiftWalletAdjustments.targetUserId, userId)).limit(1)).length },
   { table: "topupLogs", check: async (userId, db) => (await db.select({ id: topupLogs.id }).from(topupLogs).where(eq(topupLogs.userId, userId)).limit(1)).length },
   // A personal coupon (scope="user") is itself an unredeemed financial
   // right, distinct from couponUsages (a coupon already spent on an
@@ -7490,6 +7496,19 @@ const ACCOUNT_MERGE_TABLE_CHECKS: AccountMergeTableCheck[] = [
     userIdColumnName: "userId",
     countFor: plainUserIdCount(dailyCheckinRewardGrants, dailyCheckinRewardGrants.userId),
     conflictKeyColumns: ["ruleId", "milestoneInstanceNumber"],
+  },
+  {
+    table: "adminGiftEntitlements",
+    category: "economic",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(adminGiftEntitlements, adminGiftEntitlements.userId),
+    conflictKeyColumns: ["episodeId"],
+  },
+  {
+    table: "adminGiftWalletAdjustments",
+    category: "economic",
+    userIdColumnName: "targetUserId",
+    countFor: plainUserIdCount(adminGiftWalletAdjustments, adminGiftWalletAdjustments.targetUserId),
   },
 
   // ---- user_owned (direct) ----
@@ -7908,6 +7927,8 @@ const ADMIN_USER_DELETE_CHECKS: Array<{
   { table: "sportsMatchVotes", reference: "Sports Votes", category: "economic", from: sportsMatchVotes, condition: (id) => eq(sportsMatchVotes.userId, id) },
   { table: "sportsMatchRewards", reference: "Sports Match Rewards", category: "economic", from: sportsMatchRewards, condition: (id) => eq(sportsMatchRewards.userId, id) },
   { table: "dailyCheckinRewardGrants", reference: "Daily Check-in Reward Grants", category: "economic", from: dailyCheckinRewardGrants, condition: (id) => eq(dailyCheckinRewardGrants.userId, id) },
+  { table: "adminGiftEntitlements", reference: "Admin Gift Entitlements", category: "economic", from: adminGiftEntitlements, condition: (id) => eq(adminGiftEntitlements.userId, id) },
+  { table: "adminGiftWalletAdjustments", reference: "Admin Gift Wallet Adjustments", category: "economic", from: adminGiftWalletAdjustments, condition: (id) => eq(adminGiftWalletAdjustments.targetUserId, id) },
 
   { table: "carts", reference: "Cart", category: "user_owned", from: carts, condition: (id) => eq(carts.userId, id) },
   { table: "wishlists", reference: "Wishlist", category: "user_owned", from: wishlists, condition: (id) => eq(wishlists.userId, id) },
@@ -8028,6 +8049,34 @@ const ADMIN_USER_DELETE_CHECKS: Array<{
     category: "audit_or_actor",
     from: workspaceAuditEvents,
     condition: (id) => eq(workspaceAuditEvents.actorUserId, id),
+  },
+  {
+    table: "workspaceKanbanTransitions",
+    reference: "Workspace Kanban Transition Actors",
+    category: "audit_or_actor",
+    from: workspaceKanbanTransitions,
+    condition: (id) => eq(workspaceKanbanTransitions.actorUserId, id),
+  },
+  {
+    table: "workspacePublishOwnershipTransitions",
+    reference: "Workspace Publish Ownership Transition Actors",
+    category: "audit_or_actor",
+    from: workspacePublishOwnershipTransitions,
+    condition: (id) => eq(workspacePublishOwnershipTransitions.actorUserId, id),
+  },
+  {
+    table: "adminGiftEntitlements",
+    reference: "Admin Gift Entitlement Actors",
+    category: "audit_or_actor",
+    from: adminGiftEntitlements,
+    condition: (id) => eq(adminGiftEntitlements.actorAdminId, id),
+  },
+  {
+    table: "adminGiftWalletAdjustments",
+    reference: "Admin Gift Wallet Adjustment Actors",
+    category: "audit_or_actor",
+    from: adminGiftWalletAdjustments,
+    condition: (id) => eq(adminGiftWalletAdjustments.actorAdminId, id),
   },
   // Review finding on PR #45: a FORMER admin who performed a prior
   // name/role edit or delete (recorded with actorAdminId = their own id,

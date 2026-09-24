@@ -70,12 +70,22 @@ describe("IPE-008 completed-merge Source session boundary", () => {
   it("keeps historical recovery reads reachable so the UI can explain the completed workflow", async () => {
     markCompletedSource();
     vi.spyOn(db, "listAccountRecoveryRequestsForUser").mockResolvedValue([
-      { id: 1, status: "blocked" },
+      { id: 1, requesterUserId: 55, status: "blocked" },
     ] as any);
+    vi.spyOn(db, "listAccountMergeCasesForRecoveryRequest").mockResolvedValue([] as any);
     const caller = appRouter.createCaller(userContext());
 
     await expect(caller.accountRecovery.myRequests()).resolves.toEqual([
-      { id: 1, status: "blocked" },
+      expect.objectContaining({
+        id: 1,
+        requesterUserId: 55,
+        status: "blocked",
+        lifecycle: expect.objectContaining({
+          persistedStatus: "blocked",
+          effectiveStatus: "blocked",
+          integrity: "unresolved",
+        }),
+      }),
     ]);
   });
 
@@ -88,7 +98,16 @@ describe("IPE-008 completed-merge Source session boundary", () => {
 
     const result = await caller.auth.googleConnectionCutoffStatus();
     expect(result.accountMerged).toBe(true);
-    expect(JSON.stringify(result)).not.toContain("77");
+    expect(Object.keys(result).sort()).toEqual([
+      "accountMerged",
+      "activeNow",
+      "cutoffAt",
+      "enabled",
+      "exempt",
+      "googleConnected",
+      "needsConnection",
+      "serverNow",
+    ].sort());
     expect(JSON.stringify(result)).not.toContain("source@example.test");
   });
 

@@ -49,6 +49,8 @@ export const IPE007_UNSUPPORTED_DIRECT_TABLES = [
   "workspaceMembers",
   "workspaceGoogleConsentAttempts",
   "workspaceGoogleConnections",
+  "adminGiftEntitlements",
+  "adminGiftWalletAdjustments",
 ] as const;
 
 export const IPE007_HANDLED_INDIRECT_TABLES = ["cartItems"] as const;

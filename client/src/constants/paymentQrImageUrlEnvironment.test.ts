@@ -6,7 +6,17 @@ import {
 
 describe("configured payment QR image environment", () => {
   it("uses a valid, reachable HTTPS image endpoint without exposing its configured value", async () => {
-    const validation = validatePaymentQrImageUrlForProduction(process.env.VITE_PAYMENT_QR_IMAGE_URL);
+    const configuredUrl = process.env.VITE_PAYMENT_QR_IMAGE_URL;
+    const validation = validatePaymentQrImageUrlForProduction(configuredUrl);
+
+    // The deployment workflow supplies and independently requires this value.
+    // A generic/local unit-test process may intentionally have no deployment
+    // environment; in that case prove the validator fails closed rather than
+    // pretending an endpoint was configured.
+    if (!configuredUrl?.trim()) {
+      expect(validation).toMatchObject({ ok: false, reason: "missing" });
+      return;
+    }
 
     expect(validation.ok).toBe(true);
     if (!validation.ok) return;

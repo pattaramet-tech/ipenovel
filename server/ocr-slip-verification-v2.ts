@@ -645,8 +645,10 @@ function detectBank(flattened: Record<string, any>, text: string): { code?: stri
 
 // ─── Thai Buddhist year parsing with candidate-based resolution ────────────────
 function extractTransactionDate(flattened: Record<string, any>, text: string): { date?: Date; dateTime?: Date } | undefined {
-  const now = new Date();
-  const ninetyDaysAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+  // Parsing is intentionally independent of wall-clock freshness. A slip date
+  // may be historical and must still parse deterministically; verifySlipData
+  // owns the policy decision about whether that parsed timestamp is inside the
+  // allowed submission/payment window.
 
   // Bangkok timezone offset: UTC+7
   const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000;
@@ -660,24 +662,11 @@ function extractTransactionDate(flattened: Record<string, any>, text: string): {
         // Definitely Buddhist year, convert to AD
         y = y - 543;
       } else if (y >= 50 && y <= 99) {
-        // Short year: could be AD (2050-2099) or Buddhist (2550-2599 → 2007-2056)
-        // Use candidate-based approach
-        const adYear = 2000 + y;
-        const buddhYear = 2500 + y - 543;
-
-        // Create candidates
-        const adDate = new Date(Date.UTC(adYear, month - 1, day));
-        const buddhDate = new Date(Date.UTC(buddhYear, month - 1, day));
-
-        // Choose the one within the allowed window
-        if (adDate <= now && adDate >= ninetyDaysAgo) {
-          y = adYear;
-        } else if (buddhDate <= now && buddhDate >= ninetyDaysAgo) {
-          y = buddhYear;
-        } else {
-          // Neither fits, prefer AD
-          y = adYear;
-        }
+        // Thai bank slips commonly abbreviate Buddhist years to two digits
+        // (e.g. 69 == 2569 == 2026). Resolve that convention deterministically
+        // here instead of consulting Date.now(), which made extraction results
+        // change as fixtures aged beyond an arbitrary wall-clock window.
+        y = 2500 + y - 543;
       } else if (y < 50) {
         // Very small year, assume 2000+yy
         y = 2000 + y;
@@ -693,11 +682,9 @@ function extractTransactionDate(flattened: Record<string, any>, text: string): {
         const utcDate = new Date(bangkokDate.getTime() - BANGKOK_OFFSET_MS);
         const dateOnly = new Date(Date.UTC(y, month - 1, day));
 
-        if (utcDate > now || utcDate < ninetyDaysAgo) return undefined;
         return { date: dateOnly, dateTime: utcDate };
       } else {
         const d = new Date(Date.UTC(y, month - 1, day));
-        if (d > now || d < ninetyDaysAgo) return undefined;
         return { date: d };
       }
     } catch {

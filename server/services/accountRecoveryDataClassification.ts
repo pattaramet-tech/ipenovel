@@ -213,6 +213,19 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     reason: "Workspace connection state is user-scoped and must not be silently reassigned during recovery.",
   },
 
+  {
+    table: "adminGiftEntitlements",
+    column: "actorAdminId",
+    category: "deliberately_ignored",
+    reason: "The admin who granted the entitlement; actor provenance is not account-owned data for the recovery source.",
+  },
+  {
+    table: "adminGiftWalletAdjustments",
+    column: "actorAdminId",
+    category: "deliberately_ignored",
+    reason: "The admin who performed the wallet adjustment; actor provenance is not financial state owned by the recovery source.",
+  },
+
   // ---- deliberately_ignored: admin/system actor identities, never the source's own data ----
   {
     table: "workspaceAuditEvents",
@@ -354,6 +367,8 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
   { table: "sportsMatchVotes", column: "userId", category: "economic_hard_block", reason: "Records real points spent on a wager, and may reference an issued reward coupon." },
   { table: "sportsMatchRewards", column: "userId", category: "economic_hard_block", reason: "A reward coupon issued to this user - a financial right." },
   { table: "dailyCheckinRewardGrants", column: "userId", category: "economic_hard_block", reason: "A granted points/coupon reward - a financial right, distinct from the check-in event itself (see dailyCheckins.userId below)." },
+  { table: "adminGiftEntitlements", column: "userId", category: "economic_hard_block", reason: "An admin-granted content entitlement is a durable economic/content-access right owned by the user." },
+  { table: "adminGiftWalletAdjustments", column: "targetUserId", category: "economic_hard_block", reason: "An admin wallet credit/clawback receipt is durable financial history tied to the target account and must participate in recovery safety." },
 
   // ---- user_owned_hard_block: Category B - cart/library/reading progress/check-ins ----
   { table: "carts", column: "userId", category: "user_owned_hard_block", reason: "The user's shopping cart." },
