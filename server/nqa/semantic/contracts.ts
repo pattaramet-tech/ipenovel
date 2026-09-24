@@ -1,5 +1,6 @@
 import type { NqaDecision, NqaReasonCode, QaEvidenceRef } from "../contracts";
 import type { NqaDeterministicQaResult } from "../deterministic/contracts";
+import type { NqaAlignmentResult } from "./alignment/contracts";
 
 export const NQA_SEMANTIC_GLOBAL_POLICY_VERSION =
   "nqa-semantic-global-v1" as const;
@@ -54,5 +55,6 @@ export type NqaSemanticQaStageResult = {
   reasonCodes: NqaReasonCode[];
   deterministic: NqaDeterministicQaResult;
   globalSearch: NqaGlobalSourceSearchResult | null;
+  alignment: NqaAlignmentResult | null;
   policyVersion: string;
 };

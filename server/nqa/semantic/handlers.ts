@@ -14,6 +14,11 @@ import { resolveChapter } from "../chapter/resolver";
 import { runDeterministicQa } from "../deterministic/engine";
 import type { NqaDeterministicPolicy } from "../deterministic/contracts";
 import type {
+  NqaAlignmentPolicy,
+  NqaRerankerProvider,
+} from "./alignment/contracts";
+import { runSemanticAlignment } from "./alignment/engine";
+import type {
   NqaEmbeddingProvider,
   NqaSemanticQaStageResult,
   NqaSemanticSearchPolicy,
@@ -53,10 +58,12 @@ export function createNqaSemanticQaHandlers(input: {
   adapter: NqaGoogleBulkIntakeAdapter;
   reader: NqaChapterDocumentReader;
   embeddingProvider: NqaEmbeddingProvider;
+  rerankerProvider?: NqaRerankerProvider;
   expectedInternalSequence?: (chapter: number) => number | null | undefined;
   variantOverrides?: Record<string, TranslationVariant>;
   deterministicPolicy?: Partial<NqaDeterministicPolicy>;
   semanticPolicy?: Partial<NqaSemanticSearchPolicy>;
+  alignmentPolicy?: Partial<NqaAlignmentPolicy>;
 }): SemanticHandlerMap {
   return {
     "nqa.qa.run_semantic": async context => {
@@ -117,6 +124,7 @@ export function createNqaSemanticQaHandlers(input: {
           reasonCodes: [...deterministic.reasonCodes],
           deterministic,
           globalSearch: null,
+          alignment: null,
           policyVersion:
             input.semanticPolicy?.version ?? "nqa-semantic-global-v1",
         };
@@ -139,11 +147,25 @@ export function createNqaSemanticQaHandlers(input: {
         policy: input.semanticPolicy,
       });
 
+      const alignment =
+        input.rerankerProvider &&
+        source !== null &&
+        globalSearch.decision !== "FAIL"
+          ? await runSemanticAlignment({
+              source,
+              translation,
+              embeddingProvider: input.embeddingProvider,
+              rerankerProvider: input.rerankerProvider,
+              policy: input.alignmentPolicy,
+            })
+          : null;
+
       const decision =
-        globalSearch.decision === "FAIL"
+        globalSearch.decision === "FAIL" || alignment?.decision === "FAIL"
           ? "FAIL"
           : deterministic.decision === "REVIEW" ||
-              globalSearch.decision === "REVIEW"
+              globalSearch.decision === "REVIEW" ||
+              alignment?.decision === "REVIEW"
             ? "REVIEW"
             : "PASS";
 
@@ -151,10 +173,12 @@ export function createNqaSemanticQaHandlers(input: {
         decision,
         reasonCodes: mergeReasons(
           deterministic.reasonCodes,
-          globalSearch.reasonCodes
+          globalSearch.reasonCodes,
+          alignment?.reasonCodes ?? []
         ) as NqaSemanticQaStageResult["reasonCodes"],
         deterministic,
         globalSearch,
+        alignment,
         policyVersion: globalSearch.policyVersion,
       };
 

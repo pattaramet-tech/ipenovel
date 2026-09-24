@@ -11,6 +11,7 @@ import { InMemoryNqaGatewayAuditSink } from "../mcp/audit";
 import { NqaMcpGateway } from "../mcp/gateway";
 import { NqaGatewayHandlerRegistry } from "../mcp/handlers";
 import { InMemoryNqaIdempotencyStore } from "../mcp/idempotency";
+import type { NqaRerankerProvider } from "./alignment/contracts";
 import type { NqaEmbeddingProvider } from "./contracts";
 import { createNqaSemanticQaHandlers } from "./handlers";
 
@@ -184,6 +185,7 @@ function embeddingProvider(
 
 function makeGateway(input?: {
   provider?: NqaEmbeddingProvider;
+  rerankerProvider?: NqaRerankerProvider;
   includeTranslation?: boolean;
   validContract?: boolean;
 }) {
@@ -200,6 +202,7 @@ function makeGateway(input?: {
     adapter: adapter(input?.validContract ?? true),
     reader,
     embeddingProvider: provider,
+    rerankerProvider: input?.rerankerProvider,
     expectedInternalSequence: chapter => (chapter === 197 ? 198 : null),
     deterministicPolicy: {
       minChapterCharsReview: 1,
@@ -227,6 +230,7 @@ function makeGateway(input?: {
     }),
     reader,
     provider,
+    rerankerProvider: input?.rerankerProvider,
     auditSink,
   };
 }
@@ -410,5 +414,64 @@ describe("NQA semantic QA MCP handler", () => {
     });
     expect(reader.readDocument).not.toHaveBeenCalled();
     expect(provider.calls).toBe(0);
+  });
+
+  it("runs M10 alignment when a reranker provider is configured", async () => {
+    const provider: NqaEmbeddingProvider & { calls: number } = {
+      providerId: "fixture-embedding",
+      modelVersion: "fixture-m10",
+      calls: 0,
+      async embed(texts: string[]) {
+        this.calls += 1;
+        return texts.map(text => {
+          if (text.includes("source-196")) return [0, 1, 0];
+          if (text.includes("source-197")) return [1, 0, 0];
+          if (text.includes("source-205")) return [0, 0, 1];
+          if (text.includes("thai-query")) return [1, 0, 0];
+          throw new Error("unexpected M10 fixture text");
+        });
+      },
+    };
+    const reranker: NqaRerankerProvider & { calls: number } = {
+      providerId: "fixture-reranker",
+      modelVersion: "fixture-reranker-v1",
+      calls: 0,
+      async rerank(pairs) {
+        this.calls += 1;
+        return pairs.map(pair => ({
+          pairId: pair.pairId,
+          score: 0.95,
+        }));
+      },
+    };
+    const { gateway } = makeGateway({
+      provider,
+      rerankerProvider: reranker,
+    });
+
+    const result = await gateway.dispatch({
+      request: request("1".repeat(64)),
+      principal: qaPrincipal,
+    });
+
+    expect(result).toMatchObject({
+      status: "OK",
+      result: {
+        status: "PASS",
+        semantic: {
+          decision: "PASS",
+          globalSearch: { decision: "PASS" },
+          alignment: {
+            decision: "PASS",
+            metrics: {
+              alignedPairCount: 1,
+              sourceCoverage: 1,
+              translationCoverage: 1,
+            },
+          },
+        },
+      },
+    });
+    expect(reranker.calls).toBe(1);
   });
 });
