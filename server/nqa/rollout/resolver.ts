@@ -12,7 +12,7 @@ function targetKey(row: number, chapter: number): string {
   return row + ":" + chapter;
 }
 
-function normalizedTargets(
+export function normalizeNqaRolloutTargets(
   targets: readonly { row: number; chapter: number }[]
 ): Array<{ row: number; chapter: number }> {
   const unique = new Map<string, { row: number; chapter: number }>();
@@ -70,7 +70,7 @@ export function buildNqaControlledRolloutScope(input: {
     expectedRegistryStateFingerprint: input.state.stateFingerprint,
     candidatePolicyFingerprint: input.state.activePolicyFingerprint,
     baselinePolicyFingerprint: input.state.rollbackTarget.policyFingerprint,
-    targets: normalizedTargets(input.targets),
+    targets: normalizeNqaRolloutTargets(input.targets),
   };
 
   return NqaControlledRolloutScopeSchema.parse({

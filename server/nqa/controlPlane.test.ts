@@ -124,6 +124,34 @@ describe("NQA MCP control plane", () => {
     ).toMatchObject({ allowed: true, reason: "ALLOW" });
   });
 
+  it("keeps M19 soak evaluation read-only and scope expansion production-gated", () => {
+    expect(
+      authorizeNqaCapability({
+        capability: "nqa.rollout.evaluate_soak",
+        actorPermissions: ["READ"],
+      })
+    ).toMatchObject({ allowed: true, reason: "ALLOW" });
+
+    expect(
+      authorizeNqaCapability({
+        capability: "nqa.rollout.expand_scope",
+        actorPermissions: ["PRODUCTION_MUTATION"],
+      })
+    ).toMatchObject({
+      allowed: false,
+      reason: "TIER_DISABLED",
+      requiredPermission: "PRODUCTION_MUTATION",
+    });
+
+    expect(
+      authorizeNqaCapability({
+        capability: "nqa.rollout.expand_scope",
+        actorPermissions: ["PRODUCTION_MUTATION"],
+        enabledPermissionTiers: ["READ", "QA_OPERATE", "PRODUCTION_MUTATION"],
+      })
+    ).toMatchObject({ allowed: true, reason: "ALLOW" });
+  });
+
   it("fails closed for any capability not in the allowlist", () => {
     expect(
       authorizeNqaCapability({

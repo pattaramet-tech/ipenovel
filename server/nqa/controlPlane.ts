@@ -124,6 +124,18 @@ export const NQA_CAPABILITIES = {
     description:
       "Commit one explicitly authorized rollback to the preserved previous policy.",
   },
+  "nqa.rollout.evaluate_soak": {
+    requiredPermission: "READ",
+    effect: "READ_ONLY",
+    description:
+      "Evaluate bounded M18 monitoring plus operational telemetry over an explicit production soak window.",
+  },
+  "nqa.rollout.expand_scope": {
+    requiredPermission: "PRODUCTION_MUTATION",
+    effect: "PRODUCTION_MUTATION",
+    description:
+      "Commit one explicitly human-authorized monotonic rollout-scope expansion after a passing M19 soak gate.",
+  },
   "nqa.qa.run_deterministic": {
     requiredPermission: "QA_OPERATE",
     effect: "QA_STATE_WRITE",
