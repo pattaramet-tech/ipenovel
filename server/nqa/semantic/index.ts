@@ -1,4 +1,5 @@
 export * from "./adjudication";
+export * from "./structure";
 export * from "./alignment";
 export * from "./contracts";
 export * from "./embedding";

@@ -31,6 +31,12 @@ import type {
   NqaSemanticSearchPolicy,
 } from "./contracts";
 import { searchGlobalSourceChapters } from "./search";
+import type {
+  NqaStructurePolicy,
+  NqaStructureVerificationProvider,
+} from "./structure/contracts";
+import { runStructuredVerification } from "./structure/engine";
+import { buildStructureEvidenceItems } from "./structure/evidence";
 
 type SemanticCapability = "nqa.qa.run_semantic";
 
@@ -82,12 +88,14 @@ export function createNqaSemanticQaHandlers(input: {
   rerankerProvider?: NqaRerankerProvider;
   jevProvider?: NqaJevProvider;
   smallLlmProvider?: NqaSmallLlmProvider;
+  structureProvider?: NqaStructureVerificationProvider;
   expectedInternalSequence?: (chapter: number) => number | null | undefined;
   variantOverrides?: Record<string, TranslationVariant>;
   deterministicPolicy?: Partial<NqaDeterministicPolicy>;
   semanticPolicy?: Partial<NqaSemanticSearchPolicy>;
   alignmentPolicy?: Partial<NqaAlignmentPolicy>;
   adjudicationPolicy?: Partial<NqaAdjudicationPolicy>;
+  structurePolicy?: Partial<NqaStructurePolicy>;
 }): SemanticHandlerMap {
   return {
     "nqa.qa.run_semantic": async context => {
@@ -150,6 +158,7 @@ export function createNqaSemanticQaHandlers(input: {
           globalSearch: null,
           alignment: null,
           adjudication: null,
+          structure: null,
           policyVersion:
             input.semanticPolicy?.version ?? "nqa-semantic-global-v1",
         };
@@ -224,8 +233,56 @@ export function createNqaSemanticQaHandlers(input: {
             })
           : null;
 
-      const decision = adjudication?.decision ?? preAdjudicationDecision;
-      const reasonCodes = adjudication?.reasonCodes ?? preAdjudicationReasons;
+      const preStructureDecision =
+        adjudication?.decision ?? preAdjudicationDecision;
+      const preStructureReasons =
+        adjudication?.reasonCodes ?? preAdjudicationReasons;
+
+      const structure =
+        input.structureProvider &&
+        source !== null &&
+        alignment !== null &&
+        (preStructureDecision === "REVIEW" ||
+          (preStructureDecision === "PASS" &&
+            input.structurePolicy?.runOnPass === true))
+          ? await runStructuredVerification({
+              items: buildStructureEvidenceItems({
+                alignment,
+                source,
+                translation,
+                policy: input.structurePolicy,
+                alignmentPolicy: input.alignmentPolicy,
+              }),
+              provider: input.structureProvider,
+              policy: input.structurePolicy,
+            })
+          : null;
+
+      let decision = preStructureDecision;
+      let reasonCodes = preStructureReasons;
+
+      if (structure?.decision === "FAIL") {
+        decision = "FAIL";
+        reasonCodes = mergeReasons(
+          preStructureReasons,
+          structure.reasonCodes
+        ) as NqaSemanticQaStageResult["reasonCodes"];
+      } else if (structure?.decision === "REVIEW") {
+        if (preStructureDecision === "PASS") {
+          decision = "REVIEW";
+        }
+        reasonCodes = mergeReasons(
+          preStructureReasons,
+          structure.reasonCodes
+        ) as NqaSemanticQaStageResult["reasonCodes"];
+      } else if (
+        structure?.decision === "PASS" &&
+        preStructureDecision === "REVIEW" &&
+        input.structurePolicy?.allowStructuredPassUpgrade === true
+      ) {
+        decision = "PASS";
+        reasonCodes = structure.reasonCodes;
+      }
 
       const result: NqaSemanticQaStageResult = {
         decision,
@@ -234,6 +291,7 @@ export function createNqaSemanticQaHandlers(input: {
         globalSearch,
         alignment,
         adjudication,
+        structure,
         policyVersion: globalSearch.policyVersion,
       };
 

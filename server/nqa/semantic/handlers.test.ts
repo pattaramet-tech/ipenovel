@@ -19,6 +19,7 @@ import type {
 import type { NqaRerankerProvider } from "./alignment/contracts";
 import type { NqaEmbeddingProvider } from "./contracts";
 import { createNqaSemanticQaHandlers } from "./handlers";
+import type { NqaStructureVerificationProvider } from "./structure/contracts";
 
 const SOURCE_ID = "sourceDocument12345";
 const TRANSLATION_ID = "translationDoc12345";
@@ -193,6 +194,10 @@ function makeGateway(input?: {
   rerankerProvider?: NqaRerankerProvider;
   jevProvider?: NqaJevProvider;
   smallLlmProvider?: NqaSmallLlmProvider;
+  structureProvider?: NqaStructureVerificationProvider;
+  structurePolicy?: Parameters<
+    typeof createNqaSemanticQaHandlers
+  >[0]["structurePolicy"];
   deterministicPolicy?: Partial<NqaDeterministicPolicy>;
   includeTranslation?: boolean;
   validContract?: boolean;
@@ -213,6 +218,8 @@ function makeGateway(input?: {
     rerankerProvider: input?.rerankerProvider,
     jevProvider: input?.jevProvider,
     smallLlmProvider: input?.smallLlmProvider,
+    structureProvider: input?.structureProvider,
+    structurePolicy: input?.structurePolicy,
     expectedInternalSequence: chapter => (chapter === 197 ? 198 : null),
     deterministicPolicy: {
       minChapterCharsReview: 1,
@@ -560,5 +567,198 @@ describe("NQA semantic QA MCP handler", () => {
       },
     });
     expect(adjudicationCalls).toBe(1);
+  });
+
+  it("allows M12 strong structured mismatches to demote PASS to FAIL", async () => {
+    const provider: NqaEmbeddingProvider = {
+      providerId: "fixture-embedding",
+      modelVersion: "fixture-m12",
+      async embed(texts: string[]) {
+        return texts.map(text => {
+          if (text.includes("source-196")) return [0, 1, 0];
+          if (text.includes("source-197")) return [1, 0, 0];
+          if (text.includes("source-205")) return [0, 0, 1];
+          if (text.includes("thai-query")) return [1, 0, 0];
+          throw new Error("unexpected M12 fixture text");
+        });
+      },
+    };
+    const reranker: NqaRerankerProvider = {
+      providerId: "fixture-reranker",
+      modelVersion: "fixture-reranker-m12",
+      async rerank(pairs) {
+        return pairs.map(pair => ({
+          pairId: pair.pairId,
+          score: 0.95,
+        }));
+      },
+    };
+    const structureProvider: NqaStructureVerificationProvider = {
+      providerId: "fixture-structure",
+      modelVersion: "fixture-structure-v1",
+      async verify(items) {
+        return items.map(item => ({
+          evidenceId: item.evidenceId,
+          source: {
+            entities: [],
+            events: [],
+            relationships: [],
+            causalLinks: [],
+          },
+          translation: {
+            entities: [],
+            events: [],
+            relationships: [],
+            causalLinks: [],
+          },
+          dimensions: [
+            {
+              dimension: "EVENT",
+              status: "MISMATCH",
+              confidence: 0.95,
+              boundedSummary: "Events conflict.",
+            },
+            {
+              dimension: "ENTITY",
+              status: "MISMATCH",
+              confidence: 0.95,
+              boundedSummary: "Entities conflict.",
+            },
+            {
+              dimension: "RELATIONSHIP",
+              status: "MATCH",
+              confidence: 0.9,
+              boundedSummary: "No relationship issue.",
+            },
+            {
+              dimension: "CAUSALITY",
+              status: "INSUFFICIENT",
+              confidence: 0.8,
+              boundedSummary: "No causal evidence.",
+            },
+            {
+              dimension: "CHRONOLOGY",
+              status: "MATCH",
+              confidence: 0.9,
+              boundedSummary: "Order is stable.",
+            },
+          ],
+        }));
+      },
+    };
+    const { gateway } = makeGateway({
+      provider,
+      rerankerProvider: reranker,
+      structureProvider,
+      structurePolicy: { runOnPass: true, minFailItems: 1 },
+    });
+
+    const result = await gateway.dispatch({
+      request: request("3".repeat(64)),
+      principal: qaPrincipal,
+    });
+
+    expect(result).toMatchObject({
+      status: "OK",
+      result: {
+        status: "FAIL",
+        semantic: {
+          decision: "FAIL",
+          structure: {
+            decision: "FAIL",
+            reasonCodes: expect.arrayContaining([
+              "EVENT_MISMATCH",
+              "ENTITY_MISMATCH",
+            ]),
+          },
+        },
+      },
+    });
+  });
+
+  it("does not let M12 PASS upgrade an upstream REVIEW by default", async () => {
+    const provider: NqaEmbeddingProvider = {
+      providerId: "fixture-embedding",
+      modelVersion: "fixture-m12-review",
+      async embed(texts: string[]) {
+        return texts.map(text => {
+          if (text.includes("source-196")) return [0, 1, 0];
+          if (text.includes("source-197")) return [1, 0, 0];
+          if (text.includes("source-205")) return [0, 0, 1];
+          if (text.includes("thai-query")) return [1, 0, 0];
+          throw new Error("unexpected M12 review fixture text");
+        });
+      },
+    };
+    const reranker: NqaRerankerProvider = {
+      providerId: "fixture-reranker",
+      modelVersion: "fixture-reranker-m12-review",
+      async rerank(pairs) {
+        return pairs.map(pair => ({
+          pairId: pair.pairId,
+          score: 0.6,
+        }));
+      },
+    };
+    const structureProvider: NqaStructureVerificationProvider = {
+      providerId: "fixture-structure",
+      modelVersion: "fixture-structure-pass",
+      async verify(items) {
+        return items.map(item => ({
+          evidenceId: item.evidenceId,
+          source: {
+            entities: [],
+            events: [],
+            relationships: [],
+            causalLinks: [],
+          },
+          translation: {
+            entities: [],
+            events: [],
+            relationships: [],
+            causalLinks: [],
+          },
+          dimensions: [
+            "EVENT",
+            "ENTITY",
+            "RELATIONSHIP",
+            "CAUSALITY",
+            "CHRONOLOGY",
+          ].map(dimension => ({
+            dimension: dimension as
+              "EVENT" | "ENTITY" | "RELATIONSHIP" | "CAUSALITY" | "CHRONOLOGY",
+            status: "MATCH" as const,
+            confidence: 0.95,
+            boundedSummary: "Structured dimension matches.",
+          })),
+        }));
+      },
+    };
+    const { gateway } = makeGateway({
+      provider,
+      rerankerProvider: reranker,
+      structureProvider,
+    });
+
+    const result = await gateway.dispatch({
+      request: request("4".repeat(64)),
+      principal: qaPrincipal,
+    });
+
+    expect(result).toMatchObject({
+      status: "OK",
+      result: {
+        status: "REVIEW",
+        semantic: {
+          decision: "REVIEW",
+          alignment: {
+            decision: "REVIEW",
+          },
+          structure: {
+            decision: "PASS",
+          },
+        },
+      },
+    });
   });
 });
