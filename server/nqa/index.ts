@@ -1,4 +1,5 @@
 export * from "./contracts";
+export * from "./chapter";
 export * from "./controlPlane";
 export * from "./core";
 export * from "./intake";
