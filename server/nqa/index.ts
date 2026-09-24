@@ -13,4 +13,5 @@ export * from "./review";
 export * from "./calibration";
 export * from "./candidatePolicy";
 export * from "./activation";
+export * from "./rollout";
 export * from "./fixtures/canonical";
