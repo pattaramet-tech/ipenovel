@@ -94,6 +94,24 @@ export const NQA_CAPABILITIES = {
     description:
       "Build a fail-closed offline promotion decision artifact without applying policy changes.",
   },
+  "nqa.candidate_policy.materialize": {
+    requiredPermission: "READ",
+    effect: "READ_ONLY",
+    description:
+      "Materialize an M15-promoted candidate as an inactive versioned policy artifact.",
+  },
+  "nqa.candidate_policy.shadow_revalidate": {
+    requiredPermission: "READ",
+    effect: "READ_ONLY",
+    description:
+      "Replay an inactive candidate against a bounded human-confirmed shadow dataset.",
+  },
+  "nqa.candidate_policy.activation_readiness": {
+    requiredPermission: "READ",
+    effect: "READ_ONLY",
+    description:
+      "Build fail-closed activation-readiness evidence without activating policy.",
+  },
   "nqa.qa.run_deterministic": {
     requiredPermission: "QA_OPERATE",
     effect: "QA_STATE_WRITE",

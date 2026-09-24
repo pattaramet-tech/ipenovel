@@ -83,6 +83,21 @@ describe("NQA MCP control plane", () => {
     ).toMatchObject({ allowed: true, reason: "ALLOW" });
   });
 
+  it("keeps M16 candidate-policy capabilities read-only", () => {
+    for (const capability of [
+      "nqa.candidate_policy.materialize",
+      "nqa.candidate_policy.shadow_revalidate",
+      "nqa.candidate_policy.activation_readiness",
+    ] as const) {
+      expect(
+        authorizeNqaCapability({
+          capability,
+          actorPermissions: ["READ"],
+        })
+      ).toMatchObject({ allowed: true, reason: "ALLOW" });
+    }
+  });
+
   it("fails closed for any capability not in the allowlist", () => {
     expect(
       authorizeNqaCapability({
