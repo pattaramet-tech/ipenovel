@@ -136,6 +136,18 @@ export const NQA_CAPABILITIES = {
     description:
       "Commit one explicitly human-authorized monotonic rollout-scope expansion after a passing M19 soak gate.",
   },
+  "nqa.rollout.evaluate_completion": {
+    requiredPermission: "READ",
+    effect: "READ_ONLY",
+    description:
+      "Evaluate ordered M19 rollout history, terminal coverage and final soak evidence for candidate finalization readiness.",
+  },
+  "nqa.rollout.finalize_candidate": {
+    requiredPermission: "PRODUCTION_MUTATION",
+    effect: "PRODUCTION_MUTATION",
+    description:
+      "Commit one explicitly human-authorized candidate finalization into append-only baseline lineage.",
+  },
   "nqa.qa.run_deterministic": {
     requiredPermission: "QA_OPERATE",
     effect: "QA_STATE_WRITE",

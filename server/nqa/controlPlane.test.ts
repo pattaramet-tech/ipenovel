@@ -152,6 +152,34 @@ describe("NQA MCP control plane", () => {
     ).toMatchObject({ allowed: true, reason: "ALLOW" });
   });
 
+  it("keeps M20 completion read-only and candidate finalization production-gated", () => {
+    expect(
+      authorizeNqaCapability({
+        capability: "nqa.rollout.evaluate_completion",
+        actorPermissions: ["READ"],
+      })
+    ).toMatchObject({ allowed: true, reason: "ALLOW" });
+
+    expect(
+      authorizeNqaCapability({
+        capability: "nqa.rollout.finalize_candidate",
+        actorPermissions: ["PRODUCTION_MUTATION"],
+      })
+    ).toMatchObject({
+      allowed: false,
+      reason: "TIER_DISABLED",
+      requiredPermission: "PRODUCTION_MUTATION",
+    });
+
+    expect(
+      authorizeNqaCapability({
+        capability: "nqa.rollout.finalize_candidate",
+        actorPermissions: ["PRODUCTION_MUTATION"],
+        enabledPermissionTiers: ["READ", "QA_OPERATE", "PRODUCTION_MUTATION"],
+      })
+    ).toMatchObject({ allowed: true, reason: "ALLOW" });
+  });
+
   it("fails closed for any capability not in the allowlist", () => {
     expect(
       authorizeNqaCapability({

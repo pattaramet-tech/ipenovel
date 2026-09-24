@@ -27,7 +27,7 @@ export interface NqaScopeExpansionStore {
   }): Promise<NqaScopeExpansionAppendResult>;
 }
 
-function validateTransition(input: {
+export function validateNqaScopeExpansionTransition(input: {
   previous: NqaScopeExpansionState;
   event: NqaScopeExpansionEvent;
 }): void {
@@ -93,7 +93,7 @@ function applyChain(
       left.resultingState.revision - right.resultingState.revision
   )) {
     const event = verifyNqaScopeExpansionEvent(raw);
-    validateTransition({ previous: state, event });
+    validateNqaScopeExpansionTransition({ previous: state, event });
     state = event.resultingState;
   }
   return verifyNqaScopeExpansionState(state);
@@ -146,7 +146,10 @@ export class InMemoryNqaScopeExpansionStore implements NqaScopeExpansionStore {
     ) {
       return "CONFLICT";
     }
-    validateTransition({ previous: state, event: input.event });
+    validateNqaScopeExpansionTransition({
+      previous: state,
+      event: input.event,
+    });
     this.events.push(structuredClone(input.event));
     return "COMMITTED";
   }
@@ -285,7 +288,10 @@ export class JsonFileNqaScopeExpansionStore implements NqaScopeExpansionStore {
       ) {
         return "CONFLICT";
       }
-      validateTransition({ previous: state, event: input.event });
+      validateNqaScopeExpansionTransition({
+        previous: state,
+        event: input.event,
+      });
       await fs.mkdir(this.eventsDir(), { recursive: true });
       await fs.writeFile(
         path.join(
