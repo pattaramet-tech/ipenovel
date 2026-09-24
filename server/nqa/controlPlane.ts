@@ -71,6 +71,17 @@ export const NQA_CAPABILITIES = {
     effect: "READ_ONLY",
     description: "Inspect one review queue entry.",
   },
+  "nqa.review.submit_action": {
+    requiredPermission: "QA_OPERATE",
+    effect: "QA_STATE_WRITE",
+    description:
+      "Append one bounded human-review action to the QA-only curation journal.",
+  },
+  "nqa.review.export_curated": {
+    requiredPermission: "READ",
+    effect: "READ_ONLY",
+    description: "Export deterministic bounded curation evidence.",
+  },
   "nqa.qa.run_deterministic": {
     requiredPermission: "QA_OPERATE",
     effect: "QA_STATE_WRITE",

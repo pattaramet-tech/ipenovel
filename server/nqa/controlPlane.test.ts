@@ -40,6 +40,33 @@ describe("NQA MCP control plane", () => {
     });
   });
 
+  it("gates M14 review mutation while keeping curated export read-only", () => {
+    expect(
+      authorizeNqaCapability({
+        capability: "nqa.review.submit_action",
+        actorPermissions: ["READ"],
+      })
+    ).toMatchObject({
+      allowed: false,
+      reason: "MISSING_PERMISSION",
+      requiredPermission: "QA_OPERATE",
+    });
+
+    expect(
+      authorizeNqaCapability({
+        capability: "nqa.review.submit_action",
+        actorPermissions: ["QA_OPERATE"],
+      })
+    ).toMatchObject({ allowed: true, reason: "ALLOW" });
+
+    expect(
+      authorizeNqaCapability({
+        capability: "nqa.review.export_curated",
+        actorPermissions: ["READ"],
+      })
+    ).toMatchObject({ allowed: true, reason: "ALLOW" });
+  });
+
   it("fails closed for any capability not in the allowlist", () => {
     expect(
       authorizeNqaCapability({

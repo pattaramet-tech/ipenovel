@@ -9,4 +9,5 @@ export * from "./identity";
 export * from "./mcp";
 export * from "./semantic";
 export * from "./shadow";
+export * from "./review";
 export * from "./fixtures/canonical";
