@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { NqaDocumentSnapshot } from "../chapter/contracts";
 import type { NqaChapterDocumentReader } from "../chapter/googleReader";
+import type { NqaDeterministicPolicy } from "../deterministic/contracts";
 import { NqaGoogleBulkIntakeAdapter } from "../google/adapter";
 import type {
   NqaGoogleReadOnlyTransport,
@@ -11,6 +12,10 @@ import { InMemoryNqaGatewayAuditSink } from "../mcp/audit";
 import { NqaMcpGateway } from "../mcp/gateway";
 import { NqaGatewayHandlerRegistry } from "../mcp/handlers";
 import { InMemoryNqaIdempotencyStore } from "../mcp/idempotency";
+import type {
+  NqaJevProvider,
+  NqaSmallLlmProvider,
+} from "./adjudication/contracts";
 import type { NqaRerankerProvider } from "./alignment/contracts";
 import type { NqaEmbeddingProvider } from "./contracts";
 import { createNqaSemanticQaHandlers } from "./handlers";
@@ -186,6 +191,9 @@ function embeddingProvider(
 function makeGateway(input?: {
   provider?: NqaEmbeddingProvider;
   rerankerProvider?: NqaRerankerProvider;
+  jevProvider?: NqaJevProvider;
+  smallLlmProvider?: NqaSmallLlmProvider;
+  deterministicPolicy?: Partial<NqaDeterministicPolicy>;
   includeTranslation?: boolean;
   validContract?: boolean;
 }) {
@@ -203,6 +211,8 @@ function makeGateway(input?: {
     reader,
     embeddingProvider: provider,
     rerankerProvider: input?.rerankerProvider,
+    jevProvider: input?.jevProvider,
+    smallLlmProvider: input?.smallLlmProvider,
     expectedInternalSequence: chapter => (chapter === 197 ? 198 : null),
     deterministicPolicy: {
       minChapterCharsReview: 1,
@@ -473,5 +483,82 @@ describe("NQA semantic QA MCP handler", () => {
       },
     });
     expect(reranker.calls).toBe(1);
+  });
+
+  it("runs M11 adjudication only for upstream REVIEW evidence", async () => {
+    const provider: NqaEmbeddingProvider = {
+      providerId: "fixture-embedding",
+      modelVersion: "fixture-m11",
+      async embed(texts: string[]) {
+        return texts.map(text => {
+          if (text.includes("source-196")) return [0, 1, 0];
+          if (text.includes("source-197")) return [1, 0, 0];
+          if (text.includes("source-205")) return [0, 0, 1];
+          if (text.includes("thai-query")) return [1, 0, 0];
+          throw new Error("unexpected M11 fixture text");
+        });
+      },
+    };
+    const reranker: NqaRerankerProvider = {
+      providerId: "fixture-reranker",
+      modelVersion: "fixture-reranker-m11",
+      async rerank(pairs) {
+        return pairs.map(pair => ({
+          pairId: pair.pairId,
+          score: 0.6,
+        }));
+      },
+    };
+    let adjudicationCalls = 0;
+    const smallLlm: NqaSmallLlmProvider = {
+      providerId: "fixture-small-llm",
+      modelVersion: "fixture-small-llm-v1",
+      async adjudicate(evidence) {
+        adjudicationCalls += 1;
+        expect(evidence.upstreamDecision).toBe("REVIEW");
+        expect(evidence.snippets.length).toBeGreaterThan(0);
+        expect(evidence.snippets[0].sourceText).toContain("source-197");
+        expect(evidence.snippets[0].translationText).toContain("thai-query");
+        return {
+          decision: "PASS",
+          reasonCodes: [],
+          confidence: 0.95,
+          boundedRationale: "The bounded pair is semantically consistent.",
+          modelVersion: "fixture-small-llm-v1",
+        };
+      },
+    };
+    const { gateway } = makeGateway({
+      provider,
+      rerankerProvider: reranker,
+      smallLlmProvider: smallLlm,
+    });
+
+    const result = await gateway.dispatch({
+      request: request("2".repeat(64)),
+      principal: qaPrincipal,
+    });
+
+    expect(result).toMatchObject({
+      status: "OK",
+      result: {
+        status: "PASS",
+        semantic: {
+          decision: "PASS",
+          alignment: {
+            decision: "REVIEW",
+            reasonCodes: ["ALIGNMENT_UNCERTAIN"],
+          },
+          adjudication: {
+            decision: "PASS",
+            route: "LOCAL_LLM",
+            localLlm: {
+              confidence: 0.95,
+            },
+          },
+        },
+      },
+    });
+    expect(adjudicationCalls).toBe(1);
   });
 });

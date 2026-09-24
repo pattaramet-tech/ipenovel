@@ -14,6 +14,13 @@ import { resolveChapter } from "../chapter/resolver";
 import { runDeterministicQa } from "../deterministic/engine";
 import type { NqaDeterministicPolicy } from "../deterministic/contracts";
 import type {
+  NqaAdjudicationPolicy,
+  NqaJevProvider,
+  NqaSmallLlmProvider,
+} from "./adjudication/contracts";
+import { runNqaAdjudication } from "./adjudication/engine";
+import { buildAdjudicationEvidencePack } from "./adjudication/evidence";
+import type {
   NqaAlignmentPolicy,
   NqaRerankerProvider,
 } from "./alignment/contracts";
@@ -54,16 +61,33 @@ function mergeReasons(
   return Array.from(new Set(reasonGroups.flat()));
 }
 
+const M11_ADJUDICABLE_REVIEW_REASONS = new Set([
+  "LOW_CONFIDENCE",
+  "ALIGNMENT_UNCERTAIN",
+  "MODEL_DISAGREEMENT",
+  "INSUFFICIENT_EVIDENCE",
+]);
+
+function isM11AdjudicableReview(reasons: readonly string[]): boolean {
+  return (
+    reasons.length > 0 &&
+    reasons.every(reason => M11_ADJUDICABLE_REVIEW_REASONS.has(reason))
+  );
+}
+
 export function createNqaSemanticQaHandlers(input: {
   adapter: NqaGoogleBulkIntakeAdapter;
   reader: NqaChapterDocumentReader;
   embeddingProvider: NqaEmbeddingProvider;
   rerankerProvider?: NqaRerankerProvider;
+  jevProvider?: NqaJevProvider;
+  smallLlmProvider?: NqaSmallLlmProvider;
   expectedInternalSequence?: (chapter: number) => number | null | undefined;
   variantOverrides?: Record<string, TranslationVariant>;
   deterministicPolicy?: Partial<NqaDeterministicPolicy>;
   semanticPolicy?: Partial<NqaSemanticSearchPolicy>;
   alignmentPolicy?: Partial<NqaAlignmentPolicy>;
+  adjudicationPolicy?: Partial<NqaAdjudicationPolicy>;
 }): SemanticHandlerMap {
   return {
     "nqa.qa.run_semantic": async context => {
@@ -125,6 +149,7 @@ export function createNqaSemanticQaHandlers(input: {
           deterministic,
           globalSearch: null,
           alignment: null,
+          adjudication: null,
           policyVersion:
             input.semanticPolicy?.version ?? "nqa-semantic-global-v1",
         };
@@ -160,7 +185,7 @@ export function createNqaSemanticQaHandlers(input: {
             })
           : null;
 
-      const decision =
+      const preAdjudicationDecision =
         globalSearch.decision === "FAIL" || alignment?.decision === "FAIL"
           ? "FAIL"
           : deterministic.decision === "REVIEW" ||
@@ -169,16 +194,46 @@ export function createNqaSemanticQaHandlers(input: {
             ? "REVIEW"
             : "PASS";
 
+      const preAdjudicationReasons = mergeReasons(
+        deterministic.reasonCodes,
+        globalSearch.reasonCodes,
+        alignment?.reasonCodes ?? []
+      ) as NqaSemanticQaStageResult["reasonCodes"];
+
+      const adjudication =
+        preAdjudicationDecision === "REVIEW" &&
+        source !== null &&
+        isM11AdjudicableReview(preAdjudicationReasons) &&
+        (input.jevProvider || input.smallLlmProvider)
+          ? await runNqaAdjudication({
+              evidencePack: buildAdjudicationEvidencePack({
+                adjudication: {
+                  upstreamDecision: preAdjudicationDecision,
+                  upstreamReasonCodes: preAdjudicationReasons,
+                  globalSearch,
+                  alignment,
+                },
+                source,
+                translation,
+                policy: input.adjudicationPolicy,
+                alignmentPolicy: input.alignmentPolicy,
+              }),
+              jevProvider: input.jevProvider,
+              smallLlmProvider: input.smallLlmProvider,
+              policy: input.adjudicationPolicy,
+            })
+          : null;
+
+      const decision = adjudication?.decision ?? preAdjudicationDecision;
+      const reasonCodes = adjudication?.reasonCodes ?? preAdjudicationReasons;
+
       const result: NqaSemanticQaStageResult = {
         decision,
-        reasonCodes: mergeReasons(
-          deterministic.reasonCodes,
-          globalSearch.reasonCodes,
-          alignment?.reasonCodes ?? []
-        ) as NqaSemanticQaStageResult["reasonCodes"],
+        reasonCodes,
         deterministic,
         globalSearch,
         alignment,
+        adjudication,
         policyVersion: globalSearch.policyVersion,
       };
 
