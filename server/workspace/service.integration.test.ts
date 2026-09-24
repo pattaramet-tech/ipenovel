@@ -14,6 +14,7 @@ import {
   createWorkspace,
   getWorkspaceDetail,
   listMigrationOwnership,
+  listPublicationNovelOptions,
   listReadOnlyBindings,
 } from "./service";
 
@@ -67,6 +68,30 @@ describe.sequential("workspace M01 admin authorization and read-only binding int
       await testDb.delete(users).where(eq(users.id, owner.id));
       await testDb.delete(users).where(eq(users.id, member.id));
       await testDb.delete(users).where(eq(users.id, admin.id));
+    }
+  });
+
+  it("does not truncate publication novel options to the first 200 rows", async () => {
+    if (!process.env.TEST_DATABASE_URL) return;
+    assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
+
+    const testDb = getTestDb();
+    const owner = await createTestUser({ role: "admin" });
+    const workspace = await createWorkspace(owner.id, "Large novel catalog");
+    const createdNovelIds: number[] = [];
+
+    try {
+      for (let index = 0; index < 205; index += 1) {
+        const novel = await createTestNovel({ title: `Visibility ${String(index).padStart(3, "0")}` });
+        createdNovelIds.push(novel.id);
+      }
+      const options = await listPublicationNovelOptions(owner.id, workspace.workspaceId);
+      expect(options.filter((option) => createdNovelIds.includes(option.id))).toHaveLength(205);
+      expect(options.some((option) => option.id === createdNovelIds[204])).toBe(true);
+    } finally {
+      await testDb.delete(workspaceWorkspaces).where(eq(workspaceWorkspaces.id, workspace.workspaceId));
+      for (const novelId of createdNovelIds) await testDb.delete(novels).where(eq(novels.id, novelId));
+      await testDb.delete(users).where(eq(users.id, owner.id));
     }
   });
 

@@ -16,6 +16,7 @@ import { ensureDatabaseMigrated } from "./startupMigrations";
 import { assertProductionStagingDatabaseIsolation } from "./productionStagingSafety";
 import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
 import { registerHealthReadinessRoutes } from "./healthReadiness";
+import { createUnattendedPublishWorker } from "../workspace/publishUnattendedWorker";
 
 // Procedures that have caused "No procedure found on path ..." client errors
 // in production when an older server build was still deployed after the
@@ -74,6 +75,11 @@ async function startServer() {
   // `node dist/index.js` start (bypassing package.json, as the hosting
   // platform did during the incident) safe.
   await ensureDatabaseMigrated();
+
+  // Validate the unattended Controlled Publish worker before opening the port.
+  // It is inert unless explicitly enabled; if enabled, Preview-only DB identity
+  // and the execution/provider gates must all pass or startup fails closed.
+  const unattendedPublishWorker = createUnattendedPublishWorker();
 
   // STEP 4: construct the Express application.
   const app = express();
@@ -143,8 +149,10 @@ async function startServer() {
     console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
   }
 
+  server.on("close", () => unattendedPublishWorker.stop());
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
+    unattendedPublishWorker.start();
     // Check upload service health
     checkUploadServiceHealth();
   });

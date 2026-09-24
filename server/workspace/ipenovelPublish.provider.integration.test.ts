@@ -18,6 +18,7 @@ describe.sequential("IpeNovel Workspace external publish adapter", () => {
     const episode = await createTestEpisode(novel.id, { isPublished: false, title: "Provider boundary fixture" });
     const workspace = await createWorkspace(owner.id, "Provider boundary tenant");
     await db.update(episodes).set({ content: "preserve-content", fileUrl: "legacy://preserve", price: "17.00" }).where(eq(episodes.id, episode.id));
+    await db.update(novels).set({ publicationStatus: "archived" }).where(eq(novels.id, novel.id));
 
     try {
       const provider = createIpeNovelWorkspacePublishProvider();
@@ -47,9 +48,14 @@ describe.sequential("IpeNovel Workspace external publish adapter", () => {
         price: "17.00",
       });
       expect(after.publishedAt).toBeTruthy();
+      const [publishedNovel] = await db.select().from(novels).where(eq(novels.id, novel.id));
+      expect(publishedNovel.publicationStatus).toBe("published");
 
+      await db.update(novels).set({ publicationStatus: "archived" }).where(eq(novels.id, novel.id));
       const reconciled = await provider.reconcile(request);
       expect(reconciled).toEqual(first);
+      const [reconciledNovel] = await db.select().from(novels).where(eq(novels.id, novel.id));
+      expect(reconciledNovel.publicationStatus).toBe("published");
       expect(await provider.execute(request)).toEqual(first);
       const receipts = await db.select().from(workspaceAuditEvents).where(and(
         eq(workspaceAuditEvents.workspaceId, workspace.workspaceId),

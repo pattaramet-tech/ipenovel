@@ -26,10 +26,11 @@ describe("Workspace Control Center controlled-operations contract", () => {
     expect(controlCenterRouter).not.toContain(".mutation(async");
   });
 
-  it("keeps publish/Kanban mutations unavailable while allowing M06-B Checker and AI queue actions", () => {
+  it("keeps publish ownership/execution mutations unavailable while allowing editorial Kanban, Checker and AI queue actions", () => {
     const page = read("client/src/pages/WorkspacePage.tsx");
 
-    expect(page).toContain("Admin Operational Control Center");
+    expect(page).toContain("Editorial Workspace");
+    expect(page).toContain("Editorial Episode Packs");
     expect(page).toContain("trpc.workspace.controlCenter.publishOverview.useQuery");
     expect(page).toContain("trpc.workspace.publishCutover.readiness.useQuery");
     expect(page).toContain("trpc.workspace.publishFinalGate.package.useQuery");
@@ -39,6 +40,12 @@ describe("Workspace Control Center controlled-operations contract", () => {
     expect(page).toContain("aiQueue.queue.useMutation");
     expect(page).toContain("aiQueue.retry.useMutation");
     expect(page).toContain("checker.queueRun.useMutation");
-    expect(page).not.toContain("kanban.transitionCard.useMutation");
+    expect(page).toContain("kanban.transitionCard.useMutation");
+    expect(page).toContain("editorial.createNovel.useMutation");
+    expect(page).toContain("editorial.createEpisode.useMutation");
+    expect(page).toContain("editorial.assignWorkItem.useMutation");
+    expect(page).toContain("editorial.updateWorkItemNote.useMutation");
+    expect(page).toContain("หมายเหตุ");
+    expect(page).not.toContain("Editorial assignee filter");
   });
 });

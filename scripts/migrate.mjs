@@ -71,6 +71,8 @@ export const REQUIRED_TABLES = [
   // presence check below has an entry for it and actually runs the
   // coupons_ownerUserId_idx check instead of silently skipping it.
   "coupons",
+  "workspaceEditorialWorkItems",
+  "workspaceEditorialEpisodeStages",
 ];
 export const REQUIRED_COLUMNS = [
   { table: "coupons", column: "maxDiscountAmount" },
@@ -87,6 +89,13 @@ export const REQUIRED_COLUMNS = [
   // here instead.
   { table: "dailyCheckinRewardGrants", column: "pointsTransactionId" },
   { table: "dailyCheckinRewardGrants", column: "streakCountAtGrant" },
+  { table: "workspaceEditorialWorkItems", column: "saleMode" },
+  { table: "workspaceEditorialWorkItems", column: "price" },
+  { table: "workspaceEditorialWorkItems", column: "isFree" },
+  { table: "workspaceEditorialEpisodeStages", column: "stageContract" },
+  { table: "workspaceEditorialEpisodeStages", column: "saleMode" },
+  { table: "workspaceEditorialEpisodeStages", column: "price" },
+  { table: "workspaceEditorialEpisodeStages", column: "isFree" },
 ];
 
 /**
@@ -98,7 +107,16 @@ export const REQUIRED_COLUMNS = [
  * Verifying nullability at boot turns that into a fail-closed deploy error
  * instead of a runtime error for every user who taps "check in".
  */
-export const REQUIRED_NULLABLE_COLUMNS = [{ table: "dailyCheckins", column: "couponId" }];
+export const REQUIRED_NULLABLE_COLUMNS = [
+  { table: "dailyCheckins", column: "couponId" },
+  { table: "workspaceEditorialWorkItems", column: "saleMode" },
+  { table: "workspaceEditorialWorkItems", column: "price" },
+  { table: "workspaceEditorialWorkItems", column: "isFree" },
+  { table: "workspaceEditorialEpisodeStages", column: "stageContract" },
+  { table: "workspaceEditorialEpisodeStages", column: "saleMode" },
+  { table: "workspaceEditorialEpisodeStages", column: "price" },
+  { table: "workspaceEditorialEpisodeStages", column: "isFree" },
+];
 
 export const REQUIRED_INDEXES = [
   { table: "coupons", index: "coupons_ownerUserId_idx" },
@@ -169,7 +187,7 @@ export async function findMissingSchemaObjects(conn) {
     // report the distinct "present but still NOT NULL" failure here.
     if (nullableRows && nullableRows.length > 0) {
       if (String(nullableRows[0].nullable).toUpperCase() !== "YES") {
-        missing.push(`column ${table}.${column} must be nullable (migration 0031 not applied)`);
+        missing.push(`column ${table}.${column} must be nullable`);
       }
     }
   }

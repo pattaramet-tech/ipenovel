@@ -284,8 +284,12 @@ describe("no destructive statement anywhere in the six repaired migrations", () 
 });
 
 describe("journal and timestamps are untouched by this repair", () => {
-  it("drizzle/meta/_journal.json is byte-identical to the base commit (no journal entry or timestamp changed)", () => {
-    expect(isByteIdenticalToBase("drizzle/meta/_journal.json")).toBe(true);
+  it("keeps the repaired migration-chain journal entries byte-for-byte equivalent to the repair baseline while allowing later migrations", () => {
+    const baseJournal = JSON.parse(gitBlob(BASE_SHA, "drizzle/meta/_journal.json").toString("utf8"));
+    const currentJournal = JSON.parse(fs.readFileSync(path.join(repoRoot, "drizzle/meta/_journal.json"), "utf8"));
+    expect(currentJournal.entries.filter((entry: any) => entry.idx >= 17 && entry.idx <= 30)).toEqual(
+      baseJournal.entries.filter((entry: any) => entry.idx >= 17 && entry.idx <= 30)
+    );
   });
 
   it("this repair created no migration of its own - the only idx-31/32 entries are the unrelated point-reward and coupon-ownership migrations (later, unrelated migrations - e.g. 0033 auth identities, 0034 account recovery - may legitimately follow idx 32; this no longer asserts idx 33 is undefined)", () => {

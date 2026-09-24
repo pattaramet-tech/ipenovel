@@ -51,7 +51,7 @@ export default function NovelDetailPage() {
   );
 
   // Always call episodes query (never conditionally) - gated by validNovelId only
-  const { data: episodes } = trpc.novels.episodes.useQuery(
+  const { data: episodes, error: episodesError, isLoading: episodesLoading } = trpc.novels.episodes.useQuery(
     { novelId: validNovelId },
     { enabled: !!validNovelId }
   );
@@ -213,26 +213,33 @@ export default function NovelDetailPage() {
 
     return { freeEpisodes, paidEpisodes, packageEpisodes, readerEpisodes };
   }, [episodes, searchTerm, sortBy]);
+  const { packageEpisodes } = filteredAndSortedEpisodes;
 
   // Table-of-contents groups (บทที่ 1-100, 101-200, ...) for each sale type.
   // Grouping always orders episodes numerically within a group regardless of
   // the active sortBy, since a table of contents should read top-to-bottom by
   // chapter number - groupEpisodesByHundreds sorts each bucket internally.
-  // New per-chapter purchases are cut from the main storefront, but a chapter
-  // that's free or already owned must stay visible/readable here - otherwise
-  // free-to-read novels using single chapters would show nothing, and past
-  // per-chapter buyers would lose visibility of what they already paid for.
+  // The public storefront is package-first. Legacy chapter rows stay visible
+  // only when they are actually free or already owned; locked chapter rows are
+  // historical commerce artifacts and must not masquerade as current products.
   const visibleReaderEpisodes = useMemo(
-    () =>
-      filteredAndSortedEpisodes.readerEpisodes.filter(
-        (ep: any) => ep.isFree === true || ep.isPurchased === true || ep.hasPurchased === true
-      ),
+    () => filteredAndSortedEpisodes.readerEpisodes.filter((ep: any) =>
+      ep?.isFree === true || ep?.isPurchased === true || ep?.hasPurchased === true
+    ),
     [filteredAndSortedEpisodes.readerEpisodes]
   );
   const readerEpisodeGroups = useMemo(
     () => groupEpisodesByHundreds(visibleReaderEpisodes),
     [visibleReaderEpisodes]
   );
+
+  // Storefront counts are commercial rows, matching the package list shown
+  // below (not the number of chapter headings embedded inside packageToc).
+  const totalReadableChapterCount = visibleReaderEpisodes.length + packageEpisodes.length;
+  const freeReadableChapterCount =
+    visibleReaderEpisodes.filter((ep: any) => ep.isFree === true).length +
+    packageEpisodes.filter((ep: any) => ep.isFree === true).length;
+  const paidReadableChapterCount = totalReadableChapterCount - freeReadableChapterCount;
 
   // SEO: only set page-specific tags once the novel has actually loaded -
   // while loading/on error, useDocumentHead simply isn't called with a
@@ -383,19 +390,10 @@ export default function NovelDetailPage() {
                 {episode.progressPercent > 0 ? "อ่านต่อ" : "อ่าน"}
               </button>
             ) : (
-              // Unpurchased paid chapter - direct wallet purchase only, never cart
-              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
-                <span className="font-semibold text-sm text-foreground">
-                  ฿{episode.price ?? "ไม่ระบุ"}
-                </span>
-                <button
-                  onClick={() => handleBuyNow(episode.id)}
-                  disabled={purchasingEpisodeId === episode.id}
-                  className="inline-flex items-center justify-center px-4 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition disabled:opacity-60 disabled:cursor-wait"
-                  title="ซื้อบทนี้ด้วยเงินในกระเป๋า"
-                >
-                  {purchasingEpisodeId === episode.id ? "กำลังซื้อ..." : "ซื้อทันที"}
-                </button>
+              // Legacy chapter rows remain visible for TOC/backward compatibility,
+              // but new commerce is package-only: never offer per-chapter purchase.
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>🔒</span><span>ล็อก</span>
               </div>
             )}
           </div>
@@ -643,8 +641,6 @@ export default function NovelDetailPage() {
     );
   }
 
-  const { freeEpisodes, paidEpisodes, packageEpisodes } = filteredAndSortedEpisodes;
-
   return (
     <div className="min-h-screen bg-background">
       <div className="container max-w-4xl px-4 py-6 md:py-8">
@@ -725,15 +721,15 @@ export default function NovelDetailPage() {
             <div className="grid grid-cols-3 gap-3 p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border">
               <div>
                 <p className="text-xs font-semibold text-muted-foreground mb-1">{t("status.totalEpisodes")}</p>
-                <p className="text-2xl font-bold">{episodes?.length || 0}</p>
+                <p className="text-2xl font-bold">{episodesError ? "—" : episodesLoading ? "…" : totalReadableChapterCount}</p>
               </div>
               <div>
                 <p className="text-xs font-semibold text-muted-foreground mb-1">{t("status.freeEpisodes")}</p>
-                <p className="text-2xl font-bold text-green-600">{freeEpisodes.length}</p>
+                <p className="text-2xl font-bold text-green-600">{episodesError ? "—" : episodesLoading ? "…" : freeReadableChapterCount}</p>
               </div>
               <div>
                 <p className="text-xs font-semibold text-muted-foreground mb-1">{t("status.paidEpisodes")}</p>
-                <p className="text-2xl font-bold text-blue-600">{paidEpisodes.length}</p>
+                <p className="text-2xl font-bold text-blue-600">{episodesError ? "—" : episodesLoading ? "…" : paidReadableChapterCount}</p>
               </div>
             </div>
           </div>
@@ -755,7 +751,7 @@ export default function NovelDetailPage() {
                     : "border-transparent text-muted-foreground hover:text-foreground"
                 }`}
               >
-                ทั้งหมด <span className="ml-1 text-xs font-normal text-muted-foreground">({visibleReaderEpisodes.length + packageEpisodes.length})</span>
+                ทั้งหมด <span className="ml-1 text-xs font-normal text-muted-foreground">({totalReadableChapterCount})</span>
               </button>
               {packageEpisodes.length > 0 && (
                 <button
@@ -797,7 +793,14 @@ export default function NovelDetailPage() {
 
           {/* Episodes List - grouped as a table of contents (บทที่ 1-100, 101-200, ...) */}
           <div className="space-y-6">
-            {saleType === "all" && visibleReaderEpisodes.length === 0 && packageEpisodes.length === 0 ? (
+            {episodesError ? (
+              <Card className="border-red-200 bg-red-50 p-8 text-center">
+                <p className="font-medium text-red-700">โหลดรายการตอนที่เผยแพร่ไม่สำเร็จ</p>
+                <p className="mt-2 text-sm text-red-600">กรุณาลองรีเฟรชอีกครั้ง หากยังพบปัญหาให้แจ้งผู้ดูแลระบบ</p>
+              </Card>
+            ) : episodesLoading ? (
+              <Card className="p-8 text-center"><p className="text-muted-foreground">กำลังโหลดรายการตอน…</p></Card>
+            ) : saleType === "all" && totalReadableChapterCount === 0 ? (
               <Card className="p-8 text-center">
                 <p className="text-muted-foreground">ไม่มีตอนที่ตรงกับการค้นหา</p>
               </Card>
@@ -812,9 +815,8 @@ export default function NovelDetailPage() {
                     {renderEpisodeGroupAccordion(readerEpisodeGroups, "chapter", renderChapterEpisodeCard)}
                   </div>
                 )}
-                {/* Package Episodes Section - cart/checkout flow (main sale surface).
-                    Rendered as a single flat list in episode order - packages
-                    don't align to 100-chapter boundaries, so no range grouping. */}
+                {/* Public commerce is one row per Episode Pack. packageToc stays
+                    backend/reader metadata and is never expanded into storefront rows. */}
                 {packageEpisodes.length > 0 && (
                   <div>
                     <h3 className="text-lg font-semibold mb-3 text-amber-600">ขายแพ็ก ({packageEpisodes.length})</h3>

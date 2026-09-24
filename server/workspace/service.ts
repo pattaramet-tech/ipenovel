@@ -1,4 +1,5 @@
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
+import { nanoid } from "nanoid";
 import {
   novels,
   workspaceMembers,
@@ -21,6 +22,9 @@ export class WorkspaceServiceError extends Error {
       | "DATABASE_UNAVAILABLE"
       | "WORKSPACE_NOT_FOUND"
       | "NOVEL_NOT_FOUND"
+      | "INVALID_NOVEL_INPUT"
+      | "DUPLICATE_NOVEL_TITLE"
+      | "WORKSPACE_NOT_EMPTY"
       | "MEMBERSHIP_CONFLICT"
       | "INVALID_MEMBERSHIP_CHANGE",
     message: string
@@ -84,6 +88,20 @@ export async function createWorkspace(userId: number, name: string) {
   });
 }
 
+export async function deleteWorkspace(userId: number, workspaceId: number) {
+  const db = await database();
+  await requireWorkspace(db, workspaceId);
+  await requireWorkspacePlatformAdmin(db, userId);
+  const [{ count }] = await db.select({ count: sql<number>`count(*)` }).from(workspaceNovels)
+    .where(and(eq(workspaceNovels.workspaceId, workspaceId), eq(workspaceNovels.status, "active")));
+  if (Number(count) > 0) {
+    throw new WorkspaceServiceError("WORKSPACE_NOT_EMPTY", "ลบ Workspace ไม่ได้ขณะที่ยังมีนิยายอยู่ กรุณาย้าย/นำเรื่องออกก่อน");
+  }
+  await db.update(workspaceWorkspaces).set({ status: "archived", deletedAt: new Date() })
+    .where(eq(workspaceWorkspaces.id, workspaceId));
+  return { workspaceId, deleted: true as const };
+}
+
 export async function getWorkspaceDetail(userId: number, workspaceId: number) {
   const db = await database();
   await requireWorkspace(db, workspaceId);
@@ -94,10 +112,131 @@ export async function getWorkspaceDetail(userId: number, workspaceId: number) {
       .select({ workspaceNovel: workspaceNovels, novel: novels })
       .from(workspaceNovels)
       .innerJoin(novels, eq(workspaceNovels.novelId, novels.id))
-      .where(eq(workspaceNovels.workspaceId, workspaceId)),
+      .where(and(eq(workspaceNovels.workspaceId, workspaceId), eq(workspaceNovels.status, "active"))),
   ]);
   const workspace = await requireWorkspace(db, workspaceId);
   return { workspace, membership: null, members, novels: novelRows };
+}
+
+export async function listPublicationNovelOptions(userId: number, workspaceId: number) {
+  const db = await database();
+  await requireWorkspace(db, workspaceId);
+  await requireWorkspacePlatformAdmin(db, userId);
+
+  const [publicationNovels, boundRows] = await Promise.all([
+    db
+      .select({
+        id: novels.id,
+        title: novels.title,
+        publicationStatus: novels.publicationStatus,
+        storyStatus: novels.storyStatus,
+      })
+      .from(novels)
+      .orderBy(asc(novels.title), asc(novels.id)),
+    db
+      .select({ novelId: workspaceNovels.novelId })
+      .from(workspaceNovels)
+      .where(
+        and(
+          eq(workspaceNovels.workspaceId, workspaceId),
+          eq(workspaceNovels.status, "active")
+        )
+      ),
+  ]);
+
+  const boundNovelIds = new Set(boundRows.map((row: any) => Number(row.novelId)));
+  return publicationNovels.map((novel: any) => ({
+    ...novel,
+    bound: boundNovelIds.has(Number(novel.id)),
+  }));
+}
+
+export async function createWorkspacePublicationNovel(input: {
+  actorUserId: number;
+  workspaceId: number;
+  title: string;
+  author?: string;
+  description?: string;
+}) {
+  const db = await database();
+  await requireWorkspace(db, input.workspaceId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
+
+  const title = input.title.trim();
+  if (!title) {
+    throw new WorkspaceServiceError(
+      "INVALID_NOVEL_INPUT",
+      "Novel title is required."
+    );
+  }
+
+  const normalizedTitle = title.normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase("th");
+  const titleCandidates = await db.select({ id: novels.id, title: novels.title }).from(novels);
+  const duplicate = titleCandidates.find((row: any) =>
+    String(row.title ?? "").normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase("th") === normalizedTitle
+  );
+  if (duplicate) {
+    throw new WorkspaceServiceError(
+      "DUPLICATE_NOVEL_TITLE",
+      `มีเรื่องชื่อนี้อยู่แล้ว (Novel #${duplicate.id}) กรุณาใช้ “เพิ่มเรื่องเดิม” แทน`
+    );
+  }
+
+  return db.transaction(async (tx: any) => {
+    const slugBase =
+      title
+        .toLowerCase()
+        .replace(/\s+/g, "-")
+        .replace(/[^a-z0-9-]/g, "")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "")
+        .slice(0, 440) || "novel";
+    const slug = `${slugBase}-${nanoid(10)}`;
+    const novelId = insertId(
+      await tx.insert(novels).values({
+        title,
+        author: input.author?.trim() || "",
+        description: input.description?.trim() || "",
+        coverImageUrl: "",
+        slug,
+        publicationStatus: "archived",
+        storyStatus: "ongoing",
+      })
+    );
+    const workspaceNovelId = insertId(
+      await tx.insert(workspaceNovels).values({
+        workspaceId: input.workspaceId,
+        novelId,
+        status: "active",
+      })
+    );
+
+    await tx.insert(workspaceReadOnlyBindings).values({
+      workspaceNovelId,
+      sourceKind: "synthetic",
+      sourceKey: `publication-novel:${novelId}`,
+      displayName: `Synthetic source for ${title}`,
+      role: "source",
+      sequence: 1,
+      status: "active",
+    });
+    await tx.insert(workspaceMigrationRegistry).values(
+      buildInitialMigrationOwnership().map(entry => ({
+        workspaceNovelId,
+        capability: entry.capability,
+        owner: entry.owner,
+        cutoverEpoch: entry.cutoverEpoch,
+        changedBy: input.actorUserId,
+      }))
+    );
+
+    return {
+      novelId,
+      workspaceNovelId,
+      publicationStatus: "archived" as const,
+      storyStatus: "ongoing" as const,
+    };
+  });
 }
 
 export async function addOrUpdateMember(input: {
@@ -173,6 +312,12 @@ export async function bindPublicationNovel(input: {
           status: "active",
         }));
 
+    if (existing[0] && existing[0].status !== "active") {
+      await tx.update(workspaceNovels)
+        .set({ status: "active", version: sql`${workspaceNovels.version} + 1` })
+        .where(eq(workspaceNovels.id, workspaceNovelId));
+    }
+
     if (!existing[0]) {
       await tx.insert(workspaceReadOnlyBindings).values({
         workspaceNovelId,
@@ -195,6 +340,26 @@ export async function bindPublicationNovel(input: {
     }
     return { workspaceNovelId, created: !existing[0] };
   });
+}
+
+export async function unbindPublicationNovel(input: {
+  actorUserId: number;
+  workspaceId: number;
+  workspaceNovelId: number;
+}) {
+  const db = await database();
+  await requireWorkspace(db, input.workspaceId);
+  await requireWorkspacePlatformAdmin(db, input.actorUserId);
+  const rows = await db.select().from(workspaceNovels).where(and(
+    eq(workspaceNovels.id, input.workspaceNovelId),
+    eq(workspaceNovels.workspaceId, input.workspaceId),
+    eq(workspaceNovels.status, "active")
+  )).limit(1);
+  if (!rows[0]) throw new WorkspaceServiceError("NOVEL_NOT_FOUND", "Workspace novel not found.");
+  await db.update(workspaceNovels)
+    .set({ status: "unlinked", version: sql`${workspaceNovels.version} + 1` })
+    .where(eq(workspaceNovels.id, input.workspaceNovelId));
+  return { workspaceNovelId: input.workspaceNovelId, unlinked: true as const };
 }
 
 export async function listReadOnlyBindings(userId: number, workspaceId: number) {

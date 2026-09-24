@@ -323,6 +323,69 @@
       "when": 1789256936880,
       "tag": "0045_admin_gift_wallet_adjustment",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "5",
+      "when": 1789713765456,
+      "tag": "0046_workspace_editorial_work_items",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "5",
+      "when": 1789722422697,
+      "tag": "0047_workspace_editorial_source_draft",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "5",
+      "when": 1789727563969,
+      "tag": "0048_workspace_editorial_foreign_checker",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "5",
+      "when": 1789731864147,
+      "tag": "0049_workspace_editorial_editor",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "5",
+      "when": 1789735698314,
+      "tag": "0050_workspace_editorial_approval_episode_stage",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "5",
+      "when": 1789752570408,
+      "tag": "0051_workspace_editorial_multitab_stage",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "5",
+      "when": 1789821675084,
+      "tag": "0052_workspace_editorial_notes",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "5",
+      "when": 1789845561098,
+      "tag": "0053_workspace_editorial_google_connection_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "5",
+      "when": 1789932500000,
+      "tag": "0054_workspace_editorial_sale_metadata",
+      "breakpoints": true
     }
   ]
 }

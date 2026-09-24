@@ -1,0 +1,2 @@
+ALTER TABLE `workspaceEditorialSources` ADD `googleConnectionId` int;--> statement-breakpoint
+ALTER TABLE `workspaceEditorialSources` ADD CONSTRAINT `wes_google_connection_fk` FOREIGN KEY (`googleConnectionId`) REFERENCES `workspaceGoogleConnections`(`id`) ON DELETE restrict ON UPDATE no action;
