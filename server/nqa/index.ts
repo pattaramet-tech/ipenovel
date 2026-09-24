@@ -7,4 +7,5 @@ export * from "./intake";
 export * from "./google";
 export * from "./identity";
 export * from "./mcp";
+export * from "./semantic";
 export * from "./fixtures/canonical";
