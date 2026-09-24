@@ -82,6 +82,18 @@ export const NQA_CAPABILITIES = {
     effect: "READ_ONLY",
     description: "Export deterministic bounded curation evidence.",
   },
+  "nqa.calibration.evaluate": {
+    requiredPermission: "READ",
+    effect: "READ_ONLY",
+    description:
+      "Evaluate replayable threshold profiles against human-confirmed M14 evidence.",
+  },
+  "nqa.calibration.promotion_gate": {
+    requiredPermission: "READ",
+    effect: "READ_ONLY",
+    description:
+      "Build a fail-closed offline promotion decision artifact without applying policy changes.",
+  },
   "nqa.qa.run_deterministic": {
     requiredPermission: "QA_OPERATE",
     effect: "QA_STATE_WRITE",

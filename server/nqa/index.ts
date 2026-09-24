@@ -10,4 +10,5 @@ export * from "./mcp";
 export * from "./semantic";
 export * from "./shadow";
 export * from "./review";
+export * from "./calibration";
 export * from "./fixtures/canonical";

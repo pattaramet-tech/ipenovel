@@ -67,6 +67,22 @@ describe("NQA MCP control plane", () => {
     ).toMatchObject({ allowed: true, reason: "ALLOW" });
   });
 
+  it("keeps M15 calibration and promotion-gate capabilities read-only", () => {
+    expect(
+      authorizeNqaCapability({
+        capability: "nqa.calibration.evaluate",
+        actorPermissions: ["READ"],
+      })
+    ).toMatchObject({ allowed: true, reason: "ALLOW" });
+
+    expect(
+      authorizeNqaCapability({
+        capability: "nqa.calibration.promotion_gate",
+        actorPermissions: ["READ"],
+      })
+    ).toMatchObject({ allowed: true, reason: "ALLOW" });
+  });
+
   it("fails closed for any capability not in the allowlist", () => {
     expect(
       authorizeNqaCapability({
