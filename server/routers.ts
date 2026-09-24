@@ -506,12 +506,16 @@ export const appRouter = router({
       };
     }),
 
-    episodes: protectedProcedure.input(z.object({ novelId: z.number() })).query(async ({ input, ctx }) => {
+    episodes: publicProcedure.input(z.object({ novelId: z.number() })).query(async ({ input, ctx }) => {
       const episodes = await db.getEpisodesByNovelId(input.novelId);
-      const isAdmin = ctx.user.role === "admin";
-      // One batch query for all episodes' reading progress, instead of one
-      // query per episode inside the loop below.
-      const progressMap = await db.getReadingProgressBatch(ctx.user.id, episodes.map((ep: any) => ep.id));
+      const user = ctx.user;
+      const isAdmin = user?.role === "admin";
+      // Public storefront visitors must be able to see episode/package metadata.
+      // Purchase state and reading progress are user-specific, so only query
+      // those when a verified session is present.
+      const progressMap = user
+        ? await db.getReadingProgressBatch(user.id, episodes.map((ep: any) => ep.id))
+        : new Map();
 
       // Enrich episodes with purchase status. IMPORTANT: isPurchased/hasPurchased
       // must be computed from actual purchase records only (episodePurchases +
@@ -520,7 +524,9 @@ export const appRouter = router({
       const enriched = await Promise.all(
         episodes.map(async (ep: any) => {
           const isFree = ep.isFree === true;
-          const hasPurchased = await readerService.hasPurchasedEpisode(ctx.user.id, ep.id);
+          const hasPurchased = user
+            ? await readerService.hasPurchasedEpisode(user.id, ep.id)
+            : false;
           const canRead = isFree || hasPurchased || isAdmin;
           const progress = progressMap.get(ep.id);
 
