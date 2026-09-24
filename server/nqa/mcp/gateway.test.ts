@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { NQA_CAPABILITIES } from "../controlPlane";
+import {
+  NQA_CAPABILITIES,
+  NQA_V1_ENABLED_PERMISSION_TIERS,
+} from "../controlPlane";
 import { InMemoryNqaGatewayAuditSink } from "./audit";
 import { NqaMcpGateway } from "./gateway";
 import { NqaGatewayHandlerRegistry } from "./handlers";
@@ -369,12 +372,15 @@ describe("NQA MCP secure gateway", () => {
     });
   });
 
-  it("exposes no V1 capability requiring production mutation permission", () => {
+  it("declares M17 production mutation capabilities but keeps the V1 tier disabled", () => {
     expect(
       Object.values(NQA_CAPABILITIES).some(
         definition => definition.requiredPermission === "PRODUCTION_MUTATION"
       )
-    ).toBe(false);
+    ).toBe(true);
+    expect(NQA_V1_ENABLED_PERMISSION_TIERS).not.toContain(
+      "PRODUCTION_MUTATION"
+    );
 
     expect(
       Object.values(NQA_CAPABILITIES).some(

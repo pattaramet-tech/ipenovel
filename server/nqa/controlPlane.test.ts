@@ -3,19 +3,24 @@ import { describe, expect, it } from "vitest";
 import {
   InMemoryNqaAuditSink,
   NQA_CAPABILITIES,
+  NQA_V1_ENABLED_PERMISSION_TIERS,
   authorizeAndAudit,
   authorizeNqaCapability,
 } from "./controlPlane";
 
 describe("NQA MCP control plane", () => {
-  it("exposes only READ and QA_OPERATE capability tiers in V1", () => {
-    const permissions = new Set(
+  it("keeps the V1 runtime enabled tiers limited to READ and QA_OPERATE", () => {
+    expect([...NQA_V1_ENABLED_PERMISSION_TIERS].sort()).toEqual([
+      "QA_OPERATE",
+      "READ",
+    ]);
+
+    const declaredPermissions = new Set(
       Object.values(NQA_CAPABILITIES).map(
         definition => definition.requiredPermission
       )
     );
-
-    expect([...permissions].sort()).toEqual(["QA_OPERATE", "READ"]);
+    expect(declaredPermissions.has("PRODUCTION_MUTATION")).toBe(true);
   });
 
   it("allows a read capability with READ permission", () => {
@@ -96,6 +101,27 @@ describe("NQA MCP control plane", () => {
         })
       ).toMatchObject({ allowed: true, reason: "ALLOW" });
     }
+  });
+
+  it("keeps M17 policy switching disabled unless the production tier is explicitly enabled", () => {
+    expect(
+      authorizeNqaCapability({
+        capability: "nqa.policy.activate_candidate",
+        actorPermissions: ["PRODUCTION_MUTATION"],
+      })
+    ).toMatchObject({
+      allowed: false,
+      reason: "TIER_DISABLED",
+      requiredPermission: "PRODUCTION_MUTATION",
+    });
+
+    expect(
+      authorizeNqaCapability({
+        capability: "nqa.policy.rollback",
+        actorPermissions: ["PRODUCTION_MUTATION"],
+        enabledPermissionTiers: ["READ", "QA_OPERATE", "PRODUCTION_MUTATION"],
+      })
+    ).toMatchObject({ allowed: true, reason: "ALLOW" });
   });
 
   it("fails closed for any capability not in the allowlist", () => {

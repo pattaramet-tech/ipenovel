@@ -11,7 +11,7 @@ export type NqaPermissionTier = (typeof NQA_PERMISSION_TIERS)[number];
 
 export type CapabilityDefinition = {
   requiredPermission: NqaPermissionTier;
-  effect: "READ_ONLY" | "QA_STATE_WRITE";
+  effect: "READ_ONLY" | "QA_STATE_WRITE" | "PRODUCTION_MUTATION";
   description: string;
 };
 
@@ -111,6 +111,18 @@ export const NQA_CAPABILITIES = {
     effect: "READ_ONLY",
     description:
       "Build fail-closed activation-readiness evidence without activating policy.",
+  },
+  "nqa.policy.activate_candidate": {
+    requiredPermission: "PRODUCTION_MUTATION",
+    effect: "PRODUCTION_MUTATION",
+    description:
+      "Commit one explicitly authorized M16-ready candidate activation transaction.",
+  },
+  "nqa.policy.rollback": {
+    requiredPermission: "PRODUCTION_MUTATION",
+    effect: "PRODUCTION_MUTATION",
+    description:
+      "Commit one explicitly authorized rollback to the preserved previous policy.",
   },
   "nqa.qa.run_deterministic": {
     requiredPermission: "QA_OPERATE",
