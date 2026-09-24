@@ -19,7 +19,8 @@ describe("server/db.ts - raw database error logging", () => {
   });
 
   afterEach(() => {
-    process.env.DATABASE_URL = originalDatabaseUrl;
+    if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = originalDatabaseUrl;
     vi.restoreAllMocks();
   });
 
