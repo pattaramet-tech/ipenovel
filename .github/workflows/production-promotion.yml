@@ -96,7 +96,7 @@ jobs:
         with:
           ref: ${{ inputs.candidate_sha }}
           path: candidate
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v6

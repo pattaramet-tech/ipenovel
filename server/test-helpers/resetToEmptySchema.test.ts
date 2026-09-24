@@ -107,7 +107,8 @@ describe("resetToEmptySchema - database-name guards", () => {
       await expect(resetToEmptySchema(conn, undefined)).rejects.toThrow();
       expect(calls).toHaveLength(0);
     } finally {
-      process.env.DATABASE_URL = originalDatabaseUrl;
+      if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = originalDatabaseUrl;
     }
   });
 

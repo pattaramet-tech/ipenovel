@@ -128,7 +128,8 @@ describe("resetToMigrationCutoff - TEST_DATABASE_URL only, never DATABASE_URL", 
       await resetToMigrationCutoff(conn, undefined, migrationsFolder, "0023_add_episode_sale_mode");
       expect(resetToEmptySchemaModule.resetToEmptySchema).toHaveBeenCalledWith(conn, undefined);
     } finally {
-      process.env.DATABASE_URL = originalDatabaseUrl;
+      if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = originalDatabaseUrl;
     }
   });
 });
