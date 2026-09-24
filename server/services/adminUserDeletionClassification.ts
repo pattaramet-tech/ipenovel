@@ -104,6 +104,8 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
   { table: "sportsMatchVotes", column: "userId", category: "economic", reference: "Sports Votes", reason: "Records real points spent on a wager, and may reference an issued reward coupon." },
   { table: "sportsMatchRewards", column: "userId", category: "economic", reference: "Sports Match Rewards", reason: "A reward coupon issued to this user - a financial right." },
   { table: "dailyCheckinRewardGrants", column: "userId", category: "economic", reference: "Daily Check-in Reward Grants", reason: "A granted points/coupon reward - a financial right, distinct from the check-in event itself." },
+  { table: "adminGiftEntitlements", column: "userId", category: "economic", reference: "Admin Gift Entitlements", reason: "An admin-granted content entitlement is a durable access right owned by this account." },
+  { table: "adminGiftWalletAdjustments", column: "targetUserId", category: "economic", reference: "Admin Gift Wallet Adjustments", reason: "A durable wallet credit/clawback receipt is financial history tied to this target account." },
 
   // ---- user_owned: cart/library/reading progress/check-ins ----
   { table: "carts", column: "userId", category: "user_owned", reference: "Cart", reason: "The user's shopping cart." },
@@ -152,6 +154,10 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
   { table: "workspaceGoogleConsentAttempts", column: "userId", category: "user_owned", reference: "Workspace Google Consent Attempts", reason: "Workspace consent lifecycle state is user-scoped and must not be orphaned by hard deletion." },
   { table: "workspaceGoogleConnections", column: "userId", category: "user_owned", reference: "Workspace Google Connections", reason: "Workspace Google connection state is user-scoped and must not be orphaned by hard deletion." },
   { table: "workspaceAuditEvents", column: "actorUserId", category: "audit_or_actor", reference: "Workspace Audit Actor References", reason: "Workspace audit actor provenance is append-only historical evidence that must remain attributable." },
+  { table: "workspaceKanbanTransitions", column: "actorUserId", category: "audit_or_actor", reference: "Workspace Kanban Transition Actors", reason: "Immutable Kanban transition provenance must remain attributable to the actor account." },
+  { table: "workspacePublishOwnershipTransitions", column: "actorUserId", category: "audit_or_actor", reference: "Workspace Publish Ownership Transition Actors", reason: "Immutable publish ownership cutover/rollback provenance must remain attributable to the actor account." },
+  { table: "adminGiftEntitlements", column: "actorAdminId", category: "audit_or_actor", reference: "Admin Gift Entitlement Actors", reason: "The admin who granted an entitlement is durable audit provenance that must remain attributable." },
+  { table: "adminGiftWalletAdjustments", column: "actorAdminId", category: "audit_or_actor", reference: "Admin Gift Wallet Adjustment Actors", reason: "The admin who performed a wallet adjustment is durable financial audit provenance that must remain attributable." },
   {
     table: "adminUserAuditLogs",
     column: "actorAdminId",

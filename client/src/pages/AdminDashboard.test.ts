@@ -56,7 +56,7 @@ describe("AdminDashboard source shape", () => {
   });
 
   it("every admin query passes shouldFetchAdminData as its enabled flag", () => {
-    const queryBlocks = source.match(/trpc\.admin\.[a-zA-Z.]+\.useQuery\([\s\S]{0,200}?\)/g) ?? [];
+    const queryBlocks = source.match(/trpc\.admin\.[a-zA-Z.]+\.useQuery\([\s\S]{0,500}?\n\s*\);/g) ?? [];
     expect(queryBlocks.length).toBeGreaterThan(0);
     for (const block of queryBlocks) {
       expect(block).toMatch(/enabled:\s*shouldFetchAdminData/);

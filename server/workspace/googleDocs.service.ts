@@ -10,7 +10,7 @@ import {
   workspaceGoogleConsentAttempts,
   workspaceNovels,
 } from "../../drizzle/schema";
-import { getDb } from "../db";
+import { assertAccountMergeClassifiedMutationAllowed, getDb } from "../db";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import { runWorkspaceTransactionWithDeadlockRetry } from "./transactionRetry";
 import {
@@ -123,14 +123,17 @@ export async function createGoogleConsentAttempt(input: {
   const encryptedVerifier = input.cipher.encrypt(attempt.verifier);
   const now = input.now ?? new Date();
   const expiresAt = new Date(now.getTime() + (input.ttlMs ?? 10 * 60_000));
-  await db.insert(workspaceGoogleConsentAttempts).values({
-    userId: input.userId,
-    stateHash: attempt.stateHash,
-    encryptedCodeVerifier: encryptedVerifier.encryptedRefreshToken,
-    keyVersion: encryptedVerifier.keyVersion,
-    fixedRedirectUri: input.fixedRedirectUri,
-    scope: attempt.scope,
-    expiresAt,
+  await db.transaction(async (tx: any) => {
+    await assertAccountMergeClassifiedMutationAllowed(input.userId, tx);
+    await tx.insert(workspaceGoogleConsentAttempts).values({
+      userId: input.userId,
+      stateHash: attempt.stateHash,
+      encryptedCodeVerifier: encryptedVerifier.encryptedRefreshToken,
+      keyVersion: encryptedVerifier.keyVersion,
+      fixedRedirectUri: input.fixedRedirectUri,
+      scope: attempt.scope,
+      expiresAt,
+    });
   });
   return {
     authorizationUrl: buildDocsAuthorizationUrl({
@@ -153,6 +156,7 @@ export async function consumeGoogleConsentAttempt(input: {
   const stateHash = createHash("sha256").update(input.state).digest("hex");
   const now = input.now ?? new Date();
   return db.transaction(async (tx: any) => {
+    await assertAccountMergeClassifiedMutationAllowed(input.userId, tx);
     const rows = await tx
       .select()
       .from(workspaceGoogleConsentAttempts)
@@ -213,43 +217,46 @@ export async function saveGoogleConnection(input: {
       "The incremental Google authorization is missing required read-only scopes."
     );
   }
-  const existing = await db
-    .select()
-    .from(workspaceGoogleConnections)
-    .where(
-      and(
-        eq(workspaceGoogleConnections.userId, input.userId),
-        eq(workspaceGoogleConnections.providerSubject, input.providerSubject)
+  return db.transaction(async (tx: any) => {
+    await assertAccountMergeClassifiedMutationAllowed(input.userId, tx);
+    const existing = await tx
+      .select()
+      .from(workspaceGoogleConnections)
+      .where(
+        and(
+          eq(workspaceGoogleConnections.userId, input.userId),
+          eq(workspaceGoogleConnections.providerSubject, input.providerSubject)
+        )
       )
-    )
-    .limit(1);
-  if (existing[0]) {
-    await db
-      .update(workspaceGoogleConnections)
-      .set({
+      .limit(1);
+    if (existing[0]) {
+      await tx
+        .update(workspaceGoogleConnections)
+        .set({
+          encryptedRefreshToken: input.credential.encryptedRefreshToken,
+          keyVersion: input.credential.keyVersion,
+          grantedScopes: input.grantedScopes,
+          tokenExpiresAt: input.tokenExpiresAt ?? null,
+          status: "active",
+          revokedAt: null,
+          version: existing[0].version + 1,
+        })
+        .where(eq(workspaceGoogleConnections.id, existing[0].id));
+      return { connectionId: existing[0].id, created: false };
+    }
+    const connectionId = insertId(
+      await tx.insert(workspaceGoogleConnections).values({
+        userId: input.userId,
+        providerSubject: input.providerSubject,
         encryptedRefreshToken: input.credential.encryptedRefreshToken,
         keyVersion: input.credential.keyVersion,
         grantedScopes: input.grantedScopes,
         tokenExpiresAt: input.tokenExpiresAt ?? null,
         status: "active",
-        revokedAt: null,
-        version: existing[0].version + 1,
       })
-      .where(eq(workspaceGoogleConnections.id, existing[0].id));
-    return { connectionId: existing[0].id, created: false };
-  }
-  const connectionId = insertId(
-    await db.insert(workspaceGoogleConnections).values({
-      userId: input.userId,
-      providerSubject: input.providerSubject,
-      encryptedRefreshToken: input.credential.encryptedRefreshToken,
-      keyVersion: input.credential.keyVersion,
-      grantedScopes: input.grantedScopes,
-      tokenExpiresAt: input.tokenExpiresAt ?? null,
-      status: "active",
-    })
-  );
-  return { connectionId, created: true };
+    );
+    return { connectionId, created: true };
+  });
 }
 
 export async function rotateGoogleConnectionCredential(input: {
@@ -260,47 +267,50 @@ export async function rotateGoogleConnectionCredential(input: {
   cipher: WorkspaceTokenCipher;
 }) {
   const db = await database();
-  const connection = await requireOwnedConnection(
-    db,
-    input.connectionId,
-    input.actorUserId
-  );
-  if (!connection.encryptedRefreshToken) {
-    throw new WorkspaceDocsServiceError(
-      "CONNECTION_NOT_FOUND",
-      "The Google connection has no active refresh credential."
+  return db.transaction(async (tx: any) => {
+    await assertAccountMergeClassifiedMutationAllowed(input.actorUserId, tx);
+    const connection = await requireOwnedConnection(
+      tx,
+      input.connectionId,
+      input.actorUserId
     );
-  }
-  const credential = rotateRefreshCredential({
-    current: {
-      encryptedRefreshToken: connection.encryptedRefreshToken,
-      keyVersion: connection.keyVersion,
-    },
-    returnedRefreshToken: input.returnedRefreshToken,
-    cipher: input.cipher,
+    if (!connection.encryptedRefreshToken) {
+      throw new WorkspaceDocsServiceError(
+        "CONNECTION_NOT_FOUND",
+        "The Google connection has no active refresh credential."
+      );
+    }
+    const credential = rotateRefreshCredential({
+      current: {
+        encryptedRefreshToken: connection.encryptedRefreshToken,
+        keyVersion: connection.keyVersion,
+      },
+      returnedRefreshToken: input.returnedRefreshToken,
+      cipher: input.cipher,
+    });
+    const result = await tx
+      .update(workspaceGoogleConnections)
+      .set({
+        encryptedRefreshToken: credential.encryptedRefreshToken,
+        keyVersion: credential.keyVersion,
+        version: input.expectedVersion + 1,
+      })
+      .where(
+        and(
+          eq(workspaceGoogleConnections.id, input.connectionId),
+          eq(workspaceGoogleConnections.userId, input.actorUserId),
+          eq(workspaceGoogleConnections.version, input.expectedVersion),
+          eq(workspaceGoogleConnections.status, "active")
+        )
+      );
+    if (affectedRows(result) !== 1) {
+      throw new WorkspaceDocsServiceError(
+        "CONNECTION_VERSION_CONFLICT",
+        "The Google connection changed while rotating its credential."
+      );
+    }
+    return { credential, version: input.expectedVersion + 1 };
   });
-  const result = await db
-    .update(workspaceGoogleConnections)
-    .set({
-      encryptedRefreshToken: credential.encryptedRefreshToken,
-      keyVersion: credential.keyVersion,
-      version: input.expectedVersion + 1,
-    })
-    .where(
-      and(
-        eq(workspaceGoogleConnections.id, input.connectionId),
-        eq(workspaceGoogleConnections.userId, input.actorUserId),
-        eq(workspaceGoogleConnections.version, input.expectedVersion),
-        eq(workspaceGoogleConnections.status, "active")
-      )
-    );
-  if (affectedRows(result) !== 1) {
-    throw new WorkspaceDocsServiceError(
-      "CONNECTION_VERSION_CONFLICT",
-      "The Google connection changed while rotating its credential."
-    );
-  }
-  return { credential, version: input.expectedVersion + 1 };
 }
 
 export async function revokeGoogleConnection(input: {
@@ -333,6 +343,7 @@ export async function revokeGoogleConnection(input: {
     adapter: input.adapter,
   });
   return db.transaction(async (tx: any) => {
+    await assertAccountMergeClassifiedMutationAllowed(input.actorUserId, tx);
     const updateResult = await tx
       .update(workspaceGoogleConnections)
       .set({
@@ -583,6 +594,7 @@ export async function observeBoundGoogleDocument(input: {
   );
 
   return runWorkspaceTransactionWithDeadlockRetry(db, async (tx: any) => {
+    await assertAccountMergeClassifiedMutationAllowed(input.actorUserId, tx);
     const existing = await tx
       .select()
       .from(workspaceDocumentSnapshots)

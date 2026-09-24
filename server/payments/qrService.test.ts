@@ -4,10 +4,16 @@ import fixture from "./fixtures/merchant-qr.synthetic.json";
 const deps = vi.hoisted(() => ({ getDb: vi.fn(), getOrderById: vi.fn(), getCartItems: vi.fn(), getPurchaseByUserAndEpisode: vi.fn(),
   getUserPointsBalance: vi.fn(), getCouponByCode: vi.fn(), resolveCouponOwnership: vi.fn(),
   createOrder: vi.fn(), createOrderItems: vi.fn(), createPayment: vi.fn() }));
+const entitlementDeps = vi.hoisted(() => ({ hasAdminGiftEntitlement: vi.fn() }));
 vi.mock("../db", () => deps);
+vi.mock("../services/adminGiftWalletAdjustmentService", () => entitlementDeps);
 import { renderPaymentQr, resolveQrAmount } from "./qrService";
 import { quoteCartPricing, createOrderFromCart } from "../services/orderService";
-beforeEach(() => { vi.clearAllMocks(); deps.getPurchaseByUserAndEpisode.mockResolvedValue(null); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  deps.getPurchaseByUserAndEpisode.mockResolvedValue(null);
+  entitlementDeps.hasAdminGiftEntitlement.mockResolvedValue(false);
+});
 describe("QR selection and server amounts", () => {
   it("renders the static QR without calling a broken renderer", async () => {
     const render = vi.fn().mockRejectedValue(Error("engine down"));

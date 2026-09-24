@@ -16,6 +16,22 @@ const providerVerificationSource = fs.readFileSync(
   path.join(root, "services", "paymentProviderVerificationService.ts"),
   "utf8"
 );
+const providerAutoApprovalSource = fs.readFileSync(
+  path.join(root, "payments", "providerAutoApproval.ts"),
+  "utf8"
+);
+const adminGiftAdjustmentSource = fs.readFileSync(
+  path.join(root, "services", "adminGiftWalletAdjustmentService.ts"),
+  "utf8"
+);
+const workspaceServiceSource = fs.readFileSync(
+  path.join(root, "workspace", "service.ts"),
+  "utf8"
+);
+const workspaceGoogleDocsSource = fs.readFileSync(
+  path.join(root, "workspace", "googleDocs.service.ts"),
+  "utf8"
+);
 
 /**
  * IPE-005 reflection coverage.
@@ -61,6 +77,8 @@ const productionGuardEvidence: Record<string, string[]> = {
     "markSportsRewardCouponUsed(couponId, userId, guardedTx)",
   ],
   dailyCheckinRewardGrants: ["assertAccountMergeClassifiedMutationAllowed(userId, tx)"],
+  adminGiftEntitlements: ["assertAccountMergeClassifiedMutationAllowed(input.targetUserId, tx)"],
+  adminGiftWalletAdjustments: ["assertAccountMergeClassifiedMutationAllowed(input.targetUserId, tx)"],
   carts: ["withAccountMergeClassifiedMutationGuard(userId, undefined"],
   wishlists: ["withAccountMergeClassifiedMutationGuard(userId, undefined"],
   readingProgress: ["withAccountMergeClassifiedMutationGuard(data.userId, undefined"],
@@ -69,6 +87,22 @@ const productionGuardEvidence: Record<string, string[]> = {
   orderItems: ["withAccountMergeOrderMutationGuard(orderId, tx"],
   payments: ["withAccountMergePaymentMutationGuard(paymentId"],
   orderHistory: ["withAccountMergeOrderMutationGuard(data.orderId, tx"],
+  workspaceWorkspaces: [
+    "assertAccountMergeClassifiedMutationAllowed(userId, tx)",
+    "tx.insert(workspaceWorkspaces)",
+  ],
+  workspaceMembers: [
+    "assertAccountMergeClassifiedMutationAllowed(input.userId, tx)",
+    "tx.insert(workspaceMembers)",
+  ],
+  workspaceGoogleConsentAttempts: [
+    "assertAccountMergeClassifiedMutationAllowed(input.userId, tx)",
+    "tx.insert(workspaceGoogleConsentAttempts)",
+  ],
+  workspaceGoogleConnections: [
+    "assertAccountMergeClassifiedMutationAllowed(input.actorUserId, tx)",
+    ".update(workspaceGoogleConnections)",
+  ],
 };
 
 const allProductionSources = [
@@ -78,6 +112,10 @@ const allProductionSources = [
   approvalSource,
   routersSource,
   providerVerificationSource,
+  providerAutoApprovalSource,
+  adminGiftAdjustmentSource,
+  workspaceServiceSource,
+  workspaceGoogleDocsSource,
 ].join("\n");
 
 function classifiedTableSet(): Set<string> {
@@ -106,7 +144,8 @@ describe("IPE-005 classified mutation reflection coverage", () => {
 
   it("active Provider/manual payment writers participate in the same payment-owner guard", () => {
     expect(approvalSource).toContain("withAccountMergePaymentMutationGuard(paymentId, tx");
-    expect(providerVerificationSource).toContain("db.updatePayment(payment.id, {");
+    expect(providerVerificationSource).toContain('persistAndAutoApprove("order", payment, result)');
+    expect(providerAutoApprovalSource).toContain("db.withAccountMergePaymentMutationGuard");
     expect(dbSource).toContain("withAccountMergePaymentMutationGuard(paymentId, tx");
   });
 

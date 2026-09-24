@@ -159,7 +159,11 @@ describe("Google ID token / access token / refresh token are never persisted", (
     // Scoped to the Google-specific additions (authIdentities table / the
     // Google db.ts functions), not the whole file - other tables/columns
     // are out of scope for this feature and untouched.
-    const authIdentitiesSection = schemaSource.slice(schemaSource.indexOf("export const authIdentities"));
+    const authIdentitiesStart = schemaSource.indexOf("export const authIdentities");
+    const authIdentitiesEnd = schemaSource.indexOf("export type AuthIdentity", authIdentitiesStart);
+    expect(authIdentitiesStart).toBeGreaterThan(-1);
+    expect(authIdentitiesEnd).toBeGreaterThan(authIdentitiesStart);
+    const authIdentitiesSection = schemaSource.slice(authIdentitiesStart, authIdentitiesEnd);
     expect(authIdentitiesSection).not.toMatch(/accessToken|access_token|refreshToken|refresh_token|idToken|id_token/i);
 
     const googleDbSection = dbSource.slice(dbSection_start(dbSource));

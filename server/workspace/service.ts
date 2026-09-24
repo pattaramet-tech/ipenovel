@@ -7,7 +7,7 @@ import {
   workspaceReadOnlyBindings,
   workspaceWorkspaces,
 } from "../../drizzle/schema";
-import { getDb } from "../db";
+import { assertAccountMergeClassifiedMutationAllowed, getDb } from "../db";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import {
   buildInitialMigrationOwnership,
@@ -72,6 +72,7 @@ export async function createWorkspace(userId: number, name: string) {
   const db = await database();
   await requireWorkspacePlatformAdmin(db, userId);
   return db.transaction(async (tx: any) => {
+    await assertAccountMergeClassifiedMutationAllowed(userId, tx);
     const workspaceId = insertId(await tx.insert(workspaceWorkspaces).values({ name, ownerUserId: userId }));
     await tx.insert(workspaceMembers).values({
       workspaceId,
@@ -128,19 +129,22 @@ export async function addOrUpdateMember(input: {
   });
   if (failure) throw new WorkspaceServiceError("INVALID_MEMBERSHIP_CHANGE", failure);
 
-  if (existingRows[0]) {
-    await db.update(workspaceMembers)
-      .set({ role: input.role, status: "active", version: (existingRows[0].version ?? 1) + 1 })
-      .where(eq(workspaceMembers.id, existingRows[0].id));
-  } else {
-    await db.insert(workspaceMembers).values({
-      workspaceId: input.workspaceId,
-      userId: input.userId,
-      role: input.role,
-      status: "active",
-    });
-  }
-  return { ok: true };
+  return db.transaction(async (tx: any) => {
+    await assertAccountMergeClassifiedMutationAllowed(input.userId, tx);
+    if (existingRows[0]) {
+      await tx.update(workspaceMembers)
+        .set({ role: input.role, status: "active", version: (existingRows[0].version ?? 1) + 1 })
+        .where(eq(workspaceMembers.id, existingRows[0].id));
+    } else {
+      await tx.insert(workspaceMembers).values({
+        workspaceId: input.workspaceId,
+        userId: input.userId,
+        role: input.role,
+        status: "active",
+      });
+    }
+    return { ok: true };
+  });
 }
 
 export async function bindPublicationNovel(input: {

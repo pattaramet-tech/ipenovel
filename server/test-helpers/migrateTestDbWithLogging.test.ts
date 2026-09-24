@@ -255,7 +255,7 @@ describe("runMigrationsWithLogging - failure reporting", () => {
 
     for (const tag of [...attempted, ...completed]) {
       expect(tag).not.toMatch(/mysql:\/\//);
-      expect(tag).not.toMatch(/CREATE TABLE|ALTER TABLE|SELECT/i);
+      expect(tag).not.toMatch(/\b(?:CREATE\s+TABLE|ALTER\s+TABLE|SELECT)\b/i);
       expect(tag).toMatch(/^\d{4}_/); // a plain migration tag, e.g. "0024_widen_episode_content_mediumtext"
     }
   });

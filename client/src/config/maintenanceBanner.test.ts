@@ -25,8 +25,8 @@ describe("MAINTENANCE_BANNER_CONFIG", () => {
     ]);
   });
 
-  it("is currently enabled", () => {
-    expect(MAINTENANCE_BANNER_CONFIG.enabled).toBe(true);
+  it("is currently disabled after the announced maintenance window", () => {
+    expect(MAINTENANCE_BANNER_CONFIG.enabled).toBe(false);
   });
 
   it("no longer carries an `id` field - dismissal is in-memory only now, so there is nothing left to namespace by announcement id", () => {
