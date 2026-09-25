@@ -17,4 +17,5 @@ export * from "./rollout";
 export * from "./soak";
 export * from "./finalization";
 export * from "./prepublish";
+export * from "./autolink";
 export * from "./fixtures/canonical";

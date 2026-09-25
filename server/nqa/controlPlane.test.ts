@@ -103,6 +103,34 @@ describe("NQA MCP control plane", () => {
     }
   });
 
+  it("keeps novel-id preview read-only and Column A backfill behind the disabled REMEDIATION tier", () => {
+    expect(
+      authorizeNqaCapability({
+        capability: "nqa.novel_link.preview",
+        actorPermissions: ["READ"],
+      })
+    ).toMatchObject({ allowed: true, reason: "ALLOW" });
+
+    expect(
+      authorizeNqaCapability({
+        capability: "nqa.novel_link.confirm_backfill",
+        actorPermissions: ["REMEDIATION"],
+      })
+    ).toMatchObject({
+      allowed: false,
+      reason: "TIER_DISABLED",
+      requiredPermission: "REMEDIATION",
+    });
+
+    expect(
+      authorizeNqaCapability({
+        capability: "nqa.novel_link.confirm_backfill",
+        actorPermissions: ["REMEDIATION"],
+        enabledPermissionTiers: ["READ", "QA_OPERATE", "REMEDIATION"],
+      })
+    ).toMatchObject({ allowed: true, reason: "ALLOW" });
+  });
+
   it("keeps M17 policy switching disabled unless the production tier is explicitly enabled", () => {
     expect(
       authorizeNqaCapability({

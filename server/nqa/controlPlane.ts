@@ -41,6 +41,18 @@ export const NQA_CAPABILITIES = {
     effect: "READ_ONLY",
     description: "Resolve exact, alias, or structured identity candidates.",
   },
+  "nqa.novel_link.preview": {
+    requiredPermission: "READ",
+    effect: "READ_ONLY",
+    description:
+      "Preview one deterministic Sheet-row to canonical ipenovel novelId match without mutation.",
+  },
+  "nqa.novel_link.confirm_backfill": {
+    requiredPermission: "REMEDIATION",
+    effect: "PRODUCTION_MUTATION",
+    description:
+      "Confirm and write one preview-bound canonical novelId to the configured Sheet Column A.",
+  },
   "nqa.chapter.resolve": {
     requiredPermission: "READ",
     effect: "READ_ONLY",

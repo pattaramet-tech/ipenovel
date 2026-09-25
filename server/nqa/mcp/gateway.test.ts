@@ -386,7 +386,8 @@ describe("NQA MCP secure gateway", () => {
       Object.values(NQA_CAPABILITIES).some(
         definition => definition.requiredPermission === "REMEDIATION"
       )
-    ).toBe(false);
+    ).toBe(true);
+    expect(NQA_V1_ENABLED_PERMISSION_TIERS).not.toContain("REMEDIATION");
   });
 
   it("rejects malformed request envelopes without executing a handler", async () => {
