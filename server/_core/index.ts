@@ -17,6 +17,7 @@ import { assertProductionStagingDatabaseIsolation } from "./productionStagingSaf
 import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
 import { registerHealthReadinessRoutes } from "./healthReadiness";
 import { createUnattendedPublishWorker } from "../workspace/publishUnattendedWorker";
+import { registerWorkspaceGoogleDocsOAuthRoutes } from "../workspace/googleDocs.oauth";
 
 // Procedures that have caused "No procedure found on path ..." client errors
 // in production when an older server build was still deployed after the
@@ -116,6 +117,10 @@ async function startServer() {
   // isGoogleAuthActive(), server/_core/env.ts), so this is a no-op for any
   // deployment still on the default "manus" flag.
   registerGoogleOAuthRoutes(app);
+  // Admin-only incremental Google Docs authorization for Workspace. This is
+  // separate from sign-in OAuth because it requests durable read-only Docs
+  // scopes and stores only an encrypted refresh credential.
+  registerWorkspaceGoogleDocsOAuthRoutes(app);
 
   // Dynamic sitemap (published novels only) - must be registered before the
   // Vite/static-file fallback below, otherwise /sitemap.xml would 404 and

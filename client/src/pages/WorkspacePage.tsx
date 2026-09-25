@@ -1059,6 +1059,9 @@ export default function WorkspacePage() {
   const googleConnections = (
     (editorialGoogleConnections.data as any[] | undefined) ?? []
   ).filter((connection: any) => connection.status === "active" && connection.scopeReady);
+  const googleDocsConnectStatus = typeof window === "undefined"
+    ? null
+    : new URLSearchParams(window.location.search).get("googleDocsConnect");
   const firstGoogleConnectionId = googleConnections[0]?.id;
   const draftStructureSummary = useMemo(
     () => summarizeEditorialDraftTabs(editorialDraftData?.tabs ?? []),
@@ -1184,7 +1187,7 @@ export default function WorkspacePage() {
       </div>
 
       <section className="space-y-6">
-        <Card className="hidden">
+        <Card className={workspaces.data?.length ? "hidden" : "space-y-4 p-5"}>
           <div>
             <h2 className="font-semibold">Workspaces</h2>
             <p className="text-sm text-muted-foreground">All platform admins can open every active workspace.</p>
@@ -1255,6 +1258,19 @@ export default function WorkspacePage() {
                     </option>
                   ))}
                 </select>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => window.location.assign("/api/workspace/google/start")}
+                >
+                  เชื่อม Google Docs
+                </Button>
+                {googleDocsConnectStatus === "success" && (
+                  <span className="text-xs text-emerald-700">เชื่อม Google Docs แล้ว</span>
+                )}
+                {googleDocsConnectStatus === "error" && (
+                  <span className="text-xs text-destructive">เชื่อม Google Docs ไม่สำเร็จ กรุณาลองใหม่</span>
+                )}
               </div>
 
               <div className="grid gap-3 lg:grid-cols-3">

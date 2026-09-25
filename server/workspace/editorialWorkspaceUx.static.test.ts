@@ -107,7 +107,7 @@ describe("Workspace Editorial Preview UX", () => {
   it("applies Preview feedback for compact Workspace, container-only novel intake and guarded ownership prep", () => {
     const source = page();
     expect(source).toContain('aria-label="Workspace"');
-    expect(source).toContain('<Card className="hidden">');
+    expect(source).toContain('workspaces.data?.length ? "hidden" : "space-y-4 p-5"');
     expect(source).toContain('card.workItemType !== "NEW_STORY"');
     expect(source).toContain("1. สร้างเรื่องใหม่");
     expect(source).toContain("2. เพิ่มตอนใหม่");

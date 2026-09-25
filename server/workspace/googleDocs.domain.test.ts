@@ -19,6 +19,7 @@ describe("Workspace Docs M02 domain contract", () => {
   it("uses a separate least-privilege Docs scope and PKCE attempt", () => {
     const attempt = createDocsConsentAttempt();
     expect(attempt.scope).toBe(WORKSPACE_DOCS_SCOPE);
+    expect(attempt.scope).toContain("openid");
     expect(attempt.scope).toContain("drive.metadata.readonly");
     expect(attempt.scope).toContain("documents.readonly");
     expect(attempt.state).not.toBe(attempt.verifier);
