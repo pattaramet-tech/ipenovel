@@ -122,6 +122,117 @@ describe("NQA chapter extractor", () => {
     expect(extraction.text).toContain("ซาโบ");
   });
 
+  it("sanitizes source tail noise and updates paragraph/end-index provenance", () => {
+    const snapshot: NqaDocumentSnapshot = {
+      documentId: "source-tail-noise",
+      title: "English",
+      revisionId: "rev-tail",
+      tabs: [
+        {
+          tabId: "t.0",
+          title: "Source",
+          index: 0,
+          parentTabId: null,
+          paragraphs: [
+            {
+              text: "บท 82: 81. Promotion",
+              startIndex: 1,
+              endIndex: 22,
+              tabId: "t.0",
+            },
+            {
+              text: "Actual story ending.",
+              startIndex: 23,
+              endIndex: 43,
+              tabId: "t.0",
+            },
+            {
+              text: "Patreon(.)com/Bleam",
+              startIndex: 44,
+              endIndex: 63,
+              tabId: "t.0",
+            },
+            {
+              text: "For 100 advance chapters, read ahead!",
+              startIndex: 64,
+              endIndex: 101,
+              tabId: "t.0",
+            },
+          ],
+        },
+      ],
+    };
+    const boundary = buildSourceChapterBoundaries(snapshot)[0];
+    const extraction = extractSourceChapter({ snapshot, boundary });
+
+    expect(extraction.text).toBe("บท 82: 81. Promotion\nActual story ending.");
+    expect(extraction.paragraphCount).toBe(2);
+    expect(extraction.endIndex).toBe(43);
+    expect(extraction.sha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("sanitizes translated copied UI tail before downstream QA", () => {
+    const snapshot: NqaDocumentSnapshot = {
+      documentId: "translation-tail-noise",
+      title: "Thai",
+      revisionId: "rev-tail-th",
+      tabs: [
+        {
+          tabId: "t.0",
+          title: "บท 81",
+          index: 0,
+          parentTabId: null,
+          paragraphs: [
+            {
+              text: "บทที่ 81 กิจกรรมส่งเสริมการขาย",
+              startIndex: 1,
+              endIndex: 31,
+              tabId: "t.0",
+            },
+            {
+              text: "นี่คือเนื้อเรื่องจริง",
+              startIndex: 32,
+              endIndex: 49,
+              tabId: "t.0",
+            },
+            {
+              text: "ความคิดเห็น",
+              startIndex: 50,
+              endIndex: 61,
+              tabId: "t.0",
+            },
+            {
+              text: "ความคิดเห็น 14",
+              startIndex: 62,
+              endIndex: 76,
+              tabId: "t.0",
+            },
+            {
+              text: "โหวต",
+              startIndex: 77,
+              endIndex: 81,
+              tabId: "t.0",
+            },
+            {
+              text: "จบตอน",
+              startIndex: 82,
+              endIndex: 87,
+              tabId: "t.0",
+            },
+          ],
+        },
+      ],
+    };
+    const boundary = buildTranslationChapterBoundaries(snapshot)[0];
+    const extraction = extractTranslationChapter({ snapshot, boundary });
+
+    expect(extraction.text).toBe(
+      "บทที่ 81 กิจกรรมส่งเสริมการขาย\nนี่คือเนื้อเรื่องจริง"
+    );
+    expect(extraction.paragraphCount).toBe(2);
+    expect(extraction.endIndex).toBe(49);
+  });
+
   it("produces deterministic hashes for identical chapter snapshots", () => {
     const snapshot: NqaDocumentSnapshot = {
       documentId: "translation-document-123",
