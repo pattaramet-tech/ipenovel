@@ -12,6 +12,9 @@ export type NqaGatewayHandlerContext = {
     novelId?: string | null;
     bundleId?: string | null;
     chapter?: number | null;
+    runId?: string | null;
+    column?: "L" | "M" | null;
+    confirmation?: string | null;
   };
   inputFingerprint: string | null;
 };
