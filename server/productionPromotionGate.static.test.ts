@@ -19,6 +19,10 @@ const verification = fs.readFileSync(
   path.join(repoRoot, "scripts", "production-deployment-verify.mjs"),
   "utf8"
 );
+const dispatch = fs.readFileSync(
+  path.join(repoRoot, "scripts", "production-post-deploy-dispatch.mjs"),
+  "utf8"
+);
 const pkg = JSON.parse(
   fs.readFileSync(path.join(repoRoot, "package.json"), "utf8")
 );
@@ -94,12 +98,26 @@ describe("M12D.9 Controlled Production Promotion", () => {
     expect(verification).not.toMatch(/method:\s*["'](?:POST|PUT|PATCH|DELETE)/);
   });
 
-  it("exposes reusable operator preflight/check/verification commands", () => {
+  it("version-controls a fail-closed Production post-deploy dispatch transport", () => {
+    expect(dispatch).toContain('const EVENT_TYPE = "production-deployed"');
+    expect(dispatch).toContain('required(env, "SOURCE_COMMIT")');
+    expect(dispatch).toContain(
+      'required(env, "GITHUB_PRODUCTION_DISPATCH_TOKEN")'
+    );
+    expect(dispatch).toContain("environment !== PROD_ENVIRONMENT");
+    expect(dispatch).toContain("/repos/${config.repository}/dispatches");
+    expect(dispatch).not.toContain("GITHUB_PRODUCTION_DISPATCH_TOKEN=");
+  });
+
+  it("exposes reusable operator preflight/check/dispatch/verification commands", () => {
     expect(pkg.scripts["production:promotion:preflight"]).toBe(
       "node scripts/production-promotion-preflight.mjs"
     );
     expect(pkg.scripts["production:promotion:check"]).toBe(
       "node scripts/production-promotion-check.mjs"
+    );
+    expect(pkg.scripts["production:deployment:dispatch"]).toBe(
+      "node scripts/production-post-deploy-dispatch.mjs"
     );
     expect(pkg.scripts["production:deployment:verify"]).toBe(
       "node scripts/production-deployment-verify.mjs"
