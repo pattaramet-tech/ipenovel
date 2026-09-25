@@ -32,6 +32,10 @@ const workspaceGoogleDocsSource = fs.readFileSync(
   path.join(root, "workspace", "googleDocs.service.ts"),
   "utf8"
 );
+const workspaceEditorialBoardSource = fs.readFileSync(
+  path.join(root, "workspace", "editorialBoard.service.ts"),
+  "utf8"
+);
 
 /**
  * IPE-005 reflection coverage.
@@ -103,6 +107,11 @@ const productionGuardEvidence: Record<string, string[]> = {
     "assertAccountMergeClassifiedMutationAllowed(input.actorUserId, tx)",
     ".update(workspaceGoogleConnections)",
   ],
+  workspaceEditorialWorkItems: [
+    "assertAccountMergeClassifiedMutationsAllowed(guardedAssigneeUserIds, tx)",
+    ".insert(workspaceEditorialWorkItems)",
+    ".update(workspaceEditorialWorkItems)",
+  ],
 };
 
 const allProductionSources = [
@@ -116,6 +125,7 @@ const allProductionSources = [
   adminGiftAdjustmentSource,
   workspaceServiceSource,
   workspaceGoogleDocsSource,
+  workspaceEditorialBoardSource,
 ].join("\n");
 
 function classifiedTableSet(): Set<string> {

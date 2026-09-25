@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { parseWorkspacePublishExecutionScope, scopeMatches, WorkspacePublishRuntimeError } from "./publishExecution.runtime";
+import { parseWorkspacePublishExecutionScope, requirePreviewPublishExecutionSafety, scopeMatches, WorkspacePublishRuntimeError } from "./publishExecution.runtime";
 
 describe("workspace publish execution runtime scope", () => {
   it("parses one exact scoped run and rejects missing, duplicate, extra, or non-positive fields", () => {
@@ -24,6 +24,24 @@ describe("workspace publish execution runtime scope", () => {
     ]) {
       expect(() => parseWorkspacePublishExecutionScope(raw)).toThrow(WorkspacePublishRuntimeError);
     }
+  });
+
+  it("requires an explicit preview tier and exact preview database identity", () => {
+    const safe = {
+      WORKSPACE_PUBLISH_ACCEPTANCE_TIER: "preview",
+      WORKSPACE_PUBLISH_PREVIEW_DATABASE_NAME: "ipenovel_preview",
+      DATABASE_URL: "mysql://user:secret@db.internal:3306/ipenovel_preview",
+    } as NodeJS.ProcessEnv;
+    expect(requirePreviewPublishExecutionSafety(safe)).toEqual({
+      tier: "preview",
+      databaseName: "ipenovel_preview",
+    });
+    expect(() => requirePreviewPublishExecutionSafety({ ...safe, WORKSPACE_PUBLISH_ACCEPTANCE_TIER: "production" }))
+      .toThrowError(/ACCEPTANCE_TIER=preview/);
+    expect(() => requirePreviewPublishExecutionSafety({ ...safe, WORKSPACE_PUBLISH_PREVIEW_DATABASE_NAME: "ipenovel_prod" }))
+      .toThrowError(/database identity/);
+    expect(() => requirePreviewPublishExecutionSafety({ ...safe, DATABASE_URL: undefined }))
+      .toThrow(WorkspacePublishRuntimeError);
   });
 
   it("checks execution/provider flags before any outbox claim", () => {

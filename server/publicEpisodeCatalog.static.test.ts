@@ -11,21 +11,17 @@ const episodesProcedure = source.slice(start, end);
 describe("public episode catalog contract", () => {
   it("keeps novel episode/package metadata public for anonymous storefront visitors", () => {
     expect(start).toBeGreaterThan(-1);
-    expect(episodesProcedure).toContain("const user = ctx.user");
-    expect(episodesProcedure).toContain(
-      'const isAdmin = user?.role === "admin"'
-    );
+    expect(episodesProcedure).toContain('const isAdmin = ctx.user?.role === "admin"');
+    expect(episodesProcedure).toContain("const userId = ctx.user?.id");
+    expect(episodesProcedure).toContain("ep.isPublished === true");
   });
 
   it("does not require user-specific purchase or progress lookups for anonymous visitors", () => {
-    expect(episodesProcedure).toContain("const progressMap = user");
-    expect(episodesProcedure).toContain("? await db.getReadingProgressBatch(");
-    expect(episodesProcedure).toContain("user.id");
-    expect(episodesProcedure).toContain("const hasPurchased = user");
-    expect(episodesProcedure).toContain(
-      "? await readerService.hasPurchasedEpisode(user.id, ep.id)"
-    );
-    expect(episodesProcedure).toContain(": false");
+    expect(episodesProcedure).toContain("let progressMap = new Map<number, any>()");
+    expect(episodesProcedure).toContain("if (userId)");
+    expect(episodesProcedure).toContain("db.getReadingProgressBatch(userId");
+    expect(episodesProcedure).toContain("let hasPurchased = false");
+    expect(episodesProcedure).toContain("readerService.hasPurchasedEpisode(userId, ep.id)");
     expect(episodesProcedure).not.toContain("ctx.user.id");
   });
 

@@ -214,6 +214,103 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
   },
 
   {
+    table: "workspaceEditorialWorkItems",
+    column: "assigneeUserId",
+    category: "user_owned_hard_block",
+    reason: "The current editorial assignee is mutable user-owned operational state and must not be orphaned or silently reassigned during recovery.",
+  },
+  {
+    table: "workspaceEditorialWorkItems",
+    column: "createdByUserId",
+    category: "deliberately_ignored",
+    reason: "The work-item creator is durable actor provenance, not mutable account-owned state that Account Recovery should move.",
+  },
+  {
+    table: "workspaceEditorialWorkItemEvents",
+    column: "actorUserId",
+    category: "deliberately_ignored",
+    reason: "Editorial assignment-event actor identity is immutable historical provenance rather than recoverable account-owned data.",
+  },
+  {
+    table: "workspaceEditorialWorkItemEvents",
+    column: "fromAssigneeUserId",
+    category: "deliberately_ignored",
+    reason: "The former assignee in an immutable assignment event is historical provenance; current assignment is classified on the work item.",
+  },
+  {
+    table: "workspaceEditorialWorkItemEvents",
+    column: "toAssigneeUserId",
+    category: "deliberately_ignored",
+    reason: "The destination assignee in an immutable assignment event is historical provenance; current assignment is classified on the work item.",
+  },
+  {
+    table: "workspaceEditorialSources",
+    column: "createdByUserId",
+    category: "deliberately_ignored",
+    reason: "Editorial source creator identity is durable provenance for the shared source record, not mutable account-owned state.",
+  },
+  {
+    table: "workspaceEditorialSourceSnapshots",
+    column: "createdByUserId",
+    category: "deliberately_ignored",
+    reason: "Immutable source-snapshot creator identity is audit provenance and is not data Account Recovery should move.",
+  },
+  {
+    table: "workspaceEditorialDrafts",
+    column: "createdByUserId",
+    category: "deliberately_ignored",
+    reason: "Editorial draft creator identity records durable provenance; the draft belongs to the Workspace work item rather than the actor account.",
+  },
+  {
+    table: "workspaceEditorialDraftTransforms",
+    column: "actorUserId",
+    category: "deliberately_ignored",
+    reason: "Draft-transform actor identity is immutable edit provenance and must remain attributable rather than be reassigned by recovery.",
+  },
+  {
+    table: "workspaceEditorialDraftEditEvents",
+    column: "actorUserId",
+    category: "deliberately_ignored",
+    reason: "Manual draft-edit actor identity is immutable editorial audit provenance, not mutable account-owned data.",
+  },
+  {
+    table: "workspaceEditorialDraftApprovals",
+    column: "approvedByUserId",
+    category: "deliberately_ignored",
+    reason: "Approval identity is immutable authorization evidence for an exact draft and must remain historical provenance.",
+  },
+  {
+    table: "workspaceEditorialEpisodeStages",
+    column: "stagedByUserId",
+    category: "deliberately_ignored",
+    reason: "Episode-stage actor identity is immutable publication provenance and is not account-owned state for recovery.",
+  },
+  {
+    table: "workspaceEditorialCheckerAllowWords",
+    column: "createdByUserId",
+    category: "deliberately_ignored",
+    reason: "Allow-list creator identity records who changed shared Workspace checker policy; it is audit provenance, not user-owned content.",
+  },
+  {
+    table: "workspaceEditorialCheckerRuns",
+    column: "createdByUserId",
+    category: "deliberately_ignored",
+    reason: "Checker-run creator identity is immutable execution provenance for shared editorial evidence.",
+  },
+  {
+    table: "workspaceEditorialCheckerFindingStates",
+    column: "actorUserId",
+    category: "deliberately_ignored",
+    reason: "Finding-state actor identity records who resolved shared editorial evidence and is durable audit provenance.",
+  },
+  {
+    table: "workspaceEditorialCheckerResolutionEvents",
+    column: "actorUserId",
+    category: "deliberately_ignored",
+    reason: "Checker-resolution event actor identity is immutable audit provenance and must remain attributable.",
+  },
+
+  {
     table: "adminGiftEntitlements",
     column: "actorAdminId",
     category: "deliberately_ignored",

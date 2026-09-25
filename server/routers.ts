@@ -33,6 +33,7 @@ import { ocrMetricsRouter } from "./routers/ocrMetricsRouter";
 import { r2Put, R2StorageError } from "./services/r2Storage";
 import { optimizeImageToWebp, ImageOptimizeError, SPORTS_MATCH_IMAGE_PRESET } from "./services/imageOptimizer";
 import * as readerService from "./services/readerService";
+import { projectPackageToc } from "./services/packageTocProjectionService";
 import * as packageZipImportService from "./services/packageZipImportService";
 import {
   runMediaMigrationBatch,
@@ -507,15 +508,23 @@ export const appRouter = router({
     }),
 
     episodes: publicProcedure.input(z.object({ novelId: z.number() })).query(async ({ input, ctx }) => {
-      const episodes = await db.getEpisodesByNovelId(input.novelId);
-      const user = ctx.user;
-      const isAdmin = user?.role === "admin";
-      // Public storefront visitors must be able to see episode/package metadata.
-      // Purchase state and reading progress are user-specific, so only query
-      // those when a verified session is present.
-      const progressMap = user
-        ? await db.getReadingProgressBatch(user.id, episodes.map((ep: any) => ep.id))
-        : new Map();
+      const allEpisodes = await db.getEpisodesByNovelId(input.novelId);
+      // Novel TOC is a public storefront surface. Never expose staged/draft rows
+      // here; admin preview of unpublished content belongs in admin/workspace UI.
+      const episodes = allEpisodes.filter((ep: any) => ep.isPublished === true);
+      const isAdmin = ctx.user?.role === "admin";
+      const userId = ctx.user?.id;
+      // Anonymous readers must be able to see the published TOC. Entitlement
+      // enrichment is optional and only queried for an authenticated reader.
+      let progressMap = new Map<number, any>();
+      if (userId) {
+        try {
+          progressMap = await db.getReadingProgressBatch(userId, episodes.map((ep: any) => ep.id));
+        } catch (error) {
+          // Public TOC visibility must not depend on optional per-user progress.
+          console.error("[novels.episodes] Reading-progress enrichment failed", { novelId: input.novelId });
+        }
+      }
 
       // Enrich episodes with purchase status. IMPORTANT: isPurchased/hasPurchased
       // must be computed from actual purchase records only (episodePurchases +
@@ -524,9 +533,19 @@ export const appRouter = router({
       const enriched = await Promise.all(
         episodes.map(async (ep: any) => {
           const isFree = ep.isFree === true;
-          const hasPurchased = user
-            ? await readerService.hasPurchasedEpisode(user.id, ep.id)
-            : false;
+          let hasPurchased = false;
+          if (userId) {
+            try {
+              hasPurchased = await readerService.hasPurchasedEpisode(userId, ep.id);
+            } catch (error) {
+              // Entitlement enrichment is optional storefront personalization.
+              // Fail closed for this row, but never hide the published TOC.
+              console.error("[novels.episodes] Entitlement enrichment failed", {
+                novelId: input.novelId,
+                episodeId: ep.id,
+              });
+            }
+          }
           const canRead = isFree || hasPurchased || isAdmin;
           const progress = progressMap.get(ep.id);
 
@@ -545,6 +564,10 @@ export const appRouter = router({
           // field name for the frontend's sale-type tab classification.
           const saleMode = readerService.resolveSaleMode(ep);
           const saleType = saleMode;
+          // Package TOC is safe storefront metadata: headings only, never prose.
+          // It lets NovelDetail project one commercial package into its readable
+          // chapter rows without exposing the locked package content.
+          const packageToc = saleMode === "package" ? projectPackageToc(content) : [];
 
           return {
             ...safeEpisode,
@@ -556,6 +579,8 @@ export const appRouter = router({
             hasLegacyFile,
             saleMode,
             saleType,
+            packageToc,
+            packageChapterCount: packageToc.length,
             fileUrl: canRead
               ? await resolveStoredFileValueSafe(fileUrl, "episodeFile", "novels.episodes")
               : null,

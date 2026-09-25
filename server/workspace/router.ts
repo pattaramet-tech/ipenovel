@@ -38,6 +38,65 @@ import {
   WorkspaceDocsServiceError,
 } from "./googleDocs.service";
 import {
+  assignEditorialWorkItem,
+  createEditorialEpisodeWorkItem,
+  ensureEditorialBoard,
+  getEditorialBoard,
+  listEditorialAssignees,
+  removeEditorialEpisodeWorkItem,
+  updateEditorialEpisodeSaleMetadata,
+  updateEditorialEpisodeWorkItem,
+  updateEditorialWorkItemNote,
+  WorkspaceEditorialBoardError,
+} from "./editorialBoard.service";
+import { projectEditorialBoardSaleFallback } from "./editorialBoardCommerceProjection.service";
+import {
+  getEditorialDraftReadModel,
+  getEditorialSourceSnapshot,
+  importEditorialSource,
+  WorkspaceEditorialDraftError,
+} from "./editorialDraft.service";
+import {
+  fetchEditorialGoogleDocSource,
+  listEditorialGoogleConnections,
+  WorkspaceEditorialGoogleSourceError,
+} from "./editorialSource.googleDocs";
+import {
+  getHistoricalPackRepairPreview,
+  repairHistoricalPublishedPack,
+  WorkspaceHistoricalPackRepairError,
+} from "./editorialHistoricalPackRepair.service";
+import {
+  allowEditorialFindingWord,
+  getEditorialForeignCheckerReadModel,
+  listEditorialFindingResolutionEvents,
+  removeEditorialAllowedWord,
+  runEditorialForeignChecker,
+  setEditorialFindingDisposition,
+  WorkspaceEditorialForeignCheckerError,
+} from "./editorialForeignChecker.service";
+import {
+  applyEditorialEditorEdit,
+  excludeEditorialDraftTab,
+  getEditorialEditorReadModel,
+  restoreEditorialDraftTab,
+  undoEditorialEditorEdit,
+  WorkspaceEditorialEditorError,
+} from "./editorialEditor.service";
+import {
+  approveEditorialDraft,
+  getEditorialApprovalReadModel,
+  stageEditorialEpisodeDraft,
+  WorkspaceEditorialApprovalError,
+} from "./editorialApproval.service";
+import {
+  getEditorialPublishReadModel,
+  prepareEditorialPublishOwnership,
+  requestEditorialPublish,
+  WorkspaceEditorialPublishError,
+} from "./editorialPublish.service";
+import { getEditorialEvidenceStatuses } from "./editorialStatus.service";
+import {
   createPublishDestination,
   createPublishDryRun,
   getPublishRunDetail,
@@ -49,7 +108,7 @@ import {
   requestPublishExecution,
   WorkspacePublishExecutionError,
 } from "./publishExecution.service";
-import { parseWorkspacePublishExecutionScope, WorkspacePublishRuntimeError } from "./publishExecution.runtime";
+import { requirePreviewPublishExecutionSafety, WorkspacePublishRuntimeError } from "./publishExecution.runtime";
 import {
   getPublishCutoverReadiness,
   rehearsePublishCutoverRollback,
@@ -74,10 +133,14 @@ import {
   addOrUpdateMember,
   bindPublicationNovel,
   createWorkspace,
+  deleteWorkspace,
+  createWorkspacePublicationNovel,
   getWorkspaceDetail,
   listMigrationOwnership,
+  listPublicationNovelOptions,
   listReadOnlyBindings,
   listWorkspacesForUser,
+  unbindPublicationNovel,
   WorkspaceServiceError,
 } from "./service";
 
@@ -197,6 +260,97 @@ function mapWorkspaceError(error: unknown): never {
               : "BAD_REQUEST";
     throw new TRPCError({ code, message: error.message });
   }
+  if (error instanceof WorkspaceEditorialBoardError) {
+    const code =
+      error.code === "DATABASE_UNAVAILABLE"
+        ? "SERVICE_UNAVAILABLE"
+        : error.code.endsWith("_NOT_FOUND")
+          ? "NOT_FOUND"
+          : error.code.endsWith("_CONFLICT")
+            ? "CONFLICT"
+            : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
+  if (error instanceof WorkspaceHistoricalPackRepairError) {
+    const code =
+      error.code === "DATABASE_UNAVAILABLE"
+        ? "SERVICE_UNAVAILABLE"
+        : error.code === "WORK_ITEM_NOT_FOUND"
+          ? "NOT_FOUND"
+          : "CONFLICT";
+    throw new TRPCError({ code, message: error.message });
+  }
+  if (error instanceof WorkspaceEditorialDraftError) {
+    const code =
+      error.code === "DATABASE_UNAVAILABLE"
+        ? "SERVICE_UNAVAILABLE"
+        : error.code.endsWith("_NOT_FOUND")
+          ? "NOT_FOUND"
+          : error.code.endsWith("_CONFLICT") ||
+              error.code === "REFRESH_REQUIRES_REVIEW"
+            ? "CONFLICT"
+            : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
+  if (error instanceof WorkspaceEditorialGoogleSourceError) {
+    const code =
+      error.code === "DATABASE_UNAVAILABLE"
+        ? "SERVICE_UNAVAILABLE"
+        : error.code === "CONNECTION_NOT_FOUND"
+          ? "NOT_FOUND"
+          : error.code === "CONNECTION_RECONNECT_REQUIRED" ||
+              error.code === "RUNTIME_CONFIG_INVALID"
+            ? "PRECONDITION_FAILED"
+            : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
+  if (error instanceof WorkspaceEditorialForeignCheckerError) {
+    const code =
+      error.code === "DATABASE_UNAVAILABLE"
+        ? "SERVICE_UNAVAILABLE"
+        : error.code.endsWith("_NOT_FOUND")
+          ? "NOT_FOUND"
+          : error.code.endsWith("_CONFLICT")
+            ? "CONFLICT"
+            : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
+  if (error instanceof WorkspaceEditorialEditorError) {
+    const code =
+      error.code === "DATABASE_UNAVAILABLE"
+        ? "SERVICE_UNAVAILABLE"
+        : error.code.endsWith("_NOT_FOUND")
+          ? "NOT_FOUND"
+          : error.code.endsWith("_CONFLICT") ||
+              error.code === "UNDO_NOT_AVAILABLE"
+            ? "CONFLICT"
+            : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
+  if (error instanceof WorkspaceEditorialApprovalError) {
+    const code =
+      error.code === "DATABASE_UNAVAILABLE"
+        ? "SERVICE_UNAVAILABLE"
+        : error.code.endsWith("_NOT_FOUND")
+          ? "NOT_FOUND"
+          : error.code.endsWith("_CONFLICT") ||
+              error.code === "CHECKER_STALE" ||
+              error.code === "QC_UNRESOLVED" ||
+              error.code === "EPISODE_PUBLISHED" ||
+              error.code === "KANBAN_CONFLICT"
+            ? "CONFLICT"
+            : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
+  if (error instanceof WorkspaceEditorialPublishError) {
+    const code =
+      error.code === "DATABASE_UNAVAILABLE"
+        ? "SERVICE_UNAVAILABLE"
+        : error.code === "WORK_ITEM_NOT_FOUND"
+          ? "NOT_FOUND"
+          : "CONFLICT";
+    throw new TRPCError({ code, message: error.message });
+  }
   if (error instanceof WorkspaceDocsServiceError) {
     const code =
       error.code === "DATABASE_UNAVAILABLE"
@@ -208,15 +362,49 @@ function mapWorkspaceError(error: unknown): never {
     const code =
       error.code === "WORKSPACE_NOT_FOUND" || error.code === "NOVEL_NOT_FOUND"
         ? "NOT_FOUND"
-        : error.code === "INVALID_MEMBERSHIP_CHANGE" || error.code === "MEMBERSHIP_CONFLICT"
-          ? "CONFLICT"
-          : "SERVICE_UNAVAILABLE";
+        : error.code === "INVALID_NOVEL_INPUT"
+          ? "BAD_REQUEST"
+          : error.code === "INVALID_MEMBERSHIP_CHANGE" || error.code === "MEMBERSHIP_CONFLICT"
+            ? "CONFLICT"
+            : "SERVICE_UNAVAILABLE";
     throw new TRPCError({ code, message: error.message });
   }
   throw error;
 }
 
 const workspaceIdInput = z.object({ workspaceId: z.number().int().positive() });
+const editorialSourcePayloadInput = z.object({
+  sourceKind: z.enum(["google_doc", "uploaded_file"]),
+  sourceKey: z.string().trim().min(1).max(255),
+  providerDocumentId: z.string().trim().max(255).nullable().optional(),
+  mimeType: z.string().trim().min(1).max(160),
+  title: z.string().trim().min(1).max(500),
+  revisionKey: z.string().trim().max(255).nullable().optional(),
+  tabs: z.array(z.object({
+    sourceTabId: z.string().trim().min(1).max(255),
+    tabOrder: z.number().int().nonnegative(),
+    title: z.string().max(500),
+    paragraphs: z.array(z.string().max(200000)).max(10000),
+  })).min(1).max(500),
+});
+const editorialEditCommandInput = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.enum(["replace_sentence", "replace_range"]),
+    paragraphKey: z.string().trim().length(64),
+    expectedParagraphFingerprint: z.string().trim().length(64),
+    startOffset: z.number().int().nonnegative(),
+    endOffset: z.number().int().nonnegative(),
+    expectedText: z.string().max(200000),
+    replacementText: z.string().max(200000),
+  }),
+  z.object({
+    kind: z.literal("replace_paragraph"),
+    paragraphKey: z.string().trim().length(64),
+    expectedParagraphFingerprint: z.string().trim().length(64),
+    expectedText: z.string().max(200000),
+    replacementText: z.string().max(200000),
+  }),
+]);
 const legacyRetirementEvidenceInput = z.object({
   sustainedParity: z.object({ passed: z.boolean(), evidenceRef: z.string().trim().min(1).max(255) }),
   slo: z.object({ passed: z.boolean(), evidenceRef: z.string().trim().min(1).max(255) }),
@@ -238,6 +426,16 @@ export const workspaceRouter = router({
     .mutation(async ({ ctx, input }) => {
       try {
         return await createWorkspace(ctx.user.id, input.name);
+      } catch (error) {
+        return mapWorkspaceError(error);
+      }
+    }),
+
+  delete: adminProcedure
+    .input(workspaceIdInput)
+    .mutation(async ({ ctx, input }) => {
+      try {
+        return await deleteWorkspace(ctx.user.id, input.workspaceId);
       } catch (error) {
         return mapWorkspaceError(error);
       }
@@ -278,6 +476,25 @@ export const workspaceRouter = router({
           return mapWorkspaceError(error);
         }
       }),
+    availablePublicationNovels: adminProcedure
+      .input(workspaceIdInput)
+      .query(async ({ ctx, input }) => {
+        try {
+          return await listPublicationNovelOptions(ctx.user.id, input.workspaceId);
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    removePublicationNovel: adminProcedure
+      .input(workspaceIdInput.extend({ workspaceNovelId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await unbindPublicationNovel({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+
     bindPublicationNovel: adminProcedure
       .input(workspaceIdInput.extend({ novelId: z.number().int().positive() }))
       .mutation(async ({ ctx, input }) => {
@@ -538,16 +755,17 @@ export const workspaceRouter = router({
       .mutation(async ({ ctx, input }) => {
         try {
           const executionEnabled = process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true";
-          const executionScope = executionEnabled
-            ? parseWorkspacePublishExecutionScope(process.env.WORKSPACE_PUBLISH_EXECUTION_SCOPE)
-            : undefined;
+          const externalProviderEnabled = process.env.WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true";
+          if (executionEnabled && !externalProviderEnabled) {
+            throw new WorkspacePublishExecutionError("EXTERNAL_PROVIDER_DISABLED", "Workspace publish external provider is not enabled.");
+          }
+          if (executionEnabled) requirePreviewPublishExecutionSafety();
           return await requestPublishExecution({
             actorUserId: ctx.user.id,
             workspaceId: input.workspaceId,
             runId: input.runId,
             expectedCutoverEpoch: input.expectedCutoverEpoch,
             expectedOwnershipVersion: input.expectedOwnershipVersion,
-            executionScope,
             executionEnabled,
           });
         } catch (error) {
@@ -657,6 +875,761 @@ export const workspaceRouter = router({
       .query(async ({ ctx, input }) => {
         try {
           return await requireLegacyRetirementCandidate({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+  }),
+
+  editorial: router({
+    historicalPackRepairPreview: adminProcedure
+      .input(workspaceIdInput.extend({ workItemId: z.number().int().positive() }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getHistoricalPackRepairPreview({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    repairHistoricalPack: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        expectedChapterEpisodeIds: z.array(z.number().int().positive()).min(1).max(5000),
+        price: z.string().trim().regex(/^\d+(?:\.\d{1,2})?$/),
+        isFree: z.boolean(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          requirePreviewPublishExecutionSafety();
+          return await repairHistoricalPublishedPack({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    bulkApproveDrafts: adminProcedure
+      .input(workspaceIdInput.extend({ workItemIds: z.array(z.number().int().positive()).min(1).max(100) }))
+      .mutation(async ({ ctx, input }) => {
+        const results = [];
+        for (const workItemId of Array.from(new Set(input.workItemIds))) {
+          try {
+            const state = await getEditorialApprovalReadModel({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId });
+            if (state.approvalStatus?.valid) { results.push({ workItemId, ok: true as const, skipped: true as const }); continue; }
+            if (!state.latestDraft?.id || !state.latestDraft?.version || !state.latestDraft?.draftSha256 || !state.qc?.ready || !state.qc?.checkerRunId || !state.qc?.qcEvidenceSha256) throw new Error(state.qc?.reason ?? "Draft/QC evidence is not ready for approval.");
+            await approveEditorialDraft({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId, expectedDraftId: state.latestDraft.id, expectedDraftVersion: state.latestDraft.version, expectedDraftSha256: state.latestDraft.draftSha256, expectedCheckerRunId: state.qc.checkerRunId, expectedQcEvidenceSha256: state.qc.qcEvidenceSha256, idempotencyKey: `bulk-approve:${input.workspaceId}:${workItemId}:${state.latestDraft.id}:${state.qc.checkerRunId}` });
+            results.push({ workItemId, ok: true as const, skipped: false as const });
+          } catch (error) { results.push({ workItemId, ok: false as const, error: error instanceof Error ? error.message : String(error) }); }
+        }
+        return results;
+      }),
+    bulkStageDrafts: adminProcedure
+      .input(workspaceIdInput.extend({ workItemIds: z.array(z.number().int().positive()).min(1).max(100) }))
+      .mutation(async ({ ctx, input }) => {
+        const results = [];
+        for (const workItemId of Array.from(new Set(input.workItemIds))) {
+          try {
+            const state = await getEditorialApprovalReadModel({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId });
+            if (state.stageStatus?.valid) { results.push({ workItemId, ok: true as const, skipped: true as const }); continue; }
+            if (!state.approvalStatus?.valid || !state.approval?.id || !state.latestDraft?.id || !state.latestDraft?.version || !state.latestDraft?.draftSha256) throw new Error(state.approvalStatus?.reason ?? state.stagePlanError ?? "Approval/stage evidence is not ready.");
+            await stageEditorialEpisodeDraft({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId, approvalId: state.approval.id, expectedDraftId: state.latestDraft.id, expectedDraftVersion: state.latestDraft.version, expectedDraftSha256: state.latestDraft.draftSha256, idempotencyKey: `bulk-stage:${input.workspaceId}:${workItemId}:${state.approval.id}:${state.latestDraft.id}` });
+            results.push({ workItemId, ok: true as const, skipped: false as const });
+          } catch (error) { results.push({ workItemId, ok: false as const, error: error instanceof Error ? error.message : String(error) }); }
+        }
+        return results;
+      }),
+    bulkRunChecker: adminProcedure
+      .input(workspaceIdInput.extend({ workItemIds: z.array(z.number().int().positive()).min(1).max(100) }))
+      .mutation(async ({ ctx, input }) => {
+        const results = [];
+        for (const workItemId of Array.from(new Set(input.workItemIds))) {
+          try {
+            const checker = await runEditorialForeignChecker({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId });
+            results.push({
+              workItemId,
+              ok: true as const,
+              runId: checker.run?.id ?? null,
+              effectiveStatus: checker.effectiveStatus,
+              findingCount: checker.findings.length,
+              unresolvedCount: checker.unresolvedCount,
+              latestDraft: checker.latestDraft
+                ? {
+                    id: checker.latestDraft.id,
+                    version: checker.latestDraft.version,
+                    draftSha256: checker.latestDraft.draftSha256,
+                  }
+                : null,
+              openFindings: checker.findings
+                .filter((finding: any) => finding.disposition === "open")
+                .map((finding: any) => ({
+                  id: finding.id,
+                  findingKey: finding.findingKey,
+                  ruleKey: finding.ruleKey,
+                  token: finding.token,
+                  paragraphKey: finding.paragraphKey,
+                  paragraphFingerprint: finding.paragraphFingerprint,
+                  paragraphOrder: finding.paragraphOrder,
+                  sentenceText: finding.sentenceText,
+                  contextText: finding.contextText,
+                  resolutionVersion: finding.resolutionVersion ?? 0,
+                })),
+              sampleFindings: checker.findings
+                .filter((finding: any) => finding.disposition === "open")
+                .slice(0, 5)
+                .map((finding: any) => ({ token: finding.token, ruleKey: finding.ruleKey })),
+            });
+          } catch (error) {
+            results.push({ workItemId, ok: false as const, error: error instanceof Error ? error.message : String(error) });
+          }
+        }
+        return results;
+      }),
+    bulkRequestPublish: adminProcedure
+      .input(workspaceIdInput.extend({ workItemIds: z.array(z.number().int().positive()).min(1).max(100) }))
+      .mutation(async ({ ctx, input }) => {
+        const executionEnabled = process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true";
+        const externalProviderEnabled = process.env.WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true";
+        if (executionEnabled && !externalProviderEnabled) {
+          throw new WorkspacePublishExecutionError("EXTERNAL_PROVIDER_DISABLED", "Workspace publish external provider is not enabled.");
+        }
+        if (executionEnabled) requirePreviewPublishExecutionSafety();
+        const results = [];
+        for (const workItemId of Array.from(new Set(input.workItemIds))) {
+          try {
+            await prepareEditorialPublishOwnership({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId });
+            const state = await getEditorialPublishReadModel({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId });
+            const stagedDraftSha256 = state.stages[0]?.stagedDraftSha256;
+            if (!state.requestReady || !state.stageSetSha256 || !stagedDraftSha256 || !state.ownership) throw new Error(state.blocker ?? "Publish evidence is incomplete.");
+            await requestEditorialPublish({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId, expectedStageSetSha256: state.stageSetSha256, expectedStagedDraftSha256: stagedDraftSha256, expectedCutoverEpoch: state.ownership.cutoverEpoch, expectedOwnershipVersion: state.ownership.version, executionEnabled });
+            results.push({ workItemId, ok: true as const });
+          } catch (error) {
+            results.push({ workItemId, ok: false as const, error: error instanceof Error ? error.message : String(error) });
+          }
+        }
+        return results;
+      }),
+    evidenceStatuses: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemIds: z.array(z.number().int().positive()).max(500),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getEditorialEvidenceStatuses({
+            actorUserId: ctx.user.id,
+            workspaceId: input.workspaceId,
+            workItemIds: input.workItemIds,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    board: adminProcedure
+      .input(workspaceIdInput)
+      .query(async ({ ctx, input }) => {
+        try {
+          const board = await getEditorialBoard({
+            actorUserId: ctx.user.id,
+            workspaceId: input.workspaceId,
+          });
+          return board ? await projectEditorialBoardSaleFallback(board) : board;
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    assignees: adminProcedure
+      .input(workspaceIdInput)
+      .query(async ({ ctx, input }) => {
+        try {
+          return await listEditorialAssignees({
+            actorUserId: ctx.user.id,
+            workspaceId: input.workspaceId,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    googleConnections: adminProcedure.query(async ({ ctx }) => {
+      try {
+        return await listEditorialGoogleConnections(ctx.user.id);
+      } catch (error) {
+        return mapWorkspaceError(error);
+      }
+    }),
+    sourceDraft: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getEditorialDraftReadModel({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    sourceSnapshot: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        snapshotId: z.number().int().positive(),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getEditorialSourceSnapshot({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    editor: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getEditorialEditorReadModel({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    editorExcludeTab: adminProcedure
+      .input(workspaceIdInput.extend({ workItemId: z.number().int().positive(), expectedDraftId: z.number().int().positive(), expectedDraftSha256: z.string().trim().length(64), sourceTabId: z.string().trim().min(1).max(255) }))
+      .mutation(async ({ ctx, input }) => {
+        try { return await excludeEditorialDraftTab({ actorUserId: ctx.user.id, ...input }); }
+        catch (error) { return mapWorkspaceError(error); }
+      }),
+    editorRestoreTab: adminProcedure
+      .input(workspaceIdInput.extend({ workItemId: z.number().int().positive(), expectedDraftId: z.number().int().positive(), expectedDraftSha256: z.string().trim().length(64), sourceTabId: z.string().trim().min(1).max(255) }))
+      .mutation(async ({ ctx, input }) => {
+        try { return await restoreEditorialDraftTab({ actorUserId: ctx.user.id, ...input }); }
+        catch (error) { return mapWorkspaceError(error); }
+      }),
+    editorEdit: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        expectedDraftId: z.number().int().positive(),
+        expectedDraftVersion: z.number().int().positive(),
+        expectedDraftSha256: z.string().trim().length(64),
+        findingId: z.number().int().positive().optional(),
+        findingKey: z.string().trim().length(64).optional(),
+        command: editorialEditCommandInput,
+        idempotencyKey: z.string().trim().min(1).max(255),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await applyEditorialEditorEdit({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    editorUndo: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        expectedDraftId: z.number().int().positive(),
+        expectedDraftVersion: z.number().int().positive(),
+        expectedDraftSha256: z.string().trim().length(64),
+        idempotencyKey: z.string().trim().min(1).max(255),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await undoEditorialEditorEdit({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    approval: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getEditorialApprovalReadModel({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    approveDraft: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        expectedDraftId: z.number().int().positive(),
+        expectedDraftVersion: z.number().int().positive(),
+        expectedDraftSha256: z.string().trim().length(64),
+        expectedCheckerRunId: z.number().int().positive(),
+        expectedQcEvidenceSha256: z.string().trim().length(64),
+        idempotencyKey: z.string().trim().min(1).max(255),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await approveEditorialDraft({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    stageEpisodeDraft: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        approvalId: z.number().int().positive(),
+        expectedDraftId: z.number().int().positive(),
+        expectedDraftVersion: z.number().int().positive(),
+        expectedDraftSha256: z.string().trim().length(64),
+        idempotencyKey: z.string().trim().min(1).max(255),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await stageEditorialEpisodeDraft({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    publish: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getEditorialPublishReadModel({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    preparePublishOwnership: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await prepareEditorialPublishOwnership({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    requestPublish: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        expectedStageSetSha256: z.string().trim().length(64),
+        expectedStagedDraftSha256: z.string().trim().length(64),
+        expectedCutoverEpoch: z.number().int().positive(),
+        expectedOwnershipVersion: z.number().int().positive(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          const executionEnabled = process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true";
+          const externalProviderEnabled = process.env.WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true";
+          if (executionEnabled && !externalProviderEnabled) {
+            throw new WorkspacePublishExecutionError("EXTERNAL_PROVIDER_DISABLED", "Workspace publish external provider is not enabled.");
+          }
+          if (executionEnabled) requirePreviewPublishExecutionSafety();
+          return await requestEditorialPublish({
+            actorUserId: ctx.user.id,
+            ...input,
+            executionEnabled,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    foreignChecker: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        runId: z.number().int().positive().optional(),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getEditorialForeignCheckerReadModel({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    foreignCheckerRun: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        expectedDraftId: z.number().int().positive().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await runEditorialForeignChecker({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    foreignCheckerResolve: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        findingId: z.number().int().positive(),
+        disposition: z.enum(["open", "fixed", "ignored"]),
+        note: z.string().trim().max(4000).optional(),
+        expectedVersion: z.number().int().nonnegative(),
+        idempotencyKey: z.string().trim().min(1).max(255),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await setEditorialFindingDisposition({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    foreignCheckerAllow: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        findingId: z.number().int().positive(),
+        expectedVersion: z.number().int().nonnegative(),
+        idempotencyKey: z.string().trim().min(1).max(255),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await allowEditorialFindingWord({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    foreignCheckerUnallow: adminProcedure
+      .input(workspaceIdInput.extend({
+        normalizedWord: z.string().trim().min(1).max(500),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await removeEditorialAllowedWord({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    foreignCheckerResolutionEvents: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await listEditorialFindingResolutionEvents({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    importSource: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        payload: editorialSourcePayloadInput,
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await importEditorialSource({
+            actorUserId: ctx.user.id,
+            workspaceId: input.workspaceId,
+            workItemId: input.workItemId,
+            payload: input.payload,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    importGoogleDoc: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        connectionId: z.number().int().positive(),
+        documentUrlOrId: z.string().trim().min(1).max(1000),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          const payload = await fetchEditorialGoogleDocSource({
+            actorUserId: ctx.user.id,
+            connectionId: input.connectionId,
+            documentUrlOrId: input.documentUrlOrId,
+          });
+          return await importEditorialSource({
+            actorUserId: ctx.user.id,
+            workspaceId: input.workspaceId,
+            workItemId: input.workItemId,
+            payload,
+            googleConnectionId: input.connectionId,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    createNovel: adminProcedure
+      .input(workspaceIdInput.extend({
+        title: z.string().trim().min(1).max(500),
+        author: z.string().trim().max(255).optional(),
+        description: z.string().trim().max(10000).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await createWorkspacePublicationNovel({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    createEpisode: adminProcedure
+      .input(workspaceIdInput.extend({
+        workspaceNovelId: z.number().int().positive(),
+        episodeNumber: z.string().trim().min(1).max(100),
+        episodeTitle: z.string().trim().max(500).optional(),
+        saleMode: z.literal("package").default("package"),
+        price: z.string().trim().regex(/^\d+(?:\.\d{1,2})?$/),
+        isFree: z.boolean(),
+        assigneeUserId: z.number().int().positive().nullable().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await createEditorialEpisodeWorkItem({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    bulkImportGoogleDocs: adminProcedure
+      .input(workspaceIdInput.extend({
+        workspaceNovelId: z.number().int().positive(),
+        connectionId: z.number().int().positive(),
+        price: z.string().trim().regex(/^\d+(?:\.\d{1,2})?$/),
+        isFree: z.boolean(),
+        assigneeUserId: z.number().int().positive().nullable().optional(),
+        rows: z.array(z.object({
+          episodeNumber: z.string().trim().min(1).max(100),
+          episodeTitle: z.string().trim().max(500).optional(),
+          documentUrlOrId: z.string().trim().min(1).max(1000),
+        })).min(1).max(30),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const results = [];
+        for (let rowIndex = 0; rowIndex < input.rows.length; rowIndex += 1) {
+          const row = input.rows[rowIndex]!;
+          try {
+            const payload = await fetchEditorialGoogleDocSource({
+              actorUserId: ctx.user.id,
+              connectionId: input.connectionId,
+              documentUrlOrId: row.documentUrlOrId,
+            });
+            const created = await createEditorialEpisodeWorkItem({
+              actorUserId: ctx.user.id,
+              workspaceId: input.workspaceId,
+              workspaceNovelId: input.workspaceNovelId,
+              episodeNumber: row.episodeNumber,
+              episodeTitle: row.episodeTitle,
+              saleMode: "package",
+              price: input.isFree ? "0.00" : input.price,
+              isFree: input.isFree,
+              assigneeUserId: input.assigneeUserId ?? null,
+            });
+            const card = (created.board?.columns ?? [])
+              .flatMap((column: any) => column.cards ?? [])
+              .find((candidate: any) =>
+                candidate.workItemType === "NEW_EPISODE" &&
+                candidate.workspaceNovelId === input.workspaceNovelId &&
+                String(candidate.episodeNumber ?? "").trim() === row.episodeNumber.trim()
+              );
+            if (!card?.workItemId) throw new Error("Created Episode Pack work item could not be resolved.");
+            const imported = await importEditorialSource({
+              actorUserId: ctx.user.id,
+              workspaceId: input.workspaceId,
+              workItemId: card.workItemId,
+              payload,
+              googleConnectionId: input.connectionId,
+            });
+            results.push({
+              rowIndex,
+              episodeNumber: row.episodeNumber,
+              documentTitle: payload.title,
+              workItemId: card.workItemId,
+              ok: true as const,
+              created: created.created,
+              draftCreated: imported.draftCreated,
+              refreshBlocked: imported.refreshBlocked,
+            });
+          } catch (error) {
+            results.push({
+              rowIndex,
+              episodeNumber: row.episodeNumber,
+              ok: false as const,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        return results;
+      }),
+    bulkImportEpisodeFiles: adminProcedure
+      .input(workspaceIdInput.extend({
+        workspaceNovelId: z.number().int().positive(),
+        price: z.string().trim().regex(/^\d+(?:\.\d{1,2})?$/),
+        isFree: z.boolean(),
+        assigneeUserId: z.number().int().positive().nullable().optional(),
+        files: z.array(z.object({
+          episodeNumber: z.string().trim().min(1).max(100),
+          episodeTitle: z.string().trim().max(500).optional(),
+          fileName: z.string().trim().min(1).max(500),
+          mimeType: z.string().trim().min(1).max(160),
+          paragraphs: z.array(z.string().max(200000)).min(1).max(10000),
+        })).min(1).max(50),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const results = [];
+        for (const file of input.files) {
+          try {
+            const created = await createEditorialEpisodeWorkItem({
+              actorUserId: ctx.user.id,
+              workspaceId: input.workspaceId,
+              workspaceNovelId: input.workspaceNovelId,
+              episodeNumber: file.episodeNumber,
+              episodeTitle: file.episodeTitle,
+              saleMode: "package",
+              price: input.isFree ? "0.00" : input.price,
+              isFree: input.isFree,
+              assigneeUserId: input.assigneeUserId ?? null,
+            });
+            const card = (created.board?.columns ?? [])
+              .flatMap((column: any) => column.cards ?? [])
+              .find((candidate: any) =>
+                candidate.workItemType === "NEW_EPISODE" &&
+                candidate.workspaceNovelId === input.workspaceNovelId &&
+                String(candidate.episodeNumber ?? "").trim() === file.episodeNumber.trim()
+              );
+            if (!card?.workItemId) throw new Error("Created Episode Pack work item could not be resolved.");
+            const imported = await importEditorialSource({
+              actorUserId: ctx.user.id,
+              workspaceId: input.workspaceId,
+              workItemId: card.workItemId,
+              payload: {
+                sourceKind: "uploaded_file",
+                sourceKey: `uploaded-file:work-item-${card.workItemId}`,
+                mimeType: file.mimeType,
+                title: file.fileName,
+                tabs: [{
+                  sourceTabId: "file-main",
+                  tabOrder: 0,
+                  title: file.fileName,
+                  paragraphs: file.paragraphs,
+                }],
+              },
+            });
+            results.push({
+              episodeNumber: file.episodeNumber,
+              workItemId: card.workItemId,
+              ok: true as const,
+              created: created.created,
+              draftCreated: imported.draftCreated,
+              refreshBlocked: imported.refreshBlocked,
+            });
+          } catch (error) {
+            results.push({
+              episodeNumber: file.episodeNumber,
+              ok: false as const,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        return results;
+      }),
+    updateEpisode: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        episodeNumber: z.string().trim().min(1).max(100),
+        episodeTitle: z.string().trim().max(500).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try { return await updateEditorialEpisodeWorkItem({ actorUserId: ctx.user.id, ...input }); }
+        catch (error) { return mapWorkspaceError(error); }
+      }),
+    updateEpisodeSale: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        price: z.string().trim().regex(/^\d+(?:\.\d{1,2})?$/),
+        isFree: z.boolean(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try { return await updateEditorialEpisodeSaleMetadata({ actorUserId: ctx.user.id, ...input }); }
+        catch (error) { return mapWorkspaceError(error); }
+      }),
+    removeEpisode: adminProcedure
+      .input(workspaceIdInput.extend({ workItemId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        try { return await removeEditorialEpisodeWorkItem({ actorUserId: ctx.user.id, ...input }); }
+        catch (error) { return mapWorkspaceError(error); }
+      }),
+    assignWorkItem: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        assigneeUserId: z.number().int().positive().nullable(),
+        expectedVersion: z.number().int().positive(),
+        idempotencyKey: z.string().trim().min(1).max(255),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await assignEditorialWorkItem({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    updateWorkItemNote: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        note: z.string().max(1000).nullable(),
+        expectedVersion: z.number().int().positive(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await updateEditorialWorkItemNote({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    ensureBoard: adminProcedure
+      .input(workspaceIdInput)
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await ensureEditorialBoard({
+            actorUserId: ctx.user.id,
+            workspaceId: input.workspaceId,
+          });
         } catch (error) {
           return mapWorkspaceError(error);
         }

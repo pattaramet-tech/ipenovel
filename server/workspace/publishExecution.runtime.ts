@@ -5,9 +5,13 @@ import {
   type WorkspacePublishProvider,
 } from "./publishExecution.domain";
 import { claimPublishOutbox, processClaimedPublishOutbox } from "./publishExecution.service";
+import {
+  assertEditorialPublishRequestCurrent,
+  reconcileEditorialPublishRun,
+} from "./editorialPublish.service";
 
 export class WorkspacePublishRuntimeError extends Error {
-  constructor(readonly code: "EXECUTION_SCOPE_REQUIRED" | "EXECUTION_SCOPE_INVALID", message: string) {
+  constructor(readonly code: "EXECUTION_SCOPE_REQUIRED" | "EXECUTION_SCOPE_INVALID" | "PREVIEW_SAFETY_GATE_BLOCKED", message: string) {
     super(message);
     this.name = "WorkspacePublishRuntimeError";
   }
@@ -46,6 +50,36 @@ export function parseWorkspacePublishExecutionScope(raw: string | undefined): Wo
   };
 }
 
+export function requirePreviewPublishExecutionSafety(env: NodeJS.ProcessEnv = process.env) {
+  if (env.WORKSPACE_PUBLISH_ACCEPTANCE_TIER !== "preview") {
+    throw new WorkspacePublishRuntimeError(
+      "PREVIEW_SAFETY_GATE_BLOCKED",
+      "Preview Controlled Publish requires WORKSPACE_PUBLISH_ACCEPTANCE_TIER=preview."
+    );
+  }
+  const expectedDatabase = env.WORKSPACE_PUBLISH_PREVIEW_DATABASE_NAME?.trim();
+  if (!expectedDatabase) {
+    throw new WorkspacePublishRuntimeError(
+      "PREVIEW_SAFETY_GATE_BLOCKED",
+      "Preview Controlled Publish requires an explicit WORKSPACE_PUBLISH_PREVIEW_DATABASE_NAME."
+    );
+  }
+  let actualDatabase: string;
+  try {
+    const databaseUrl = new URL(env.DATABASE_URL ?? "");
+    actualDatabase = decodeURIComponent(databaseUrl.pathname.replace(/^\//, ""));
+  } catch {
+    throw new WorkspacePublishRuntimeError("PREVIEW_SAFETY_GATE_BLOCKED", "Preview database identity cannot be parsed.");
+  }
+  if (!actualDatabase || actualDatabase !== expectedDatabase) {
+    throw new WorkspacePublishRuntimeError(
+      "PREVIEW_SAFETY_GATE_BLOCKED",
+      "Preview Controlled Publish database identity does not match the explicit preview database allowlist."
+    );
+  }
+  return { tier: "preview" as const, databaseName: actualDatabase };
+}
+
 export function scopeMatches(input: WorkspacePublishExecutionScope, expected: WorkspacePublishExecutionScope) {
   return input.workspaceId === expected.workspaceId
     && input.workspaceNovelId === expected.workspaceNovelId
@@ -72,6 +106,10 @@ export async function runScopedPublishWorkerOnce(input: {
   }
   const startedAt = Date.now();
   const maxAttempts = input.maxAttempts ?? WORKSPACE_PUBLISH_MAX_ATTEMPTS;
+  await reconcileEditorialPublishRun({
+    workspaceId: input.scope.workspaceId,
+    runId: input.scope.runId,
+  });
   const claimed = await claimPublishOutbox({
     workspaceId: input.scope.workspaceId,
     publishRunId: input.scope.runId,
@@ -97,6 +135,18 @@ export async function runScopedPublishWorkerOnce(input: {
     allowExternalProvider: input.allowExternalProvider,
     maxAttempts,
     observer: input.observer,
+    beforeProviderExecute: assertEditorialPublishRequestCurrent,
   });
-  return { claimed: true as const, outboxId: claimed.id, attempt: claimed.attempts, result, durationMs: Date.now() - startedAt };
+  const editorialProjection = await reconcileEditorialPublishRun({
+    workspaceId: input.scope.workspaceId,
+    runId: input.scope.runId,
+  });
+  return {
+    claimed: true as const,
+    outboxId: claimed.id,
+    attempt: claimed.attempts,
+    result,
+    editorialProjection,
+    durationMs: Date.now() - startedAt,
+  };
 }

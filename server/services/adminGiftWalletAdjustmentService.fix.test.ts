@@ -67,7 +67,7 @@ describe("IPE-048 C02 fix contract", () => {
 
   it("keeps migrations 0040-0045 contiguous and journal/file aligned", () => {
     const journal = JSON.parse(read("drizzle/meta/_journal.json"));
-    const tail = journal.entries.filter((entry: any) => entry.idx >= 40);
+    const tail = journal.entries.filter((entry: any) => entry.idx >= 40 && entry.idx <= 45);
     expect(tail.map((entry: any) => entry.idx)).toEqual([40, 41, 42, 43, 44, 45]);
     expect(tail.at(-1)?.tag).toBe("0045_admin_gift_wallet_adjustment");
     for (const entry of tail) {

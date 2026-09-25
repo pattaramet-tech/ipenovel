@@ -1,0 +1,1 @@
+ALTER TABLE `workspaceEditorialWorkItems` ADD `note` varchar(1000);

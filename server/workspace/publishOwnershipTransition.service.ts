@@ -61,7 +61,7 @@ async function loadRunContext(db: any, workspaceId: number, runId: number) {
   return row;
 }
 
-async function readCriticalReadiness(db: any, context: any) {
+async function readCriticalReadiness(db: any, context: any, phase: "pre_publish" | "final" = "final") {
   const [source] = await db.select({ fingerprint: workspaceDocumentFingerprints })
     .from(workspaceDocumentSnapshots)
     .innerJoin(workspaceDocumentBindings, eq(workspaceDocumentBindings.documentId, workspaceDocumentSnapshots.documentId))
@@ -87,9 +87,14 @@ async function readCriticalReadiness(db: any, context: any) {
   if (!source || expectedHash !== currentHash) blockers.push("STALE_LAST_PUBLISHED_HASH");
   if (context.run.checkerRunId && (!checker || checker.snapshotId !== context.run.snapshotId || checker.status !== "passed")) blockers.push("CHECKER_NOT_PASSED");
   if (items.length === 0) blockers.push("EMPTY_PUBLISH_RUN");
-  if (unresolvedItems.length > 0) blockers.push("UNRESOLVED_PUBLISH_ITEMS");
-  if (publishedMissingReceipt.length > 0) blockers.push("PUBLISHED_ITEM_MISSING_RECEIPT");
-  if (backlog.length > 0) blockers.push("OUTBOX_BACKLOG_PRESENT");
+  // Pre-publish ownership preparation intentionally permits pending publish
+  // items. Final cutover/rollback readiness continues to require terminal
+  // items, provider receipts, and delivered outbox evidence.
+  if (phase === "final") {
+    if (unresolvedItems.length > 0) blockers.push("UNRESOLVED_PUBLISH_ITEMS");
+    if (publishedMissingReceipt.length > 0) blockers.push("PUBLISHED_ITEM_MISSING_RECEIPT");
+    if (backlog.length > 0) blockers.push("OUTBOX_BACKLOG_PRESENT");
+  }
   const digest = buildPublishReadinessDigest({
     workspaceNovelId: context.workspaceNovel.id,
     publishRunId: context.run.id,
@@ -114,6 +119,7 @@ async function performTransition(input: {
   expectedOwner: PublishOwnershipOwner;
   expectedCutoverEpoch: number;
   expectedVersion: number;
+  readinessPhase?: "pre_publish" | "final";
 }) {
   const db = await database();
   await requireWorkspacePlatformAdmin(db, input.actorUserId);
@@ -134,8 +140,9 @@ async function performTransition(input: {
     return { transition: replayed, ownership, created: false };
   }
 
+  const readinessPhase = input.readinessPhase ?? "final";
   let m05cDigest: string | undefined;
-  if (input.direction === "cutover") {
+  if (input.direction === "cutover" && readinessPhase === "final") {
     const readiness = await getPublishCutoverReadiness({ actorUserId: input.actorUserId, workspaceId: input.workspaceId, runId: input.runId });
     if (!readiness.readyForSyntheticCutover) {
       throw new WorkspacePublishOwnershipTransitionError("PUBLISH_READINESS_BLOCKED", `Publish cutover readiness is blocked: ${readiness.blockers.join(", ")}`);
@@ -153,11 +160,13 @@ async function performTransition(input: {
     }
     const ownership = rows[0];
     const target = transitionTarget(input.direction, input.expectedCutoverEpoch);
-    const readiness = await readCriticalReadiness(tx, context);
+    const readiness = await readCriticalReadiness(tx, context, readinessPhase);
     if (readiness.blockers.length > 0) {
       throw new WorkspacePublishOwnershipTransitionError("PUBLISH_READINESS_BLOCKED", `Publish ownership transition is blocked: ${readiness.blockers.join(", ")}`);
     }
-    const readinessDigest = input.direction === "cutover" ? m05cDigest! : readiness.digest;
+    const readinessDigest = input.direction === "cutover" && readinessPhase === "final"
+      ? m05cDigest!
+      : readiness.digest;
     const idempotencyKey = buildPublishOwnershipTransitionIdempotencyKey({
       workspaceId: input.workspaceId,
       workspaceNovelId: context.workspaceNovel.id,
@@ -251,6 +260,7 @@ export function cutoverPublishOwnership(input: {
   expectedOwner: "sheets";
   expectedCutoverEpoch: 0;
   expectedVersion: number;
+  readinessPhase?: "pre_publish" | "final";
 }) {
   return performTransition({ ...input, direction: "cutover" });
 }

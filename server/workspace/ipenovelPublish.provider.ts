@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { episodes, workspaceAuditEvents } from "../../drizzle/schema";
+import { episodes, novels, workspaceAuditEvents } from "../../drizzle/schema";
 import { getDb } from "../db";
 import {
   WORKSPACE_PUBLISH_PROVIDER_RECEIPT_EVENT,
@@ -51,7 +51,17 @@ export function createIpeNovelWorkspacePublishProvider(): WorkspacePublishProvid
         eq(workspaceAuditEvents.eventType, WORKSPACE_PUBLISH_PROVIDER_RECEIPT_EVENT),
         eq(workspaceAuditEvents.correlationId, request.requestKey)
       )).limit(1);
-      return event ? parseReceiptMetadata(event.metadataJson) : undefined;
+      const reconciled = event ? parseReceiptMetadata(event.metadataJson) : undefined;
+      if (reconciled && request.targetType === "novel" && request.episodeId) {
+        const [episode] = await db.select({ id: episodes.id, novelId: episodes.novelId, isPublished: episodes.isPublished })
+          .from(episodes).where(eq(episodes.id, request.episodeId)).limit(1);
+        if (episode?.novelId === request.targetId && episode.isPublished === true) {
+          // Durable provider receipt + published episode is sufficient evidence
+          // to repair parent visibility left archived by the pre-fix adapter.
+          await db.update(novels).set({ publicationStatus: "published" }).where(eq(novels.id, request.targetId));
+        }
+      }
+      return reconciled;
     },
     async execute(request) {
       if (request.targetType !== "novel" || !request.episodeId) {
@@ -65,6 +75,12 @@ export function createIpeNovelWorkspacePublishProvider(): WorkspacePublishProvid
         if (!episode || episode.novelId !== request.targetId) {
           throw new IpeNovelWorkspacePublishProviderError("TARGET_NOT_FOUND", "Publish episode does not belong to the destination novel.");
         }
+        // A successful Controlled Publish makes the destination reader-visible as
+        // a whole. New Workspace novels start archived/hidden, so publish the
+        // parent novel in the same transaction as the episode + provider receipt.
+        // This also self-heals a replay where an older provider receipt exists but
+        // the parent novel was left archived by the pre-fix adapter.
+        await tx.update(novels).set({ publicationStatus: "published" }).where(eq(novels.id, request.targetId));
         const [existing] = await tx.select().from(workspaceAuditEvents).where(and(
           eq(workspaceAuditEvents.workspaceId, request.workspaceId),
           eq(workspaceAuditEvents.eventType, WORKSPACE_PUBLISH_PROVIDER_RECEIPT_EVENT),
