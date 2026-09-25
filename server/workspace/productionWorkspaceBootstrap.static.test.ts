@@ -18,7 +18,7 @@ describe("M12D.11 Production Workspace bootstrap", () => {
   it("exposes a self-service Google Docs connect action and fixed callback flow", () => {
     const page = read("client/src/pages/WorkspacePage.tsx");
     const oauth = read("server/workspace/googleDocs.oauth.ts");
-    const index = read("server/_core/index.ts");
+    const index = read("server/_core/index.ts").replace(/\r\n/g, "\n");
 
     expect(page).toContain('window.location.assign("/api/workspace/google/start")');
     expect(page).toContain("เชื่อม Google Docs");
@@ -29,7 +29,7 @@ describe("M12D.11 Production Workspace bootstrap", () => {
     expect(oauth).not.toMatch(/req\.headers\.(host|origin)|x-forwarded-host/i);
     expect(oauth).not.toContain("returnTo");
     expect(index.indexOf("registerWorkspaceGoogleDocsOAuthRoutes(app)")).toBeLessThan(
-      index.indexOf('app.use(\r\n    "/api/trpc"')
+      index.indexOf('app.use(\n    "/api/trpc"')
     );
   });
 });
