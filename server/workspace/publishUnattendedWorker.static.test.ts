@@ -3,24 +3,22 @@ import { describe, expect, it } from "vitest";
 
 const read = (path: string) => readFileSync(path, "utf8");
 
-describe("M12D.9 unattended Controlled Publish worker", () => {
+describe("M12D.9/M12D.13 unattended Controlled Publish worker", () => {
   const worker = read("server/workspace/publishUnattendedWorker.ts");
   const runtime = read("server/workspace/publishExecution.runtime.ts");
   const execution = read("server/workspace/publishExecution.service.ts");
   const startup = read("server/_core/index.ts");
   const router = read("server/workspace/router.ts");
 
-  it("reuses the centralized environment policy, provider gate, and environment-specific DB safety", () => {
+  it("reuses environment/DB identity safety plus the external-provider gate", () => {
     expect(worker).toContain("resolveWorkspacePublishExecutionPolicy(env)");
     expect(runtime).toContain('WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true"');
     expect(worker).toContain('WORKSPACE_PUBLISH_UNATTENDED_ENABLED === "false"');
     expect(worker).toContain("publishPolicy.safety");
     expect(router).toContain("requireWorkspacePublishRequestPolicy");
-    expect(router).not.toContain('WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true"');
-    expect(runtime).toContain("WORKSPACE_PUBLISH_ACCEPTANCE_TIER");
-    expect(runtime).toContain("WORKSPACE_PUBLISH_PREVIEW_DATABASE_NAME");
     expect(runtime).toContain("PRODUCTION_DB_FINGERPRINT");
-    expect(runtime).toContain("requireProductionPublishExecutionSafety");
+    expect(runtime).toContain("PRODUCTION_STAGING_DB_FINGERPRINT");
+    expect(runtime).toContain("requireWorkspacePublishEnvironmentSafety");
   });
 
   it("derives each queued scope from durable state and executes through the existing fenced runtime/provider", () => {
@@ -57,6 +55,7 @@ describe("M12D.9 unattended Controlled Publish worker", () => {
     expect(worker).toContain('component: "workspace-publish-worker"');
     expect(worker).toContain('event: "cycle_complete"');
     expect(worker).toContain('event: "cycle_failed"');
+    expect(worker).toContain("environment: safety.tier");
     expect(worker).not.toMatch(/console\.(?:log|error)\([^\n]*(?:DATABASE_URL|password|leaseToken)/i);
   });
 });

@@ -3,8 +3,7 @@ import { describe, expect, it } from "vitest";
 import { databaseIdentityFingerprint } from "../../scripts/lib/databaseIdentity.mjs";
 import {
   parseWorkspacePublishExecutionScope,
-  requirePreviewPublishExecutionSafety,
-  requireProductionPublishExecutionSafety,
+  requireWorkspacePublishEnvironmentSafety,
   requireWorkspacePublishRequestPolicy,
   resolveWorkspacePublishExecutionPolicy,
   scopeMatches,
@@ -13,26 +12,19 @@ import {
 
 const PRODUCTION_URL = "mysql://user:secret@prod-db.internal:3306/ipenovel_prod";
 const STAGING_URL = "mysql://user:secret@staging-db.internal:3306/ipenovel_staging";
+const PRODUCTION_FINGERPRINT = databaseIdentityFingerprint(PRODUCTION_URL);
+const STAGING_FINGERPRINT = databaseIdentityFingerprint(STAGING_URL);
 
-function productionEnv(overrides: Record<string, string | undefined> = {}) {
+function releaseEnv(
+  environment: "production" | "production-staging",
+  overrides: Record<string, string | undefined> = {}
+) {
   return {
-    DEPLOYMENT_ENVIRONMENT: "production",
-    DATABASE_URL: PRODUCTION_URL,
-    PRODUCTION_DB_FINGERPRINT: databaseIdentityFingerprint(PRODUCTION_URL),
-    PRODUCTION_STAGING_DB_FINGERPRINT: databaseIdentityFingerprint(STAGING_URL),
+    DEPLOYMENT_ENVIRONMENT: environment,
+    DATABASE_URL: environment === "production" ? PRODUCTION_URL : STAGING_URL,
+    PRODUCTION_DB_FINGERPRINT: PRODUCTION_FINGERPRINT,
+    PRODUCTION_STAGING_DB_FINGERPRINT: STAGING_FINGERPRINT,
     WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED: "true",
-    ...overrides,
-  } as NodeJS.ProcessEnv;
-}
-
-function previewEnv(overrides: Record<string, string | undefined> = {}) {
-  return {
-    DEPLOYMENT_ENVIRONMENT: "preview",
-    DATABASE_URL: "mysql://user:secret@db.internal:3306/ipenovel_preview",
-    WORKSPACE_PUBLISH_EXECUTION_ENABLED: "true",
-    WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED: "true",
-    WORKSPACE_PUBLISH_ACCEPTANCE_TIER: "preview",
-    WORKSPACE_PUBLISH_PREVIEW_DATABASE_NAME: "ipenovel_preview",
     ...overrides,
   } as NodeJS.ProcessEnv;
 }
@@ -61,96 +53,107 @@ describe("workspace publish execution runtime scope", () => {
     }
   });
 
-  it("requires an explicit preview tier and exact preview database identity", () => {
-    const safe = previewEnv();
-    expect(requirePreviewPublishExecutionSafety(safe)).toEqual({
-      tier: "preview",
-      databaseName: "ipenovel_preview",
+  it("activates Production only when DATABASE_URL matches the approved Production fingerprint", () => {
+    const policy = resolveWorkspacePublishExecutionPolicy(releaseEnv("production"));
+    expect(policy).toMatchObject({
+      mode: "production",
+      executionEnabled: true,
+      externalProviderEnabled: true,
+      safety: {
+        tier: "production",
+        databaseName: "ipenovel_prod",
+        databaseFingerprint: PRODUCTION_FINGERPRINT,
+      },
     });
-    expect(() => requirePreviewPublishExecutionSafety({ ...safe, WORKSPACE_PUBLISH_ACCEPTANCE_TIER: "production" }))
-      .toThrowError(/ACCEPTANCE_TIER=preview/);
-    expect(() => requirePreviewPublishExecutionSafety({ ...safe, WORKSPACE_PUBLISH_PREVIEW_DATABASE_NAME: "ipenovel_prod" }))
-      .toThrowError(/database identity/);
-    expect(() => requirePreviewPublishExecutionSafety({ ...safe, DATABASE_URL: undefined }))
-      .toThrow(WorkspacePublishRuntimeError);
-  });
-
-  it("enables Production from exact environment + DB identity without reading the legacy execution flag", () => {
-    const withoutFlag = productionEnv();
-    delete withoutFlag.WORKSPACE_PUBLISH_EXECUTION_ENABLED;
-    const disabledLegacyFlag = productionEnv({ WORKSPACE_PUBLISH_EXECUTION_ENABLED: "false" });
-
-    const first = resolveWorkspacePublishExecutionPolicy(withoutFlag);
-    const second = resolveWorkspacePublishExecutionPolicy(disabledLegacyFlag);
-
-    for (const policy of [first, second]) {
-      expect(policy.mode).toBe("production");
-      expect(policy.executionEnabled).toBe(true);
-      expect(policy.externalProviderEnabled).toBe(true);
-      expect(policy.safety).toEqual({ tier: "production", databaseName: "ipenovel_prod" });
-      expect(policy.finalGateExecutionBlock).toBe(false);
-    }
-  });
-
-  it("does not require Preview acceptance settings on the Production path", () => {
-    const env = productionEnv({
-      WORKSPACE_PUBLISH_ACCEPTANCE_TIER: undefined,
-      WORKSPACE_PUBLISH_PREVIEW_DATABASE_NAME: undefined,
-      WORKSPACE_PUBLISH_EXECUTION_ENABLED: "false",
-    });
-    expect(requireWorkspacePublishRequestPolicy(env).mode).toBe("production");
-  });
-
-  it("fails closed for a non-exact Production environment or wrong Production DB identity", () => {
-    expect(() =>
-      requireProductionPublishExecutionSafety(
-        productionEnv({ DEPLOYMENT_ENVIRONMENT: "Production" })
-      )
-    ).toThrowError(/DEPLOYMENT_ENVIRONMENT=production exactly/);
 
     expect(() =>
-      requireProductionPublishExecutionSafety(
-        productionEnv({
-          PRODUCTION_DB_FINGERPRINT: databaseIdentityFingerprint(
-            "mysql://user:secret@other-db.internal:3306/not_production"
-          ),
+      requireWorkspacePublishEnvironmentSafety(
+        releaseEnv("production", {
+          DATABASE_URL: "mysql://user:secret@wrong.internal:3306/ipenovel_wrong",
         })
       )
-    ).toThrowError(/does not match the approved Production database identity/);
+    ).toThrowError(/does not match the approved production database identity/i);
+  });
+
+  it("activates production-staging only when its DB fingerprint matches and differs from Production", () => {
+    const policy = requireWorkspacePublishRequestPolicy(releaseEnv("production-staging"));
+    expect(policy).toMatchObject({
+      mode: "production-staging",
+      executionEnabled: true,
+      externalProviderEnabled: true,
+      safety: {
+        tier: "production-staging",
+        databaseName: "ipenovel_staging",
+        databaseFingerprint: STAGING_FINGERPRINT,
+      },
+    });
 
     expect(() =>
-      requireProductionPublishExecutionSafety(
-        productionEnv({
-          PRODUCTION_STAGING_DB_FINGERPRINT: databaseIdentityFingerprint(PRODUCTION_URL),
+      requireWorkspacePublishEnvironmentSafety(
+        releaseEnv("production-staging", {
+          PRODUCTION_STAGING_DB_FINGERPRINT: undefined,
+        })
+      )
+    ).toThrowError(/PRODUCTION_STAGING_DB_FINGERPRINT/);
+
+    expect(() =>
+      requireWorkspacePublishEnvironmentSafety(
+        releaseEnv("production-staging", {
+          PRODUCTION_STAGING_DB_FINGERPRINT: PRODUCTION_FINGERPRINT,
         })
       )
     ).toThrowError(/fingerprints must differ/);
-  });
 
-  it("keeps the external provider as an independent fail-closed Production gate", () => {
     expect(() =>
-      requireWorkspacePublishRequestPolicy(
-        productionEnv({ WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED: "false" })
+      requireWorkspacePublishEnvironmentSafety(
+        releaseEnv("production-staging", {
+          DATABASE_URL: PRODUCTION_URL,
+        })
       )
-    ).toThrowError(/external provider is not enabled/i);
+    ).toThrowError(/does not match the approved production-staging database identity/i);
   });
 
-  it("preserves legacy Preview activation through WORKSPACE_PUBLISH_EXECUTION_ENABLED", () => {
-    const active = resolveWorkspacePublishExecutionPolicy(previewEnv());
-    expect(active.mode).toBe("legacy-preview");
-    expect(active.executionEnabled).toBe(true);
-    expect(active.finalGateExecutionBlock).toBe(true);
-    expect(active.safety).toEqual({ tier: "preview", databaseName: "ipenovel_preview" });
+  it("keeps Preview/development environments inactive without a rollout or acceptance flag", () => {
+    const policy = resolveWorkspacePublishExecutionPolicy({
+      DEPLOYMENT_ENVIRONMENT: "preview",
+      DATABASE_URL: "mysql://user:secret@preview.internal:3306/ipenovel_preview",
+      WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED: "true",
+    } as NodeJS.ProcessEnv);
 
-    const disabled = resolveWorkspacePublishExecutionPolicy(
-      previewEnv({ WORKSPACE_PUBLISH_EXECUTION_ENABLED: "false" })
-    );
-    expect(disabled.mode).toBe("disabled");
-    expect(disabled.executionEnabled).toBe(false);
-    expect(disabled.safety).toBeNull();
+    expect(policy).toEqual({
+      mode: "inactive",
+      executionEnabled: false,
+      externalProviderEnabled: true,
+      safety: null,
+    });
+    expect(() =>
+      requireWorkspacePublishRequestPolicy({
+        DEPLOYMENT_ENVIRONMENT: "preview",
+        WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED: "true",
+      } as NodeJS.ProcessEnv)
+    ).toThrowError(/not active in this deployment environment/i);
   });
 
-  it("checks execution/provider flags before any outbox claim", () => {
+  it("keeps the external provider as an independent fail-closed gate in both release environments", () => {
+    for (const environment of ["production", "production-staging"] as const) {
+      expect(() =>
+        requireWorkspacePublishRequestPolicy(
+          releaseEnv(environment, { WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED: "false" })
+        )
+      ).toThrowError(/external provider is not enabled/i);
+    }
+  });
+
+  it("rejects non-exact deployment environment literals", () => {
+    expect(
+      resolveWorkspacePublishExecutionPolicy({
+        ...releaseEnv("production"),
+        DEPLOYMENT_ENVIRONMENT: "Production",
+      })
+    ).toMatchObject({ mode: "inactive", executionEnabled: false });
+  });
+
+  it("checks execution/provider guards before any outbox claim", () => {
     const source = readFileSync(new URL("./publishExecution.runtime.ts", import.meta.url), "utf8");
     const executionGuard = source.indexOf("if (!input.executionEnabled)");
     const providerGuard = source.indexOf('input.provider.mode === "external" && !input.allowExternalProvider');

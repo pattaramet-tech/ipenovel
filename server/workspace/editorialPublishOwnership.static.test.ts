@@ -13,6 +13,6 @@ describe("IPE-056-G guarded publish ownership preparation", () => {
     expect(publish).toContain('expectedOwner: "sheets"');
     expect(publish).toContain("expectedCutoverEpoch: 0");
     expect(router).toContain("preparePublishOwnership: adminProcedure");
-    expect(publish).not.toContain('WORKSPACE_PUBLISH_EXECUTION_ENABLED = "true"');
+    expect(router).toContain("requireWorkspacePublishRequestPolicy");
   });
 });
