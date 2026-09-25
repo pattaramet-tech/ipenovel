@@ -73,6 +73,18 @@ export const NQA_CAPABILITIES = {
     effect: "READ_ONLY",
     description: "Read bounded QA evidence.",
   },
+  "nqa.result.writeback_preview": {
+    requiredPermission: "READ",
+    effect: "READ_ONLY",
+    description:
+      "Preview one bounded NQA result writeback to Sheet Column L or M without mutation.",
+  },
+  "nqa.result.writeback_confirm": {
+    requiredPermission: "REMEDIATION",
+    effect: "PRODUCTION_MUTATION",
+    description:
+      "Confirm one preview-bound NQA result writeback to Sheet Column L or M.",
+  },
   "nqa.review.list": {
     requiredPermission: "READ",
     effect: "READ_ONLY",
@@ -216,6 +228,9 @@ export const NqaMcpRequestSchema = z
         novelId: z.string().min(1).nullable().optional(),
         bundleId: z.string().min(1).nullable().optional(),
         chapter: z.number().int().positive().nullable().optional(),
+        runId: z.string().min(1).max(100).nullable().optional(),
+        column: z.enum(["L", "M"]).nullable().optional(),
+        confirmation: z.string().min(1).max(200).nullable().optional(),
       })
       .strict(),
     idempotencyKey: z

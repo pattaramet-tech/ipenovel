@@ -73,6 +73,7 @@ import {
 } from "./services/accountMergeGuardService";
 import { updateAdminUserProfile, AdminUserManagementError } from "./services/adminUserManagementService";
 import { workspaceRouter } from "./workspace/router";
+import { nqaAdminRouter } from "./nqa/admin/router";
 
 // ============ HELPER PROCEDURES ============
 
@@ -1343,6 +1344,7 @@ export const appRouter = router({
   // only the removed local-password AUTHENTICATION path.
   admin: router({
     ocr: ocrMetricsRouter,
+    nqa: nqaAdminRouter,
 
     payments: router({
       pending: adminProcedure.query(async () => {

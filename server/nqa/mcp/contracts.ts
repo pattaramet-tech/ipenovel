@@ -36,6 +36,9 @@ export const NqaGatewayTargetSchema = z
     novelId: z.string().min(1).max(100).nullable().optional(),
     bundleId: z.string().min(1).max(150).nullable().optional(),
     chapter: z.number().int().positive().nullable().optional(),
+    runId: z.string().min(1).max(100).nullable().optional(),
+    column: z.enum(["L", "M"]).nullable().optional(),
+    confirmation: z.string().min(1).max(200).nullable().optional(),
   })
   .strict();
 

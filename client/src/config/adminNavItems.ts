@@ -25,6 +25,7 @@ import {
   UserSearch,
   ImagePlus,
   Users,
+  FlaskConical,
 } from "lucide-react";
 
 export interface NavItem {
@@ -111,6 +112,11 @@ export const adminNavSections: NavSection[] = [
         label: "Hybrid Content Health",
         href: "/admin/hybrid-health",
         icon: Activity,
+      },
+      {
+        label: "NQA",
+        href: "/admin/nqa",
+        icon: FlaskConical,
       },
       {
         label: "Categories",
