@@ -2,22 +2,33 @@
 
 ## Purpose
 
-M12D.9 closes the gap between a successful Controlled Publish enqueue and the actual provider execution. The HTTP request remains responsible only for validation and durable enqueue. A Preview-only background worker drains eligible Workspace publish outbox rows.
+M12D.9 closes the gap between a successful Controlled Publish enqueue and the actual provider execution. The HTTP request remains responsible only for validation and durable enqueue; the background worker drains eligible Workspace publish outbox rows.
+
+M12D.9 originally activated this worker only for Preview. **M12D.12 supersedes the Production activation rule** without changing the durable worker/outbox mechanics.
 
 ## Activation gates
 
-The worker reuses the two existing execution gates. It starts when both are true:
+### Preview / legacy non-production
+
+Preview preserves the original activation contract:
 
 - `WORKSPACE_PUBLISH_EXECUTION_ENABLED=true`
 - `WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED=true`
-
-It then requires the existing Preview safety identity:
-
 - `WORKSPACE_PUBLISH_ACCEPTANCE_TIER=preview`
 - `WORKSPACE_PUBLISH_PREVIEW_DATABASE_NAME=<exact Preview database name>`
 - `DATABASE_URL` resolves to that exact database name
 
-No new rollout flag is required for Preview, so an already-enqueued run can resume after deploying this code. `WORKSPACE_PUBLISH_UNATTENDED_ENABLED=false` is an emergency kill switch. Setting it explicitly to `true` makes missing execution/provider prerequisites fail startup closed.
+### Production (M12D.12)
+
+When `DEPLOYMENT_ENVIRONMENT=production` exactly:
+
+- `WORKSPACE_PUBLISH_EXECUTION_ENABLED` is ignored; it is not a Production kill switch or activation gate.
+- `DATABASE_URL` must match `PRODUCTION_DB_FINGERPRINT`.
+- `PRODUCTION_STAGING_DB_FINGERPRINT`, when supplied, must differ from the Production fingerprint.
+- `WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED=true` remains required for external delivery.
+- Preview acceptance variables are not read and Production must never spoof `WORKSPACE_PUBLISH_ACCEPTANCE_TIER=preview`.
+
+`WORKSPACE_PUBLISH_UNATTENDED_ENABLED=false` remains a worker-specific emergency stop. Setting it explicitly to `true` makes missing execution-policy/provider prerequisites fail startup closed.
 
 Optional polling control:
 
@@ -37,8 +48,8 @@ Logs use structured JSON under `component=workspace-publish-worker` and include 
 
 ## Existing queued runs
 
-The worker does not require a new Publish click. A previously enqueued eligible run (for example a run that is still `publishing` with a pending outbox) is discovered by `resolvePendingPublishExecutionScope()` and can continue after the worker-enabled Preview deployment.
+The worker does not require a new Publish click. A previously enqueued eligible run is discovered by `resolvePendingPublishExecutionScope()` and can continue after a worker-enabled deployment, subject to the current environment-aware runtime policy.
 
 ## Production boundary
 
-This implementation deliberately uses the existing Preview database safety gate. It is not a Production activation mechanism. Production execution remains out of scope.
+M12D.12 adds a dedicated Production safety path. Production execution is enabled by exact environment + approved Production DB identity, not by the legacy Preview execution flag. This does not remove admin authorization, ownership epoch/version, stale-hash validation, outbox idempotency, lease fencing, bounded retry/dead-letter, provider receipt, or the external-provider opt-in.

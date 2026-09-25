@@ -1,6 +1,6 @@
 import { createIpeNovelWorkspacePublishProvider } from "./ipenovelPublish.provider";
 import {
-  requirePreviewPublishExecutionSafety,
+  resolveWorkspacePublishExecutionPolicy,
   runScopedPublishWorkerOnce,
 } from "./publishExecution.runtime";
 import { resolvePendingPublishExecutionScope } from "./publishExecution.service";
@@ -61,16 +61,15 @@ export function createUnattendedPublishWorker(
   const pollMs = parsePollMs(env.WORKSPACE_PUBLISH_UNATTENDED_POLL_MS);
   const explicitlyEnabled = env.WORKSPACE_PUBLISH_UNATTENDED_ENABLED === "true";
   const explicitlyDisabled = env.WORKSPACE_PUBLISH_UNATTENDED_ENABLED === "false";
-  const executionEnabled = env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true";
-  const externalProviderEnabled =
-    env.WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true";
+  const publishPolicy = resolveWorkspacePublishExecutionPolicy(env);
+  const { executionEnabled, externalProviderEnabled } = publishPolicy;
 
   if (
     explicitlyEnabled &&
     (!executionEnabled || !externalProviderEnabled)
   ) {
     throw new Error(
-      "Explicit unattended publish requires both execution and external-provider flags to be true."
+      "Explicit unattended publish requires execution policy and external-provider configuration to be enabled."
     );
   }
 
@@ -91,7 +90,10 @@ export function createUnattendedPublishWorker(
     };
   }
 
-  const safety = requirePreviewPublishExecutionSafety(env);
+  const safety = publishPolicy.safety;
+  if (!safety) {
+    throw new Error("Enabled unattended publish requires resolved environment safety.");
+  }
   const resolveScope = deps.resolveScope ?? resolvePendingPublishExecutionScope;
   const runOnce = deps.runOnce ?? runScopedPublishWorkerOnce;
   const createProvider = deps.createProvider ?? createIpeNovelWorkspacePublishProvider;
@@ -122,10 +124,10 @@ export function createUnattendedPublishWorker(
       const startedAt = Date.now();
       const result = await runOnce({
         scope,
-        leaseOwner: `preview-unattended:${process.pid}`,
+        leaseOwner: `${publishPolicy.mode}-unattended:${process.pid}`,
         provider: createProvider(),
-        executionEnabled: true,
-        allowExternalProvider: true,
+        executionEnabled: publishPolicy.executionEnabled,
+        allowExternalProvider: publishPolicy.externalProviderEnabled,
         observer: event => {
           if (
             event.type === "claim_acquired" ||

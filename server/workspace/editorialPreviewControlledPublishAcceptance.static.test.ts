@@ -12,8 +12,8 @@ describe("IPE-056-P Preview Controlled Publish safety gate", () => {
     expect(runtime).toContain("WORKSPACE_PUBLISH_ACCEPTANCE_TIER");
     expect(runtime).toContain("WORKSPACE_PUBLISH_PREVIEW_DATABASE_NAME");
     expect(runtime).toContain("PREVIEW_SAFETY_GATE_BLOCKED");
-    expect(worker).toContain("requirePreviewPublishExecutionSafety()");
-    expect(router).toContain("if (executionEnabled) requirePreviewPublishExecutionSafety()");
+    expect(worker).toContain("requireWorkspacePublishRequestPolicy()");
+    expect(router).toContain("requireWorkspacePublishRequestPolicy()");
   });
   it("derives worker scope from the queued run and current ownership instead of per-run env", () => {
     expect(execution).toContain("resolvePendingPublishExecutionScope");
@@ -26,7 +26,7 @@ describe("IPE-056-P Preview Controlled Publish safety gate", () => {
     expect(provider).toContain('publicationStatus: "published"');
     expect(provider).toContain("same transaction as the episode + provider receipt");
     expect(provider).toContain('mode: "external"');
-    expect(worker).toContain('WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true"');
-    expect(worker).toContain('WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true"');
+    expect(runtime).toContain('WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true"');
+    expect(runtime).toContain('WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true"');
   });
 });

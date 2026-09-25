@@ -10,15 +10,17 @@ describe("M12D.9 unattended Controlled Publish worker", () => {
   const startup = read("server/_core/index.ts");
   const router = read("server/workspace/router.ts");
 
-  it("reuses the existing execution/provider gates plus the exact Preview database safety gate", () => {
-    expect(worker).toContain('WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true"');
-    expect(worker).toContain('WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true"');
+  it("reuses the centralized environment policy, provider gate, and environment-specific DB safety", () => {
+    expect(worker).toContain("resolveWorkspacePublishExecutionPolicy(env)");
+    expect(runtime).toContain('WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true"');
     expect(worker).toContain('WORKSPACE_PUBLISH_UNATTENDED_ENABLED === "false"');
-    expect(worker).toContain("requirePreviewPublishExecutionSafety(env)");
-    expect(router).toContain('WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true"');
-    expect(router).toContain('new WorkspacePublishExecutionError("EXTERNAL_PROVIDER_DISABLED"');
+    expect(worker).toContain("publishPolicy.safety");
+    expect(router).toContain("requireWorkspacePublishRequestPolicy");
+    expect(router).not.toContain('WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true"');
     expect(runtime).toContain("WORKSPACE_PUBLISH_ACCEPTANCE_TIER");
     expect(runtime).toContain("WORKSPACE_PUBLISH_PREVIEW_DATABASE_NAME");
+    expect(runtime).toContain("PRODUCTION_DB_FINGERPRINT");
+    expect(runtime).toContain("requireProductionPublishExecutionSafety");
   });
 
   it("derives each queued scope from durable state and executes through the existing fenced runtime/provider", () => {

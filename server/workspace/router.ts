@@ -108,7 +108,12 @@ import {
   requestPublishExecution,
   WorkspacePublishExecutionError,
 } from "./publishExecution.service";
-import { requirePreviewPublishExecutionSafety, WorkspacePublishRuntimeError } from "./publishExecution.runtime";
+import {
+  requireWorkspacePublishEnvironmentSafety,
+  requireWorkspacePublishRequestPolicy,
+  resolveWorkspacePublishExecutionPolicy,
+  WorkspacePublishRuntimeError,
+} from "./publishExecution.runtime";
 import {
   getPublishCutoverReadiness,
   rehearsePublishCutoverRollback,
@@ -754,19 +759,15 @@ export const workspaceRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         try {
-          const executionEnabled = process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true";
-          const externalProviderEnabled = process.env.WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true";
-          if (executionEnabled && !externalProviderEnabled) {
-            throw new WorkspacePublishExecutionError("EXTERNAL_PROVIDER_DISABLED", "Workspace publish external provider is not enabled.");
-          }
-          if (executionEnabled) requirePreviewPublishExecutionSafety();
+          const publishPolicy = requireWorkspacePublishRequestPolicy();
+
           return await requestPublishExecution({
             actorUserId: ctx.user.id,
             workspaceId: input.workspaceId,
             runId: input.runId,
             expectedCutoverEpoch: input.expectedCutoverEpoch,
             expectedOwnershipVersion: input.expectedOwnershipVersion,
-            executionEnabled,
+            executionEnabled: publishPolicy.executionEnabled,
           });
         } catch (error) {
           return mapWorkspaceError(error);
@@ -783,7 +784,7 @@ export const workspaceRouter = router({
             actorUserId: ctx.user.id,
             workspaceId: input.workspaceId,
             runId: input.runId,
-            executionEnabled: process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true",
+            executionEnabled: resolveWorkspacePublishExecutionPolicy().finalGateExecutionBlock,
           });
         } catch (error) {
           return mapWorkspaceError(error);
@@ -797,7 +798,7 @@ export const workspaceRouter = router({
             actorUserId: ctx.user.id,
             workspaceId: input.workspaceId,
             runId: input.runId,
-            executionEnabled: process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true",
+            executionEnabled: resolveWorkspacePublishExecutionPolicy().finalGateExecutionBlock,
           });
         } catch (error) {
           return mapWorkspaceError(error);
@@ -900,7 +901,7 @@ export const workspaceRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         try {
-          requirePreviewPublishExecutionSafety();
+          requireWorkspacePublishEnvironmentSafety();
           return await repairHistoricalPublishedPack({ actorUserId: ctx.user.id, ...input });
         } catch (error) {
           return mapWorkspaceError(error);
@@ -985,12 +986,8 @@ export const workspaceRouter = router({
     bulkRequestPublish: adminProcedure
       .input(workspaceIdInput.extend({ workItemIds: z.array(z.number().int().positive()).min(1).max(100) }))
       .mutation(async ({ ctx, input }) => {
-        const executionEnabled = process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true";
-        const externalProviderEnabled = process.env.WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true";
-        if (executionEnabled && !externalProviderEnabled) {
-          throw new WorkspacePublishExecutionError("EXTERNAL_PROVIDER_DISABLED", "Workspace publish external provider is not enabled.");
-        }
-        if (executionEnabled) requirePreviewPublishExecutionSafety();
+        const publishPolicy = requireWorkspacePublishRequestPolicy();
+
         const results = [];
         for (const workItemId of Array.from(new Set(input.workItemIds))) {
           try {
@@ -998,7 +995,7 @@ export const workspaceRouter = router({
             const state = await getEditorialPublishReadModel({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId });
             const stagedDraftSha256 = state.stages[0]?.stagedDraftSha256;
             if (!state.requestReady || !state.stageSetSha256 || !stagedDraftSha256 || !state.ownership) throw new Error(state.blocker ?? "Publish evidence is incomplete.");
-            await requestEditorialPublish({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId, expectedStageSetSha256: state.stageSetSha256, expectedStagedDraftSha256: stagedDraftSha256, expectedCutoverEpoch: state.ownership.cutoverEpoch, expectedOwnershipVersion: state.ownership.version, executionEnabled });
+            await requestEditorialPublish({ actorUserId: ctx.user.id, workspaceId: input.workspaceId, workItemId, expectedStageSetSha256: state.stageSetSha256, expectedStagedDraftSha256: stagedDraftSha256, expectedCutoverEpoch: state.ownership.cutoverEpoch, expectedOwnershipVersion: state.ownership.version, executionEnabled: publishPolicy.executionEnabled });
             results.push({ workItemId, ok: true as const });
           } catch (error) {
             results.push({ workItemId, ok: false as const, error: error instanceof Error ? error.message : String(error) });
@@ -1235,16 +1232,12 @@ export const workspaceRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         try {
-          const executionEnabled = process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true";
-          const externalProviderEnabled = process.env.WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true";
-          if (executionEnabled && !externalProviderEnabled) {
-            throw new WorkspacePublishExecutionError("EXTERNAL_PROVIDER_DISABLED", "Workspace publish external provider is not enabled.");
-          }
-          if (executionEnabled) requirePreviewPublishExecutionSafety();
+          const publishPolicy = requireWorkspacePublishRequestPolicy();
+
           return await requestEditorialPublish({
             actorUserId: ctx.user.id,
             ...input,
-            executionEnabled,
+            executionEnabled: publishPolicy.executionEnabled,
           });
         } catch (error) {
           return mapWorkspaceError(error);

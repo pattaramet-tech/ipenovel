@@ -31,9 +31,9 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
     expect(router).not.toContain("const stagedDraftSha256 = state.stages[0]?.draftSha256");
     expect(router).toContain("expectedStagedDraftSha256: stagedDraftSha256");
     expect(router).toContain("expectedOwnershipVersion: state.ownership.version");
-    expect(router).toContain("requirePreviewPublishExecutionSafety()");
-    expect(router).toContain('WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true"');
-    expect(router).toContain('WorkspacePublishExecutionError("EXTERNAL_PROVIDER_DISABLED"');
+    expect(router).toContain("requireWorkspacePublishRequestPolicy()");
+    expect(router).not.toContain('WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true"');
+    expect(router).toContain("publishPolicy.executionEnabled");
   });
   it("keeps migration 0050 additive and scoped to editorial approval/staging", () => {
     const migration = source(
