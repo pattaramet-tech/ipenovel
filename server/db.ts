@@ -59,6 +59,19 @@ import {
   workspaceMembers,
   workspaceGoogleConsentAttempts,
   workspaceGoogleConnections,
+  workspaceEditorialWorkItems,
+  workspaceEditorialWorkItemEvents,
+  workspaceEditorialSources,
+  workspaceEditorialSourceSnapshots,
+  workspaceEditorialDrafts,
+  workspaceEditorialDraftTransforms,
+  workspaceEditorialDraftEditEvents,
+  workspaceEditorialDraftApprovals,
+  workspaceEditorialEpisodeStages,
+  workspaceEditorialCheckerAllowWords,
+  workspaceEditorialCheckerRuns,
+  workspaceEditorialCheckerFindingStates,
+  workspaceEditorialCheckerResolutionEvents,
   workspaceAuditEvents,
   workspaceKanbanTransitions,
   workspacePublishOwnershipTransitions,
@@ -7217,6 +7230,7 @@ const ACCOUNT_RECOVERY_USER_OWNED_DATA_CHECKS: Array<{
   { table: "workspaceMembers", check: async (userId, db) => (await db.select({ id: workspaceMembers.id }).from(workspaceMembers).where(eq(workspaceMembers.userId, userId)).limit(1)).length },
   { table: "workspaceGoogleConsentAttempts", check: async (userId, db) => (await db.select({ id: workspaceGoogleConsentAttempts.id }).from(workspaceGoogleConsentAttempts).where(eq(workspaceGoogleConsentAttempts.userId, userId)).limit(1)).length },
   { table: "workspaceGoogleConnections", check: async (userId, db) => (await db.select({ id: workspaceGoogleConnections.id }).from(workspaceGoogleConnections).where(eq(workspaceGoogleConnections.userId, userId)).limit(1)).length },
+  { table: "workspaceEditorialWorkItems", check: async (userId, db) => (await db.select({ id: workspaceEditorialWorkItems.id }).from(workspaceEditorialWorkItems).where(eq(workspaceEditorialWorkItems.assigneeUserId, userId)).limit(1)).length },
 ];
 
 /** Category B ("User-owned data") from the recovery-safety spec - cart,
@@ -7563,6 +7577,12 @@ const ACCOUNT_MERGE_TABLE_CHECKS: AccountMergeTableCheck[] = [
     category: "user_owned",
     userIdColumnName: "userId",
     countFor: plainUserIdCount(workspaceGoogleConnections, workspaceGoogleConnections.userId),
+  },
+  {
+    table: "workspaceEditorialWorkItems",
+    category: "user_owned",
+    userIdColumnName: "assigneeUserId",
+    countFor: plainUserIdCount(workspaceEditorialWorkItems, workspaceEditorialWorkItems.assigneeUserId),
   },
 
   // ---- indirect (no direct userId column - counted via a join to the
@@ -7938,6 +7958,7 @@ const ADMIN_USER_DELETE_CHECKS: Array<{
   { table: "workspaceMembers", reference: "Workspace Memberships", category: "user_owned", from: workspaceMembers, condition: (id) => eq(workspaceMembers.userId, id) },
   { table: "workspaceGoogleConsentAttempts", reference: "Workspace Google Consent Attempts", category: "user_owned", from: workspaceGoogleConsentAttempts, condition: (id) => eq(workspaceGoogleConsentAttempts.userId, id) },
   { table: "workspaceGoogleConnections", reference: "Workspace Google Connections", category: "user_owned", from: workspaceGoogleConnections, condition: (id) => eq(workspaceGoogleConnections.userId, id) },
+  { table: "workspaceEditorialWorkItems", reference: "Workspace Editorial Assignments", category: "user_owned", from: workspaceEditorialWorkItems, condition: (id) => eq(workspaceEditorialWorkItems.assigneeUserId, id) },
 
   { table: "orderHistory", reference: "Order History Actor References", category: "audit_or_actor", from: orderHistory, condition: (id) => eq(orderHistory.actorUserId, id) },
   { table: "payments", reference: "Payment/Admin Review References", category: "audit_or_actor", from: payments, condition: (id) => or(eq(payments.reviewedByUserId, id), eq(payments.approvedByAdminId, id)) },
@@ -8043,6 +8064,36 @@ const ADMIN_USER_DELETE_CHECKS: Array<{
     from: accountMergeCompensationAuditLogs,
     condition: (id) => eq(accountMergeCompensationAuditLogs.actorAdminId, id),
   },
+  {
+    table: "workspaceEditorialWorkItems",
+    reference: "Workspace Editorial Work Item Creator References",
+    category: "audit_or_actor",
+    from: workspaceEditorialWorkItems,
+    condition: (id) => eq(workspaceEditorialWorkItems.createdByUserId, id),
+  },
+  {
+    table: "workspaceEditorialWorkItemEvents",
+    reference: "Workspace Editorial Assignment Event References",
+    category: "audit_or_actor",
+    from: workspaceEditorialWorkItemEvents,
+    condition: (id) =>
+      or(
+        eq(workspaceEditorialWorkItemEvents.actorUserId, id),
+        eq(workspaceEditorialWorkItemEvents.fromAssigneeUserId, id),
+        eq(workspaceEditorialWorkItemEvents.toAssigneeUserId, id)
+      ),
+  },
+  { table: "workspaceEditorialSources", reference: "Workspace Editorial Source Creator References", category: "audit_or_actor", from: workspaceEditorialSources, condition: (id) => eq(workspaceEditorialSources.createdByUserId, id) },
+  { table: "workspaceEditorialSourceSnapshots", reference: "Workspace Editorial Source Snapshot Creator References", category: "audit_or_actor", from: workspaceEditorialSourceSnapshots, condition: (id) => eq(workspaceEditorialSourceSnapshots.createdByUserId, id) },
+  { table: "workspaceEditorialDrafts", reference: "Workspace Editorial Draft Creator References", category: "audit_or_actor", from: workspaceEditorialDrafts, condition: (id) => eq(workspaceEditorialDrafts.createdByUserId, id) },
+  { table: "workspaceEditorialDraftTransforms", reference: "Workspace Editorial Draft Transform Actors", category: "audit_or_actor", from: workspaceEditorialDraftTransforms, condition: (id) => eq(workspaceEditorialDraftTransforms.actorUserId, id) },
+  { table: "workspaceEditorialDraftEditEvents", reference: "Workspace Editorial Draft Edit Actors", category: "audit_or_actor", from: workspaceEditorialDraftEditEvents, condition: (id) => eq(workspaceEditorialDraftEditEvents.actorUserId, id) },
+  { table: "workspaceEditorialDraftApprovals", reference: "Workspace Editorial Approval Actors", category: "audit_or_actor", from: workspaceEditorialDraftApprovals, condition: (id) => eq(workspaceEditorialDraftApprovals.approvedByUserId, id) },
+  { table: "workspaceEditorialEpisodeStages", reference: "Workspace Editorial Episode Stage Actors", category: "audit_or_actor", from: workspaceEditorialEpisodeStages, condition: (id) => eq(workspaceEditorialEpisodeStages.stagedByUserId, id) },
+  { table: "workspaceEditorialCheckerAllowWords", reference: "Workspace Editorial Checker Policy Actors", category: "audit_or_actor", from: workspaceEditorialCheckerAllowWords, condition: (id) => eq(workspaceEditorialCheckerAllowWords.createdByUserId, id) },
+  { table: "workspaceEditorialCheckerRuns", reference: "Workspace Editorial Checker Run Actors", category: "audit_or_actor", from: workspaceEditorialCheckerRuns, condition: (id) => eq(workspaceEditorialCheckerRuns.createdByUserId, id) },
+  { table: "workspaceEditorialCheckerFindingStates", reference: "Workspace Editorial Finding State Actors", category: "audit_or_actor", from: workspaceEditorialCheckerFindingStates, condition: (id) => eq(workspaceEditorialCheckerFindingStates.actorUserId, id) },
+  { table: "workspaceEditorialCheckerResolutionEvents", reference: "Workspace Editorial Resolution Event Actors", category: "audit_or_actor", from: workspaceEditorialCheckerResolutionEvents, condition: (id) => eq(workspaceEditorialCheckerResolutionEvents.actorUserId, id) },
   {
     table: "workspaceAuditEvents",
     reference: "Workspace Audit Actor References",

@@ -49,6 +49,7 @@ export const IPE007_UNSUPPORTED_DIRECT_TABLES = [
   "workspaceMembers",
   "workspaceGoogleConsentAttempts",
   "workspaceGoogleConnections",
+  "workspaceEditorialWorkItems",
   "adminGiftEntitlements",
   "adminGiftWalletAdjustments",
 ] as const;

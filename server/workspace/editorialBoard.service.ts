@@ -13,7 +13,7 @@ import {
   workspaceNovels,
   workspaceWorkspaces,
 } from "../../drizzle/schema";
-import { getDb } from "../db";
+import { assertAccountMergeClassifiedMutationsAllowed, getDb } from "../db";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import {
   EDITORIAL_BOARD_NAME,
@@ -674,6 +674,11 @@ export async function createEditorialEpisodeWorkItem(input: {
       return;
     }
 
+    const guardedAssigneeUserIds = input.assigneeUserId ? [input.assigneeUserId] : [];
+    if (guardedAssigneeUserIds.length > 0) {
+      await assertAccountMergeClassifiedMutationsAllowed(guardedAssigneeUserIds, tx);
+    }
+
     const logicalItemKey = editorialEpisodeLogicalKey(
       input.workspaceNovelId,
       input.episodeNumber
@@ -1017,6 +1022,21 @@ export async function assignEditorialWorkItem(input: {
 
     if ((row.workItem.assigneeUserId ?? null) === input.assigneeUserId) {
       return { workItem: row.workItem, replayed: false, unchanged: true };
+    }
+
+    const guardedAssigneeUserIds: number[] = [];
+    for (const userId of [row.workItem.assigneeUserId, input.assigneeUserId]) {
+      if (
+        typeof userId === "number" &&
+        Number.isInteger(userId) &&
+        userId > 0 &&
+        guardedAssigneeUserIds.indexOf(userId) === -1
+      ) {
+        guardedAssigneeUserIds.push(userId);
+      }
+    }
+    if (guardedAssigneeUserIds.length > 0) {
+      await assertAccountMergeClassifiedMutationsAllowed(guardedAssigneeUserIds, tx);
     }
 
     const update = await tx
