@@ -10,7 +10,12 @@ export const WORKSPACE_DOCS_SCOPES = [
   "https://www.googleapis.com/auth/drive.metadata.readonly",
   "https://www.googleapis.com/auth/documents.readonly",
 ] as const;
-export const WORKSPACE_DOCS_SCOPE = WORKSPACE_DOCS_SCOPES.join(" ");
+export const WORKSPACE_DOCS_AUTHORIZATION_SCOPES = [
+  "openid",
+  ...WORKSPACE_DOCS_SCOPES,
+] as const;
+export const WORKSPACE_DOCS_SCOPE =
+  WORKSPACE_DOCS_AUTHORIZATION_SCOPES.join(" ");
 export const WORKSPACE_DOCS_CALLBACK_PATH = "/api/workspace/google/callback";
 export const DOCS_NORMALIZATION_VERSION = 1 as const;
 

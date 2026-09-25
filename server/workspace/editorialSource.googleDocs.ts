@@ -4,10 +4,13 @@ import { workspaceGoogleConnections } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import {
-  createAesGcmTokenCipher,
   GOOGLE_DOC_MIME_TYPE,
   hasRequiredDocsScopes,
 } from "./googleDocs.domain";
+import {
+  workspaceGoogleDocsOAuthClientCredentials,
+  workspaceGoogleDocsTokenCipher,
+} from "./googleDocs.runtime";
 import { rotateGoogleConnectionCredential } from "./googleDocs.service";
 import type {
   EditorialSourcePayload,
@@ -18,7 +21,6 @@ const GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const GOOGLE_DOCS_ENDPOINT = "https://docs.googleapis.com/v1/documents";
 const GOOGLE_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_RESPONSE_CHARS = 20_000_000;
-const TOKEN_KEY_VERSION = 1;
 
 export class WorkspaceEditorialGoogleSourceError extends Error {
   constructor(
@@ -37,44 +39,26 @@ export class WorkspaceEditorialGoogleSourceError extends Error {
   }
 }
 
-function decode32ByteKey(raw: string) {
-  const value = raw.trim();
-  const decoded = /^[a-f0-9]{64}$/i.test(value)
-    ? Buffer.from(value, "hex")
-    : Buffer.from(value, "base64");
-  if (!value || decoded.length !== 32) {
+function tokenCipher() {
+  try {
+    return workspaceGoogleDocsTokenCipher();
+  } catch {
     throw new WorkspaceEditorialGoogleSourceError(
       "RUNTIME_CONFIG_INVALID",
-      "WORKSPACE_GOOGLE_DOCS_TOKEN_ENCRYPTION_KEY must decode to 32 bytes."
+      "Workspace Google Docs token encryption is not configured."
     );
   }
-  return decoded;
-}
-
-function tokenCipher() {
-  return createAesGcmTokenCipher(
-    new Map([
-      [
-        TOKEN_KEY_VERSION,
-        decode32ByteKey(
-          process.env.WORKSPACE_GOOGLE_DOCS_TOKEN_ENCRYPTION_KEY ?? ""
-        ),
-      ],
-    ]),
-    TOKEN_KEY_VERSION
-  );
 }
 
 function oauthConfig() {
-  const clientId = (process.env.GOOGLE_OAUTH_CLIENT_ID ?? "").trim();
-  const clientSecret = (process.env.GOOGLE_OAUTH_CLIENT_SECRET ?? "").trim();
-  if (!clientId || !clientSecret) {
+  try {
+    return workspaceGoogleDocsOAuthClientCredentials();
+  } catch {
     throw new WorkspaceEditorialGoogleSourceError(
       "RUNTIME_CONFIG_INVALID",
       "Google OAuth runtime configuration is incomplete."
     );
   }
-  return { clientId, clientSecret };
 }
 
 async function database() {
