@@ -51,6 +51,10 @@ import {
 } from "./publishExecution.service";
 import { parseWorkspacePublishExecutionScope, WorkspacePublishRuntimeError } from "./publishExecution.runtime";
 import {
+  getWorkspaceNqaAutolinkRuntime,
+  WorkspaceNqaAutolinkRuntimeError,
+} from "./nqaAutolink.runtime";
+import {
   getPublishCutoverReadiness,
   rehearsePublishCutoverRollback,
   WorkspacePublishCutoverError,
@@ -89,6 +93,13 @@ import {
  * defense in depth. Customer-facing Google-connection gating remains bypassed.
  */
 function mapWorkspaceError(error: unknown): never {
+  if (error instanceof WorkspaceNqaAutolinkRuntimeError) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: error.message,
+      cause: { code: error.code, blockers: [...error.blockers] },
+    });
+  }
   if (error instanceof WorkspaceAdminAccessError) {
     throw new TRPCError({ code: "FORBIDDEN", message: error.message });
   }
@@ -283,6 +294,37 @@ export const workspaceRouter = router({
       .mutation(async ({ ctx, input }) => {
         try {
           return await bindPublicationNovel({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+  }),
+
+  nqaNovelLink: router({
+    status: adminProcedure.query(() => getWorkspaceNqaAutolinkRuntime().status()),
+    preview: adminProcedure
+      .input(z.object({ row: z.number().int().positive() }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getWorkspaceNqaAutolinkRuntime().preview({ actorUserId: ctx.user.id, row: input.row });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    confirmBackfill: adminProcedure
+      .input(z.object({
+        row: z.number().int().positive(),
+        novelId: z.number().int().positive(),
+        previewFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await getWorkspaceNqaAutolinkRuntime().confirmBackfill({
+            actorUserId: ctx.user.id,
+            row: input.row,
+            novelId: input.novelId,
+            previewFingerprint: input.previewFingerprint,
+          });
         } catch (error) {
           return mapWorkspaceError(error);
         }
