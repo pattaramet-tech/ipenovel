@@ -39,8 +39,8 @@ describe("Workspace historical Episode Pack repair planning", () => {
     expect(router).toContain("historicalPackRepairPreview: adminProcedure");
     expect(router).toContain("getHistoricalPackRepairPreview");
     expect(router).toContain("repairHistoricalPack: adminProcedure");
-    expect(router).toContain("requirePreviewPublishExecutionSafety()");
+    expect(router).toContain("requireWorkspacePublishEnvironmentSafety()");
     expect(router).toContain("repairHistoricalPublishedPack");
-    expect(service).toContain("requirePreviewPublishExecutionSafety()");
+    expect(service).toContain("requireWorkspacePublishEnvironmentSafety()");
   });
 });

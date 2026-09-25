@@ -8,8 +8,10 @@ describe("workspace M06 operational publish prerequisites", () => {
   const router = readFileSync(new URL("./router.ts", import.meta.url), "utf8");
   const worker = readFileSync(new URL("../../scripts/workspace-publish-worker-once.mts", import.meta.url), "utf8");
 
-  it("requires the global flag and derives exact run ownership from durable state", () => {
-    expect(router).toContain("WORKSPACE_PUBLISH_EXECUTION_ENABLED");
+  it("uses the centralized environment policy and derives exact run ownership from durable state", () => {
+    expect(router).not.toContain("WORKSPACE_PUBLISH_EXECUTION_ENABLED");
+    expect(router).toContain("requireWorkspacePublishRequestPolicy");
+    expect(runtime).toContain("WORKSPACE_PUBLISH_EXECUTION_ENABLED");
     expect(router).not.toContain("WORKSPACE_PUBLISH_EXECUTION_SCOPE");
     expect(router).toContain("expectedOwnershipVersion");
     expect(execution).toContain("resolvePendingPublishExecutionScope");
@@ -18,8 +20,8 @@ describe("workspace M06 operational publish prerequisites", () => {
   });
 
   it("keeps the runtime one-shot and double-gated for an external provider", () => {
-    expect(worker).toContain('WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true"');
-    expect(worker).toContain('WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true"');
+    expect(worker).toContain("requireWorkspacePublishRequestPolicy");
+    expect(runtime).toContain('WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true"');
     expect(runtime).not.toMatch(/setInterval\(|setTimeout\(|cron\(|scheduler\(/i);
     expect(worker).not.toMatch(/setInterval\(|setTimeout\(|cron\(|scheduler\(/i);
   });

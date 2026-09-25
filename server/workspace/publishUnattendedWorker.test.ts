@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { databaseIdentityFingerprint } from "../../scripts/lib/databaseIdentity.mjs";
 import { createUnattendedPublishWorker } from "./publishUnattendedWorker";
 
 function previewEnv(overrides: Record<string, string | undefined> = {}) {
   return {
+    DEPLOYMENT_ENVIRONMENT: "preview",
     WORKSPACE_PUBLISH_EXECUTION_ENABLED: "true",
     WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED: "true",
     WORKSPACE_PUBLISH_ACCEPTANCE_TIER: "preview",
@@ -12,8 +14,21 @@ function previewEnv(overrides: Record<string, string | undefined> = {}) {
   } as NodeJS.ProcessEnv;
 }
 
+function productionEnv(overrides: Record<string, string | undefined> = {}) {
+  const productionUrl = "mysql://user:pass@prod-db.internal/ipenovel_prod";
+  const stagingUrl = "mysql://user:pass@staging-db.internal/ipenovel_staging";
+  return {
+    DEPLOYMENT_ENVIRONMENT: "production",
+    DATABASE_URL: productionUrl,
+    PRODUCTION_DB_FINGERPRINT: databaseIdentityFingerprint(productionUrl),
+    PRODUCTION_STAGING_DB_FINGERPRINT: databaseIdentityFingerprint(stagingUrl),
+    WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED: "true",
+    ...overrides,
+  } as NodeJS.ProcessEnv;
+}
+
 describe("M12D.9 unattended publish worker runtime", () => {
-  it("is inert when the existing execution gates are not both enabled", () => {
+  it("is inert when the Preview execution/provider gates are not both enabled", () => {
     const worker = createUnattendedPublishWorker(
       previewEnv({ WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED: "false" })
     );
@@ -22,7 +37,7 @@ describe("M12D.9 unattended publish worker runtime", () => {
     expect(worker.isRunning()).toBe(false);
   });
 
-  it("supports an explicit emergency kill switch even when the execution gates are enabled", () => {
+  it("supports an explicit emergency kill switch even when execution is enabled", () => {
     const worker = createUnattendedPublishWorker(
       previewEnv({ WORKSPACE_PUBLISH_UNATTENDED_ENABLED: "false" })
     );
@@ -37,15 +52,24 @@ describe("M12D.9 unattended publish worker runtime", () => {
           WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED: "false",
         })
       )
-    ).toThrow(/requires both execution and external-provider flags/i);
+    ).toThrow(/execution policy and external-provider configuration/i);
   });
 
-  it("fails closed when active flags point at a non-Preview database identity", () => {
+  it("fails closed when active Preview flags point at a non-Preview database identity", () => {
     expect(() =>
       createUnattendedPublishWorker(
         previewEnv({ DATABASE_URL: "mysql://user:pass@localhost/ipenovel_prod" })
       )
     ).toThrow(/database identity/i);
+  });
+
+  it("enables the Production worker without WORKSPACE_PUBLISH_EXECUTION_ENABLED, even when the legacy flag is false", () => {
+    const withoutFlag = productionEnv();
+    delete withoutFlag.WORKSPACE_PUBLISH_EXECUTION_ENABLED;
+    const withFalseFlag = productionEnv({ WORKSPACE_PUBLISH_EXECUTION_ENABLED: "false" });
+
+    expect(createUnattendedPublishWorker(withoutFlag).enabled).toBe(true);
+    expect(createUnattendedPublishWorker(withFalseFlag).enabled).toBe(true);
   });
 
   it("automatically executes one durable queued scope and schedules the next poll", async () => {

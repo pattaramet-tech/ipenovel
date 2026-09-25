@@ -15,7 +15,7 @@ import { getDb } from "../db";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import { normalizeEditorialSaleMetadata } from "./editorialBoard.service";
 import { EDITORIAL_BOARD_SLUG } from "./editorialBoard.domain";
-import { requirePreviewPublishExecutionSafety } from "./publishExecution.runtime";
+import { requireWorkspacePublishEnvironmentSafety } from "./publishExecution.runtime";
 
 export class WorkspaceHistoricalPackRepairError extends Error {
   constructor(readonly code: "DATABASE_UNAVAILABLE" | "WORK_ITEM_NOT_FOUND" | "REPAIR_NOT_SAFE", message: string) {
@@ -187,7 +187,7 @@ export async function repairHistoricalPublishedPack(input: {
   price: string;
   isFree: boolean;
 }) {
-  requirePreviewPublishExecutionSafety();
+  requireWorkspacePublishEnvironmentSafety();
   const db = await getDb();
   if (!db) throw new WorkspaceHistoricalPackRepairError("DATABASE_UNAVAILABLE", "Database is unavailable.");
   await requireWorkspacePlatformAdmin(db, input.actorUserId);

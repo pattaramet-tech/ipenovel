@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 describe("workspace M05-B publish execution boundaries", () => {
   const service = readFileSync(new URL("./publishExecution.service.ts", import.meta.url), "utf8");
   const router = readFileSync(new URL("./router.ts", import.meta.url), "utf8");
+  const runtime = readFileSync(new URL("./publishExecution.runtime.ts", import.meta.url), "utf8");
   const schema = readFileSync(new URL("../../drizzle/schema.ts", import.meta.url), "utf8");
   const journal = readFileSync(new URL("../../drizzle/meta/_journal.json", import.meta.url), "utf8");
 
@@ -14,7 +15,10 @@ describe("workspace M05-B publish execution boundaries", () => {
   });
 
   it("keeps worker execution internal and requires explicit server/provider opt-in", () => {
-    expect(router).toContain("WORKSPACE_PUBLISH_EXECUTION_ENABLED");
+    expect(router).not.toContain("WORKSPACE_PUBLISH_EXECUTION_ENABLED");
+    expect(router).toContain("requireWorkspacePublishRequestPolicy");
+    expect(runtime).toContain("WORKSPACE_PUBLISH_EXECUTION_ENABLED");
+    expect(runtime).toContain("requireProductionPublishExecutionSafety");
     expect(router).not.toContain("claimPublishOutbox");
     expect(router).not.toContain("processClaimedPublishOutbox");
     expect(service).toContain("allowExternalProvider !== true");

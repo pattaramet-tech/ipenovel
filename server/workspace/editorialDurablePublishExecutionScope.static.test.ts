@@ -21,8 +21,12 @@ describe("IPE-056-T durable publish execution scope", () => {
   it("retains master execution, external-provider and Preview DB safety gates", () => {
     const router = read("server/workspace/router.ts");
     const worker = read("scripts/workspace-publish-worker-once.mts");
-    expect(router).toContain("WORKSPACE_PUBLISH_EXECUTION_ENABLED");
-    expect(worker).toContain("WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED");
-    expect(worker).toContain("requirePreviewPublishExecutionSafety()");
+    const runtime = read("server/workspace/publishExecution.runtime.ts");
+    expect(router).not.toContain("WORKSPACE_PUBLISH_EXECUTION_ENABLED");
+    expect(router).toContain("requireWorkspacePublishRequestPolicy");
+    expect(worker).toContain("requireWorkspacePublishRequestPolicy");
+    expect(runtime).toContain("WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED");
+    expect(runtime).toContain("WORKSPACE_PUBLISH_EXECUTION_ENABLED");
+    expect(runtime).toContain("requireProductionPublishExecutionSafety");
   });
 });
