@@ -185,9 +185,6 @@ export function validateM06PreviewBaseline(rows: M06BaselineRows) {
 async function readRows(): Promise<M06BaselineRows> {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) fail("DATABASE_URL is required");
-  if (process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED !== "false") {
-    fail(`WORKSPACE_PUBLISH_EXECUTION_ENABLED must be literal false, got ${JSON.stringify(process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED)}`);
-  }
 
   const connection = await mysql.createConnection(databaseUrl);
   try {
@@ -359,10 +356,7 @@ async function main() {
   }
   const rows = await readRows();
   const result = validateM06PreviewBaseline(rows);
-  console.log(JSON.stringify({
-    ...result,
-    executionEnabled: process.env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true",
-  }, null, 2));
+  console.log(JSON.stringify(result, null, 2));
 }
 
 const isMain = Boolean(process.argv[1]) && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

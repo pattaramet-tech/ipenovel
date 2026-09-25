@@ -56,6 +56,5 @@ describe("M06 Preview read-only baseline verifier", () => {
     expect(source).not.toMatch(/\b(?:INSERT|UPDATE|DELETE|REPLACE|ALTER|DROP|TRUNCATE)\b/i);
     expect(source).not.toMatch(/requestPublishExecution|claimPublishOutbox|processClaimedPublishOutbox|cutoverPublishOwnership|rollbackPublishOwnership/);
     expect(source).toContain('if (!/^\\s*SELECT\\b/i.test(sql))');
-    expect(source).toContain('WORKSPACE_PUBLISH_EXECUTION_ENABLED !== "false"');
   });
 });

@@ -111,7 +111,6 @@ import {
 import {
   requireWorkspacePublishEnvironmentSafety,
   requireWorkspacePublishRequestPolicy,
-  resolveWorkspacePublishExecutionPolicy,
   WorkspacePublishRuntimeError,
 } from "./publishExecution.runtime";
 import {
@@ -181,7 +180,7 @@ function mapWorkspaceError(error: unknown): never {
     const code =
       error.code === "DATABASE_UNAVAILABLE"
           ? "SERVICE_UNAVAILABLE"
-          : error.code === "PUBLISH_OWNERSHIP_AMBIGUOUS" || error.code === "PREVIEW_GATE_BLOCKED"
+          : error.code === "PUBLISH_OWNERSHIP_AMBIGUOUS" || error.code === "FINAL_GATE_BLOCKED"
             ? "CONFLICT"
             : "BAD_REQUEST";
     throw new TRPCError({ code, message: error.message });
@@ -784,13 +783,12 @@ export const workspaceRouter = router({
             actorUserId: ctx.user.id,
             workspaceId: input.workspaceId,
             runId: input.runId,
-            executionEnabled: resolveWorkspacePublishExecutionPolicy().finalGateExecutionBlock,
           });
         } catch (error) {
           return mapWorkspaceError(error);
         }
       }),
-    requirePreviewReadiness: adminProcedure
+    requireReadiness: adminProcedure
       .input(workspaceIdInput.extend({ runId: z.number().int().positive() }))
       .query(async ({ ctx, input }) => {
         try {
@@ -798,7 +796,6 @@ export const workspaceRouter = router({
             actorUserId: ctx.user.id,
             workspaceId: input.workspaceId,
             runId: input.runId,
-            executionEnabled: resolveWorkspacePublishExecutionPolicy().finalGateExecutionBlock,
           });
         } catch (error) {
           return mapWorkspaceError(error);

@@ -14,11 +14,12 @@ describe("workspace M05-B publish execution boundaries", () => {
     expect(journal).toContain("0043_workspace_publish_dry_run_foundation");
   });
 
-  it("keeps worker execution internal and requires explicit server/provider opt-in", () => {
-    expect(router).not.toContain("WORKSPACE_PUBLISH_EXECUTION_ENABLED");
+  it("keeps worker execution internal and requires environment identity plus provider opt-in", () => {
     expect(router).toContain("requireWorkspacePublishRequestPolicy");
-    expect(runtime).toContain("WORKSPACE_PUBLISH_EXECUTION_ENABLED");
-    expect(runtime).toContain("requireProductionPublishExecutionSafety");
+    expect(runtime).toContain("requireWorkspacePublishEnvironmentSafety");
+    expect(runtime).toContain("PRODUCTION_DB_FINGERPRINT");
+    expect(runtime).toContain("PRODUCTION_STAGING_DB_FINGERPRINT");
+    expect(runtime).toContain("WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED");
     expect(router).not.toContain("claimPublishOutbox");
     expect(router).not.toContain("processClaimedPublishOutbox");
     expect(service).toContain("allowExternalProvider !== true");

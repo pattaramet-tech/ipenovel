@@ -19,8 +19,7 @@ export class WorkspacePublishRuntimeError extends Error {
     readonly code:
       | "EXECUTION_SCOPE_REQUIRED"
       | "EXECUTION_SCOPE_INVALID"
-      | "PREVIEW_SAFETY_GATE_BLOCKED"
-      | "PRODUCTION_SAFETY_GATE_BLOCKED"
+      | "ENVIRONMENT_SAFETY_GATE_BLOCKED"
       | "EXTERNAL_PROVIDER_DISABLED",
     message: string
   ) {
@@ -29,17 +28,27 @@ export class WorkspacePublishRuntimeError extends Error {
   }
 }
 
-export type WorkspacePublishEnvironmentSafety =
-  | { tier: "preview"; databaseName: string }
-  | { tier: "production"; databaseName: string };
+export type WorkspacePublishEnvironment = "production" | "production-staging";
 
-export type WorkspacePublishExecutionPolicy = {
-  mode: "disabled" | "legacy-preview" | "production";
-  executionEnabled: boolean;
-  externalProviderEnabled: boolean;
-  safety: WorkspacePublishEnvironmentSafety | null;
-  finalGateExecutionBlock: boolean;
+export type WorkspacePublishEnvironmentSafety = {
+  tier: WorkspacePublishEnvironment;
+  databaseName: string;
+  databaseFingerprint: string;
 };
+
+export type WorkspacePublishExecutionPolicy =
+  | {
+      mode: WorkspacePublishEnvironment;
+      executionEnabled: true;
+      externalProviderEnabled: boolean;
+      safety: WorkspacePublishEnvironmentSafety;
+    }
+  | {
+      mode: "inactive";
+      executionEnabled: false;
+      externalProviderEnabled: boolean;
+      safety: null;
+    };
 
 function positiveInt(value: string | undefined, key: string): number {
   const number = Number(value);
@@ -74,157 +83,143 @@ export function parseWorkspacePublishExecutionScope(raw: string | undefined): Wo
   };
 }
 
-export function requirePreviewPublishExecutionSafety(env: NodeJS.ProcessEnv = process.env) {
-  if (env.WORKSPACE_PUBLISH_ACCEPTANCE_TIER !== "preview") {
+function parseDatabaseIdentity(databaseUrl: string | undefined, label: string) {
+  if (!databaseUrl?.trim()) {
     throw new WorkspacePublishRuntimeError(
-      "PREVIEW_SAFETY_GATE_BLOCKED",
-      "Preview Controlled Publish requires WORKSPACE_PUBLISH_ACCEPTANCE_TIER=preview."
+      "ENVIRONMENT_SAFETY_GATE_BLOCKED",
+      `${label} Controlled Publish requires DATABASE_URL.`
     );
   }
-  const expectedDatabase = env.WORKSPACE_PUBLISH_PREVIEW_DATABASE_NAME?.trim();
-  if (!expectedDatabase) {
-    throw new WorkspacePublishRuntimeError(
-      "PREVIEW_SAFETY_GATE_BLOCKED",
-      "Preview Controlled Publish requires an explicit WORKSPACE_PUBLISH_PREVIEW_DATABASE_NAME."
-    );
-  }
-  let actualDatabase: string;
   try {
-    const databaseUrl = new URL(env.DATABASE_URL ?? "");
-    actualDatabase = decodeURIComponent(databaseUrl.pathname.replace(/^\//, ""));
+    const url = new URL(databaseUrl);
+    const databaseName = decodeURIComponent(url.pathname.replace(/^\//, ""));
+    if (!databaseName) throw new Error("database name missing");
+    return {
+      databaseName,
+      databaseFingerprint: databaseIdentityFingerprint(databaseUrl),
+    };
   } catch {
-    throw new WorkspacePublishRuntimeError("PREVIEW_SAFETY_GATE_BLOCKED", "Preview database identity cannot be parsed.");
-  }
-  if (!actualDatabase || actualDatabase !== expectedDatabase) {
     throw new WorkspacePublishRuntimeError(
-      "PREVIEW_SAFETY_GATE_BLOCKED",
-      "Preview Controlled Publish database identity does not match the explicit preview database allowlist."
+      "ENVIRONMENT_SAFETY_GATE_BLOCKED",
+      `${label} database identity cannot be parsed safely.`
     );
   }
-  return { tier: "preview" as const, databaseName: actualDatabase };
 }
 
-/**
- * Production Controlled Publish never uses the legacy execution flag and
- * never reuses Preview acceptance settings. It is enabled by the exact
- * deployment identity, then fail-closed against the approved Production DB
- * fingerprint before any publish request or worker can proceed.
- */
-export function requireProductionPublishExecutionSafety(
-  env: NodeJS.ProcessEnv = process.env
-): WorkspacePublishEnvironmentSafety {
-  if (env.DEPLOYMENT_ENVIRONMENT !== "production") {
+function requiredFingerprint(raw: string | undefined, variableName: string) {
+  const fingerprint = normalizeDatabaseIdentityFingerprint(raw);
+  if (!fingerprint) {
     throw new WorkspacePublishRuntimeError(
-      "PRODUCTION_SAFETY_GATE_BLOCKED",
-      "Production Controlled Publish requires DEPLOYMENT_ENVIRONMENT=production exactly."
+      "ENVIRONMENT_SAFETY_GATE_BLOCKED",
+      `Controlled Publish requires a valid ${variableName}.`
     );
   }
-  if (!env.DATABASE_URL?.trim()) {
+  return fingerprint;
+}
+
+function requirePublishDatabaseIdentity(
+  env: NodeJS.ProcessEnv,
+  environment: WorkspacePublishEnvironment
+): WorkspacePublishEnvironmentSafety {
+  const label = environment === "production" ? "Production" : "Production-staging";
+  if (env.DEPLOYMENT_ENVIRONMENT !== environment) {
     throw new WorkspacePublishRuntimeError(
-      "PRODUCTION_SAFETY_GATE_BLOCKED",
-      "Production Controlled Publish requires DATABASE_URL."
+      "ENVIRONMENT_SAFETY_GATE_BLOCKED",
+      `${label} Controlled Publish requires DEPLOYMENT_ENVIRONMENT=${environment} exactly.`
     );
   }
 
-  const expectedProduction = normalizeDatabaseIdentityFingerprint(env.PRODUCTION_DB_FINGERPRINT);
-  if (!expectedProduction) {
+  const productionFingerprint = requiredFingerprint(
+    env.PRODUCTION_DB_FINGERPRINT,
+    "PRODUCTION_DB_FINGERPRINT"
+  );
+  const stagingFingerprint =
+    environment === "production-staging"
+      ? requiredFingerprint(
+          env.PRODUCTION_STAGING_DB_FINGERPRINT,
+          "PRODUCTION_STAGING_DB_FINGERPRINT"
+        )
+      : normalizeDatabaseIdentityFingerprint(env.PRODUCTION_STAGING_DB_FINGERPRINT);
+
+  if (stagingFingerprint && stagingFingerprint === productionFingerprint) {
     throw new WorkspacePublishRuntimeError(
-      "PRODUCTION_SAFETY_GATE_BLOCKED",
-      "Production Controlled Publish requires a valid PRODUCTION_DB_FINGERPRINT."
-    );
-  }
-  const stagingFingerprint = normalizeDatabaseIdentityFingerprint(env.PRODUCTION_STAGING_DB_FINGERPRINT);
-  if (stagingFingerprint && stagingFingerprint === expectedProduction) {
-    throw new WorkspacePublishRuntimeError(
-      "PRODUCTION_SAFETY_GATE_BLOCKED",
+      "ENVIRONMENT_SAFETY_GATE_BLOCKED",
       "Production and production-staging database fingerprints must differ."
     );
   }
 
-  let actualFingerprint: string;
-  let databaseName: string;
-  try {
-    actualFingerprint = databaseIdentityFingerprint(env.DATABASE_URL);
-    const databaseUrl = new URL(env.DATABASE_URL);
-    databaseName = decodeURIComponent(databaseUrl.pathname.replace(/^\//, ""));
-  } catch {
+  const actual = parseDatabaseIdentity(env.DATABASE_URL, label);
+  const expectedFingerprint =
+    environment === "production" ? productionFingerprint : stagingFingerprint!;
+
+  if (actual.databaseFingerprint !== expectedFingerprint) {
     throw new WorkspacePublishRuntimeError(
-      "PRODUCTION_SAFETY_GATE_BLOCKED",
-      "Production database identity cannot be parsed safely."
-    );
-  }
-  if (!databaseName || actualFingerprint !== expectedProduction) {
-    throw new WorkspacePublishRuntimeError(
-      "PRODUCTION_SAFETY_GATE_BLOCKED",
-      "Production DATABASE_URL does not match the approved Production database identity."
+      "ENVIRONMENT_SAFETY_GATE_BLOCKED",
+      `${label} DATABASE_URL does not match the approved ${environment} database identity.`
     );
   }
 
-  return { tier: "production", databaseName };
+  return {
+    tier: environment,
+    databaseName: actual.databaseName,
+    databaseFingerprint: actual.databaseFingerprint,
+  };
 }
 
-/**
- * Safety for publish-adjacent mutations that historically used the Preview
- * guard directly. Production takes its own exact identity path; every other
- * environment preserves the established Preview contract.
- */
 export function requireWorkspacePublishEnvironmentSafety(
   env: NodeJS.ProcessEnv = process.env
 ): WorkspacePublishEnvironmentSafety {
-  return env.DEPLOYMENT_ENVIRONMENT === "production"
-    ? requireProductionPublishExecutionSafety(env)
-    : requirePreviewPublishExecutionSafety(env);
+  if (env.DEPLOYMENT_ENVIRONMENT === "production") {
+    return requirePublishDatabaseIdentity(env, "production");
+  }
+  if (env.DEPLOYMENT_ENVIRONMENT === "production-staging") {
+    return requirePublishDatabaseIdentity(env, "production-staging");
+  }
+  throw new WorkspacePublishRuntimeError(
+    "ENVIRONMENT_SAFETY_GATE_BLOCKED",
+    "Controlled Publish is available only in production or production-staging."
+  );
 }
 
 /**
- * Single source of truth for Controlled Publish activation.
- * - Production: enabled by exact environment + DB identity; legacy execution
- *   flag is deliberately ignored, including when explicitly "false".
- * - Non-production: preserves the legacy Preview flag contract.
+ * Controlled Publish has no execution/acceptance feature flag. Runtime activation
+ * is derived only from the deployment environment and its approved DB identity.
+ * Preview/development environments stay inactive instead of impersonating either
+ * release environment.
  */
 export function resolveWorkspacePublishExecutionPolicy(
   env: NodeJS.ProcessEnv = process.env
 ): WorkspacePublishExecutionPolicy {
   const externalProviderEnabled = env.WORKSPACE_PUBLISH_EXTERNAL_PROVIDER_ENABLED === "true";
 
-  if (env.DEPLOYMENT_ENVIRONMENT === "production") {
+  if (
+    env.DEPLOYMENT_ENVIRONMENT === "production" ||
+    env.DEPLOYMENT_ENVIRONMENT === "production-staging"
+  ) {
     return {
-      mode: "production",
+      mode: env.DEPLOYMENT_ENVIRONMENT,
       executionEnabled: true,
       externalProviderEnabled,
-      safety: requireProductionPublishExecutionSafety(env),
-      finalGateExecutionBlock: false,
-    };
-  }
-
-  const executionEnabled = env.WORKSPACE_PUBLISH_EXECUTION_ENABLED === "true";
-  if (!executionEnabled) {
-    return {
-      mode: "disabled",
-      executionEnabled: false,
-      externalProviderEnabled,
-      safety: null,
-      finalGateExecutionBlock: false,
+      safety: requireWorkspacePublishEnvironmentSafety(env),
     };
   }
 
   return {
-    mode: "legacy-preview",
-    executionEnabled: true,
+    mode: "inactive",
+    executionEnabled: false,
     externalProviderEnabled,
-    safety: requirePreviewPublishExecutionSafety(env),
-    finalGateExecutionBlock: true,
+    safety: null,
   };
 }
 
 export function requireWorkspacePublishRequestPolicy(
   env: NodeJS.ProcessEnv = process.env
-): WorkspacePublishExecutionPolicy & { executionEnabled: true } {
+): Extract<WorkspacePublishExecutionPolicy, { executionEnabled: true }> {
   const policy = resolveWorkspacePublishExecutionPolicy(env);
   if (!policy.executionEnabled) {
     throw new WorkspacePublishRuntimeError(
-      "EXECUTION_SCOPE_REQUIRED",
-      "Workspace publish execution is not enabled by server configuration."
+      "ENVIRONMENT_SAFETY_GATE_BLOCKED",
+      "Controlled Publish is not active in this deployment environment."
     );
   }
   if (!policy.externalProviderEnabled) {
@@ -233,7 +228,7 @@ export function requireWorkspacePublishRequestPolicy(
       "Workspace publish external provider is not enabled."
     );
   }
-  return policy as WorkspacePublishExecutionPolicy & { executionEnabled: true };
+  return policy;
 }
 
 export function scopeMatches(input: WorkspacePublishExecutionScope, expected: WorkspacePublishExecutionScope) {

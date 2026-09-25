@@ -16,13 +16,13 @@ import { getTestDb } from "../test-helpers/testDb";
 import { GOOGLE_DOC_MIME_TYPE } from "./googleDocs.domain";
 import { bindGoogleDocument, observeBoundGoogleDocument, saveGoogleConnection } from "./googleDocs.service";
 import { createPublishDestination, createPublishDryRun } from "./publishDryRun.service";
-import { getPublishFinalGatePackage, requirePublishFinalGate, WorkspacePublishFinalGateError } from "./publishFinalGate.service";
+import { getPublishFinalGatePackage, requirePublishFinalGate } from "./publishFinalGate.service";
 import { bindPublicationNovel, createWorkspace } from "./service";
 
-const text = "M05-E final publish gate preview source";
+const text = "M05-E final publish gate source";
 
 describe.sequential("workspace M05-E final publish gate", () => {
-  it("produces deterministic read-only Preview readiness and fails closed on execution/history", async () => {
+  it("produces deterministic read-only readiness and fails closed on transition history", async () => {
     if (!process.env.TEST_DATABASE_URL) return;
     assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
     const db = getTestDb();
@@ -81,19 +81,14 @@ describe.sequential("workspace M05-E final publish gate", () => {
       const [item] = await db.select().from(workspacePublishItems).where(eq(workspacePublishItems.runId, plan.run.id));
       await db.update(workspacePublishItems).set({ status: "published", providerReceipt: "receipt-m05e-1" }).where(eq(workspacePublishItems.id, item.id));
 
-      const first = await getPublishFinalGatePackage({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: plan.run.id, executionEnabled: false });
-      const second = await requirePublishFinalGate({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: plan.run.id, executionEnabled: false });
-      expect(first.gate.previewReady).toBe(true);
+      const first = await getPublishFinalGatePackage({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: plan.run.id });
+      const second = await requirePublishFinalGate({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: plan.run.id });
+      expect(first.gate.gateReady).toBe(true);
       expect(first.gate.operatorCutoverEligible).toBe(true);
       expect(first.gate.packageDigest).toBe(second.gate.packageDigest);
       expect(first.gate.cutoverCommand).toMatchObject({ expectedOwner: "sheets", expectedCutoverEpoch: 0, automatic: false });
       expect(first.registryMutationApplied).toBe(false);
       expect(first.publishDeliveryApplied).toBe(false);
-
-      const executionBlocked = await getPublishFinalGatePackage({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: plan.run.id, executionEnabled: true });
-      expect(executionBlocked.gate.blockers).toContain("PREVIEW_EXECUTION_ENABLED");
-      await expect(requirePublishFinalGate({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: plan.run.id, executionEnabled: true }))
-        .rejects.toMatchObject({ code: "PREVIEW_GATE_BLOCKED" } satisfies Partial<WorkspacePublishFinalGateError>);
 
       const [ownership] = await db.select().from(workspaceMigrationRegistry).where(eq(workspaceMigrationRegistry.workspaceNovelId, workspaceNovel.workspaceNovelId));
       await db.insert(workspacePublishOwnershipTransitions).values({
@@ -111,9 +106,9 @@ describe.sequential("workspace M05-E final publish gate", () => {
         idempotencyKey: "f".repeat(64),
         actorUserId: owner.id,
       });
-      const historyBlocked = await getPublishFinalGatePackage({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: plan.run.id, executionEnabled: false });
+      const historyBlocked = await getPublishFinalGatePackage({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: plan.run.id });
       expect(historyBlocked.gate.blockers).toContain("TRANSITION_HISTORY_PRESENT");
-      expect(historyBlocked.gate.previewReady).toBe(false);
+      expect(historyBlocked.gate.gateReady).toBe(false);
     } finally {
       await db.delete(workspaceWorkspaces).where(eq(workspaceWorkspaces.id, workspace.workspaceId));
       await db.delete(workspaceGoogleConnections).where(eq(workspaceGoogleConnections.userId, owner.id));

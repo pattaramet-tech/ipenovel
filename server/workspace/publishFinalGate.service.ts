@@ -13,7 +13,7 @@ export class WorkspacePublishFinalGateError extends Error {
     readonly code:
       | "DATABASE_UNAVAILABLE"
       | "PUBLISH_OWNERSHIP_AMBIGUOUS"
-      | "PREVIEW_GATE_BLOCKED",
+      | "FINAL_GATE_BLOCKED",
     message: string
   ) {
     super(message);
@@ -27,12 +27,10 @@ async function database() {
   return db;
 }
 
-
 export async function getPublishFinalGatePackage(input: {
   actorUserId: number;
   workspaceId: number;
   runId: number;
-  executionEnabled: boolean;
 }) {
   const db = await database();
   await requireWorkspacePlatformAdmin(db, input.actorUserId);
@@ -81,7 +79,6 @@ export async function getPublishFinalGatePackage(input: {
       cutoverEpoch: 0,
       version: ownership.version,
     },
-    executionEnabled: input.executionEnabled,
     transitionIds: transitions.map(row => row.id),
     inheritedBlockers: readiness.blockers,
   });
@@ -100,12 +97,11 @@ export async function requirePublishFinalGate(input: {
   actorUserId: number;
   workspaceId: number;
   runId: number;
-  executionEnabled: boolean;
 }) {
   const result = await getPublishFinalGatePackage(input);
-  if (!result.gate.previewReady || !result.gate.operatorCutoverEligible) {
+  if (!result.gate.gateReady || !result.gate.operatorCutoverEligible) {
     throw new WorkspacePublishFinalGateError(
-      "PREVIEW_GATE_BLOCKED",
+      "FINAL_GATE_BLOCKED",
       `Publish final gate is blocked: ${result.gate.blockers.join(", ") || result.readiness.blockers.join(", ")}`
     );
   }

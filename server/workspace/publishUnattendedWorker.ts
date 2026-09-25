@@ -69,14 +69,14 @@ export function createUnattendedPublishWorker(
     (!executionEnabled || !externalProviderEnabled)
   ) {
     throw new Error(
-      "Explicit unattended publish requires execution policy and external-provider configuration to be enabled."
+      "Explicit unattended publish requires a supported release environment and external-provider configuration."
     );
   }
 
-  // No new rollout flag is required for Preview: once the two existing
-  // execution gates are deliberately enabled, unattended draining is the
-  // default. WORKSPACE_PUBLISH_UNATTENDED_ENABLED=false is an emergency kill
-  // switch; =true turns missing prerequisite flags into a fail-closed boot.
+  // Unattended draining follows the same environment/DB identity policy as
+  // request-time publish. WORKSPACE_PUBLISH_UNATTENDED_ENABLED=false remains
+  // a worker-only emergency stop; =true makes missing runtime prerequisites
+  // fail closed during startup.
   const enabled =
     !explicitlyDisabled && executionEnabled && externalProviderEnabled;
 
@@ -173,7 +173,7 @@ export function createUnattendedPublishWorker(
       log({
         level: "info",
         event: "started",
-        acceptanceTier: safety.tier,
+        environment: safety.tier,
         databaseName: safety.databaseName,
         pollMs,
       });

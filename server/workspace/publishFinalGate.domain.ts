@@ -1,10 +1,9 @@
 import { createHash } from "node:crypto";
 
-export const WORKSPACE_PUBLISH_FINAL_GATE_CONTRACT = "workspace-publish-final-gate-v1" as const;
+export const WORKSPACE_PUBLISH_FINAL_GATE_CONTRACT = "workspace-publish-final-gate-v2" as const;
 
 export type PublishFinalGateBlocker =
   | "CUTOVER_READINESS_BLOCKED"
-  | "PREVIEW_EXECUTION_ENABLED"
   | "TRANSITION_HISTORY_PRESENT";
 
 export function buildPublishFinalGatePackage(input: {
@@ -13,13 +12,11 @@ export function buildPublishFinalGatePackage(input: {
   publishRunId: number;
   readinessDigest: string;
   ownership: { owner: "sheets"; cutoverEpoch: 0; version: number };
-  executionEnabled: boolean;
   transitionIds: number[];
   inheritedBlockers: string[];
 }) {
   const blockers: PublishFinalGateBlocker[] = [];
   if (input.inheritedBlockers.length > 0) blockers.push("CUTOVER_READINESS_BLOCKED");
-  if (input.executionEnabled) blockers.push("PREVIEW_EXECUTION_ENABLED");
   if (input.transitionIds.length > 0) blockers.push("TRANSITION_HISTORY_PRESENT");
 
   const normalized = {
@@ -29,7 +26,6 @@ export function buildPublishFinalGatePackage(input: {
     publishRunId: input.publishRunId,
     readinessDigest: input.readinessDigest,
     ownership: input.ownership,
-    executionEnabled: input.executionEnabled,
     transitionIds: [...input.transitionIds].sort((a, b) => a - b),
     inheritedBlockers: [...input.inheritedBlockers].sort(),
     blockers: [...blockers].sort(),
@@ -38,8 +34,7 @@ export function buildPublishFinalGatePackage(input: {
 
   return {
     ...normalized,
-    packageDigest,
-    previewReady: blockers.length === 0,
+    gateReady: blockers.length === 0,
     operatorCutoverEligible: blockers.length === 0,
     cutoverCommand: {
       expectedOwner: "sheets" as const,
@@ -47,9 +42,7 @@ export function buildPublishFinalGatePackage(input: {
       expectedVersion: input.ownership.version,
       automatic: false as const,
     },
-    previewSafety: {
-      publishExecutionEnabled: input.executionEnabled,
-      requiresExplicitPostCutoverEnable: true as const,
+    sideEffects: {
       providerDeliveryApplied: false as const,
       registryMutationApplied: false as const,
     },
