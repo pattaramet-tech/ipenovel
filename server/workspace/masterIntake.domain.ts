@@ -112,12 +112,21 @@ export function masterIntakePreviewFingerprint(input: {
   workspaceId: number;
   startRow: number;
   endRow: number;
-  rows: Array<{ rowNumber: number; rowFingerprint: string; status: string }>;
+  rows: Array<{
+    rowNumber: number;
+    rowFingerprint: string;
+    status: string;
+    existingNovelId?: number | null;
+    workspaceNovelId?: number | null;
+    workItemId?: number | null;
+    blockers?: string[];
+    sourceAlreadyLinked?: boolean;
+  }>;
 }): string {
   return createHash("sha256")
     .update(
       JSON.stringify({
-        version: "workspace-master-intake-preview-v1",
+        version: "workspace-master-intake-preview-v2",
         workspaceId: input.workspaceId,
         startRow: input.startRow,
         endRow: input.endRow,
@@ -125,6 +134,11 @@ export function masterIntakePreviewFingerprint(input: {
           rowNumber: row.rowNumber,
           rowFingerprint: row.rowFingerprint,
           status: row.status,
+          existingNovelId: row.existingNovelId ?? null,
+          workspaceNovelId: row.workspaceNovelId ?? null,
+          workItemId: row.workItemId ?? null,
+          blockers: [...(row.blockers ?? [])].sort(),
+          sourceAlreadyLinked: row.sourceAlreadyLinked === true,
         })),
       })
     )
