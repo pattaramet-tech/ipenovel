@@ -41,9 +41,11 @@ describe("M12D.7 sale metadata contract", () => {
     expect(page).toContain('saleMode: "package"');
     expect(page).toContain("Episode Pack");
     expect(page).not.toContain('<option value="chapter">รายบท</option>');
-    expect(board).toContain("existingWorkItem.saleMode !== sale.saleMode");
-    expect(board).toContain("existingWorkItem.price !== sale.price");
-    expect(board).toContain("existingWorkItem.isFree !== sale.isFree");
+    expect(board).toContain("(existingWorkItem.saleMode ?? null) !== (sale?.saleMode ?? null)");
+    expect(board).toContain("(existingWorkItem.price ?? null) !== (sale?.price ?? null)");
+    expect(board).toContain("(existingWorkItem.isFree ?? null) !== (sale?.isFree ?? null)");
+    expect(board).toContain("allowPendingSaleMetadata?: boolean");
+    expect(router).not.toContain("allowPendingSaleMetadata");
   });
 
   it("allows sale correction only through the pre-Draft editable Episode Pack guard", () => {
@@ -69,7 +71,7 @@ describe("M12D.7 sale metadata contract", () => {
   it("rejects an existing episode identity with different sale metadata", () => {
     const board = source("server/workspace/editorialBoard.service.ts");
     expect(board).toContain("already exists with different intake metadata");
-    expect(board).toContain("workItem.saleMode !== sale.saleMode");
+    expect(board).toContain("(workItem.saleMode ?? null) !== (sale?.saleMode ?? null)");
   });
 
   it("propagates sale metadata from work item through Episode and stage", () => {
