@@ -409,7 +409,7 @@ export async function previewWorkspaceMasterIntake(input: {
         for (const entry of activeItems) {
           if (entry.cardStatus !== "active") continue;
           const span = parseEpisodeSpan(entry.item.episodeNumber ?? "");
-          if (!span || !spansOverlap(span, parsed)) continue;
+          if (!span || !spansOverlap(span, { start: parsed.rangeStart, end: parsed.rangeEnd })) continue;
           if (
             span.start === parsed.rangeStart &&
             span.end === parsed.rangeEnd
