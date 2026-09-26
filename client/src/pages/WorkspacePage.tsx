@@ -173,6 +173,10 @@ export default function WorkspacePage() {
   const ensuredEditorialWorkspaces = useRef(new Set<number>());
   const { isAdmin, loading: adminLoading } = useAdminGuard();
 
+  useEffect(() => {
+    setBulkCleanupPreviewResult(undefined);
+  }, [selectedWorkspaceId, selectedEditorialWorkItemIds.join(",")]);
+
   const workspaces = trpc.workspace.list.useQuery(undefined, { enabled: isAdmin });
   const detail = trpc.workspace.detail.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
@@ -1899,6 +1903,10 @@ export default function WorkspacePage() {
                     onClick={async () => {
                       try {
                         const response = await bulkCleanupPreviewQuery.refetch();
+                        if (response.error) {
+                          toast.error(response.error.message);
+                          return;
+                        }
                         if (response.data) {
                           setBulkCleanupPreviewResult(response.data);
                           const duplicateGroups = response.data.groups.filter((group: any) => group.occurrenceCount > 1).length;
