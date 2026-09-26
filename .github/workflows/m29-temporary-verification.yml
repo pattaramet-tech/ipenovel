@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: m29-temporary-verification
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -30,6 +34,8 @@ jobs:
           --health-retries=20
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v6
         with:
           run_install: false
@@ -47,5 +53,19 @@ jobs:
         run: pnpm check
       - name: Build
         run: pnpm build
+      - name: Diff and secret safety scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check origin/main...HEAD
+          changed="$(git diff --name-only origin/main...HEAD)"
+          if [ -n "$changed" ] && git grep -n $'\uFFFD' -- $changed; then
+            echo "U+FFFD replacement character found in changed files"
+            exit 1
+          fi
+          if git diff --unified=0 origin/main...HEAD | grep -E '^\+.*BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'; then
+            echo "Private key material detected in diff"
+            exit 1
+          fi
       - name: Dependency audit
         run: pnpm audit --audit-level=high
