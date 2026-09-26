@@ -229,8 +229,9 @@ export async function applyEditorialBulkFindingCleanup(input: {
   }
 
   if (input.action.kind === "group") {
+    const groupKey = input.action.groupKey;
     const group = preview.groups.find(
-      candidate => candidate.groupKey === input.action.groupKey
+      candidate => candidate.groupKey === groupKey
     );
     if (!group) {
       throw new WorkspaceEditorialBulkCleanupError(
