@@ -2423,6 +2423,63 @@ export const workspaceEditorialWorkItemEvents = mysqlTable(
   })
 );
 
+/** M29 durable Google Sheets row provenance for Workspace Master Intake Sync. */
+export const workspaceMasterIntakeRows = mysqlTable(
+  "workspaceMasterIntakeRows",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workspaceId: int("workspaceId").notNull(),
+    workspaceNovelId: int("workspaceNovelId").notNull(),
+    workItemId: int("workItemId").notNull(),
+    spreadsheetId: varchar("spreadsheetId", { length: 128 }).notNull(),
+    sheetId: int("sheetId").notNull(),
+    sheetName: varchar("sheetName", { length: 255 }).notNull(),
+    rowNumber: int("rowNumber").notNull(),
+    rawTitle: varchar("rawTitle", { length: 500 }).notNull(),
+    normalizedTitle: varchar("normalizedTitle", { length: 500 }).notNull(),
+    episodeNumber: varchar("episodeNumber", { length: 100 }).notNull(),
+    translationDocUrl: text("translationDocUrl").notNull(),
+    translationDocumentId: varchar("translationDocumentId", { length: 255 }).notNull(),
+    webSourceUrl: text("webSourceUrl"),
+    preparedSourceDocUrl: text("preparedSourceDocUrl").notNull(),
+    preparedSourceDocumentId: varchar("preparedSourceDocumentId", { length: 255 }).notNull(),
+    rowFingerprint: varchar("rowFingerprint", { length: 64 }).notNull(),
+    lastSyncedByUserId: int("lastSyncedByUserId").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    workspaceSheetRowUnique: uniqueIndex("wmir_workspace_sheet_row_unique").on(
+      table.workspaceId,
+      table.spreadsheetId,
+      table.sheetId,
+      table.rowNumber
+    ),
+    workItemUnique: uniqueIndex("wmir_work_item_unique").on(table.workItemId),
+    workspaceUpdatedIdx: index("wmir_workspace_updated_idx").on(table.workspaceId, table.updatedAt),
+    workspaceFk: foreignKey({
+      name: "wmir_workspace_fk",
+      columns: [table.workspaceId],
+      foreignColumns: [workspaceWorkspaces.id],
+    }).onDelete("cascade"),
+    workspaceNovelFk: foreignKey({
+      name: "wmir_workspace_novel_fk",
+      columns: [table.workspaceNovelId],
+      foreignColumns: [workspaceNovels.id],
+    }).onDelete("cascade"),
+    workItemFk: foreignKey({
+      name: "wmir_work_item_fk",
+      columns: [table.workItemId],
+      foreignColumns: [workspaceEditorialWorkItems.id],
+    }).onDelete("cascade"),
+    syncedByFk: foreignKey({
+      name: "wmir_synced_by_fk",
+      columns: [table.lastSyncedByUserId],
+      foreignColumns: [users.id],
+    }),
+  })
+);
+
 /** IPE-055-C durable source identity and immutable original snapshots. */
 export const workspaceEditorialSources = mysqlTable(
   "workspaceEditorialSources",
@@ -3360,6 +3417,7 @@ export const workspaceAuditEvents = mysqlTable(
 export type WorkspaceWorkspace = typeof workspaceWorkspaces.$inferSelect;
 export type WorkspaceMember = typeof workspaceMembers.$inferSelect;
 export type WorkspaceNovel = typeof workspaceNovels.$inferSelect;
+export type WorkspaceMasterIntakeRow = typeof workspaceMasterIntakeRows.$inferSelect;
 export type WorkspaceReadOnlyBinding = typeof workspaceReadOnlyBindings.$inferSelect;
 export type WorkspaceMigrationRegistryEntry = typeof workspaceMigrationRegistry.$inferSelect;
 export type WorkspaceDocumentFingerprint = typeof workspaceDocumentFingerprints.$inferSelect;
