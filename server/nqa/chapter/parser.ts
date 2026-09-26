@@ -18,12 +18,17 @@ export type ParsedTranslationHeading = {
 
 export function parseSourceHeading(text: string): ParsedSourceHeading | null {
   const normalized = text.normalize("NFC").trim();
-  const match = normalized.match(/^บท\s*(\d+)\s*:\s*(\d+)\s*\.\s*(.+?)\s*$/);
-  if (!match) return null;
+  const legacyMatch = normalized.match(
+    /^บท\s*(\d+)\s*:\s*(\d+)\s*\.\s*(.+?)\s*$/
+  );
+  const liveMatch = legacyMatch
+    ? null
+    : normalized.match(/^บท\s*(\d+)\s*:\s*(.+?)\s*$/);
+  if (!legacyMatch && !liveMatch) return null;
 
-  const internalSequence = Number(match[1]);
-  const chapter = Number(match[2]);
-  const title = match[3].trim();
+  const internalSequence = Number(legacyMatch?.[1] ?? liveMatch![1]);
+  const chapter = Number(legacyMatch?.[2] ?? liveMatch![1]);
+  const title = (legacyMatch?.[3] ?? liveMatch![2]).trim();
   if (
     !Number.isInteger(internalSequence) ||
     !Number.isInteger(chapter) ||

@@ -69,6 +69,75 @@ describe("NQA chapter heading parser", () => {
     });
   });
 
+  it("parses live single-number source headings without changing legacy semantics", () => {
+    expect(parseSourceHeading("บท 101: Homecoming")).toEqual({
+      internalSequence: 101,
+      chapter: 101,
+      title: "Homecoming",
+    });
+    expect(parseSourceHeading("บท 101:")).toBeNull();
+    expect(parseSourceHeading("บท 0: Homecoming")).toBeNull();
+  });
+
+  it("builds source boundaries from live single-number source headings", () => {
+    const liveSource: NqaDocumentSnapshot = {
+      documentId: "live-source-101",
+      title: "Live English source",
+      revisionId: "live-rev-1",
+      tabs: [
+        {
+          tabId: "t.0",
+          title: "Tab 1",
+          index: 0,
+          parentTabId: null,
+          paragraphs: [
+            {
+              text: "บท 101: Homecoming",
+              startIndex: 1,
+              endIndex: 21,
+              tabId: "t.0",
+            },
+            {
+              text: "source 101 body",
+              startIndex: 22,
+              endIndex: 37,
+              tabId: "t.0",
+            },
+            {
+              text: "บท 102: The Next Chapter",
+              startIndex: 38,
+              endIndex: 63,
+              tabId: "t.0",
+            },
+            {
+              text: "source 102 body",
+              startIndex: 64,
+              endIndex: 79,
+              tabId: "t.0",
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(buildSourceChapterBoundaries(liveSource)).toMatchObject([
+      {
+        internalSequence: 101,
+        chapter: 101,
+        title: "Homecoming",
+        paragraphStart: 0,
+        paragraphEnd: 1,
+      },
+      {
+        internalSequence: 102,
+        chapter: 102,
+        title: "The Next Chapter",
+        paragraphStart: 2,
+        paragraphEnd: 3,
+      },
+    ]);
+  });
+
   it("parses Thai translation chapter headings", () => {
     expect(parseTranslationHeading("บทที่ 197 การสิงร่าง(แปลใหม่)")).toEqual({
       chapter: 197,
