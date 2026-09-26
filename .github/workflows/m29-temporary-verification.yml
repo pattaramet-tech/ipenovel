@@ -1,0 +1,35 @@
+name: M29 Temporary Verification
+
+on:
+  push:
+    branches:
+      - feat/nqa-m29-master-intake-sync
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: M29 targeted tests
+        run: pnpm exec vitest run server/workspace/masterIntake.domain.test.ts server/workspace/masterIntake.static.test.ts
+      - name: Full regression
+        run: pnpm test
+      - name: Typecheck
+        run: pnpm check
+      - name: Build
+        run: pnpm build
+      - name: Dependency audit
+        run: pnpm audit --audit-level=high
