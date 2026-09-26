@@ -109,6 +109,7 @@ export default function WorkspacePage() {
   const [selectedSourceWorkItemId, setSelectedSourceWorkItemId] = useState<number>();
   const [selectedEditorialWorkItemIds, setSelectedEditorialWorkItemIds] = useState<number[]>([]);
   const [bulkCheckerSummary, setBulkCheckerSummary] = useState<Array<any>>([]);
+  const [bulkCleanupPreviewResult, setBulkCleanupPreviewResult] = useState<any>();
   const [bulkEditorTarget, setBulkEditorTarget] = useState<{
     workItemId: number;
     paragraphKey: string;
@@ -196,6 +197,13 @@ export default function WorkspacePage() {
   const editorialEvidenceStatuses = trpc.workspace.editorial.evidenceStatuses.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0, workItemIds: editorialEvidenceWorkItemIds },
     { enabled: isAdmin && Boolean(selectedWorkspaceId) && editorialEvidenceWorkItemIds.length > 0, retry: false }
+  );
+  const bulkCleanupPreviewQuery = trpc.workspace.editorial.bulkFindingCleanupPreview.useQuery(
+    {
+      workspaceId: selectedWorkspaceId ?? 0,
+      workItemIds: selectedEditorialWorkItemIds,
+    },
+    { enabled: false, retry: false }
   );
   const editorialGoogleConnections = trpc.workspace.editorial.googleConnections.useQuery(
     undefined,
@@ -452,6 +460,34 @@ export default function WorkspacePage() {
       setBulkCheckerSummary([]);
       toast.error(error.message);
     },
+  });
+  const refreshBulkAfterCleanup = trpc.workspace.editorial.bulkRunChecker.useMutation({
+    onSuccess: async (results) => {
+      setBulkCheckerSummary(results as any[]);
+      await refreshBulkEditorial();
+    },
+  });
+  const bulkCleanupApply = trpc.workspace.editorial.bulkFindingCleanupApply.useMutation({
+    onSuccess: async (result, variables) => {
+      setBulkCleanupPreviewResult(undefined);
+      const failed = result.results.filter((row: any) => !row.ok);
+      toast[failed.length ? "error" : "success"](
+        `ลบพร้อมกันแล้ว ${result.summary.removedFindings} จุด · ${result.summary.changed} Episode Pack${failed.length ? ` · ผิดพลาด ${failed.length}` : ""}`
+      );
+      try {
+        const refreshed = await refreshBulkAfterCleanup.mutateAsync({
+          workspaceId: variables.workspaceId,
+          workItemIds: variables.workItemIds,
+        });
+        setBulkCheckerSummary(refreshed as any[]);
+      } catch (error) {
+        await refreshBulkEditorial();
+        toast.error(
+          `ลบสำเร็จ แต่โหลดผลตรวจล่าสุดไม่สำเร็จ: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    },
+    onError: (error) => toast.error(error.message),
   });
   const rerunBulkEditedChecker = trpc.workspace.editorial.foreignCheckerRun.useMutation();
   const rerunBulkAfterAllow = trpc.workspace.editorial.bulkRunChecker.useMutation();
@@ -1162,7 +1198,7 @@ export default function WorkspacePage() {
   const visibleEditorialWorkItemIds = visibleEditorialCards.map((card: any) => card.workItemId).filter((id: any): id is number => Number.isInteger(id));
   const uncheckedEditorialWorkItemIds = visibleEditorialCards.filter((card: any) => !card.evidence?.checker).map((card: any) => card.workItemId);
   const readyEditorialWorkItemIds = visibleEditorialCards.filter((card: any) => card.evidence?.readyToPublish && !card.evidence?.published).map((card: any) => card.workItemId);
-  const bulkBusy = Boolean(bulkEditorTarget) || bulkRunEditorialChecker.isPending || bulkEditEditorialFinding.isPending || rerunBulkEditedChecker.isPending || bulkAllowEditorialFinding.isPending || rerunBulkAfterAllow.isPending || bulkApproveEditorialDrafts.isPending || bulkStageEditorialDrafts.isPending || bulkRequestEditorialPublish.isPending;
+  const bulkBusy = Boolean(bulkEditorTarget) || bulkRunEditorialChecker.isPending || bulkEditEditorialFinding.isPending || rerunBulkEditedChecker.isPending || bulkAllowEditorialFinding.isPending || rerunBulkAfterAllow.isPending || bulkApproveEditorialDrafts.isPending || bulkStageEditorialDrafts.isPending || bulkRequestEditorialPublish.isPending || bulkCleanupPreviewQuery.isFetching || bulkCleanupApply.isPending || refreshBulkAfterCleanup.isPending;
   const selectedEditorialCards = editorialCards.filter((card: any) => selectedEditorialSet.has(card.workItemId));
   const bulkSelectionLabel = selectedEditorialCards.map((card: any) => `${card.novel?.title ?? "ไม่ทราบเรื่อง"} ${card.episodeNumber ? `ตอน ${card.episodeNumber}` : ""}`.trim()).join("\n");
   const normalizedEpisodeNovelSearch = episodeNovelSearch.trim().toLocaleLowerCase("th");
@@ -1855,10 +1891,111 @@ export default function WorkspacePage() {
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button type="button" size="sm" variant="outline" disabled={!selectedEditorialWorkItemIds.length || bulkBusy} onClick={() => bulkRunEditorialChecker.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds })}>{bulkRunEditorialChecker.isPending ? "กำลังตรวจ…" : "3. ตรวจ / ตรวจซ้ำ"}</Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={!selectedEditorialWorkItemIds.length || bulkBusy}
+                    onClick={async () => {
+                      try {
+                        const response = await bulkCleanupPreviewQuery.refetch();
+                        if (response.data) {
+                          setBulkCleanupPreviewResult(response.data);
+                          const duplicateGroups = response.data.groups.filter((group: any) => group.occurrenceCount > 1).length;
+                          toast.success(`จัดกลุ่มแล้ว · คำ/ข้อความซ้ำ ${duplicateGroups} กลุ่ม · ค้าง ${response.data.summary.openFindingCount} จุด`);
+                        }
+                      } catch (error) {
+                        toast.error(error instanceof Error ? error.message : "จัดกลุ่ม finding ไม่สำเร็จ");
+                      }
+                    }}
+                  >
+                    {bulkCleanupPreviewQuery.isFetching ? "กำลังจัดกลุ่ม…" : "3.1 จัดกลุ่ม / ลบซ้ำ"}
+                  </Button>
                   <Button type="button" size="sm" variant="outline" disabled={!selectedEditorialWorkItemIds.length || bulkBusy} onClick={() => bulkApproveEditorialDrafts.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds })}>{bulkApproveEditorialDrafts.isPending ? "กำลังยืนยัน…" : "4. ยืนยัน Draft ปัจจุบัน"}</Button>
                   <Button type="button" size="sm" variant="outline" disabled={!selectedEditorialWorkItemIds.length || bulkBusy} onClick={() => bulkStageEditorialDrafts.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds })}>{bulkStageEditorialDrafts.isPending ? "กำลัง Stage…" : "5. Stage"}</Button>
                   <Button type="button" size="sm" disabled={!selectedEditorialWorkItemIds.length || bulkBusy} onClick={() => { const readyCount = selectedEditorialCards.filter((card: any) => card.evidence?.readyToPublish && !card.evidence?.published).length; const blockedCount = selectedEditorialCards.length - readyCount; if (window.confirm(`Controlled Publish\n\nพร้อมลง ${readyCount} ตอน · ยังไม่พร้อม ${blockedCount} ตอน\n\n${bulkSelectionLabel}\n\nรายการที่ไม่ผ่าน readiness / ownership / evidence จะไม่ถูกเผยแพร่`)) bulkRequestEditorialPublish.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds }); }}>{bulkRequestEditorialPublish.isPending ? "กำลังเผยแพร่…" : "6. Publish"}</Button>
                 </div>
+                {bulkCleanupPreviewResult && (
+                  <div className="space-y-2 rounded-md border bg-background p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-semibold">Bulk Finding Cleanup</div>
+                        <div className="text-xs text-muted-foreground">
+                          Preview เท่านั้น · ลบใน Workspace Draft · สร้าง Draft ใหม่ 1 version ต่อ Episode Pack · ตรวจซ้ำอัตโนมัติ
+                        </div>
+                      </div>
+                      <span className="text-xs text-muted-foreground">
+                        พร้อม {bulkCleanupPreviewResult.summary.readyWorkItems}/{bulkCleanupPreviewResult.summary.selectedWorkItems} Pack · ค้าง {bulkCleanupPreviewResult.summary.openFindingCount} จุด
+                      </span>
+                    </div>
+                    {bulkCleanupPreviewResult.sourceJunk?.occurrenceCount > 0 && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-300 bg-amber-50/60 px-3 py-2">
+                        <div className="text-sm">
+                          <span className="font-semibold">SOURCE JUNK ทั้งชุด</span>
+                          {" · "}{bulkCleanupPreviewResult.sourceJunk.occurrenceCount} จุด
+                          {" · "}{bulkCleanupPreviewResult.sourceJunk.paragraphCount} ย่อหน้า
+                          {" · "}{bulkCleanupPreviewResult.sourceJunk.workItemCount} Pack
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="destructive"
+                          disabled={bulkBusy}
+                          onClick={() => {
+                            if (!window.confirm(
+                              `ลบ Source Junk ทั้งชุด ${bulkCleanupPreviewResult.sourceJunk.occurrenceCount} จุด จาก ${bulkCleanupPreviewResult.sourceJunk.workItemCount} Episode Pack?\n\nระบบจะสร้าง Draft ใหม่ 1 version ต่อ Pack และตรวจซ้ำอัตโนมัติ`
+                            )) return;
+                            bulkCleanupApply.mutate({
+                              workspaceId: selectedWorkspaceId!,
+                              workItemIds: bulkCleanupPreviewResult.workItemIds,
+                              expectedPreviewFingerprint: bulkCleanupPreviewResult.previewFingerprint,
+                              action: { kind: "source_junk" },
+                            });
+                          }}
+                        >
+                          ลบ Source Junk ทั้งหมด
+                        </Button>
+                      </div>
+                    )}
+                    <div className="space-y-1">
+                      {bulkCleanupPreviewResult.groups
+                        .filter((group: any) => group.occurrenceCount > 1)
+                        .slice(0, 60)
+                        .map((group: any) => (
+                          <div key={group.groupKey} className="flex flex-wrap items-center justify-between gap-2 rounded border px-3 py-2 text-sm">
+                            <div className="min-w-0">
+                              <span className="font-medium break-all">{group.displayToken}</span>
+                              <span className="ml-2 text-xs text-muted-foreground">
+                                {group.ruleKey} · {group.occurrenceCount} จุด · {group.paragraphCount} ย่อหน้า · {group.workItemCount} Pack
+                              </span>
+                            </div>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={bulkBusy}
+                              onClick={() => {
+                                if (!window.confirm(
+                                  `ลบ “${group.displayToken}” ทั้งหมด ${group.occurrenceCount} จุด?\n\nลบเฉพาะ exact finding ที่อยู่ใน Preview นี้ และตรวจซ้ำอัตโนมัติ`
+                                )) return;
+                                bulkCleanupApply.mutate({
+                                  workspaceId: selectedWorkspaceId!,
+                                  workItemIds: bulkCleanupPreviewResult.workItemIds,
+                                  expectedPreviewFingerprint: bulkCleanupPreviewResult.previewFingerprint,
+                                  action: { kind: "group", groupKey: group.groupKey },
+                                });
+                              }}
+                            >
+                              ลบทั้งหมด {group.occurrenceCount} จุด
+                            </Button>
+                          </div>
+                        ))}
+                      {bulkCleanupPreviewResult.groups.filter((group: any) => group.occurrenceCount > 1).length === 0 && (
+                        <div className="text-xs text-muted-foreground">ไม่พบ exact finding ที่ซ้ำมากกว่า 1 จุด</div>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {bulkCheckerSummary.length > 0 && (() => {
                   const passed = bulkCheckerSummary.filter((result: any) => result.ok && result.effectiveStatus === "passed").length;
                   const needsFix = bulkCheckerSummary.filter((result: any) => result.ok && result.effectiveStatus === "failed").length;
