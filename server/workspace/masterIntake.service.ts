@@ -7,6 +7,7 @@ import {
   workspaceEditorialSources,
   workspaceEditorialWorkItems,
   workspaceKanbanCards,
+  workspaceKanbanColumns,
   workspaceMasterIntakeRows,
   workspaceNovels,
   workspaceWorkspaces,
@@ -73,6 +74,7 @@ type PreviewRow = {
   workspaceNovelId: number | null;
   workItemId: number | null;
   blockers: string[];
+  sourceAlreadyLinked: boolean;
 };
 
 type PreviewResult = {
@@ -315,6 +317,7 @@ export async function previewWorkspaceMasterIntake(input: {
         workspaceNovelId: null,
         workItemId: null,
         blockers,
+        sourceAlreadyLinked: false,
       });
       continue;
     }
@@ -376,6 +379,7 @@ export async function previewWorkspaceMasterIntake(input: {
         workspaceNovelId: Number(provenance.workspaceNovelId),
         workItemId: Number(provenance.workItemId),
         blockers,
+        sourceAlreadyLinked: false,
       });
       continue;
     }
@@ -385,6 +389,7 @@ export async function previewWorkspaceMasterIntake(input: {
     const candidate = candidates.length === 1 ? candidates[0] : null;
     let workspaceNovelId: number | null = null;
     let workItemId: number | null = null;
+    let sourceAlreadyLinked = false;
 
     if (candidate) {
       const workspaceNovel = workspaceByNovelId.get(candidate.id) as any;
@@ -394,11 +399,16 @@ export async function previewWorkspaceMasterIntake(input: {
           .select({
             item: workspaceEditorialWorkItems,
             cardStatus: workspaceKanbanCards.status,
+            columnKey: workspaceKanbanColumns.key,
           })
           .from(workspaceEditorialWorkItems)
           .innerJoin(
             workspaceKanbanCards,
             eq(workspaceEditorialWorkItems.cardId, workspaceKanbanCards.id)
+          )
+          .innerJoin(
+            workspaceKanbanColumns,
+            eq(workspaceKanbanCards.columnId, workspaceKanbanColumns.id)
           )
           .where(
             and(
@@ -426,14 +436,23 @@ export async function previewWorkspaceMasterIntake(input: {
                   eq(workspaceEditorialSources.status, "active")
                 )
               );
-            if (
-              activeSources.some(
-                (source: any) =>
-                  source.providerDocumentId &&
-                  source.providerDocumentId !== translationDocumentId
-              )
-            ) {
+            const matchingSource = activeSources.some(
+              (source: any) =>
+                source.providerDocumentId === translationDocumentId
+            );
+            const conflictingSource = activeSources.some(
+              (source: any) =>
+                source.providerDocumentId &&
+                source.providerDocumentId !== translationDocumentId
+            );
+            if (conflictingSource) {
               blockers.push("EXISTING_TRANSLATION_SOURCE_CONFLICT");
+            }
+            if (!matchingSource && activeSources.length === 0 && entry.columnKey !== "new") {
+              blockers.push("EXISTING_PACK_NOT_EDITABLE");
+            }
+            if (matchingSource) {
+              sourceAlreadyLinked = true;
             }
           } else {
             blockers.push("EPISODE_RANGE_OVERLAP");
@@ -456,6 +475,7 @@ export async function previewWorkspaceMasterIntake(input: {
       workspaceNovelId,
       workItemId,
       blockers,
+      sourceAlreadyLinked,
     });
   }
 
@@ -668,12 +688,15 @@ export async function syncWorkspaceMasterIntake(input: {
     }
 
     try {
-      // Validate/read C before creating any database objects for this row.
-      const sourcePayload = await fetchEditorialGoogleDocSource({
-        actorUserId: input.actorUserId,
-        connectionId: input.googleConnectionId,
-        documentUrlOrId: row.translationDocUrl!,
-      });
+      // Validate/read C before creating any database objects unless this exact
+      // Google source is already durably linked to the existing work item.
+      const sourcePayload = row.sourceAlreadyLinked
+        ? null
+        : await fetchEditorialGoogleDocSource({
+            actorUserId: input.actorUserId,
+            connectionId: input.googleConnectionId,
+            documentUrlOrId: row.translationDocUrl!,
+          });
       const target = await resolveWorkspaceNovelForSync({
         actorUserId: input.actorUserId,
         workspaceId: input.workspaceId,
@@ -685,13 +708,15 @@ export async function syncWorkspaceMasterIntake(input: {
         workspaceNovelId: target.workspaceNovelId,
         previewRow: row,
       });
-      const imported = await importEditorialSource({
-        actorUserId: input.actorUserId,
-        workspaceId: input.workspaceId,
-        workItemId: work.workItemId,
-        payload: sourcePayload,
-        googleConnectionId: input.googleConnectionId,
-      });
+      const imported = sourcePayload
+        ? await importEditorialSource({
+            actorUserId: input.actorUserId,
+            workspaceId: input.workspaceId,
+            workItemId: work.workItemId,
+            payload: sourcePayload,
+            googleConnectionId: input.googleConnectionId,
+          })
+        : null;
       await persistProvenance({
         actorUserId: input.actorUserId,
         workspaceId: input.workspaceId,
@@ -709,7 +734,9 @@ export async function syncWorkspaceMasterIntake(input: {
         workItemId: work.workItemId,
         novelCreated: target.novelCreated,
         workItemCreated: work.created,
-        sourceResult: String(imported.reason ?? "SOURCE_IMPORTED"),
+        sourceResult: imported
+          ? String(imported.reason ?? "SOURCE_IMPORTED")
+          : "SOURCE_ALREADY_LINKED",
         error: null,
       });
     } catch (error) {
