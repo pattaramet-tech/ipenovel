@@ -403,7 +403,8 @@ export async function previewWorkspaceMasterIntake(input: {
         rowNumber,
         status: blockers.length
           ? "CONFLICT"
-          : provenance.rowFingerprint === rowFingerprint
+          : provenance.rowFingerprint === rowFingerprint &&
+              provenanceSourceAlreadyLinked
             ? "UNCHANGED"
             : "UPDATED",
         rowFingerprint,
