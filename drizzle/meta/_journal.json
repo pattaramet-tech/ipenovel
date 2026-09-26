@@ -386,6 +386,13 @@
       "when": 1789932500000,
       "tag": "0054_workspace_editorial_sale_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "5",
+      "when": 1790450000000,
+      "tag": "0055_workspace_master_intake_sync",
+      "breakpoints": true
     }
   ]
 }
