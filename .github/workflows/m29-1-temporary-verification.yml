@@ -1,0 +1,97 @@
+name: M29.1 Temporary Verification
+
+on:
+  push:
+    branches:
+      - feat/nqa-m29-1-bulk-finding-cleanup
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m29-1-temporary-verification
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      TEST_DATABASE_URL: mysql://root:root@127.0.0.1:3306/ipenovel_test
+      DATABASE_URL: mysql://root:root@127.0.0.1:3306/ipenovel_test
+      VITE_PAYMENT_QR_IMAGE_URL: https://pub-example.r2.dev/payment/qr.jpg
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: ipenovel_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: M29.1 targeted and adjacent regression
+        run: >-
+          pnpm exec vitest run
+          server/workspace/editorialBulkFindingCleanup.domain.test.ts
+          server/workspace/editorialBulkFindingCleanup.static.test.ts
+          server/workspace/editorialBulkFindingCleanup.service.integration.test.ts
+          server/workspace/editorialEditor.domain.test.ts
+          server/workspace/editorialEditor.service.integration.test.ts
+          server/workspace/editorialForeignChecker.domain.test.ts
+          server/workspace/editorialForeignChecker.static.test.ts
+          server/workspace/editorialForeignChecker.service.integration.test.ts
+          server/workspace/editorialApproval.static.test.ts
+          server/workspace/editorialBoard.static.test.ts
+          server/migration-deployment-safety.test.ts
+          server/migration-legacy-pending-chain-static.test.ts
+
+      - name: Full CI regression (baseline diagnostic)
+        continue-on-error: true
+        run: pnpm test:ci
+
+      - name: Typecheck
+        run: pnpm check
+
+      - name: Build
+        run: pnpm build
+
+      - name: Diff and secret safety scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check 4d968774bac690a7dc10bf891584bc3b3e9bb33c...HEAD
+          changed="$(git diff --name-only 4d968774bac690a7dc10bf891584bc3b3e9bb33c...HEAD)"
+          if [ -n "$changed" ] && git grep -n $'\uFFFD' -- $changed; then
+            echo "U+FFFD replacement character found in changed files"
+            exit 1
+          fi
+          if git diff --unified=0 4d968774bac690a7dc10bf891584bc3b3e9bb33c...HEAD | grep -E '^\+.*BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'; then
+            echo "Private key material detected in diff"
+            exit 1
+          fi
+          if ! git diff --quiet 4d968774bac690a7dc10bf891584bc3b3e9bb33c...HEAD -- package.json pnpm-lock.yaml; then
+            echo "M29.1 must not add dependencies without separate review."
+            exit 1
+          fi
+
+      - name: Dependency audit (baseline diagnostic)
+        continue-on-error: true
+        run: pnpm audit --audit-level=high

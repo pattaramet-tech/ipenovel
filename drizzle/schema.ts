@@ -2714,6 +2714,7 @@ export const workspaceEditorialDraftEditEvents = mysqlTable(
       "replace_sentence",
       "replace_range",
       "replace_paragraph",
+      "bulk_cleanup",
       "undo",
     ]).notNull(),
     paragraphKey: varchar("paragraphKey", { length: 64 }),
