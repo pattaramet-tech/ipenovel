@@ -1091,8 +1091,12 @@ export default function WorkspacePage() {
   const editorialCheckerData = editorialForeignChecker.data as any;
   const editorialCheckerRunStale = Boolean(
     editorialCheckerData?.run &&
-      editorialCheckerData?.latestDraft &&
-      editorialCheckerData.run.draftId !== editorialCheckerData.latestDraft.id
+      (
+        editorialCheckerData?.isCurrent === false ||
+        !editorialCheckerData?.latestDraft ||
+        editorialCheckerData.run.draftId !== editorialCheckerData.latestDraft.id ||
+        editorialCheckerData.run.engineVersion !== editorialCheckerData.engineVersion
+      )
   );
   const googleConnections = (
     (editorialGoogleConnections.data as any[] | undefined) ?? []
@@ -2269,7 +2273,7 @@ export default function WorkspacePage() {
 
                     {editorialCheckerRunStale && (
                       <div className="rounded-md border border-dashed p-2 text-sm text-muted-foreground">
-                        ผลตรวจนี้เป็นของ Draft เก่า — Draft เปลี่ยนแล้ว ให้กด “ตรวจ / ตรวจซ้ำ” ก่อนแก้สถานะ finding
+                        ผลตรวจนี้เก่าแล้ว — Draft หรือ Checker engine เปลี่ยน ให้กด “ตรวจ / ตรวจซ้ำ” ก่อนแก้สถานะ finding
                       </div>
                     )}
 
