@@ -85,6 +85,25 @@ describe("Workspace Master Intake domain", () => {
     ).not.toBe(fingerprint);
   });
 
+  it("allows a missing prepared English source K in the canonical fingerprint", () => {
+    const row = {
+      spreadsheetId: "sheet",
+      sheetId: 10,
+      sheetName: "tab",
+      rowNumber: 1580,
+      novelTitle: "เรื่อง",
+      normalizedTitle: "เรื่อง",
+      episodeNumber: "141-190",
+      translationDocUrl: "https://docs.google.com/document/d/12345678901234567890/edit",
+      translationDocumentId: "12345678901234567890",
+      webSourceUrl: "https://example.com/source",
+      preparedSourceDocUrl: null,
+      preparedSourceDocumentId: null,
+    };
+    expect(() => masterIntakeRowFingerprint(row)).not.toThrow();
+    expect(masterIntakeRowFingerprint(row)).toMatch(/^[a-f0-9]{64}$/);
+  });
+
   it("fingerprints stable canonical row identity and links", () => {
     const row = {
       spreadsheetId: "sheet",
