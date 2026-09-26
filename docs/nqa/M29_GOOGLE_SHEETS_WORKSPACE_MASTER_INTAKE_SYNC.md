@@ -10,7 +10,7 @@ Source:
 - B: novel title + terminal episode range
 - C: Thai translation Google Doc
 - E: web source URL
-- K: prepared English source Google Doc
+- K: prepared English source Google Doc (optional; empty K does not block Sync)
 
 The feature uses the selected durable Workspace Google connection with read-only Sheets/Docs scopes.
 
@@ -31,14 +31,14 @@ For an actionable row, M29:
 - creates/reuses an Editorial Episode Pack;
 - leaves commerce metadata pending/unset for M29-created packs;
 - imports C through the existing Google Docs → Editorial Draft pipeline;
-- persists C/E/K links plus spreadsheet/sheet/row provenance and SHA-256 row fingerprint;
+- persists C/E and optional K links plus spreadsheet/sheet/row provenance and SHA-256 row fingerprint;
 - records an append-only Workspace audit event for the batch.
 
 The preview fingerprint includes the row fingerprint plus resolved DB target identities/blockers. Confirm recomputes Preview and rejects a stale fingerprint, preventing a preview from being applied after Sheet or Workspace state drifts.
 
 ## Conflict and idempotency policy
 
-Preview fails closed per row for malformed B/C/E/K values, ambiguous titles, overlapping ranges, duplicate/overlapping identities inside the same batch, shifted provenance, an already-owned work item, changed Thai source identity, missing durable targets, or a pack that has advanced beyond the editable intake state.
+Preview fails closed per row for malformed B/C/E values, a malformed non-empty K value, ambiguous titles, overlapping ranges, duplicate/overlapping identities inside the same batch, shifted provenance, an already-owned work item, changed Thai source identity, missing durable targets, or a pack that has advanced beyond the editable intake state. An empty K is accepted and persisted as missing optional prepared-source metadata.
 
 Repeated identical syncs do not create duplicate novels, Episode Packs, or provenance rows.
 
