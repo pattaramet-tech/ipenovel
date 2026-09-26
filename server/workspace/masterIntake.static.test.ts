@@ -38,6 +38,23 @@ describe("M29 Workspace Master Intake safety", () => {
     expect(workspaceService).toContain('publicationStatus: "archived"');
   });
 
+  it("fails closed on batch overlap, shifted provenance and advanced-pack refresh", () => {
+    const service = read("server/workspace/masterIntake.service.ts");
+    expect(service).toContain("DUPLICATE_BATCH_EPISODE_IDENTITY");
+    expect(service).toContain("BATCH_EPISODE_RANGE_OVERLAP");
+    expect(service).toContain("WORK_ITEM_ALREADY_LINKED_TO_SHEET_ROW");
+    expect(service).toContain("EXISTING_PACK_NOT_EDITABLE");
+    expect(service).toContain("SOURCE_ALREADY_LINKED");
+    expect(service).toContain("provenanceSourceAlreadyLinked");
+  });
+
+  it("reuses a novel created earlier in the same bulk sync", () => {
+    const service = read("server/workspace/masterIntake.service.ts");
+    expect(service).toContain("normalizeMasterIntakeNovelTitle(row.novelTitle!)");
+    expect(service).toContain("matching.length === 1");
+    expect(service).toContain("bindPublicationNovel");
+  });
+
   it("registers migration 0055 exactly once", () => {
     const journal = JSON.parse(read("drizzle/meta/_journal.json"));
     const entries = journal.entries.filter(
