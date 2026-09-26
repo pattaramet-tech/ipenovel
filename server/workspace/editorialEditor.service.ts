@@ -798,11 +798,11 @@ export async function applyEditorialBulkFindingCleanupRevision(input: {
       .where(
         eq(workspaceEditorialCheckerFindingStates.workItemId, input.workItemId)
       );
-    const stateByKey = new Map(
-      states.map((state: any) => [state.findingKey, state])
+    const stateByKey = new Map<string, any>(
+      states.map((state: any) => [String(state.findingKey), state])
     );
 
-    const matched = findings
+    const matched: EditorialBulkCleanupFinding[] = findings
       .map((finding: any): EditorialBulkCleanupFinding => ({
         findingKey: finding.findingKey,
         ruleKey: finding.ruleKey,
@@ -817,17 +817,17 @@ export async function applyEditorialBulkFindingCleanupRevision(input: {
         disposition: stateByKey.get(finding.findingKey)?.disposition ?? "open",
         resolutionVersion: stateByKey.get(finding.findingKey)?.version ?? 0,
       }))
-      .filter(finding =>
+      .filter((finding: EditorialBulkCleanupFinding) =>
         findingMatchesEditorialBulkCleanupAction(finding, input.action)
       );
 
-    const actualFindingKeys = matched
-      .map(finding => finding.findingKey)
+    const actualFindingKeys: string[] = matched
+      .map((finding: EditorialBulkCleanupFinding) => finding.findingKey)
       .sort();
     if (
       actualFindingKeys.length !== expectedFindingKeys.length ||
       actualFindingKeys.some(
-        (findingKey, index) => findingKey !== expectedFindingKeys[index]
+        (findingKey: string, index: number) => findingKey !== expectedFindingKeys[index]
       )
     ) {
       throw new WorkspaceEditorialEditorError(
