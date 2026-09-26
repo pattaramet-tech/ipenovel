@@ -210,7 +210,7 @@ export default function WorkspacePage() {
       workspaceId: selectedWorkspaceId ?? 0,
       googleConnectionId: Number(googleConnectionId) || 0,
       startRow: Number(masterIntakeStartRow) || 0,
-      endRow: Number(masterIntakeEndRow) || 0,
+      endRow: Number(masterIntakeEndRow || masterIntakeStartRow) || 0,
     },
     { enabled: false, retry: false }
   );
