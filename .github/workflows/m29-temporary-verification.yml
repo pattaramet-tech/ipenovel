@@ -52,6 +52,10 @@ jobs:
           pnpm exec vitest run
           server/workspace/masterIntake.domain.test.ts
           server/workspace/masterIntake.static.test.ts
+          server/workspace/editorialForeignChecker.domain.test.ts
+          server/workspace/editorialForeignChecker.static.test.ts
+          server/workspace/editorialForeignChecker.service.integration.test.ts
+          server/workspace/editorialApproval.static.test.ts
           server/workspace/editorialSaleMetadata.contract.test.ts
           server/workspace/editorialBoard.domain.test.ts
           server/workspace/editorialBoard.static.test.ts
