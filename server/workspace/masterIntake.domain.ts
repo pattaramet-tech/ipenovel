@@ -22,8 +22,8 @@ export type MasterIntakeRowCanonical = {
   translationDocUrl: string;
   translationDocumentId: string;
   webSourceUrl: string | null;
-  preparedSourceDocUrl: string;
-  preparedSourceDocumentId: string;
+  preparedSourceDocUrl: string | null;
+  preparedSourceDocumentId: string | null;
 };
 
 function normalizeSpace(value: string) {
@@ -102,7 +102,7 @@ export function masterIntakeRowFingerprint(row: MasterIntakeRowCanonical): strin
         translationDocUrl: row.translationDocUrl.trim(),
         webSourceUrl: row.webSourceUrl?.trim() ?? null,
         preparedSourceDocumentId: row.preparedSourceDocumentId,
-        preparedSourceDocUrl: row.preparedSourceDocUrl.trim(),
+        preparedSourceDocUrl: row.preparedSourceDocUrl?.trim() ?? null,
       })
     )
     .digest("hex");
