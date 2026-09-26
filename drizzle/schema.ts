@@ -3416,7 +3416,8 @@ export const workspaceAuditEvents = mysqlTable(
 
 export type WorkspaceWorkspace = typeof workspaceWorkspaces.$inferSelect;
 export type WorkspaceMember = typeof workspaceMembers.$inferSelect;
-export type WorkspaceNovel = typeof workspaceNovels.$inferSelect;\nexport type WorkspaceMasterIntakeRow = typeof workspaceMasterIntakeRows.$inferSelect;
+export type WorkspaceNovel = typeof workspaceNovels.$inferSelect;
+export type WorkspaceMasterIntakeRow = typeof workspaceMasterIntakeRows.$inferSelect;
 export type WorkspaceReadOnlyBinding = typeof workspaceReadOnlyBindings.$inferSelect;
 export type WorkspaceMigrationRegistryEntry = typeof workspaceMigrationRegistry.$inferSelect;
 export type WorkspaceDocumentFingerprint = typeof workspaceDocumentFingerprints.$inferSelect;
