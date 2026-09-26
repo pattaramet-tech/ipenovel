@@ -1319,7 +1319,7 @@ export default function WorkspacePage() {
                       Google Sheets Master Intake
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      รวมนิยาย / นิยายยังไม่จบ/ยังไม่ยื่น · อ่าน B/C/E/K · สูงสุด 100 แถวต่อครั้ง
+                      รวมนิยาย / นิยายยังไม่จบ/ยังไม่ยื่น · อ่าน B/C/E/K (K ไม่บังคับ) · สูงสุด 100 แถวต่อครั้ง
                     </p>
                   </div>
                   <span className="rounded-full border bg-background px-2 py-1 text-xs">
