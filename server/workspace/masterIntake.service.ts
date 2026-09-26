@@ -523,6 +523,35 @@ export async function previewWorkspaceMasterIntake(input: {
     });
   }
 
+  for (let leftIndex = 0; leftIndex < rows.length; leftIndex += 1) {
+    const left = rows[leftIndex]!;
+    const leftParsed = parseMasterIntakeTitleRange(left.rawTitle);
+    if (!leftParsed) continue;
+    for (let rightIndex = leftIndex + 1; rightIndex < rows.length; rightIndex += 1) {
+      const right = rows[rightIndex]!;
+      const rightParsed = parseMasterIntakeTitleRange(right.rawTitle);
+      if (!rightParsed || leftParsed.normalizedTitle !== rightParsed.normalizedTitle) continue;
+      if (
+        !spansOverlap(
+          { start: leftParsed.rangeStart, end: leftParsed.rangeEnd },
+          { start: rightParsed.rangeStart, end: rightParsed.rangeEnd }
+        )
+      ) {
+        continue;
+      }
+      const exact =
+        leftParsed.rangeStart === rightParsed.rangeStart &&
+        leftParsed.rangeEnd === rightParsed.rangeEnd;
+      const blocker = exact
+        ? "DUPLICATE_BATCH_EPISODE_IDENTITY"
+        : "BATCH_EPISODE_RANGE_OVERLAP";
+      if (!left.blockers.includes(blocker)) left.blockers.push(blocker);
+      if (!right.blockers.includes(blocker)) right.blockers.push(blocker);
+      left.status = "CONFLICT";
+      right.status = "CONFLICT";
+    }
+  }
+
   const previewFingerprint = masterIntakePreviewFingerprint({
     workspaceId: input.workspaceId,
     startRow: input.startRow,
@@ -553,18 +582,35 @@ async function resolveWorkspaceNovelForSync(input: {
 }) {
   const row = input.previewRow;
   if (!row.novelTitle) throw new Error("Parsed novel title is unavailable.");
-  if (row.existingNovelId) {
+
+  let novelId = row.existingNovelId;
+  if (!novelId) {
+    const db = await database();
+    const titleRows = await db.select({ id: novels.id, title: novels.title }).from(novels);
+    const matching = titleRows.filter(
+      (candidate: any) =>
+        normalizeMasterIntakeNovelTitle(String(candidate.title ?? "")) ===
+        normalizeMasterIntakeNovelTitle(row.novelTitle!)
+    );
+    if (matching.length > 1) {
+      throw new Error("Novel title became ambiguous after preview.");
+    }
+    novelId = matching.length === 1 ? Number(matching[0]!.id) : null;
+  }
+
+  if (novelId) {
     const bound = await bindPublicationNovel({
       actorUserId: input.actorUserId,
       workspaceId: input.workspaceId,
-      novelId: row.existingNovelId,
+      novelId,
     });
     return {
-      novelId: row.existingNovelId,
+      novelId,
       workspaceNovelId: Number(bound.workspaceNovelId),
       novelCreated: false,
     };
   }
+
   const created = await createWorkspacePublicationNovel({
     actorUserId: input.actorUserId,
     workspaceId: input.workspaceId,
