@@ -256,6 +256,7 @@ describe.sequential(
         await db.delete(users).where(eq(users.id, owner.id));
         await db.delete(users).where(eq(users.id, outsider.id));
       }
+    });
 
     it("detects Devanagari plus source-junk tails and refuses to allowlist junk", async () => {
       if (!process.env.TEST_DATABASE_URL) return;
@@ -352,7 +353,6 @@ describe.sequential(
         await db.delete(novels).where(eq(novels.id, novel.id));
         await db.delete(users).where(eq(users.id, owner.id));
       }
-    });
     });
   }
 );
