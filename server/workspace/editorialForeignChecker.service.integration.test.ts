@@ -256,6 +256,103 @@ describe.sequential(
         await db.delete(users).where(eq(users.id, owner.id));
         await db.delete(users).where(eq(users.id, outsider.id));
       }
+
+    it("detects Devanagari plus source-junk tails and refuses to allowlist junk", async () => {
+      if (!process.env.TEST_DATABASE_URL) return;
+      assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
+
+      const db = getTestDb();
+      const owner = await createTestUser({ role: "admin" });
+      const novel = await createTestNovel();
+      const workspace = await createWorkspace(owner.id, "Editorial QC v4");
+      let boardId: number | null = null;
+
+      try {
+        await bindPublicationNovel({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          novelId: novel.id,
+        });
+        const board = await ensureEditorialBoard({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+        });
+        boardId = board?.board.id ?? null;
+        const storyCard = board?.columns
+          .flatMap(column => column.cards)
+          .find(card => card.workItemType === "NEW_STORY");
+        expect(storyCard?.workItemId).toBeTruthy();
+        const workItemId = storyCard!.workItemId!;
+
+        const imported = await importEditorialSource({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          payload: source("checker-v4-junk", [
+            "บทที่ 74",
+            "มันคือโปเกมอนโอมา\u093E\u0907\u091Fกับคาบูโตะ",
+            "ขอบคุณสำหรับพาวเวอร์สโตนทั้งหมด",
+            "1.Unown",
+            "2. Oboro21",
+            "ความคิดของผู้สร้าง",
+            "alex02373 alex02373",
+            "จบตอน",
+          ]),
+        });
+
+        const checked = await runEditorialForeignChecker({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          expectedDraftId: imported.latestDraftId!,
+        });
+
+        expect(checked.run.engineVersion).toBe(
+          "workspace-editorial-foreign-checker-v4"
+        );
+        const devanagari = checked.findings.find(
+          (finding: any) => finding.token === "\u093E\u0907\u091F"
+        );
+        expect(devanagari).toMatchObject({
+          ruleKey: "foreign_script",
+          disposition: "open",
+        });
+        const junk = checked.findings.filter(
+          (finding: any) => finding.ruleKey === "source_junk"
+        );
+        expect(junk.map((finding: any) => finding.token)).toEqual([
+          "ขอบคุณสำหรับพาวเวอร์สโตนทั้งหมด",
+          "1.Unown",
+          "2. Oboro21",
+          "ความคิดของผู้สร้าง",
+          "alex02373 alex02373",
+          "จบตอน",
+        ]);
+        expect(checked.effectiveStatus).toBe("failed");
+
+        await expect(
+          allowEditorialFindingWord({
+            actorUserId: owner.id,
+            workspaceId: workspace.workspaceId,
+            workItemId,
+            findingId: junk[0].id,
+            expectedVersion: junk[0].resolutionVersion ?? 0,
+            idempotencyKey: "checker-v4-no-allow-source-junk",
+          })
+        ).rejects.toMatchObject({ code: "ALLOW_WORD_INVALID" });
+      } finally {
+        if (boardId) {
+          await db
+            .delete(workspaceKanbanCards)
+            .where(eq(workspaceKanbanCards.boardId, boardId));
+        }
+        await db
+          .delete(workspaceWorkspaces)
+          .where(eq(workspaceWorkspaces.id, workspace.workspaceId));
+        await db.delete(novels).where(eq(novels.id, novel.id));
+        await db.delete(users).where(eq(users.id, owner.id));
+      }
+    });
     });
   }
 );
