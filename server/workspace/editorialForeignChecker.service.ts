@@ -389,6 +389,7 @@ export async function getEditorialForeignCheckerReadModel(input: {
       findings: [],
       allowWords,
       unresolvedCount: 0,
+      isCurrent: false,
       effectiveStatus: null,
     };
   }
@@ -435,6 +436,11 @@ export async function getEditorialForeignCheckerReadModel(input: {
     (finding: any) => finding.disposition === "open"
   ).length;
 
+  const isCurrent = Boolean(
+    draft &&
+      run.draftId === draft.id &&
+      run.engineVersion === EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION
+  );
   return {
     engineVersion: EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION,
     latestDraft: draft,
@@ -442,6 +448,7 @@ export async function getEditorialForeignCheckerReadModel(input: {
     findings: projected,
     allowWords,
     unresolvedCount,
+    isCurrent,
     effectiveStatus: unresolvedCount === 0 ? "passed" : "failed",
   };
 }
@@ -618,10 +625,14 @@ export async function setEditorialFindingDisposition(input: {
       .for("update")
       .limit(1);
     const currentDraft = await latestDraft(tx, input.workItemId);
-    if (!currentDraft || located.run.draftId !== currentDraft.id) {
+    if (
+      !currentDraft ||
+      located.run.draftId !== currentDraft.id ||
+      located.run.engineVersion !== EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION
+    ) {
       throw new WorkspaceEditorialForeignCheckerError(
         "DRAFT_CONFLICT",
-        "This finding belongs to an older Draft. Run the checker against the current Draft before resolving it."
+        "This finding belongs to an older Draft or checker engine. Run the checker again before resolving it."
       );
     }
     return persistFindingState(tx, {
@@ -684,10 +695,14 @@ export async function allowEditorialFindingWord(input: {
       .limit(1);
 
     const currentDraft = await latestDraft(tx, input.workItemId);
-    if (!currentDraft || located.run.draftId !== currentDraft.id) {
+    if (
+      !currentDraft ||
+      located.run.draftId !== currentDraft.id ||
+      located.run.engineVersion !== EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION
+    ) {
       throw new WorkspaceEditorialForeignCheckerError(
         "DRAFT_CONFLICT",
-        "This finding belongs to an older Draft. Run the checker against the current Draft before allowing it."
+        "This finding belongs to an older Draft or checker engine. Run the checker again before allowing it."
       );
     }
 
