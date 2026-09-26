@@ -656,10 +656,13 @@ export async function allowEditorialFindingWord(input: {
     input.workItemId,
     input.findingId
   );
-  if (located.finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.longEnglish) {
+  if (
+    located.finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.longEnglish ||
+    located.finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+  ) {
     throw new WorkspaceEditorialForeignCheckerError(
       "ALLOW_WORD_INVALID",
-      "Long-English findings must be fixed or ignored; they cannot be added as one allowed word."
+      "This finding must be fixed or ignored; it cannot be added to the Workspace allowlist."
     );
   }
   const normalizedWord = normalizeEditorialAllowedWord(
