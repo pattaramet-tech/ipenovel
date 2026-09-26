@@ -35,7 +35,10 @@ import {
   type EditorialEpisodeDraftPlan,
 } from "./editorialApproval.domain";
 import { EDITORIAL_BOARD_SLUG } from "./editorialBoard.domain";
-import { editorialAllowListSha256 } from "./editorialForeignChecker.domain";
+import {
+  EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION,
+  editorialAllowListSha256,
+} from "./editorialForeignChecker.domain";
 import { projectEditorialQcColumn } from "./editorialQcProjection.service";
 
 export class WorkspaceEditorialApprovalError extends Error {
@@ -217,7 +220,10 @@ async function currentQcEvidence(
       findings: [],
     };
   }
-  if (run.draftId !== draftId) {
+  if (
+    run.draftId !== draftId ||
+    run.engineVersion !== EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION
+  ) {
     return {
       ready: false as const,
       reason: "CHECKER_STALE" as const,
