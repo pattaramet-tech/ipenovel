@@ -30,7 +30,7 @@ describe("Workspace Editorial foreign-word checker static boundaries", () => {
     expect(domain).not.toMatch(/SpreadsheetApp|DocumentApp|setBackgroundColor/);
   });
 
-  it("keeps historical alphabet rule keys for old evidence but excludes A-Z/a-z from new v3 findings", () => {
+  it("keeps historical alphabet rule keys for old evidence but excludes A-Z/a-z from new v4 findings", () => {
     const domain = source("server/workspace/editorialForeignChecker.domain.ts");
     expect(domain).toContain('latinWord: "latin_word"');
     expect(domain).toContain('longEnglish: "long_english"');
@@ -38,6 +38,21 @@ describe("Workspace Editorial foreign-word checker static boundaries", () => {
     expect(domain).toContain("sentenceText");
     expect(domain).toContain("contextText");
     expect(domain).toContain('offsetEncoding: "utf16"');
+  });
+
+  it("detects deterministic source-junk tail markers without auto-deleting content", () => {
+    const domain = source("server/workspace/editorialForeignChecker.domain.ts");
+    const service = source("server/workspace/editorialForeignChecker.service.ts");
+    const page = source("client/src/pages/WorkspacePage.tsx");
+    expect(domain).toContain('sourceJunk: "source_junk"');
+    expect(domain).toContain("SOURCE_JUNK_ANCHOR_PATTERNS");
+    expect(domain).toContain("ขอบคุณ");
+    expect(domain).toContain("พาวเวอร์สโตน");
+    expect(domain).toContain("ความคิดของ");
+    expect(domain).toContain("หากคุณอยากอ่านตอนถัดไปก่อนใคร");
+    expect(service).toContain("EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk");
+    expect(page).toContain('finding.ruleKey === "source_junk"');
+    expect(service + domain).not.toMatch(/deleteEditorial|autoDelete|removeParagraph/);
   });
 
   it("keeps checker execution local and independent from AI, publish and legacy checker queues", () => {
