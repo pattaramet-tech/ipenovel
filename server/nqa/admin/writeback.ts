@@ -17,6 +17,7 @@ import {
 import { InMemoryNqaIdempotencyStore } from "../mcp/idempotency";
 import { GoogleRestReadOnlyTransport } from "../google/transport";
 import { NQA_AUTOLINK_LIVE_TARGET } from "../../workspace/nqaAutolink.runtime";
+import { refreshWorkspaceGoogleNqaReadAccessToken } from "../../workspace/googleNqaRead";
 import type {
   NqaAdminRun,
   NqaAdminWritebackColumn,
@@ -25,7 +26,6 @@ import type {
 import { JsonNqaAdminRunStore } from "./store";
 import { hashNqaAdminWriteback, nqaAdminRuntimeStaticConfig } from "./runtime";
 
-const READ_TOKEN_ENV = "NQA_AUTOLINK_GOOGLE_READ_ACCESS_TOKEN";
 const WRITE_TOKEN_ENV = "NQA_AUTOLINK_GOOGLE_WRITE_ACCESS_TOKEN";
 const WRITEBACK_ENABLED_ENV = "NQA_ADMIN_WRITEBACK_ENABLED";
 
@@ -147,16 +147,24 @@ function columnMValue(run: NqaAdminRun, row: number) {
   ).slice(0, 2_000);
 }
 
-async function readCurrentCell(
-  row: number,
-  column: NqaAdminWritebackColumn,
-  env: Environment
-): Promise<string> {
+async function readCurrentCell(input: {
+  actorUserId: number;
+  googleConnectionId: number;
+  row: number;
+  column: NqaAdminWritebackColumn;
+}): Promise<string> {
   const transport = new GoogleRestReadOnlyTransport({
-    accessTokenProvider: () => env[READ_TOKEN_ENV] ?? "",
+    accessTokenProvider: () =>
+      refreshWorkspaceGoogleNqaReadAccessToken({
+        actorUserId: input.actorUserId,
+        connectionId: input.googleConnectionId,
+      }),
   });
   const range =
-    quoteSheetName(NQA_AUTOLINK_LIVE_TARGET.sheetName) + "!" + column + row;
+    quoteSheetName(NQA_AUTOLINK_LIVE_TARGET.sheetName) +
+    "!" +
+    input.column +
+    input.row;
   const [response] = await transport.batchGetValues({
     spreadsheetId: NQA_AUTOLINK_LIVE_TARGET.spreadsheetId,
     ranges: [range],
@@ -175,11 +183,12 @@ async function buildPreview(input: {
     input.runId,
     input.actorUserId
   );
-  const currentValue = await readCurrentCell(
-    input.row,
-    input.column,
-    input.env
-  );
+  const currentValue = await readCurrentCell({
+    actorUserId: input.actorUserId,
+    googleConnectionId: run.googleConnectionId,
+    row: input.row,
+    column: input.column,
+  });
   const value =
     input.column === "L"
       ? columnLValue(run, input.row, currentValue)

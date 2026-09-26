@@ -35,7 +35,7 @@ describe("NQA M11 local small-LLM provider", () => {
         new LocalHttpSmallLlmProvider("Qwen/Qwen3-1.7B", {
           endpoint: "https://example.com/adjudicate",
         })
-    ).toThrow("Local small-LLM endpoint must use a loopback hostname.");
+    ).toThrow("NQA sidecar endpoint must use loopback or a private bridge hostname.");
   });
 
   it("posts bounded evidence and parses a typed response", async () => {

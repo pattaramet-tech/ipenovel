@@ -114,7 +114,8 @@ import {
   WorkspacePublishRuntimeError,
 } from "./publishExecution.runtime";
 import {
-  getWorkspaceNqaAutolinkRuntime,
+  createWorkspaceNqaAutolinkRuntimeForActor,
+  resolveWorkspaceNqaAutolinkRuntimeStatusForActor,
   WorkspaceNqaAutolinkRuntimeError,
 } from "./nqaAutolink.runtime";
 import {
@@ -522,12 +523,20 @@ export const workspaceRouter = router({
   }),
 
   nqaNovelLink: router({
-    status: adminProcedure.query(() => getWorkspaceNqaAutolinkRuntime().status()),
+    status: adminProcedure.query(async ({ ctx }) =>
+      resolveWorkspaceNqaAutolinkRuntimeStatusForActor(ctx.user.id)
+    ),
     preview: adminProcedure
       .input(z.object({ row: z.number().int().positive() }))
       .query(async ({ ctx, input }) => {
         try {
-          return await getWorkspaceNqaAutolinkRuntime().preview({ actorUserId: ctx.user.id, row: input.row });
+          const runtime = await createWorkspaceNqaAutolinkRuntimeForActor(
+            ctx.user.id
+          );
+          return await runtime.preview({
+            actorUserId: ctx.user.id,
+            row: input.row,
+          });
         } catch (error) {
           return mapWorkspaceError(error);
         }
@@ -540,7 +549,10 @@ export const workspaceRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         try {
-          return await getWorkspaceNqaAutolinkRuntime().confirmBackfill({
+          const runtime = await createWorkspaceNqaAutolinkRuntimeForActor(
+            ctx.user.id
+          );
+          return await runtime.confirmBackfill({
             actorUserId: ctx.user.id,
             row: input.row,
             novelId: input.novelId,

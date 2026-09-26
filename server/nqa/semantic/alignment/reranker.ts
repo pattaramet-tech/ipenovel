@@ -1,3 +1,4 @@
+import { validateNqaSidecarEndpoint } from "../sidecarEndpoint";
 import type {
   NqaRerankerProvider,
   NqaRerankPair,
@@ -13,17 +14,13 @@ export class LocalHttpRerankerProvider implements NqaRerankerProvider {
       endpoint: string;
       fetchFn?: typeof fetch;
       timeoutMs?: number;
+      privateBridge?: boolean;
     }
   ) {
-    const parsed = new URL(input.endpoint);
-    const allowedHosts = new Set(["127.0.0.1", "localhost", "::1"]);
-
-    if (!allowedHosts.has(parsed.hostname)) {
-      throw new Error("Local reranker endpoint must use a loopback hostname.");
-    }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new Error("Local reranker endpoint must use HTTP or HTTPS.");
-    }
+    validateNqaSidecarEndpoint({
+      endpoint: input.endpoint,
+      privateBridge: input.privateBridge,
+    });
   }
 
   async rerank(pairs: NqaRerankPair[]): Promise<NqaRerankScore[]> {

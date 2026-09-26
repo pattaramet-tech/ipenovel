@@ -1,3 +1,4 @@
+import { validateNqaSidecarEndpoint } from "../sidecarEndpoint";
 import { NqaReasonCodeSchema, type NqaReasonCode } from "../../contracts";
 import type {
   NqaAdjudicationEvidencePack,
@@ -14,17 +15,13 @@ export class LocalHttpSmallLlmProvider implements NqaSmallLlmProvider {
       endpoint: string;
       fetchFn?: typeof fetch;
       timeoutMs?: number;
+      privateBridge?: boolean;
     }
   ) {
-    const parsed = new URL(input.endpoint);
-    const allowedHosts = new Set(["127.0.0.1", "localhost", "::1"]);
-
-    if (
-      !allowedHosts.has(parsed.hostname) ||
-      (parsed.protocol !== "http:" && parsed.protocol !== "https:")
-    ) {
-      throw new Error("Local small-LLM endpoint must use a loopback hostname.");
-    }
+    validateNqaSidecarEndpoint({
+      endpoint: input.endpoint,
+      privateBridge: input.privateBridge,
+    });
   }
 
   async adjudicate(

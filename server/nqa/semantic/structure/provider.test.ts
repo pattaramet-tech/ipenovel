@@ -74,7 +74,7 @@ describe("NQA M12 local structure provider", () => {
         new LocalHttpStructureVerificationProvider("Qwen/Qwen3-1.7B", {
           endpoint: "https://example.com/verify-structure",
         })
-    ).toThrow("Local structure endpoint must use a loopback hostname.");
+    ).toThrow("NQA sidecar endpoint must use loopback or a private bridge hostname.");
   });
 
   it("posts bounded items and parses typed assessments", async () => {

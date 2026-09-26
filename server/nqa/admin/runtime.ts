@@ -33,6 +33,10 @@ import { LocalHttpEmbeddingProvider } from "../semantic/embedding";
 import { LocalHttpRerankerProvider } from "../semantic/alignment/reranker";
 import { LocalHttpSmallLlmProvider } from "../semantic/adjudication/smallLlm";
 import { LocalHttpStructureVerificationProvider } from "../semantic/structure/provider";
+import {
+  nqaSidecarHealthEndpoint,
+  validateNqaSidecarEndpoint,
+} from "../semantic/sidecarEndpoint";
 import { createNqaIdentityHandlers } from "../identity/handlers";
 import { NqaNovelIdentityResolver } from "../identity/resolver";
 import { JsonlNqaAdminGatewayAuditSink } from "./audit";
@@ -47,10 +51,10 @@ import {
   fetchEditorialGoogleDocSource,
   listEditorialGoogleConnections,
 } from "../../workspace/editorialSource.googleDocs";
+import { refreshWorkspaceGoogleNqaReadAccessToken } from "../../workspace/googleNqaRead";
 import {
   NQA_AUTOLINK_LIVE_TARGET,
-  NQA_GOOGLE_NOVEL_ID_PREVIEW_SCOPE,
-  resolveWorkspaceNqaAutolinkRuntimeStatus,
+  resolveWorkspaceNqaAutolinkRuntimeStatusForActor,
 } from "../../workspace/nqaAutolink.runtime";
 import { JsonNqaAdminRunStore, resolveNqaAdminRunDirectory } from "./store";
 import type {
@@ -63,21 +67,22 @@ import type {
   NqaAdminStartRunInput,
 } from "./contracts";
 
-const SHEETS_READ_TOKEN_ENV = "NQA_AUTOLINK_GOOGLE_READ_ACCESS_TOKEN";
-const SHEETS_READ_SCOPES_ENV = "NQA_AUTOLINK_GOOGLE_READ_GRANTED_SCOPES";
 const SHEETS_WRITE_TOKEN_ENV = "NQA_AUTOLINK_GOOGLE_WRITE_ACCESS_TOKEN";
 const SHEETS_WRITE_SCOPES_ENV = "NQA_AUTOLINK_GOOGLE_WRITE_GRANTED_SCOPES";
 const ADMIN_WRITEBACK_ENABLED_ENV = "NQA_ADMIN_WRITEBACK_ENABLED";
 const FULL_SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets";
 
-const EMBEDDING_ENDPOINT = "http://127.0.0.1:8765/embed";
-const RERANK_ENDPOINT = "http://127.0.0.1:8766/rerank";
-const ADJUDICATION_ENDPOINT = "http://127.0.0.1:8767/adjudicate";
-const STRUCTURE_ENDPOINT = "http://127.0.0.1:8767/verify-structure";
+const EMBEDDING_ENDPOINT_ENV = "NQA_EMBEDDING_ENDPOINT";
+const RERANK_ENDPOINT_ENV = "NQA_RERANKER_ENDPOINT";
+const ADJUDICATION_ENDPOINT_ENV = "NQA_QWEN_ADJUDICATION_ENDPOINT";
+const STRUCTURE_ENDPOINT_ENV = "NQA_QWEN_STRUCTURE_ENDPOINT";
+const PRIVATE_INFERENCE_BRIDGE_ENABLED_ENV =
+  "NQA_PRIVATE_INFERENCE_BRIDGE_ENABLED";
 
-const EMBEDDING_HEALTH = "http://127.0.0.1:8765/health";
-const RERANK_HEALTH = "http://127.0.0.1:8766/health";
-const QWEN_HEALTH = "http://127.0.0.1:8767/health";
+const DEFAULT_EMBEDDING_ENDPOINT = "http://127.0.0.1:8765/embed";
+const DEFAULT_RERANK_ENDPOINT = "http://127.0.0.1:8766/rerank";
+const DEFAULT_ADJUDICATION_ENDPOINT = "http://127.0.0.1:8767/adjudicate";
+const DEFAULT_STRUCTURE_ENDPOINT = "http://127.0.0.1:8767/verify-structure";
 
 const MAX_EVIDENCE_ITEMS = 20;
 const EXCERPT_LIMIT = 900;
@@ -270,11 +275,16 @@ class SplitCredentialGoogleTransport implements NqaGoogleReadOnlyTransport {
   }
 }
 
-function createSheetsReadTransport(
-  env: Environment = process.env
-): GoogleRestReadOnlyTransport {
+function createSheetsReadTransport(input: {
+  actorUserId: number;
+  googleConnectionId: number;
+}): GoogleRestReadOnlyTransport {
   return new GoogleRestReadOnlyTransport({
-    accessTokenProvider: () => env[SHEETS_READ_TOKEN_ENV] ?? "",
+    accessTokenProvider: () =>
+      refreshWorkspaceGoogleNqaReadAccessToken({
+        actorUserId: input.actorUserId,
+        connectionId: input.googleConnectionId,
+      }),
   });
 }
 
@@ -284,7 +294,6 @@ function createQaAdapter(input: {
   sampleParagraphs: NqaAdminSampleMode;
   env?: Environment;
 }) {
-  const env = input.env ?? process.env;
   const baseReader = new WorkspaceEditorialNqaDocsReader(
     input.actorUserId,
     input.googleConnectionId
@@ -293,7 +302,7 @@ function createQaAdapter(input: {
     baseReader,
     input.sampleParagraphs
   );
-  const sheetTransport = createSheetsReadTransport(env);
+  const sheetTransport = createSheetsReadTransport(input);
   const split = new SplitCredentialGoogleTransport(sheetTransport, reader);
 
   return {
@@ -311,6 +320,33 @@ function createQaAdapter(input: {
     reader,
     sheetTransport,
   };
+}
+
+export function resolveNqaSidecarRuntimeConfig(
+  env: Environment = process.env
+) {
+  const privateBridge = env[PRIVATE_INFERENCE_BRIDGE_ENABLED_ENV] === "true";
+  const config = {
+    embeddingEndpoint:
+      env[EMBEDDING_ENDPOINT_ENV]?.trim() || DEFAULT_EMBEDDING_ENDPOINT,
+    rerankerEndpoint:
+      env[RERANK_ENDPOINT_ENV]?.trim() || DEFAULT_RERANK_ENDPOINT,
+    adjudicationEndpoint:
+      env[ADJUDICATION_ENDPOINT_ENV]?.trim() || DEFAULT_ADJUDICATION_ENDPOINT,
+    structureEndpoint:
+      env[STRUCTURE_ENDPOINT_ENV]?.trim() || DEFAULT_STRUCTURE_ENDPOINT,
+    privateBridge,
+  };
+
+  for (const endpoint of [
+    config.embeddingEndpoint,
+    config.rerankerEndpoint,
+    config.adjudicationEndpoint,
+    config.structureEndpoint,
+  ]) {
+    validateNqaSidecarEndpoint({ endpoint, privateBridge });
+  }
+  return config;
 }
 
 async function probeSidecar(url: string): Promise<boolean> {
@@ -334,11 +370,13 @@ export async function getNqaAdminStatus(
   actorUserId: number,
   env: Environment = process.env
 ) {
-  const autolink = resolveWorkspaceNqaAutolinkRuntimeStatus(env);
+  const autolink =
+    await resolveWorkspaceNqaAutolinkRuntimeStatusForActor(actorUserId, env);
   let googleConnections: Array<{
     id: number;
     status: string;
     scopeReady: boolean;
+    nqaReadScopeReady: boolean;
     updatedAt: unknown;
   }> = [];
   let googleConnectionError = false;
@@ -348,11 +386,26 @@ export async function getNqaAdminStatus(
     googleConnectionError = true;
   }
 
-  const [embeddingReady, rerankerReady, qwenReady] = await Promise.all([
-    probeSidecar(EMBEDDING_HEALTH),
-    probeSidecar(RERANK_HEALTH),
-    probeSidecar(QWEN_HEALTH),
-  ]);
+  let sidecarConfig: ReturnType<typeof resolveNqaSidecarRuntimeConfig> | null =
+    null;
+  try {
+    sidecarConfig = resolveNqaSidecarRuntimeConfig(env);
+  } catch {
+    sidecarConfig = null;
+  }
+  const [embeddingReady, rerankerReady, qwenReady] = sidecarConfig
+    ? await Promise.all([
+        probeSidecar(
+          nqaSidecarHealthEndpoint(sidecarConfig.embeddingEndpoint)
+        ),
+        probeSidecar(
+          nqaSidecarHealthEndpoint(sidecarConfig.rerankerEndpoint)
+        ),
+        probeSidecar(
+          nqaSidecarHealthEndpoint(sidecarConfig.adjudicationEndpoint)
+        ),
+      ])
+    : [false, false, false];
 
   let runStoreReady = true;
   try {
@@ -365,6 +418,12 @@ export async function getNqaAdminStatus(
     !googleConnectionError &&
     googleConnections.some(
       connection => connection.status === "active" && connection.scopeReady
+    );
+  const sheetReadReady =
+    !googleConnectionError &&
+    googleConnections.some(
+      connection =>
+        connection.status === "active" && connection.nqaReadScopeReady
     );
 
   const writeToken = env[SHEETS_WRITE_TOKEN_ENV]?.trim() ?? "";
@@ -401,7 +460,7 @@ export async function getNqaAdminStatus(
       blockers: Array.from(new Set(qcBlockers)),
     },
     google: {
-      sheetReadReady: autolink.previewReady,
+      sheetReadReady,
       docsReady,
       connectionError: googleConnectionError,
       connections: googleConnections,
@@ -424,14 +483,18 @@ export async function getNqaAdminStatus(
 }
 
 async function planRows(input: {
+  actorUserId: number;
+  googleConnectionId: number;
   startRow: number;
   endRow: number;
   mode: NqaAdminStartRunInput["mode"];
   qcEligibilityOnly: boolean;
   env?: Environment;
 }): Promise<NqaAdminRunRow[]> {
-  const env = input.env ?? process.env;
-  const transport = createSheetsReadTransport(env);
+  const transport = createSheetsReadTransport({
+    actorUserId: input.actorUserId,
+    googleConnectionId: input.googleConnectionId,
+  });
   const metadata = await transport.getSpreadsheetMetadata(
     NQA_AUTOLINK_LIVE_TARGET.spreadsheetId
   );
@@ -545,7 +608,8 @@ export async function startNqaAdminRun(
     candidate =>
       candidate.id === input.googleConnectionId &&
       candidate.status === "active" &&
-      candidate.scopeReady
+      candidate.scopeReady &&
+      candidate.nqaReadScopeReady
   );
   if (!connection) {
     throw new NqaAdminRuntimeError(
@@ -555,6 +619,8 @@ export async function startNqaAdminRun(
   }
 
   const rows = await planRows({
+    actorUserId,
+    googleConnectionId: input.googleConnectionId,
     startRow: input.startRow,
     endRow: input.endRow,
     mode: input.mode,
@@ -655,6 +721,7 @@ function buildGateway(input: {
   env: Environment;
 }) {
   const { adapter, reader } = createQaAdapter(input);
+  const sidecar = resolveNqaSidecarRuntimeConfig(input.env);
   const identityResolver = new NqaNovelIdentityResolver({
     novels: [],
     bundles: [],
@@ -672,24 +739,28 @@ function buildGateway(input: {
       adapter,
       reader,
       embeddingProvider: new LocalHttpEmbeddingProvider("BAAI/bge-m3", {
-        endpoint: EMBEDDING_ENDPOINT,
+        endpoint: sidecar.embeddingEndpoint,
+        privateBridge: sidecar.privateBridge,
         timeoutMs: 300_000,
       }),
       rerankerProvider: new LocalHttpRerankerProvider(
         "BAAI/bge-reranker-v2-m3",
         {
-          endpoint: RERANK_ENDPOINT,
+          endpoint: sidecar.rerankerEndpoint,
+          privateBridge: sidecar.privateBridge,
           timeoutMs: 300_000,
         }
       ),
       smallLlmProvider: new LocalHttpSmallLlmProvider("Qwen/Qwen3-1.7B", {
-        endpoint: ADJUDICATION_ENDPOINT,
+        endpoint: sidecar.adjudicationEndpoint,
+        privateBridge: sidecar.privateBridge,
         timeoutMs: 300_000,
       }),
       structureProvider: new LocalHttpStructureVerificationProvider(
         "Qwen/Qwen3-1.7B",
         {
-          endpoint: STRUCTURE_ENDPOINT,
+          endpoint: sidecar.structureEndpoint,
+          privateBridge: sidecar.privateBridge,
           timeoutMs: 300_000,
         }
       ),
@@ -1264,10 +1335,7 @@ export async function listNqaAdminRuns(
 export function nqaAdminRuntimeStaticConfig(env: Environment = process.env) {
   return {
     target: NQA_AUTOLINK_LIVE_TARGET,
-    sheetReadTokenConfigured: Boolean(env[SHEETS_READ_TOKEN_ENV]?.trim()),
-    sheetReadScopeReady: parseScopes(env[SHEETS_READ_SCOPES_ENV]).has(
-      NQA_GOOGLE_NOVEL_ID_PREVIEW_SCOPE
-    ),
+    sheetReadAuthMode: "workspace-refresh" as const,
     writebackEnabled: env[ADMIN_WRITEBACK_ENABLED_ENV] === "true",
     writeTokenConfigured: Boolean(env[SHEETS_WRITE_TOKEN_ENV]?.trim()),
     writeScopeReady: parseScopes(env[SHEETS_WRITE_SCOPES_ENV]).has(

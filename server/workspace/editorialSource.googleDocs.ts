@@ -6,6 +6,7 @@ import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import {
   GOOGLE_DOC_MIME_TYPE,
   hasRequiredDocsScopes,
+  hasRequiredNqaReadScopes,
 } from "./googleDocs.domain";
 import {
   workspaceGoogleDocsOAuthClientCredentials,
@@ -285,6 +286,7 @@ export async function listEditorialGoogleConnections(actorUserId: number) {
     id: row.id,
     status: row.status,
     scopeReady: hasRequiredDocsScopes(row.grantedScopes),
+    nqaReadScopeReady: hasRequiredNqaReadScopes(row.grantedScopes),
     updatedAt: row.updatedAt,
   }));
 }

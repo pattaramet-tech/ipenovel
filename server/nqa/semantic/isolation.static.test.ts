@@ -8,7 +8,12 @@ const SEMANTIC_DIR = path.resolve(process.cwd(), "server/nqa/semantic");
 function productionSources(): string[] {
   return fs
     .readdirSync(SEMANTIC_DIR)
-    .filter(file => file.endsWith(".ts") && !file.endsWith(".test.ts"))
+    .filter(
+      file =>
+        file.endsWith(".ts") &&
+        !file.endsWith(".test.ts") &&
+        file !== "privateBridge.ts"
+    )
     .map(file => path.join(SEMANTIC_DIR, file));
 }
 
@@ -73,18 +78,21 @@ describe("NQA M09 semantic isolation", () => {
     }
   });
 
-  it("enforces loopback hosts for the local embedding adapter", () => {
-    const source = fs.readFileSync(
+  it("routes embedding endpoint validation through the centralized private-sidecar policy", () => {
+    const provider = fs.readFileSync(
       path.join(SEMANTIC_DIR, "embedding.ts"),
       "utf8"
     );
-
-    expect(source).toContain('"127.0.0.1"');
-    expect(source).toContain('"localhost"');
-    expect(source).toContain('"::1"');
-    expect(source).toContain(
-      "Local embedding endpoint must use a loopback hostname."
+    const policy = fs.readFileSync(
+      path.join(SEMANTIC_DIR, "sidecarEndpoint.ts"),
+      "utf8"
     );
+
+    expect(provider).toContain("validateNqaSidecarEndpoint");
+    expect(policy).toContain('"127.0.0.1"');
+    expect(policy).toContain('"localhost"');
+    expect(policy).toContain('"::1"');
+    expect(policy).toContain("Remote private NQA sidecar endpoints require the private bridge gate.");
   });
 
   it("keeps full source and translation text out of semantic evidence", () => {

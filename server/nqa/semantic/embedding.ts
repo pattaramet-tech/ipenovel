@@ -1,3 +1,4 @@
+import { validateNqaSidecarEndpoint } from "./sidecarEndpoint";
 import type { NqaEmbeddingProvider, NqaEmbeddingVector } from "./contracts";
 
 export function cosineSimilarity(
@@ -43,18 +44,13 @@ export class LocalHttpEmbeddingProvider implements NqaEmbeddingProvider {
       endpoint: string;
       fetchFn?: typeof fetch;
       timeoutMs?: number;
+      privateBridge?: boolean;
     }
   ) {
-    const parsed = new URL(input.endpoint);
-    const allowedHosts = new Set(["127.0.0.1", "localhost", "::1"]);
-
-    if (!allowedHosts.has(parsed.hostname)) {
-      throw new Error("Local embedding endpoint must use a loopback hostname.");
-    }
-
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new Error("Local embedding endpoint must use HTTP or HTTPS.");
-    }
+    validateNqaSidecarEndpoint({
+      endpoint: input.endpoint,
+      privateBridge: input.privateBridge,
+    });
   }
 
   async embed(texts: string[]): Promise<NqaEmbeddingVector[]> {

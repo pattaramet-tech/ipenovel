@@ -16,7 +16,7 @@ describe("NQA M10 local reranker provider", () => {
         new LocalHttpRerankerProvider("BAAI/bge-reranker-v2-m3", {
           endpoint: "https://example.com/rerank",
         })
-    ).toThrow("Local reranker endpoint must use a loopback hostname.");
+    ).toThrow("NQA sidecar endpoint must use loopback or a private bridge hostname.");
   });
 
   it("posts ordered query/passage pairs and returns normalized scores", async () => {
