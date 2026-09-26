@@ -134,6 +134,12 @@ import {
   WorkspacePublishFinalGateError,
 } from "./publishFinalGate.service";
 import {
+  listWorkspaceMasterIntakeHistory,
+  previewWorkspaceMasterIntake,
+  syncWorkspaceMasterIntake,
+  WorkspaceMasterIntakeError,
+} from "./masterIntake.service";
+import {
   getLegacyRetirementCandidatePackage,
   requireLegacyRetirementCandidate,
   WorkspaceLegacyRetirementError,
@@ -161,6 +167,18 @@ import {
  * defense in depth. Customer-facing Google-connection gating remains bypassed.
  */
 function mapWorkspaceError(error: unknown): never {
+  if (error instanceof WorkspaceMasterIntakeError) {
+    const code =
+      error.code === "WORKSPACE_NOT_FOUND"
+        ? "NOT_FOUND"
+        : error.code === "STALE_PREVIEW"
+          ? "CONFLICT"
+          : error.code === "DATABASE_UNAVAILABLE" ||
+              error.code === "GOOGLE_READ_FAILED"
+            ? "SERVICE_UNAVAILABLE"
+            : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
   if (error instanceof WorkspaceNqaAutolinkRuntimeError) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
@@ -934,6 +952,53 @@ export const workspaceRouter = router({
   }),
 
   editorial: router({
+    masterIntakePreview: adminProcedure
+      .input(workspaceIdInput.extend({
+        googleConnectionId: z.number().int().positive(),
+        startRow: z.number().int().min(2),
+        endRow: z.number().int().min(2),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await previewWorkspaceMasterIntake({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    masterIntakeSync: adminProcedure
+      .input(workspaceIdInput.extend({
+        googleConnectionId: z.number().int().positive(),
+        startRow: z.number().int().min(2),
+        endRow: z.number().int().min(2),
+        expectedPreviewFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await syncWorkspaceMasterIntake({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    masterIntakeHistory: adminProcedure
+      .input(workspaceIdInput.extend({
+        limit: z.number().int().min(1).max(50).default(20),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await listWorkspaceMasterIntakeHistory({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
     historicalPackRepairPreview: adminProcedure
       .input(workspaceIdInput.extend({ workItemId: z.number().int().positive() }))
       .query(async ({ ctx, input }) => {
