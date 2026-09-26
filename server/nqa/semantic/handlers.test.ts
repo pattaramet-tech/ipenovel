@@ -138,6 +138,60 @@ function sourceSnapshot(): NqaDocumentSnapshot {
   };
 }
 
+function liveSourceSnapshot(): NqaDocumentSnapshot {
+  return {
+    documentId: SOURCE_ID,
+    title: "Live English",
+    revisionId: "live-source-rev",
+    tabs: [
+      {
+        tabId: "t.0",
+        title: "Tab 1",
+        index: 0,
+        parentTabId: null,
+        paragraphs: [
+          {
+            text: "บท 196: Search and Rescue",
+            startIndex: 1,
+            endIndex: 27,
+            tabId: "t.0",
+          },
+          {
+            text: "source-196 " + "A".repeat(300),
+            startIndex: 28,
+            endIndex: 337,
+            tabId: "t.0",
+          },
+          {
+            text: "บท 197: Possessing",
+            startIndex: 338,
+            endIndex: 357,
+            tabId: "t.0",
+          },
+          {
+            text: "source-197 " + "B".repeat(300),
+            startIndex: 358,
+            endIndex: 667,
+            tabId: "t.0",
+          },
+          {
+            text: "บท 205: Distant Event",
+            startIndex: 668,
+            endIndex: 690,
+            tabId: "t.0",
+          },
+          {
+            text: "source-205 " + "C".repeat(300),
+            startIndex: 691,
+            endIndex: 1000,
+            tabId: "t.0",
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function translationSnapshot(include197 = true): NqaDocumentSnapshot {
   return {
     documentId: TRANSLATION_ID,
@@ -204,11 +258,13 @@ function makeGateway(input?: {
   deterministicPolicy?: Partial<NqaDeterministicPolicy>;
   includeTranslation?: boolean;
   validContract?: boolean;
+  sourceDocument?: NqaDocumentSnapshot;
+  expectedInternalSequence?: (chapter: number) => number | null;
 }) {
   const reader: NqaChapterDocumentReader = {
     readDocument: vi.fn(async documentId =>
       documentId === SOURCE_ID
-        ? sourceSnapshot()
+        ? (input?.sourceDocument ?? sourceSnapshot())
         : translationSnapshot(input?.includeTranslation ?? true)
     ),
   };
@@ -224,7 +280,9 @@ function makeGateway(input?: {
     structureProvider: input?.structureProvider,
     structurePolicy: input?.structurePolicy,
     alignmentPolicyResolver: input?.alignmentPolicyResolver,
-    expectedInternalSequence: chapter => (chapter === 197 ? 198 : null),
+    expectedInternalSequence:
+      input?.expectedInternalSequence ??
+      (chapter => (chapter === 197 ? 198 : null)),
     deterministicPolicy: {
       minChapterCharsReview: 1,
       maxChapterCharsReview: 100_000,
@@ -316,6 +374,30 @@ describe("NQA semantic QA MCP handler", () => {
         },
       },
     });
+  });
+
+  it("reaches semantic embeddings for live single-number source headings", async () => {
+    const provider = embeddingProvider([1, 0, 0]);
+    const { gateway } = makeGateway({
+      provider,
+      sourceDocument: liveSourceSnapshot(),
+      expectedInternalSequence: chapter => chapter,
+    });
+
+    const result = await gateway.dispatch({
+      request: request("0".repeat(64)),
+      principal: qaPrincipal,
+    });
+
+    expect(result).toMatchObject({
+      status: "OK",
+      result: {
+        semantic: {
+          deterministic: { decision: "PASS" },
+        },
+      },
+    });
+    expect(provider.calls).toBeGreaterThan(0);
   });
 
   it("fails a strong distant wrong-source match", async () => {
