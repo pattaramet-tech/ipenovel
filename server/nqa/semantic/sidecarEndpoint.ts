@@ -48,7 +48,9 @@ export function validateNqaSidecarEndpoint(input: {
 
 export function nqaSidecarHealthEndpoint(endpoint: string): string {
   const parsed = new URL(endpoint);
-  parsed.pathname = "/health";
+  parsed.pathname = parsed.pathname.startsWith("/api/nqa/bridge/")
+    ? "/api/nqa/bridge/health"
+    : "/health";
   parsed.search = "";
   parsed.hash = "";
   return parsed.toString();

@@ -42,5 +42,10 @@ describe("M28.1 NQA sidecar endpoint policy", () => {
     expect(
       nqaSidecarHealthEndpoint("http://127.0.0.1:8767/adjudicate?x=1")
     ).toBe("http://127.0.0.1:8767/health");
+    expect(
+      nqaSidecarHealthEndpoint(
+        "http://127.0.0.1:3000/api/nqa/bridge/adjudicate?x=1"
+      )
+    ).toBe("http://127.0.0.1:3000/api/nqa/bridge/health");
   });
 });
