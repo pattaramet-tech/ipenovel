@@ -96,6 +96,15 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
     );
   });
 
+  it("treats QC from an obsolete checker engine as stale before approval/stage", () => {
+    const service = source("server/workspace/editorialApproval.service.ts");
+    expect(service).toContain("EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION");
+    expect(service).toContain(
+      "run.engineVersion !== EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION"
+    );
+    expect(service).toContain('"CHECKER_STALE"');
+  });
+
   it("stages only a NEW_EPISODE and never makes it reader-visible", () => {
     const domain = source("server/workspace/editorialApproval.domain.ts");
     const service = source("server/workspace/editorialApproval.service.ts");
