@@ -10,9 +10,15 @@ export const WORKSPACE_DOCS_SCOPES = [
   "https://www.googleapis.com/auth/drive.metadata.readonly",
   "https://www.googleapis.com/auth/documents.readonly",
 ] as const;
+export const WORKSPACE_SHEETS_READ_SCOPE =
+  "https://www.googleapis.com/auth/spreadsheets.readonly" as const;
+export const WORKSPACE_NQA_READ_SCOPES = [
+  ...WORKSPACE_DOCS_SCOPES,
+  WORKSPACE_SHEETS_READ_SCOPE,
+] as const;
 export const WORKSPACE_DOCS_AUTHORIZATION_SCOPES = [
   "openid",
-  ...WORKSPACE_DOCS_SCOPES,
+  ...WORKSPACE_NQA_READ_SCOPES,
 ] as const;
 export const WORKSPACE_DOCS_SCOPE =
   WORKSPACE_DOCS_AUTHORIZATION_SCOPES.join(" ");
@@ -54,6 +60,12 @@ export function hasRequiredDocsScopes(grantedScopes: string): boolean {
   const granted = new Set(grantedScopes.split(/\s+/).filter(Boolean));
   return WORKSPACE_DOCS_SCOPES.every(scope => granted.has(scope));
 }
+
+export function hasRequiredNqaReadScopes(grantedScopes: string): boolean {
+  const granted = new Set(grantedScopes.split(/\s+/).filter(Boolean));
+  return WORKSPACE_NQA_READ_SCOPES.every(scope => granted.has(scope));
+}
+
 export const GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document";
 export type WorkspaceGoogleConnectionStatus =
   "active" | "reconnect_required" | "revoked";

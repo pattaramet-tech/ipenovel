@@ -34,7 +34,7 @@ describe("NQA semantic embedding provider", () => {
         new LocalHttpEmbeddingProvider("BAAI/bge-m3", {
           endpoint: "https://example.com/embed",
         })
-    ).toThrow("Local embedding endpoint must use a loopback hostname.");
+    ).toThrow("NQA sidecar endpoint must use loopback or a private bridge hostname.");
   });
 
   it("posts bounded text batches to a loopback sidecar", async () => {

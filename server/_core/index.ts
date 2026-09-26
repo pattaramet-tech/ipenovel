@@ -18,6 +18,7 @@ import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
 import { registerHealthReadinessRoutes } from "./healthReadiness";
 import { createUnattendedPublishWorker } from "../workspace/publishUnattendedWorker";
 import { registerWorkspaceGoogleDocsOAuthRoutes } from "../workspace/googleDocs.oauth";
+import { registerNqaPrivateInferenceBridgeRoutes } from "../nqa/semantic/privateBridge";
 
 // Procedures that have caused "No procedure found on path ..." client errors
 // in production when an older server build was still deployed after the
@@ -107,6 +108,7 @@ async function startServer() {
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  registerNqaPrivateInferenceBridgeRoutes(app);
   // OAuth callback under /api/oauth/callback (Manus - always registered,
   // unchanged, kept for rollback)
   registerOAuthRoutes(app);

@@ -1,3 +1,4 @@
+import { validateNqaSidecarEndpoint } from "../sidecarEndpoint";
 import type {
   NqaStructureDimension,
   NqaStructureDimensionAssessment,
@@ -218,15 +219,13 @@ export class LocalHttpStructureVerificationProvider implements NqaStructureVerif
       endpoint: string;
       fetchFn?: typeof fetch;
       timeoutMs?: number;
+      privateBridge?: boolean;
     }
   ) {
-    const parsed = new URL(input.endpoint);
-    if (
-      !new Set(["127.0.0.1", "localhost", "::1"]).has(parsed.hostname) ||
-      (parsed.protocol !== "http:" && parsed.protocol !== "https:")
-    ) {
-      throw new Error("Local structure endpoint must use a loopback hostname.");
-    }
+    validateNqaSidecarEndpoint({
+      endpoint: input.endpoint,
+      privateBridge: input.privateBridge,
+    });
   }
 
   async verify(

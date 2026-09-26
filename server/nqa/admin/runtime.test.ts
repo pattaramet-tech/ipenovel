@@ -121,14 +121,14 @@ describe("M26 NQA Admin runtime", () => {
 
   it("writeback activation is exact-literal and fingerprinting is deterministic", () => {
     const base = {
-      NQA_AUTOLINK_GOOGLE_READ_ACCESS_TOKEN: "read",
-      NQA_AUTOLINK_GOOGLE_READ_GRANTED_SCOPES:
-        "https://www.googleapis.com/auth/spreadsheets.readonly",
       NQA_AUTOLINK_GOOGLE_WRITE_ACCESS_TOKEN: "write",
       NQA_AUTOLINK_GOOGLE_WRITE_GRANTED_SCOPES:
         "https://www.googleapis.com/auth/spreadsheets",
     };
 
+    expect(nqaAdminRuntimeStaticConfig(base).sheetReadAuthMode).toBe(
+      "workspace-refresh"
+    );
     expect(
       nqaAdminRuntimeStaticConfig({
         ...base,

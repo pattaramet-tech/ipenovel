@@ -31,6 +31,10 @@ import type {
 import { NqaMcpGateway } from "../nqa/mcp/gateway";
 import { NqaGatewayHandlerRegistry } from "../nqa/mcp/handlers";
 import { InMemoryNqaIdempotencyStore } from "../nqa/mcp/idempotency";
+import {
+  preferredWorkspaceGoogleNqaReadConnection,
+  refreshWorkspaceGoogleNqaReadAccessToken,
+} from "./googleNqaRead";
 
 export const NQA_AUTOLINK_LIVE_TARGET = {
   spreadsheetId: "1uUzDUt4McCQFADr4WFZ5NiRTUlg1hOafMLIyljzec7Y",
@@ -86,6 +90,8 @@ type RuntimeDependencies = {
   gatewayAuditSink?: NqaGatewayAuditSink;
   now?: () => string;
   requestIdFactory?: () => string;
+  readAccessTokenProvider?: () => Promise<string> | string;
+  statusOverride?: WorkspaceNqaAutolinkRuntimeStatus;
 };
 
 export class WorkspaceNqaAutolinkRuntimeError extends Error {
@@ -234,7 +240,8 @@ export class WorkspaceNqaAutolinkRuntime {
 
   constructor(input: RuntimeDependencies = {}) {
     const env = input.env ?? process.env;
-    this.statusValue = resolveWorkspaceNqaAutolinkRuntimeStatus(env);
+    this.statusValue =
+      input.statusOverride ?? resolveWorkspaceNqaAutolinkRuntimeStatus(env);
     this.now = input.now ?? (() => new Date().toISOString());
     this.requestIdFactory = input.requestIdFactory ?? randomUUID;
 
@@ -248,7 +255,9 @@ export class WorkspaceNqaAutolinkRuntime {
     const readTransport =
       input.readTransport ??
       new GoogleRestNovelIdSheetBackfillTransport({
-        accessTokenProvider: () => env[READ_TOKEN_ENV] ?? "",
+        accessTokenProvider:
+          input.readAccessTokenProvider ??
+          (() => env[READ_TOKEN_ENV] ?? ""),
       });
     const writeTransport =
       input.writeTransport ??
@@ -373,6 +382,73 @@ export class WorkspaceNqaAutolinkRuntime {
       }),
     });
   }
+}
+
+
+export async function resolveWorkspaceNqaAutolinkRuntimeStatusForActor(
+  actorUserId: number,
+  env: Environment = process.env
+): Promise<WorkspaceNqaAutolinkRuntimeStatus> {
+  const base = resolveWorkspaceNqaAutolinkRuntimeStatus(env);
+  let connection = null;
+  try {
+    connection = await preferredWorkspaceGoogleNqaReadConnection(actorUserId);
+  } catch {
+    connection = null;
+  }
+  const durableReadReady = connection !== null;
+
+  const previewBlockers: WorkspaceNqaAutolinkBlocker[] = base.previewBlockers.filter(
+    blocker =>
+      blocker !== "READ_CREDENTIAL_MISSING" && blocker !== "READ_SCOPE_MISSING"
+  );
+  if (!durableReadReady) {
+    previewBlockers.push("READ_CREDENTIAL_MISSING", "READ_SCOPE_MISSING");
+  }
+
+  const confirmBlockers: WorkspaceNqaAutolinkBlocker[] = base.confirmBlockers.filter(
+    blocker =>
+      blocker !== "READ_CREDENTIAL_MISSING" &&
+      blocker !== "READ_SCOPE_MISSING" &&
+      blocker !== "READ_WRITE_CREDENTIALS_NOT_DISTINCT"
+  );
+  if (!durableReadReady) {
+    confirmBlockers.push("READ_CREDENTIAL_MISSING", "READ_SCOPE_MISSING");
+  }
+
+  return {
+    ...base,
+    previewReady: previewBlockers.length === 0,
+    confirmReady: confirmBlockers.length === 0,
+    readCredentialConfigured: durableReadReady,
+    readScopeReady: durableReadReady,
+    credentialsDistinct: true,
+    previewBlockers,
+    confirmBlockers,
+  };
+}
+
+export async function createWorkspaceNqaAutolinkRuntimeForActor(
+  actorUserId: number,
+  env: Environment = process.env
+): Promise<WorkspaceNqaAutolinkRuntime> {
+  const statusOverride =
+    await resolveWorkspaceNqaAutolinkRuntimeStatusForActor(actorUserId, env);
+  const connection = await preferredWorkspaceGoogleNqaReadConnection(
+    actorUserId
+  );
+
+  return new WorkspaceNqaAutolinkRuntime({
+    env,
+    statusOverride,
+    readAccessTokenProvider: async () => {
+      if (!connection) return "";
+      return await refreshWorkspaceGoogleNqaReadAccessToken({
+        actorUserId,
+        connectionId: connection.id,
+      });
+    },
+  });
 }
 
 export function createWorkspaceNqaAutolinkRuntime(

@@ -7,6 +7,7 @@ import {
   fingerprintDocsMetadata,
   GOOGLE_DOC_MIME_TYPE,
   hasRequiredDocsScopes,
+  hasRequiredNqaReadScopes,
   normalizeDocsText,
   observeDocsSnapshot,
   revokeDocsConnection,
@@ -22,6 +23,8 @@ describe("Workspace Docs M02 domain contract", () => {
     expect(attempt.scope).toContain("openid");
     expect(attempt.scope).toContain("drive.metadata.readonly");
     expect(attempt.scope).toContain("documents.readonly");
+    expect(attempt.scope).toContain("spreadsheets.readonly");
+    expect(hasRequiredNqaReadScopes(attempt.scope)).toBe(true);
     expect(attempt.state).not.toBe(attempt.verifier);
     expect(attempt.challenge).not.toBe(attempt.verifier);
     expect(attempt.challengeMethod).toBe("S256");
