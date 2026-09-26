@@ -1925,7 +1925,7 @@ export default function WorkspacePage() {
                                           type="button"
                                           size="sm"
                                           variant="outline"
-                                          disabled={finding.ruleKey === "long_english" || bulkBusy}
+                                          disabled={(finding.ruleKey === "long_english" || finding.ruleKey === "source_junk") || bulkBusy}
                                           onClick={() => {
                                             if (!window.confirm(`ยกเว้นคำ “${finding.token}” สำหรับ Checker ทั้ง Workspace?`)) return;
                                             bulkAllowEditorialFinding.mutate({
@@ -2414,7 +2414,7 @@ export default function WorkspacePage() {
                               variant="outline"
                               disabled={
                                 editorialCheckerRunStale ||
-                                finding.ruleKey === "long_english" ||
+                                (finding.ruleKey === "long_english" || finding.ruleKey === "source_junk") ||
                                 allowEditorialFinding.isPending
                               }
                               onClick={() =>
