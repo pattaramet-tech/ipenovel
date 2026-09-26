@@ -1352,9 +1352,9 @@ export default function WorkspacePage() {
                     onClick={async () => {
                       const startRow = Number(masterIntakeStartRow);
                       const endRow = Number(masterIntakeEndRow || masterIntakeStartRow);
-                      const connectionId = Number(googleConnectionId) || Number(googleConnections[0]?.id);
-                      if (!connectionId) {
-                        toast.error("เชื่อม Google Docs/Sheets ก่อน");
+                      const connectionId = Number(googleConnectionId);
+                      if (!Number.isInteger(connectionId) || connectionId <= 0) {
+                        toast.error("เลือก Google connection ก่อน");
                         return;
                       }
                       if (
@@ -1366,9 +1366,6 @@ export default function WorkspacePage() {
                       ) {
                         toast.error("ช่วง Sync ต้องเป็น 1-100 แถว และเริ่มตั้งแต่แถว 2");
                         return;
-                      }
-                      if (String(connectionId) !== googleConnectionId) {
-                        setGoogleConnectionId(String(connectionId));
                       }
                       try {
                         const response = await masterIntakePreviewQuery.refetch();
