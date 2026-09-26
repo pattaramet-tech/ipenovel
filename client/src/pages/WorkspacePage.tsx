@@ -122,6 +122,9 @@ export default function WorkspacePage() {
   }>();
   const [bulkEditorText, setBulkEditorText] = useState("");
   const [googleConnectionId, setGoogleConnectionId] = useState("");
+  const [masterIntakeStartRow, setMasterIntakeStartRow] = useState("");
+  const [masterIntakeEndRow, setMasterIntakeEndRow] = useState("");
+  const [masterIntakePreviewResult, setMasterIntakePreviewResult] = useState<any>();
   const [googleDocUrl, setGoogleDocUrl] = useState("");
   const [episodeGoogleDocUrl, setEpisodeGoogleDocUrl] = useState("");
   const [episodeIntakeMode, setEpisodeIntakeMode] = useState<"single" | "bulk_docs" | "bulk_files">("bulk_docs");
@@ -197,6 +200,19 @@ export default function WorkspacePage() {
   const editorialGoogleConnections = trpc.workspace.editorial.googleConnections.useQuery(
     undefined,
     { enabled: isAdmin }
+  );
+  const masterIntakeHistory = trpc.workspace.editorial.masterIntakeHistory.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0, limit: 10 },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId), retry: false }
+  );
+  const masterIntakePreviewQuery = trpc.workspace.editorial.masterIntakePreview.useQuery(
+    {
+      workspaceId: selectedWorkspaceId ?? 0,
+      googleConnectionId: Number(googleConnectionId) || 0,
+      startRow: Number(masterIntakeStartRow) || 0,
+      endRow: Number(masterIntakeEndRow) || 0,
+    },
+    { enabled: false, retry: false }
   );
   const editorialSourceDraft = trpc.workspace.editorial.sourceDraft.useQuery(
     {
@@ -344,6 +360,9 @@ export default function WorkspacePage() {
     setSelectedSourceWorkItemId(undefined);
     setBulkCheckerSummary([]);
     setGoogleConnectionId("");
+    setMasterIntakeStartRow("");
+    setMasterIntakeEndRow("");
+    setMasterIntakePreviewResult(undefined);
     setGoogleDocUrl("");
     setUploadedSource(undefined);
     setEditorTarget(undefined);
@@ -582,6 +601,25 @@ export default function WorkspacePage() {
       setSelectedSourceWorkItemId(undefined);
       await workspaces.refetch();
       toast.success("ลบ Workspace แล้ว");
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const masterIntakeSync = trpc.workspace.editorial.masterIntakeSync.useMutation({
+    onSuccess: async (result) => {
+      setMasterIntakePreviewResult(undefined);
+      const firstSuccess = result.results.find((row: any) => row.ok && row.workItemId);
+      if (firstSuccess?.workItemId) setSelectedSourceWorkItemId(firstSuccess.workItemId);
+      await Promise.all([
+        detail.refetch(),
+        bindings.refetch(),
+        ownership.refetch(),
+        availableNovels.refetch(),
+        editorialBoard.refetch(),
+        masterIntakeHistory.refetch(),
+      ]);
+      toast[result.summary.failed ? "error" : "success"](
+        `Sync สำเร็จ ${result.summary.succeeded}/${result.summary.attempted} แถว${result.summary.failed ? ` · มีปัญหา ${result.summary.failed} แถว` : ""}`
+      );
     },
     onError: (error) => toast.error(error.message),
   });
@@ -1270,6 +1308,161 @@ export default function WorkspacePage() {
                 )}
                 {googleDocsConnectStatus === "error" && (
                   <span className="text-xs text-destructive">เชื่อม Google Docs ไม่สำเร็จ กรุณาลองใหม่</span>
+                )}
+              </div>
+
+              <div className="space-y-3 rounded-md border bg-muted/10 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-2 font-semibold">
+                      <Database className="h-4 w-4" />
+                      Google Sheets Master Intake
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      รวมนิยาย / นิยายยังไม่จบ/ยังไม่ยื่น · อ่าน B/C/E/K · สูงสุด 100 แถวต่อครั้ง
+                    </p>
+                  </div>
+                  <span className="rounded-full border bg-background px-2 py-1 text-xs">
+                    Preview ก่อน Sync · ไม่ Publish · ไม่เขียน L/M
+                  </span>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto_auto]">
+                  <Input
+                    inputMode="numeric"
+                    value={masterIntakeStartRow}
+                    onChange={(event) => {
+                      setMasterIntakeStartRow(event.target.value);
+                      setMasterIntakePreviewResult(undefined);
+                    }}
+                    placeholder="Start row เช่น 1584"
+                  />
+                  <Input
+                    inputMode="numeric"
+                    value={masterIntakeEndRow}
+                    onChange={(event) => {
+                      setMasterIntakeEndRow(event.target.value);
+                      setMasterIntakePreviewResult(undefined);
+                    }}
+                    placeholder="End row เช่น 1600"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={masterIntakePreviewQuery.isFetching}
+                    onClick={async () => {
+                      const startRow = Number(masterIntakeStartRow);
+                      const endRow = Number(masterIntakeEndRow || masterIntakeStartRow);
+                      const connectionId = Number(googleConnectionId) || Number(googleConnections[0]?.id);
+                      if (!connectionId) {
+                        toast.error("เชื่อม Google Docs/Sheets ก่อน");
+                        return;
+                      }
+                      if (
+                        !Number.isInteger(startRow) ||
+                        !Number.isInteger(endRow) ||
+                        startRow < 2 ||
+                        endRow < startRow ||
+                        endRow - startRow + 1 > 100
+                      ) {
+                        toast.error("ช่วง Sync ต้องเป็น 1-100 แถว และเริ่มตั้งแต่แถว 2");
+                        return;
+                      }
+                      if (String(connectionId) !== googleConnectionId) {
+                        setGoogleConnectionId(String(connectionId));
+                      }
+                      try {
+                        const response = await masterIntakePreviewQuery.refetch();
+                        if (response.data) setMasterIntakePreviewResult(response.data);
+                      } catch (error) {
+                        toast.error(error instanceof Error ? error.message : "Preview Sync ไม่สำเร็จ");
+                      }
+                    }}
+                  >
+                    {masterIntakePreviewQuery.isFetching && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Preview Sync
+                  </Button>
+                  <Button
+                    type="button"
+                    disabled={
+                      !masterIntakePreviewResult ||
+                      masterIntakeSync.isPending ||
+                      masterIntakePreviewResult.rows.every((row: any) =>
+                        row.status === "CONFLICT" || row.status === "UNCHANGED"
+                      )
+                    }
+                    onClick={() => {
+                      if (!masterIntakePreviewResult || !selectedWorkspaceId) return;
+                      masterIntakeSync.mutate({
+                        workspaceId: selectedWorkspaceId,
+                        googleConnectionId: Number(googleConnectionId),
+                        startRow: masterIntakePreviewResult.startRow,
+                        endRow: masterIntakePreviewResult.endRow,
+                        expectedPreviewFingerprint: masterIntakePreviewResult.previewFingerprint,
+                      });
+                    }}
+                  >
+                    {masterIntakeSync.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Sync
+                  </Button>
+                </div>
+
+                {masterIntakePreviewResult && (
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap gap-2 text-xs">
+                      {(["NEW", "MATCH", "UNCHANGED", "UPDATED", "CONFLICT"] as const).map((status) => (
+                        <span key={status} className="rounded border bg-background px-2 py-1">
+                          {status}: {masterIntakePreviewResult.summary?.[status] ?? 0}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="overflow-x-auto rounded border bg-background">
+                      <table className="w-full text-left text-xs">
+                        <thead className="border-b bg-muted/30">
+                          <tr>
+                            <th className="px-2 py-2">Row</th>
+                            <th className="px-2 py-2">เรื่อง</th>
+                            <th className="px-2 py-2">ตอน</th>
+                            <th className="px-2 py-2">สถานะ</th>
+                            <th className="px-2 py-2">Links</th>
+                            <th className="px-2 py-2">หมายเหตุ</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {masterIntakePreviewResult.rows.map((row: any) => (
+                            <tr key={row.rowNumber} className="border-b last:border-0">
+                              <td className="px-2 py-2">{row.rowNumber}</td>
+                              <td className="max-w-72 px-2 py-2">{row.novelTitle ?? row.rawTitle}</td>
+                              <td className="whitespace-nowrap px-2 py-2">{row.episodeNumber ?? "—"}</td>
+                              <td className="px-2 py-2"><StatusPill value={row.status} /></td>
+                              <td className="whitespace-nowrap px-2 py-2">
+                                {row.translationDocUrl && <a className="mr-2 text-primary underline" href={row.translationDocUrl} target="_blank" rel="noreferrer">C</a>}
+                                {row.webSourceUrl && <a className="mr-2 text-primary underline" href={row.webSourceUrl} target="_blank" rel="noreferrer">E</a>}
+                                {row.preparedSourceDocUrl && <a className="text-primary underline" href={row.preparedSourceDocUrl} target="_blank" rel="noreferrer">K</a>}
+                              </td>
+                              <td className="px-2 py-2 text-muted-foreground">
+                                {row.blockers?.length ? row.blockers.join(", ") : row.existingNovelId ? `Novel #${row.existingNovelId}` : "พร้อมสร้างฉบับซ่อน"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {((masterIntakeHistory.data as any[]) ?? []).length > 0 && (
+                  <details className="text-xs">
+                    <summary className="cursor-pointer font-medium">Sync History</summary>
+                    <div className="mt-2 space-y-1">
+                      {((masterIntakeHistory.data as any[]) ?? []).slice(0, 10).map((entry: any) => (
+                        <div key={entry.id} className="rounded border bg-background px-2 py-1">
+                          {formatDate(entry.createdAt)} · rows {entry.metadata?.startRow ?? "?"}-{entry.metadata?.endRow ?? "?"}
+                          {" · "}{entry.metadata?.summary?.succeeded ?? 0}/{entry.metadata?.summary?.attempted ?? 0} สำเร็จ
+                          {" · "}{shortHash(entry.correlationId)}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
                 )}
               </div>
 
