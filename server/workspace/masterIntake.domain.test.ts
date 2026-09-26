@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertMasterIntakeRowRange,
   googleDocumentIdFromUrlOrId,
+  masterIntakePreviewFingerprint,
   masterIntakeRowFingerprint,
   normalizeOptionalHttpUrl,
   parseMasterIntakeTitleRange,
@@ -50,6 +51,38 @@ describe("Workspace Master Intake domain", () => {
     expect(() => assertMasterIntakeRowRange(2, 101)).not.toThrow();
     expect(() => assertMasterIntakeRowRange(2, 102)).toThrow(/1-100 rows/);
     expect(() => assertMasterIntakeRowRange(1, 1)).toThrow(/1-100 rows/);
+  });
+
+  it("binds preview fingerprints to resolved Workspace targets", () => {
+    const base = {
+      workspaceId: 7,
+      startRow: 1584,
+      endRow: 1584,
+      rows: [{
+        rowNumber: 1584,
+        rowFingerprint: "a".repeat(64),
+        status: "MATCH",
+        existingNovelId: 10,
+        workspaceNovelId: 20,
+        workItemId: 30,
+        blockers: [] as string[],
+        sourceAlreadyLinked: true,
+      }],
+    };
+    const fingerprint = masterIntakePreviewFingerprint(base);
+    expect(masterIntakePreviewFingerprint({ ...base })).toBe(fingerprint);
+    expect(
+      masterIntakePreviewFingerprint({
+        ...base,
+        rows: [{ ...base.rows[0], workItemId: 31 }],
+      })
+    ).not.toBe(fingerprint);
+    expect(
+      masterIntakePreviewFingerprint({
+        ...base,
+        rows: [{ ...base.rows[0], sourceAlreadyLinked: false }],
+      })
+    ).not.toBe(fingerprint);
   });
 
   it("fingerprints stable canonical row identity and links", () => {
