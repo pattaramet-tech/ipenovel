@@ -62,6 +62,11 @@ import {
   WorkspaceEditorialGoogleSourceError,
 } from "./editorialSource.googleDocs";
 import {
+  applyEditorialBulkFindingCleanup,
+  previewEditorialBulkFindingCleanup,
+  WorkspaceEditorialBulkCleanupError,
+} from "./editorialBulkFindingCleanup.service";
+import {
   getHistoricalPackRepairPreview,
   repairHistoricalPublishedPack,
   WorkspaceHistoricalPackRepairError,
@@ -167,6 +172,17 @@ import {
  * defense in depth. Customer-facing Google-connection gating remains bypassed.
  */
 function mapWorkspaceError(error: unknown): never {
+  if (error instanceof WorkspaceEditorialBulkCleanupError) {
+    const code =
+      error.code === "DATABASE_UNAVAILABLE"
+        ? "SERVICE_UNAVAILABLE"
+        : error.code === "WORKSPACE_NOT_FOUND"
+          ? "NOT_FOUND"
+          : error.code === "PREVIEW_STALE"
+            ? "CONFLICT"
+            : "BAD_REQUEST";
+    throw new TRPCError({ code, message: error.message });
+  }
   if (error instanceof WorkspaceMasterIntakeError) {
     const code =
       error.code === "WORKSPACE_NOT_FOUND"
@@ -1019,6 +1035,42 @@ export const workspaceRouter = router({
         try {
           requireWorkspacePublishEnvironmentSafety();
           return await repairHistoricalPublishedPack({ actorUserId: ctx.user.id, ...input });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    bulkFindingCleanupPreview: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemIds: z.array(z.number().int().positive()).min(1).max(100),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await previewEditorialBulkFindingCleanup({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    bulkFindingCleanupApply: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemIds: z.array(z.number().int().positive()).min(1).max(100),
+        expectedPreviewFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+        action: z.discriminatedUnion("kind", [
+          z.object({
+            kind: z.literal("group"),
+            groupKey: z.string().regex(/^[a-f0-9]{64}$/),
+          }),
+          z.object({ kind: z.literal("source_junk") }),
+        ]),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await applyEditorialBulkFindingCleanup({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
         } catch (error) {
           return mapWorkspaceError(error);
         }
