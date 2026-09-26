@@ -286,17 +286,24 @@ export async function previewWorkspaceMasterIntake(input: {
     const preparedSourceDocUrl = String(cells[9] ?? "").trim();
     const parsed = parseMasterIntakeTitleRange(rawTitle);
     const translationDocumentId = googleDocumentIdFromUrlOrId(translationDocUrl);
-    const preparedSourceDocumentId = googleDocumentIdFromUrlOrId(
-      preparedSourceDocUrl
-    );
+    const preparedSourceDocumentId = preparedSourceDocUrl
+      ? googleDocumentIdFromUrlOrId(preparedSourceDocUrl)
+      : null;
     const webSourceUrl = normalizeOptionalHttpUrl(webSourceRaw);
     const blockers: string[] = [];
     if (!parsed) blockers.push("TITLE_RANGE_INVALID");
     if (!translationDocumentId) blockers.push("TRANSLATION_DOC_INVALID");
-    if (!preparedSourceDocumentId) blockers.push("PREPARED_SOURCE_DOC_INVALID");
+    if (preparedSourceDocUrl && !preparedSourceDocumentId) {
+      blockers.push("PREPARED_SOURCE_DOC_INVALID");
+    }
     if (webSourceUrl === undefined) blockers.push("WEB_SOURCE_URL_INVALID");
 
-    if (!parsed || !translationDocumentId || !preparedSourceDocumentId || webSourceUrl === undefined) {
+    if (
+      !parsed ||
+      !translationDocumentId ||
+      (preparedSourceDocUrl && !preparedSourceDocumentId) ||
+      webSourceUrl === undefined
+    ) {
       rows.push({
         rowNumber,
         status: "CONFLICT",
@@ -333,7 +340,7 @@ export async function previewWorkspaceMasterIntake(input: {
       translationDocUrl,
       translationDocumentId,
       webSourceUrl,
-      preparedSourceDocUrl,
+      preparedSourceDocUrl: preparedSourceDocUrl || null,
       preparedSourceDocumentId,
     };
     const rowFingerprint = masterIntakeRowFingerprint(canonical);
@@ -675,20 +682,19 @@ async function persistProvenance(input: {
 }) {
   const db = await database();
   const parsed = parseMasterIntakeTitleRange(input.row.rawTitle);
-  if (
-    !parsed ||
-    !input.row.translationDocUrl ||
-    !input.row.preparedSourceDocUrl
-  ) {
+  if (!parsed || !input.row.translationDocUrl) {
     throw new Error("Master Intake row is no longer canonical.");
   }
   const translationDocumentId = googleDocumentIdFromUrlOrId(
     input.row.translationDocUrl
   );
-  const preparedSourceDocumentId = googleDocumentIdFromUrlOrId(
-    input.row.preparedSourceDocUrl
-  );
-  if (!translationDocumentId || !preparedSourceDocumentId) {
+  const preparedSourceDocumentId = input.row.preparedSourceDocUrl
+    ? googleDocumentIdFromUrlOrId(input.row.preparedSourceDocUrl)
+    : null;
+  if (
+    !translationDocumentId ||
+    (input.row.preparedSourceDocUrl && !preparedSourceDocumentId)
+  ) {
     throw new Error("Master Intake Google document identity is invalid.");
   }
 
