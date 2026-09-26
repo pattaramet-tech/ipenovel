@@ -469,6 +469,14 @@ export async function previewWorkspaceMasterIntake(input: {
             span.end === parsed.rangeEnd
           ) {
             workItemId = Number(entry.item.id);
+            const linkedProvenance = provenanceRows.find(
+              (provenance: any) =>
+                Number(provenance.workItemId) === workItemId &&
+                Number(provenance.rowNumber) !== rowNumber
+            );
+            if (linkedProvenance) {
+              blockers.push("WORK_ITEM_ALREADY_LINKED_TO_SHEET_ROW");
+            }
             const activeSources = await db
               .select({
                 providerDocumentId: workspaceEditorialSources.providerDocumentId,
