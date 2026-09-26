@@ -350,11 +350,55 @@ export async function previewWorkspaceMasterIntake(input: {
         blockers.push("TRANSLATION_SOURCE_CHANGED");
       }
       const [workItem] = await db
-        .select({ id: workspaceEditorialWorkItems.id })
+        .select({
+          id: workspaceEditorialWorkItems.id,
+          columnKey: workspaceKanbanColumns.key,
+        })
         .from(workspaceEditorialWorkItems)
-        .where(eq(workspaceEditorialWorkItems.id, provenance.workItemId))
+        .innerJoin(
+          workspaceKanbanCards,
+          eq(workspaceEditorialWorkItems.cardId, workspaceKanbanCards.id)
+        )
+        .innerJoin(
+          workspaceKanbanColumns,
+          eq(workspaceKanbanCards.columnId, workspaceKanbanColumns.id)
+        )
+        .where(
+          and(
+            eq(workspaceEditorialWorkItems.id, provenance.workItemId),
+            eq(workspaceKanbanCards.status, "active")
+          )
+        )
         .limit(1);
-      if (!workItem) blockers.push("SYNC_TARGET_MISSING");
+      let provenanceSourceAlreadyLinked = false;
+      if (!workItem) {
+        blockers.push("SYNC_TARGET_MISSING");
+      } else {
+        const activeSources = await db
+          .select({
+            providerDocumentId: workspaceEditorialSources.providerDocumentId,
+          })
+          .from(workspaceEditorialSources)
+          .where(
+            and(
+              eq(workspaceEditorialSources.workItemId, provenance.workItemId),
+              eq(workspaceEditorialSources.status, "active")
+            )
+          );
+        const matchingSource = activeSources.some(
+          (source: any) => source.providerDocumentId === translationDocumentId
+        );
+        const conflictingSource = activeSources.some(
+          (source: any) =>
+            source.providerDocumentId &&
+            source.providerDocumentId !== translationDocumentId
+        );
+        if (conflictingSource) blockers.push("SYNC_TARGET_SOURCE_CHANGED");
+        if (!matchingSource && activeSources.length === 0 && workItem.columnKey !== "new") {
+          blockers.push("EXISTING_PACK_NOT_EDITABLE");
+        }
+        provenanceSourceAlreadyLinked = matchingSource;
+      }
       rows.push({
         rowNumber,
         status: blockers.length
@@ -379,7 +423,7 @@ export async function previewWorkspaceMasterIntake(input: {
         workspaceNovelId: Number(provenance.workspaceNovelId),
         workItemId: Number(provenance.workItemId),
         blockers,
-        sourceAlreadyLinked: false,
+        sourceAlreadyLinked: provenanceSourceAlreadyLinked,
       });
       continue;
     }
