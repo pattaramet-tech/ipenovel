@@ -24,9 +24,12 @@ describe("Workspace Editorial foreign-word checker static boundaries", () => {
     expect(domain).toContain("\\u0600-\\u06FF");
     expect(domain).toContain("\\u3040-\\u30FF");
     expect(domain).toContain("\\uAC00-\\uD7AF");
+    expect(domain).toContain("\\u0900-\\u097F");
+    expect(domain).toContain("\\uA8E0-\\uA8FF");
+    expect(domain).toContain("\\u1CD0-\\u1CFF");
     expect(domain).toContain("isLikelyKaomoji");
     expect(domain).toContain("const checkAsciiAlphabet = false");
-    expect(domain).toContain("v3 only emits findings for non-ASCII foreign scripts");
+    expect(domain).toContain("v4 emits blocking findings only for non-ASCII foreign scripts");
     expect(domain).not.toMatch(/SpreadsheetApp|DocumentApp|setBackgroundColor/);
   });
 
