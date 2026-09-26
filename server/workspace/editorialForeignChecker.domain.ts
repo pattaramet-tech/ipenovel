@@ -397,7 +397,7 @@ function evaluateEditorialSourceJunkTail(
   }
 
   const findings: EditorialForeignFinding[] = [];
-  for (const rows of grouped.values()) {
+  for (const rows of Array.from(grouped.values())) {
     const ordered = [...rows].sort(
       (a, b) => a.paragraphOrder - b.paragraphOrder
     );
