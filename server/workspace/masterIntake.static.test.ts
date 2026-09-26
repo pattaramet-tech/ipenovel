@@ -6,7 +6,7 @@ const root = process.cwd();
 const read = (file: string) => fs.readFileSync(path.join(root, file), "utf8");
 
 describe("M29 Workspace Master Intake safety", () => {
-  it("persists Sheet row provenance and C/E/K links without touching publish/writeback", () => {
+  it("persists Sheet row provenance and C/E with optional K without touching publish/writeback", () => {
     const service = read("server/workspace/masterIntake.service.ts");
     const schema = read("drizzle/schema.ts");
     expect(schema).toContain("workspaceMasterIntakeRows");
@@ -55,6 +55,17 @@ describe("M29 Workspace Master Intake safety", () => {
     expect(service).toContain("bindPublicationNovel");
   });
 
+  it("does not block when K is empty but still rejects a malformed non-empty K", () => {
+    const service = read("server/workspace/masterIntake.service.ts");
+    expect(service).toContain("if (preparedSourceDocUrl && !preparedSourceDocumentId)");
+    expect(service).toContain("preparedSourceDocUrl: preparedSourceDocUrl || null");
+    expect(service).not.toContain('if (!preparedSourceDocumentId) blockers.push("PREPARED_SOURCE_DOC_INVALID")');
+    const migration = read("drizzle/0056_workspace_master_intake_optional_prepared_source.sql");
+    expect(migration).toContain("preparedSourceDocUrl");
+    expect(migration).toContain("preparedSourceDocumentId");
+    expect(migration).toContain("NULL");
+  });
+
   it("registers migration 0055 exactly once", () => {
     const journal = JSON.parse(read("drizzle/meta/_journal.json"));
     const entries = journal.entries.filter(
@@ -65,5 +76,10 @@ describe("M29 Workspace Master Intake safety", () => {
     expect(read("drizzle/0055_workspace_master_intake_sync.sql")).toContain(
       "workspaceMasterIntakeRows"
     );
+    const optionalKEntries = journal.entries.filter(
+      (entry: any) => entry.tag === "0056_workspace_master_intake_optional_prepared_source"
+    );
+    expect(optionalKEntries).toHaveLength(1);
+    expect(optionalKEntries[0].idx).toBe(56);
   });
 });
