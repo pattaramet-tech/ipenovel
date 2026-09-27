@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION =
-  "workspace-editorial-foreign-checker-v5" as const;
+  "workspace-editorial-foreign-checker-v6" as const;
 
 export const EDITORIAL_FOREIGN_CHECKER_RULES = {
   foreignScript: "foreign_script",
@@ -48,8 +48,8 @@ const EXTRA_ALLOWED_CHARS = new Set(["・"]);
 
 /**
  * Ported from production Checker_Main.txt FOREIGN_WORD_RE_V9_.
- * Basic ASCII Latin is intentionally handled by a separate deterministic rule
- * so short untranslated words such as "support" can be surfaced with context.
+ * Basic ASCII Latin tokens are non-blocking; long ASCII spans are evaluated
+ * separately so untranslated sentences and leaked machine payloads still fail QC.
  */
 const FOREIGN_SCRIPT_RE =
   /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u3040-\u30FF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\u9FFF\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF\u0400-\u04FF\u1E00-\u1EFF\u0300-\u036F\u0900-\u097F\uA8E0-\uA8FF\u1CD0-\u1CFF]+/g;
@@ -67,7 +67,6 @@ const SOURCE_JUNK_ANCHOR_PATTERNS = [
   /(?:author(?:'s)?\s*(?:thoughts?|notes?)|creator(?:'s)?\s*(?:thoughts?|notes?))/i,
 ] as const;
 
-const LATIN_WORD_RE = /[A-Za-z][A-Za-z'’-]*/g;
 const LINK_OR_EMAIL_RE =
   /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|\b(?:https?:\/\/|www\.)\S+|\b[A-Za-z0-9-]+\.(?:com|net|org|co|io|me|jp|kr|cn|th)\b\S*/gi;
 
@@ -138,14 +137,6 @@ function skipRanges(text: string) {
     ranges.push({ start: match.index, end: match.index + match[0].length });
   }
   return ranges;
-}
-
-function overlapsRange(
-  start: number,
-  end: number,
-  ranges: Array<{ start: number; end: number }>
-) {
-  return ranges.some(range => start < range.end && end > range.start);
 }
 
 function sentenceAround(text: string, start: number, end: number) {
@@ -292,56 +283,24 @@ export function evaluateEditorialForeignParagraph(
   if (!text) return [];
 
   const findings: EditorialForeignFinding[] = [];
-  const urlEmailRanges = skipRanges(text);
   const kaomojiSkipMap = buildKaomojiSkipMap(text);
-  // Product rule: basic A-Z/a-z alphabet is intentionally non-blocking.
-  // We keep the historical latin_word/long_english rule keys for old evidence,
-  // but v5 emits blocking findings only for non-ASCII foreign scripts and
-  // deterministic source-junk tail blocks.
-  const checkAsciiAlphabet = false;
-  if (checkAsciiAlphabet) {
-    const longSpans = englishSpans(text).filter(span =>
-      isLongEnglishSpan(span.text)
+  // Product rule: ordinary isolated A-Z/a-z words, names and acronyms are
+  // intentionally non-blocking. Long ASCII spans remain blocking because they
+  // represent untranslated English sentences or leaked machine/control payloads.
+  const longSpans = englishSpans(text).filter(span =>
+    isLongEnglishSpan(span.text)
+  );
+
+  for (const span of longSpans) {
+    findings.push(
+      buildFinding(
+        paragraph,
+        EDITORIAL_FOREIGN_CHECKER_RULES.longEnglish,
+        span.start,
+        span.end,
+        span.text
+      )
     );
-
-    for (const span of longSpans) {
-      findings.push(
-        buildFinding(
-          paragraph,
-          EDITORIAL_FOREIGN_CHECKER_RULES.longEnglish,
-          span.start,
-          span.end,
-          span.text
-        )
-      );
-    }
-
-    const latin = new RegExp(LATIN_WORD_RE.source, "g");
-    let latinMatch: RegExpExecArray | null;
-    while ((latinMatch = latin.exec(text)) !== null) {
-      const start = latinMatch.index;
-      const end = start + latinMatch[0].length;
-      if (overlapsRange(start, end, urlEmailRanges)) continue;
-      if (kaomojiSkipMap[start]) continue;
-      const latinContext = text.slice(
-        Math.max(0, start - 20),
-        Math.min(text.length, end + 21)
-      );
-      if (isLikelyKaomoji(latinContext)) continue;
-      if (longSpans.some(span => start >= span.start && end <= span.end))
-        continue;
-      const normalized = normalizeEditorialAllowedWord(latinMatch[0]);
-      if (allowWords.has(normalized)) continue;
-      findings.push(
-        buildFinding(
-          paragraph,
-          EDITORIAL_FOREIGN_CHECKER_RULES.latinWord,
-          start,
-          end,
-          latinMatch[0]
-        )
-      );
-    }
   }
 
   const foreign = new RegExp(FOREIGN_SCRIPT_RE.source, "g");
