@@ -7,6 +7,7 @@ import {
   workspaceEditorialCheckerFindings,
   workspaceEditorialCheckerFindingStates,
   workspaceEditorialCheckerRuns,
+  workspaceEditorialStructuralConfirmations,
   workspaceEditorialDraftApprovals,
   workspaceEditorialDraftParagraphs,
   workspaceEditorialDraftTabs,
@@ -235,7 +236,7 @@ async function currentQcEvidence(
     };
   }
 
-  const [allowRows, findings, states, anomalies] = await Promise.all([
+  const [allowRows, findings, states, anomalies, confirmations] = await Promise.all([
     db
       .select()
       .from(workspaceEditorialCheckerAllowWords)
@@ -268,6 +269,15 @@ async function currentQcEvidence(
         asc(workspaceEditorialCheckerAnomalies.severity),
         asc(workspaceEditorialCheckerAnomalies.anomalyType),
         asc(workspaceEditorialCheckerAnomalies.id)
+      ),
+    db
+      .select()
+      .from(workspaceEditorialStructuralConfirmations)
+      .where(
+        and(
+          eq(workspaceEditorialStructuralConfirmations.workItemId, workItemId),
+          eq(workspaceEditorialStructuralConfirmations.draftId, draftId)
+        )
       ),
   ]);
   const activeAllow = new Set(allowRows.map((row: any) => row.normalizedWord));
@@ -304,13 +314,31 @@ async function currentQcEvidence(
   const unresolvedCount = projected.filter(
     (finding: any) => finding.disposition === "open"
   ).length;
-  const projectedAnomalies = anomalies.map((anomaly: any) => ({
-    anomalyKey: anomaly.anomalyKey,
-    anomalyType: anomaly.anomalyType,
-    severity: anomaly.severity,
-  }));
+  const confirmationByKey = new Map(
+    confirmations.map((confirmation: any) => [
+      confirmation.anomalyKey,
+      confirmation,
+    ])
+  );
+  const projectedAnomalies = anomalies.map((anomaly: any) => {
+    const confirmation: any = confirmationByKey.get(anomaly.anomalyKey);
+    const disposition =
+      anomaly.anomalyType === "source_note_only" &&
+      confirmation?.status === "confirmed"
+        ? "confirmed_source_note"
+        : "open";
+    return {
+      anomalyKey: anomaly.anomalyKey,
+      anomalyType: anomaly.anomalyType,
+      severity: anomaly.severity,
+      disposition,
+      resolutionVersion: Number(confirmation?.version ?? 0),
+    };
+  });
   const blockingAnomalyCount = projectedAnomalies.filter(
-    (anomaly: any) => anomaly.severity === "error"
+    (anomaly: any) =>
+      anomaly.severity === "error" &&
+      anomaly.disposition !== "confirmed_source_note"
   ).length;
   const qcEvidenceSha256 = editorialQcEvidenceSha256({
     runId: run.id,

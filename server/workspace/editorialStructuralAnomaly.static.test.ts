@@ -59,6 +59,34 @@ describe("M29.2 Structural Anomaly Check safety", () => {
     );
   });
 
+  it("adds draft-bound source-note confirmations without mutating Draft content", () => {
+    const schema = read("drizzle/schema.ts");
+    const migration = read(
+      "drizzle/0060_workspace_editorial_structural_confirmations.sql"
+    );
+    const checker = read("server/workspace/editorialForeignChecker.service.ts");
+    const approval = read("server/workspace/editorialApproval.service.ts");
+    const router = read("server/workspace/router.ts");
+    const page = read("client/src/pages/WorkspacePage.tsx");
+    expect(schema).toContain("workspaceEditorialStructuralConfirmations");
+    expect(migration).toContain("workspaceEditorialStructuralConfirmations");
+    expect(migration).not.toMatch(/DROP TABLE|DROP COLUMN|DROP FOREIGN KEY/i);
+    expect(checker).toContain("confirmed_source_note");
+    expect(checker).toContain("setEditorialStructuralConfirmation");
+    expect(checker).toContain('located.anomaly.anomalyType !== "source_note_only"');
+    expect(approval).toContain('anomaly.disposition !== "confirmed_source_note"');
+    expect(router).toContain("structuralConfirmation: adminProcedure");
+    expect(page).toContain("ยืนยันว่าเป็นหมายเหตุต้นฉบับ");
+    expect(page).toContain("ตรวจ structural ซ้ำ");
+    const journal = JSON.parse(read("drizzle/meta/_journal.json"));
+    const entries = journal.entries.filter(
+      (entry: any) =>
+        entry.tag === "0060_workspace_editorial_structural_confirmations"
+    );
+    expect(entries).toHaveLength(1);
+    expect(entries[0].idx).toBe(60);
+  });
+
   it("registers migration 0058 exactly once", () => {
     const journal = JSON.parse(read("drizzle/meta/_journal.json"));
     const entries = journal.entries.filter(

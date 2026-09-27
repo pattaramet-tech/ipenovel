@@ -670,6 +670,8 @@ export function editorialQcEvidenceSha256(input: {
     anomalyKey: string;
     anomalyType: string;
     severity: string;
+    disposition?: string;
+    resolutionVersion?: number;
   }>;
 }) {
   const findings = input.findings
@@ -680,11 +682,18 @@ export function editorialQcEvidenceSha256(input: {
     }))
     .sort((a, b) => a.findingKey.localeCompare(b.findingKey));
   const anomalies = (input.anomalies ?? [])
-    .map(anomaly => ({
-      anomalyKey: anomaly.anomalyKey,
-      anomalyType: anomaly.anomalyType,
-      severity: anomaly.severity,
-    }))
+    .map(anomaly => {
+      const base = {
+        anomalyKey: anomaly.anomalyKey,
+        anomalyType: anomaly.anomalyType,
+        severity: anomaly.severity,
+      };
+      const disposition = anomaly.disposition ?? "open";
+      const resolutionVersion = anomaly.resolutionVersion ?? 0;
+      return disposition === "open" && resolutionVersion === 0
+        ? base
+        : { ...base, disposition, resolutionVersion };
+    })
     .sort((a, b) => a.anomalyKey.localeCompare(b.anomalyKey));
   return sha256(
     JSON.stringify({

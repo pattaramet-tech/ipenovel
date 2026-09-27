@@ -7,6 +7,7 @@ import {
   workspaceEditorialCheckerFindingStates,
   workspaceEditorialCheckerResolutionEvents,
   workspaceEditorialCheckerRuns,
+  workspaceEditorialStructuralConfirmations,
   workspaceEditorialDraftParagraphs,
   workspaceEditorialDraftTabs,
   workspaceEditorialDrafts,
@@ -40,6 +41,9 @@ export class WorkspaceEditorialForeignCheckerError extends Error {
       | "DRAFT_CONFLICT"
       | "FINDING_NOT_FOUND"
       | "FINDING_CONFLICT"
+      | "ANOMALY_NOT_FOUND"
+      | "ANOMALY_CONFLICT"
+      | "ANOMALY_CONFIRM_INVALID"
       | "ALLOW_WORD_INVALID",
     message: string
   ) {
@@ -301,6 +305,60 @@ async function findingInWorkItem(
   return row;
 }
 
+async function anomalyInWorkItem(
+  db: any,
+  workItemId: number,
+  anomalyId: number
+) {
+  const [row] = await db
+    .select({
+      anomaly: workspaceEditorialCheckerAnomalies,
+      run: workspaceEditorialCheckerRuns,
+    })
+    .from(workspaceEditorialCheckerAnomalies)
+    .innerJoin(
+      workspaceEditorialCheckerRuns,
+      eq(
+        workspaceEditorialCheckerAnomalies.runId,
+        workspaceEditorialCheckerRuns.id
+      )
+    )
+    .where(
+      and(
+        eq(workspaceEditorialCheckerAnomalies.id, anomalyId),
+        eq(workspaceEditorialCheckerRuns.workItemId, workItemId)
+      )
+    )
+    .limit(1);
+  if (!row) {
+    throw new WorkspaceEditorialForeignCheckerError(
+      "ANOMALY_NOT_FOUND",
+      "Editorial structural anomaly was not found in this work item."
+    );
+  }
+  return row;
+}
+
+async function currentStructuralConfirmation(
+  db: any,
+  workItemId: number,
+  draftId: number,
+  anomalyKey: string
+) {
+  const [state] = await db
+    .select()
+    .from(workspaceEditorialStructuralConfirmations)
+    .where(
+      and(
+        eq(workspaceEditorialStructuralConfirmations.workItemId, workItemId),
+        eq(workspaceEditorialStructuralConfirmations.draftId, draftId),
+        eq(workspaceEditorialStructuralConfirmations.anomalyKey, anomalyKey)
+      )
+    )
+    .limit(1);
+  return state ?? null;
+}
+
 async function currentFindingState(
   db: any,
   workItemId: number,
@@ -506,8 +564,20 @@ export async function getEditorialForeignCheckerReadModel(input: {
     .where(
       eq(workspaceEditorialCheckerFindingStates.workItemId, input.workItemId)
     );
+  const confirmations = await db
+    .select()
+    .from(workspaceEditorialStructuralConfirmations)
+    .where(
+      and(
+        eq(workspaceEditorialStructuralConfirmations.workItemId, input.workItemId),
+        eq(workspaceEditorialStructuralConfirmations.draftId, run.draftId)
+      )
+    );
   const stateByKey = new Map(
     states.map((state: any) => [state.findingKey, state])
+  );
+  const confirmationByKey = new Map(
+    confirmations.map((state: any) => [state.anomalyKey, state])
   );
   const activeAllowed = new Set(
     allowWords.map((word: any) => word.normalizedWord)
@@ -531,6 +601,26 @@ export async function getEditorialForeignCheckerReadModel(input: {
   const unresolvedCount = projected.filter(
     (finding: any) => finding.disposition === "open"
   ).length;
+  const projectedAnomalies = anomalies.map((row: any) => {
+    const confirmation: any = confirmationByKey.get(row.anomalyKey);
+    const confirmedSourceNote =
+      row.anomalyType === "source_note_only" &&
+      confirmation?.status === "confirmed";
+    return {
+      ...row,
+      relatedSourceTabIds: JSON.parse(row.relatedSourceTabIdsJson),
+      details: JSON.parse(row.detailsJson),
+      disposition: confirmedSourceNote ? "confirmed_source_note" : "open",
+      confirmationVersion: Number(confirmation?.version ?? 0),
+      confirmationActorUserId: confirmation?.actorUserId ?? null,
+      confirmationUpdatedAt: confirmation?.updatedAt ?? null,
+    };
+  });
+  const effectiveBlockingAnomalyCount = projectedAnomalies.filter(
+    (anomaly: any) =>
+      anomaly.severity === "error" &&
+      anomaly.disposition !== "confirmed_source_note"
+  ).length;
 
   const isCurrent = Boolean(
     draft &&
@@ -538,23 +628,19 @@ export async function getEditorialForeignCheckerReadModel(input: {
       run.engineVersion === EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION
   );
   const blockingIssueCount =
-    unresolvedCount + Number(run.blockingAnomalyCount ?? 0);
+    unresolvedCount + effectiveBlockingAnomalyCount;
   return {
     engineVersion: EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION,
     latestDraft: draft,
     run,
     findings: projected,
-    anomalies: anomalies.map((row: any) => ({
-      ...row,
-      relatedSourceTabIds: JSON.parse(row.relatedSourceTabIdsJson),
-      details: JSON.parse(row.detailsJson),
-    })),
+    anomalies: projectedAnomalies,
     structuralSummary: {
       tabCount: Number(run.tabCount ?? 0),
       expectedTabCount:
         run.expectedTabCount === null ? null : Number(run.expectedTabCount),
       anomalyCount: Number(run.anomalyCount ?? anomalies.length),
-      blockingAnomalyCount: Number(run.blockingAnomalyCount ?? 0),
+      blockingAnomalyCount: effectiveBlockingAnomalyCount,
     },
     allowWords,
     unresolvedCount,
@@ -788,6 +874,135 @@ export async function setEditorialFindingDisposition(input: {
       idempotencyKey: input.idempotencyKey,
     });
   });
+}
+
+export async function setEditorialStructuralConfirmation(input: {
+  actorUserId: number;
+  workspaceId: number;
+  workItemId: number;
+  anomalyId: number;
+  confirmed: boolean;
+  expectedVersion: number;
+}) {
+  const db = await database();
+  await requireWorkItem(
+    db,
+    input.actorUserId,
+    input.workspaceId,
+    input.workItemId
+  );
+  const located = await anomalyInWorkItem(
+    db,
+    input.workItemId,
+    input.anomalyId
+  );
+  if (
+    located.anomaly.anomalyType !== "source_note_only" ||
+    !located.anomaly.sourceTabId
+  ) {
+    throw new WorkspaceEditorialForeignCheckerError(
+      "ANOMALY_CONFIRM_INVALID",
+      "Only source_note_only anomalies can be explicitly confirmed."
+    );
+  }
+
+  const result = await db.transaction(async (tx: any) => {
+    await tx
+      .select({ id: workspaceEditorialWorkItems.id })
+      .from(workspaceEditorialWorkItems)
+      .where(eq(workspaceEditorialWorkItems.id, input.workItemId))
+      .for("update")
+      .limit(1);
+    const currentDraft = await latestDraft(tx, input.workItemId);
+    if (
+      !currentDraft ||
+      located.run.draftId !== currentDraft.id ||
+      located.run.engineVersion !== EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION
+    ) {
+      throw new WorkspaceEditorialForeignCheckerError(
+        "DRAFT_CONFLICT",
+        "This structural anomaly belongs to an older Draft or checker engine. Run the checker again before confirming it."
+      );
+    }
+    const state = await currentStructuralConfirmation(
+      tx,
+      input.workItemId,
+      currentDraft.id,
+      located.anomaly.anomalyKey
+    );
+    const currentVersion = Number(state?.version ?? 0);
+    if (currentVersion !== input.expectedVersion) {
+      throw new WorkspaceEditorialForeignCheckerError(
+        "ANOMALY_CONFLICT",
+        "Structural confirmation version conflict."
+      );
+    }
+    const status = input.confirmed ? "confirmed" : "revoked";
+    if (!state) {
+      await tx.insert(workspaceEditorialStructuralConfirmations).values({
+        workItemId: input.workItemId,
+        draftId: currentDraft.id,
+        anomalyKey: located.anomaly.anomalyKey,
+        anomalyType: located.anomaly.anomalyType,
+        sourceTabId: located.anomaly.sourceTabId,
+        status,
+        actorUserId: input.actorUserId,
+        version: 1,
+      });
+    } else {
+      const updateResult = await tx
+        .update(workspaceEditorialStructuralConfirmations)
+        .set({
+          status,
+          actorUserId: input.actorUserId,
+          version: sql`${workspaceEditorialStructuralConfirmations.version} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(workspaceEditorialStructuralConfirmations.id, state.id),
+            eq(
+              workspaceEditorialStructuralConfirmations.version,
+              input.expectedVersion
+            )
+          )
+        );
+      const affected = Number(
+        (updateResult as any)[0]?.affectedRows ??
+          (updateResult as any).affectedRows ??
+          0
+      );
+      if (affected !== 1) {
+        throw new WorkspaceEditorialForeignCheckerError(
+          "ANOMALY_CONFLICT",
+          "Structural confirmation changed concurrently."
+        );
+      }
+    }
+    return { draftId: currentDraft.id };
+  });
+
+  const readModel = await getEditorialForeignCheckerReadModel({
+    actorUserId: input.actorUserId,
+    workspaceId: input.workspaceId,
+    workItemId: input.workItemId,
+  });
+  const targetColumnKey =
+    readModel.blockingIssueCount > 0 ? "needs_fix" : "pending_confirm";
+  const kanbanProjection = await db.transaction((tx: any) =>
+    projectEditorialQcColumn(tx, {
+      workItemId: input.workItemId,
+      expectedDraftId: result.draftId,
+      targetColumnKey,
+      actorUserId: input.actorUserId,
+      reason:
+        targetColumnKey === "needs_fix"
+          ? "editorial_structural_issues_open"
+          : "editorial_structural_confirmed",
+      idempotencyKey: `editorial-structural-confirm-${input.anomalyId}-${input.expectedVersion}-${input.confirmed ? "confirmed" : "revoked"}`,
+    })
+  );
+  return { ...readModel, kanbanProjection };
 }
 
 export async function allowEditorialFindingWord(input: {

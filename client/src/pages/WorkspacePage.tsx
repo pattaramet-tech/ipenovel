@@ -10,6 +10,7 @@ import { summarizeEditorialDraftTabs } from "./workspaceEditorialDraftSummary";
 import {
   chapterEditorFindingRanges,
   chapterEditorIssues,
+  chapterEditorStructuralRepairGuidance,
   chapterEditorTabStatus,
   parseChapterEditorPasteText,
   serializeChapterEditorParagraphs,
@@ -1237,6 +1238,17 @@ export default function WorkspacePage() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const setStructuralConfirmation = trpc.workspace.editorial.structuralConfirmation.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        editorialForeignChecker.refetch(),
+        editorialApproval.refetch(),
+        editorialBoard.refetch(),
+      ]);
+      toast.success("อัปเดตการยืนยัน structural issue แล้ว");
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const unallowEditorialWord = trpc.workspace.editorial.foreignCheckerUnallow.useMutation({
     onSuccess: async () => {
       if (selectedWorkspaceId && selectedSourceWorkItemId) {
@@ -1705,6 +1717,35 @@ export default function WorkspacePage() {
     );
   }, [chapterEditorTarget?.sourceTabId, chapterEditorIssueSignature]);
 
+  const structuralNavigationTabs = (anomaly: any) => {
+    const ids = Array.from(
+      new Set(
+        [
+          anomaly.sourceTabId,
+          ...(anomaly.relatedSourceTabIds ?? []),
+        ].filter(Boolean)
+      )
+    ) as string[];
+    const direct = ids
+      .map(id => chapterEditorTabs.find((tab: any) => tab.sourceTabId === id))
+      .filter(Boolean);
+    if (direct.length || anomaly.anomalyType !== "missing_expected_chapter") {
+      return direct;
+    }
+    const missing = Number(anomaly.chapterNumber);
+    if (!Number.isFinite(missing)) return [];
+    return chapterEditorTabs
+      .filter((tab: any) => Number.isFinite(Number(tab.chapterNumber)))
+      .slice()
+      .sort(
+        (left: any, right: any) =>
+          Math.abs(Number(left.chapterNumber) - missing) -
+            Math.abs(Number(right.chapterNumber) - missing) ||
+          Number(left.chapterNumber) - Number(right.chapterNumber)
+      )
+      .slice(0, 2);
+  };
+
   const navigateChapterEditorIssue = (issue: any, index: number) => {
     if (!chapterEditorTarget) return;
     setChapterEditorIssueIndex(index);
@@ -1734,13 +1775,33 @@ export default function WorkspacePage() {
       return;
     }
     const anomaly = issue.anomaly;
-    const primaryTabId = String(anomaly.sourceTabId ?? "");
-    if (primaryTabId && primaryTabId !== chapterEditorTarget.sourceTabId) {
-      const targetTab = chapterEditorTabs.find(
-        (tab: any) => tab.sourceTabId === primaryTabId
-      );
-      if (targetTab) {
-        openChapterEditor(targetTab);
+    const targetTabs = structuralNavigationTabs(anomaly);
+    const primaryTab =
+      targetTabs.find(
+        (tab: any) => tab.sourceTabId === String(anomaly.sourceTabId ?? "")
+      ) ?? targetTabs[0];
+    if (
+      primaryTab &&
+      primaryTab.sourceTabId !== chapterEditorTarget.sourceTabId
+    ) {
+      openChapterEditor(primaryTab);
+      return;
+    }
+    if (
+      anomaly.anomalyType === "empty_tab" ||
+      anomaly.anomalyType === "heading_only_tab" ||
+      anomaly.anomalyType === "end_only_tab" ||
+      anomaly.anomalyType === "source_note_only"
+    ) {
+      const paragraph =
+        anomaly.anomalyType === "end_only_tab"
+          ? chapterEditorParagraphs[chapterEditorParagraphs.length - 1]
+          : chapterEditorParagraphs[0];
+      if (paragraph) {
+        focusChapterEditorParagraph(
+          paragraph.id,
+          anomaly.anomalyType === "end_only_tab" ? paragraph.text.length : 0
+        );
         return;
       }
     }
@@ -3851,6 +3912,19 @@ export default function WorkspacePage() {
                                     );
                                   }
                                   const anomaly = issue.anomaly as any;
+                                  const relatedTabs =
+                                    structuralNavigationTabs(anomaly);
+                                  const confirmedSourceNote =
+                                    anomaly.disposition ===
+                                    "confirmed_source_note";
+                                  const repairLabel =
+                                    anomaly.anomalyType === "empty_tab"
+                                      ? "เติมเนื้อหา"
+                                      : anomaly.anomalyType ===
+                                            "heading_only_tab" ||
+                                          anomaly.anomalyType === "end_only_tab"
+                                        ? "เปิดจุดซ่อม"
+                                        : "ไปยัง structural issue";
                                   return (
                                     <div
                                       key={issue.key}
@@ -3878,17 +3952,29 @@ export default function WorkspacePage() {
                                             {anomaly.message}
                                           </div>
                                         </button>
-                                        <span
-                                          className={
-                                            anomaly.severity === "error"
-                                              ? "rounded-full bg-red-100 px-2 py-0.5 text-xs text-red-800"
-                                              : "rounded-full bg-orange-100 px-2 py-0.5 text-xs text-orange-900"
-                                          }
-                                        >
-                                          {anomaly.severity}
-                                        </span>
+                                        <div className="flex flex-wrap gap-1">
+                                          {confirmedSourceNote && (
+                                            <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-800">
+                                              confirmed source note
+                                            </span>
+                                          )}
+                                          <span
+                                            className={
+                                              anomaly.severity === "error"
+                                                ? "rounded-full bg-red-100 px-2 py-0.5 text-xs text-red-800"
+                                                : "rounded-full bg-orange-100 px-2 py-0.5 text-xs text-orange-900"
+                                            }
+                                          >
+                                            {anomaly.severity}
+                                          </span>
+                                        </div>
                                       </div>
-                                      <div className="mt-2">
+                                      <div className="mt-2 rounded-md bg-muted/40 p-2 text-xs text-muted-foreground">
+                                        {chapterEditorStructuralRepairGuidance(
+                                          anomaly.anomalyType
+                                        )}
+                                      </div>
+                                      <div className="mt-2 flex flex-wrap gap-2">
                                         <Button
                                           type="button"
                                           size="sm"
@@ -3900,7 +3986,83 @@ export default function WorkspacePage() {
                                             )
                                           }
                                         >
-                                          ไปยัง structural issue
+                                          {repairLabel}
+                                        </Button>
+                                        {relatedTabs.map((tab: any) => (
+                                          <Button
+                                            key={tab.sourceTabId}
+                                            type="button"
+                                            size="sm"
+                                            variant="outline"
+                                            disabled={
+                                              editEditorialDraft.isPending
+                                            }
+                                            onClick={() =>
+                                              openChapterEditor(tab)
+                                            }
+                                          >
+                                            {anomaly.anomalyType ===
+                                            "missing_expected_chapter"
+                                              ? "เปิดแท็บใกล้เคียง"
+                                              : "เปิดแท็บ"}{" "}
+                                            {tab.title}
+                                          </Button>
+                                        ))}
+                                        {anomaly.anomalyType ===
+                                          "source_note_only" && (
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant={
+                                              confirmedSourceNote
+                                                ? "outline"
+                                                : "default"
+                                            }
+                                            disabled={
+                                              editorialCheckerRunStale ||
+                                              setStructuralConfirmation.isPending
+                                            }
+                                            onClick={() =>
+                                              setStructuralConfirmation.mutate({
+                                                workspaceId:
+                                                  selectedWorkspaceId!,
+                                                workItemId:
+                                                  selectedSourceWorkItemId!,
+                                                anomalyId: anomaly.id,
+                                                confirmed:
+                                                  !confirmedSourceNote,
+                                                expectedVersion:
+                                                  anomaly.confirmationVersion ??
+                                                  0,
+                                              })
+                                            }
+                                          >
+                                            {confirmedSourceNote
+                                              ? "ยกเลิกยืนยันหมายเหตุต้นฉบับ"
+                                              : "ยืนยันว่าเป็นหมายเหตุต้นฉบับ"}
+                                          </Button>
+                                        )}
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="ghost"
+                                          disabled={
+                                            !latestEditorialDraft ||
+                                            runEditorialForeignChecker.isPending
+                                          }
+                                          onClick={() => {
+                                            if (!latestEditorialDraft) return;
+                                            runEditorialForeignChecker.mutate({
+                                              workspaceId:
+                                                selectedWorkspaceId!,
+                                              workItemId:
+                                                selectedSourceWorkItemId!,
+                                              expectedDraftId:
+                                                latestEditorialDraft.id,
+                                            });
+                                          }}
+                                        >
+                                          ตรวจ structural ซ้ำ
                                         </Button>
                                       </div>
                                     </div>

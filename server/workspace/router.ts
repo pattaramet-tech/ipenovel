@@ -78,6 +78,7 @@ import {
   removeEditorialAllowedWord,
   runEditorialForeignChecker,
   setEditorialFindingDisposition,
+  setEditorialStructuralConfirmation,
   WorkspaceEditorialForeignCheckerError,
 } from "./editorialForeignChecker.service";
 import {
@@ -1463,6 +1464,23 @@ export const workspaceRouter = router({
       .mutation(async ({ ctx, input }) => {
         try {
           return await setEditorialFindingDisposition({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    structuralConfirmation: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        anomalyId: z.number().int().positive(),
+        confirmed: z.boolean(),
+        expectedVersion: z.number().int().nonnegative(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await setEditorialStructuralConfirmation({
             actorUserId: ctx.user.id,
             ...input,
           });

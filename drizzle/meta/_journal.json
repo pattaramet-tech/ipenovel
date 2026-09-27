@@ -421,6 +421,13 @@
       "when": 1790460000000,
       "tag": "0059_workspace_editorial_tab_editor",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "5",
+      "when": 1790461800000,
+      "tag": "0060_workspace_editorial_structural_confirmations",
+      "breakpoints": true
     }
   ]
 }

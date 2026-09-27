@@ -3039,6 +3039,50 @@ export const workspaceEditorialCheckerAnomalies = mysqlTable(
   })
 );
 
+export const workspaceEditorialStructuralConfirmations = mysqlTable(
+  "workspaceEditorialStructuralConfirmations",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workItemId: int("workItemId").notNull(),
+    draftId: int("draftId").notNull(),
+    anomalyKey: varchar("anomalyKey", { length: 64 }).notNull(),
+    anomalyType: varchar("anomalyType", { length: 80 }).notNull(),
+    sourceTabId: varchar("sourceTabId", { length: 255 }).notNull(),
+    status: mysqlEnum("status", ["confirmed", "revoked"]).default("confirmed").notNull(),
+    actorUserId: int("actorUserId").notNull(),
+    version: int("version").default(1).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    itemDraftAnomalyUnique: uniqueIndex("wesc_item_draft_anomaly_unique").on(
+      table.workItemId,
+      table.draftId,
+      table.anomalyKey
+    ),
+    itemDraftStatusIdx: index("wesc_item_draft_status_idx").on(
+      table.workItemId,
+      table.draftId,
+      table.status
+    ),
+    workItemFk: foreignKey({
+      name: "wesc_work_item_fk",
+      columns: [table.workItemId],
+      foreignColumns: [workspaceEditorialWorkItems.id],
+    }).onDelete("cascade"),
+    draftFk: foreignKey({
+      name: "wesc_draft_fk",
+      columns: [table.draftId],
+      foreignColumns: [workspaceEditorialDrafts.id],
+    }).onDelete("cascade"),
+    actorFk: foreignKey({
+      name: "wesc_actor_fk",
+      columns: [table.actorUserId],
+      foreignColumns: [users.id],
+    }),
+  })
+);
+
 export const workspaceEditorialCheckerFindingStates = mysqlTable(
   "workspaceEditorialCheckerFindingStates",
   {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   chapterEditorFindingRanges,
   chapterEditorIssues,
+  chapterEditorStructuralRepairGuidance,
   chapterEditorTabStatus,
   parseChapterEditorPasteText,
   serializeChapterEditorParagraphs,
@@ -134,6 +135,21 @@ describe("workspace Chapter Editor paragraph helpers", () => {
     ]);
   });
 
+  it("provides explicit structural repair guidance without auto-fixing content", () => {
+    expect(chapterEditorStructuralRepairGuidance("empty_tab")).toContain(
+      "เติมเนื้อหา"
+    );
+    expect(chapterEditorStructuralRepairGuidance("source_note_only")).toContain(
+      "ยืนยัน"
+    );
+    expect(
+      chapterEditorStructuralRepairGuidance("duplicate_content_exact")
+    ).toContain("เปิดแท็บ");
+    expect(
+      chapterEditorStructuralRepairGuidance("missing_expected_chapter")
+    ).toContain("แท็บใกล้เคียง");
+  });
+
   it("derives edited, foreign-word and structural status per tab", () => {
     expect(
       chapterEditorTabStatus({
@@ -157,6 +173,11 @@ describe("workspace Chapter Editor paragraph helpers", () => {
         ],
         anomalies: [
           { relatedSourceTabIds: ["tab-1", "tab-2"] },
+          {
+            sourceTabId: "tab-2",
+            relatedSourceTabIds: [],
+            disposition: "confirmed_source_note",
+          },
           { relatedSourceTabIds: ["tab-3"] },
         ],
       })

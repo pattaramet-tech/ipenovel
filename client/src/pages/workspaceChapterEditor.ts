@@ -18,6 +18,7 @@ export type ChapterEditorTabStatusInput = {
   anomalies?: readonly {
     sourceTabId?: string | null;
     relatedSourceTabIds?: readonly string[] | null;
+    disposition?: string | null;
   }[];
 };
 
@@ -43,6 +44,9 @@ export type ChapterEditorIssueAnomalyInput = {
   sourceTabId?: string | null;
   relatedSourceTabIds?: readonly string[] | null;
   message: string;
+  chapterNumber?: string | null;
+  disposition?: string | null;
+  confirmationVersion?: number | null;
 };
 
 export function chapterEditorIssues(input: {
@@ -78,6 +82,31 @@ export function chapterEditorIssues(input: {
   return [...findings, ...anomalies];
 }
 
+export function chapterEditorStructuralRepairGuidance(anomalyType: string) {
+  switch (anomalyType) {
+    case "empty_tab":
+      return "แท็บนี้ไม่มีเนื้อหา ให้เปิด Editor แล้วเติมเนื้อหาที่ถูกต้อง จากนั้นบันทึก Draft + ตรวจซ้ำ";
+    case "heading_only_tab":
+      return "แท็บนี้มีเพียงชื่อบท ให้เติมเนื้อเรื่องใต้ชื่อบท แล้วบันทึก Draft + ตรวจซ้ำ";
+    case "end_only_tab":
+      return "แท็บนี้มีเพียง “จบตอน” ให้ตรวจต้นฉบับและเติมเนื้อเรื่องก่อน marker แล้วตรวจซ้ำ";
+    case "source_note_only":
+      return "ถ้าแท็บนี้เป็นหมายเหตุจากต้นฉบับจริง ให้ยืนยันอย่างชัดเจน; ถ้าไม่ใช่ ให้แก้เนื้อหาแล้วตรวจซ้ำ";
+    case "duplicate_chapter_number":
+      return "เปิดแท็บที่มีเลขบทซ้ำทีละแท็บเพื่อตรวจชื่อบทและเนื้อหา ห้ามแก้อัตโนมัติ";
+    case "duplicate_content_exact":
+      return "เปิดแท็บที่เกี่ยวข้องเพื่อตรวจเนื้อหาซ้ำทั้งบท แล้วแก้เฉพาะแท็บที่ผิด";
+    case "duplicate_content_near":
+      return "เปิดแท็บที่เกี่ยวข้องเพื่อตรวจความคล้ายสูง อาจเป็นข้อความซ้ำที่ถูกต้องได้";
+    case "missing_expected_chapter":
+      return "ไม่พบเลขบทที่คาดไว้ ให้ตรวจแท็บใกล้เคียงว่าหัวข้อบทหายหรือเลขบทผิด";
+    case "tab_count_mismatch":
+      return "จำนวนแท็บไม่ตรงช่วงตอน ให้ตรวจแท็บที่ขาด/เกินและโครงสร้าง Episode Pack";
+    default:
+      return "ตรวจแท็บที่เกี่ยวข้อง แก้เนื้อหาโดยผู้ใช้ แล้วรัน checker ซ้ำ";
+  }
+}
+
 export function chapterEditorTabStatus(input: ChapterEditorTabStatusInput) {
   const edited = input.paragraphs.some(
     paragraph =>
@@ -92,8 +121,9 @@ export function chapterEditorTabStatus(input: ChapterEditorTabStatusInput) {
   ).length;
   const structuralIssueCount = (input.anomalies ?? []).filter(
     anomaly =>
-      anomaly.sourceTabId === input.sourceTabId ||
-      (anomaly.relatedSourceTabIds ?? []).includes(input.sourceTabId)
+      (anomaly.sourceTabId === input.sourceTabId ||
+        (anomaly.relatedSourceTabIds ?? []).includes(input.sourceTabId)) &&
+      anomaly.disposition !== "confirmed_source_note"
   ).length;
   return { edited, foreignFindingCount, structuralIssueCount };
 }
